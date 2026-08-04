@@ -293,6 +293,12 @@ impl EditBox {
 
     /// `deleteWords` — but **a selection wins**: with anything highlighted,
     /// Ctrl+Backspace deletes the selection and not a word.
+    ///
+    /// **Deleting this guard is an equivalent mutant, and vanilla's is too**:
+    /// [`Self::delete_chars_to_pos`] carries the *same* `highlight != cursor`
+    /// check, so both routes end in `insert_text("")`. Shown equivalent rather
+    /// than witnessed — a test written to kill it would only be re-asserting
+    /// the second guard.
     pub fn delete_words(&mut self, dir: i32) {
         if self.value.is_empty() {
             return;

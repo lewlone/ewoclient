@@ -137,6 +137,33 @@ impl AnvilName {
     }
 }
 
+/// `AnvilScreen.keyPressed`'s return — whether the screen consumes the key
+/// (M93t).
+///
+/// ```java
+/// return !this.name.keyPressed(event) && !this.name.canConsumeInput()
+///     ? super.keyPressed(event) : true;
+/// ```
+///
+/// **Read the negations carefully.** It reaches `super` only when the box
+/// neither handled the key **nor could have**. So with the field focused and
+/// editable — which it is whenever slot 0 holds something — the second
+/// disjunct is true and **every non-escape key is swallowed**: `E` does not
+/// close the anvil, a number key does not swap a hotbar slot, `Q` does not
+/// drop. That reads like a bug and is exactly what typing a name requires,
+/// because otherwise the letters would double as screen shortcuts.
+///
+/// With slot 0 empty the field is uneditable, `canConsumeInput` is false, and
+/// an unhandled key reaches the screen as usual.
+///
+/// Lives here rather than in `live_cmd` because `PlaySession`'s module has no
+/// test module anywhere in the repo — M71's finding, and this rule is one
+/// boolean expression whose two negations are exactly what a transcription
+/// gets wrong.
+pub fn key_consumed(field_handled: bool, field_can_consume: bool) -> bool {
+    field_handled || field_can_consume
+}
+
 // -- The gap this module recorded is CLOSED (M93t) ---------------------------
 //
 // `EditBox` is now [`crate::edit_box`]: character input, the caret, selection,
@@ -153,6 +180,17 @@ impl AnvilName {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_editable_field_swallows_every_key_the_screen_would_have_used() {
+        // The surprising half, and the one a transcription inverts: `super` is
+        // reached only when the box did NOT handle the key AND could not have.
+        assert!(key_consumed(false, true), "unhandled but consumable — swallowed");
+        assert!(key_consumed(true, true));
+        assert!(key_consumed(true, false), "handled by an unfocusable box");
+        // The ONLY path to the screen.
+        assert!(!key_consumed(false, false));
+    }
 
     #[test]
     fn the_filter_strips_the_section_sign_and_the_control_range() {

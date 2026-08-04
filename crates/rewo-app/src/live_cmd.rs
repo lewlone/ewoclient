@@ -3816,6 +3816,8 @@ fn run_headless(
             // …and it holds no scroll, so a stonecutter would draw its first
             // page. `run_headless` never opens one.
             None,
+            // …nor an anvil, so there is no field to draw.
+            None,
         );
         headless_screen_labels = labels;
     } else {
@@ -6178,6 +6180,13 @@ impl LiveApp {
                             == rewo_world::menu_screen::STONECUTTER_MENU_PROTOCOL_ID
                     })
                     .map(|m| cut_view(&mut self.screen, m, &items));
+                // M93t — likewise the anvil's field, seeded here so the render
+                // and the key handler see one box.
+                let anvil_field = session
+                    .menus
+                    .open()
+                    .filter(|m| m.layout.protocol_id == ANVIL_MENU_PROTOCOL_ID)
+                    .map(|m| anvil_local(&mut self.screen, m, &items).field.clone());
                 let (labels, velvet) = apply_screen(
                     &mut state.world_renderer,
                     &mut state.gpu,
@@ -6196,6 +6205,7 @@ impl LiveApp {
                     // paint the server's last word.
                     beacon_override,
                     cut.as_ref(),
+                    anvil_field.as_ref(),
                 );
                 self.screen_labels = labels;
                 // M88 — read the panel back OUT of the renderer, after the
@@ -11161,10 +11171,25 @@ fn apply_screen(
     // reason: it needs the screen-local scroll, and `apply_screen` holds no
     // `ScreenState` — which is also what keeps it drivable from a gate.
     cut: Option<&CutView>,
+    // M93t — the anvil's name field, resolved by the caller for the reason the
+    // beacon's choice and the stonecutter's grid are: it is screen-local state
+    // and `apply_screen` holds no `ScreenState`.
+    anvil_field: Option<&rewo_world::edit_box::EditBox>,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
 ) {
+    // M93t — the anvil's field is rendered ONCE, here, because its text and
+    // its cursor share a width measurement: the cursor's x is the width of the
+    // run before it. Splitting the two would measure the same string twice
+    // with two chances to disagree.
+    let (anvil_labels, anvil_fills) = match (baked.font.as_ref(), anvil_field) {
+        (Some(f), Some(a)) => {
+            let (l, fills, _) = anvil_field_render(a, &f.advance, w, h);
+            (l, fills)
+        }
+        _ => (Vec::new(), Vec::new()),
+    };
     // M93q — the loom's grid, resolved here because it keys off the pattern
     // slot's item NAME and only this side holds the registry.
     let loom = session.menus.open().and_then(|m| {
@@ -11220,6 +11245,7 @@ fn apply_screen(
             beacon_override,
             loom,
             cut,
+            anvil_fills: &anvil_fills,
         },
         Some(rewo_gpu::container::screen_to_gui_for(
             mouse,
@@ -11248,7 +11274,8 @@ fn apply_screen(
                 beacon_effects,
                 beacon_override,
                 loom,
-            cut,
+                cut,
+                anvil_fills: &anvil_fills,
             },
             Some(rewo_gpu::container::screen_to_gui_for(
                 mouse,
@@ -11262,6 +11289,10 @@ fn apply_screen(
     ) {
         labels.extend(enchant_cost_labels(rows, &font.advance, w, h));
     }
+    // The text and the append cursor are labels; the insert cursor and the
+    // selection travelled with the panel as solid quads — M93q's `FILL_SPRITE`
+    // doing the job it was built for, one screen over.
+    labels.extend(anvil_labels);
     apply_gui_icons(wr, gpu, gui, &icons);
 
     let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
@@ -11715,8 +11746,7 @@ fn anvil_key(
     let handled = {
         let local = anvil_local(screen, open, items);
         let handled = local.field.key_pressed(input, clipboard);
-        // `!handled && !canConsumeInput()` is the ONLY path to `super`.
-        handled || local.field.can_consume_input()
+        rewo_world::anvil::key_consumed(handled, local.field.can_consume_input())
     };
     anvil_flush(session, screen, slot0);
     handled
@@ -12224,6 +12254,46 @@ fn menu_overlays(
                 }
             }
         }
+        // anvil (M93t): the name field's cursor and selection, measured by
+        // `anvil_field_render` alongside the text so the two cannot disagree
+        // about where the run ends.
+        ANVIL_MENU_PROTOCOL_ID => {
+            // `extractBackground` blits the field's own 110x16 background at
+            // (59, 20) — over a RED placeholder baked into `anvil.png`, so
+            // this is chrome the screen cannot omit. The pair is chosen by the
+            // same slot-0 predicate that makes the field editable.
+            let has_input = m.menu.menu_slot(0).is_some();
+            out.push((
+                a::ANVIL_TEXT_FIELD + usize::from(!has_input),
+                to_blit(rewo_world::menu_screen::ProgressBlit {
+                    dx: 59,
+                    dy: 20,
+                    w: 110,
+                    h: 16,
+                    sx: 0,
+                    sy: 0,
+                    src: None,
+                }),
+            ));
+            // Then the field's own cursor and selection, over it.
+            out.extend_from_slice(player.anvil_fills);
+            // `extractErrorIcon` — an input present and NO result, which is
+            // the combination the anvil refused.
+            if (has_input || m.menu.menu_slot(1).is_some()) && m.menu.menu_slot(2).is_none() {
+                out.push((
+                    a::ANVIL_ERROR,
+                    to_blit(rewo_world::menu_screen::ProgressBlit {
+                        dx: 99,
+                        dy: 45,
+                        w: 28,
+                        h: 21,
+                        sx: 0,
+                        sy: 0,
+                        src: None,
+                    }),
+                ));
+            }
+        }
         // stonecutter (M93s): the scroller, then one button chrome per visible
         // cell. The result ICONS are not here — they are items, and go through
         // the GUI-item pass with the slots (see `screen_icons`).
@@ -12413,6 +12483,8 @@ pub(crate) struct EnchantPlayer<'a> {
     /// from `selectByInput`, and this struct is `Copy` because the enchanting
     /// rows and the panel each take it by value.
     pub cut: Option<&'a CutView>,
+    /// The anvil field's cursor and selection quads (M93t), already measured.
+    pub anvil_fills: &'a [(usize, rewo_gpu::container::PanelBlit)],
     /// The beacon SCREEN's own choice (M93m), when a screen is driving.
     ///
     /// `None` re-reads the menu's data slots, which is right for a gate with
@@ -12473,6 +12545,9 @@ pub(crate) fn container_panel_for_open_menu(
             beacon_override,
             loom,
             cut,
+            // A gate drives no anvil field; `containershot` supplies its own
+            // overlays when it wants a fill (M93q's o19/o20).
+            anvil_fills: &[],
         },
         mouse_gui,
     )
@@ -13414,6 +13489,151 @@ fn enchant_cost_labels(
         });
     }
     out
+}
+
+/// The anvil name field's geometry, from `AnvilScreen.subInit` (M93t).
+///
+/// ```java
+/// this.name = new EditBox(this.font, xo + 62, yo + 24, 103, 12, …);
+/// this.name.setBordered(false);
+/// ```
+///
+/// Unbordered, so `textX = getX() + 0` and `textY = getY()` — a bordered box
+/// would inset by 4 and centre vertically by `(height - 8) / 2`, and reusing
+/// those here would put the name four pixels right and two down.
+/// `getInnerWidth()` is likewise the full 103 rather than `width - 8`.
+const ANVIL_FIELD: (i32, i32, i32) = (62, 24, 103);
+
+/// The name field's text, cursor and selection (M93t).
+///
+/// The two-piece draw in `extractWidgetRenderState` exists to *place the
+/// cursor*, not to change the text: the halves are separated by `+1` and then
+/// pulled back by `-1` for an insert cursor, so the run is contiguous either
+/// way and one label is exact.
+fn anvil_field_render(
+    local: &rewo_world::edit_box::EditBox,
+    advance: &[u8; 256],
+    w: f32,
+    h: f32,
+) -> (
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<(usize, rewo_gpu::container::PanelBlit)>,
+    Option<String>,
+) {
+    let layout = &rewo_world::menu_layout::REGISTRY[ANVIL_MENU_PROTOCOL_ID as usize];
+    let (left, top, scale) =
+        rewo_gpu::container::gui_origin_for(w, h, layout.image_w as f32, layout.image_h as f32);
+    let (fx, fy, inner) = ANVIL_FIELD;
+    let width = |u: &[u16]| rewo_gpu::text::width(&String::from_utf16_lossy(u), advance);
+    let displayed = local.displayed(inner, &width).to_vec();
+    let rel_cursor = local.cursor_position().saturating_sub(local.display_pos());
+    let on_screen = rel_cursor <= displayed.len();
+
+    let mut labels = Vec::new();
+    let mut fills = Vec::new();
+    let mut append = None;
+    let text = String::from_utf16_lossy(&displayed);
+    if !text.is_empty() {
+        labels.push(rewo_gpu::world::OwnedTextLine {
+            x: left + fx as f32 * scale,
+            y: top + fy as f32 * scale,
+            px: scale,
+            // `setTextColor(-1)` AND `setTextColorUneditable(-1)` — the anvil
+            // sets both to white, so an uneditable field is not greyed.
+            color: [1.0, 1.0, 1.0],
+            alpha: 1.0,
+            shadow: true,
+            text,
+        });
+    }
+
+    // `insert = cursorPos < value.length() || value.length() >= maxLength` —
+    // so a full field shows the BAR even with the cursor at the end, which is
+    // how vanilla tells you there is no room left.
+    let insert = local.cursor_position() < local.len() || local.len() >= local.max_length();
+    let before = if on_screen { &displayed[..rel_cursor] } else { &displayed[..] };
+    let mut cursor_x = fx + width(before) + if before.is_empty() { 0 } else { 1 };
+    if on_screen && insert {
+        cursor_x -= 1;
+    }
+
+    // The selection: `textHighlight(min(cursorX, x+width), textY-1,
+    // min(highlightX-1, x+width), textY+1+9, invert)`. The anvil sets
+    // `setInvertHighlightedTextColor(false)`, so only the blue fill runs.
+    let rel_highlight = local
+        .highlight_position()
+        .saturating_sub(local.display_pos())
+        .min(displayed.len());
+    if rel_highlight != rel_cursor {
+        let hx = fx + width(&displayed[..rel_highlight]);
+        let (x0, x1) = (cursor_x.min(fx + inner), (hx - 1).min(fx + inner));
+        let (x0, x1) = (x0.min(x1), x0.max(x1));
+        fills.push((
+            rewo_gpu::container::FILL_SPRITE,
+            rewo_gpu::container::PanelBlit {
+                dx: x0 as f32,
+                dy: (fy - 1) as f32,
+                w: (x1 - x0) as f32,
+                h: 11.0,
+                sx: 0.0,
+                sy: 0.0,
+                sw: 0.0,
+                sh: 0.0,
+                // `-16776961` = 0xFF0000FF. NOTE the pipeline is
+                // `GUI_TEXT_HIGHLIGHT`, whose blend Rewo's single container
+                // blend does not reproduce — the colour is exact, the
+                // compositing is a plain alpha draw.
+                tint: [0.0, 0.0, 1.0, 1.0],
+            },
+        ));
+    }
+
+    if local.is_focused() {
+        if insert {
+            // `fill(x, y - 1, x + 1, y + lineHeight)`, lineHeight 9 + 1.
+            fills.push((
+                rewo_gpu::container::FILL_SPRITE,
+                rewo_gpu::container::PanelBlit {
+                    dx: cursor_x as f32,
+                    dy: (fy - 1) as f32,
+                    w: 1.0,
+                    h: 11.0,
+                    sx: 0.0,
+                    sy: 0.0,
+                    sw: 0.0,
+                    sh: 0.0,
+                    tint: [1.0, 1.0, 1.0, 1.0],
+                },
+            ));
+        } else {
+            // The append cursor is the CHARACTER "_", not a rectangle.
+            append = Some(String::from("_"));
+            labels.push(rewo_gpu::world::OwnedTextLine {
+                x: left + cursor_x as f32 * scale,
+                y: top + fy as f32 * scale,
+                px: scale,
+                color: [1.0, 1.0, 1.0],
+                alpha: 1.0,
+                shadow: true,
+                text: "_".into(),
+            });
+        }
+    }
+    (labels, fills, append)
+}
+
+/// [`anvil_field_render`] for `containershot`.
+pub(crate) fn anvil_field_render_for_test(
+    local: &rewo_world::edit_box::EditBox,
+    advance: &[u8; 256],
+    w: f32,
+    h: f32,
+) -> (
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<(usize, rewo_gpu::container::PanelBlit)>,
+    Option<String>,
+) {
+    anvil_field_render(local, advance, w, h)
 }
 
 /// `AbstractContainerScreen.extractCarriedItem` — the cursor stack, offset by

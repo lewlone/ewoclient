@@ -1549,6 +1549,16 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     "gui/sprites/container/stonecutter/recipe.png",
     "gui/sprites/container/stonecutter/scroller.png",
     "gui/sprites/container/stonecutter/scroller_disabled.png",
+    // 84..=86 — the anvil (M93t). The first two are NOT decoration: the sheet
+    // has a pure-red 255,0,0 band exactly where the name field goes, and this
+    // sprite is what covers it. A screen that draws the panel and no field
+    // shows the placeholder, which is how M93t noticed the blit was missing.
+    //
+    // Which of the pair is drawn keys off slot 0, the same predicate that makes
+    // the field editable.
+    "gui/sprites/container/anvil/text_field.png",
+    "gui/sprites/container/anvil/text_field_disabled.png",
+    "gui/sprites/container/anvil/error.png",
 ];
 
 /// The loom's three pattern-button chromes, in `LoomScreen`'s test order:
@@ -1557,6 +1567,15 @@ pub const LOOM_PATTERN_CHROME: usize = 33;
 
 /// Where the banner patterns start in [`MENU_OVERLAY_SPRITES`] (M93q).
 pub const BANNER_PATTERN_OVERLAY: usize = 36;
+
+/// The anvil's name-field background, **enabled first** —
+/// `CUT_SCROLLER`'s convention: `ANVIL_TEXT_FIELD + usize::from(!has_item)`.
+///
+/// Load-bearing rather than decorative: `anvil.png` carries a red placeholder
+/// under it (M93t).
+pub const ANVIL_TEXT_FIELD: usize = 84;
+/// The anvil's "these do not combine" icon.
+pub const ANVIL_ERROR: usize = 86;
 
 /// The stonecutter's three recipe-button chromes, in
 /// `StonecutterScreen.extractButtons`' test order: selected, highlighted,
