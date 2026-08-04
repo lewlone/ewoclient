@@ -43,19 +43,23 @@ container/menu screens, M88 proving the windowed client renders one,
 M89 making it usable, M90 shift-click routing by the menu's own
 `quickMoveStack`, M91 the furnace family, M92 the rest of
 `container_set_data` (brewing stand, enchanting table, beacon), the crafting
-quick-move, and the first bespoke widget — and **M93 three of the eight
-single-input quick-moves — merchant, anvil, beacon, stonecutter, grindstone,
-cartography table and loom, **seven of eight**, leaving only smithing, which is
-genuinely blocked on class C**. Current measurement,
-taken 2026-08-04: **1860 tests, 0 failures** (world 664, net 588, gpu 252,
-data 204, app 96, mesh 45, proto 11 — all seven confirmed reporting);
-`containershot` **49/49**, `inventoryshot` 152/152, `itemshot` 75/75,
-`handshot` 34/34, `mobshot` 246/246, `live --render-check` 22/22 with
-validation ON and 0 validation errors (M92's measurement — **not re-run for
-M93**, which adds no render path); demo PNG `2cc56b4acbfb92cb`,
-byte-identical. `REWO_PACKET_COVERAGE.md` is at **109 / 0 / 32** — M93 adds no
-packet. Everything below this paragraph is the 2026-08-02 audit and is
-accurate as of that date.
+quick-move, and the first bespoke widget — and **M93**, which took the
+single-input `quickMoveStack`s (merchant, anvil, beacon, stonecutter,
+grindstone, cartography table and loom — **seven of eight**, leaving only
+smithing, genuinely blocked on class C) and then the bespoke widgets: the
+crafter's toggles, the beacon's press, the anvil's rename, and the loom
+**complete end to end** through its rendered pattern preview (M93q).
+
+Current measurement, taken 2026-08-04: **1861 tests, 0 failures** (world 665,
+net 588, gpu 252, data 204, app 96, mesh 45, proto 11 — all seven confirmed
+reporting); `containershot` **52/52**, `inventoryshot` 152/152, `itemshot`
+75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check` 22/22 with
+validation ON and 0 validation errors, re-run for M93q** — the first M93
+milestone to touch a render path, so the earlier "M93 adds no render path"
+caveat expires here; demo PNG `2cc56b4acbfb92cb`, byte-identical.
+`REWO_PACKET_COVERAGE.md` is at **109 / 0 / 32** — M93 adds no packet.
+Everything below this paragraph is the 2026-08-02 audit and is accurate as of
+that date.
 
 ### Where it was: M0–M86 shipped and merged to `main`
 
@@ -196,7 +200,7 @@ So, in ratio order:
    | Screen | What it actually needs |
    |---|---|
    | **crafter** | ✅ **complete end to end** (M93h–M93k): model, packet, click routing, render (cover, arrow, item suppression) and the `gui.togglable_slot` hint. Only `requestCursor(POINTING_HAND)` is left, and Rewo has **no cursor-shape concept at all** — new winit plumbing, not a transcription |
-   | **loom** | ✅ pattern list, grid geometry, hit test, scroll and accept-gate shipped (M93o) — **two of the three blockers above were wrong**: the component is on the item's *prototype* (never on the wire) and its value is a *tag name*, so no registry is involved. Left: the pattern **preview**'s RENDER. M93p landed its geometry and the scaled-blit plumbing (inert); the two remaining pieces are the 43 banner textures into the **overlay atlas**, and a way to draw the **solid grey backing** — `overlays` is `(sprite, PanelBlit)` with no colour and no untextured mode |
+   | **loom** | ✅ **complete end to end** (M93o–M93q): pattern list, grid geometry, hit test, scroll, accept-gate, and the preview's **render** — the 43 banner textures in the overlay atlas and a solid-fill quad (`FILL_SPRITE` + a per-quad tint + an untextured shader mode), drawn `fill` then `blit` as `extractBannerOnButton` does. **Two of the three blockers recorded here were wrong**: the component is on the item's *prototype* (never on the wire) and its value is a *tag name*, so no registry is involved. Left: the **scrollbar drag** — `LoomView::start_row` is always 0, so only the first 16 patterns are reachable; and `hasMaxPatterns`, which needs a banner layer-count component Rewo does not read |
    | **beacon** | ✅ **complete** (M93l + M93m): press, `set_beacon`, click wiring and screen-owned state. The confirm closes the **client's** screen only — Rewo resolves no *serverbound* `container_close`, a gap that predates this and affects **every** screen close |
    | **anvil** | ✅ rename semantics + `rename_item` shipped (M93n). Left: **`EditBox`** — character input, caret, focus. Rewo's key handler reads `PhysicalKey`/`KeyCode` and never `KeyEvent.text`, so **nothing can type**: a subsystem it has never had, shared with the class-C chat/command-input cluster |
    | merchant, stonecutter | genuinely class-C (`merchant_offers`, `update_recipes`) |
@@ -915,6 +919,25 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    written in `attributes.rs` and `sound_events.rs`: **a built-in registry is
    resolved by name from the datagen report**, never off the wire. A witness on
    such a value must assert the *source*, not the number.
+
+0a. **(M93q) The same witness can be sound on one property of a draw and
+   vacuous on another — and the give-away is a shared constant.** `o21` renders
+   the loom's preview and reads `LOOM_PREVIEW_BACKING` to compute its
+   expectation, so a wrong constant moves the render and the expectation
+   together: an excellent witness for the fill/pattern **order**, a
+   self-calibrating one for the **value**. M93p's `0x3F3F3F` survived it —
+   `getTextureDiffuseColor` is `DyeColor.GRAY`'s **third** constructor
+   argument, `4673362` = `0x474F52`, and both neighbouring arguments are *more
+   neutral* than the right answer, so a plausible grey is what a guess
+   produces. A 52-witness validation-required pixel gate is blind to it; three
+   lines of unit test stating the decompile's literal kill it. **Pin a number
+   against its source, not against itself**, and treat any `*shot` witness that
+   computes an expectation from a `pub const` the renderer also reads as
+   covering everything about that draw except the constant. Its sibling: **a
+   gate that cannot reach a call site does not test it** — `o19`/`o20` graded
+   the fill primitive while `container_panel_for_open_menu` hardcoded
+   `loom: None`, so the entire loom arm could have been deleted with both
+   staying green.
 
 0b. **(M92) A mutation harness that restores by `mv` silently grades the
    mutated binary.** `mv`/`cp` preserve the original file's mtime, which is
@@ -2326,6 +2349,106 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M93q — the overlay colour quad, and two ways a pixel gate goes blind (2026-08-03)
+
+The loom's pattern preview is `fill` then `blit` — a grey backing under an
+untinted pattern — and the overlay path could not draw the first half:
+`ContainerPanel::overlays` is `(sprite, PanelBlit)` and every sprite index
+samples the atlas. M93q adds an **untextured mode** (a negative-`u` sentinel in
+`container.frag`, a per-quad `tint`, and a `FILL_SPRITE` index), the 43
+banner-pattern textures and the loom's three button sprites, and wires the loom
+arm of `menu_overlays`.
+
+The structure is verbatim `LoomScreen.extractBannerOnButton`, and the ordering
+is why fills share the sprites' **ordered** list rather than getting a list of
+their own:
+
+```java
+graphics.fill(0, 0, 5, 10, DyeColor.GRAY.getTextureDiffuseColor());
+graphics.blit(bannerPatternSprite.atlasLocation(), 0, 0, 5, 10, u0, u1, v0, v1);
+```
+
+**The milestone is really about the two blind spots the gate had**, both worth
+carrying forward.
+
+**One: a gate that cannot reach a call site does not test it.** `o19`/`o20`
+grade the fill primitive from a hand-made overlay list, and they pass whether or
+not any menu ever emits one — because `container_panel_for_open_menu` hardcoded
+`loom: None` (with a comment saying a gate holds no registry), so the gate could
+not reach the loom arm at all. **Delete the entire arm and both stay green.**
+That is M92's finding one level over: M92's case was a gate *supplying* an input
+production derives, this one is a gate *unable to enter* the branch under test.
+Fixed the way M93m did it for the beacon's screen-local choice — the same entry
+point carries the view, so the gate cannot exercise a path the live client does
+not take (M45) — and `o21` now drives the real arm, with a control frame proving
+the probed rect is the one the loom paints, and a **two-sided** test (some
+pixels lighter than the backing, some exactly it) that catches the fill/pattern
+order. Mutating the two pushes into the wrong order takes it from 9 lighter
+pixels to 0.
+
+**Two: a witness can be sound on one property of the same draw and vacuous on
+another.** `o21` reads `LOOM_PREVIEW_BACKING` to compute its own expectation, so
+a wrong constant moves the render *and* the expectation together — a sound
+witness for the **order**, a self-calibrating one for the **value**. And the
+value was wrong. `DyeColor.GRAY.getTextureDiffuseColor()` is the **third**
+constructor argument:
+
+```java
+GRAY(7, "gray", 4673362, MapColor.COLOR_GRAY, MapColor.TERRACOTTA_GRAY, 4408131, 8421504),
+
+DyeColor(int id, String name, int textureDiffuseColor, MapColor mapColor,
+         MapColor terracottaColor, int fireworkColor, int textColor)
+```
+
+`4673362` is `0x474F52`, a faintly blue grey (R < G < B). M93p had shipped
+`0x3F3F3F`, which is **none of GRAY's three colours** — and the trap is that
+both neighbouring arguments are *more neutral* than the right answer
+(`fireworkColor` `0x434343`, `textColor` `0x808080`), so a plausible flat grey
+is exactly what a guess produces. M28c's rule is what makes it resolvable:
+count the arguments, because `getTextureDiffuseColor` and `getTextColor` differ
+by more than a shade.
+
+Mutating the constant back demonstrates the asymmetry rather than asserting it:
+
+| grader | wrong constant |
+|---|---|
+| `containershot` — 52 witnesses, validation on, real pixels | **survives** |
+| a three-line unit test stating the decompile's literal | **kills it** |
+
+**The general rule: when a witness and the code under test read the same
+constant, the witness pins the behaviour around that constant and never the
+constant.** Pin a number against its source, not against itself. Worth a sweep
+for other cases — anywhere a `*shot` witness computes an expectation from a
+`pub const` the renderer also reads.
+
+**Measured.** 1861 tests / 0 failures across all seven crates (world 665, net
+588, gpu 252, data 204, app 96, mesh 45, proto 11); `containershot` 49 → **52**;
+`inventoryshot` 152, `itemshot` 75, `handshot` 34, `mobshot` 246/246; demo PNG
+`2cc56b4acbfb92cb` byte-identical. 5 mutations, 5 killed, plus the constant
+mutation kept as the demonstration above.
+
+**`live --render-check` re-run: 22/22, validation ON, 0 errors** — the first M93
+milestone that needed it, because M93q is the first to touch a render path (the
+fragment shader and the overlay atlas). §0.0's standing "M93 adds no render
+path" note stops being true here. `r22` reports 3 overlay sprites at peak, so
+the **textured** overlay path is exercised windowed and the shader's new branch
+is inert for it, as intended.
+
+**What `--render-check` does NOT reach, and why.** It never opens a **loom**, so
+the fill's windowed call site is unexercised — M86's own class of gap, recorded
+rather than papered over. The blocker is not the injection: `r19` already
+injects an `open_screen`, but `loom_display_patterns` is false without a banner
+**and** a dye actually in the slots (a dye alone offers nothing — a loom stamps
+one dyed layer at a time), so an injected empty loom would draw nothing and
+witness nothing. Staging it means giving the player both items and clicking them
+into a real loom's slots, which is a harness of its own. Headlessly the arm is
+covered by `o21`.
+
+**Open.** The loom's **scrollbar drag** is unwired, so `LoomView::start_row` is
+always 0 and only the first 16 patterns are reachable.
+
+---
 
 ### M93i — wiring the crafter toggles, and the defect that wiring exposed (2026-08-03)
 
