@@ -54,11 +54,13 @@ three values correct, all three now pinned against their source. **M93s** is the
 **stonecutter, complete end to end**, which the plan had recorded as blocked on
 class-C `update_recipes` and which was not: the recipe list is jar-derivable,
 and the hard part was reproducing its ORDER, which is a wire contract because a
-click sends an index.
+click sends an index. **M93t** is the **`EditBox`** — a text-entry subsystem
+Rewo had never had — wiring the anvil end to end, and finding a missing chrome
+blit because `anvil.png` hides a red placeholder under the name field.
 
-Current measurement, taken 2026-08-04: **1879 tests, 0 failures** (world 676,
+Current measurement, taken 2026-08-04: **1899 tests, 0 failures** (world 696,
 net 588, gpu 255, data 208, app 97, mesh 45, proto 11 — all seven confirmed
-reporting); `containershot` **58/58**, `inventoryshot` 152/152, `itemshot`
+reporting); `containershot` **63/63**, `inventoryshot` 152/152, `itemshot`
 75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check` 22/22 with
 validation ON and 0 validation errors, re-run for M93q** — the first M93
 milestone to touch a render path, so the earlier "M93 adds no render path"
@@ -208,7 +210,7 @@ So, in ratio order:
    | **crafter** | ✅ **complete end to end** (M93h–M93k): model, packet, click routing, render (cover, arrow, item suppression) and the `gui.togglable_slot` hint. Only `requestCursor(POINTING_HAND)` is left, and Rewo has **no cursor-shape concept at all** — new winit plumbing, not a transcription |
    | **loom** | ✅ **complete end to end** (M93o–M93q): pattern list, grid geometry, hit test, scroll, accept-gate, and the preview's **render** — the 43 banner textures in the overlay atlas and a solid-fill quad (`FILL_SPRITE` + a per-quad tint + an untextured shader mode), drawn `fill` then `blit` as `extractBannerOnButton` does. **Two of the three blockers recorded here were wrong**: the component is on the item's *prototype* (never on the wire) and its value is a *tag name*, so no registry is involved. Left: the **scrollbar drag** — `LoomView::start_row` is always 0, so only the first 16 patterns are reachable; and `hasMaxPatterns`, which needs a banner layer-count component Rewo does not read |
    | **beacon** | ✅ **complete** (M93l + M93m): press, `set_beacon`, click wiring and screen-owned state. The confirm closes the **client's** screen only — Rewo resolves no *serverbound* `container_close`, a gap that predates this and affects **every** screen close |
-   | **anvil** | ✅ rename semantics + `rename_item` shipped (M93n). Left: **`EditBox`** — character input, caret, focus. Rewo's key handler reads `PhysicalKey`/`KeyCode` and never `KeyEvent.text`, so **nothing can type**: a subsystem it has never had, shared with the class-C chat/command-input cluster |
+   | **anvil** | ✅ **complete end to end** (M93n + M93t): rename semantics, `rename_item`, and the **`EditBox`** — a subsystem Rewo had never had. Character input via `KeyEvent.text` (the seam it never read), the caret, selection, the four shortcuts, word motion, and the field's own background sprite, which `anvil.png` hides a **red placeholder** under. Left: the clipboard is **in-process**, not the OS's (no crate pulls it in); IME pre-edit is absent |
    | **stonecutter** | ✅ **complete end to end** (M93s): the recipe list, the grid, the three button chromes, the result icons, the scrollbar and every input path. **The class-C claim was wrong** — the third of this arc, after M91's furnace recipes and M93's merchant quick-move. The list is jar-derivable and the hard part was its ORDER, which is a wire contract because a click sends an *index*: `RecipeManager.prepare` loads into a `SortedMap<Identifier, _>` and `Identifier.compareTo` is **path first, then namespace** |
    | merchant | genuinely class-C (`merchant_offers`) for its trade list — though M93 found its *quick-move* was never blocked by that packet at all |
 
@@ -221,7 +223,7 @@ So, in ratio order:
    rows are done and `container_button_click` is shipped, so the loom and the
    crafter are *only* missing their button lists; the beacon needs
    `set_beacon` plus click-tracked `primary`/`secondary` state; the anvil
-   needs a text field; and the merchant's trade list is genuinely blocked on
+   has its text field (M93t); and the merchant's trade list is genuinely blocked on
    class-C `merchant_offers` — note M93 found its *quick-move* was never
    blocked by that packet at all, and **M93s found the stonecutter was not
    blocked by `update_recipes` either**.
@@ -2368,6 +2370,100 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M93t — the EditBox: a text-entry subsystem, and a red band (2026-08-04)
+
+M93n shipped the anvil's semantics and recorded that **nothing could type** —
+Rewo read `PhysicalKey`/`KeyCode` and never a character. This is the missing
+half: `EditBox`'s editing core, the `KeyEvent.text` seam, and the render.
+
+**The buffer is `Vec<u16>`, and that is not fussiness.** Every index in
+vanilla's `EditBox` is a Java `String` index — a UTF-16 code unit — and one
+rule is only *expressible* in that unit:
+
+```java
+if (Character.isHighSurrogate(text.charAt(maxInsertionLength - 1)))
+   maxInsertionLength--;
+```
+
+which stops a truncation splitting a surrogate pair. In UTF-8 that is a
+different, merely analogous operation. M93n had already counted the anvil's 50
+in code units for the same reason, so this is consistent rather than novel.
+
+**Findings that read backwards**, each pinned:
+
+- `insertText`'s room is `maxLength - length - (start - end)` — a **double
+  negative**, since `start <= end`, so it *adds back* the room the selection
+  frees. Read as a subtraction, replacing a long selection refuses a short
+  insert.
+- **`setValue` truncates with no surrogate check** where `insertText` has one,
+  so a programmatic set can split a pair a paste cannot. Vanilla's asymmetry.
+- an **uneditable box still swallows** backspace and delete: the switch is
+  gated on focus, not editability, and `return true` sits outside the
+  `if (isEditable)`.
+- `case 260/264/265/266/267` share the **`default`** label, so Insert, the
+  vertical arrows and page up/down are treated as unrecognised — they fall
+  through and return false.
+- **word motion is not symmetric**: forward lands at the start of the *next*
+  word, backward at the start of the word you were in, so out-and-back does not
+  return you.
+- a **selection beats a word delete**; the four shortcuts need control down
+  **and shift up and alt up**, so Ctrl+Shift+C is not a copy; and **cut copies
+  even when uneditable**, only the removal being gated.
+
+**`AnvilScreen.keyPressed` is the behaviour worth knowing:**
+
+```java
+return !this.name.keyPressed(event) && !this.name.canConsumeInput()
+    ? super.keyPressed(event) : true;
+```
+
+It reaches `super` **only** when the box neither handled the key nor could
+have. So with an item in slot 0 the field is focused and editable and **every
+non-escape key is swallowed** — `E` does not close the anvil, a number key does
+not swap a hotbar slot, `Q` does not drop. That reads like a bug and is exactly
+what typing requires, since the letters would otherwise double as shortcuts.
+
+**A red band said the chrome was missing.** `anvil.png` carries a pure
+`255,0,0` band exactly where the name field goes, and
+`AnvilScreen.extractBackground` covers it with a 110x16 sprite chosen by
+whether slot 0 has an item. Rewo drew the panel and not the sprite, so the
+first run of these witnesses read `[255, 0, 0]` for what they called "the bare
+panel". **A placeholder in a vanilla texture is a deliberate signal**, and
+this is what it signals; the error icon went in beside it.
+
+**Three mutations survived, and the three outcomes were all different** —
+which is the useful part:
+
+| survivor | verdict |
+|---|---|
+| the swallow rule | **a real gap**: it lived in `live_cmd`, which has no test module anywhere (M71's finding). Extracted to `anvil::key_consumed` with a truth table |
+| the field-background pair inverted | **a real gap, and a symmetric witness**: x5 asserted only that the two frames *differ*, so swapping them passed. It now names the values, read out of the PNGs |
+| `deleteWords`' selection guard | **equivalent**: `deleteCharsToPos` carries the same check, so both routes end in `insert_text("")`. Vanilla is doubly guarded too |
+
+The insert/append cursor split is exact — `insert` is `cursorPos < len || len >=
+maxLength`, so a **full** field shows the bar even at the end while one with
+room shows the character `_`, a glyph and not a quad. The selection is a blue
+quad through M93q's `FILL_SPRITE`, colour exact, `GUI_TEXT_HIGHLIGHT`'s blend
+not reproduced.
+
+**Measured.** 1899 tests / 0 failures; `containershot` 58 → **63**;
+`inventoryshot` 152, `itemshot` 75, `handshot` 34, `mobshot` 246/246;
+**`live --render-check` 22/22, validation ON, 0 errors**; demo PNG
+`2cc56b4acbfb92cb` byte-identical. 7 mutations, 6 killed, 1 shown equivalent.
+
+**Open.** The **clipboard is in-process**, not the OS's — no crate pulls one in
+and `winit` exposes none, so copy/cut/paste are exact against each other and
+isolated from the desktop; it swaps at one field. IME pre-edit, the hint, the
+suggestion and the formatter list are absent (the anvil sets none). Mouse
+click-to-position and drag-select inside the field are not wired
+(`findClickedPositionInText`, `onDrag`). The seed uses a name derived from the
+item id, so a stack already carrying `custom_name` seeds the field with its
+*default* name — M41 decodes the component's bytes, not its text, and this is
+the same wall the tooltip's name override hits. It does not reach the wire,
+because `on_name_changed` compares against what the server was told.
+
+---
 
 ### M93s — the stonecutter, and an order that is a wire contract (2026-08-04)
 

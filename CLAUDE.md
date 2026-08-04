@@ -4411,13 +4411,58 @@ plain-click path).
 anything else after an interrupted battery**, and split batteries so each stays
 inside the 10-minute tool cap.
 
-**Measured:** 1773 → **1879 tests**, 0 failures, seven crates reporting (world
-676, net 588, gpu 255, data 208, app 97, mesh 45, proto 11); `containershot`
-27 → **58**; `inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97,
+**Measured:** 1773 → **1899 tests**, 0 failures, seven crates reporting (world
+696, net 588, gpu 255, data 208, app 97, mesh 45, proto 11); `containershot`
+27 → **63**; `inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97,
 `mobshot` 246/246; `live --render-check` **22/22** validation ON, 0 errors
 (re-run at M93q, the first of the arc to touch a render path); demo PNG
-`2cc56b4acbfb92cb` byte-identical; **179 mutations across M93a–s, 176 killed,
+`2cc56b4acbfb92cb` byte-identical; **186 mutations across M93a–t, 182 killed,
 2 shown equivalent, 1 alive by construction (named)**.
+
+### M93t — the EditBox, a subsystem Rewo never had, and a red band
+
+M93n shipped the anvil's semantics and recorded that **nothing could type** —
+Rewo read `PhysicalKey` and never a character. This is `EditBox`'s editing core
+plus the `KeyEvent.text` seam, wiring the anvil end to end.
+
+**The buffer is `Vec<u16>` and that is not fussiness**: every index in vanilla's
+EditBox is a Java String index, and one rule — `isHighSurrogate(charAt(max - 1))`,
+which stops a truncation splitting a pair — is only *expressible* in UTF-16.
+M93n had already counted the anvil's 50 in code units for the same reason.
+
+Findings that read backwards: `insertText`'s room is a **double negative**
+(`maxLength - length - (start - end)`, so the selection's width is added *back*);
+`setValue` truncates with **no** surrogate check where `insertText` has one; an
+**uneditable box still swallows** backspace, because `return true` sits outside
+the `if (isEditable)`; Insert and the vertical arrows share the **`default`**
+label and so are treated as unrecognised; **word motion is not symmetric**, so
+Ctrl+Left then Ctrl+Right does not return you; and the four shortcuts need
+control down **and shift up and alt up**.
+
+**`AnvilScreen.keyPressed` reaches `super` only when the box neither handled
+the key nor could have** — so with an item in slot 0 **every non-escape key is
+swallowed**: E does not close the anvil, a number key does not swap, Q does not
+drop. That reads like a bug and is exactly what typing requires.
+
+**A red band said the chrome was missing.** `anvil.png` carries a pure
+`255,0,0` band exactly where the name field goes, and `extractBackground`
+covers it with a sprite chosen by slot 0. Rewo drew the panel and not the
+sprite, so the first run of these witnesses read `[255,0,0]` for "the bare
+panel". **A placeholder in a vanilla texture is a deliberate signal.**
+
+**Three mutations survived with three different verdicts**, which is the
+transferable part: the swallow rule was a **real gap** (it lived in `live_cmd`,
+which has no test module — M71's finding — and is now `anvil::key_consumed`);
+the field-background inversion was a **real gap behind a symmetric witness**
+(x5 asserted the two frames *differ*, so swapping them passed — it now names
+the values, read out of the PNGs); and `deleteWords`' selection guard is
+**equivalent**, because `deleteCharsToPos` carries the same check and vanilla
+is doubly guarded too.
+
+1899 tests; `containershot` 58 → **63**; `live --render-check` 22/22 validation
+ON 0 errors; demo PNG byte-identical. **Open:** the clipboard is **in-process**,
+not the OS's (no crate pulls one in, `winit` exposes none); no IME pre-edit; no
+click-to-position or drag-select inside the field.
 
 ### M93s — the stonecutter, and an order that is a wire contract
 
