@@ -2465,3 +2465,48 @@ fn run_tint_check(
     off.destroy(gpu);
     c.finish("TINT", TINT_WITNESSES)
 }
+
+/// The two `DYE_DIFFUSE_COLORS` tables, which only this crate can see at once.
+///
+/// M93q's sweep found the table **duplicated** — `rewo_data::
+/// block_entity_models` holds it as `&[u32]` for banners and signs, and
+/// `rewo_gpu::mobs` as `[[u8; 3]; 16]` for tropical fish and the sheep's
+/// derivation — with nothing anywhere asserting the two agree. They do agree
+/// today, and each is verified against `DyeColor.java` below, but neither
+/// crate depends on the other so no test *could* have compared them: a future
+/// edit to one is invisible to every guard on the other.
+///
+/// The literals are `DyeColor`'s **third** constructor argument in ordinal
+/// order, which is `textureDiffuseColor` — the field M93q got wrong for the
+/// loom by taking a neighbouring, more plausibly-grey one.
+#[cfg(test)]
+mod m93q_dye_table_sweep {
+    /// ```java
+    /// DyeColor(int id, String name, int textureDiffuseColor, MapColor mapColor,
+    ///          MapColor terracottaColor, int fireworkColor, int textColor)
+    /// ```
+    const DIFFUSE: [u32; 16] = [
+        16383998, 16351261, 13061821, 3847130, 16701501, 8439583, 15961002, 4673362, 10329495,
+        1481884, 8991416, 3949738, 8606770, 6192150, 11546150, 1908001,
+    ];
+
+    #[test]
+    fn both_dye_tables_match_dyecolor_and_therefore_each_other() {
+        let data = rewo_data::block_entity_models::DYE_DIFFUSE_COLORS;
+        let gpu = rewo_gpu::mobs::DYE_DIFFUSE_COLORS;
+        assert_eq!(data.len(), 16);
+        assert_eq!(gpu.len(), 16);
+        for (i, &want) in DIFFUSE.iter().enumerate() {
+            assert_eq!(data[i], want, "rewo-data dye {i}");
+            let packed =
+                ((gpu[i][0] as u32) << 16) | ((gpu[i][1] as u32) << 8) | gpu[i][2] as u32;
+            assert_eq!(packed, want, "rewo-gpu dye {i}");
+        }
+        // Grey is the entry M93q's loom bug was about: 0x474F52, which is
+        // neither `fireworkColor` (0x434343) nor `textColor` (0x808080), both
+        // of which are MORE neutral than the right answer.
+        assert_eq!(data[7], 0x474F52);
+        assert_ne!(data[7], 0x434343);
+        assert_ne!(data[7], 0x808080);
+    }
+}
