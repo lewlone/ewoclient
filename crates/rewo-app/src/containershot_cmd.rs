@@ -1907,6 +1907,7 @@ fn overlays(
         let mut mer_frame = |n: usize,
                              scroll: i32,
                              spent: bool,
+                             bar: Option<(i32, i32, i32)>,
                              gpu: &mut Gpu,
                              off: &mut Offscreen,
                              wr: &mut WorldRenderer|
@@ -1919,6 +1920,10 @@ fn overlays(
                 offers,
                 scroll_off: scroll,
                 selected: 0,
+                level: bar.map_or(5, |b| b.0),
+                xp: bar.map_or(0, |b| b.1),
+                show_progress: bar.is_some(),
+                future_xp: bar.map_or(0, |b| b.2),
             };
             wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
                 open,
@@ -1938,8 +1943,8 @@ fn overlays(
         // The arrow's centre for row 0. `COST_B_X + 20` — past cost B, which
         // is where the first cut of the ARM had it wrong too.
         let (ax, ay) = (ms::COST_B_X + 20 + 5, ms::row_item_y(0) + 3 + 4);
-        let empty = mer_frame(0, 0, false, gpu, off, wr)?;
-        let three = mer_frame(3, 0, false, gpu, off, wr)?;
+        let empty = mer_frame(0, 0, false, None, gpu, off, wr)?;
+        let three = mer_frame(3, 0, false, None, gpu, off, wr)?;
 
         c.record(
             "y1.a_visible_offer_draws_its_trade_arrow",
@@ -1964,7 +1969,7 @@ fn overlays(
         // diff map says otherwise (row y=4 is `....XXX...`), and the centre
         // differs too. The lesson is the one M93s records: read the sprites
         // first, and do not invent a reason a witness passed.
-        let spent = mer_frame(3, 0, true, gpu, off, wr)?;
+        let spent = mer_frame(3, 0, true, None, gpu, off, wr)?;
         let (dx, dy) = (ms::COST_B_X + 20 + 6, ms::row_item_y(0) + 3 + 2);
         c.record(
             "y2.a_spent_offer_wears_a_different_arrow",
@@ -1979,8 +1984,8 @@ fn overlays(
         // y3 — the scroller appears exactly when the list scrolls, which is
         // `steps > 1` reached by different arithmetic than `can_scroll`.
         let sx = ms::SCROLL_X + 3;
-        let seven = mer_frame(7, 0, false, gpu, off, wr)?;
-        let nine = mer_frame(9, 0, false, gpu, off, wr)?;
+        let seven = mer_frame(7, 0, false, None, gpu, off, wr)?;
+        let nine = mer_frame(9, 0, false, None, gpu, off, wr)?;
         let sy = ms::scroller_y(0, 9).expect("nine scrolls") + 13;
         c.record(
             "y3.the_scroller_appears_exactly_when_the_list_scrolls",
@@ -1992,9 +1997,78 @@ fn overlays(
             ),
         );
 
+        // y5..y7 — the XP bar (M93v).
+        {
+            use rewo_world::merchant_screen as bar;
+            let probe_x = |frac: f32| {
+                bar::XP_BAR_X + ((bar::XP_BAR_W as f32 * frac) as i32).min(bar::XP_BAR_W - 1)
+            };
+            let by = bar::XP_BAR_Y + 2;
+            // A wandering trader: `showProgressBar()` false, so no bar at all.
+            let none = mer_frame(3, 0, false, None, gpu, off, wr)?;
+            // Level 2 spans 10..70, so 40 xp is half the LEVEL — not half the
+            // villager's career.
+            let half = mer_frame(3, 0, false, Some((2, 40, 0)), gpu, off, wr)?;
+            let (fill, _) = bar::xp_bar(2, 40, 0).expect("level 2 has a bar");
+            assert_eq!(fill, 51, "fixture: half of 102");
+
+            c.record(
+                "y5.the_bar_is_drawn_only_when_the_merchant_has_a_level",
+                at_mer(&half, probe_x(0.25), by) != at_mer(&none, probe_x(0.25), by),
+                format!(
+                    "a levelled trader draws {:?} where a wandering one draws {:?} —                      `showProgressBar()` gates the background too",
+                    at_mer(&half, probe_x(0.25), by),
+                    at_mer(&none, probe_x(0.25), by)
+                ),
+            );
+
+            // y6 — the fill stops at its width: filled left of 51, background
+            // right of it, and the two must differ.
+            let inside = at_mer(&half, bar::XP_BAR_X + fill - 3, by);
+            let outside = at_mer(&half, bar::XP_BAR_X + fill + 3, by);
+            c.record(
+                "y6.the_fill_stops_at_the_levels_own_fraction",
+                inside != outside,
+                format!(
+                    "at 40 xp of level 2 (10..70) the bar is filled to {fill}/102: just                      inside reads {inside:?} and just outside {outside:?}"
+                ),
+            );
+
+            // y7 — a master villager shows NOTHING, background included.
+            let master = mer_frame(3, 0, false, Some((5, 999, 0)), gpu, off, wr)?;
+            c.record(
+                "y7.a_master_villager_shows_no_bar_at_all",
+                at_mer(&master, probe_x(0.25), by) == at_mer(&none, probe_x(0.25), by)
+                    && bar::xp_bar(5, 999, 0).is_none(),
+                format!(
+                    "level 5 reads {:?}, identical to no bar {:?} — `traderLevel < 5` gates                      the BACKGROUND, so a maxed villager is blank rather than full",
+                    at_mer(&master, probe_x(0.25), by),
+                    at_mer(&none, probe_x(0.25), by)
+                ),
+            );
+            // y8 — the result segment samples the sprite from `w`, not 0, so
+            // it CONTINUES the gradient where the fill stopped.
+            //
+            // Observable because both bar sprites are dark (14,17,16) at
+            // x = 0 and x = 101 and flat in between — read out of the PNGs.
+            // So the result segment's FIRST pixel is mid-gradient grey with
+            // the offset and the sprite's dark left edge without it.
+            let future = mer_frame(3, 0, false, Some((2, 40, 2)), gpu, off, wr)?;
+            let (f2, fut) = bar::xp_bar(2, 40, 2).expect("level 2");
+            assert!(fut > 1, "fixture: {fut} px of result");
+            let first = at_mer(&future, bar::XP_BAR_X + f2, by);
+            c.record(
+                "y8.the_result_segment_continues_the_gradient_rather_than_restarting_it",
+                first != [14, 17, 16],
+                format!(
+                    "the result segment's first pixel reads {first:?}; sampling from 0                      instead of {f2} would put the sprite's dark left edge (14,17,16) there"
+                ),
+            );
+        }
+
         // y4 — scrolling moves WHICH offers are drawn, not where the rows are.
         // With 9 offers and scroll 2, offer 8 occupies row 6.
-        let scrolled = mer_frame(9, 2, false, gpu, off, wr)?;
+        let scrolled = mer_frame(9, 2, false, None, gpu, off, wr)?;
         let bottom = (ax, ms::row_item_y(6) + 3 + 4);
         let unscrolled_bottom = at_mer(&nine, bottom.0, bottom.1);
         let scrolled_bottom = at_mer(&scrolled, bottom.0, bottom.1);

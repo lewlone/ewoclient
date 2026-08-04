@@ -4411,13 +4411,48 @@ plain-click path).
 anything else after an interrupted battery**, and split batteries so each stays
 inside the 10-minute tool cap.
 
-**Measured:** 1773 → **1916 tests**, 0 failures, seven crates reporting (world
-705, net 596, gpu 255, data 208, app 97, mesh 45, proto 11); `containershot`
-27 → **67**; `inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97,
+**Measured:** 1773 → **1924 tests**, 0 failures, seven crates reporting (world
+712, net 596, gpu 255, data 208, app 97, mesh 45, proto 11); `containershot`
+27 → **71**; `inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97,
 `mobshot` 246/246; `live --render-check` **22/22** validation ON, 0 errors
 (re-run at M93q, the first of the arc to touch a render path); demo PNG
-`2cc56b4acbfb92cb` byte-identical; **189 mutations across M93a–u, 184 killed,
+`2cc56b4acbfb92cb` byte-identical; **194 mutations across M93a–v, 189 killed,
 2 shown equivalent, 1 alive by construction (named)**.
+
+### M93v — the XP bar, and a blit argument I read as a size
+
+M93u recorded this as blocked on `VillagerData`'s thresholds and
+`getFutureTraderXp`. **Neither was.** The thresholds are five ints, and the
+future xp is *derived by vanilla itself* — `updateSellItem` matches the payment
+slots against the offers and takes the matched offer's xp.
+
+**`traderLevel < 5` gates the background too**, so a maxed villager shows
+nothing rather than a full bar; `getMinXpPerLevel` and `getMaxXpPerLevel` both
+return **0** outside the levelling range, so their difference is the bar's
+divisor and only the two guards keep it safe; the fill is the fraction of the
+**level**, not the career; and `getRecipeFor`'s `selectionHint > 0` is
+**strictly** greater, so selecting the *first* trade falls through to the scan.
+
+**Two mutations survived and both were real.** One was M71/M93t's shape — logic
+in `live_cmd`, which has no test module — now `satisfied_offers`. **The other
+is a lesson about reading a signature**: mutating the result segment's source
+offset changed *nothing*, because I had read
+`blitSprite(sprite, 102, 5, u, v, x, y, w, h)`'s first two arguments as the
+source **rect's** size when they are the **sheet's**. Every segment was drawing
+the whole bar squeezed into its width, so the offset could not matter. **A
+surviving mutation is a question, not just a verdict** — what it asks about is
+sometimes not what you mutated.
+
+**And an instrument failure of my own**: the shell totalling test counts used
+`grep -v "0 passed; 0 failed"`, which matches `71`**`0 passed`**`; 0 failed`, so
+it silently dropped `rewo-world` the moment its count hit a multiple of ten.
+M91's finding in the measuring tool rather than the build — the only signal was
+a total moving the wrong way.
+
+1924 tests; `containershot` 67 → **71**; `live --render-check` 22/22 validation
+ON 0 errors. **Open:** the discounted-price pair with its strikethrough, and a
+cost carrying a component predicate declines rather than guesses (M41 has a
+digest, not per-component values).
 
 ### M93u — the merchant, and the fourth class-C claim to fall
 

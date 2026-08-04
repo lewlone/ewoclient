@@ -58,9 +58,9 @@ click sends an index. **M93t** is the **`EditBox`** — a text-entry subsystem
 Rewo had never had — wiring the anvil end to end, and finding a missing chrome
 blit because `anvil.png` hides a red placeholder under the name field.
 
-Current measurement, taken 2026-08-04: **1916 tests, 0 failures** (world 705,
+Current measurement, taken 2026-08-04: **1924 tests, 0 failures** (world 712,
 net 596, gpu 255, data 208, app 97, mesh 45, proto 11 — all seven confirmed
-reporting); `containershot` **67/67**, `inventoryshot` 152/152, `itemshot`
+reporting); `containershot` **71/71**, `inventoryshot` 152/152, `itemshot`
 75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check` 22/22 with
 validation ON and 0 validation errors, re-run for M93q** — the first M93
 milestone to touch a render path, so the earlier "M93 adds no render path"
@@ -212,7 +212,7 @@ So, in ratio order:
    | **beacon** | ✅ **complete** (M93l + M93m): press, `set_beacon`, click wiring and screen-owned state. The confirm closes the **client's** screen only — Rewo resolves no *serverbound* `container_close`, a gap that predates this and affects **every** screen close |
    | **anvil** | ✅ **complete end to end** (M93n + M93t): rename semantics, `rename_item`, and the **`EditBox`** — a subsystem Rewo had never had. Character input via `KeyEvent.text` (the seam it never read), the caret, selection, the four shortcuts, word motion, and the field's own background sprite, which `anvil.png` hides a **red placeholder** under. Left: the clipboard is **in-process**, not the OS's (no crate pulls it in); IME pre-edit is absent |
    | **stonecutter** | ✅ **complete end to end** (M93s): the recipe list, the grid, the three button chromes, the result icons, the scrollbar and every input path. **The class-C claim was wrong** — the third of this arc, after M91's furnace recipes and M93's merchant quick-move. The list is jar-derivable and the hard part was its ORDER, which is a wire contract because a click sends an *index*: `RecipeManager.prepare` loads into a `SortedMap<Identifier, _>` and `Identifier.compareTo` is **path first, then namespace** |
-   | **merchant** | ✅ **the trade list ships** (M93u): `merchant_offers` decodes, `select_trade` sends, and the seven rows render with their three items, arrow and scrollbar. **The class-C label was wrong a fourth time** — unlike M91/M93s the *data* really is server-rolled, but the packet needed nothing Rewo had not built (`ItemStack`, and M52e's `TypedDataComponent` walker). Left: the **XP bar's fill**, which needs `VillagerData`'s per-level thresholds and `getFutureTraderXp` — menu state Rewo does not model; and the discounted-price pair with its strikethrough |
+   | **merchant** | ✅ **complete** (M93u + M93v): `merchant_offers` decodes, `select_trade` sends, the seven rows render with their three items, arrow and scrollbar, and the **XP bar** draws all three layers with its future segment DERIVED (`updateSellItem` matches the payment slots against the offers — vanilla derives it too). **The class-C label was wrong a fourth time.** Left: the discounted-price pair with its strikethrough, and a cost carrying a component predicate declines rather than guesses (M41 has a digest, not per-component values) |
 
    **The crafter uses `container_slot_state_changed` (id 20), not
    `container_button_click` (17)** — `CrafterMenu` has no `clickMenuButton`
@@ -2370,6 +2370,72 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M93v — the XP bar, and a blit argument I read as a size (2026-08-04)
+
+M93u recorded this as blocked on `VillagerData`'s thresholds and
+`getFutureTraderXp`. **Neither was a blocker.** The thresholds are five ints in
+the decompile, and the future xp is *derived by vanilla itself* —
+`MerchantContainer.updateSellItem` matches the payment slots against the offers
+and takes the matched offer's xp — so the client holds both halves.
+
+**Findings, each pinned:**
+
+- **`traderLevel < 5` gates the background too**, so a master villager shows
+  *nothing* rather than a full bar.
+- `getMinXpPerLevel` and `getMaxXpPerLevel` **both return 0** outside the
+  levelling range, so their difference is 0 — and the bar's multiplier divides
+  by exactly that. The division is safe only because `extractProgressBar` guards
+  on `canLevelUp` **and** on `traderLevel < 5`; transcribing the arithmetic
+  without both is a divide by zero on a maxed villager.
+- the fill is the fraction of the **level**, not of the career: level 2 spans
+  10..70, so 40 xp is halfway.
+- the result segment is clamped to `102 - w`, the room *left*.
+- `getRecipeFor`'s `selectionHint > 0` is **strictly** greater, so selecting the
+  **first** trade falls through to the linear scan and can match a different
+  offer. Hint 0 is both "nothing selected" and "the first trade".
+- `satisfiedBy` compares cost A at its **modified** count and cost B at its
+  **base** — `modified_cost_a`'s asymmetry one layer up — and an offer with no
+  cost B requires the second slot to be **empty**.
+
+**One honest decline.** `ItemCost.test` ends in a
+`DataComponentExactPredicate` — per-component *values*, where M41 gives Rewo a
+digest of the whole patch. A constrained cost is treated as unmatched rather
+than guessed, which is **one-directional**: the result segment is missing where
+vanilla would show it, never present where vanilla would not.
+
+**Two mutations survived and both were real.** The first was M71/M93t's shape
+again — the decline lived in `live_cmd`, which has no test module anywhere, and
+is now `merchant_screen::satisfied_offers`.
+
+**The second is the better one, and it is a lesson about reading a signature.**
+Mutating the result segment's source offset to 0 changed *nothing*, and the
+reason was that the render had `src: Some((102, 5))`: I read
+`blitSprite(sprite, 102, 5, u, v, x, y, w, h)`'s first two arguments as the
+source **rect's** size. They are the **sheet's**; the rect is `w × h` at
+`(u, v)`, a 1:1 slice. So every segment was drawing the whole bar squeezed into
+its own width, and the offset could not possibly matter. **A surviving mutation
+is a question, not just a verdict** — the thing it asks about is sometimes not
+the thing you mutated.
+
+**And an instrument failure of my own.** The shell pipeline totalling the test
+counts filtered with `grep -v "0 passed; 0 failed"`, which matches
+`71`**`0 passed`**`; 0 failed` — so it silently dropped `rewo-world` the moment
+its count hit a multiple of ten, reporting "6 crates, 1212". That is M91's
+finding in the measuring tool rather than the build: **a count that moves the
+wrong way is the only signal**, and the fix is to anchor on the number.
+
+**Measured.** 1924 tests / 0 failures; `containershot` 67 → **71**;
+`inventoryshot` 152, `itemshot` 75, `handshot` 34, `mobshot` 246/246; **`live
+--render-check` 22/22, validation ON, 0 errors**; demo PNG `2cc56b4acbfb92cb`
+byte-identical. 5 mutations, 5 killed.
+
+**Open.** The **discounted-price pair** — `extractAndDecorateCostA` draws the
+base count, the modified count 14 px right, and a 9×2 strikethrough — is
+modelled by `discounted()` and not rendered. The trade button's own
+`Button.Plain` chrome is not drawn.
+
+---
 
 ### M93u — the merchant, and the fourth class-C claim to fall (2026-08-04)
 
