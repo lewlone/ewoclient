@@ -58,8 +58,8 @@ click sends an index. **M93t** is the **`EditBox`** — a text-entry subsystem
 Rewo had never had — wiring the anvil end to end, and finding a missing chrome
 blit because `anvil.png` hides a red placeholder under the name field.
 
-Current measurement, taken 2026-08-04: **1929 tests, 0 failures** (world 717,
-net 596, gpu 255, data 208, app 97, mesh 45, proto 11 — all seven confirmed
+Current measurement, taken 2026-08-04: **1942 tests, 0 failures** (world 717,
+net 609, gpu 255, data 212, app 97, mesh 45, proto 11 — all seven confirmed
 reporting); `containershot` **76/76**, `inventoryshot` 152/152, `itemshot`
 75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check` 22/22 with
 validation ON and 0 validation errors, re-run for M93q** — the first M93
@@ -2370,6 +2370,66 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M93y — the recipe book's decode, and a class-C claim that IS one (2026-08-04)
+
+Four packets — `recipe_book_add` / `_remove` / `_settings` and
+`place_ghost_recipe` — decoded into session state, plus the `SlotDisplay`
+(11 variants) and `RecipeDisplay` (5) trees they carry.
+
+**The class-C label here is correct**, unlike the four M91–M93u overturned, and
+saying so is the point: the recipe book is a tabbed, searchable, filterable list
+with ghost placement and none of that exists. What ships is the half that has to
+come first, on **M63's split** — *decoding a packet needs no listening; making a
+noise does*. Nothing consumes it yet and the module says so.
+
+**It is dispatched rather than left resolved-but-ignored, and M74's check is
+why.** It caught the four ids the moment they resolved and named the class the
+coverage doc keeps at **zero**: a packet whose id resolves and whose body is
+dropped reads as *handled* to every grep, which is worse than absent.
+
+**Findings, each pinned:**
+
+- the three registries are **built-in**, so they come from the report and never
+  the wire (M92's rule). The alphabetisation trap bites harder here than in
+  M64: `minecraft:empty` is id 0 while `any_fuel` sorts first, and because the
+  variants have **different body lengths** a wrong table does not mislabel — it
+  **desyncs the reader mid-packet** and the rest of the list is garbage.
+- `group` is `OPTIONAL_VAR_INT` — `i == 0 ? empty : of(i - 1)` — the `+ 1`
+  family in its optional form. **0 means absent and group 0 rides as 1**, so a
+  raw read turns "no group" into group 0 and shifts every other one.
+- a shaped recipe's **width and height come before** the ingredient list they
+  describe, so taking the list first consumes the width as its count.
+- **`replace` clears the book**: true on join, false per unlock. Appending
+  unconditionally leaves a stale book across a respawn.
+- `SlotDisplay` is recursive, so it takes M41's depth bound — charged only by
+  the recursive arms, M52e's correction.
+- a `smithing_trim`'s pattern is `Holder<TrimPattern>`, `id + 1` with 0 meaning
+  an **inline** definition; Rewo has no trim-pattern codec and an inline one has
+  no length, so it refuses rather than desyncing.
+
+**Verified against a real server, not only its fixtures.** All nine decode tests
+drive hand-built bodies, which proves the reader against bytes *I* wrote. A
+temporary counter in the dispatch, run against a live 26.2 server, showed the
+book reaching one entry on join — a real `recipe_book_add` through the
+production path, no warning logged. Worth doing because **"no warning" is also
+what a packet that never arrived looks like**: the render check was green either
+way, and the two are only distinguishable by asserting something *positive*
+about what was decoded.
+
+**Measured.** 1942 tests / 0 failures; `containershot` 76, `inventoryshot` 152,
+`mobshot` 246/246; **`live --render-check` 22/22, validation ON, 0 errors**; demo
+PNG `2cc56b4acbfb92cb` byte-identical. 4 mutations, 4 killed — and the intended
+witness re-checked for the one the harness short-circuited past (M93x's lesson).
+`REWO_PACKET_COVERAGE.md` **110 / 0 / 31 → 114 / 0 / 27**, class C 20 → **16**.
+
+**Open.** The book itself: the tabbed UI, the search field (which now has
+M93t's `EditBox` to build on), the filter toggle, the category grouping, and
+ghost placement into a container's slots. The two serverbound packets
+(`recipe_book_seen_recipe`, `recipe_book_change_settings`) are named and unsent,
+because nothing can yet click what would send them.
+
+---
 
 ### M93x — the trade button's chrome, and reading WHICH witness fires (2026-08-04)
 
