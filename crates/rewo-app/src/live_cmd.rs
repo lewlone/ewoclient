@@ -4635,6 +4635,20 @@ impl ApplicationHandler for LiveApp {
                     ) {
                         return;
                     }
+                    // M93s — the stonecutter's grid. Same seam, and vanilla's
+                    // own order: the recipe loop runs first and returns true
+                    // on a hit, then the scrollbar's grab box sets `scrolling`
+                    // and DOES NOT consume the press — it falls through to
+                    // `super.mouseClicked`, so a grab still reaches the slots.
+                    if cut_press(
+                        session,
+                        &mut self.screen,
+                        &items,
+                        ext.width as f32,
+                        ext.height as f32,
+                    ) {
+                        return;
+                    }
                     // `AbstractContainerScreen.mouseClicked`'s double click:
                     // the **same slot**, the **left** button, and under 250 ms
                     // since the last one. Not "two clicks anywhere in
@@ -4685,6 +4699,12 @@ impl ApplicationHandler for LiveApp {
                 ..
             } if self.screen.inventory_open() => {
                 let items = self.items.clone();
+                // `StonecutterScreen.mouseReleased` clears `scrolling`
+                // unconditionally — not gated on `displayRecipes`, so a list
+                // that vanishes mid-drag does not strand the grab (M93s).
+                if let Some(c) = self.screen.cut.as_mut() {
+                    c.scrolling = false;
+                }
                 if let Some(session) = self.session.as_mut() {
                     finish_drag(session, &items, &mut self.drag);
                 }
@@ -4740,6 +4760,10 @@ impl ApplicationHandler for LiveApp {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.screen.mouse = (position.x, position.y);
+                // M93s — `mouseDragged` while the stonecutter's thumb is held.
+                // Guarded on `isScrollBarActive` as well as `scrolling`, so a
+                // list that shrinks under a held thumb stops moving.
+                self.cut_drag();
                 // Crossing a slot with the button down extends a drag. The
                 // slot only *joins* it if the server would accept it, and that
                 // is decided at release — this records the path.
@@ -4772,6 +4796,10 @@ impl ApplicationHandler for LiveApp {
                 if let Some(view) = self.stats.as_mut() {
                     view.model.list_mut().mouse_scrolled(dy);
                 }
+                // M93s — and the stonecutter's grid. `mouseScrolled` returns
+                // true whether or not the bar is active, so the screen
+                // swallows every notch; only an active bar moves.
+                self.cut_wheel(dy);
             }
             WindowEvent::RedrawRequested => self.frame(event_loop),
             _ => {}
@@ -4810,6 +4838,85 @@ impl LiveApp {
     /// hover whatever slot happens to sit at the stale coordinate.
     /// The layout on screen — the open container's, or the player's.
     ///
+    /// `StonecutterScreen.mouseDragged` (M93s).
+    ///
+    /// ```java
+    /// if (this.scrolling && this.isScrollBarActive()) {
+    ///    int yscr = this.topPos + 14;
+    ///    this.scrollOffs = ((float)event.y() - yscr - 7.5F) / ((yscr + 54) - yscr - 15.0F);
+    ///    this.scrollOffs = Mth.clamp(this.scrollOffs, 0.0F, 1.0F);
+    ///    this.startIndex = (int)(this.scrollOffs * this.getOffscreenRows() + 0.5) * 4;
+    /// }
+    /// ```
+    ///
+    /// Both halves of the guard matter: `scrolling` alone would move the list
+    /// whenever the cursor did, and `isScrollBarActive` alone would let a list
+    /// that shrank under a held thumb keep scrolling past its end.
+    fn cut_drag(&mut self) {
+        use rewo_world::menu_screen as ms;
+        if !self.screen.cut.is_some_and(|c| c.scrolling) {
+            return;
+        }
+        let Some(ext) = self.state.as_ref().map(|s| s.window.inner_size()) else {
+            return;
+        };
+        let items = self.items.clone();
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let Some(open) = session.menus.open() else {
+            return;
+        };
+        if open.layout.protocol_id != ms::STONECUTTER_MENU_PROTOCOL_ID {
+            return;
+        }
+        let name = open.menu.menu_slot(0).and_then(|s| items.name(s.item_id));
+        let visible = name.map_or(0, |n| rewo_data::stonecutter_table::select_by_input(n).len());
+        if !ms::cut_scroll_active(ms::cut_display_recipes(name.is_some(), visible), visible) {
+            return;
+        }
+        let (_, gy) = rewo_gpu::container::screen_to_gui_for(
+            self.screen.mouse,
+            ext.width as f32,
+            ext.height as f32,
+            open.layout.image_w as f32,
+            open.layout.image_h as f32,
+        );
+        if let Some(c) = self.screen.cut.as_mut() {
+            c.scroll_offs = ms::cut_scroll_offs_from_drag(gy);
+        }
+    }
+
+    /// `StonecutterScreen.mouseScrolled` (M93s) — one notch is one ROW, so a
+    /// long list scrolls proportionally slower per notch.
+    ///
+    /// The sign is vanilla's `scrollOffs - scrollY / offscreenRows`, the same
+    /// minus M84 records for `AbstractScrollArea`.
+    fn cut_wheel(&mut self, dy: f64) {
+        use rewo_world::menu_screen as ms;
+        if self.screen.cut.is_none() {
+            return;
+        }
+        let items = self.items.clone();
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let Some(open) = session.menus.open() else {
+            return;
+        };
+        if open.layout.protocol_id != ms::STONECUTTER_MENU_PROTOCOL_ID {
+            return;
+        }
+        let name = open.menu.menu_slot(0).and_then(|s| items.name(s.item_id));
+        let visible = name.map_or(0, |n| rewo_data::stonecutter_table::select_by_input(n).len());
+        if !ms::cut_scroll_active(ms::cut_display_recipes(name.is_some(), visible), visible) {
+            return;
+        }
+        if let Some(c) = self.screen.cut.as_mut() {
+            c.scroll_offs = ms::cut_scroll_offs_from_wheel(c.scroll_offs, dy, visible);
+        }
+    }
+
     /// Falls back to `PLAYER` with no session, which is what the screen shows
     /// before a connection anyway.
     fn shown_layout(&self) -> &'static rewo_world::menu_layout::MenuLayout {
@@ -11529,6 +11636,71 @@ pub struct CutLocal {
     scroll_offs: f32,
     /// Whether the thumb is being dragged. Cleared on any release.
     pub scrolling: bool,
+}
+
+/// `StonecutterScreen.mouseClicked` (M93s).
+///
+/// ```java
+/// if (this.displayRecipes) {
+///    for (int index = this.startIndex; index < endIndex; index++) {
+///       … if (hit && this.menu.clickMenuButton(player, index)) {
+///          play(UI_STONECUTTER_SELECT_RECIPE);
+///          this.minecraft.gameMode.handleInventoryButtonClick(this.menu.containerId, index);
+///          return true;
+///       }
+///    }
+///    if (over the scrollbar) this.scrolling = true;   // and does NOT return
+/// }
+/// return super.mouseClicked(event, doubleClick);
+/// ```
+///
+/// So a recipe consumes the press and a scrollbar grab does not — the grab
+/// falls through to the slot logic, which finds nothing under the bar.
+/// Returns whether the press was consumed.
+fn cut_press(
+    session: &mut PlaySession,
+    screen: &mut ScreenState,
+    items: &rewo_data::items::Items,
+    w: f32,
+    h: f32,
+) -> bool {
+    use rewo_world::menu_screen as ms;
+    let Some(open) = session.menus.open() else {
+        return false;
+    };
+    if open.layout.protocol_id != ms::STONECUTTER_MENU_PROTOCOL_ID {
+        return false;
+    }
+    let view = cut_view(screen, open, items);
+    if !view.display {
+        // The whole block is inside `if (this.displayRecipes)`, so with no
+        // grid there is no recipe click AND no scrollbar grab.
+        return false;
+    }
+    let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
+        screen.mouse,
+        w,
+        h,
+        open.layout.image_w as f32,
+        open.layout.image_h as f32,
+    );
+    if let Some(index) = ms::cut_cell_click_at(gx, gy, view.start_index) {
+        // `isValidRecipeIndex` is the server's gate and the screen's: vanilla
+        // calls `clickMenuButton` inside the hit test, so an out-of-range cell
+        // does not consume the press either.
+        if ms::cut_click_accepted(index, view.recipes.len()) {
+            if let Err(e) = session.container_button_click(index) {
+                log::warn!("stonecutter recipe {index}: {e}");
+            }
+            return true;
+        }
+    }
+    if ms::cut_scroller_grabbed(gx, gy) {
+        if let Some(c) = screen.cut.as_mut() {
+            c.scrolling = true;
+        }
+    }
+    false
 }
 
 /// The whole stonecutter view, resolved from the menu plus the screen's own
