@@ -4411,13 +4411,55 @@ plain-click path).
 anything else after an interrupted battery**, and split batteries so each stays
 inside the 10-minute tool cap.
 
-**Measured:** 1773 → **1899 tests**, 0 failures, seven crates reporting (world
-696, net 588, gpu 255, data 208, app 97, mesh 45, proto 11); `containershot`
-27 → **63**; `inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97,
+**Measured:** 1773 → **1916 tests**, 0 failures, seven crates reporting (world
+705, net 596, gpu 255, data 208, app 97, mesh 45, proto 11); `containershot`
+27 → **67**; `inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97,
 `mobshot` 246/246; `live --render-check` **22/22** validation ON, 0 errors
 (re-run at M93q, the first of the arc to touch a render path); demo PNG
-`2cc56b4acbfb92cb` byte-identical; **186 mutations across M93a–t, 182 killed,
+`2cc56b4acbfb92cb` byte-identical; **189 mutations across M93a–u, 184 killed,
 2 shown equivalent, 1 alive by construction (named)**.
+
+### M93u — the merchant, and the fourth class-C claim to fall
+
+The coverage doc filed `merchant_offers` as class C. It needed nothing Rewo had
+not built — `ItemStack` (M34/M41) and the `TypedDataComponent` walker M52e
+wrote for `can_place_on`. **That is four this arc, and the reasons differ**,
+which is the part worth keeping: M91's furnace recipes and M93s's stonecutter
+list were **jar data**; M93's merchant quick-move **never consulted** the
+packet; and here the data really **is** server-rolled — only the decode was
+mislabelled. So "blocked on a packet we don't decode" deserves a check against
+what the packet carries *and* what decoding it would cost.
+
+**Traps:** the order is **costA, result, costB** (the sold item sits *between*
+the costs, while every constructor lists them costA/costB/result); the numerics
+are `writeInt`, **fixed big-endian** in a var-int protocol, so a var-int reading
+turns a discount into a surcharge; and `Item.STREAM_CODEC` is `holderRegistry`,
+**raw 0-based** — the fifth appearance. In the price, `demandDiff` clamps at 0
+from below while `specialPriceDiff` is added *after* and is not floored (that is
+the discount), and **only cost A is modified**.
+
+**The scroll is not the stonecutter's with new numbers**: `scrollOff` is an
+**offer index**, one notch is one offer, and the drag rounds the index rather
+than a fraction. The thumb's bottom override is load-bearing for **short**
+scrollable lists (8/9/10 offers land at 91/106/111) and redundant for long ones,
+where `min(113, …)` caps an overshoot — the opposite of what I first asserted,
+and only visible by computing both regimes.
+
+**Reading the render loop caught two offsets no witness covered**:
+`offerY = yo + 16 + 1` against the buttons' `+ 2`, so a row's items sit one
+pixel **above** its button; and `sellItem1X = xo + 5 + 5`, so cost A adds the
+button's 5 **twice**. And M93s's lesson landed twice — the arrow's x was wrong
+(`5 + 5 + 20` for `xo + 5 + 35 + 20`), and when the witness failed again I
+explained it *wrongly* rather than re-reading the sprites.
+
+A surviving mutation is **equivalent here and not in vanilla**: dropping the
+visibility guard changes nothing because this computes `row = i - scroll_off`
+directly, where vanilla's `offerY` advances only inside the drawn branch.
+
+1916 tests; `containershot` 63 → **67**; `live --render-check` 22/22 validation
+ON 0 errors; coverage **110/0/31**, class C 21 → 20. **Open:** the XP bar's fill
+(needs `VillagerData` thresholds and `getFutureTraderXp`) and the
+discounted-price pair with its strikethrough.
 
 ### M93t — the EditBox, a subsystem Rewo never had, and a red band
 
