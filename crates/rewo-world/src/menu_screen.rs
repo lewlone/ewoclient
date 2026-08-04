@@ -1149,10 +1149,21 @@ mod tests {
         let mut theirs: Vec<String> = rewo_data::assets::MENU_BACKGROUND_TEXTURES
             .iter()
             .map(|t| t.to_string())
+            // The recipe book's sheet rides this list without being a container
+            // SCREEN — it is a separate window-anchored panel (M94) that just
+            // happens to be blitted the same way. Named as one explicit
+            // exception rather than by loosening the comparison, so a second
+            // stray entry still fails this test.
+            .filter(|t| t != "gui/recipe_book.png")
             .collect();
         mine.sort();
         theirs.sort();
         assert_eq!(mine, theirs);
+        assert!(
+            rewo_data::assets::MENU_BACKGROUND_TEXTURES
+                .contains(&"gui/recipe_book.png"),
+            "the exception above must name something that is actually there,              or it silently stops excluding anything"
+        );
     }
 
     #[test]

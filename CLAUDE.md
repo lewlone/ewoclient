@@ -4419,6 +4419,67 @@ inside the 10-minute tool cap.
 `2cc56b4acbfb92cb` byte-identical; **205 mutations across M93a–y, 199 killed,
 2 shown equivalent, 1 alive by construction (named)**.
 
+### M94 — the recipe book renders, and two errors only the windowed client could show
+
+M93z built the model; this draws it. Panel, tabs, recipe slots, arrows, filter.
+
+**Opening the book MOVES the menu**, so this is not a pure addition:
+`updateScreenPosition` swaps `(width - imageWidth) / 2` for
+`177 + (width - imageWidth - 200) / 2` — 77 px for a 176-wide panel. Rewo
+measures slot hit-testing, slot icons and the hover box from that origin, so
+drawing the book without the shift leaves the menu centred under a book that
+overlaps it and every click lands on the wrong slot — **silently**, because the
+render still looks plausible. `topPos` does not move. The draw and the hit test
+now resolve through one `Placement`, M89's one-accessor rule applied to
+geometry.
+
+**Two design errors, both found by `live --render-check`, neither visible
+headlessly:**
+
+* The book was hung off `ContainerPanel` — which is `None` for the player's own
+  inventory (the path `inventoryshot` pins), and **the player's inventory is one
+  of exactly four screens that HAS a book**. So it was undrawable in its
+  commonest case, and `containershot` structurally cannot see that: it only ever
+  drives an open container.
+* The gate's "crafting table" fixture used menu type **13, which is
+  `enchantment`** — same 176x166 size, so every headless witness measured what
+  it expected and passed. `crafting` is 12.
+
+Both are the M86 shape. **Run `--render-check` on any milestone that adds a
+render path.**
+
+**Four chrome inversions:** a tab's sprite tracks **selection, not hover**
+(`get(true, this.selected)` hard-codes `enabled` and passes `selected` as
+*focused*), while the filter toggle inverts the same record the other way
+(`get(filtering, hovered)` — and the sprite names make reading it as the
+widget's own state easy, giving a button that never changes when clicked); a
+selected tab shifts 2 px left **and takes its icon with it**; the stacked-recipe
+look is **two items at (5, 3)**, because vanilla draws a copy at `offset + 1`
+then *decrements* offset — reading it as applying to the back copy gives (4, 4),
+which renders as one item; and the panel is sampled from **(1, 1)**.
+
+**The gate's rewrite was the instructive half. b1 passed while measuring nothing
+it claimed** — it probed the book's centre and compared open against shut,
+reading `[0,0,0]` against `[255,255,255]`, and neither was the book: the probe
+sat on a recipe slot's black border, and the *control* frame had the menu over
+that position because an open book moves the menu. **A frame diff may not let
+its control change with its subject.** Every witness now names its sprite's
+value read out of the PNG (`tab.png` 139 vs `tab_selected.png` 198,
+`slot_craftable` 139 vs `slot_uncraftable` 106) — "different from the backdrop"
+would pass with every tab drawing the same art. And a mutation deleting
+`take(view.shown)` **survived the gate** and was killed by the model's test,
+because the gate's fixture sized its slot vec to `shown` and made the guard a
+no-op.
+
+**1979 tests**; `containershot` 76 → **83**; **`live --render-check` 22 →
+23/23**, validation ON, 0 errors; demo PNG `2cc56b4acbfb92cb` byte-identical;
+**18 mutations, 18 killed**. **Open:** no items in the book (grid results, tab
+icons); `hasCraftable` is `false` for every collection so every slot wears the
+uncraftable chrome (it needs `StackedItemContents`, and guessing `true` is
+worse); nothing can click it, so tab/page are pinned to 0 and hover never
+reaches the arrows or filter; no search box, page counter, overlay popup or
+ghost slots.
+
 ### M93z — the recipe book's UI model, and a filter button that toggles one stage of three
 
 M93y decoded the packets and named the book as the subsystem that had to

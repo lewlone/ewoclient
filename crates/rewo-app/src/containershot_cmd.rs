@@ -1375,7 +1375,7 @@ fn overlays(
             let open = m.open().expect("open");
             wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
                 open, 30, false, effects, None, over, None, None, None,
-            ));
+        ));
             wr.set_container(true, None);
             shot(gpu, off, wr)
         };
@@ -1436,7 +1436,7 @@ fn overlays(
             let open = m.open().expect("open");
             let mut panel = crate::live_cmd::container_panel_for_open_menu(
                 open, 30, false, effects, None, None, None, None, None,
-            )
+        )
             .ok_or("containershot: no brewing panel")?;
             panel.overlays = overlays;
             wr.set_container_panel(Some(panel));
@@ -1513,7 +1513,7 @@ fn overlays(
                 }),
                 None,
                 None,
-            ));
+        ));
             wr.set_container(true, None);
             shot(gpu, off, wr)
         };
@@ -1592,7 +1592,7 @@ fn overlays(
                 None,
                 view.as_ref(),
                 None,
-            ));
+        ));
             wr.set_container(true, None);
             shot(gpu, off, wr)
         };
@@ -1762,7 +1762,7 @@ fn overlays(
             setup(&mut field);
             let mut panel = crate::live_cmd::container_panel_for_open_menu(
                 open, 30, false, effects, None, None, None, None, None,
-            )
+        )
             .ok_or("containershot: no anvil panel")?;
             // A 6-px monospace advance, so the geometry is arithmetic.
             let (_, fills, _) = crate::live_cmd::anvil_field_render_for_test(
@@ -1941,7 +1941,7 @@ fn overlays(
                 None,
                 None,
                 Some(&view),
-            ));
+        ));
             wr.set_container(true, None);
             shot(gpu, off, wr)
         };
@@ -2187,6 +2187,224 @@ fn overlays(
                 && !ms::offer_visible(8, 0, 9),
             format!(
                 "row 6 draws an arrow either way ({unscrolled_bottom:?} /                  {scrolled_bottom:?}) — the ROW is fixed and the offer in it changes, so                  offer 8 is invisible at scroll 0 and visible at scroll 2"
+            ),
+        );
+    }
+
+    // -- the recipe book (M94) ----------------------------------------------
+    //
+    // Two origins are in play: the menu's, which an open book MOVES, and the
+    // book's own, which is anchored to the window.
+    {
+        use rewo_world::recipe_book_screen as rb;
+        let (bl, bt, bsc) = rewo_gpu::container::recipe_book_origin(W as f32, H as f32);
+        let at_book = |img: &[u8], gx: i32, gy: i32| -> [u8; 3] {
+            let x = (bl + (gx as f32 + 0.5) * bsc) as u32;
+            let y = (bt + (gy as f32 + 0.5) * bsc) as u32;
+            let i = ((y.min(H - 1) * W + x.min(W - 1)) * 4) as usize;
+            [img[i], img[i + 1], img[i + 2]]
+        };
+        let book = |shown: usize, total: usize, page: usize| crate::live_cmd::BookRender {
+            view: Some(rb::BookView {
+                tabs: 4,
+                selected_tab: 0,
+                page,
+                total_pages: total,
+                shown,
+                filtering: false,
+                furnace_family: false,
+            }),
+            // TWENTY slots whatever the page shows, which is vanilla's own
+            // structure: `updateButtonsForPage` keeps 20 `RecipeButton`s and
+            // flips `visible` on the ones past the end. Sizing this vec to
+            // `shown` instead would make `book_chrome`'s `take(shown)` a no-op
+            // here, and a mutation deleting it survived the gate for exactly
+            // that reason - caught by the model's own test, whose fixture does
+            // pass 20.
+            slots: vec![(true, false); rb::ITEMS_PER_PAGE],
+            hover: rb::BookHover::default(),
+        };
+        // The crafting table - one of the four menus that actually has a book.
+        // Menu type 12; 13 is `enchantment`, which an earlier draft of this
+        // named `craft` and which is the same 176x166 size, so nothing here
+        // noticed. Only `live --render-check` did, by opening it and finding
+        // no book.
+        let craft = rewo_world::menu_layout::layout_of(12).unwrap();
+        let mut book_frame = |b: Option<&crate::live_cmd::BookRender>,
+                              gpu: &mut Gpu,
+                              off: &mut Offscreen,
+                              wr: &mut WorldRenderer|
+         -> Result<Vec<u8>, String> {
+            let m = menu(12, &[]);
+            wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
+                m.open().unwrap(),
+                30,
+                false,
+                effects,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ));
+            // The book is set BESIDE the panel, not inside it — the seam
+            // `--render-check`'s r23 forced, because the player's own
+            // inventory has no `ContainerPanel` and still has a book.
+            wr.set_recipe_book(b.and_then(crate::live_cmd::recipe_book_panel));
+            wr.set_container(true, None);
+            shot(gpu, off, wr)
+        };
+        let shut = book_frame(None, gpu, off, wr)?;
+        let full = book(20, 1, 0);
+        let open = book_frame(Some(&full), gpu, off, wr)?;
+        // Taken here so `book_frame` can be dropped before b4, which needs
+        // `shot` itself.
+        let short = book(5, 3, 2);
+        let short_frame = book_frame(Some(&short), gpu, off, wr)?;
+        let uncraftable_slots = crate::live_cmd::BookRender {
+            slots: vec![(false, false); 20],
+            ..full.clone()
+        };
+        let unc_frame = book_frame(Some(&uncraftable_slots), gpu, off, wr)?;
+        drop(book_frame);
+
+        // b1 - the book paints its own sheet.
+        //
+        // The value is NAMED - `recipe_book.png`'s own (55,55,55), read out of
+        // the PNG - rather than merely "different from shut", and both flaws
+        // that forced the rewrite are why. The first draft probed book(73,80)
+        // and compared open against shut: it passed, reading [0,0,0] against
+        // [255,255,255], and neither number was the book. (73,80) is inside
+        // recipe slot 7, near its BLACK bottom border; and the shut frame had
+        // the menu panel over that screen position, because an open book MOVES
+        // the menu - so the control changed along with the subject, which is
+        // the one thing a frame diff may not do. book(10,80) is bare panel and
+        // is outside the menu in both frames.
+        c.record(
+            "b1.an_open_book_paints_its_own_sheet",
+            at_book(&open, 10, 80) == [55, 55, 55] && at_book(&shut, 10, 80) != [55, 55, 55],
+            format!(
+                "bare panel reads {:?} - `recipe_book.png` at (11,81), its own value - against {:?} with the book shut",
+                at_book(&open, 10, 80),
+                at_book(&shut, 10, 80)
+            ),
+        );
+
+        // b2 - and it MOVES the menu. Measured against `screen_left`'s own
+        // arithmetic rather than by eye: 77 GUI px for a 176-wide panel.
+        let sw = W as f32 / bsc;
+        let centred = rb::screen_left(sw as i32, craft.image_w, false, false);
+        let shifted = rb::screen_left(sw as i32, craft.image_w, true, false);
+        let place = |open_book: bool| {
+            rewo_gpu::container::gui_origin_placed(
+                W as f32,
+                H as f32,
+                rewo_gpu::container::Placement::with_book(
+                    craft.image_w as f32,
+                    craft.image_h as f32,
+                    open_book,
+                ),
+            )
+        };
+        let (ml, mt, _) = place(true);
+        let (ml0, mt0, _) = place(false);
+        c.record(
+            "b2.an_open_book_shifts_the_menu_by_screen_lefts_own_amount",
+            shifted - centred == 77 && ((ml - ml0) / bsc - 77.0).abs() < 1e-3,
+            format!(
+                "the model says {centred} -> {shifted} and the renderer moves the panel {:.1} GUI px",
+                (ml - ml0) / bsc
+            ),
+        );
+
+        // b3 - the shift is horizontal ONLY. `topPos` is untouched in vanilla,
+        // and a symmetric "re-centre both axes" reading would move it too.
+        c.record(
+            "b3.the_shift_is_horizontal_only",
+            mt == mt0,
+            format!("top is {mt} either way"),
+        );
+
+        // b4 - the panel is sampled from (1, 1). Proven by rendering the SAME
+        // book with a (0, 0) source and showing the frames differ: without
+        // that the constant could be anything and no pixel would notice. The
+        // constant itself is pinned by a unit test; this is the half that says
+        // it reaches the draw.
+        let mut zeroed = crate::live_cmd::recipe_book_panel(&full).unwrap();
+        for b in &mut zeroed.blits {
+            b.sx = 0.0;
+            b.sy = 0.0;
+        }
+        wr.set_recipe_book(Some(zeroed));
+        wr.set_container(true, None);
+        let from_zero = shot(gpu, off, wr)?;
+        let differs = (0..(W * H) as usize).any(|i| {
+            from_zero[i * 4] != open[i * 4] || from_zero[i * 4 + 1] != open[i * 4 + 1]
+        });
+        c.record(
+            "b4.the_panels_one_one_source_offset_reaches_the_draw",
+            differs && rb::PANEL_SOURCE == (1, 1),
+            "sourcing the panel at (0,0) instead of (1,1) changes the frame".to_string(),
+        );
+
+        // b5 - the tab column hangs off the book's LEFT edge, and only the
+        // SELECTED tab wears the selected sprite.
+        //
+        // Both sprites are named: `tab.png` is grey 139 at its middle and
+        // `tab_selected.png` is 198, read out of the PNGs. That is what makes
+        // this witness able to fail - "the tabs differ from the backdrop" would
+        // pass with every tab drawing the same art, which is exactly the
+        // mistake `sprites.get(true, this.selected)` invites.
+        let tab_mid = |i: i32, sel: bool| {
+            (
+                rb::TAB_DX + rb::tab_x_shift(sel) + 17,
+                rb::TAB_DY + rb::TAB_PITCH * i + 13,
+            )
+        };
+        let (t0x, t0y) = tab_mid(0, true);
+        let (t1x, t1y) = tab_mid(1, false);
+        c.record(
+            "b5.only_the_selected_tab_wears_the_selected_sprite",
+            rb::TAB_DX < 0
+                && at_book(&open, t0x, t0y) == [198, 198, 198]
+                && at_book(&open, t1x, t1y) == [139, 139, 139],
+            format!(
+                "tab 0 (selected) reads {:?} - `tab_selected.png`'s own 198 - and tab 1 reads {:?}, `tab.png`'s 139; the column sits at book x={}, outside the 0..147 panel",
+                at_book(&open, t0x, t0y),
+                at_book(&open, t1x, t1y),
+                rb::TAB_DX
+            ),
+        );
+
+        // b7 - a slot's chrome follows its collection's craftable flag, and
+        // both sprites are named: `slot_craftable.png` is 139 at its middle
+        // and `slot_uncraftable.png` is 106.
+        let (c0x, c0y) = rb::grid_slot(0);
+        c.record(
+            "b7.a_slots_chrome_names_its_craftable_state",
+            at_book(&open, c0x + 12, c0y + 12) == [139, 139, 139]
+                && at_book(&unc_frame, c0x + 12, c0y + 12) == [106, 106, 106],
+            format!(
+                "slot 0 reads {:?} craftable and {:?} not - `slot_craftable.png`'s 139 against `slot_uncraftable.png`'s 106",
+                at_book(&open, c0x + 12, c0y + 12),
+                at_book(&unc_frame, c0x + 12, c0y + 12)
+            ),
+        );
+
+        // b6 - a short page draws fewer slots, and the ones it drops go back to
+        // bare panel rather than staying lit.
+        let (sx, sy) = rb::grid_slot(19);
+        let (fx, fy) = rb::grid_slot(0);
+        c.record(
+            "b6.a_short_page_draws_only_the_slots_it_has",
+            at_book(&open, sx + 12, sy + 12) == [139, 139, 139]
+                && at_book(&short_frame, sx + 12, sy + 12) == [55, 55, 55]
+                && at_book(&short_frame, fx + 12, fy + 12)
+                    == at_book(&open, fx + 12, fy + 12),
+            format!(
+                "slot 19 reads {:?} on a full page and {:?} on a 5-slot one - the sheet's own bare panel, so the cell is not merely dimmed - while slot 0 is identical in both",
+                at_book(&open, sx + 12, sy + 12),
+                at_book(&short_frame, sx + 12, sy + 12)
             ),
         );
     }

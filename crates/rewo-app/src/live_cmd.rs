@@ -156,6 +156,8 @@ struct RenderCheck {
     /// origin, the layout's own slot rects — stayed unexercised here. That is
     /// the exact shape of the blind spot M86 was: a path nothing drives.
     container_frames: u64,
+    /// M94 — the most quads the recipe book drew in any frame.
+    book_quads_max: usize,
     /// The panel height the RENDERER was holding while a container was open.
     ///
     /// Read back from `WorldRenderer::container_panel_height`, not from the
@@ -395,6 +397,18 @@ impl RenderCheck {
         // to `PLAYER` would keep r19 green while drawing 176x166 geometry for a
         // 63-slot menu, which is the failure worth naming rather than the one
         // that is merely absent.
+        // M94 — and that the recipe book itself was drawn. A shut book carries
+        // no quads at all, so this is 0 unless the book's builder ran: the
+        // panel plus four tabs plus the filter toggle is six at minimum, with
+        // no unlocked recipes to fill the grid.
+        row(
+            "r23 the recipe book was drawn in the windowed client",
+            self.book_quads_max >= 6,
+            format!(
+                "{} quads at peak (panel + 4 tabs + filter = 6 with an empty grid)",
+                self.book_quads_max
+            ),
+        );
         row(
             "r21 open_screen opened the client's screen by itself",
             self.container_self_opened_frames > 0,
@@ -4162,6 +4176,10 @@ struct LiveApp {
     advanced_tooltips: bool,
     /// M92 — whether the second (brewing-stand) injection has happened.
     brewing_injected: bool,
+    /// M94 — whether `--render-check` has opened the recipe book yet.
+    book_injected: bool,
+    /// M94 — whether the crafting-table injection has happened.
+    book_menu_injected: bool,
     /// M88 — whether `--render-check` has injected its container open yet.
     /// Latched so the inject happens once rather than every frame past the
     /// threshold, which would re-open the menu and reset its state each frame.
@@ -5750,6 +5768,27 @@ impl LiveApp {
             // it, which is the behaviour M87 was missing and M89 added. With
             // the injection after the forced open, the container would render
             // either way and `r21` could not tell.
+            // M94 — open the recipe book, which no server does unprompted: a
+            // fresh player's `RecipeBookSettings` are all shut, so without this
+            // the windowed client never reaches the book's draw and `r23` would
+            // be measuring nothing. Injected EARLY so it is live while the
+            // inventory (a CRAFTING book menu) is on screen for `r16`.
+            //
+            // Eight booleans, four `(open, filtering)` pairs in
+            // `RecipeBookSettings`' positional order — crafting first.
+            if !self.book_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.92 {
+                    if let Some(session) = self.session.as_mut() {
+                        let id = session.ids.cb_play_recipe_book_settings;
+                        let body = [1u8, 0, 0, 0, 0, 0, 0, 0];
+                        session.apply_recipe_book(id, &body);
+                        if session.recipe_book_settings.crafting.open {
+                            self.book_injected = true;
+                        }
+                    }
+                }
+            }
             if !self.container_injected {
                 let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
                 if self.started.elapsed().as_secs_f32() >= limit * 0.4 {
@@ -5766,6 +5805,36 @@ impl LiveApp {
                                 && session.menus.open().is_some();
                         if opened {
                             self.container_injected = true;
+                        }
+                    }
+                }
+            }
+            // M94 — last of all, a CRAFTING TABLE, because the book only draws
+            // while a book menu is on screen and neither of the two injections
+            // below is one: `book_type_of` answers for the player's own
+            // inventory, `crafting`, and the three furnaces, and nothing else.
+            // The chest opened at 0.4 holds the screen for the rest of the run,
+            // so without this the windowed client never reaches the book's
+            // builder however long it runs — the same shape of gap as M92's
+            // overlay injection, one screen over.
+            //
+            // Last (0.90) so `r20` and `r22` have already latched: a crafting
+            // table's panel is 176x166, the player's own size, and it draws no
+            // overlays.
+            if !self.book_menu_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.90 {
+                    if let Some(session) = self.session.as_mut() {
+                        // Menu type 12. NOT 13 - that is `enchantment`,
+                        // which this first got wrong, and which opened a
+                        // perfectly valid screen with no book.
+                        let mut body: Vec<u8> = vec![11, 12, 8];
+                        let title = b"Crafting";
+                        body.extend_from_slice(&(title.len() as u16).to_be_bytes());
+                        body.extend_from_slice(title);
+                        let open_id = session.ids.cb_play_open_screen;
+                        if rewo_net::route_menu(open_id, &body, &session.ids, &mut session.menus) {
+                            self.book_menu_injected = true;
                         }
                     }
                 }
@@ -6301,6 +6370,16 @@ impl LiveApp {
                     merchant.as_ref(),
                 );
                 self.screen_labels = labels;
+                // M94 — OUTSIDE the `container_panel_height` guard below: the
+                // player's own inventory has no container panel and is the
+                // commonest screen with a book, so counting inside that guard
+                // measures zero forever. r23's first two red runs were this
+                // and the field placement it forced.
+                if let Some(c) = self.check.as_mut() {
+                    c.book_quads_max = c
+                        .book_quads_max
+                        .max(state.world_renderer.container_panel_book_quads());
+                }
                 // M88 — read the panel back OUT of the renderer, after the
                 // draw path set it. Asking the open menu's layout instead
                 // would answer 168 for a chest whether or not the panel
@@ -6739,6 +6818,8 @@ fn run_windowed(
         f3_used_as_modifier: false,
         advanced_tooltips: false,
         container_injected: false,
+        book_injected: false,
+        book_menu_injected: false,
         brewing_injected: false,
         screen_forced_open: false,
         tool_highlight: rewo_gpu::hud::ToolHighlight::default(),
@@ -8957,6 +9038,66 @@ fn celestial_state_of(day_ticks: Option<i64>) -> CelestialState {
 
 #[cfg(test)]
 mod tests {
+    /// `rewo-gpu` restates the recipe book's geometry rather than importing it,
+    /// because the renderer deliberately does not depend on `rewo-world` (M94).
+    /// This is the crate that sees both, so this is where the copy is paid for.
+    ///
+    /// Without it a drift draws the book a pixel off, or against the wrong
+    /// sheet, with nothing failing anywhere.
+    #[test]
+    fn the_renderers_copy_of_the_books_geometry_matches_the_model() {
+        use rewo_world::recipe_book_screen as rb;
+        let (w, h, off, narrow, sheet) =
+            rewo_gpu::container::book_constants_for_cross_check();
+        assert_eq!(w, rb::IMAGE_W as f32);
+        assert_eq!(h, rb::IMAGE_H as f32);
+        assert_eq!(off, rb::OFFSET_X as f32);
+        assert_eq!(narrow, rb::WIDTH_TOO_NARROW_BELOW as f32);
+        assert_eq!(
+            rewo_data::assets::MENU_BACKGROUND_TEXTURES[sheet],
+            "gui/recipe_book.png",
+            "the renderer's sheet index must name the book's own sheet"
+        );
+        assert_eq!(sheet, rewo_data::assets::RECIPE_BOOK_SHEET);
+    }
+
+    /// The draw and the hit test resolve their origin through the same
+    /// `Placement`, so an open book must move BOTH or neither.
+    #[test]
+    fn an_open_book_moves_the_hit_test_exactly_as_far_as_the_panel() {
+        use rewo_gpu::container::{gui_origin_placed, screen_to_gui_placed, Placement};
+        let (w, h) = (1920.0f32, 1080.0f32);
+        let shut = Placement::with_book(176.0, 166.0, false);
+        let open = Placement::with_book(176.0, 166.0, true);
+        let (l0, t0, sc) = gui_origin_placed(w, h, shut);
+        let (l1, t1, _) = gui_origin_placed(w, h, open);
+        assert_ne!(l0, l1, "the panel moves");
+        assert_eq!(t0, t1, "but only horizontally");
+
+        let m = (900.0, 500.0);
+        let g0 = screen_to_gui_placed(m, w, h, shut);
+        let g1 = screen_to_gui_placed(m, w, h, open);
+        // The cursor's GUI-space x shifts by exactly the panel's own shift, so
+        // a slot under the cursor before the book opened is not under it after.
+        let panel_shift = ((l1 - l0) / sc) as f64;
+        assert!(((g0.0 - g1.0) - panel_shift).abs() < 1e-6);
+        assert_eq!(g0.1, g1.1);
+    }
+
+    /// A window under 379 GUI px keeps the menu centred, and the book covers it.
+    #[test]
+    fn a_narrow_window_moves_neither() {
+        use rewo_gpu::container::{gui_origin_placed, Placement};
+        // 640x480 at the GUI scale this picks is under the threshold.
+        let (w, h) = (640.0f32, 480.0f32);
+        let scale = rewo_gpu::hud::gui_scale(w, h);
+        assert!(w / scale < 379.0, "the fixture has to actually be narrow");
+        assert_eq!(
+            gui_origin_placed(w, h, Placement::with_book(176.0, 166.0, true)),
+            gui_origin_placed(w, h, Placement::with_book(176.0, 166.0, false))
+        );
+    }
+
     use super::*;
     use rewo_net::effects::VisualEffectSnapshot;
 
@@ -11313,6 +11454,12 @@ fn apply_screen(
             ),
         })
     });
+    // M94 — the recipe book, if the server says it is open for this menu's
+    // book type. It is built here rather than inside `container_panel` because
+    // its presence has to reach `screen_to_gui_placed` below as well: an open
+    // book MOVES the menu, and a hover resolved against a centred panel while
+    // the panel is drawn 77 px right would be wrong by more than four slots.
+    let book = live_recipe_book(session);
     // Which menu is on screen: the open container if there is one, else the
     // player's own. Chosen ONCE and threaded everywhere, because the panel,
     // the icons, the hover and the durability bars are all measured from the
@@ -11333,6 +11480,11 @@ fn apply_screen(
     // (M87k's rule): the enchanting table's row highlight is measured from the
     // panel's top-left, so converting against the player's 176x166 would offset
     // it wherever the two disagree.
+    // M94 — the book, beside the panel. Set unconditionally so a shut book
+    // clears last frame's, and set even when `container_panel` returns `None`
+    // (the player's own inventory), which is one of the four screens that has
+    // one.
+    wr.set_recipe_book(book.as_ref().and_then(recipe_book_panel));
     wr.set_container_panel(container_panel(
         layout,
         session.menus.open(),
@@ -11346,12 +11498,15 @@ fn apply_screen(
             anvil_fills: &anvil_fills,
             merchant,
         },
-        Some(rewo_gpu::container::screen_to_gui_for(
+        Some(rewo_gpu::container::screen_to_gui_placed(
             mouse,
             w,
             h,
-            layout.image_w as f32,
-            layout.image_h as f32,
+            rewo_gpu::container::Placement::with_book(
+                layout.image_w as f32,
+                layout.image_h as f32,
+                book.is_some(),
+            ),
         )),
     ));
 
@@ -11377,12 +11532,15 @@ fn apply_screen(
                 anvil_fills: &anvil_fills,
                 merchant,
             },
-            Some(rewo_gpu::container::screen_to_gui_for(
+            Some(rewo_gpu::container::screen_to_gui_placed(
                 mouse,
                 w,
                 h,
-                layout.image_w as f32,
-                layout.image_h as f32,
+                rewo_gpu::container::Placement::with_book(
+                    layout.image_w as f32,
+                    layout.image_h as f32,
+                    book.is_some(),
+                ),
             )),
         ),
         baked.font.as_ref(),
@@ -12942,6 +13100,187 @@ pub(crate) struct EnchantPlayer<'a> {
     /// would light nothing, which is M93i's "correct on the wire, invisible on
     /// screen" one screen over.
     pub beacon_override: Option<rewo_world::menu_screen::BeaconChoice>,
+}
+
+/// Which of `RecipeBookSettings`' four `TypeSettings` a menu reads (M94).
+///
+/// **Only four menus have a book at all** — `RecipeBookMenu` is abstract and
+/// exactly three concrete classes implement `getRecipeBookType`: the player's
+/// own `InventoryMenu` and `CraftingMenu` (both CRAFTING) and
+/// `AbstractFurnaceMenu`, which returns the type its subclass was built with.
+/// Every other screen returns `None` here and draws no book, which is why a
+/// chest is unaffected by any of this.
+fn book_type_of(layout: &rewo_world::menu_layout::MenuLayout) -> Option<usize> {
+    // Keyed on the registry NAME, not the protocol id: the id is the server's
+    // and a version bump renumbers it, while these four names are what the
+    // decompile's class names correspond to.
+    //
+    // The index is `RecipeBookSettings`' own positional order — crafting,
+    // furnace, blast furnace, smoker — which M93y records as the wire contract.
+    if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
+        // The player's own inventory IS a `RecipeBookMenu`: `InventoryMenu`
+        // returns CRAFTING. It has no menu registry id because it is never
+        // opened by `open_screen`.
+        return Some(0);
+    }
+    match layout.name {
+        "crafting" => Some(0),
+        "furnace" => Some(1),
+        "blast_furnace" => Some(2),
+        "smoker" => Some(3),
+        _ => None,
+    }
+}
+
+/// Everything the recipe book's chrome needs for one frame (M94).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BookRender {
+    pub view: Option<rewo_world::recipe_book_screen::BookView>,
+    /// `(hasCraftable, hasMultipleRecipes)` for each collection on the page.
+    pub slots: Vec<(bool, bool)>,
+    pub hover: rewo_world::recipe_book_screen::BookHover,
+}
+
+/// The recipe book for the menu currently on screen (M94), or `None` when it
+/// is shut — which is also what keeps the menu centred.
+///
+/// # What this does not do yet
+///
+/// The selected tab and the current page are **client** state that only a
+/// click can change, and nothing can click the book yet, so both are pinned to
+/// 0 and the tab column renders with the first tab selected. `hasCraftable` is
+/// likewise reported as `false` for every collection, because it needs
+/// `StackedItemContents` — vanilla's "can I make this from what I am holding"
+/// solver — which Rewo has not ported. The consequence is visible and
+/// deliberately not faked: every slot draws the *uncraftable* chrome. Guessing
+/// `true` would be worse, since it is the state that tells a player a recipe is
+/// available.
+fn live_recipe_book(session: &rewo_net::play::PlaySession) -> Option<BookRender> {
+    use rewo_world::recipe_book_screen as rb;
+    let layout = session
+        .menus
+        .open()
+        .map(|m| m.menu.layout())
+        .unwrap_or_else(|| session.inventory.layout());
+    let kind = book_type_of(layout)?;
+    let st = match kind {
+        0 => session.recipe_book_settings.crafting,
+        1 => session.recipe_book_settings.furnace,
+        2 => session.recipe_book_settings.blast_furnace,
+        _ => session.recipe_book_settings.smoker,
+    };
+    if !st.open {
+        return None;
+    }
+    // The entries the server has unlocked, grouped exactly as
+    // `categorizeAndGroupRecipes` does, then narrowed to the selected tab.
+    let names = session.recipe_display_ids.as_ref()?;
+    let entries: Vec<(i32, Option<i32>, &str)> = session
+        .recipe_book
+        .values()
+        .filter_map(|e| Some((e.id, e.group, names.category.name(e.category)?)))
+        .collect();
+    let all = rb::collections(&entries);
+    let selected_tab = 0usize;
+    let tab = rb::Tab::ALL[selected_tab];
+    // Stage one of `updateCollections` is the tab's own membership; the
+    // `hasAnySelected` stage is unconditional and is what a collection from
+    // another tab fails.
+    let mine: Vec<_> = all
+        .iter()
+        .filter(|c| tab.included().contains(&c.category.as_str()))
+        .collect();
+    let total_pages = rb::total_pages(mine.len());
+    let page = rb::clamp_page(0, mine.len(), false);
+    let range = rb::page_range(page, mine.len());
+    let slots: Vec<(bool, bool)> = mine[range]
+        .iter()
+        // `hasCraftable` — see the note above. `hasMultipleRecipes` is the
+        // SELECTED entries, and with no filter every recipe in a group is
+        // selected, so a grouped collection reports several.
+        .map(|c| (false, c.recipes.len() > 1))
+        .collect();
+    Some(BookRender {
+        view: Some(rb::BookView {
+            tabs: rb::Tab::ALL.len(),
+            selected_tab,
+            page,
+            total_pages,
+            shown: slots.len(),
+            filtering: st.filtering,
+            furnace_family: kind != 0,
+        }),
+        slots,
+        // Nothing can hover the book: the cursor would have to be converted
+        // into book space, which needs the window size that only the renderer
+        // has. Recorded rather than approximated from the panel's origin, which
+        // is a pixel out on odd window widths.
+        hover: rb::BookHover::default(),
+    })
+}
+
+/// The book's chrome as blits, with its semantic sprites resolved to atlas
+/// indices.
+///
+/// The mapping lives here rather than in the model for the reason the model's
+/// doc gives: `MENU_OVERLAY_SPRITES` is append-only and its order is an atlas
+/// contract, so keeping the geometry free of it lets the atlas grow without
+/// touching a geometry file — and lets the model's tests name a *sprite* rather
+/// than an index.
+pub(crate) fn recipe_book_panel(
+    b: &BookRender,
+) -> Option<rewo_gpu::container::RecipeBookPanel> {
+    use rewo_data::assets as a;
+    use rewo_world::recipe_book_screen as rb;
+    let view = b.view?;
+    let mut blits = Vec::new();
+    let mut overlays = Vec::new();
+    for q in rb::book_chrome(view, &b.slots, b.hover) {
+        let blit = rewo_gpu::container::PanelBlit {
+            dx: q.x as f32,
+            dy: q.y as f32,
+            w: q.w as f32,
+            h: q.h as f32,
+            sx: 0.0,
+            sy: 0.0,
+            sw: q.w as f32,
+            sh: q.h as f32,
+            tint: [1.0; 4],
+        };
+        match q.sprite {
+            // The panel is the one quad that comes off a background SHEET
+            // rather than a sprite, and the one whose source is not (0, 0).
+            rb::BookSprite::Panel => blits.push(rewo_gpu::container::PanelBlit {
+                sx: rb::PANEL_SOURCE.0 as f32,
+                sy: rb::PANEL_SOURCE.1 as f32,
+                ..blit
+            }),
+            rb::BookSprite::Tab { selected } => {
+                overlays.push((a::BOOK_TAB + usize::from(selected), blit))
+            }
+            rb::BookSprite::Slot(s) => overlays.push((
+                a::BOOK_SLOT
+                    + match s {
+                        rb::SlotSprite::Craftable => 0,
+                        rb::SlotSprite::ManyCraftable => 1,
+                        rb::SlotSprite::Uncraftable => 2,
+                        rb::SlotSprite::ManyUncraftable => 3,
+                    },
+                blit,
+            )),
+            rb::BookSprite::PageForward { hovered } => {
+                overlays.push((a::BOOK_PAGE_ARROW + usize::from(hovered), blit))
+            }
+            rb::BookSprite::PageBackward { hovered } => {
+                overlays.push((a::BOOK_PAGE_ARROW + 2 + usize::from(hovered), blit))
+            }
+            rb::BookSprite::Filter { furnace, filtering, hovered } => {
+                let base = if furnace { a::BOOK_FILTER_FURNACE } else { a::BOOK_FILTER };
+                overlays.push((base + rb::filter_sprite_offset(filtering, hovered), blit))
+            }
+        }
+    }
+    Some(rewo_gpu::container::RecipeBookPanel { blits, overlays })
 }
 
 /// [`container_panel`] for `containershot`, which drives the production
