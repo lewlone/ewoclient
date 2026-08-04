@@ -1636,8 +1636,8 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-03
-(M93) — **1840 tests / 0 failures** (all seven crates confirmed reporting),
-`mobshot` 246/246, `containershot` **48/48**, `inventoryshot` 152/152,
+(M93) — **1848 tests / 0 failures** (all seven crates confirmed reporting),
+`mobshot` 246/246, `containershot` **49/49**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `live --render-check` 22/22 with validation
 ON and 0 VUIDs (M92's measurement — M93 adds no render path), demo PNG
 `2cc56b4acbfb92cb`. No branch or worktree holds a commit off
@@ -4414,7 +4414,7 @@ inside the 10-minute tool cap.
 **Measured:** 1773 → **1817 tests**, 0 failures, seven crates reporting;
 `containershot` 27 → **36**; `inventoryshot` 152, `itemshot` 75, `handshot` 34,
 `swingshot` 97, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical;
-**126 mutations across M93a–l, 125 killed and 1 shown equivalent**.
+**147 mutations across M93a–n, 146 killed and 1 shown equivalent**.
 
 ### M93l — the beacon's press state machine and `set_beacon`
 
@@ -4471,6 +4471,34 @@ nothing they could see — a click would have moved a choice nothing drew, M93i'
 resolves no *serverbound* `container_close` — `ids.rs` has the clientbound one
 alone — so the server still believes the menu is open. That predates this and
 affects **every** screen close.
+
+### M93n — the anvil's rename
+
+Listed as "needs a text field"; it needs *two* things and only one is the field.
+
+**`validateName`'s `length() <= 50` counts UTF-16 code units, not characters.**
+An emoji is 2 there and 1 to `chars().count()`, so a char-count check accepts
+names the server rejects — silently, since `setItemName` just returns false
+while the client has drawn the text. 25 emoji are legal, 26 are not.
+
+**Typing an item's own name means *clear* the name.** No `CUSTOM_NAME` plus a
+typed string equal to the hover name sends `""` — there is nothing to set.
+Without the `!has(CUSTOM_NAME)` half, renaming a named item back to its
+displayed name *clears* it; without the equality, every rename becomes a clear.
+
+Also: `None` (too long) is **not** `Some("")` (a legal clear); a rejected name
+does **not** advance the stored name; and the empty string is meaningful on the
+wire, so a sender that suppressed it could never un-name anything. Sent on
+every accepted keystroke, not on a confirm — the anvil has none.
+
+**Recorded, not built:** `EditBox`. Rewo's key handler reads
+`PhysicalKey`/`KeyCode` and never `KeyEvent.text`, so **nothing can type** — a
+subsystem it has never had, shared with the class-C chat/command-input cluster.
+
+`containershot` `d12` pins that the container arc now needs **four distinct
+serverbound screen packets** — `container_button_click` 17,
+`container_slot_state_changed` 20, `rename_item` 48, `set_beacon` 52. Four
+screens, four packets, none a mode of another.
 
 ### M93h — the crafter's slot toggles, and a scoping claim that was wrong twice
 
