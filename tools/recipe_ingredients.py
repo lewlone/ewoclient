@@ -37,20 +37,38 @@ def die(tag: str, msg: str) -> None:
     sys.exit(1)
 
 
-def expand_tag(tool: str, name: str, seen: set[str] | None = None) -> list[str]:
-    """Every item id in an item tag, following `#`-references."""
+def expand_tag(
+    tool: str,
+    name: str,
+    seen: set[str] | None = None,
+    registry: str = "item",
+) -> list[str]:
+    """Every id in a tag, following `#`-references.
+
+    `registry` is the tag's own registry directory — `item` for
+    `ItemTags`, `banner_pattern` for `BannerPatternTags`, and so on. It was
+    hardcoded to `item` until M93o needed `no_item_required`, and M93h had
+    recorded that hardcoding as one of the loom's three blockers. It is the
+    only one of the three that was real.
+
+    The name may carry a `/`, because a tag id is a path: `pattern_item/flower`
+    lives at `tags/banner_pattern/pattern_item/flower.json`. So only the
+    NAMESPACE is stripped, never the path.
+    """
     seen = seen or set()
-    if name in seen:
-        die(tool, f"tag cycle at {name}")
-    seen.add(name)
-    p = os.path.join(TAGS, name.split(":")[-1] + ".json")
+    key = f"{registry}:{name}"
+    if key in seen:
+        die(tool, f"tag cycle at {key}")
+    seen.add(key)
+    root = os.path.join(BASE, "decompiled/data/minecraft/tags", registry)
+    p = os.path.join(root, name.split(":")[-1] + ".json")
     if not os.path.exists(p):
-        die(tool, f"no tag file for {name}")
+        die(tool, f"no {registry} tag file for {name} (looked at {p})")
     out: list[str] = []
     for v in json.load(open(p, encoding="utf-8"))["values"]:
         entry = v["id"] if isinstance(v, dict) else v
         if entry.startswith("#"):
-            out += expand_tag(tool, entry[1:], set(seen))
+            out += expand_tag(tool, entry[1:], set(seen), registry)
         else:
             out.append(entry if ":" in entry else "minecraft:" + entry)
     return out

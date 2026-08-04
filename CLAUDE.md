@@ -1636,7 +1636,7 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-03
-(M93) — **1848 tests / 0 failures** (all seven crates confirmed reporting),
+(M93) — **1857 tests / 0 failures** (all seven crates confirmed reporting),
 `mobshot` 246/246, `containershot` **49/49**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `live --render-check` 22/22 with validation
 ON and 0 VUIDs (M92's measurement — M93 adds no render path), demo PNG
@@ -4414,7 +4414,7 @@ inside the 10-minute tool cap.
 **Measured:** 1773 → **1817 tests**, 0 failures, seven crates reporting;
 `containershot` 27 → **36**; `inventoryshot` 152, `itemshot` 75, `handshot` 34,
 `swingshot` 97, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical;
-**147 mutations across M93a–n, 146 killed and 1 shown equivalent**.
+**157 mutations across M93a–o, 155 killed and 2 shown equivalent**.
 
 ### M93l — the beacon's press state machine and `set_beacon`
 
@@ -4499,6 +4499,38 @@ subsystem it has never had, shared with the class-C chat/command-input cluster.
 serverbound screen packets** — `container_button_click` 17,
 `container_slot_state_changed` 20, `rename_item` 48, `set_beacon` 52. Four
 screens, four packets, none a mode of another.
+
+### M93o — the loom, and two of three recorded blockers that were wrong
+
+M93h listed three. **One was real.** The occupied-pattern-slot case does *not*
+need the `PROVIDES_BANNER_PATTERNS` HolderSet value off the wire — the
+component is on the item's **prototype**, which never crosses the wire — and it
+does *not* need the `banner_pattern` registry, because the value is a **named**
+HolderSet, i.e. a tag id whose contents are jar data. The real blocker was that
+`expand_tag` hardcoded `tags/item`.
+
+**Same shape as M93e's correction**, and the lesson repeats: *a blocker
+recorded from the wire's point of view can be wrong because the answer was
+never on the wire.*
+
+The item→tag mapping is **extracted from both sides** (`Items.java` names a
+constant per item, `BannerPatternTags` maps it to a tag id) rather than
+inferred — `flower_banner_pattern → pattern_item/flower` looks like a rule and
+is a naming coincidence.
+
+Four screen details that invert: an item with **no** patterns offers
+`ImmutableList.of()`, **not** the default set (falling back would let junk
+unlock everything); the grid needs a **dye**, not just a banner; `canScroll` is
+strictly `> 16`; and the bounds test and the **range** test are separate, so a
+cell past the end is *hit* then *rejected* and must not consume the click.
+
+**One mutation shown equivalent — in Rust only.** Deleting `index >= 0` changes
+nothing because `(-1i32) as usize` wraps past any representable bound; it is
+load-bearing in Java, where `<` does not wrap. Rewritten as `try_from` so the
+intent does not lean on the wrap.
+
+**Left:** the pattern **preview** inside each button — a render job on M28c's
+banner sprites, not more decode.
 
 ### M93h — the crafter's slot toggles, and a scoping claim that was wrong twice
 
