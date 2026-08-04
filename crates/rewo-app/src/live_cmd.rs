@@ -11196,6 +11196,10 @@ fn container_panel(
             h: q.h as f32,
             sx: q.u0 * screen.sheet_w,
             sy: q.v0 * screen.sheet_h,
+            // A background quad samples 1:1 — the panel sheet is drawn at its
+            // own scale.
+            sw: q.w as f32,
+            sh: q.h as f32,
         })
         .collect();
     Some(rewo_gpu::container::ContainerPanel {
@@ -11216,6 +11220,10 @@ fn to_blit(b: rewo_world::menu_screen::ProgressBlit) -> rewo_gpu::container::Pan
         h: b.h as f32,
         sx: b.sx as f32,
         sy: b.sy as f32,
+        // M93p — `None` resolves to the destination size, which every overlay
+        // before the loom preview used.
+        sw: b.source_size().0 as f32,
+        sh: b.source_size().1 as f32,
     }
 }
 

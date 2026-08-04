@@ -341,6 +341,69 @@ pub struct ProgressBlit {
     /// Source origin within the sprite.
     pub sx: i32,
     pub sy: i32,
+    /// Source SIZE, when it differs from `(w, h)` (M93p).
+    ///
+    /// `None` means "the same as the destination", which every blit before the
+    /// loom's pattern preview was. That one samples a 21x40 region of a banner
+    /// texture into a 5x10 cell, and the ratio is **not uniform** — 21/5 is not
+    /// 40/10 — so it cannot be expressed as a single scale factor.
+    pub src: Option<(i32, i32)>,
+}
+
+impl ProgressBlit {
+    /// The source size, resolving `None` to the destination's.
+    pub fn source_size(&self) -> (i32, i32) {
+        self.src.unwrap_or((self.w, self.h))
+    }
+}
+
+/// `LoomScreen.extractBannerOnButton` — the banner preview inside a 14x14
+/// pattern button (M93p, geometry only — see the module note below).
+///
+/// ```java
+/// pose().translate(posX + 4, posY + 2);
+/// float u1 = u0 + (sprite.u1 - u0) * 21F / 64F;
+/// float vSpan = sprite.v1 - sprite.v0;
+/// float v0 = sprite.v0 + vSpan / 64F;
+/// float v1 = v0 + vSpan * 40F / 64F;
+/// fill(0, 0, 5, 10, DyeColor.GRAY.getTextureDiffuseColor());
+/// blit(sprite.atlasLocation(), 0, 0, 5, 10, u0, u1, v0, v1);
+/// ```
+///
+/// So a **5x10 destination** at `(x + 4, y + 2)` sampling the **21x40** region
+/// of the 64x64 banner texture that starts one pixel down — the banner's front
+/// face. The ratio is deliberately not uniform: 21/5 is 4.2 and 40/10 is 4.
+///
+/// The pattern is drawn **untinted** over a flat grey. Not the banner's base
+/// colour and not the dye's — `DyeColor.GRAY.getTextureDiffuseColor()`, a
+/// constant. The pattern textures are greyscale masks (M28c), so the button
+/// reads as a grey banner with a white pattern whatever colours are in the
+/// slots.
+pub fn loom_pattern_preview(cell_x: i32, cell_y: i32) -> ProgressBlit {
+    ProgressBlit {
+        dx: cell_x + 4,
+        dy: cell_y + 2,
+        w: 5,
+        h: 10,
+        sx: 0,
+        sy: 1,
+        src: Some((21, 40)),
+    }
+}
+
+/// `DyeColor.GRAY.getTextureDiffuseColor()` — the preview's flat backing.
+///
+/// M28c's finding applies: the dye table is `getTextureDiffuseColor`, **not**
+/// the sign's `getTextColor`, and the two differ.
+pub const LOOM_PREVIEW_BACKING: u32 = 0x3F3F3F;
+
+/// Where cell `(row, column)` of the visible window sits, relative to the
+/// panel — the same arithmetic `loom_cell_at` inverts.
+pub fn loom_cell_origin(row: i32, column: i32) -> (i32, i32) {
+    (
+        LOOM_GRID_X + column * LOOM_CELL,
+        LOOM_GRID_Y + row * LOOM_CELL,
+    )
 }
 
 /// `AbstractFurnaceScreen.extractBackground`'s two overlays (M91).
@@ -377,6 +440,7 @@ pub fn furnace_progress(lit: bool, lit_progress: f32, burn_progress: f32) -> (Op
             h,
             sx: 0,
             sy: 14 - h,
+            src: None,
         }
     });
     let arrow = ProgressBlit {
@@ -386,6 +450,7 @@ pub fn furnace_progress(lit: bool, lit_progress: f32, burn_progress: f32) -> (Op
         h: 16,
         sx: 0,
         sy: 0,
+        src: None,
     };
     (flame, arrow)
 }
@@ -454,6 +519,7 @@ pub fn brewing_progress(
         h: 4,
         sx: 0,
         sy: 0,
+        src: None,
     });
 
     if ticks <= 0 {
@@ -470,6 +536,7 @@ pub fn brewing_progress(
         h: arrow_h,
         sx: 0,
         sy: 0,
+        src: None,
     });
 
     // `tickCount / 2 % 7` — integer divide first, so each frame is held for
@@ -482,6 +549,7 @@ pub fn brewing_progress(
         h: bubble_h,
         sx: 0,
         sy: 29 - bubble_h,
+        src: None,
     });
 
     (fuel_bar, brew, bubbles)
@@ -591,6 +659,7 @@ pub fn enchant_row_rect(i: usize) -> ProgressBlit {
         h: 19,
         sx: 0,
         sy: 0,
+        src: None,
     }
 }
 
@@ -604,6 +673,7 @@ pub fn enchant_level_rect(i: usize) -> ProgressBlit {
         h: 16,
         sx: 0,
         sy: 0,
+        src: None,
     }
 }
 
@@ -995,7 +1065,7 @@ pub fn beacon_button_hovered(b: BeaconButton, gui_x: f64, gui_y: f64) -> bool {
 /// The 18x18 icon inside a 22x22 button — **inset by 2 on both axes**, so it
 /// leaves a 2 px frame on every side.
 pub fn beacon_icon_rect(b: BeaconButton) -> ProgressBlit {
-    ProgressBlit { dx: b.x + 2, dy: b.y + 2, w: 18, h: 18, sx: 0, sy: 0 }
+    ProgressBlit { dx: b.x + 2, dy: b.y + 2, w: 18, h: 18, sx: 0, sy: 0, src: None }
 }
 
 /// The button's own 22x22 chrome rect.
@@ -1007,6 +1077,7 @@ pub fn beacon_button_rect(b: BeaconButton) -> ProgressBlit {
         h: BEACON_BUTTON,
         sx: 0,
         sy: 0,
+        src: None,
     }
 }
 
@@ -1913,6 +1984,7 @@ pub fn crafter_disabled_cover(slot_x: i32, slot_y: i32) -> ProgressBlit {
         h: CRAFTER_COVER_SIZE,
         sx: 0,
         sy: 0,
+        src: None,
     }
 }
 
@@ -1943,6 +2015,7 @@ pub fn crafter_redstone() -> ProgressBlit {
         h: 16,
         sx: 0,
         sy: 0,
+        src: None,
     }
 }
 
@@ -2308,6 +2381,53 @@ mod m93o_loom_grid {
         assert!(!loom_display_patterns(true, true, true, 32));
         // ...and neither does an empty selectable set.
         assert!(!loom_display_patterns(true, true, false, 0));
+    }
+
+    #[test]
+    fn the_preview_samples_a_non_uniform_sub_rect() {
+        // A 5x10 destination from a 21x40 source: the ratio is 4.2 across and
+        // 4 down, so this cannot be a scale factor — which is why the source
+        // size is carried as its own pair.
+        let p = loom_pattern_preview(60, 13);
+        assert_eq!((p.dx, p.dy), (64, 15), "inset 4 across and 2 down");
+        assert_eq!((p.w, p.h), (5, 10));
+        assert_eq!(p.source_size(), (21, 40));
+        assert_ne!(
+            p.source_size().0 * p.h,
+            p.source_size().1 * p.w,
+            "21/5 != 40/10, so no single factor expresses it"
+        );
+        // The source starts ONE pixel down — `v0 + vSpan / 64` — and at u = 0.
+        assert_eq!((p.sx, p.sy), (0, 1));
+    }
+
+    #[test]
+    fn every_other_blit_samples_one_to_one() {
+        // `src: None` resolves to the destination, so the preview is the only
+        // place the two differ. A blit that quietly gained a source size would
+        // scale a sprite that vanilla draws 1:1.
+        let r = enchant_row_rect(0);
+        assert_eq!(r.source_size(), (r.w, r.h));
+        let a = crafter_disabled_cover(26, 17);
+        assert_eq!(a.source_size(), (a.w, a.h));
+        let c = crafter_redstone();
+        assert_eq!(c.source_size(), (c.w, c.h));
+    }
+
+    #[test]
+    fn the_cell_origin_inverts_the_hit_test() {
+        // The render places cells and `loom_cell_at` finds them; if the two
+        // disagreed you would click one pattern and get another.
+        for row in 0..LOOM_ROWS {
+            for col in 0..LOOM_COLS {
+                let (x, y) = loom_cell_origin(row, col);
+                assert_eq!(
+                    loom_cell_at(x as f64, y as f64, 0),
+                    Some(row * LOOM_COLS + col),
+                    "cell ({row}, {col}) at ({x}, {y})"
+                );
+            }
+        }
     }
 
     #[test]

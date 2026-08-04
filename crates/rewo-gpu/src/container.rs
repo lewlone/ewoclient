@@ -601,6 +601,16 @@ pub struct PanelBlit {
     /// Source origin in sheet pixels.
     pub sx: f32,
     pub sy: f32,
+    /// Source SIZE in sheet pixels (M93p).
+    ///
+    /// Equal to `(w, h)` for every blit until the loom's pattern preview,
+    /// which samples a 21x40 region of a banner texture into a 5x10 cell — the
+    /// first place the source and destination sizes differ. Carried as its own
+    /// pair rather than a scale factor because vanilla writes the two rects
+    /// independently, and a factor would have to be derived (and could be
+    /// derived wrongly on a non-uniform one: 21/5 is not 40/10).
+    pub sw: f32,
+    pub sh: f32,
 }
 
 /// An open container's panel: which sheet, which blits, and how big the panel
@@ -929,7 +939,7 @@ impl ContainerPass {
                 }
                 Some(p) => {
                     for b in &p.blits {
-                        let r = self.menu_rect_px(p.sheet, b.sx, b.sy, b.w, b.h);
+                        let r = self.menu_rect_px(p.sheet, b.sx, b.sy, b.sw, b.sh);
                         quad(
                             &mut v,
                             left + b.dx * scale,
@@ -950,7 +960,7 @@ impl ContainerPass {
                             // wasted draw, not a visible one.
                             continue;
                         }
-                        let r = self.overlay_rect_px(sprite, b.sx, b.sy, b.w, b.h);
+                        let r = self.overlay_rect_px(sprite, b.sx, b.sy, b.sw, b.sh);
                         quad(
                             &mut v,
                             left + b.dx * scale,
