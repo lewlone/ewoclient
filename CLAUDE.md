@@ -4411,13 +4411,57 @@ plain-click path).
 anything else after an interrupted battery**, and split batteries so each stays
 inside the 10-minute tool cap.
 
-**Measured:** 1773 → **1861 tests**, 0 failures, seven crates reporting (world
-665, net 588, gpu 252, data 204, app 96, mesh 45, proto 11); `containershot`
+**Measured:** 1773 → **1865 tests**, 0 failures, seven crates reporting (world
+665, net 588, gpu 255, data 204, app 97, mesh 45, proto 11); `containershot`
 27 → **52**; `inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97,
 `mobshot` 246/246; `live --render-check` **22/22** validation ON, 0 errors
 (re-run at M93q, the first of the arc to touch a render path); demo PNG
-`2cc56b4acbfb92cb` byte-identical; **168 mutations across M93a–q, 165 killed,
+`2cc56b4acbfb92cb` byte-identical; **173 mutations across M93a–r, 170 killed,
 2 shown equivalent, 1 alive by construction (named)**.
+
+### M93r — the self-calibrating-witness sweep, and what it did NOT find
+
+M93q's closing line asked for a sweep of anywhere a `*shot` witness computes an
+expectation from a `pub const` the renderer also reads. Run over ~1,400
+witnesses in 34 gates: **96 of 480 SCREAMING consts are read by both a gate and
+production**, narrowed to value-shaped ones, each checked for **value** (against
+the decompile) and for **pinning** (by mutation, the only real evidence).
+
+**Three real holes, all with correct values** — process debt, not a rendering
+bug. `GLINT_STRENGTH`: `handshot`'s `n3` asserts every glint vertex carries it
+while *reading* it; mutating `0.75 → 0.55`, a 27% change in the foil's alpha,
+left `handshot` (34), `inventoryshot` (152) and all of `rewo-gpu`'s tests green.
+`DARK_GRAY`: same shape in the advanced tooltip, and the mutation used was
+`0x555555 → 0x3F3F3F` — **the exact wrong grey M93p shipped for the loom**,
+which is the point: a plausible flat grey is what a guess produces, and no
+amount of pixel-reading catches one when the reader shares the value.
+`DYE_DIFFUSE_COLORS` is a different failure — **duplicated** across `rewo-data`
+(banners/signs) and `rewo-gpu` (fish, the sheep derivation), and neither crate
+depends on the other, so **no test *could* have compared them**; the agreement
+test has to live in `rewo-app`.
+
+**What it did not find matters as much, and both shapes look like the bug.**
+An **enum comparison** (`== PotWobble::Positive`) names which outcome is
+expected — an identity, not a transcribed value. And a constant used as a
+**search key** self-guards: `blockentityshot` finds a sign by
+`line_height == HANGING_LINE_HEIGHT` then asserts `line_y` against literals, so
+a wrong constant makes `find` return `None` and fails. Most value-shaped consts
+are also pinned already, **often inside the gate rather than a unit test**
+(`BAR_W == 182`, `scale_armor == 0.16`, `(ANCHOR_ACCEL - 0.0139…).abs() <
+1e-17`) — a first detector looking only in `#[cfg(test)]` called all of those
+unpinned, so **the mechanical search has a high false-positive rate and its
+shortlist must be read**.
+
+**The best pin in the codebase is a derivation, not a literal.**
+`SHEEP_WOOL_COLORS` is self-calibrating in `mobshot` and needs no fix, because
+`entities.rs` pins it *by rule* — `floor(diffuse * 0.75)`, white overridden to
+`0xE6E6E6` — and **12 of its 16 rows would differ under `round`**, so the test
+proves the rule rather than the numbers. Prefer that form for any derived table.
+Also: there are two different `TITLE_SCALE`s (hud 4, death screen 2), both
+right, which a name-keyed search reports as one value.
+
+**1865 tests / 0 failures**; 5 mutations, all alive before the pins and all
+killed after; demo PNG `2cc56b4acbfb92cb` byte-identical.
 
 ### M93q — the overlay colour quad, and two ways a pixel gate goes blind
 
