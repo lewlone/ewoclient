@@ -639,6 +639,9 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         components: data.components,
         use_profiles: data.use_profiles,
     });
+    // M93y — the recipe book's display registries, supplied for the same
+    // reason: built-in registries live in the report, not on the wire.
+    session.recipe_display_ids = Some(data.recipe_display_ids);
     // Client-side relighting of our own edits — the server only sends light
     // on chunk load, never for a placed torch or a broken roof.
     session.set_light_tables(

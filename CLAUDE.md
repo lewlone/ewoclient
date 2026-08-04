@@ -4411,13 +4411,46 @@ plain-click path).
 anything else after an interrupted battery**, and split batteries so each stays
 inside the 10-minute tool cap.
 
-**Measured:** 1773 → **1929 tests**, 0 failures, seven crates reporting (world
-717, net 596, gpu 255, data 208, app 97, mesh 45, proto 11); `containershot`
+**Measured:** 1773 → **1942 tests**, 0 failures, seven crates reporting (world
+717, net 609, gpu 255, data 212, app 97, mesh 45, proto 11); `containershot`
 27 → **76**; `inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97,
 `mobshot` 246/246; `live --render-check` **22/22** validation ON, 0 errors
 (re-run at M93q, the first of the arc to touch a render path); demo PNG
-`2cc56b4acbfb92cb` byte-identical; **201 mutations across M93a–x, 195 killed,
+`2cc56b4acbfb92cb` byte-identical; **205 mutations across M93a–y, 199 killed,
 2 shown equivalent, 1 alive by construction (named)**.
+
+### M93y — the recipe book's decode, and a class-C claim that IS one
+
+Four packets decoded into session state, plus the `SlotDisplay` (11 variants)
+and `RecipeDisplay` (5) trees. **The class-C label here is correct** — unlike
+the four M91–M93u overturned — and saying so matters: the book is a tabbed,
+searchable, filterable list with ghost placement, none of which exists. This is
+the half that comes first, on **M63's split**: decoding needs no listening.
+
+**Dispatched rather than left resolved-but-ignored, and M74's check is why** —
+it caught the ids the moment they resolved and named the class the coverage doc
+keeps at **zero**: a packet whose id resolves and whose body is dropped reads as
+*handled* to every grep, which is worse than absent.
+
+The registries are **built-in**, so they come from the report (M92's rule) — and
+the alphabetisation trap bites harder here than in M64, because the variants
+have **different body lengths**, so a wrong table **desyncs the reader
+mid-packet** rather than mislabelling. `group` is `OPTIONAL_VAR_INT`, the `+1`
+family in optional form (**0 is absent; group 0 rides as 1**). A shaped recipe's
+**width and height precede** the ingredients they describe. **`replace` clears
+the book** — true on join, false per unlock.
+
+**Verified against a real server, not only its fixtures.** The nine decode tests
+drive bytes *I* wrote; a temporary counter against a live 26.2 server showed the
+book reaching one entry on join, through the production path. Worth doing
+because **"no warning" is also what a packet that never arrived looks like** —
+the render check was green either way, and only a *positive* assertion about
+what was decoded tells them apart.
+
+1942 tests; coverage **110/0/31 → 114/0/27**, class C 20 → **16**; `live
+--render-check` 22/22 validation ON 0 errors. **Open:** the book's UI (its
+search field now has M93t's `EditBox` to build on) and the two serverbound
+packets, unsent because nothing can yet click what would send them.
 
 ### M93x — the trade button's chrome, and reading WHICH witness fires
 

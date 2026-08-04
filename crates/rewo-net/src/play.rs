@@ -387,6 +387,13 @@ pub struct PlaySession {
     pub ids: Ids,
     /// The villager trade list, when a merchant screen is open (M93u).
     pub merchant: Option<crate::merchant::MerchantOffers>,
+    /// The unlocked recipes, by `RecipeDisplayId` (M93y). Decoded and held;
+    /// nothing renders a recipe book yet.
+    pub recipe_book: std::collections::BTreeMap<i32, crate::recipe_book::Entry>,
+    /// The book's four per-type open/filter pairs.
+    pub recipe_book_settings: crate::recipe_book::BookSettings,
+    /// The last ghost recipe the server asked to be shown, and its container.
+    pub ghost_recipe: Option<(i32, crate::recipe_book::RecipeDisplay)>,
     /// Server-reported latency per player, in milliseconds (M52c).
     ///
     /// **This is the only ping a client can know**, and the reason is worth
@@ -583,6 +590,12 @@ pub struct PlaySession {
     /// equipment packets are recognised but interpret no item, so every swing
     /// keeps the bare-hand `SwingAnimation.DEFAULT`.
     pub swing_data: Option<crate::item_stack::SwingWireData>,
+    /// The three recipe-book display registries (M93y).
+    ///
+    /// Supplied by the app, as `swing_data` is, because they are **built-in**
+    /// registries read from the datagen report — a server never sends them,
+    /// and `rewo-net` holds no path to the report.
+    pub recipe_display_ids: Option<rewo_data::recipe_display::RecipeDisplayIds>,
     /// The `minecraft:enchantment` registry from configuration (M42), indexed
     /// by protocol id. Empty on a server that syncs none.
     pub enchantments: Vec<crate::enchantment_parse::EnchantmentDef>,
@@ -1416,6 +1429,9 @@ impl<'a> Connection<'a> {
             .unwrap_or(7);
         let mut session = PlaySession {
             merchant: None,
+            recipe_book: Default::default(),
+            recipe_book_settings: Default::default(),
+            ghost_recipe: None,
             writer,
             codec,
             rx,
@@ -1475,6 +1491,7 @@ impl<'a> Connection<'a> {
             entity_types: None,
             attribute_registry: None,
             swing_data: None,
+            recipe_display_ids: None,
             swing_effect_ids,
             global_bits,
             dim_types,
@@ -2712,6 +2729,18 @@ impl PlaySession {
                 // the index a click sends addresses the list by position.
                 Err(e) => log::warn!("net: {e}"),
             }
+        } else if id == ids.cb_play_recipe_book_add
+            || id == ids.cb_play_recipe_book_remove
+            || id == ids.cb_play_recipe_book_settings
+            || id == ids.cb_play_place_ghost_recipe
+        {
+            // M93y. The BOOK is a subsystem Rewo does not have — tabs, search,
+            // filtering, ghost placement — and this is the decode half only.
+            // It is dispatched rather than left resolved-but-ignored because
+            // that class is the one `REWO_PACKET_COVERAGE.md` keeps at zero: a
+            // packet whose id resolves and whose body is dropped reads as
+            // handled to every grep.
+            self.apply_recipe_book(id, body);
         } else if id == ids.cb_play_game_event {
             // M33 took the four weather ids; M71 took the other ten. One
             // decode feeds the weather levels, the client game state and the
@@ -3942,6 +3971,60 @@ impl PlaySession {
         let mut p = PacketWriter::packet(id);
         p.buf.extend_from_slice(&crate::rename_item_body(name));
         self.send(p)
+    }
+
+    /// The recipe book's four clientbound packets (M93y).
+    ///
+    /// A malformed body is dropped whole and logged, never applied in part:
+    /// `SlotDisplay`'s variants have different lengths, so a partial read has
+    /// already lost its place and the rest of the list is garbage.
+    fn apply_recipe_book(&mut self, id: i32, body: &[u8]) {
+        let ids = &self.ids;
+        if id == ids.cb_play_recipe_book_settings {
+            match crate::recipe_book::parse_settings(body) {
+                Ok(s) => self.recipe_book_settings = s,
+                Err(e) => log::warn!("net: {e}"),
+            }
+            return;
+        }
+        if id == ids.cb_play_recipe_book_remove {
+            match crate::recipe_book::parse_remove(body) {
+                Ok(v) => {
+                    for r in v {
+                        self.recipe_book.remove(&r);
+                    }
+                }
+                Err(e) => log::warn!("net: {e}"),
+            }
+            return;
+        }
+        // The remaining two need the display registries, which are BUILT-IN
+        // and so come from the report rather than the wire (M92's rule).
+        let Some(display_ids) = self.recipe_display_ids.as_ref() else {
+            log::warn!("net: recipe book packet with no display registries");
+            return;
+        };
+        if id == ids.cb_play_recipe_book_add {
+            match crate::recipe_book::parse_add(body, display_ids) {
+                Ok(a) => {
+                    // `replace` CLEARS the book first — a join sends true, an
+                    // unlock sends false. Appending unconditionally leaves a
+                    // stale book across a respawn.
+                    if a.replace {
+                        self.recipe_book.clear();
+                    }
+                    for e in a.entries {
+                        self.recipe_book.insert(e.id, e);
+                    }
+                }
+                Err(e) => log::warn!("net: {e}"),
+            }
+        } else {
+            match crate::recipe_book::parse_place_ghost(body, display_ids) {
+                Ok(g) => self.ghost_recipe = Some(g),
+                Err(e) => log::warn!("net: {e}"),
+            }
+        }
     }
 
     /// `MerchantScreen.TradeOfferButton.onPress` — `select_trade` (M93u).

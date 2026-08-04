@@ -194,9 +194,9 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **110** |
+| Resolved **and** consumed | **114** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **31** |
+| Not resolved at all | **27** |
 | **Total clientbound-play** | **141** |
 
 The 32 gaps, by class:
@@ -205,8 +205,8 @@ The 32 gaps, by class:
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
 | **B** needs rendering | **0** | 0% |
-| **C** needs a subsystem Rewo lacks | **20** | 65% |
-| **D** not applicable | **11** | 35% |
+| **C** needs a subsystem Rewo lacks | **16** | 59% |
+| **D** not applicable | **11** | 41% |
 
 **M87 is the first bite out of class C**, and it is a worked example of what
 that class costs. `open_screen` and `container_set_data` are eleven lines of
@@ -515,7 +515,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 60 | `open_sign_editor` | absent | **C** | Sign edit screen. |
 | 61 | `ping` | handled | `req!` → `cb_play_ping` | |
 | 62 | `pong_response` | absent | **D** | The reply to a serverbound `ping_request` Rewo never sends (`pingDebugMonitor`). |
-| 63 | `place_ghost_recipe` | absent | **C** | Recipe book. |
+| 63 | `place_ghost_recipe` | handled | — | Decoded and held (M93y). The BOOK is still a subsystem Rewo lacks; this is the decode half, on M63's split. |
 | 64 | `player_abilities` | handled | — | Flags byte + `flyingSpeed` + `walkingSpeed`, nine fixed bytes. Landed by **M75** with the flight / no-clip physics it feeds and the `GameType` binding M71 left unstarted. The **serverbound** twin is one byte carrying only `FLAG_FLYING` — writing the clientbound body there desyncs the stream by eight. |
 | 65 | `player_chat` | handled | `opt!` → `cb_play_player_chat` | |
 | 66 | `player_combat_end` | handled | `req!` → `cb_play_player_combat_end` | **M78.** Vestigial: the handler is an **empty method**, so nothing is stored — inventing a field would be a divergence dressed as decode-and-state. The body is **not** empty (a VarInt `duration`), and the only gradeable property is that the reader consumes exactly it. §9. |
@@ -526,9 +526,9 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 71 | `player_look_at` | handled | `req!` → `cb_play_player_look_at` | **M76.** `/teleport … facing`. An anchor `readEnum`, three doubles, a flag, and **only then** a conditional entity + anchor pair. An unresolvable entity falls back to the packet's own coordinates, which are the sender's snapshot of `toAnchor.apply(entity)` — not a placeholder. |
 | 72 | `player_position` | handled | `req!` → `cb_play_position` | The positional teleport. Its rotational twin (73) landed in **M76**, closing §3's asymmetry. |
 | 73 | `player_rotation` | handled | `req!` → `cb_play_player_rotation` | **M76.** Ten fixed bytes: `FLOAT yRot, BOOL relativeY, FLOAT xRot, BOOL relativeX` — **two interleaved booleans, not** the packed `Relative` mask 72 carries. It is the only one of the two that answers the server. |
-| 74 | `recipe_book_add` | absent | **C** | Recipe book. |
-| 75 | `recipe_book_remove` | absent | **C** | Recipe book. |
-| 76 | `recipe_book_settings` | absent | **C** | Recipe book. |
+| 74 | `recipe_book_add` | handled | — | Decoded into the session's recipe map (M93y). `replace` CLEARS it first. |
+| 75 | `recipe_book_remove` | handled | — | Decoded (M93y). |
+| 76 | `recipe_book_settings` | handled | — | Decoded (M93y). Four positional open/filter pairs. |
 | 77 | `remove_entities` | handled | `req!` → `cb_play_remove_entities` | |
 | 78 | `remove_mob_effect` | handled | `req!` → `cb_play_remove_mob_effect` | |
 | 79 | `reset_score` | handled | `req!` → `cb_play_reset_score` | M65. |
