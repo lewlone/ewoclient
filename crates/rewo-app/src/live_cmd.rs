@@ -11957,6 +11957,11 @@ fn merchant_press(
     if offer as usize >= n {
         return false;
     }
+    if let Some(l) = screen.merchant.as_mut() {
+        // `postButtonClick` sets `shopItem` LOCALLY first — the trade's items
+        // appear before the server answers.
+        l.selected = offer;
+    }
     if let Err(e) = session.select_trade(offer) {
         log::warn!("select_trade {offer}: {e}");
     }
@@ -11974,6 +11979,10 @@ pub struct MerchantView {
     /// ceiling is the item's own max stack size and only this side holds the
     /// item table.
     pub cost_a_counts: Vec<i32>,
+    /// `MerchantScreen.shopItem` — the selected offer, whose out-of-stock X
+    /// is drawn in the right-hand panel. Screen-local: the packet does not
+    /// carry a selection.
+    pub selected: i32,
 }
 
 /// The merchant screen's scroll, which no packet carries (M93u).
@@ -11981,6 +11990,7 @@ pub struct MerchantView {
 pub struct MerchantLocal {
     container_id: i32,
     pub scroll_off: i32,
+    pub selected: i32,
     pub dragging: bool,
 }
 
@@ -11996,6 +12006,7 @@ pub(crate) fn merchant_view(
         screen.merchant = Some(MerchantLocal {
             container_id: m.container_id,
             scroll_off: 0,
+            selected: 0,
             dragging: false,
         });
     }
@@ -12011,6 +12022,7 @@ pub(crate) fn merchant_view(
         // held scroll when the villager restocks, and vanilla's own guard is
         // `offer_visible`'s `!canScroll` short-circuit rather than a stored
         // clamp.
+        selected: local.selected,
         scroll_off: local
             .scroll_off
             .min(rewo_world::merchant_screen::max_scroll_off(offers.offers.len()).max(0)),
@@ -12488,11 +12500,14 @@ fn menu_overlays(
                 // The row is the offer's position in the WINDOW, which is the
                 // offer index only when nothing is scrolled.
                 let row = if ms::can_scroll(n) { i - v.scroll_off } else { i };
-                let y = ms::button_y(row) + 2;
+                let y = ms::row_item_y(row);
+                // `xo + 5 + 35 + 20` — past cost B, not past cost A. The first
+                // cut of this read `5 + 5 + 20` and put every arrow 30 px left,
+                // on top of the cost-A icon.
                 out.push((
                     a::VILLAGER_TRADE_ARROW + usize::from(offer.out_of_stock),
                     to_blit(rewo_world::menu_screen::ProgressBlit {
-                        dx: ms::TRADE_BUTTON_X + 5 + 20,
+                        dx: ms::COST_B_X + 20,
                         dy: y + 3,
                         w: 10,
                         h: 9,
@@ -12501,21 +12516,28 @@ fn menu_overlays(
                         src: None,
                     }),
                 ));
-                // A spent trade also wears the red X over its arrow.
-                if offer.out_of_stock {
-                    out.push((
-                        a::VILLAGER_OUT_OF_STOCK,
-                        to_blit(rewo_world::menu_screen::ProgressBlit {
-                            dx: ms::TRADE_BUTTON_X + 5 + 20 - 9,
-                            dy: y - 6,
-                            w: 28,
-                            h: 21,
-                            sx: 0,
-                            sy: 0,
-                            src: None,
-                        }),
-                    ));
-                }
+            }
+            // The 28x21 red X is NOT per row — `extractButtonArrows` only
+            // swaps the arrow. It belongs to the SELECTED offer, in the
+            // right-hand trading panel at `leftPos + 83 + 99`.
+            if let Some(sel) = usize::try_from(v.selected)
+                .ok()
+                .and_then(|i| v.offers.get(i))
+                .filter(|o| o.out_of_stock)
+            {
+                let _ = sel;
+                out.push((
+                    a::VILLAGER_OUT_OF_STOCK,
+                    to_blit(rewo_world::menu_screen::ProgressBlit {
+                        dx: 182,
+                        dy: 35,
+                        w: 28,
+                        h: 21,
+                        sx: 0,
+                        sy: 0,
+                        src: None,
+                    }),
+                ));
             }
         }
         // anvil (M93t): the name field's cursor and selection, measured by
@@ -13676,7 +13698,7 @@ pub(crate) fn screen_icons(
                 continue;
             }
             let row = if ms::can_scroll(n) { idx - v.scroll_off } else { idx };
-            let y = ms::button_y(row) + 2;
+            let y = ms::row_item_y(row);
             let mut put = |gx: i32, id: i32, count: i32| {
                 if let Some(icon) = icon_for(
                     items,

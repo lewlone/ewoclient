@@ -26,11 +26,31 @@ pub const TRADE_BUTTON_H: i32 = 20;
 pub const TRADE_BUTTON_Y: i32 = 18;
 
 /// `SELL_ITEM_1_X` / `SELL_ITEM_2_X` / `BUY_ITEM_X`, each offset from
-/// `xo + 5`. Vanilla writes them as `xo + 5 + 35` and `xo + 5 + 68`, so the
-/// constants are relative to the button's own x and not to the panel.
-pub const COST_A_X: i32 = TRADE_BUTTON_X;
+/// `xo + 5` — the button's own x.
+///
+/// **Cost A adds the 5 twice.** Vanilla computes `sellItem1X = xo + 5 + 5`
+/// once, outside the loop, and then passes it; the other two are written
+/// inline as `xo + 5 + 35` and `xo + 5 + 68`. So cost A sits at **10** and not
+/// at the button's edge, which reading `SELL_ITEM_1_X = 5` alone suggests.
+pub const COST_A_X: i32 = TRADE_BUTTON_X + 5;
 pub const COST_B_X: i32 = TRADE_BUTTON_X + 35;
 pub const RESULT_X: i32 = TRADE_BUTTON_X + 68;
+
+/// Where a drawn row's ITEMS sit — `offerY = yo + 16 + 1`, then
+/// `decorHeight = offerY + 2`, advancing 20 per **drawn** offer.
+///
+/// **One pixel above the buttons.** `init` starts them at `yo + 16 + 2` while
+/// the offer cursor starts at `+ 1`, so the row's items are at `19 + row * 20`
+/// and its button at `18 + row * 20`. Deriving the items from
+/// [`button_y`] — the obvious thing — puts every icon a pixel low.
+///
+/// Vanilla's cursor advances only inside the drawn branch, so it counts drawn
+/// offers; this computes the row directly instead, which is equivalent while
+/// the visibility guard holds and is why removing that guard here changes
+/// nothing (it would stack vanilla's offers down the panel).
+pub fn row_item_y(row: i32) -> i32 {
+    17 + row * TRADE_BUTTON_H + 2
+}
 
 /// `SCROLL_BAR_START_X` / `_TOP_POS_Y` / `_HEIGHT`, and the thumb's size.
 pub const SCROLL_X: i32 = 94;
@@ -302,6 +322,19 @@ mod tests {
         assert!(scroller_grabbed(95.0, 18.5));
         assert!(scroller_grabbed(95.0, 158.0), "18 + 139 + 1");
         assert!(!scroller_grabbed(95.0, 158.5));
+    }
+
+    #[test]
+    fn the_items_sit_one_pixel_above_their_button() {
+        // `offerY = yo + 16 + 1` against `init`'s `buttonY = yo + 16 + 2`.
+        assert_eq!(button_y(0), 18);
+        assert_eq!(row_item_y(0), 19, "17 + 2, not 18 + 2");
+        assert_eq!(row_item_y(1), 39);
+        assert_eq!(row_item_y(0), button_y(0) + 1);
+        // …and cost A adds the button's 5 TWICE.
+        assert_eq!(COST_A_X, 10, "xo + 5 + 5");
+        assert_eq!(COST_B_X, 40);
+        assert_eq!(RESULT_X, 73);
     }
 
     #[test]
