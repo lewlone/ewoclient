@@ -6,6 +6,7 @@
 //! Prediction/physics land in M3; this is the read model.
 
 pub mod abilities;
+pub mod anvil;
 pub mod attributes;
 pub mod biome;
 pub mod biome_noise;

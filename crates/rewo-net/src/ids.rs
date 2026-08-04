@@ -273,6 +273,8 @@ pub struct Ids {
     pub sb_play_container_slot_state_changed: Option<i32>,
     /// `set_beacon` (M93l) — the beacon's confirm button.
     pub sb_play_set_beacon: Option<i32>,
+    /// `rename_item` (M93n) — the anvil's name field.
+    pub sb_play_rename_item: Option<i32>,
     pub sb_play_use_item: Option<i32>,
     pub cb_play_set_health: Option<i32>,
     pub cb_play_system_chat: Option<i32>,
@@ -641,6 +643,7 @@ impl Ids {
             sb_play_container_button_click: opt!(p, P, S, "container_button_click"),
             sb_play_container_slot_state_changed: opt!(p, P, S, "container_slot_state_changed"),
             sb_play_set_beacon: opt!(p, P, S, "set_beacon"),
+            sb_play_rename_item: opt!(p, P, S, "rename_item"),
             sb_play_use_item: opt!(p, P, S, "use_item"),
             cb_play_set_health: opt!(p, P, C, "set_health"),
             cb_play_system_chat: opt!(p, P, C, "system_chat"),
