@@ -1457,6 +1457,20 @@ pub fn container_button_click_body(container_id: i32, button: i32) -> Vec<u8> {
 ///
 /// `newState` is **enabled**, matching `setSlotState(slotId, isEnabled)` — not
 /// the stored data value, which is its inverse (`isEnabled ? 0 : 1`).
+/// `ServerboundRenameItemPacket` (M93n) — one `writeUtf` string and nothing
+/// else.
+///
+/// The **empty string is meaningful**, not an absence: it is the request to
+/// clear the custom name, which `AnvilScreen.onNameChanged` produces whenever
+/// you type an unnamed item's own display name. So this has no `Option` and
+/// no "skip if empty" — a caller that suppressed the empty case would make an
+/// anvil unable to un-name anything.
+pub fn rename_item_body(name: &str) -> Vec<u8> {
+    let mut w = rewo_proto::writer::PacketWriter::default();
+    w.string(name);
+    w.buf
+}
+
 /// `ServerboundSetBeaconPacket` (M93l) — two `Optional<Holder<MobEffect>>`.
 ///
 /// ```java
@@ -4611,6 +4625,19 @@ mod award_stats_tests {
         // ...and a container id past 127 is a two-byte varint, so the total
         // grows by exactly one.
         assert_eq!(container_button_click_body(128, 2).len(), 3);
+    }
+
+    /// M93n — one length-prefixed string, and the EMPTY one is meaningful.
+    #[test]
+    fn the_rename_body_is_one_string_and_empty_is_a_real_request() {
+        // `writeUtf` is a VarInt byte length then the UTF-8 bytes.
+        assert_eq!(rename_item_body("Sting"), vec![5u8, b'S', b't', b'i', b'n', b'g']);
+        // The empty string is the request to CLEAR the name, so it is a
+        // one-byte body and not an omission. A sender that skipped it would
+        // make an anvil unable to un-name anything.
+        assert_eq!(rename_item_body(""), vec![0u8]);
+        // The length is in BYTES, not characters — two bytes for é.
+        assert_eq!(rename_item_body("é"), vec![2u8, 0xC3, 0xA9]);
     }
 
     /// M93l — two optionals, each a bool then a RAW registry id.

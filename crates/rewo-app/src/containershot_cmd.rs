@@ -425,6 +425,30 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
                     ids.sb_play_container_slot_state_changed
                 ),
             );
+            // M93n — the anvil's rename, the fourth distinct serverbound
+            // packet the container arc has needed. Four screens, four packets,
+            // and none of them a mode of another.
+            let four = [
+                ids.sb_play_container_button_click,
+                ids.sb_play_container_slot_state_changed,
+                ids.sb_play_set_beacon,
+                ids.sb_play_rename_item,
+            ];
+            let all_resolved = four.iter().all(|i| i.is_some());
+            let all_distinct = {
+                let mut v: Vec<i32> = four.iter().flatten().copied().collect();
+                v.sort_unstable();
+                let n = v.len();
+                v.dedup();
+                v.len() == n
+            };
+            c.record(
+                "d12.the_anvils_rename_resolves_and_the_four_screen_packets_are_distinct",
+                all_resolved && all_distinct,
+                format!(
+                    "button_click/slot_state/set_beacon/rename_item = {four:?} — four                      screens, four packets, and a name that failed to resolve would                      leave its sender returning Err while every body witness stayed green"
+                ),
+            );
         }
         // ...and the two jar-derived recipe tables must not be the same data.
         // Stone is stonecuttable and NOT smeltable; iron ore is the reverse.

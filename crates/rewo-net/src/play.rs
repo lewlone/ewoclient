@@ -3906,6 +3906,20 @@ impl PlaySession {
         self.send(p)
     }
 
+    /// `AnvilScreen.onNameChanged` (M93n) — `rename_item`.
+    ///
+    /// Sent on **every accepted keystroke**, not on a confirm: the anvil has
+    /// no confirm, and the server recomputes the result stack as you type,
+    /// which is what makes the cost label move while you edit.
+    pub fn rename_item(&mut self, name: &str) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_rename_item else {
+            return Err("rename_item unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        p.buf.extend_from_slice(&crate::rename_item_body(name));
+        self.send(p)
+    }
+
     /// `BeaconConfirmButton.onPress` (M93l) — `set_beacon`, then close.
     ///
     /// The close is the CALLER's: vanilla sends the packet and then calls
