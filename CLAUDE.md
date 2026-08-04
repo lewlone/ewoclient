@@ -4411,13 +4411,62 @@ plain-click path).
 anything else after an interrupted battery**, and split batteries so each stays
 inside the 10-minute tool cap.
 
-**Measured:** 1773 → **1865 tests**, 0 failures, seven crates reporting (world
-665, net 588, gpu 255, data 204, app 97, mesh 45, proto 11); `containershot`
-27 → **52**; `inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97,
+**Measured:** 1773 → **1879 tests**, 0 failures, seven crates reporting (world
+676, net 588, gpu 255, data 208, app 97, mesh 45, proto 11); `containershot`
+27 → **58**; `inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97,
 `mobshot` 246/246; `live --render-check` **22/22** validation ON, 0 errors
 (re-run at M93q, the first of the arc to touch a render path); demo PNG
-`2cc56b4acbfb92cb` byte-identical; **173 mutations across M93a–r, 170 killed,
+`2cc56b4acbfb92cb` byte-identical; **179 mutations across M93a–s, 176 killed,
 2 shown equivalent, 1 alive by construction (named)**.
+
+### M93s — the stonecutter, and an order that is a wire contract
+
+The plan called this widget "genuinely class-C (`update_recipes`)". **It is
+not** — the third such claim this arc to not survive the decompile, after M91's
+furnace recipes and M93's merchant quick-move. The pattern is worth carrying:
+*"blocked on a packet we don't decode" deserves a check against what the packet
+actually carries*, because for vanilla content the answer is usually in the jar.
+
+**The contents were never the hard part; the ORDER is, and it is part of the
+wire contract.** A click sends an *index*, and the server resolves it against
+`selectByInput` — a **filter**, which preserves the master list's order. Get the
+order wrong and every click cuts a different block than the one drawn, **with no
+error anywhere**: M64's alphabetisation trap somewhere nastier, because there
+the ids merely came out wrong while here the server acts on it. It reproduces
+because `RecipeManager.prepare` loads into a `SortedMap<Identifier, _>` — and
+**`Identifier.compareTo` is path first, then namespace**, not the combined
+`namespace:path`. The generator sorts by the file stem explicitly rather than
+the filename: those agree only because `.` (0x2E) is below every character
+`[a-z0-9_]` uses.
+
+**One cell has three y-origins** and vanilla means all three — `+2` for the icon
+/ highlight / tooltip, `+1` for the chrome and the cursor, **`+0` for the
+click**. The first witness called the top two pixel rows "clickable but not
+highlighted"; they are not. Both boxes are 18 tall on an 18 pitch, so they
+**tile** — the offset is a *shear*, not a gap — and those rows highlight the row
+**above**. A click lands one row *below* the lit cell at every boundary, and
+away from a boundary they agree, which is why it is easy to miss. The scrollbar
+likewise has three origins (grab `+9`, drag track `+14`, draw `+15`) and the
+drag divides by 39 while the draw multiplies by 41, so **vanilla's thumb
+overshoots its own track by two pixels**.
+
+**The fourth detector error of the arc, same shape as the other three.** `w2`
+proved "cell 6 draws no chrome" by comparing against the bare panel — and
+`recipe_selected.png`'s centre is `(81, 73, 58)`, *exactly* what
+`stonecutter.png` reads at that probe, so a cell 6 wrongly drawing a **selected**
+chrome would have passed. The control is now a twelve-recipe view, differing in
+one thing only. Reading the sprite PNGs' pixels *before* writing the witnesses
+is what made the rest sound. Also: `mouse_gui` is GUI pixels and the first cut
+converted the other way, so the hover never landed.
+
+**A surviving mutation was a real gap, not an equivalent mutant** — swapping
+`selected` and `hovered` changed nothing, because the orderings differ *only* on
+a cell that is both and no witness hovered the selected cell.
+
+1879 tests; `containershot` 52 → **58**; 6 mutations, 6 killed; demo PNG
+byte-identical. **Open:** no tooltip on a recipe button, and the datapack caveat
+now has teeth — a pack that *reorders* stonecutting recipes makes a click cut
+the wrong block.
 
 ### M93r — the self-calibrating-witness sweep, and what it did NOT find
 
