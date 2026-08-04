@@ -2354,6 +2354,369 @@ pub fn loom_can_scroll(display_patterns: bool, selectable: usize) -> bool {
     display_patterns && selectable > (LOOM_COLS * LOOM_ROWS) as usize
 }
 
+// ── The stonecutter's recipe grid (M93s) ──────────────────────────────────
+//
+// `StonecutterScreen`. Superficially the loom's grid, and it is not: the loom
+// tiles 14x14 cells whose hit box, chrome and preview share one origin, while
+// **the stonecutter gives the same cell three different y-origins** and vanilla
+// means all three.
+
+/// `minecraft:menu`'s `stonecutter` id.
+pub const STONECUTTER_MENU_PROTOCOL_ID: i32 = 24;
+
+/// `RECIPES_X` / `RECIPES_Y` — the grid's origin, relative to the panel.
+pub const CUT_GRID_X: i32 = 52;
+pub const CUT_GRID_Y: i32 = 14;
+/// `RECIPES_COLUMNS` / `RECIPES_ROWS`.
+pub const CUT_COLS: i32 = 4;
+pub const CUT_ROWS: i32 = 3;
+/// `RECIPES_IMAGE_SIZE_WIDTH` / `_HEIGHT`. The width is also the column pitch,
+/// so cells touch horizontally; the height is also the row pitch.
+pub const CUT_CELL_W: i32 = 16;
+pub const CUT_CELL_H: i32 = 18;
+/// `this.startIndex + 12`. Vanilla hard-codes the 12 at all four use sites
+/// rather than deriving it from `COLUMNS * ROWS`; the two agree.
+pub const CUT_PAGE: i32 = 12;
+
+/// `SCROLLER_WIDTH` / `SCROLLER_HEIGHT` / `SCROLLER_FULL_HEIGHT`.
+pub const CUT_SCROLLER_W: i32 = 12;
+pub const CUT_SCROLLER_H: i32 = 15;
+pub const CUT_SCROLLER_TRACK: i32 = 54;
+/// The scrollbar's x, `this.leftPos + 119`, shared by every one of its boxes.
+pub const CUT_SCROLLER_X: i32 = 119;
+
+/// Where cell `pos_index` of the visible page sits — **the ICON's origin**,
+/// `posY = y + row * 18 + 2`.
+///
+/// This is `extractRecipes`' `graphics.item(...)` position and, separately,
+/// the origin of the *highlight* and *tooltip* hit boxes. It is **not** where
+/// the button chrome is drawn and **not** where a click is tested. See
+/// [`cut_cell_sprite_origin`] and [`cut_cell_click_at`].
+pub fn cut_cell_origin(pos_index: i32) -> (i32, i32) {
+    (
+        CUT_GRID_X + (pos_index % CUT_COLS) * CUT_CELL_W,
+        CUT_GRID_Y + (pos_index / CUT_COLS) * CUT_CELL_H + 2,
+    )
+}
+
+/// Where the button chrome is blitted — `int textureY = posY - 1`.
+///
+/// One pixel **above** the icon. The sprite is 16x18 like everything else
+/// here, so the chrome and the icon are offset by a pixel by design.
+pub fn cut_cell_sprite_origin(pos_index: i32) -> (i32, i32) {
+    let (x, y) = cut_cell_origin(pos_index);
+    (x, y - 1)
+}
+
+/// Which absolute recipe index a **click** lands on.
+///
+/// ```java
+/// for (int index = this.startIndex; index < endIndex; index++) {
+///    int posIndex = index - this.startIndex;
+///    double xx = event.x() - (xo + posIndex % 4 * 16);
+///    double yy = event.y() - (yo + posIndex / 4 * 18);
+///    if (xx >= 0 && yy >= 0 && xx < 16 && yy < 18 && this.menu.clickMenuButton(…, index))
+/// ```
+///
+/// **No `+ 2`.** The click box starts at the row's own top, where the chrome
+/// starts at `+1` and the icon, highlight and tooltip at `+2`.
+///
+/// Both boxes are 18 tall on an 18 pitch, so they *tile* — the offset is a
+/// **shear, not a gap**, and the consequence is that at every row boundary the
+/// two disagree about which row the cursor is on:
+///
+/// | gui y | click | highlight |
+/// |---|---|---|
+/// | 14, 15 | cell 0 | *nothing* |
+/// | 32, 33 | cell 4 (row 1) | cell 0 (row 0) |
+/// | 50, 51 | cell 8 (row 2) | cell 4 (row 1) |
+/// | 68, 69 | *nothing* | cell 8 (row 2) |
+///
+/// So the grid's top two pixel rows click with no highlight, its bottom two
+/// highlight with no click, and in between a click lands one row **below** the
+/// cell that is lit. That reads like a bug and is vanilla, in three separate
+/// methods that each recompute the origin.
+///
+/// The loop also runs the full page without checking `index < size`, leaning
+/// on `clickMenuButton` to reject an out-of-range index; the size gate lives
+/// in [`cut_click_accepted`], not here.
+pub fn cut_cell_click_at(gui_x: f64, gui_y: f64, start_index: i32) -> Option<i32> {
+    for pos_index in 0..CUT_PAGE {
+        let ox = (CUT_GRID_X + (pos_index % CUT_COLS) * CUT_CELL_W) as f64;
+        let oy = (CUT_GRID_Y + (pos_index / CUT_COLS) * CUT_CELL_H) as f64;
+        let (xx, yy) = (gui_x - ox, gui_y - oy);
+        if xx >= 0.0 && yy >= 0.0 && xx < CUT_CELL_W as f64 && yy < CUT_CELL_H as f64 {
+            return Some(start_index + pos_index);
+        }
+    }
+    None
+}
+
+/// Which absolute index draws its **highlighted** chrome, from
+/// `extractButtons`' `ym >= posY && ym < posY + 18` — the icon's origin, two
+/// pixels below the click box's.
+pub fn cut_cell_highlight_at(gui_x: f64, gui_y: f64, start_index: i32, visible: usize) -> Option<i32> {
+    for pos_index in 0..CUT_PAGE {
+        let index = start_index + pos_index;
+        if index as usize >= visible {
+            break;
+        }
+        let (ox, oy) = cut_cell_origin(pos_index);
+        let (xx, yy) = (gui_x - ox as f64, gui_y - oy as f64);
+        if xx >= 0.0 && yy >= 0.0 && xx < CUT_CELL_W as f64 && yy < CUT_CELL_H as f64 {
+            return Some(index);
+        }
+    }
+    None
+}
+
+/// `StonecutterMenu.isValidRecipeIndex` — `buttonId >= 0 && buttonId < size`.
+///
+/// The screen's click loop does not bound the index; this does, server-side,
+/// which is why clicking an empty cell in a partial last row is inert rather
+/// than an error.
+pub fn cut_click_accepted(index: i32, visible: usize) -> bool {
+    usize::try_from(index).is_ok_and(|i| i < visible)
+}
+
+/// `StonecutterScreen.containerChanged`'s `displayRecipes`, which is
+/// `StonecutterMenu.hasInputItem()`:
+///
+/// ```java
+/// return this.inputSlot.hasItem() && !this.recipesForInput.isEmpty();
+/// ```
+///
+/// **Both halves.** An input with no recipes shows no grid at all rather than
+/// an empty one — so an unrecognised item in the slot is indistinguishable
+/// from an empty slot, on screen.
+pub fn cut_display_recipes(has_input: bool, visible: usize) -> bool {
+    has_input && visible > 0
+}
+
+/// `isScrollBarActive` — `displayRecipes && getNumberOfVisibleRecipes() > 12`.
+///
+/// Strictly greater, so exactly one full page does not scroll.
+pub fn cut_scroll_active(display_recipes: bool, visible: usize) -> bool {
+    display_recipes && visible > CUT_PAGE as usize
+}
+
+/// `getOffscreenRows` — `(size + 4 - 1) / 4 - 3`, integer division.
+///
+/// Negative for a short list, which vanilla never sees because every caller is
+/// behind [`cut_scroll_active`]; the arithmetic is kept verbatim rather than
+/// clamped, and the guard is the caller's.
+pub fn cut_offscreen_rows(visible: usize) -> i32 {
+    (visible as i32 + CUT_COLS - 1) / CUT_COLS - CUT_ROWS
+}
+
+/// `this.startIndex = (int)(this.scrollOffs * this.getOffscreenRows() + 0.5) * 4`
+///
+/// Rounds to a whole row **and then** multiplies, so the grid only ever scrolls
+/// by whole rows.
+pub fn cut_start_index(scroll_offs: f32, visible: usize) -> i32 {
+    (scroll_offs * cut_offscreen_rows(visible) as f32 + 0.5) as i32 * CUT_COLS
+}
+
+/// `mouseDragged`'s new `scrollOffs`.
+///
+/// ```java
+/// int yscr = this.topPos + 14;
+/// int yscr2 = yscr + 54;
+/// this.scrollOffs = ((float)event.y() - yscr - 7.5F) / (yscr2 - yscr - 15.0F);
+/// ```
+///
+/// The divisor is `54 - 15` = **39**, the track less the thumb — while the
+/// thumb is *drawn* with a travel of 41 (see [`cut_scroller_y`]). The two
+/// disagree in vanilla, and the drag maths uses a track origin of `+14` where
+/// the draw uses `+15` and the grab box `+9`: **three origins for one
+/// scrollbar**.
+pub fn cut_scroll_offs_from_drag(gui_y: f64) -> f32 {
+    let yscr = CUT_GRID_Y as f32;
+    let travel = (CUT_SCROLLER_TRACK - CUT_SCROLLER_H) as f32;
+    ((gui_y as f32 - yscr - 7.5) / travel).clamp(0.0, 1.0)
+}
+
+/// `mouseScrolled` — `scrollOffs - scrollY / offscreenRows`, clamped.
+///
+/// One wheel notch is one **row**, not one page and not a fixed fraction, so a
+/// long list scrolls proportionally slower per notch.
+pub fn cut_scroll_offs_from_wheel(scroll_offs: f32, scroll_y: f64, visible: usize) -> f32 {
+    let rows = cut_offscreen_rows(visible);
+    (scroll_offs - scroll_y as f32 / rows as f32).clamp(0.0, 1.0)
+}
+
+/// Where the scroller thumb is drawn — `yo + 15 + (int)(41.0F * scrollOffs)`.
+///
+/// **41, not 39.** At full scroll the 15-tall thumb sits at `+56`, so its
+/// bottom edge is `+71` against a track that the cursor test treats as ending
+/// at `+69`: vanilla overshoots by two pixels. Transcribed rather than
+/// reconciled — "fixing" it would be a deviation, and the 41 appears verbatim.
+pub fn cut_scroller_y(scroll_offs: f32) -> i32 {
+    CUT_GRID_Y + 1 + (41.0 * scroll_offs) as i32
+}
+
+/// Whether a press grabs the scrollbar — `mouseClicked`'s box, which starts at
+/// `topPos + 9`, **six pixels above where the thumb can be drawn** and five
+/// above the track the drag maths uses.
+pub fn cut_scroller_grabbed(gui_x: f64, gui_y: f64) -> bool {
+    let (x, y) = (CUT_SCROLLER_X as f64, (CUT_GRID_Y - 5) as f64);
+    gui_x >= x
+        && gui_x < x + CUT_SCROLLER_W as f64
+        && gui_y >= y
+        && gui_y < y + CUT_SCROLLER_TRACK as f64
+}
+
+#[cfg(test)]
+mod m93s_stonecutter_grid {
+    use super::*;
+
+    /// The three y-origins of one cell, which is the whole character of this
+    /// screen and the thing a reader is most likely to collapse into one.
+    ///
+    /// The first draft of this test asserted the top two pixel rows of a cell
+    /// "click but do not highlight". They do not: both boxes are 18 tall on an
+    /// 18 pitch, so they **tile**, and the offset is a shear rather than a gap
+    /// — those rows highlight the row ABOVE. Computing the boundaries settled
+    /// in one run what reasoning about a single cell had got backwards.
+    #[test]
+    fn a_cell_has_three_different_y_origins() {
+        // Row 1, column 0 — pos_index 4.
+        assert_eq!(cut_cell_origin(4), (52, 14 + 18 + 2), "icon/highlight/tooltip");
+        assert_eq!(cut_cell_sprite_origin(4), (52, 14 + 18 + 1), "chrome, 1px above");
+        // The click box is at the row's own top, two above the icon.
+        assert_eq!(cut_cell_click_at(52.0, (14 + 18) as f64, 0), Some(4));
+    }
+
+    /// …and the consequence: at every row boundary the click and the highlight
+    /// name **different rows**.
+    #[test]
+    fn the_click_and_the_highlight_disagree_by_two_pixels_at_every_row() {
+        let at = |y: i32| {
+            (
+                cut_cell_click_at(52.0, y as f64, 0),
+                cut_cell_highlight_at(52.0, y as f64, 0, 12),
+            )
+        };
+        // The grid's top: clickable, unlit.
+        assert_eq!(at(14), (Some(0), None));
+        assert_eq!(at(15), (Some(0), None));
+        // Every interior boundary: the click is one row BELOW the lit cell.
+        assert_eq!(at(32), (Some(4), Some(0)));
+        assert_eq!(at(33), (Some(4), Some(0)));
+        assert_eq!(at(50), (Some(8), Some(4)));
+        // The grid's bottom: lit, unclickable.
+        assert_eq!(at(68), (None, Some(8)));
+        assert_eq!(at(69), (None, Some(8)));
+        assert_eq!(at(70), (None, None), "and past both");
+        // Away from a boundary they agree, which is why this is easy to miss.
+        assert_eq!(at(20), (Some(0), Some(0)));
+        assert_eq!(at(40), (Some(4), Some(4)));
+    }
+
+    #[test]
+    fn the_cells_tile_with_no_gap_horizontally() {
+        assert_eq!(cut_cell_click_at(52.0, 14.0, 0), Some(0));
+        assert_eq!(cut_cell_click_at(67.9, 14.0, 0), Some(0), "the far edge of cell 0");
+        assert_eq!(cut_cell_click_at(68.0, 14.0, 0), Some(1), "and 68 is already cell 1");
+        assert_eq!(cut_cell_click_at(51.9, 14.0, 0), None);
+        assert_eq!(cut_cell_click_at(52.0, 13.9, 0), None);
+        // Four columns and three rows, then nothing.
+        assert_eq!(cut_cell_click_at(52.0 + 4.0 * 16.0, 14.0, 0), None);
+        assert_eq!(cut_cell_click_at(52.0, 14.0 + 3.0 * 18.0, 0), None);
+    }
+
+    #[test]
+    fn a_click_is_offset_by_the_scroll_but_a_cell_is_not() {
+        // `posIndex` is a position on the page; `index` is absolute.
+        assert_eq!(cut_cell_click_at(52.0, 14.0, 0), Some(0));
+        assert_eq!(cut_cell_click_at(52.0, 14.0, 4), Some(4));
+        assert_eq!(cut_cell_click_at(52.0, 14.0, 8), Some(8));
+        // The geometry does not move with the scroll — only the index does.
+        assert_eq!(cut_cell_origin(0), cut_cell_origin(0));
+    }
+
+    #[test]
+    fn the_server_bounds_the_index_that_the_screen_did_not() {
+        // The click loop runs the whole 12-cell page regardless of the list's
+        // length, so an empty cell in a partial last row DOES produce an index
+        // — and `isValidRecipeIndex` is what makes it inert.
+        assert_eq!(cut_cell_click_at(52.0 + 3.0 * 16.0, 14.0 + 2.0 * 18.0, 0), Some(11));
+        assert!(!cut_click_accepted(11, 5));
+        assert!(cut_click_accepted(4, 5));
+        assert!(!cut_click_accepted(5, 5), "the bound is strict");
+        assert!(!cut_click_accepted(-1, 5), "negative is rejected, not wrapped");
+    }
+
+    #[test]
+    fn an_input_with_no_recipes_shows_no_grid_rather_than_an_empty_one() {
+        // `hasInputItem` is BOTH halves, so an unrecognised item in the slot
+        // is indistinguishable on screen from an empty slot.
+        assert!(!cut_display_recipes(true, 0));
+        assert!(!cut_display_recipes(false, 6));
+        assert!(cut_display_recipes(true, 1));
+    }
+
+    #[test]
+    fn exactly_one_page_does_not_scroll() {
+        assert!(!cut_scroll_active(true, 12), "strictly greater");
+        assert!(cut_scroll_active(true, 13));
+        assert!(!cut_scroll_active(false, 40), "and the grid must be shown");
+    }
+
+    #[test]
+    fn the_grid_scrolls_by_whole_rows() {
+        // 13 recipes: ceil(13/4) = 4 rows, 3 visible, so 1 offscreen row.
+        assert_eq!(cut_offscreen_rows(13), 1);
+        assert_eq!(cut_start_index(0.0, 13), 0);
+        assert_eq!(cut_start_index(1.0, 13), 4, "one whole row, not one item");
+        // The +0.5 rounds, so the halfway drag has already committed a row.
+        assert_eq!(cut_start_index(0.49, 13), 0);
+        assert_eq!(cut_start_index(0.5, 13), 4);
+        // 40 recipes: 10 rows, 7 offscreen.
+        assert_eq!(cut_offscreen_rows(40), 7);
+        assert_eq!(cut_start_index(1.0, 40), 28);
+    }
+
+    /// The scrollbar's three origins, and the 41-vs-39 disagreement.
+    #[test]
+    fn the_scrollbar_has_three_origins_and_vanilla_overshoots_its_track() {
+        // Drag maths: `(y - 14 - 7.5) / 39`, so it reads 0 at y = 21.5 and 1
+        // at y = 60.5 — the thumb's CENTRE tracks the cursor, which is what
+        // the 7.5 (half of 15) is for.
+        assert_eq!(cut_scroll_offs_from_drag(21.5), 0.0);
+        assert_eq!(cut_scroll_offs_from_drag(60.5), 1.0);
+        assert!((cut_scroll_offs_from_drag(41.0) - 0.5).abs() < 1e-6, "the midpoint");
+        // Outside the track it clamps rather than extrapolating.
+        assert_eq!(cut_scroll_offs_from_drag(0.0), 0.0);
+        assert_eq!(cut_scroll_offs_from_drag(999.0), 1.0);
+        // Draw: top +15, travel 41 — so the thumb's bottom reaches +71…
+        assert_eq!(cut_scroller_y(0.0), 15);
+        assert_eq!(cut_scroller_y(1.0), 15 + 41);
+        assert_eq!(cut_scroller_y(1.0) + CUT_SCROLLER_H, 71);
+        // …against a 54-tall track ending at +69. Two pixels of overshoot,
+        // which is vanilla and not a transcription slip.
+        assert_eq!(CUT_GRID_Y + 1 + CUT_SCROLLER_TRACK, 69);
+        // Grab box: top +9, five above the drag track and six above the draw.
+        assert!(cut_scroller_grabbed(119.0, 9.0));
+        assert!(!cut_scroller_grabbed(119.0, 8.9));
+        assert!(cut_scroller_grabbed(130.9, 62.9));
+        assert!(!cut_scroller_grabbed(131.0, 20.0), "12 wide");
+        assert!(!cut_scroller_grabbed(119.0, 63.0), "54 tall from +9");
+    }
+
+    #[test]
+    fn one_wheel_notch_is_one_row() {
+        // 40 recipes, 7 offscreen rows: a notch moves 1/7 of the range, which
+        // `cut_start_index` then rounds to exactly one row.
+        let o = cut_scroll_offs_from_wheel(0.0, -1.0, 40);
+        assert!((o - 1.0 / 7.0).abs() < 1e-6, "{o}");
+        assert_eq!(cut_start_index(o, 40), 4);
+        // Down at the top and up at the bottom are both clamped, not wrapped.
+        assert_eq!(cut_scroll_offs_from_wheel(0.0, 1.0, 40), 0.0);
+        assert_eq!(cut_scroll_offs_from_wheel(1.0, -1.0, 40), 1.0);
+    }
+}
+
 #[cfg(test)]
 mod m93o_loom_grid {
     use super::*;
