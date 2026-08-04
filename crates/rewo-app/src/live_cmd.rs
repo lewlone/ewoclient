@@ -10967,6 +10967,31 @@ fn apply_screen(
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
 ) {
+    // M93q — the loom's grid, resolved here because it keys off the pattern
+    // slot's item NAME and only this side holds the registry.
+    let loom = session.menus.open().and_then(|m| {
+        if m.layout.protocol_id != rewo_world::menu_screen::LOOM_MENU_PROTOCOL_ID {
+            return None;
+        }
+        // Slots: banner 0, dye 1, pattern 2.
+        let name = |slot: usize| m.menu.menu_slot(slot).and_then(|s| items.name(s.item_id));
+        let patterns = rewo_data::loom_pattern_table::selectable_patterns(name(2));
+        Some(LoomView {
+            patterns,
+            // The scrollbar's drag is not wired; see `LoomView::start_row`.
+            start_row: 0,
+            selected: m.loom_selected_pattern(),
+            display: rewo_world::menu_screen::loom_display_patterns(
+                m.menu.menu_slot(0).is_some(),
+                m.menu.menu_slot(1).is_some(),
+                // `hasMaxPatterns` needs the banner's own layer count, which
+                // lives in a component Rewo does not read — so the grid stays
+                // visible on a full banner where vanilla hides it.
+                false,
+                patterns.len(),
+            ),
+        })
+    });
     // Which menu is on screen: the open container if there is one, else the
     // player's own. Chosen ONCE and threaded everywhere, because the panel,
     // the icons, the hover and the durability bars are all measured from the
@@ -10995,6 +11020,7 @@ fn apply_screen(
             creative: session.abilities.instabuild,
             beacon_effects,
             beacon_override,
+            loom,
         },
         Some(rewo_gpu::container::screen_to_gui_for(
             mouse,
@@ -11022,6 +11048,7 @@ fn apply_screen(
                 creative: session.abilities.instabuild,
                 beacon_effects,
                 beacon_override,
+                loom,
             },
             Some(rewo_gpu::container::screen_to_gui_for(
                 mouse,
@@ -11200,6 +11227,7 @@ fn container_panel(
             // own scale.
             sw: q.w as f32,
             sh: q.h as f32,
+            tint: [1.0; 4],
         })
         .collect();
     Some(rewo_gpu::container::ContainerPanel {
@@ -11224,7 +11252,29 @@ fn to_blit(b: rewo_world::menu_screen::ProgressBlit) -> rewo_gpu::container::Pan
         // before the loom preview used.
         sw: b.source_size().0 as f32,
         sh: b.source_size().1 as f32,
+        // M93q — a sprite blit is untinted; `to_fill` is the tinted form.
+        tint: [1.0; 4],
     }
+}
+
+/// A solid-colour overlay quad (M93q) — the loom's grey banner backing, and
+/// anything else vanilla draws with `GuiGraphics.fill`.
+///
+/// `rgb` is an **sRGB** 0xRRGGBB, which is how vanilla's colour constants are
+/// written; the shader linearises it, the same discipline every Rewo UI pass
+/// follows.
+fn to_fill(
+    b: rewo_world::menu_screen::ProgressBlit,
+    rgb: u32,
+) -> (usize, rewo_gpu::container::PanelBlit) {
+    let c = |shift: u32| ((rgb >> shift) & 0xFF) as f32 / 255.0;
+    (
+        rewo_gpu::container::FILL_SPRITE,
+        rewo_gpu::container::PanelBlit {
+            tint: [c(16), c(8), c(0), 1.0],
+            ..to_blit(b)
+        },
+    )
 }
 
 /// The open menu's enchanting rows, or `None` when it is not that menu.
@@ -11382,6 +11432,29 @@ fn beacon_press(
 /// `minecraft:menu`'s `beacon` id.
 const BEACON_MENU_PROTOCOL_ID: i32 = 9;
 
+/// What the loom's pattern grid needs, resolved by the caller (M93q).
+///
+/// Carried rather than derived in the overlay builder because the pattern list
+/// keys off the pattern slot's item NAME, and only the caller holds the
+/// registry that turns an id into one — the same reason `ItemProps` is an
+/// input to the click arithmetic.
+#[derive(Debug, Clone, Copy)]
+pub struct LoomView {
+    /// `getSelectablePatterns()`.
+    pub patterns: &'static [&'static str],
+    /// `LoomScreen.startRow` — the first visible row.
+    ///
+    /// **Always 0 today**: the scrollbar's drag is not wired, so a loom with
+    /// more than 16 patterns shows the first sixteen and no more. The field
+    /// exists because the index arithmetic needs it and would otherwise have
+    /// a 0 baked in where a variable belongs.
+    pub start_row: i32,
+    /// `getSelectedBannerPatternIndex()`, from data slot 0. `-1` for none.
+    pub selected: i32,
+    /// `displayPatterns` — the grid is hidden entirely when false.
+    pub display: bool,
+}
+
 /// The beacon screen's local choice and the watermarks it was seeded at.
 #[derive(Debug, Clone, Copy)]
 pub struct BeaconLocal {
@@ -11526,6 +11599,62 @@ fn menu_overlays(
             }
             out.push((base + 1, to_blit(arrow)));
         }
+        // loom (M93q): for each visible cell, the button chrome then the
+        // banner preview — a grey fill under an untinted pattern.
+        rewo_world::menu_screen::LOOM_MENU_PROTOCOL_ID => {
+            let Some(l) = player.loom.filter(|l| l.display) else {
+                return out;
+            };
+            for row in 0..rewo_world::menu_screen::LOOM_ROWS {
+                for col in 0..rewo_world::menu_screen::LOOM_COLS {
+                    let index = (row + l.start_row) * rewo_world::menu_screen::LOOM_COLS + col;
+                    // `break label82` — the grid stops at the end of the list
+                    // rather than drawing empty cells.
+                    let Some(pattern) = usize::try_from(index)
+                        .ok()
+                        .and_then(|i| l.patterns.get(i))
+                    else {
+                        break;
+                    };
+                    let (cx, cy) = rewo_world::menu_screen::loom_cell_origin(row, col);
+                    let cell = rewo_world::menu_screen::ProgressBlit {
+                        dx: cx,
+                        dy: cy,
+                        w: rewo_world::menu_screen::LOOM_CELL,
+                        h: rewo_world::menu_screen::LOOM_CELL,
+                        sx: 0,
+                        sy: 0,
+                        src: None,
+                    };
+                    let hovered = mouse_gui.is_some_and(|(x, y)| {
+                        rewo_world::menu_screen::loom_cell_at(x, y, l.start_row) == Some(index)
+                    });
+                    out.push((
+                        a::LOOM_PATTERN_CHROME
+                            + if index == l.selected {
+                                0
+                            } else if hovered {
+                                1
+                            } else {
+                                2
+                            },
+                        to_blit(cell),
+                    ));
+                    // The grey backing FIRST, then the pattern over it. The
+                    // order is the whole reason fills share the sprites' list.
+                    out.push(to_fill(
+                        rewo_world::menu_screen::loom_preview_backing(cx, cy),
+                        rewo_world::menu_screen::LOOM_PREVIEW_BACKING,
+                    ));
+                    if let Some(sprite) = a::banner_pattern_overlay(pattern) {
+                        out.push((
+                            sprite,
+                            to_blit(rewo_world::menu_screen::loom_pattern_preview(cx, cy)),
+                        ));
+                    }
+                }
+            }
+        }
         // crafter_3x3 (M93j): the redstone arrow, then one cover per disabled
         // grid slot. Order matters only in that the covers must not be hidden
         // by the arrow, and they do not overlap it.
@@ -11653,6 +11782,8 @@ pub(crate) struct EnchantPlayer {
     /// The beacon's six effect ids (M92c). Carried here rather than passed
     /// separately because both screens' extra inputs travel the same seam.
     pub beacon_effects: BeaconEffectIds,
+    /// The loom's pattern grid (M93q), when a loom is open.
+    pub loom: Option<LoomView>,
     /// The beacon SCREEN's own choice (M93m), when a screen is driving.
     ///
     /// `None` re-reads the menu's data slots, which is right for a gate with
@@ -11688,6 +11819,18 @@ pub(crate) fn container_panel_for_open_menu(
     // the gate already drives rather than a second one, so `containershot`
     // cannot exercise a path the live client does not take (M45).
     beacon_override: Option<rewo_world::menu_screen::BeaconChoice>,
+    // M93q — the loom's grid. Carried for the same reason as the beacon's
+    // choice, and needed for the same reason: with it hardcoded `None` the
+    // gate could not reach `menu_overlays`' loom arm at all, so M93q's fill
+    // was witnessed as a *primitive* (o19/o20) and never as a *use* — delete
+    // the whole arm and both stayed green. That is M92's finding one level
+    // over: a gate that cannot reach a call site does not test it.
+    //
+    // The view is SUPPLIED, not resolved, because resolving it needs an item
+    // registry this gate has not got. What that leaves untested is the
+    // resolution in `live_frame`, which `d7`–`d9` grade item-side and
+    // `loom_pattern_table`'s own tests grade set-side.
+    loom: Option<LoomView>,
 ) -> Option<rewo_gpu::container::ContainerPanel> {
     container_panel(
         open.layout,
@@ -11697,6 +11840,7 @@ pub(crate) fn container_panel_for_open_menu(
             creative,
             beacon_effects,
             beacon_override,
+            loom,
         },
         mouse_gui,
     )

@@ -726,7 +726,7 @@ fn overlays(
      -> Result<Vec<u8>, String> {
         let open = m.open().expect("a menu must be open");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, false, effects, None, None,
+            open, 30, false, effects, None, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -821,7 +821,7 @@ fn overlays(
         // answer: false gives three UNAFFORDABLE rows, true three available
         // ones — same costs, different backgrounds.
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, creative, effects, mouse, None,
+            open, 30, creative, effects, mouse, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -903,7 +903,7 @@ fn overlays(
         let m = menu(9, &[(0, levels), (1, primary), (2, 0)]);
         let open = m.open().unwrap();
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, false, effects, None, None,
+            open, 30, false, effects, None, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -961,7 +961,7 @@ fn overlays(
         let m = menu(7, data);
         let open = m.open().expect("a menu must be open");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, false, effects, None, None,
+            open, 30, false, effects, None, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -1372,7 +1372,7 @@ fn overlays(
             let m = menu(9, &[(0, 4)]);
             let open = m.open().expect("open");
             wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-                open, 30, false, effects, None, over,
+                open, 30, false, effects, None, over, None,
             ));
             wr.set_container(true, None);
             shot(gpu, off, wr)
@@ -1398,6 +1398,164 @@ fn overlays(
         );
     }
 
+    // o19/o20 — M93q's solid-colour overlay quad, which the loom's grey banner
+    // backing needs and the overlay path had no way to draw: `overlays` is
+    // `(sprite, PanelBlit)`, and every sprite index samples the atlas.
+    //
+    // Graded here as a PRIMITIVE, with a hand-made overlay list. o21 below is
+    // the matching USE, and the pair is deliberate: with only these two, the
+    // whole loom arm could be deleted and both would still pass.
+    {
+        let brewing2 = rewo_world::menu_layout::layout_of(11).unwrap();
+        let at_fill = probe(brewing2);
+        // A cell of the brewing stand's flat panel, well clear of its slots.
+        let cell = |rgb: u32| rewo_gpu::container::PanelBlit {
+            dx: 60.0,
+            dy: 20.0,
+            w: 8.0,
+            h: 8.0,
+            sx: 0.0,
+            sy: 0.0,
+            sw: 0.0,
+            sh: 0.0,
+            tint: [
+                ((rgb >> 16) & 0xFF) as f32 / 255.0,
+                ((rgb >> 8) & 0xFF) as f32 / 255.0,
+                (rgb & 0xFF) as f32 / 255.0,
+                1.0,
+            ],
+        };
+        let mut fill_frame = |overlays: Vec<(usize, rewo_gpu::container::PanelBlit)>,
+                              gpu: &mut Gpu,
+                              off: &mut Offscreen,
+                              wr: &mut WorldRenderer|
+         -> Result<[u8; 3], String> {
+            let m = menu(11, &[]);
+            let open = m.open().expect("open");
+            let mut panel = crate::live_cmd::container_panel_for_open_menu(
+                open, 30, false, effects, None, None, None,
+            )
+            .ok_or("containershot: no brewing panel")?;
+            panel.overlays = overlays;
+            wr.set_container_panel(Some(panel));
+            wr.set_container(true, None);
+            let img = shot(gpu, off, wr)?;
+            // The middle of the 8x8 quad.
+            Ok(at_fill(&img, 64, 24))
+        };
+        let bare = fill_frame(vec![], gpu, off, wr)?;
+        let red = fill_frame(
+            vec![(rewo_gpu::container::FILL_SPRITE, cell(0xFF0000))],
+            gpu,
+            off,
+            wr,
+        )?;
+        let green = fill_frame(
+            vec![(rewo_gpu::container::FILL_SPRITE, cell(0x00FF00))],
+            gpu,
+            off,
+            wr,
+        )?;
+        c.record(
+            "o19.a_fill_paints_its_own_colour_with_no_texture",
+            red == [255, 0, 0] && bare != red,
+            format!(
+                "the centre of an 8x8 red fill reads {red:?} against {bare:?} with no fill — \
+                 a textured quad here would sample the atlas at (0,0) instead"
+            ),
+        );
+        c.record(
+            "o20.the_fills_colour_comes_from_its_own_tint",
+            green == [0, 255, 0] && green != red,
+            format!("the same quad in green reads {green:?} where red read {red:?}"),
+        );
+    }
+
+    // o21 — and the loom's arm actually EMITS one, under its pattern.
+    //
+    // The pair o19/o20 grades the primitive and this grades the use, because
+    // `container_panel_for_open_menu` hardcoded `loom: None` until M93q and so
+    // could not reach `menu_overlays`' loom arm at all — the shape M92 named
+    // one level over: a gate that cannot reach a call site does not test it.
+    //
+    // The `LoomView` is SUPPLIED (resolving one needs an item registry this
+    // gate has not got); `d7`–`d9` grade the item classification that feeds it
+    // and `loom_pattern_table`'s own tests grade the sets.
+    {
+        let loom_layout = rewo_world::menu_layout::layout_of(18).unwrap();
+        let at_loom = probe(loom_layout);
+        // A solid quarter-field, so the pattern covers real area rather than a
+        // hairline. Taken from the data, not spelled, so a retagged pack moves
+        // the fixture with the table.
+        let one: &'static [&'static str] = &rewo_data::loom_pattern_table::NO_ITEM_REQUIRED[..1];
+        let pattern = one[0];
+        let mut loom_frame = |display: bool,
+                              gpu: &mut Gpu,
+                              off: &mut Offscreen,
+                              wr: &mut WorldRenderer|
+         -> Result<Vec<u8>, String> {
+            let m = menu(18, &[]);
+            let open = m.open().expect("open");
+            wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
+                open,
+                30,
+                false,
+                effects,
+                None,
+                None,
+                Some(crate::live_cmd::LoomView {
+                    display,
+                    selected: 0,
+                    start_row: 0,
+                    patterns: one,
+                }),
+            ));
+            wr.set_container(true, None);
+            shot(gpu, off, wr)
+        };
+        let off_frame = loom_frame(false, gpu, off, wr)?;
+        let on_frame = loom_frame(true, gpu, off, wr)?;
+        // The preview rect of cell (0,0): 5x10 at (+4, +2) inside a 14 px cell
+        // whose origin is the grid's.
+        let (cx, cy) = rewo_world::menu_screen::loom_cell_origin(0, 0);
+        let pv = rewo_world::menu_screen::loom_pattern_preview(cx, cy);
+        let backing = rewo_world::menu_screen::LOOM_PREVIEW_BACKING;
+        let grey = [
+            ((backing >> 16) & 0xFF) as u8,
+            ((backing >> 8) & 0xFF) as u8,
+            (backing & 0xFF) as u8,
+        ];
+        let px = |img: &Vec<u8>| -> Vec<[u8; 3]> {
+            (0..pv.h)
+                .flat_map(|dy| (0..pv.w).map(move |dx| (dx, dy)))
+                .map(|(dx, dy)| at_loom(img, pv.dx + dx, pv.dy + dy))
+                .collect()
+        };
+        let on = px(&on_frame);
+        let none = px(&off_frame);
+        // The control first: without the grid, nothing here is the backing —
+        // so the rect being probed really is the one the loom paints, and o21
+        // is not reading some part of the sheet that was grey anyway.
+        let control = !none.iter().any(|p| *p == grey);
+        // The subject: the pattern sits OVER the fill. With the two pushes
+        // swapped every pixel here would be exactly the backing.
+        let lighter = on
+            .iter()
+            .filter(|p| p[0] > grey[0] && p[1] > grey[1] && p[2] > grey[2])
+            .count();
+        let greys = on.iter().filter(|p| **p == grey).count();
+        c.record(
+            "o21.the_looms_preview_paints_its_pattern_OVER_its_grey_backing",
+            control && lighter > 0 && greys > 0,
+            format!(
+                "of {} preview pixels {lighter} are lighter than the {grey:?} backing and \
+                 {greys} are exactly it, and with the grid hidden none of them is grey \
+                 ({control}) — swap the two pushes and the pattern vanishes under the fill",
+                on.len()
+            ),
+        );
+    }
+
     if let Some(d) = &args.out_dir {
         let _ = std::fs::write(d.join("containershot-overlays.txt"), "see the PNGs");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
@@ -1405,6 +1563,7 @@ fn overlays(
             30,
             false,
             effects,
+            None,
             None,
             None,
         ));

@@ -601,6 +601,9 @@ pub struct PanelBlit {
     /// Source origin in sheet pixels.
     pub sx: f32,
     pub sy: f32,
+    /// The colour this quad is multiplied by (M93q) — white for an ordinary
+    /// sprite, the fill colour for a [`FILL_SPRITE`] quad.
+    pub tint: [f32; 4],
     /// Source SIZE in sheet pixels (M93p).
     ///
     /// Equal to `(w, h)` for every blit until the loom's pattern preview,
@@ -635,6 +638,19 @@ pub struct ContainerPanel {
     /// of it*, so a set rather than a list would lose the numeral.
     pub overlays: Vec<(usize, PanelBlit)>,
 }
+
+/// The overlay "sprite index" that means **no texture**: a solid fill of the
+/// blit's own [`PanelBlit::tint`] (M93q).
+///
+/// A sentinel rather than an `Option` on the tuple, because the alternative is
+/// touching every push site to wrap a value that is `Some` in all but one of
+/// them. The emitter is the only reader, and it checks this before indexing —
+/// so an out-of-range sprite cannot reach `overlay_rect_px`.
+///
+/// Fills live in the SAME ordered list as the sprites, which is the whole
+/// point: the loom's grey banner backing must sit under its pattern and over
+/// its button chrome, and a separate fill pass could not interleave them.
+pub const FILL_SPRITE: usize = usize::MAX;
 
 /// `itemBar`'s background fill, `-16777216` — opaque black.
 const BAR_BED: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -960,7 +976,13 @@ impl ContainerPass {
                             // wasted draw, not a visible one.
                             continue;
                         }
-                        let r = self.overlay_rect_px(sprite, b.sx, b.sy, b.sw, b.sh);
+                        // A fill samples nothing: the shader takes a negative
+                        // `u` as "untextured" and uses the vertex colour alone.
+                        let r = if sprite == FILL_SPRITE {
+                            Rect { u0: -1.0, v0: -1.0, u1: -1.0, v1: -1.0 }
+                        } else {
+                            self.overlay_rect_px(sprite, b.sx, b.sy, b.sw, b.sh)
+                        };
                         quad(
                             &mut v,
                             left + b.dx * scale,
@@ -968,8 +990,8 @@ impl ContainerPass {
                             b.w * scale,
                             b.h * scale,
                             r,
-                            WHITE,
-                            WHITE,
+                            b.tint,
+                            b.tint,
                         );
                     }
                 }

@@ -20,6 +20,15 @@ vec3 srgb_to_linear(vec3 c) {
 }
 
 void main() {
-    vec4 t = texture(u_atlas, v_uv);
+    // A NEGATIVE u means untextured: the quad is a solid fill of its vertex
+    // colour (M93q). Vanilla draws these through a separate pipeline —
+    // `GuiGraphics.fill` has no sampler at all — and modelling it as a mode
+    // here keeps fills ORDERED with the sprites around them, which matters
+    // because the loom's grey backing must sit under its pattern and above the
+    // button chrome. A second pass could not interleave them.
+    //
+    // The sentinel is safe because every real UV is a normalised atlas
+    // coordinate in [0, 1]: no legitimate blit can produce a negative one.
+    vec4 t = v_uv.x < 0.0 ? vec4(1.0) : texture(u_atlas, v_uv);
     out_color = vec4(t.rgb * srgb_to_linear(v_color.rgb), t.a * v_color.a);
 }

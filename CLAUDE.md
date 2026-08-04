@@ -4411,10 +4411,55 @@ plain-click path).
 anything else after an interrupted battery**, and split batteries so each stays
 inside the 10-minute tool cap.
 
-**Measured:** 1773 → **1817 tests**, 0 failures, seven crates reporting;
-`containershot` 27 → **36**; `inventoryshot` 152, `itemshot` 75, `handshot` 34,
-`swingshot` 97, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical;
-**163 mutations across M93a–p, 160 killed, 2 shown equivalent, 1 alive by construction (named)**.
+**Measured:** 1773 → **1861 tests**, 0 failures, seven crates reporting (world
+665, net 588, gpu 252, data 204, app 96, mesh 45, proto 11); `containershot`
+27 → **52**; `inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97,
+`mobshot` 246/246; `live --render-check` **22/22** validation ON, 0 errors
+(re-run at M93q, the first of the arc to touch a render path); demo PNG
+`2cc56b4acbfb92cb` byte-identical; **168 mutations across M93a–q, 165 killed,
+2 shown equivalent, 1 alive by construction (named)**.
+
+### M93q — the overlay colour quad, and two ways a pixel gate goes blind
+
+The loom's preview is `fill` then `blit`, and the overlay path could not draw
+the first half: `overlays` is `(sprite, PanelBlit)` and every sprite index
+samples the atlas. M93q adds an untextured mode (a negative-`u` sentinel in the
+fragment shader, a per-quad `tint`, a `FILL_SPRITE` index), the 43
+banner-pattern textures, and the loom arm — closing the loom **end to end**.
+
+**The milestone is the two blind spots, not the quad.**
+
+**A gate that cannot reach a call site does not test it.** `o19`/`o20` grade the
+fill primitive from a hand-made overlay list and pass whether or not any menu
+emits one, because `container_panel_for_open_menu` hardcoded `loom: None` —
+**delete the whole loom arm and both stay green**. This is M92's finding one
+level over: M92's case was a gate *supplying* an input production derives; this
+is a gate *unable to enter* the branch. The wrapper now carries the view (the
+M93m precedent), and `o21` drives the real arm with a control frame and a
+two-sided test that catches the fill/pattern order.
+
+**And a witness can be sound on one property of the same draw and vacuous on
+another.** `o21` reads `LOOM_PREVIEW_BACKING` to compute its expectation, so a
+wrong constant moves render and expectation together — sound for the **order**,
+self-calibrating for the **value**. The value was wrong.
+`DyeColor.GRAY.getTextureDiffuseColor()` is the **third** constructor argument,
+`4673362` = `0x474F52`, faintly blue; M93p shipped `0x3F3F3F`, which is none of
+GRAY's three colours — and the trap is that both neighbouring arguments
+(`fireworkColor` `0x434343`, `textColor` `0x808080`) are **more neutral than the
+right answer**, so a plausible flat grey is exactly what a guess produces.
+Mutating it back demonstrates the asymmetry: `containershot` — 52 witnesses,
+validation on, real pixels — **survives**, and three lines of unit test stating
+the decompile's literal **kill it**. **Pin a number against its source, not
+against itself.** Worth a sweep: any `*shot` witness computing an expectation
+from a `pub const` the renderer also reads covers everything about that draw
+except the constant.
+
+**Recorded, not fixed:** `--render-check` never opens a loom, so the fill's
+windowed call site is unexercised. The blocker is not injection —
+`loom_display_patterns` is false without a banner **and** a dye in the slots, so
+an injected empty loom would witness nothing; staging it is a harness of its
+own. The loom's **scrollbar drag** is also unwired, so only the first 16
+patterns are reachable.
 
 ### M93l — the beacon's press state machine and `set_beacon`
 

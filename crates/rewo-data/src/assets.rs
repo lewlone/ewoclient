@@ -1482,7 +1482,78 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     "gui/sprites/container/crafter/disabled_slot.png",
     "gui/sprites/container/crafter/unpowered_redstone.png",
     "gui/sprites/container/crafter/powered_redstone.png",
+    // 30..=32 continued — the loom's three pattern-button chromes (M93q), in
+    // the order `LoomScreen` tests for them: selected, highlighted, plain.
+    "gui/sprites/container/loom/pattern_selected.png",
+    "gui/sprites/container/loom/pattern_highlighted.png",
+    "gui/sprites/container/loom/pattern.png",
+    // then the banner patterns (M93q), for the loom's pattern preview.
+    //
+    // ENTITY textures, not gui sprites: `entity/banner/<stem>.png`, the same
+    // non-`gui/sprites/` root the beacon's mob-effect icons use. They are
+    // already baked for the block-entity path (M28c); this is a second copy in
+    // the container atlas, because the two passes do not share one.
+    "entity/banner/base.png",
+    "entity/banner/border.png",
+    "entity/banner/bricks.png",
+    "entity/banner/circle.png",
+    "entity/banner/creeper.png",
+    "entity/banner/cross.png",
+    "entity/banner/curly_border.png",
+    "entity/banner/diagonal_left.png",
+    "entity/banner/diagonal_right.png",
+    "entity/banner/diagonal_up_left.png",
+    "entity/banner/diagonal_up_right.png",
+    "entity/banner/flow.png",
+    "entity/banner/flower.png",
+    "entity/banner/globe.png",
+    "entity/banner/gradient.png",
+    "entity/banner/gradient_up.png",
+    "entity/banner/guster.png",
+    "entity/banner/half_horizontal.png",
+    "entity/banner/half_horizontal_bottom.png",
+    "entity/banner/half_vertical.png",
+    "entity/banner/half_vertical_right.png",
+    "entity/banner/mojang.png",
+    "entity/banner/piglin.png",
+    "entity/banner/rhombus.png",
+    "entity/banner/skull.png",
+    "entity/banner/small_stripes.png",
+    "entity/banner/square_bottom_left.png",
+    "entity/banner/square_bottom_right.png",
+    "entity/banner/square_top_left.png",
+    "entity/banner/square_top_right.png",
+    "entity/banner/straight_cross.png",
+    "entity/banner/stripe_bottom.png",
+    "entity/banner/stripe_center.png",
+    "entity/banner/stripe_downleft.png",
+    "entity/banner/stripe_downright.png",
+    "entity/banner/stripe_left.png",
+    "entity/banner/stripe_middle.png",
+    "entity/banner/stripe_right.png",
+    "entity/banner/stripe_top.png",
+    "entity/banner/triangle_bottom.png",
+    "entity/banner/triangle_top.png",
+    "entity/banner/triangles_bottom.png",
+    "entity/banner/triangles_top.png",
 ];
+
+/// The loom's three pattern-button chromes, in `LoomScreen`'s test order:
+/// selected, highlighted, plain (M93q).
+pub const LOOM_PATTERN_CHROME: usize = 33;
+
+/// Where the banner patterns start in [`MENU_OVERLAY_SPRITES`] (M93q).
+pub const BANNER_PATTERN_OVERLAY: usize = 36;
+
+/// A pattern id's overlay index, or `None` for one this build has no texture
+/// for — which draws no preview rather than the WRONG preview.
+pub fn banner_pattern_overlay(pattern_id: &str) -> Option<usize> {
+    let stem = pattern_id.strip_prefix("minecraft:").unwrap_or(pattern_id);
+    crate::block_entity_models::BANNER_PATTERNS
+        .iter()
+        .position(|s| *s == stem)
+        .map(|i| BANNER_PATTERN_OVERLAY + i)
+}
 
 /// The crafter's disabled-slot cover in [`MENU_OVERLAY_SPRITES`] (M93j).
 pub const CRAFTER_DISABLED_SLOT: usize = 30;
