@@ -47,8 +47,8 @@ quick-move, and the first bespoke widget — and **M93 three of the eight
 single-input quick-moves — merchant, anvil, beacon, stonecutter, grindstone,
 cartography table and loom, **seven of eight**, leaving only smithing, which is
 genuinely blocked on class C**. Current measurement,
-taken 2026-08-04: **1848 tests, 0 failures** (world 656, net 588, gpu 252,
-data 200, app 96, mesh 45, proto 11 — all seven confirmed reporting);
+taken 2026-08-04: **1857 tests, 0 failures** (world 661, net 588, gpu 252,
+data 204, app 96, mesh 45, proto 11 — all seven confirmed reporting);
 `containershot` **49/49**, `inventoryshot` 152/152, `itemshot` 75/75,
 `handshot` 34/34, `mobshot` 246/246, `live --render-check` 22/22 with
 validation ON and 0 validation errors (M92's measurement — **not re-run for
@@ -196,7 +196,7 @@ So, in ratio order:
    | Screen | What it actually needs |
    |---|---|
    | **crafter** | ✅ **complete end to end** (M93h–M93k): model, packet, click routing, render (cover, arrow, item suppression) and the `gui.togglable_slot` hint. Only `requestCursor(POINTING_HAND)` is left, and Rewo has **no cursor-shape concept at all** — new winit plumbing, not a transcription |
-   | **loom** | **not** a button list. `getSelectablePatterns` is `BannerPatternTags.NO_ITEM_REQUIRED` (a **`banner_pattern`** tag — `expand_tag` hardcodes `tags/item`) when the pattern slot is empty, and the stack's `PROVIDES_BANNER_PATTERNS` **HolderSet value** otherwise — which Rewo walks and discards, and whose ids need the `minecraft:banner_pattern` **registry** that `parse_registry_data` does not capture |
+   | **loom** | ✅ pattern list, grid geometry, hit test, scroll and accept-gate shipped (M93o) — **two of the three blockers above were wrong**: the component is on the item's *prototype* (never on the wire) and its value is a *tag name*, so no registry is involved. Left: the pattern **preview** inside each button, a render job on M28c's banner sprites |
    | **beacon** | ✅ **complete** (M93l + M93m): press, `set_beacon`, click wiring and screen-owned state. The confirm closes the **client's** screen only — Rewo resolves no *serverbound* `container_close`, a gap that predates this and affects **every** screen close |
    | **anvil** | ✅ rename semantics + `rename_item` shipped (M93n). Left: **`EditBox`** — character input, caret, focus. Rewo's key handler reads `PhysicalKey`/`KeyCode` and never `KeyEvent.text`, so **nothing can type**: a subsystem it has never had, shared with the class-C chat/command-input cluster |
    | merchant, stonecutter | genuinely class-C (`merchant_offers`, `update_recipes`) |
