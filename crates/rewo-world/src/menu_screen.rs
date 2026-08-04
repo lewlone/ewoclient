@@ -2168,3 +2168,155 @@ mod m93l_beacon_press {
         assert_eq!(beacon_press(up, next), BeaconPress::None);
     }
 }
+
+// -- LoomScreen's pattern grid (M93o) ---------------------------------------
+
+/// The pattern grid's origin, relative to the panel.
+pub const LOOM_GRID_X: i32 = 60;
+pub const LOOM_GRID_Y: i32 = 13;
+/// Its cell pitch **and** its hit size — vanilla uses 14 for both, so the
+/// cells tile with no gap and no bleed.
+pub const LOOM_CELL: i32 = 14;
+/// `for (row 0..4) for (column 0..4)` — the visible window, not the total.
+pub const LOOM_COLS: i32 = 4;
+pub const LOOM_ROWS: i32 = 4;
+
+/// Which pattern index the cursor is over, given the first visible row.
+///
+/// ```java
+/// double xx = event.x() - (xo + column * 14);
+/// double yy = event.y() - (yo + row * 14);
+/// int index = (row + this.startRow) * 4 + column;
+/// if (xx >= 0 && yy >= 0 && xx < 14 && yy < 14 && menu.clickMenuButton(player, index))
+/// ```
+///
+/// **The bounds test and the range test are separate**, and vanilla puts the
+/// range test inside `clickMenuButton` — so a cell past the end of the list is
+/// *hit* and then *rejected*, and the loop carries on rather than stopping.
+/// Returning the index here and letting the caller range-check keeps that
+/// split, which matters because a rejected cell must not consume the click.
+pub fn loom_cell_at(gui_x: f64, gui_y: f64, start_row: i32) -> Option<i32> {
+    let dx = gui_x - LOOM_GRID_X as f64;
+    let dy = gui_y - LOOM_GRID_Y as f64;
+    if dx < 0.0 || dy < 0.0 {
+        return None;
+    }
+    let (col, row) = ((dx / LOOM_CELL as f64) as i32, (dy / LOOM_CELL as f64) as i32);
+    if col >= LOOM_COLS || row >= LOOM_ROWS {
+        return None;
+    }
+    Some((row + start_row) * LOOM_COLS + col)
+}
+
+/// `LoomMenu.clickMenuButton` — `buttonId >= 0 && buttonId < selectable.size()`.
+///
+/// The client runs this **before** sending, and only sends when it passes, so
+/// an out-of-range cell produces no packet at all.
+pub fn loom_button_accepted(index: i32, selectable: usize) -> bool {
+    // `try_from` rather than `index >= 0 && (index as usize) < selectable`.
+    //
+    // Deleting the non-negative half is an **equivalent mutant in Rust, and
+    // only in Rust**: `(-1i32) as usize` wraps to `usize::MAX`, which fails
+    // the upper bound for every representable `selectable`, so no input
+    // distinguishes the two. It is load-bearing in Java, where `<` does not
+    // wrap — vanilla's `buttonId >= 0` is a real guard.
+    //
+    // A mutation survived here and was shown equivalent rather than witnessed
+    // (M93g's precedent). The rewrite is kept anyway: it states the intent
+    // without leaning on the wrap, so a future `selectable` that is not a
+    // `usize` cannot quietly make the two readings differ.
+    usize::try_from(index).is_ok_and(|i| i < selectable)
+}
+
+/// `LoomScreen.displayPatterns` — whether the grid is shown at all.
+///
+/// ```java
+/// displayPatterns = !bannerStack.isEmpty() && !dyeStack.isEmpty()
+///                   && !hasMaxPatterns && !menu.getSelectablePatterns().isEmpty();
+/// ```
+///
+/// **A dye is required to show the grid**, which is easy to miss: a banner
+/// alone offers nothing, because a loom stamps one dyed layer at a time.
+pub fn loom_display_patterns(
+    has_banner: bool,
+    has_dye: bool,
+    has_max_patterns: bool,
+    selectable: usize,
+) -> bool {
+    has_banner && has_dye && !has_max_patterns && selectable != 0
+}
+
+/// `LoomScreen.canScroll` — `displayPatterns && selectable.size() > 16`.
+///
+/// **Strictly greater**, so exactly 16 patterns fill the window and do not
+/// scroll; the 32-entry no-item-required set does.
+pub fn loom_can_scroll(display_patterns: bool, selectable: usize) -> bool {
+    display_patterns && selectable > (LOOM_COLS * LOOM_ROWS) as usize
+}
+
+#[cfg(test)]
+mod m93o_loom_grid {
+    use super::*;
+
+    #[test]
+    fn the_cells_tile_with_no_gap_and_no_bleed() {
+        // Pitch and hit size are both 14, so cell N ends exactly where N+1
+        // begins. A 12px hit on a 14px pitch would leave dead seams; a 16px
+        // one would make neighbours overlap.
+        assert_eq!(loom_cell_at(60.0, 13.0, 0), Some(0));
+        assert_eq!(loom_cell_at(73.9, 26.9, 0), Some(0), "the far corner of cell 0");
+        assert_eq!(loom_cell_at(74.0, 13.0, 0), Some(1), "and 74 is already cell 1");
+        assert_eq!(loom_cell_at(60.0, 27.0, 0), Some(4), "one row down is +4");
+        // Just outside on either axis is a miss, not a clamp.
+        assert_eq!(loom_cell_at(59.9, 13.0, 0), None);
+        assert_eq!(loom_cell_at(60.0, 12.9, 0), None);
+        // The window is 4x4; the fifth column and row are outside it.
+        assert_eq!(loom_cell_at(60.0 + 4.0 * 14.0, 13.0, 0), None);
+        assert_eq!(loom_cell_at(60.0, 13.0 + 4.0 * 14.0, 0), None);
+    }
+
+    #[test]
+    fn scrolling_moves_the_index_by_whole_rows() {
+        // `(row + startRow) * 4 + column`, so a row of scroll is 4 indices.
+        assert_eq!(loom_cell_at(60.0, 13.0, 0), Some(0));
+        assert_eq!(loom_cell_at(60.0, 13.0, 1), Some(4));
+        assert_eq!(loom_cell_at(60.0, 13.0, 4), Some(16));
+        // The COLUMN is unaffected by the scroll.
+        assert_eq!(loom_cell_at(60.0 + 14.0, 13.0, 3), Some(13));
+    }
+
+    #[test]
+    fn a_cell_past_the_end_is_hit_and_then_rejected() {
+        // The two tests are separate in vanilla — the bounds test finds the
+        // cell, `clickMenuButton` refuses the index — and keeping them apart
+        // is what lets a rejected cell fall through instead of consuming the
+        // click.
+        assert_eq!(loom_cell_at(60.0 + 3.0 * 14.0, 13.0, 0), Some(3));
+        assert!(!loom_button_accepted(3, 3), "index 3 needs a 4th pattern");
+        assert!(loom_button_accepted(3, 4));
+        assert!(!loom_button_accepted(-1, 4), "and negative is rejected too");
+    }
+
+    #[test]
+    fn the_grid_needs_a_dye_and_not_just_a_banner() {
+        // Easy to miss: a loom stamps one DYED layer at a time, so a banner
+        // alone shows nothing.
+        assert!(!loom_display_patterns(true, false, false, 32));
+        assert!(!loom_display_patterns(false, true, false, 32));
+        assert!(loom_display_patterns(true, true, false, 32));
+        // A full banner offers nothing more...
+        assert!(!loom_display_patterns(true, true, true, 32));
+        // ...and neither does an empty selectable set.
+        assert!(!loom_display_patterns(true, true, false, 0));
+    }
+
+    #[test]
+    fn sixteen_patterns_fill_the_window_without_scrolling() {
+        // `> 16`, strictly — exactly one screenful does not scroll.
+        assert!(!loom_can_scroll(true, 16));
+        assert!(loom_can_scroll(true, 17));
+        assert!(loom_can_scroll(true, 32), "the no-item-required set does");
+        // ...and a hidden grid never scrolls whatever its size.
+        assert!(!loom_can_scroll(false, 32));
+    }
+}
