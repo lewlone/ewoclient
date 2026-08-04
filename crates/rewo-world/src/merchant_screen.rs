@@ -59,6 +59,75 @@ pub const SCROLL_HEIGHT: i32 = 139;
 pub const SCROLLER_W: i32 = 6;
 pub const SCROLLER_H: i32 = 27;
 
+// ── The discounted price pair (M93w) ──────────────────────────────────────
+
+/// How far right the **modified** count is drawn when a price is discounted.
+pub const DISCOUNT_SECOND_X: i32 = 14;
+/// The strikethrough's offset from the cost-A icon, and its size.
+pub const STRIKETHROUGH_DX: i32 = 7;
+pub const STRIKETHROUGH_DY: i32 = 12;
+pub const STRIKETHROUGH_W: i32 = 9;
+pub const STRIKETHROUGH_H: i32 = 2;
+
+/// What `extractAndDecorateCostA` draws for one row's cost A (M93w).
+///
+/// ```java
+/// graphics.fakeItem(costA, sellItem1X, decorHeight);
+/// if (baseCostA.getCount() == costA.getCount()) {
+///    graphics.itemDecorations(font, costA, sellItem1X, decorHeight);
+/// } else {
+///    graphics.itemDecorations(font, baseCostA, sellItem1X, decorHeight, baseCostA.getCount() == 1 ? "1" : null);
+///    graphics.itemDecorations(font, costA, sellItem1X + 14, decorHeight, costA.getCount() == 1 ? "1" : null);
+///    graphics.blitSprite(DISCOUNT_STRIKETHRUOGH_SPRITE, sellItem1X + 7, decorHeight + 12, 9, 2);
+/// }
+/// ```
+///
+/// Three things a reader would get wrong:
+///
+/// * there is **one icon, not two** — `fakeItem` is called once, outside the
+///   branch, and with the **modified** cost. The discounted display is two
+///   *numbers* over a single item.
+/// * the second number sits 14 px right, over **empty panel**, and the
+///   strikethrough at `+7` crosses the *first* one — the count labels are
+///   right-aligned into the icon's 16 px box, so the base number lands around
+///   `+9..+16` and a 9-px line from `+7` strikes it.
+/// * **a count of 1 normally draws nothing**, and the `countText` override is
+///   there solely to defeat that: `count == 1 ? "1" : null` forces the digit so
+///   both halves of the comparison are visible. Passing `null` throughout —
+///   the obvious simplification — silently drops a number whenever a discount
+///   reaches 1, which is exactly when the discount is most worth seeing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CostADisplay {
+    /// The count drawn at the icon. `None` when vanilla draws no digit.
+    pub at_icon: Option<i32>,
+    /// The count drawn 14 px right, present only when discounted.
+    pub at_second: Option<i32>,
+    /// Whether the strikethrough is drawn.
+    pub strikethrough: bool,
+}
+
+/// `extractAndDecorateCostA`'s two branches.
+///
+/// `base` is `getBaseCostA().getCount()` and `modified` is `getCostA()`'s.
+pub fn cost_a_display(base: i32, modified: i32) -> CostADisplay {
+    if base == modified {
+        CostADisplay {
+            // The plain path passes no `countText`, so `itemCount`'s own rule
+            // applies and a single item shows no digit.
+            at_icon: (modified != 1).then_some(modified),
+            at_second: None,
+            strikethrough: false,
+        }
+    } else {
+        CostADisplay {
+            // Both forced, including a 1.
+            at_icon: Some(base),
+            at_second: Some(modified),
+            strikethrough: true,
+        }
+    }
+}
+
 // ── The XP bar (M93v) ─────────────────────────────────────────────────────
 //
 // `MerchantScreen.extractProgressBar`, and `VillagerData`'s thresholds.
@@ -417,6 +486,68 @@ pub fn offer_visible(index: i32, scroll_off: i32, offers: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_undiscounted_price_is_one_number_and_a_single_item_is_none() {
+        assert_eq!(
+            cost_a_display(4, 4),
+            CostADisplay {
+                at_icon: Some(4),
+                at_second: None,
+                strikethrough: false
+            }
+        );
+        // `itemCount`'s own rule: a count of 1 draws no digit at all.
+        assert_eq!(
+            cost_a_display(1, 1),
+            CostADisplay {
+                at_icon: None,
+                at_second: None,
+                strikethrough: false
+            }
+        );
+    }
+
+    #[test]
+    fn a_discount_forces_BOTH_digits_including_a_one() {
+        // The whole point of `countText`: without the override the discounted
+        // number would vanish exactly when the discount is deepest.
+        assert_eq!(
+            cost_a_display(4, 1),
+            CostADisplay {
+                at_icon: Some(4),
+                at_second: Some(1),
+                strikethrough: true
+            }
+        );
+        // …and a base of 1 raised by demand is the mirror case.
+        assert_eq!(
+            cost_a_display(1, 3),
+            CostADisplay {
+                at_icon: Some(1),
+                at_second: Some(3),
+                strikethrough: true
+            }
+        );
+        assert_eq!(
+            cost_a_display(6, 4),
+            CostADisplay {
+                at_icon: Some(6),
+                at_second: Some(4),
+                strikethrough: true
+            }
+        );
+    }
+
+    #[test]
+    fn the_strikethrough_crosses_the_FIRST_number_not_the_gap() {
+        // The count labels are right-aligned into the icon's 16 px box, so the
+        // base digit sits around +9..+16 and a 9-px line from +7 strikes it —
+        // rather than sitting in the space between the two numbers.
+        assert_eq!(STRIKETHROUGH_DX, 7);
+        assert!(STRIKETHROUGH_DX + STRIKETHROUGH_W <= DISCOUNT_SECOND_X + 2);
+        assert_eq!((STRIKETHROUGH_W, STRIKETHROUGH_H), (9, 2));
+    }
 
     #[test]
     fn a_master_villager_shows_no_bar_at_all() {

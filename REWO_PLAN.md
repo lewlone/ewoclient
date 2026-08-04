@@ -58,9 +58,9 @@ click sends an index. **M93t** is the **`EditBox`** — a text-entry subsystem
 Rewo had never had — wiring the anvil end to end, and finding a missing chrome
 blit because `anvil.png` hides a red placeholder under the name field.
 
-Current measurement, taken 2026-08-04: **1924 tests, 0 failures** (world 712,
+Current measurement, taken 2026-08-04: **1927 tests, 0 failures** (world 715,
 net 596, gpu 255, data 208, app 97, mesh 45, proto 11 — all seven confirmed
-reporting); `containershot` **71/71**, `inventoryshot` 152/152, `itemshot`
+reporting); `containershot` **73/73**, `inventoryshot` 152/152, `itemshot`
 75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check` 22/22 with
 validation ON and 0 validation errors, re-run for M93q** — the first M93
 milestone to touch a render path, so the earlier "M93 adds no render path"
@@ -212,7 +212,7 @@ So, in ratio order:
    | **beacon** | ✅ **complete** (M93l + M93m): press, `set_beacon`, click wiring and screen-owned state. The confirm closes the **client's** screen only — Rewo resolves no *serverbound* `container_close`, a gap that predates this and affects **every** screen close |
    | **anvil** | ✅ **complete end to end** (M93n + M93t): rename semantics, `rename_item`, and the **`EditBox`** — a subsystem Rewo had never had. Character input via `KeyEvent.text` (the seam it never read), the caret, selection, the four shortcuts, word motion, and the field's own background sprite, which `anvil.png` hides a **red placeholder** under. Left: the clipboard is **in-process**, not the OS's (no crate pulls it in); IME pre-edit is absent |
    | **stonecutter** | ✅ **complete end to end** (M93s): the recipe list, the grid, the three button chromes, the result icons, the scrollbar and every input path. **The class-C claim was wrong** — the third of this arc, after M91's furnace recipes and M93's merchant quick-move. The list is jar-derivable and the hard part was its ORDER, which is a wire contract because a click sends an *index*: `RecipeManager.prepare` loads into a `SortedMap<Identifier, _>` and `Identifier.compareTo` is **path first, then namespace** |
-   | **merchant** | ✅ **complete** (M93u + M93v): `merchant_offers` decodes, `select_trade` sends, the seven rows render with their three items, arrow and scrollbar, and the **XP bar** draws all three layers with its future segment DERIVED (`updateSellItem` matches the payment slots against the offers — vanilla derives it too). **The class-C label was wrong a fourth time.** Left: the discounted-price pair with its strikethrough, and a cost carrying a component predicate declines rather than guesses (M41 has a digest, not per-component values) |
+   | **merchant** | ✅ **complete** (M93u–M93w): `merchant_offers` decodes, `select_trade` sends, the seven rows render with their items, arrow and scrollbar, the **XP bar** draws all three layers with its future segment derived, and a **discounted price** shows both numbers with the base struck through. **The class-C label was wrong a fourth time.** Left: the trade button's own `Button.Plain` chrome; and a cost carrying a component predicate declines rather than guesses (M41 has a digest, not per-component values) |
 
    **The crafter uses `container_slot_state_changed` (id 20), not
    `container_button_click` (17)** — `CrafterMenu` has no `clickMenuButton`
@@ -2370,6 +2370,48 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M93w — the discounted price pair (2026-08-04)
+
+`extractAndDecorateCostA`'s two branches, and **three things a reader gets
+wrong**:
+
+- there is **one icon, not two**. `fakeItem` is called once, *outside* the
+  branch, and with the **modified** cost — the discounted display is two
+  *numbers* over a single item.
+- the strikethrough at `sellItem1X + 7` crosses the **first** number, not the
+  gap between the two: the count labels are right-aligned into the icon's 16 px
+  box, so the base digit lands around `+9..+16` and a 9-px line from `+7`
+  strikes it.
+- **a count of 1 normally draws nothing** — `itemCount` is gated on
+  `getCount() != 1 || countText != null` — and the `count == 1 ? "1" : null`
+  override exists *solely* to defeat that. Passing `null` throughout, the
+  obvious simplification, silently drops a number exactly when a discount has
+  reached 1, which is when it is most worth seeing.
+
+`count_label` gained vanilla's `countText` parameter, so the override is
+expressed rather than special-cased.
+
+**A witness had to be narrowed rather than fixed**, which is the transferable
+part. `y9` first claimed the two digits as well as the strikethrough and found
+**0 changed pixels** over a 10×10 cell — correctly, because `mer_frame` builds
+the **panel** and the count labels come from `screen_icons`, which that gate
+never calls. M45's shape again: *a gate reimplementing a slice of the app's
+setup misses whatever lives outside it*. The strikethrough is a panel overlay
+and is witnessed; the digits are graded at the model level, and the gate says so
+in a comment so the next reader does not read it as an omission.
+
+**One equivalent mutant, now labelled in the code**: `icon_for` draws the item's
+model and ignores the count, and the cost-A call takes only `.0`, so which count
+is passed there cannot matter. It is spelled `modified` because that is the
+stack vanilla hands to `fakeItem`.
+
+**Measured.** 1927 tests / 0 failures; `containershot` 71 → **73**;
+`inventoryshot` 152, `itemshot` 75, `handshot` 34, `mobshot` 246/246; **`live
+--render-check` 22/22, validation ON, 0 errors**; demo PNG `2cc56b4acbfb92cb`
+byte-identical. 4 mutations, 3 killed, 1 shown equivalent.
+
+---
 
 ### M93v — the XP bar, and a blit argument I read as a size (2026-08-04)
 
