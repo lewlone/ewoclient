@@ -194,9 +194,9 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **109** |
+| Resolved **and** consumed | **110** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **32** |
+| Not resolved at all | **31** |
 | **Total clientbound-play** | **141** |
 
 The 32 gaps, by class:
@@ -205,8 +205,8 @@ The 32 gaps, by class:
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
 | **B** needs rendering | **0** | 0% |
-| **C** needs a subsystem Rewo lacks | **21** | 66% |
-| **D** not applicable | **11** | 34% |
+| **C** needs a subsystem Rewo lacks | **20** | 65% |
+| **D** not applicable | **11** | 35% |
 
 **M87 is the first bite out of class C**, and it is a worked example of what
 that class costs. `open_screen` and `container_set_data` are eleven lines of
@@ -504,7 +504,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 49 | `login` | handled | `req!` → `cb_play_login` | |
 | 50 | `low_disk_space_warning` | absent | **D** | `Minecraft.sendLowDiskSpaceWarning` — the integrated server warning about its own save directory. |
 | 51 | `map_item_data` | absent | **C** | Map-item colour patches + decorations; needs a map image pipeline and a map renderer. |
-| 52 | `merchant_offers` | absent | **C** | Villager trade screen. |
+| 52 | `merchant_offers` | handled | — | Villager trade list (M93u). **The class-C label was wrong** — the packet needed nothing Rewo had not already built: `ItemStack` (M34/M41) and the `TypedDataComponent` walker M52e wrote for `can_place_on`. Unlike M91/M93s, the *data* really is server-rolled and off-wire; what was wrong was that decoding it needed a new subsystem. |
 | 53 | `move_entity_pos` | handled | `req!` → `cb_play_move_entity_pos` | |
 | 54 | `move_entity_pos_rot` | handled | `req!` → `cb_play_move_entity_pos_rot` | |
 | 55 | `move_minecart_along_track` | handled | `req!` → `cb_play_move_minecart_along_track` | **M77.** The **only** movement channel an experimental-movement cart has: `ServerEntity.sendChanges` routes such a cart down `handleMinecartPosRot` instead of the generic position branch entirely, so it is never sent `move_entity_pos` / `teleport_entity` / `entity_position_sync`. The steps are two **full-double** `Vec3`s each (`Vec3.STREAM_CODEC`, not `LP_STREAM_CODEC`), two rotation bytes and an f32 weight. The second client guard (`getBehavior() instanceof NewMinecartBehavior`) is **not** enforced — it depends on the `minecart_improvements` feature flag, which needs `update_enabled_features` (configuration; out of this survey's scope). |
