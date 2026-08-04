@@ -1536,6 +1536,19 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     "entity/banner/triangle_top.png",
     "entity/banner/triangles_bottom.png",
     "entity/banner/triangles_top.png",
+    // 79..=83 — the stonecutter's recipe grid (M93s). The three button
+    // chromes come first in `StonecutterScreen.extractButtons`' test order
+    // (selected, then highlighted, then plain), matching the loom's three at
+    // 33; then the scroller's two, active and disabled.
+    //
+    // `isScrollBarActive` picks between the scroller pair, and it is false
+    // whenever the list fits — so the disabled thumb is what a short list
+    // shows, not an absent one.
+    "gui/sprites/container/stonecutter/recipe_selected.png",
+    "gui/sprites/container/stonecutter/recipe_highlighted.png",
+    "gui/sprites/container/stonecutter/recipe.png",
+    "gui/sprites/container/stonecutter/scroller.png",
+    "gui/sprites/container/stonecutter/scroller_disabled.png",
 ];
 
 /// The loom's three pattern-button chromes, in `LoomScreen`'s test order:
@@ -1544,6 +1557,14 @@ pub const LOOM_PATTERN_CHROME: usize = 33;
 
 /// Where the banner patterns start in [`MENU_OVERLAY_SPRITES`] (M93q).
 pub const BANNER_PATTERN_OVERLAY: usize = 36;
+
+/// The stonecutter's three recipe-button chromes, in
+/// `StonecutterScreen.extractButtons`' test order: selected, highlighted,
+/// plain (M93s). Same convention as [`LOOM_PATTERN_CHROME`].
+pub const CUT_RECIPE_CHROME: usize = 79;
+/// Its scroller, **active first** — `CUT_SCROLLER + usize::from(!active)`
+/// picks the disabled one, which is what a list that fits shows.
+pub const CUT_SCROLLER: usize = 82;
 
 /// A pattern id's overlay index, or `None` for one this build has no texture
 /// for — which draws no preview rather than the WRONG preview.

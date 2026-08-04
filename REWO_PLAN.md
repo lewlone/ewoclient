@@ -49,12 +49,16 @@ grindstone, cartography table and loom — **seven of eight**, leaving only
 smithing, genuinely blocked on class C) and then the bespoke widgets: the
 crafter's toggles, the beacon's press, the anvil's rename, and the loom
 **complete end to end** through its rendered pattern preview (M93q). **M93r**
-is the sweep M93q called for — three self-calibrating witnesses in ~1,400,
-all three values correct, all three now pinned against their source.
+is the sweep M93q called for — three self-calibrating witnesses in ~1,400, all
+three values correct, all three now pinned against their source. **M93s** is the
+**stonecutter, complete end to end**, which the plan had recorded as blocked on
+class-C `update_recipes` and which was not: the recipe list is jar-derivable,
+and the hard part was reproducing its ORDER, which is a wire contract because a
+click sends an index.
 
-Current measurement, taken 2026-08-04: **1865 tests, 0 failures** (world 665,
-net 588, gpu 255, data 204, app 97, mesh 45, proto 11 — all seven confirmed
-reporting); `containershot` **52/52**, `inventoryshot` 152/152, `itemshot`
+Current measurement, taken 2026-08-04: **1879 tests, 0 failures** (world 676,
+net 588, gpu 255, data 208, app 97, mesh 45, proto 11 — all seven confirmed
+reporting); `containershot` **58/58**, `inventoryshot` 152/152, `itemshot`
 75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check` 22/22 with
 validation ON and 0 validation errors, re-run for M93q** — the first M93
 milestone to touch a render path, so the earlier "M93 adds no render path"
@@ -205,7 +209,8 @@ So, in ratio order:
    | **loom** | ✅ **complete end to end** (M93o–M93q): pattern list, grid geometry, hit test, scroll, accept-gate, and the preview's **render** — the 43 banner textures in the overlay atlas and a solid-fill quad (`FILL_SPRITE` + a per-quad tint + an untextured shader mode), drawn `fill` then `blit` as `extractBannerOnButton` does. **Two of the three blockers recorded here were wrong**: the component is on the item's *prototype* (never on the wire) and its value is a *tag name*, so no registry is involved. Left: the **scrollbar drag** — `LoomView::start_row` is always 0, so only the first 16 patterns are reachable; and `hasMaxPatterns`, which needs a banner layer-count component Rewo does not read |
    | **beacon** | ✅ **complete** (M93l + M93m): press, `set_beacon`, click wiring and screen-owned state. The confirm closes the **client's** screen only — Rewo resolves no *serverbound* `container_close`, a gap that predates this and affects **every** screen close |
    | **anvil** | ✅ rename semantics + `rename_item` shipped (M93n). Left: **`EditBox`** — character input, caret, focus. Rewo's key handler reads `PhysicalKey`/`KeyCode` and never `KeyEvent.text`, so **nothing can type**: a subsystem it has never had, shared with the class-C chat/command-input cluster |
-   | merchant, stonecutter | genuinely class-C (`merchant_offers`, `update_recipes`) |
+   | **stonecutter** | ✅ **complete end to end** (M93s): the recipe list, the grid, the three button chromes, the result icons, the scrollbar and every input path. **The class-C claim was wrong** — the third of this arc, after M91's furnace recipes and M93's merchant quick-move. The list is jar-derivable and the hard part was its ORDER, which is a wire contract because a click sends an *index*: `RecipeManager.prepare` loads into a `SortedMap<Identifier, _>` and `Identifier.compareTo` is **path first, then namespace** |
+   | merchant | genuinely class-C (`merchant_offers`) for its trade list — though M93 found its *quick-move* was never blocked by that packet at all |
 
    **The crafter uses `container_slot_state_changed` (id 20), not
    `container_button_click` (17)** — `CrafterMenu` has no `clickMenuButton`
@@ -216,10 +221,10 @@ So, in ratio order:
    rows are done and `container_button_click` is shipped, so the loom and the
    crafter are *only* missing their button lists; the beacon needs
    `set_beacon` plus click-tracked `primary`/`secondary` state; the anvil
-   needs a text field; and the merchant and stonecutter are genuinely blocked
-   on class-C packets (`merchant_offers`, `update_recipes`) **for their
-   widgets** — note M93 found the merchant's *quick-move* was never blocked by
-   `merchant_offers` at all.
+   needs a text field; and the merchant's trade list is genuinely blocked on
+   class-C `merchant_offers` — note M93 found its *quick-move* was never
+   blocked by that packet at all, and **M93s found the stonecutter was not
+   blocked by `update_recipes` either**.
 3. **The M92 sweep is still open.** M93b closed the one instance it created
    (see below); nobody has looked for the others.
 
@@ -2363,6 +2368,129 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M93s — the stonecutter, and an order that is a wire contract (2026-08-04)
+
+The plan's table called the stonecutter widget "genuinely class-C
+(`update_recipes`)". **It is not** — the third such claim this arc to not
+survive the decompile, after M91's furnace recipes and M93's merchant
+quick-move. Worth noticing as a pattern: *"blocked on a packet we don't decode"
+deserves a check against what the packet actually carries*, because for vanilla
+content the answer is often in the jar.
+
+**The contents were never the hard part. The ORDER is, and it is part of the
+wire contract**, because a click sends an **index**:
+
+```java
+// StonecutterMenu
+this.recipesForInput = …stonecutterRecipes().selectByInput(item);
+// SelectableRecipe.SingleInputSet
+return new SingleInputSet<>(this.entries.stream().filter(e -> e.input.test(input)).toList());
+```
+
+A *filter*, so it preserves the master list's order, and the server resolves the
+clicked index against it. Reproduce that order wrongly and every click cuts a
+different block than the one drawn, **with no error anywhere** — M64's
+alphabetisation trap in a nastier place, because there the ids merely came out
+wrong while here the server acts on it.
+
+It is reproducible. `finalizeRecipeLoading` walks `recipes.values()` — a Guava
+`ImmutableMap`, insertion ordered — filled from `prepare`'s
+`SortedMap<Identifier, Recipe<?>> = new TreeMap<>()`. So: **sorted by
+`Identifier`**, and `Identifier.compareTo` is
+
+```java
+int result = this.path.compareTo(o.path);
+if (result == 0) result = this.namespace.compareTo(o.namespace);
+```
+
+**path first, then namespace** — not the combined `namespace:path`. For an
+all-vanilla pack that reduces to the file stem; a datapack in another namespace
+would *interleave* by path rather than append. The generator sorts by the stem
+explicitly rather than the filename, because those agree only accidentally: `.`
+(0x2E) is below every character `[a-z0-9_]` uses, and the agreement ends the
+moment a name uses one that is not.
+
+**The screen's character is that one cell has three y-origins**, and vanilla
+means all three:
+
+| | expression | used by |
+|---|---|---|
+| `+2` | `posY = y + row*18 + 2` | the icon, the highlight test, the tooltip test |
+| `+1` | `textureY = posY - 1` | the button chrome, and the cursor test |
+| `+0` | `y + row*18` | **the click test**, in `mouseClicked` |
+
+The first draft of the witness called the top two pixel rows "clickable but not
+highlighted". **They are not.** Both boxes are 18 tall on an 18 pitch, so they
+*tile* — the offset is a **shear, not a gap** — and those rows highlight the row
+*above*:
+
+| gui y | click | highlight |
+|---|---|---|
+| 14, 15 | cell 0 | *nothing* |
+| 32, 33 | cell 4 (row 1) | cell 0 (row 0) |
+| 68, 69 | *nothing* | cell 8 (row 2) |
+
+So a click lands one row **below** the lit cell at every boundary, and away from
+a boundary the two agree — which is why it is easy to miss. Computing the
+boundaries settled in one run what reasoning about a single cell had inverted.
+
+**The scrollbar has three origins too**, and they do not reconcile: the grab box
+starts at `+9`, the drag maths uses a track at `+14`, the thumb is drawn from
+`+15`. The drag divides by `54 - 15` = **39** while the draw multiplies by
+**41**, so at full scroll the 15-tall thumb sits at `+56` and its bottom reaches
+`+71` against a track ending at `+69`. **Vanilla overshoots by two pixels.**
+Transcribed rather than reconciled.
+
+**Smaller invertible facts**, each pinned: `hasInputItem` is *both* halves, so
+an unrecognised item in the slot is indistinguishable on screen from an empty
+one; the click loop runs the whole 12-cell page without bounding the index,
+leaning on the server's `isValidRecipeIndex`, so an empty cell in a partial last
+row is inert rather than an error; the buttons draw **no count**, because
+`extractRecipes` calls `graphics.item` (the model alone) and never
+`itemDecorations` — reusing the inventory's slot draw would put a "2" on 124 of
+the 319 recipes; and `containerChanged` fires on **any** input change while
+`slotsChanged` rebuilds the list only on a **type** change, so taking one block
+off a stack resets your scroll and keeps your list.
+
+**Three witnesses were wrong before the code was.** `mouse_gui` is GUI pixels
+and the first cut converted the other way, so the hover never landed. The
+`w2` control was **unsound**, and the sprite PNGs are what showed it:
+`recipe_selected.png`'s centre is `(81, 73, 58)`, *exactly* what
+`stonecutter.png` reads at the same probe — so "cell 6 is identical to the bare
+panel" would have passed for a cell 6 that wrongly drew a **selected** chrome.
+The control is now a twelve-recipe view, differing in one thing only. That is
+the **fourth detector error of this arc and the same shape every time**: the
+control and a plausible wrong answer share a value at the probe. Reading the
+sprites' pixels *before* writing the witnesses is what made the rest sound.
+
+**A surviving mutation was a real gap, not an equivalent mutant.** Swapping
+`selected` and `hovered` in the three-way chrome test changed nothing, because
+the orderings differ *only* on a cell that is both and no witness passed a mouse
+over the selected cell. `w6` does.
+
+**Measured.** 1879 tests / 0 failures (world 676, net 588, gpu 255, data 208,
+app 97, mesh 45, proto 11); `containershot` 52 → **58**; **`live --render-check`
+22/22, validation ON, 0 errors** — re-run because M93s adds a render path, and
+it confirms the grown atlas and the new arm cost the windowed client nothing; `inventoryshot` 152,
+`itemshot` 75, `handshot` 34, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb`
+byte-identical. 6 mutations, 6 killed.
+
+**What `--render-check` does not reach**, recorded rather than papered over: it
+never opens a **stonecutter**, so the grid's windowed call site is unexercised —
+the same gap M93q recorded for the loom, and the same blocker shape. Closing it
+needs an injected `open_screen` *plus* a `container_set_slot` putting a
+stonecuttable block in slot 0, since `hasInputItem` is both halves and an empty
+stonecutter draws no grid to witness.
+
+**Open.** `getOffscreenRows` is transcribed with its negative-for-a-short-list
+arithmetic intact because every vanilla caller is behind `isScrollBarActive`;
+the tooltip on a recipe button is not drawn (it needs the result stack through
+the tooltip path, which the grid's icons bypass); and the datapack caveat is
+M91's, now with sharper teeth — a pack that **reorders** stonecutting recipes
+makes a click cut the wrong block rather than merely mis-routing a shift-click.
+
+---
 
 ### M93r — the self-calibrating-witness sweep (2026-08-04)
 

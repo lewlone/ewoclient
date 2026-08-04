@@ -726,7 +726,7 @@ fn overlays(
      -> Result<Vec<u8>, String> {
         let open = m.open().expect("a menu must be open");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, false, effects, None, None, None,
+            open, 30, false, effects, None, None, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -821,7 +821,7 @@ fn overlays(
         // answer: false gives three UNAFFORDABLE rows, true three available
         // ones — same costs, different backgrounds.
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, creative, effects, mouse, None, None,
+            open, 30, creative, effects, mouse, None, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -903,7 +903,7 @@ fn overlays(
         let m = menu(9, &[(0, levels), (1, primary), (2, 0)]);
         let open = m.open().unwrap();
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, false, effects, None, None, None,
+            open, 30, false, effects, None, None, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -961,7 +961,7 @@ fn overlays(
         let m = menu(7, data);
         let open = m.open().expect("a menu must be open");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, false, effects, None, None, None,
+            open, 30, false, effects, None, None, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -1137,6 +1137,7 @@ fn overlays(
                 W as f32,
                 H as f32,
                 Some(open),
+                None,
             )
             .0
             .len()
@@ -1372,7 +1373,7 @@ fn overlays(
             let m = menu(9, &[(0, 4)]);
             let open = m.open().expect("open");
             wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-                open, 30, false, effects, None, over, None,
+                open, 30, false, effects, None, over, None, None,
             ));
             wr.set_container(true, None);
             shot(gpu, off, wr)
@@ -1433,7 +1434,7 @@ fn overlays(
             let m = menu(11, &[]);
             let open = m.open().expect("open");
             let mut panel = crate::live_cmd::container_panel_for_open_menu(
-                open, 30, false, effects, None, None, None,
+                open, 30, false, effects, None, None, None, None,
             )
             .ok_or("containershot: no brewing panel")?;
             panel.overlays = overlays;
@@ -1509,6 +1510,7 @@ fn overlays(
                     start_row: 0,
                     patterns: one,
                 }),
+                None,
             ));
             wr.set_container(true, None);
             shot(gpu, off, wr)
@@ -1556,6 +1558,179 @@ fn overlays(
         );
     }
 
+    // w1..w5 — the stonecutter's recipe grid (M93s).
+    //
+    // The `CutView` is SUPPLIED, as the loom's is and for the same reason: the
+    // list is resolved from an item registry this gate has not got. What that
+    // leaves untested is `cut_view`'s own resolution, which
+    // `stonecutter_table`'s tests grade list-side.
+    {
+        use rewo_world::menu_screen as ms;
+        let cut_layout = rewo_world::menu_layout::layout_of(24).unwrap();
+        let at_cut = probe(cut_layout);
+        // Six recipes, so the grid half-fills its second row and cannot scroll.
+        let six: Vec<&'static rewo_data::stonecutter_table::Cut> =
+            rewo_data::stonecutter_table::select_by_input("minecraft:andesite");
+        assert!(six.len() == 6, "fixture: andesite offers {}", six.len());
+        let mut cut_frame = |view: Option<crate::live_cmd::CutView>,
+                             mouse: Option<(f64, f64)>,
+                             gpu: &mut Gpu,
+                             off: &mut Offscreen,
+                             wr: &mut WorldRenderer|
+         -> Result<Vec<u8>, String> {
+            let m = menu(24, &[(0, -1)]);
+            let open = m.open().expect("open");
+            wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
+                open,
+                30,
+                false,
+                effects,
+                mouse,
+                None,
+                None,
+                view.as_ref(),
+            ));
+            wr.set_container(true, None);
+            shot(gpu, off, wr)
+        };
+        let view = |selected: i32, start: i32, scroll: f32, n: usize| crate::live_cmd::CutView {
+            recipes: six.iter().cycle().take(n).copied().collect(),
+            start_index: start,
+            selected,
+            scroll_offs: scroll,
+            display: true,
+        };
+        let hidden = cut_frame(None, None, gpu, off, wr)?;
+        let shown = cut_frame(Some(view(-1, 0, 0.0, 6)), None, gpu, off, wr)?;
+
+        // w1 — the grid draws at all, and only when `displayRecipes`.
+        let cell0 = ms::cut_cell_sprite_origin(0);
+        let lit = at_cut(&shown, cell0.0 + 8, cell0.1 + 9);
+        let dark = at_cut(&hidden, cell0.0 + 8, cell0.1 + 9);
+        c.record(
+            "w1.the_grid_draws_only_when_display_recipes",
+            lit != dark,
+            format!(
+                "cell 0 reads {lit:?} with a view and {dark:?} without — `hasInputItem` is \
+                 both halves, so an unrecognised item shows no grid rather than an empty one"
+            ),
+        );
+
+        // w2 — a partial last row stops at the list's end rather than drawing
+        // twelve cells. Cell 6 is past six recipes.
+        //
+        // The control is a TWELVE-recipe view, not the bare panel. Comparing
+        // against the bare panel is what the first cut did, and it was
+        // UNSOUND: `recipe_selected.png`'s centre is (81, 73, 58), which is
+        // exactly what `stonecutter.png` reads at this probe — so a cell 6
+        // that wrongly drew a SELECTED chrome would have passed. The control
+        // now differs from the test in one thing only: whether the list is
+        // long enough to reach cell 6.
+        let cell6 = ms::cut_cell_sprite_origin(6);
+        let twelve = cut_frame(Some(view(-1, 0, 0.0, 12)), None, gpu, off, wr)?;
+        let past = at_cut(&shown, cell6.0 + 8, cell6.1 + 9);
+        let drawn = at_cut(&twelve, cell6.0 + 8, cell6.1 + 9);
+        c.record(
+            "w2.a_partial_last_row_draws_no_chrome_past_the_list",
+            past != drawn,
+            format!(
+                "cell 6 reads {past:?} with six recipes and {drawn:?} with twelve — the loop                  breaks at `index >= size` rather than painting the whole page"
+            ),
+        );
+
+        // w3 — the SELECTED cell's chrome differs from a plain one, which is
+        // what makes data slot 0 observable at all.
+        let picked = cut_frame(Some(view(0, 0, 0.0, 6)), None, gpu, off, wr)?;
+        let sel = at_cut(&picked, cell0.0 + 8, cell0.1 + 9);
+        let cell1 = ms::cut_cell_sprite_origin(1);
+        let unsel = at_cut(&picked, cell1.0 + 8, cell1.1 + 9);
+        c.record(
+            "w3.the_selected_cell_wears_its_own_chrome",
+            sel != lit && sel != unsel,
+            format!(
+                "with recipe 0 selected it reads {sel:?} against {lit:?} unselected and \
+                 {unsel:?} for its neighbour — three-way, so `selected` beats `hovered`"
+            ),
+        );
+
+        // w4 — the hover highlight keys off the ICON's box, two pixels below
+        // the box a click uses. Hovering the click box's top two rows must
+        // light the row ABOVE, not this one (M93s-b's shear).
+        let (hx, _) = ms::cut_cell_origin(4);
+        // `container_panel_for_open_menu` takes GUI pixels — the live path
+        // hands it `screen_to_gui_for(...)` — so there is no conversion here.
+        // The first cut of this witness converted the other way and the hover
+        // simply never landed.
+        //
+        // gui y 32 is row 1's CLICK box and row 0's HIGHLIGHT box.
+        let sheared = cut_frame(
+            Some(view(-1, 0, 0.0, 6)),
+            Some((hx as f64 + 8.0, 32.0)),
+            gpu,
+            off,
+            wr,
+        )?;
+        let row0 = at_cut(&sheared, cell0.0 + 8, cell0.1 + 9);
+        let row1 = at_cut(&sheared, ms::cut_cell_sprite_origin(4).0 + 8, ms::cut_cell_sprite_origin(4).1 + 9);
+        c.record(
+            "w4.the_hover_lights_the_row_ABOVE_the_one_a_click_would_hit",
+            row0 != lit && row1 == lit,
+            format!(
+                "at gui y 32 — row 1's click box and row 0's highlight box — row 0 reads \
+                 {row0:?} (changed from {lit:?}) and row 1 reads {row1:?} (unchanged). The \
+                 two boxes tile on an 18 pitch, so the 2px offset is a shear, not a gap"
+            ),
+        );
+
+        // w6 — and `selected` beats `hovered`, which w3 could not see because
+        // it passes no mouse: the two orderings differ ONLY on a cell that is
+        // both. Found by a surviving mutation that swapped the branches.
+        //
+        // `extractButtons` tests selected first, so hovering the recipe you
+        // already picked keeps the selected chrome rather than flashing the
+        // highlight over it.
+        let (sx0, sy0) = ms::cut_cell_origin(0);
+        let both = cut_frame(
+            Some(view(0, 0, 0.0, 6)),
+            Some((sx0 as f64 + 8.0, sy0 as f64 + 9.0)),
+            gpu,
+            off,
+            wr,
+        )?;
+        let on_selected = at_cut(&both, cell0.0 + 8, cell0.1 + 9);
+        c.record(
+            "w6.hovering_the_selected_cell_keeps_the_selected_chrome",
+            on_selected == sel && on_selected != row0,
+            format!(
+                "hovering the selected cell 0 reads {on_selected:?}, the SELECTED sprite                  {sel:?} and not the highlighted one {row0:?} — vanilla tests selected first"
+            ),
+        );
+
+        // w5 — the scroller picks its sprite by `isScrollBarActive`, and moves.
+        let short = cut_frame(Some(view(-1, 0, 0.0, 6)), None, gpu, off, wr)?;
+        let long_top = cut_frame(Some(view(-1, 0, 0.0, 40)), None, gpu, off, wr)?;
+        let long_bot = cut_frame(Some(view(-1, 28, 1.0, 40)), None, gpu, off, wr)?;
+        let thumb = |img: &Vec<u8>, off_s: f32| {
+            at_cut(
+                img,
+                ms::CUT_SCROLLER_X + 6,
+                ms::cut_scroller_y(off_s) + 7,
+            )
+        };
+        let a = thumb(&short, 0.0);
+        let b = thumb(&long_top, 0.0);
+        let moved = thumb(&long_bot, 0.0);
+        c.record(
+            "w5.the_scroller_is_disabled_on_a_short_list_and_travels_on_a_long_one",
+            a != b && moved != b,
+            format!(
+                "the thumb reads {a:?} on a 6-recipe list (disabled sprite) against {b:?} on \
+                 a 40-recipe one, and its old position reads {moved:?} once scrolled — 41 of \
+                 travel against a 39 divisor, which is vanilla's own disagreement"
+            ),
+        );
+    }
+
     if let Some(d) = &args.out_dir {
         let _ = std::fs::write(d.join("containershot-overlays.txt"), "see the PNGs");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
@@ -1563,6 +1738,7 @@ fn overlays(
             30,
             false,
             effects,
+            None,
             None,
             None,
             None,
