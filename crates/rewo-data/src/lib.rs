@@ -51,6 +51,7 @@ pub mod server_jar;
 pub mod sign_states;
 pub mod sign_text;
 pub mod mob_effects;
+pub mod recipe_display;
 pub mod sound_events;
 pub mod sounds_json;
 pub mod stats;
@@ -133,6 +134,9 @@ pub struct GameData {
     /// which is exactly why five effect ids Rewo needed had gone unresolved
     /// for the whole session. See the module docs.
     pub mob_effects: mob_effects::MobEffects,
+    /// The recipe book's three display registries (M93y) — built-in, so they
+    /// come from the report and never from the wire.
+    pub recipe_display_ids: recipe_display::RecipeDisplayIds,
     pub sound_events: sound_events::SoundEvents,
     /// The three `minecraft:number_format_type` ids a scoreboard objective or
     /// score dispatches its optional number format on (M65).
@@ -161,6 +165,8 @@ impl GameData {
             entity_attachments::Attachments::resolve(&entity_types)?;
         let particle_types = particle_types::ParticleTypes::load(&paths.registries_json())?;
         let mob_effects = mob_effects::MobEffects::load(&paths.registries_json())?;
+        let recipe_display_ids =
+            recipe_display::RecipeDisplayIds::load(&paths.registries_json())?;
         let sound_events = sound_events::SoundEvents::load(&paths.registries_json())?;
         let number_formats =
             number_formats::NumberFormatTypeIds::load(&paths.registries_json())?;
@@ -180,6 +186,7 @@ impl GameData {
             entity_attachments,
             particle_types,
             mob_effects,
+            recipe_display_ids,
             sound_events,
             number_formats,
             attributes,
