@@ -275,6 +275,8 @@ pub struct Ids {
     pub sb_play_set_beacon: Option<i32>,
     /// `rename_item` (M93n) — the anvil's name field.
     pub sb_play_rename_item: Option<i32>,
+    /// `select_trade` (M93u) — one var-int, the offer's index.
+    pub sb_play_select_trade: Option<i32>,
     pub sb_play_use_item: Option<i32>,
     pub cb_play_set_health: Option<i32>,
     pub cb_play_system_chat: Option<i32>,
@@ -373,6 +375,8 @@ pub struct Ids {
     /// **two signed `readShort`s** in a mostly-var-int protocol. Applied only
     /// when the id matches the open menu.
     pub cb_play_container_set_data: i32,
+    /// `merchant_offers` (M93u) — the villager trade list.
+    pub cb_play_merchant_offers: i32,
     /// `ClientboundSetCameraPacket` — one VarInt entity id. An id the client
     /// cannot resolve leaves the camera where it is.
     pub cb_play_set_camera: i32,
@@ -644,6 +648,7 @@ impl Ids {
             sb_play_container_slot_state_changed: opt!(p, P, S, "container_slot_state_changed"),
             sb_play_set_beacon: opt!(p, P, S, "set_beacon"),
             sb_play_rename_item: opt!(p, P, S, "rename_item"),
+            sb_play_select_trade: opt!(p, P, S, "select_trade"),
             sb_play_use_item: opt!(p, P, S, "use_item"),
             cb_play_set_health: opt!(p, P, C, "set_health"),
             cb_play_system_chat: opt!(p, P, C, "system_chat"),
@@ -671,6 +676,7 @@ impl Ids {
             cb_play_container_close: req!(p, P, C, "container_close"),
             cb_play_open_screen: req!(p, P, C, "open_screen"),
             cb_play_container_set_data: req!(p, P, C, "container_set_data"),
+            cb_play_merchant_offers: req!(p, P, C, "merchant_offers"),
             cb_play_set_camera: req!(p, P, C, "set_camera"),
             cb_play_ticking_state: req!(p, P, C, "ticking_state"),
             cb_play_ticking_step: req!(p, P, C, "ticking_step"),

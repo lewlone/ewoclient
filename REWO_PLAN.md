@@ -58,9 +58,9 @@ click sends an index. **M93t** is the **`EditBox`** — a text-entry subsystem
 Rewo had never had — wiring the anvil end to end, and finding a missing chrome
 blit because `anvil.png` hides a red placeholder under the name field.
 
-Current measurement, taken 2026-08-04: **1899 tests, 0 failures** (world 696,
-net 588, gpu 255, data 208, app 97, mesh 45, proto 11 — all seven confirmed
-reporting); `containershot` **63/63**, `inventoryshot` 152/152, `itemshot`
+Current measurement, taken 2026-08-04: **1916 tests, 0 failures** (world 705,
+net 596, gpu 255, data 208, app 97, mesh 45, proto 11 — all seven confirmed
+reporting); `containershot` **67/67**, `inventoryshot` 152/152, `itemshot`
 75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check` 22/22 with
 validation ON and 0 validation errors, re-run for M93q** — the first M93
 milestone to touch a render path, so the earlier "M93 adds no render path"
@@ -212,7 +212,7 @@ So, in ratio order:
    | **beacon** | ✅ **complete** (M93l + M93m): press, `set_beacon`, click wiring and screen-owned state. The confirm closes the **client's** screen only — Rewo resolves no *serverbound* `container_close`, a gap that predates this and affects **every** screen close |
    | **anvil** | ✅ **complete end to end** (M93n + M93t): rename semantics, `rename_item`, and the **`EditBox`** — a subsystem Rewo had never had. Character input via `KeyEvent.text` (the seam it never read), the caret, selection, the four shortcuts, word motion, and the field's own background sprite, which `anvil.png` hides a **red placeholder** under. Left: the clipboard is **in-process**, not the OS's (no crate pulls it in); IME pre-edit is absent |
    | **stonecutter** | ✅ **complete end to end** (M93s): the recipe list, the grid, the three button chromes, the result icons, the scrollbar and every input path. **The class-C claim was wrong** — the third of this arc, after M91's furnace recipes and M93's merchant quick-move. The list is jar-derivable and the hard part was its ORDER, which is a wire contract because a click sends an *index*: `RecipeManager.prepare` loads into a `SortedMap<Identifier, _>` and `Identifier.compareTo` is **path first, then namespace** |
-   | merchant | genuinely class-C (`merchant_offers`) for its trade list — though M93 found its *quick-move* was never blocked by that packet at all |
+   | **merchant** | ✅ **the trade list ships** (M93u): `merchant_offers` decodes, `select_trade` sends, and the seven rows render with their three items, arrow and scrollbar. **The class-C label was wrong a fourth time** — unlike M91/M93s the *data* really is server-rolled, but the packet needed nothing Rewo had not built (`ItemStack`, and M52e's `TypedDataComponent` walker). Left: the **XP bar's fill**, which needs `VillagerData`'s per-level thresholds and `getFutureTraderXp` — menu state Rewo does not model; and the discounted-price pair with its strikethrough |
 
    **The crafter uses `container_slot_state_changed` (id 20), not
    `container_button_click` (17)** — `CrafterMenu` has no `clickMenuButton`
@@ -223,10 +223,10 @@ So, in ratio order:
    rows are done and `container_button_click` is shipped, so the loom and the
    crafter are *only* missing their button lists; the beacon needs
    `set_beacon` plus click-tracked `primary`/`secondary` state; the anvil
-   has its text field (M93t); and the merchant's trade list is genuinely blocked on
-   class-C `merchant_offers` — note M93 found its *quick-move* was never
-   blocked by that packet at all, and **M93s found the stonecutter was not
-   blocked by `update_recipes` either**.
+   has its text field (M93t); and **the merchant's trade list shipped in M93u**,
+   which makes four class-C claims this arc that did not survive the decompile
+   (M91's furnace recipes, M93's merchant *quick-move*, M93s's stonecutter
+   list, M93u's `merchant_offers`).
 3. **The M92 sweep is still open.** M93b closed the one instance it created
    (see below); nobody has looked for the others.
 
@@ -2370,6 +2370,96 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M93u — the merchant, and the fourth class-C claim to fall (2026-08-04)
+
+`REWO_PACKET_COVERAGE.md` filed `merchant_offers` as **class C**, "needs a
+subsystem Rewo lacks". It needed nothing Rewo had not already built —
+`ItemStack` (M34/M41) and the `TypedDataComponent` walker M52e wrote for
+`can_place_on`, which reaches the same `DataComponentExactPredicate` an
+`ItemCost` carries.
+
+**That is four this arc, and the reasons are not the same** — worth separating,
+because the pattern is only useful if the distinction is kept:
+
+| | why the claim failed |
+|---|---|
+| M91 furnace recipes | the data was in the **jar** |
+| M93 merchant quick-move | the packet was **never consulted** by that path |
+| M93s stonecutter list | the data was in the **jar**, and the hard part was its order |
+| **M93u `merchant_offers`** | the data really **is** server-rolled — but decoding it needed nothing new |
+
+So "blocked on a packet we don't decode" deserves a check against what the
+packet actually carries *and* against what decoding it would cost.
+
+**Three traps in the body**, each pinned by a round-trip over hand-built bytes:
+the order is **costA, result, costB** — the thing being sold sits *between* the
+two costs, while every constructor lists them `costA, costB, result` and
+`createFromStream` reorders them when it calls one; the numerics are
+`writeInt`, **fixed big-endian i32** in a var-int protocol, so a var-int
+reading turns a discount into a huge surcharge; and `Item.STREAM_CODEC` is
+`holderRegistry`, a **raw 0-based** id — the fifth appearance of that trap
+(M16, M21, M55, M92d, M93l) and among the quietest.
+
+**Two asymmetries in the price.** `demandDiff` clamps at 0 from below, so
+negative demand cannot make a trade cheaper — but `specialPriceDiff` is added
+*after* that clamp and is not floored, which is exactly how a hero-of-the-
+village discount works. And **only cost A is modified**; `getCostB()` returns
+the stack as sent. The final clamp's ceiling is the **item's own max stack
+size**, so it needs the prototype rather than the wire.
+
+**The scroll is not the stonecutter's with new numbers.** The stonecutter
+scrolls by whole *rows* through a fractional `scrollOffs` in `0..=1`; the
+merchant's `scrollOff` is an **offer index**, and one wheel notch moves exactly
+one offer — a 30-trade villager takes 23 notches. The drag's `+ 0.5` then
+`(int)` is a **round applied to the offer index** rather than to a fraction.
+
+**The thumb's bottom override, and a witness I had backwards.** I asserted the
+step "falls short" and used 30 offers to show it. At 30 it **overshoots** (138
+against a 113 ceiling) and `min(113, …)` caps it; the override is redundant
+there. Computing both regimes shows it is the **short scrollable lists** that
+fall short — 8, 9 and 10 offers land at 91, 106 and 111 — so the override is
+load-bearing exactly where intuition says it would not be. A second correction:
+`steps` is `size + 1 - 7`, so **eight** offers already draw a thumb; the real
+rule is `steps > 1` ⟺ `size > 7`, the same threshold as `can_scroll` by
+different arithmetic.
+
+**Reading the render loop caught two offsets no witness covered.**
+`offerY = yo + 16 + 1` while `init`'s `buttonY = yo + 16 + 2`, so a row's
+**items sit one pixel above its button** — deriving them from `button_y`, the
+obvious thing, puts every icon a pixel low. And `sellItem1X = xo + 5 + 5`, so
+**cost A adds the button's 5 twice** and sits at 10, while the other two are
+written inline; reading `SELL_ITEM_1_X = 5` alone gives 5.
+
+**And M93s's lesson twice in one milestone.** The arrow's x was `xo + 5 + 35 +
+20` and I had `5 + 5 + 20`, putting every arrow 30 px left on top of the cost-A
+icon — the witness caught it. Then the witness failed again and I explained it
+*wrongly*, claiming the two arrow sprites share their centre; the diff map says
+otherwise and the centre differs too. Read the sprites first, and do not invent
+a reason a witness passed.
+
+**A surviving mutation that is equivalent here and not in vanilla**, which is a
+distinction worth keeping: removing the visibility guard changes nothing,
+because this computes `row = i - scroll_off` directly. Vanilla's `offerY`
+advances only *inside* the drawn branch, so it counts drawn offers and dropping
+the guard would stack every offer down the panel.
+
+**Measured.** 1916 tests / 0 failures; `containershot` 63 → **67**;
+`inventoryshot` 152, `itemshot` 75, `handshot` 34, `mobshot` 246/246; **`live
+--render-check` 22/22, validation ON, 0 errors**; demo PNG `2cc56b4acbfb92cb`
+byte-identical. `REWO_PACKET_COVERAGE.md` **110 / 0 / 31**, class C 21 → 20 —
+and M74's machine check caught two things within a minute of the edit: the
+table's vocabulary is "handled", not "consumed", and §2's counts move with the
+row.
+
+**Open.** The **XP bar's fill** needs `VillagerData`'s per-level thresholds and
+`getFutureTraderXp`, which is menu state Rewo does not model — the three
+sprites are in the atlas and nothing draws them. The **discounted price pair**
+(`extractAndDecorateCostA` draws the base count, the modified count 14 px
+right, and a 9x2 strikethrough) is modelled by `discounted()` and not rendered.
+The trade button's own chrome is a `Button.Plain` and is not drawn.
+
+---
 
 ### M93t — the EditBox: a text-entry subsystem, and a red band (2026-08-04)
 

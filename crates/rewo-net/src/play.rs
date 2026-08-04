@@ -385,6 +385,8 @@ pub struct PlaySession {
     codec: FrameCodec,
     rx: Receiver<Vec<u8>>,
     pub ids: Ids,
+    /// The villager trade list, when a merchant screen is open (M93u).
+    pub merchant: Option<crate::merchant::MerchantOffers>,
     /// Server-reported latency per player, in milliseconds (M52c).
     ///
     /// **This is the only ping a client can know**, and the reason is worth
@@ -1413,6 +1415,7 @@ impl<'a> Connection<'a> {
             .map(|r| r.global_bits)
             .unwrap_or(7);
         let mut session = PlaySession {
+            merchant: None,
             writer,
             codec,
             rx,
@@ -2688,6 +2691,27 @@ impl PlaySession {
             // M87 — `open_screen` and `container_set_data`. State only so far:
             // the menu's own item slots arrive when `Inventory` becomes a
             // layout-driven menu, and nothing renders it yet.
+        } else if id == ids.cb_play_merchant_offers {
+            // M93u. The coverage doc filed this as class C; it needed nothing
+            // Rewo had not already built — `ItemStack` (M34/M41) and the
+            // `TypedDataComponent` walker M52e wrote for `can_place_on`.
+            // The component ids ride on `swing_data`, which is where every
+            // other `read_optional` caller finds them; with no registry yet
+            // there is nothing to decode a stack against, so the packet is
+            // dropped rather than guessed at.
+            match self
+                .swing_data
+                .as_ref()
+                .map(|d| d.components)
+                .ok_or_else(|| "merchant_offers: no component registry".to_string())
+                .and_then(|ids| crate::merchant::parse(body, ids))
+            {
+                Ok(m) => self.merchant = Some(m),
+                // A short or malformed body is dropped whole rather than
+                // applied in part: half a trade list is worse than none, since
+                // the index a click sends addresses the list by position.
+                Err(e) => log::warn!("net: {e}"),
+            }
         } else if id == ids.cb_play_game_event {
             // M33 took the four weather ids; M71 took the other ten. One
             // decode feeds the weather levels, the client game state and the
@@ -3917,6 +3941,21 @@ impl PlaySession {
         };
         let mut p = PacketWriter::packet(id);
         p.buf.extend_from_slice(&crate::rename_item_body(name));
+        self.send(p)
+    }
+
+    /// `MerchantScreen.TradeOfferButton.onPress` — `select_trade` (M93u).
+    ///
+    /// One var-int, the offer's index in the list the server sent. Vanilla
+    /// also calls `menu.setSelectionHint(index)` and `menu.tryMoveItems(index)`
+    /// **locally first**, so the trade's items appear in the slots before the
+    /// server answers; the packet is what makes it real.
+    pub fn select_trade(&mut self, index: i32) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_select_trade else {
+            return Err("select_trade unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        p.varint(index);
         self.send(p)
     }
 

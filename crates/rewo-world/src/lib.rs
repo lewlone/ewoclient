@@ -8,6 +8,7 @@
 pub mod abilities;
 pub mod anvil;
 pub mod edit_box;
+pub mod merchant_screen;
 pub mod attributes;
 pub mod biome;
 pub mod biome_noise;

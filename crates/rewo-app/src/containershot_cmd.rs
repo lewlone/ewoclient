@@ -726,7 +726,7 @@ fn overlays(
      -> Result<Vec<u8>, String> {
         let open = m.open().expect("a menu must be open");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, false, effects, None, None, None, None,
+            open, 30, false, effects, None, None, None, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -821,7 +821,7 @@ fn overlays(
         // answer: false gives three UNAFFORDABLE rows, true three available
         // ones — same costs, different backgrounds.
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, creative, effects, mouse, None, None, None,
+            open, 30, creative, effects, mouse, None, None, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -903,7 +903,7 @@ fn overlays(
         let m = menu(9, &[(0, levels), (1, primary), (2, 0)]);
         let open = m.open().unwrap();
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, false, effects, None, None, None, None,
+            open, 30, false, effects, None, None, None, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -961,7 +961,7 @@ fn overlays(
         let m = menu(7, data);
         let open = m.open().expect("a menu must be open");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, false, effects, None, None, None, None,
+            open, 30, false, effects, None, None, None, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -1137,6 +1137,7 @@ fn overlays(
                 W as f32,
                 H as f32,
                 Some(open),
+                None,
                 None,
             )
             .0
@@ -1373,7 +1374,7 @@ fn overlays(
             let m = menu(9, &[(0, 4)]);
             let open = m.open().expect("open");
             wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-                open, 30, false, effects, None, over, None, None,
+                open, 30, false, effects, None, over, None, None, None,
             ));
             wr.set_container(true, None);
             shot(gpu, off, wr)
@@ -1434,7 +1435,7 @@ fn overlays(
             let m = menu(11, &[]);
             let open = m.open().expect("open");
             let mut panel = crate::live_cmd::container_panel_for_open_menu(
-                open, 30, false, effects, None, None, None, None,
+                open, 30, false, effects, None, None, None, None, None,
             )
             .ok_or("containershot: no brewing panel")?;
             panel.overlays = overlays;
@@ -1510,6 +1511,7 @@ fn overlays(
                     start_row: 0,
                     patterns: one,
                 }),
+                None,
                 None,
             ));
             wr.set_container(true, None);
@@ -1589,6 +1591,7 @@ fn overlays(
                 None,
                 None,
                 view.as_ref(),
+                None,
             ));
             wr.set_container(true, None);
             shot(gpu, off, wr)
@@ -1758,7 +1761,7 @@ fn overlays(
             field.set_focused(true);
             setup(&mut field);
             let mut panel = crate::live_cmd::container_panel_for_open_menu(
-                open, 30, false, effects, None, None, None, None,
+                open, 30, false, effects, None, None, None, None, None,
             )
             .ok_or("containershot: no anvil panel")?;
             // A 6-px monospace advance, so the geometry is arithmetic.
@@ -1880,6 +1883,132 @@ fn overlays(
         );
     }
 
+    // y1..y4 — the merchant's trade list (M93u).
+    {
+        use rewo_world::merchant_screen as ms;
+        let mer_layout = rewo_world::menu_layout::layout_of(19).unwrap();
+        let at_mer = probe(mer_layout);
+        let offer = |out_of_stock: bool| rewo_net::merchant::MerchantOffer {
+            cost_a: rewo_net::merchant::ItemCost {
+                item_id: 1,
+                count: 4,
+                constrained: false,
+            },
+            result: rewo_net::item_stack::WireSlot::Empty,
+            cost_b: None,
+            out_of_stock,
+            uses: 0,
+            max_uses: 16,
+            xp: 2,
+            special_price_diff: 0,
+            price_multiplier: 0.05,
+            demand: 0,
+        };
+        let mut mer_frame = |n: usize,
+                             scroll: i32,
+                             spent: bool,
+                             gpu: &mut Gpu,
+                             off: &mut Offscreen,
+                             wr: &mut WorldRenderer|
+         -> Result<Vec<u8>, String> {
+            let m = menu(19, &[]);
+            let open = m.open().expect("open");
+            let offers: Vec<_> = (0..n).map(|i| offer(spent && i == 0)).collect();
+            let view = crate::live_cmd::MerchantView {
+                cost_a_counts: vec![4; n],
+                offers,
+                scroll_off: scroll,
+                selected: 0,
+            };
+            wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
+                open,
+                30,
+                false,
+                effects,
+                None,
+                None,
+                None,
+                None,
+                Some(&view),
+            ));
+            wr.set_container(true, None);
+            shot(gpu, off, wr)
+        };
+        // The trade arrow's centre, for row 0.
+        // The arrow's centre for row 0. `COST_B_X + 20` — past cost B, which
+        // is where the first cut of the ARM had it wrong too.
+        let (ax, ay) = (ms::COST_B_X + 20 + 5, ms::row_item_y(0) + 3 + 4);
+        let empty = mer_frame(0, 0, false, gpu, off, wr)?;
+        let three = mer_frame(3, 0, false, gpu, off, wr)?;
+
+        c.record(
+            "y1.a_visible_offer_draws_its_trade_arrow",
+            at_mer(&three, ax, ay) != at_mer(&empty, ax, ay),
+            format!(
+                "row 0 reads {:?} with three offers and {:?} with none",
+                at_mer(&three, ax, ay),
+                at_mer(&empty, ax, ay)
+            ),
+        );
+
+        // y2 — a spent offer wears the out-of-stock arrow, a DIFFERENT sprite.
+        // Probe the X's own arm, sprite (6, 2), where `trade_arrow.png` is
+        // (198,198,198) and `trade_arrow_out_of_stock.png` is (150,35,0) —
+        // read out of the PNGs rather than found by trial.
+        //
+        // This witness failed twice and BOTH times the fault was elsewhere.
+        // First the arm drew the arrow at `5 + 5 + 20` where vanilla writes
+        // `xo + 5 + 35 + 20`, putting every arrow 30 px left on top of the
+        // cost-A icon — so the probe was reading bare panel. Then I explained
+        // the survivor by claiming the two sprites share their centre; the
+        // diff map says otherwise (row y=4 is `....XXX...`), and the centre
+        // differs too. The lesson is the one M93s records: read the sprites
+        // first, and do not invent a reason a witness passed.
+        let spent = mer_frame(3, 0, true, gpu, off, wr)?;
+        let (dx, dy) = (ms::COST_B_X + 20 + 6, ms::row_item_y(0) + 3 + 2);
+        c.record(
+            "y2.a_spent_offer_wears_a_different_arrow",
+            at_mer(&spent, dx, dy) == [150, 35, 0] && at_mer(&three, dx, dy) == [198, 198, 198],
+            format!(
+                "at the X's arm a spent row reads {:?} — `trade_arrow_out_of_stock.png`'s                  own (150,35,0) — against {:?} in stock. Named rather than merely different,                  so swapping the pair cannot pass",
+                at_mer(&spent, dx, dy),
+                at_mer(&three, dx, dy)
+            ),
+        );
+
+        // y3 — the scroller appears exactly when the list scrolls, which is
+        // `steps > 1` reached by different arithmetic than `can_scroll`.
+        let sx = ms::SCROLL_X + 3;
+        let seven = mer_frame(7, 0, false, gpu, off, wr)?;
+        let nine = mer_frame(9, 0, false, gpu, off, wr)?;
+        let sy = ms::scroller_y(0, 9).expect("nine scrolls") + 13;
+        c.record(
+            "y3.the_scroller_appears_exactly_when_the_list_scrolls",
+            at_mer(&nine, sx, sy) != at_mer(&seven, sx, sy) && ms::scroller_y(0, 7).is_none(),
+            format!(
+                "nine offers draw a thumb ({:?}) where seven do not ({:?}) — `steps > 1` is                  `size > 7`, the same threshold as `can_scroll` by other arithmetic",
+                at_mer(&nine, sx, sy),
+                at_mer(&seven, sx, sy)
+            ),
+        );
+
+        // y4 — scrolling moves WHICH offers are drawn, not where the rows are.
+        // With 9 offers and scroll 2, offer 8 occupies row 6.
+        let scrolled = mer_frame(9, 2, false, gpu, off, wr)?;
+        let bottom = (ax, ms::row_item_y(6) + 3 + 4);
+        let unscrolled_bottom = at_mer(&nine, bottom.0, bottom.1);
+        let scrolled_bottom = at_mer(&scrolled, bottom.0, bottom.1);
+        c.record(
+            "y4.the_window_slides_over_the_offers_and_the_rows_stay_put",
+            unscrolled_bottom == scrolled_bottom
+                && ms::offer_visible(8, 2, 9)
+                && !ms::offer_visible(8, 0, 9),
+            format!(
+                "row 6 draws an arrow either way ({unscrolled_bottom:?} /                  {scrolled_bottom:?}) — the ROW is fixed and the offer in it changes, so                  offer 8 is invisible at scroll 0 and visible at scroll 2"
+            ),
+        );
+    }
+
     if let Some(d) = &args.out_dir {
         let _ = std::fs::write(d.join("containershot-overlays.txt"), "see the PNGs");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
@@ -1887,6 +2016,7 @@ fn overlays(
             30,
             false,
             effects,
+            None,
             None,
             None,
             None,

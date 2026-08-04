@@ -31,6 +31,7 @@ pub mod game_event;
 pub mod hud_state;
 pub mod ids;
 pub mod item_stack;
+pub mod merchant;
 pub mod menu;
 pub mod metadata;
 pub mod motion;
