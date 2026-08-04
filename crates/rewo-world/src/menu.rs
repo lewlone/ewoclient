@@ -297,6 +297,19 @@ pub enum CrafterToggle {
     None,
 }
 
+impl OpenMenu {
+    /// `LoomMenu.getSelectedBannerPatternIndex` — its single data slot (M93q).
+    ///
+    /// `LoomMenu` calls `addDataSlot(this.selectedBannerPatternIndex)` once, so
+    /// this is slot 0 and there is no other. **-1 is "none selected"**, which
+    /// is `setupResultSlot`'s own initial value and not an error — 0 is a
+    /// perfectly good pattern index, exactly as it is for the enchanting
+    /// table's clues (M92).
+    pub fn loom_selected_pattern(&self) -> i32 {
+        self.data(0) as i32
+    }
+}
+
 /// Whether a click lands on a crafter's grid, which is the outer gate before
 /// any of the toggle logic (M93i).
 ///

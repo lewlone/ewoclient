@@ -393,9 +393,26 @@ pub fn loom_pattern_preview(cell_x: i32, cell_y: i32) -> ProgressBlit {
 
 /// `DyeColor.GRAY.getTextureDiffuseColor()` — the preview's flat backing.
 ///
-/// M28c's finding applies: the dye table is `getTextureDiffuseColor`, **not**
-/// the sign's `getTextColor`, and the two differ.
-pub const LOOM_PREVIEW_BACKING: u32 = 0x3F3F3F;
+/// ```java
+/// GRAY(7, "gray", 4673362, MapColor.COLOR_GRAY, MapColor.TERRACOTTA_GRAY, 4408131, 8421504),
+///
+/// DyeColor(int id, String name, int textureDiffuseColor, MapColor mapColor,
+///          MapColor terracottaColor, int fireworkColor, int textColor)
+/// ```
+///
+/// So it is the **third** constructor argument, `4673362` = `0x474F52` — a
+/// blue-grey. M28c's finding applies and is the reason to count the arguments
+/// rather than take the grey-looking one: the dye table is
+/// `getTextureDiffuseColor`, **not** the sign's `getTextColor`, and GRAY's two
+/// differ by more than a shade (`0x474F52` against `0x808080`). Its
+/// `fireworkColor` is `0x434343`, a third value, and the neutral one — which is
+/// exactly the trap, because a plain grey is what a guess produces.
+///
+/// M93p shipped `0x3F3F3F` here, which is none of the three. The gate could not
+/// see it: `o21` reads THIS constant to compute its expectation, so a wrong
+/// value moved the render and the witness together. That is why the number is
+/// pinned below against the decompile literal rather than against itself.
+pub const LOOM_PREVIEW_BACKING: u32 = 0x474F52;
 
 /// Where cell `(row, column)` of the visible window sits, relative to the
 /// panel — the same arithmetic `loom_cell_at` inverts.
@@ -2244,6 +2261,16 @@ mod m93l_beacon_press {
 
 // -- LoomScreen's pattern grid (M93o) ---------------------------------------
 
+/// `minecraft:menu`'s `loom` id.
+pub const LOOM_MENU_PROTOCOL_ID: i32 = 18;
+
+/// The preview's flat grey backing — `fill(0, 0, 5, 10, ...)` at the same
+/// origin as the pattern, and under it.
+pub fn loom_preview_backing(cell_x: i32, cell_y: i32) -> ProgressBlit {
+    let p = loom_pattern_preview(cell_x, cell_y);
+    ProgressBlit { src: None, ..p }
+}
+
 /// The pattern grid's origin, relative to the panel.
 pub const LOOM_GRID_X: i32 = 60;
 pub const LOOM_GRID_Y: i32 = 13;
@@ -2330,6 +2357,30 @@ pub fn loom_can_scroll(display_patterns: bool, selectable: usize) -> bool {
 #[cfg(test)]
 mod m93o_loom_grid {
     use super::*;
+
+    #[test]
+    #[allow(non_snake_case)] // the emphasis is the point
+    fn the_backing_is_grays_TEXTURE_DIFFUSE_and_not_a_plausible_grey() {
+        // Stated as the decompile's own literal — the third constructor
+        // argument of `GRAY(7, "gray", 4673362, ...)` — rather than by
+        // comparing the constant to itself. `o21` in `containershot` renders
+        // this colour AND reads it to compute its expectation, so it is a
+        // sound witness for the draw ORDER and a vacuous one for the VALUE;
+        // M93p's `0x3F3F3F` survived it for exactly that reason.
+        assert_eq!(LOOM_PREVIEW_BACKING, 4673362);
+        // The two neighbouring arguments are what a guess lands on, and both
+        // are more neutral than the right answer, which is faintly blue.
+        assert_ne!(LOOM_PREVIEW_BACKING, 0x808080, "that is getTextColor");
+        assert_ne!(LOOM_PREVIEW_BACKING, 0x434343, "that is fireworkColor");
+        assert_ne!(LOOM_PREVIEW_BACKING, 0x3F3F3F, "that is a guess (M93p)");
+        // It is not grey at all: R < G < B.
+        let (r, g, b) = (
+            LOOM_PREVIEW_BACKING >> 16,
+            (LOOM_PREVIEW_BACKING >> 8) & 0xFF,
+            LOOM_PREVIEW_BACKING & 0xFF,
+        );
+        assert!(r < g && g < b, "{r} {g} {b} — the fill leans blue");
+    }
 
     #[test]
     fn the_cells_tile_with_no_gap_and_no_bleed() {
