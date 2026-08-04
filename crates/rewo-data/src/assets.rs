@@ -1559,6 +1559,19 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     "gui/sprites/container/anvil/text_field.png",
     "gui/sprites/container/anvil/text_field_disabled.png",
     "gui/sprites/container/anvil/error.png",
+    // 87..=95 — the merchant (M93u). The scroller pair and the trade-arrow
+    // pair each follow the ACTIVE-FIRST convention the stonecutter's use, so
+    // `+ usize::from(!ok)` picks the disabled one.
+    "gui/sprites/container/villager/scroller.png",
+    "gui/sprites/container/villager/scroller_disabled.png",
+    "gui/sprites/container/villager/trade_arrow.png",
+    "gui/sprites/container/villager/trade_arrow_out_of_stock.png",
+    "gui/sprites/container/villager/out_of_stock.png",
+    "gui/sprites/container/villager/discount_strikethrough.png",
+    // The XP bar's three layers, drawn background → current → result.
+    "gui/sprites/container/villager/experience_bar_background.png",
+    "gui/sprites/container/villager/experience_bar_current.png",
+    "gui/sprites/container/villager/experience_bar_result.png",
 ];
 
 /// The loom's three pattern-button chromes, in `LoomScreen`'s test order:
@@ -1567,6 +1580,17 @@ pub const LOOM_PATTERN_CHROME: usize = 33;
 
 /// Where the banner patterns start in [`MENU_OVERLAY_SPRITES`] (M93q).
 pub const BANNER_PATTERN_OVERLAY: usize = 36;
+
+/// The merchant's scroller, **active first** (M93u).
+pub const VILLAGER_SCROLLER: usize = 87;
+/// Its trade arrow, likewise — `+ usize::from(out_of_stock)`.
+pub const VILLAGER_TRADE_ARROW: usize = 89;
+/// The red X drawn over a spent trade's arrow.
+pub const VILLAGER_OUT_OF_STOCK: usize = 91;
+/// The 9x2 line struck through a discounted base price.
+pub const VILLAGER_STRIKETHROUGH: usize = 92;
+/// The XP bar's three layers: background, current, result.
+pub const VILLAGER_XP_BAR: usize = 93;
 
 /// The anvil's name-field background, **enabled first** —
 /// `CUT_SCROLLER`'s convention: `ANVIL_TEXT_FIELD + usize::from(!has_item)`.

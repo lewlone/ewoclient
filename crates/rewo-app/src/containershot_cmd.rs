@@ -726,7 +726,7 @@ fn overlays(
      -> Result<Vec<u8>, String> {
         let open = m.open().expect("a menu must be open");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, false, effects, None, None, None, None,
+            open, 30, false, effects, None, None, None, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -821,7 +821,7 @@ fn overlays(
         // answer: false gives three UNAFFORDABLE rows, true three available
         // ones — same costs, different backgrounds.
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, creative, effects, mouse, None, None, None,
+            open, 30, creative, effects, mouse, None, None, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -903,7 +903,7 @@ fn overlays(
         let m = menu(9, &[(0, levels), (1, primary), (2, 0)]);
         let open = m.open().unwrap();
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, false, effects, None, None, None, None,
+            open, 30, false, effects, None, None, None, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -961,7 +961,7 @@ fn overlays(
         let m = menu(7, data);
         let open = m.open().expect("a menu must be open");
         wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-            open, 30, false, effects, None, None, None, None,
+            open, 30, false, effects, None, None, None, None, None,
         ));
         wr.set_container(true, None);
         shot(gpu, off, wr)
@@ -1137,6 +1137,7 @@ fn overlays(
                 W as f32,
                 H as f32,
                 Some(open),
+                None,
                 None,
             )
             .0
@@ -1373,7 +1374,7 @@ fn overlays(
             let m = menu(9, &[(0, 4)]);
             let open = m.open().expect("open");
             wr.set_container_panel(crate::live_cmd::container_panel_for_open_menu(
-                open, 30, false, effects, None, over, None, None,
+                open, 30, false, effects, None, over, None, None, None,
             ));
             wr.set_container(true, None);
             shot(gpu, off, wr)
@@ -1434,7 +1435,7 @@ fn overlays(
             let m = menu(11, &[]);
             let open = m.open().expect("open");
             let mut panel = crate::live_cmd::container_panel_for_open_menu(
-                open, 30, false, effects, None, None, None, None,
+                open, 30, false, effects, None, None, None, None, None,
             )
             .ok_or("containershot: no brewing panel")?;
             panel.overlays = overlays;
@@ -1510,6 +1511,7 @@ fn overlays(
                     start_row: 0,
                     patterns: one,
                 }),
+                None,
                 None,
             ));
             wr.set_container(true, None);
@@ -1589,6 +1591,7 @@ fn overlays(
                 None,
                 None,
                 view.as_ref(),
+                None,
             ));
             wr.set_container(true, None);
             shot(gpu, off, wr)
@@ -1758,7 +1761,7 @@ fn overlays(
             field.set_focused(true);
             setup(&mut field);
             let mut panel = crate::live_cmd::container_panel_for_open_menu(
-                open, 30, false, effects, None, None, None, None,
+                open, 30, false, effects, None, None, None, None, None,
             )
             .ok_or("containershot: no anvil panel")?;
             // A 6-px monospace advance, so the geometry is arithmetic.
@@ -1887,6 +1890,7 @@ fn overlays(
             30,
             false,
             effects,
+            None,
             None,
             None,
             None,

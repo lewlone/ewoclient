@@ -3818,6 +3818,8 @@ fn run_headless(
             None,
             // …nor an anvil, so there is no field to draw.
             None,
+            // …nor a merchant.
+            None,
         );
         headless_screen_labels = labels;
     } else {
@@ -4705,6 +4707,15 @@ impl ApplicationHandler for LiveApp {
                     ) {
                         return;
                     }
+                    // M93u — the merchant's trade buttons, on the same seam.
+                    if merchant_press(
+                        session,
+                        &mut self.screen,
+                        ext.width as f32,
+                        ext.height as f32,
+                    ) {
+                        return;
+                    }
                     // `AbstractContainerScreen.mouseClicked`'s double click:
                     // the **same slot**, the **left** button, and under 250 ms
                     // since the last one. Not "two clicks anywhere in
@@ -4760,6 +4771,9 @@ impl ApplicationHandler for LiveApp {
                 // that vanishes mid-drag does not strand the grab (M93s).
                 if let Some(c) = self.screen.cut.as_mut() {
                     c.scrolling = false;
+                }
+                if let Some(m) = self.screen.merchant.as_mut() {
+                    m.dragging = false;
                 }
                 if let Some(session) = self.session.as_mut() {
                     finish_drag(session, &items, &mut self.drag);
@@ -4820,6 +4834,7 @@ impl ApplicationHandler for LiveApp {
                 // Guarded on `isScrollBarActive` as well as `scrolling`, so a
                 // list that shrinks under a held thumb stops moving.
                 self.cut_drag();
+                self.merchant_drag();
                 // Crossing a slot with the button down extends a drag. The
                 // slot only *joins* it if the server would accept it, and that
                 // is decided at release — this records the path.
@@ -4856,6 +4871,7 @@ impl ApplicationHandler for LiveApp {
                 // true whether or not the bar is active, so the screen
                 // swallows every notch; only an active bar moves.
                 self.cut_wheel(dy);
+                self.merchant_wheel(dy);
             }
             WindowEvent::RedrawRequested => self.frame(event_loop),
             _ => {}
@@ -4940,6 +4956,61 @@ impl LiveApp {
         );
         if let Some(c) = self.screen.cut.as_mut() {
             c.scroll_offs = ms::cut_scroll_offs_from_drag(gy);
+        }
+    }
+
+    /// `MerchantScreen.mouseDragged` / `mouseScrolled` (M93u).
+    fn merchant_drag(&mut self) {
+        use rewo_world::merchant_screen as ms;
+        if !self.screen.merchant.is_some_and(|l| l.dragging) {
+            return;
+        }
+        let Some(ext) = self.state.as_ref().map(|s| s.window.inner_size()) else {
+            return;
+        };
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let Some(open) = session.menus.open() else {
+            return;
+        };
+        if open.layout.protocol_id != ms::MERCHANT_MENU_PROTOCOL_ID {
+            return;
+        }
+        let n = session.merchant.as_ref().map_or(0, |m| m.offers.len());
+        // `mouseDragged` is NOT gated on `canScroll` — only on `isDragging` —
+        // but `maxScrollOff` goes negative for a short list, so the clamp is
+        // what keeps it at 0. Guarding here would be a deviation that happens
+        // to agree.
+        let (_, gy) = rewo_gpu::container::screen_to_gui_for(
+            self.screen.mouse,
+            ext.width as f32,
+            ext.height as f32,
+            open.layout.image_w as f32,
+            open.layout.image_h as f32,
+        );
+        if let Some(l) = self.screen.merchant.as_mut() {
+            l.scroll_off = ms::scroll_off_from_drag(gy, n);
+        }
+    }
+
+    fn merchant_wheel(&mut self, dy: f64) {
+        use rewo_world::merchant_screen as ms;
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let Some(open) = session.menus.open() else {
+            return;
+        };
+        if open.layout.protocol_id != ms::MERCHANT_MENU_PROTOCOL_ID {
+            return;
+        }
+        let n = session.merchant.as_ref().map_or(0, |m| m.offers.len());
+        if !ms::can_scroll(n) {
+            return;
+        }
+        if let Some(l) = self.screen.merchant.as_mut() {
+            l.scroll_off = ms::scroll_off_from_wheel(l.scroll_off, dy, n);
         }
     }
 
@@ -6187,6 +6258,24 @@ impl LiveApp {
                     .open()
                     .filter(|m| m.layout.protocol_id == ANVIL_MENU_PROTOCOL_ID)
                     .map(|m| anvil_local(&mut self.screen, m, &items).field.clone());
+                // M93u — the merchant's trade list, from the session's decoded
+                // offers plus the screen's own scroll.
+                let merchant = session
+                    .menus
+                    .open()
+                    .filter(|m| {
+                        m.layout.protocol_id
+                            == rewo_world::merchant_screen::MERCHANT_MENU_PROTOCOL_ID
+                    })
+                    .zip(session.merchant.as_ref())
+                    .map(|(m, offers)| {
+                        // The clamp's ceiling is the item's own max stack size,
+                        // through the SAME production resolver every other
+                        // consumer uses (M93b's rule).
+                        let props =
+                            |id: i32| item_props(&items, id).map_or(64, |p| p.max_stack);
+                        merchant_view(&mut self.screen, m, offers, &props)
+                    });
                 let (labels, velvet) = apply_screen(
                     &mut state.world_renderer,
                     &mut state.gpu,
@@ -6206,6 +6295,7 @@ impl LiveApp {
                     beacon_override,
                     cut.as_ref(),
                     anvil_field.as_ref(),
+                    merchant.as_ref(),
                 );
                 self.screen_labels = labels;
                 // M88 — read the panel back OUT of the renderer, after the
@@ -10772,6 +10862,8 @@ pub struct ScreenState {
     /// The anvil's name field (M93t). Screen-local: no packet carries the text
     /// being typed, only the `rename_item` it produces.
     pub anvil: Option<AnvilLocal>,
+    /// The merchant's screen-local scroll (M93u).
+    pub merchant: Option<MerchantLocal>,
     /// Set when a beacon button asks for the screen to close (M93m). Drained
     /// by the frame loop rather than closing from inside the press, so the
     /// close goes through the one path that owns the screen.
@@ -11175,6 +11267,9 @@ fn apply_screen(
     // beacon's choice and the stonecutter's grid are: it is screen-local state
     // and `apply_screen` holds no `ScreenState`.
     anvil_field: Option<&rewo_world::edit_box::EditBox>,
+    // M93u — the merchant's trade list, resolved by the caller for the same
+    // reason: it needs the screen-local scroll.
+    merchant: Option<&MerchantView>,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
@@ -11246,6 +11341,7 @@ fn apply_screen(
             loom,
             cut,
             anvil_fills: &anvil_fills,
+            merchant,
         },
         Some(rewo_gpu::container::screen_to_gui_for(
             mouse,
@@ -11257,7 +11353,7 @@ fn apply_screen(
     ));
 
     let (mut icons, mut labels) =
-        screen_icons(menu, items, &session.trim_materials, w, h, session.menus.open(), cut);
+        screen_icons(menu, items, &session.trim_materials, w, h, session.menus.open(), cut, merchant);
     if let Some((icon, label)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h) {
         icons.push(icon);
         labels.extend(label);
@@ -11276,6 +11372,7 @@ fn apply_screen(
                 loom,
                 cut,
                 anvil_fills: &anvil_fills,
+                merchant,
             },
             Some(rewo_gpu::container::screen_to_gui_for(
                 mouse,
@@ -11811,6 +11908,115 @@ fn anvil_flush(
     }
 }
 
+/// `MerchantScreen.mouseClicked` — a trade button, or a scrollbar grab (M93u).
+///
+/// The button's press sets `shopItem = getIndex() + scrollOff` and then
+/// `postButtonClick`, which does three things in order: `setSelectionHint`,
+/// `tryMoveItems` and only then the packet. The first two are LOCAL — the
+/// trade's items appear in the slots before the server answers — so a click
+/// that the server later rejects still moved the screen first.
+///
+/// The scrollbar grab, like the stonecutter's, does **not** consume the press:
+/// vanilla sets `isDragging` and falls through to `super.mouseClicked`.
+fn merchant_press(
+    session: &mut PlaySession,
+    screen: &mut ScreenState,
+    w: f32,
+    h: f32,
+) -> bool {
+    use rewo_world::merchant_screen as ms;
+    let Some(open) = session.menus.open() else {
+        return false;
+    };
+    if open.layout.protocol_id != ms::MERCHANT_MENU_PROTOCOL_ID {
+        return false;
+    }
+    let n = session.merchant.as_ref().map_or(0, |m| m.offers.len());
+    let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
+        screen.mouse,
+        w,
+        h,
+        open.layout.image_w as f32,
+        open.layout.image_h as f32,
+    );
+    let scroll_off = screen.merchant.map_or(0, |l| l.scroll_off);
+    // The grab is tested FIRST in vanilla and does not return; the button is
+    // an ordinary widget press, which happens inside `super`.
+    if ms::can_scroll(n) && ms::scroller_grabbed(gx, gy) {
+        if let Some(l) = screen.merchant.as_mut() {
+            l.dragging = true;
+        }
+    }
+    let Some(button) = ms::button_at(gx, gy) else {
+        return false;
+    };
+    let offer = ms::offer_for_button(button, scroll_off);
+    // A button past the end of the list is drawn but dead — vanilla hides the
+    // widget (`visible = false`) rather than disabling it, so there is nothing
+    // there to press.
+    if offer as usize >= n {
+        return false;
+    }
+    if let Err(e) = session.select_trade(offer) {
+        log::warn!("select_trade {offer}: {e}");
+    }
+    true
+}
+
+/// What the merchant's trade list needs, resolved by the caller (M93u).
+#[derive(Debug, Clone)]
+pub struct MerchantView {
+    /// The offers as sent, in the order the click's index addresses.
+    pub offers: Vec<rewo_net::merchant::MerchantOffer>,
+    /// `MerchantScreen.scrollOff` — an **offer index**, not a fraction.
+    pub scroll_off: i32,
+    /// Each offer's modified cost-A count, resolved here because the clamp's
+    /// ceiling is the item's own max stack size and only this side holds the
+    /// item table.
+    pub cost_a_counts: Vec<i32>,
+}
+
+/// The merchant screen's scroll, which no packet carries (M93u).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MerchantLocal {
+    container_id: i32,
+    pub scroll_off: i32,
+    pub dragging: bool,
+}
+
+/// Resolve the view, seeding the scroll on a new container.
+pub(crate) fn merchant_view(
+    screen: &mut ScreenState,
+    m: &rewo_world::menu::OpenMenu,
+    offers: &rewo_net::merchant::MerchantOffers,
+    props: &dyn Fn(i32) -> i32,
+) -> MerchantView {
+    let stale = screen.merchant.is_none_or(|l| l.container_id != m.container_id);
+    if stale {
+        screen.merchant = Some(MerchantLocal {
+            container_id: m.container_id,
+            scroll_off: 0,
+            dragging: false,
+        });
+    }
+    let local = screen.merchant.expect("just seeded");
+    MerchantView {
+        cost_a_counts: offers
+            .offers
+            .iter()
+            .map(|o| o.modified_cost_a(props(o.cost_a.item_id)))
+            .collect(),
+        offers: offers.offers.clone(),
+        // Clamped on read rather than on write: the list can SHRINK under a
+        // held scroll when the villager restocks, and vanilla's own guard is
+        // `offer_visible`'s `!canScroll` short-circuit rather than a stored
+        // clamp.
+        scroll_off: local
+            .scroll_off
+            .min(rewo_world::merchant_screen::max_scroll_off(offers.offers.len()).max(0)),
+    }
+}
+
 /// `minecraft:menu`'s `anvil` id.
 pub const ANVIL_MENU_PROTOCOL_ID: i32 = 8;
 
@@ -12254,6 +12460,64 @@ fn menu_overlays(
                 }
             }
         }
+        // merchant (M93u): the scroller, then per visible offer a trade arrow.
+        // The three ITEMS per row are icons and go through the GUI-item pass.
+        rewo_world::merchant_screen::MERCHANT_MENU_PROTOCOL_ID => {
+            use rewo_world::merchant_screen as ms;
+            let Some(v) = player.merchant else { return out };
+            let n = v.offers.len();
+            if let Some(y) = ms::scroller_y(v.scroll_off, n) {
+                out.push((
+                    a::VILLAGER_SCROLLER + usize::from(!ms::can_scroll(n)),
+                    to_blit(rewo_world::menu_screen::ProgressBlit {
+                        dx: ms::SCROLL_X,
+                        dy: y,
+                        w: ms::SCROLLER_W,
+                        h: ms::SCROLLER_H,
+                        sx: 0,
+                        sy: 0,
+                        src: None,
+                    }),
+                ));
+            }
+            for (i, offer) in v.offers.iter().enumerate() {
+                let i = i as i32;
+                if !ms::offer_visible(i, v.scroll_off, n) {
+                    continue;
+                }
+                // The row is the offer's position in the WINDOW, which is the
+                // offer index only when nothing is scrolled.
+                let row = if ms::can_scroll(n) { i - v.scroll_off } else { i };
+                let y = ms::button_y(row) + 2;
+                out.push((
+                    a::VILLAGER_TRADE_ARROW + usize::from(offer.out_of_stock),
+                    to_blit(rewo_world::menu_screen::ProgressBlit {
+                        dx: ms::TRADE_BUTTON_X + 5 + 20,
+                        dy: y + 3,
+                        w: 10,
+                        h: 9,
+                        sx: 0,
+                        sy: 0,
+                        src: None,
+                    }),
+                ));
+                // A spent trade also wears the red X over its arrow.
+                if offer.out_of_stock {
+                    out.push((
+                        a::VILLAGER_OUT_OF_STOCK,
+                        to_blit(rewo_world::menu_screen::ProgressBlit {
+                            dx: ms::TRADE_BUTTON_X + 5 + 20 - 9,
+                            dy: y - 6,
+                            w: 28,
+                            h: 21,
+                            sx: 0,
+                            sy: 0,
+                            src: None,
+                        }),
+                    ));
+                }
+            }
+        }
         // anvil (M93t): the name field's cursor and selection, measured by
         // `anvil_field_render` alongside the text so the two cannot disagree
         // about where the run ends.
@@ -12485,6 +12749,8 @@ pub(crate) struct EnchantPlayer<'a> {
     pub cut: Option<&'a CutView>,
     /// The anvil field's cursor and selection quads (M93t), already measured.
     pub anvil_fills: &'a [(usize, rewo_gpu::container::PanelBlit)],
+    /// The merchant's trade list (M93u), when a merchant is open.
+    pub merchant: Option<&'a MerchantView>,
     /// The beacon SCREEN's own choice (M93m), when a screen is driving.
     ///
     /// `None` re-reads the menu's data slots, which is right for a gate with
@@ -12534,6 +12800,8 @@ pub(crate) fn container_panel_for_open_menu(
     loom: Option<LoomView>,
     // M93s — the stonecutter's grid, supplied for the same reason.
     cut: Option<&CutView>,
+    // M93u — and the merchant's trade list.
+    merchant: Option<&MerchantView>,
 ) -> Option<rewo_gpu::container::ContainerPanel> {
     container_panel(
         open.layout,
@@ -12548,6 +12816,7 @@ pub(crate) fn container_panel_for_open_menu(
             // A gate drives no anvil field; `containershot` supplies its own
             // overlays when it wants a fill (M93q's o19/o20).
             anvil_fills: &[],
+            merchant,
         },
         mouse_gui,
     )
@@ -13333,6 +13602,8 @@ pub(crate) fn screen_icons(
     // M93s — the stonecutter's recipe grid, whose buttons draw item icons that
     // belong to no slot.
     cut: Option<&CutView>,
+    // M93u — and the merchant's trade rows, likewise.
+    merchant: Option<&MerchantView>,
 ) -> (Vec<rewo_gpu::gui_item::GuiItem>, Vec<rewo_gpu::world::OwnedTextLine>) {
     let rects = menu_slot_rects(inv, w, h);
     let (_, _, scale) = rewo_gpu::container::gui_origin(w, h);
@@ -13383,6 +13654,55 @@ pub(crate) fn screen_icons(
                 16.0 * scale,
             ) {
                 icons.push(icon);
+            }
+        }
+    }
+    // M93u — the merchant's three items per visible row. Like the
+    // stonecutter's grid these are items rather than sprites, and unlike it
+    // they DO carry counts: `extractOffers` calls `itemDecorations` for cost B
+    // and the result, and `extractAndDecorateCostA` for cost A.
+    if let Some(v) = merchant {
+        use rewo_world::merchant_screen as ms;
+        let (left, top, scale) = rewo_gpu::container::gui_origin_for(
+            w,
+            h,
+            open.map_or(176.0, |m| m.layout.image_w as f32),
+            open.map_or(166.0, |m| m.layout.image_h as f32),
+        );
+        let n = v.offers.len();
+        for (i, offer) in v.offers.iter().enumerate() {
+            let idx = i as i32;
+            if !ms::offer_visible(idx, v.scroll_off, n) {
+                continue;
+            }
+            let row = if ms::can_scroll(n) { idx - v.scroll_off } else { idx };
+            let y = ms::button_y(row) + 2;
+            let mut put = |gx: i32, id: i32, count: i32| {
+                if let Some(icon) = icon_for(
+                    items,
+                    trim_materials,
+                    rewo_world::inventory::ItemSlot::plain(id, count),
+                    left + gx as f32 * scale,
+                    top + y as f32 * scale,
+                    16.0 * scale,
+                ) {
+                    icons.push(icon);
+                }
+                labels.extend(count_label(
+                    rewo_world::inventory::ItemSlot::plain(id, count),
+                    left + gx as f32 * scale,
+                    top + y as f32 * scale,
+                    scale,
+                ));
+            };
+            // Cost A at its MODIFIED count — the number the player actually
+            // pays, not the base the offer was rolled with.
+            put(ms::COST_A_X, offer.cost_a.item_id, v.cost_a_counts[i]);
+            if let Some(b) = &offer.cost_b {
+                put(ms::COST_B_X, b.item_id, b.count);
+            }
+            if let rewo_net::item_stack::WireSlot::Stack(st) = &offer.result {
+                put(ms::RESULT_X, st.item_id, st.count);
             }
         }
     }
