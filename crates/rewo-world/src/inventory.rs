@@ -117,6 +117,34 @@ pub struct ItemSlot {
     pub trim_material: Option<i32>,
 }
 
+impl ItemSlot {
+    /// A stack with **no `DataComponentPatch` at all** — every component-derived
+    /// field at its absent value (M93s).
+    ///
+    /// For a stack Rewo synthesises rather than decodes: a stonecutter's recipe
+    /// button draws its result, which never crossed the wire. Spelled out
+    /// rather than `Default`-derived so that adding a component field is a
+    /// compile error here and a decision, not a silent `false`.
+    pub fn plain(item_id: i32, count: i32) -> Self {
+        Self {
+            item_id,
+            count,
+            has_components: false,
+            components: 0,
+            damage: None,
+            max_damage: None,
+            enchanted: false,
+            any_enchantments: false,
+            unbreakable: false,
+            dye_removed: false,
+            provides_banner_patterns_removed: false,
+            has_map_id: false,
+            damage_component_removed: false,
+            trim_material: None,
+        }
+    }
+}
+
 /// `InventoryMenu` (container 0) — the 46-slot menu the server synchronises.
 pub const MENU_SLOTS: usize = 46;
 /// `InventoryMenu.USE_ROW_SLOT_START` — the hotbar's first menu slot.
