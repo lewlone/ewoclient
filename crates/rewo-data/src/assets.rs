@@ -1572,6 +1572,14 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     "gui/sprites/container/villager/experience_bar_background.png",
     "gui/sprites/container/villager/experience_bar_current.png",
     "gui/sprites/container/villager/experience_bar_result.png",
+    // 96..=97 — the widget button (M93x), for the merchant's trade rows.
+    //
+    // ONLY the two a trade button can wear. `WidgetSprites.get(active, hovered)`
+    // has four cases and `TradeOfferButton` is never inactive — vanilla toggles
+    // its `visible` rather than its `active` — so `button_disabled` would be
+    // dead weight in the atlas.
+    "gui/sprites/widget/button.png",
+    "gui/sprites/widget/button_highlighted.png",
 ];
 
 /// The loom's three pattern-button chromes, in `LoomScreen`'s test order:
@@ -1580,6 +1588,10 @@ pub const LOOM_PATTERN_CHROME: usize = 33;
 
 /// Where the banner patterns start in [`MENU_OVERLAY_SPRITES`] (M93q).
 pub const BANNER_PATTERN_OVERLAY: usize = 36;
+
+/// The widget button, **plain first** — `WIDGET_BUTTON + usize::from(hovered)`
+/// (M93x). Nine-sliced from a 200x20 sheet with border 3.
+pub const WIDGET_BUTTON: usize = 96;
 
 /// The merchant's scroller, **active first** (M93u).
 pub const VILLAGER_SCROLLER: usize = 87;

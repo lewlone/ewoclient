@@ -4411,13 +4411,40 @@ plain-click path).
 anything else after an interrupted battery**, and split batteries so each stays
 inside the 10-minute tool cap.
 
-**Measured:** 1773 → **1927 tests**, 0 failures, seven crates reporting (world
-715, net 596, gpu 255, data 208, app 97, mesh 45, proto 11); `containershot`
-27 → **73**; `inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97,
+**Measured:** 1773 → **1929 tests**, 0 failures, seven crates reporting (world
+717, net 596, gpu 255, data 208, app 97, mesh 45, proto 11); `containershot`
+27 → **76**; `inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97,
 `mobshot` 246/246; `live --render-check` **22/22** validation ON, 0 errors
 (re-run at M93q, the first of the arc to touch a render path); demo PNG
-`2cc56b4acbfb92cb` byte-identical; **198 mutations across M93a–w, 192 killed,
+`2cc56b4acbfb92cb` byte-identical; **201 mutations across M93a–x, 195 killed,
 2 shown equivalent, 1 alive by construction (named)**.
+
+### M93x — the trade button's chrome, and reading WHICH witness fires
+
+`Button.Plain`'s `extractDefaultSprite` — `widget/button` nine-sliced from a
+200×20 sheet with border 3, empty label. **Only two of `WidgetSprites`' four
+cases are reachable**: vanilla toggles the button's `visible` and never its
+`active`, so a row past the end of the list draws *nothing* rather than a greyed
+one.
+
+**The slicing is the find.** At 88×20 on a 200×20 sheet the height matches, so
+the nine-slice degenerates to horizontal-only — and vanilla's `NineSlice`
+**tiles** rather than stretches, so a narrower button draws **one partial
+tile**: the middle is a 1:1 slice of the sheet's first `w - 6` face pixels.
+"Scale the middle" would resample every pixel of the face and blur it. The
+witness that pins it: the button's **last column is `(0,0,0)`**, source x 199 —
+the sheet's black border — where a naive 1:1 blit from x 0 would give
+`(112,112,112)`.
+
+**The transferable part is which witness fired.** All three mutations died, but
+inverting the hover pair was killed by **z3, not z2** — because z2 asserted only
+that the two frames *differ*, which is symmetric. Exactly M93t's x5 flaw, and it
+surfaced *only* because the kill came from the wrong witness. **Reading which
+witness a mutation kills is worth as much as reading whether one did.**
+
+1929 tests; `containershot` 73 → **76**; `live --render-check` 22/22 validation
+ON 0 errors. The merchant is complete; the one remaining limit is not a widget
+but the component-predicate decline.
 
 ### M93w — the discounted price pair, and an override that defeats a rule
 

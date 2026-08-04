@@ -1913,6 +1913,7 @@ fn overlays(
                              spent: bool,
                              bar: Option<(i32, i32, i32)>,
                              discounted: bool,
+                             mouse: Option<(f64, f64)>,
                              gpu: &mut Gpu,
                              off: &mut Offscreen,
                              wr: &mut WorldRenderer|
@@ -1935,7 +1936,7 @@ fn overlays(
                 30,
                 false,
                 effects,
-                None,
+                mouse,
                 None,
                 None,
                 None,
@@ -1948,8 +1949,8 @@ fn overlays(
         // The arrow's centre for row 0. `COST_B_X + 20` — past cost B, which
         // is where the first cut of the ARM had it wrong too.
         let (ax, ay) = (ms::COST_B_X + 20 + 5, ms::row_item_y(0) + 3 + 4);
-        let empty = mer_frame(0, 0, false, None, false, gpu, off, wr)?;
-        let three = mer_frame(3, 0, false, None, false, gpu, off, wr)?;
+        let empty = mer_frame(0, 0, false, None, false, None, gpu, off, wr)?;
+        let three = mer_frame(3, 0, false, None, false, None, gpu, off, wr)?;
 
         c.record(
             "y1.a_visible_offer_draws_its_trade_arrow",
@@ -1974,7 +1975,7 @@ fn overlays(
         // diff map says otherwise (row y=4 is `....XXX...`), and the centre
         // differs too. The lesson is the one M93s records: read the sprites
         // first, and do not invent a reason a witness passed.
-        let spent = mer_frame(3, 0, true, None, false, gpu, off, wr)?;
+        let spent = mer_frame(3, 0, true, None, false, None, gpu, off, wr)?;
         let (dx, dy) = (ms::COST_B_X + 20 + 6, ms::row_item_y(0) + 3 + 2);
         c.record(
             "y2.a_spent_offer_wears_a_different_arrow",
@@ -1989,8 +1990,8 @@ fn overlays(
         // y3 — the scroller appears exactly when the list scrolls, which is
         // `steps > 1` reached by different arithmetic than `can_scroll`.
         let sx = ms::SCROLL_X + 3;
-        let seven = mer_frame(7, 0, false, None, false, gpu, off, wr)?;
-        let nine = mer_frame(9, 0, false, None, false, gpu, off, wr)?;
+        let seven = mer_frame(7, 0, false, None, false, None, gpu, off, wr)?;
+        let nine = mer_frame(9, 0, false, None, false, None, gpu, off, wr)?;
         let sy = ms::scroller_y(0, 9).expect("nine scrolls") + 13;
         c.record(
             "y3.the_scroller_appears_exactly_when_the_list_scrolls",
@@ -2010,10 +2011,10 @@ fn overlays(
             };
             let by = bar::XP_BAR_Y + 2;
             // A wandering trader: `showProgressBar()` false, so no bar at all.
-            let none = mer_frame(3, 0, false, None, false, gpu, off, wr)?;
+            let none = mer_frame(3, 0, false, None, false, None, gpu, off, wr)?;
             // Level 2 spans 10..70, so 40 xp is half the LEVEL — not half the
             // villager's career.
-            let half = mer_frame(3, 0, false, Some((2, 40, 0)), false, gpu, off, wr)?;
+            let half = mer_frame(3, 0, false, Some((2, 40, 0)), false, None, gpu, off, wr)?;
             let (fill, _) = bar::xp_bar(2, 40, 0).expect("level 2 has a bar");
             assert_eq!(fill, 51, "fixture: half of 102");
 
@@ -2040,7 +2041,7 @@ fn overlays(
             );
 
             // y7 — a master villager shows NOTHING, background included.
-            let master = mer_frame(3, 0, false, Some((5, 999, 0)), false, gpu, off, wr)?;
+            let master = mer_frame(3, 0, false, Some((5, 999, 0)), false, None, gpu, off, wr)?;
             c.record(
                 "y7.a_master_villager_shows_no_bar_at_all",
                 at_mer(&master, probe_x(0.25), by) == at_mer(&none, probe_x(0.25), by)
@@ -2058,7 +2059,7 @@ fn overlays(
             // x = 0 and x = 101 and flat in between — read out of the PNGs.
             // So the result segment's FIRST pixel is mid-gradient grey with
             // the offset and the sprite's dark left edge without it.
-            let future = mer_frame(3, 0, false, Some((2, 40, 2)), false, gpu, off, wr)?;
+            let future = mer_frame(3, 0, false, Some((2, 40, 2)), false, None, gpu, off, wr)?;
             let (f2, fut) = bar::xp_bar(2, 40, 2).expect("level 2");
             assert!(fut > 1, "fixture: {fut} px of result");
             let first = at_mer(&future, bar::XP_BAR_X + f2, by);
@@ -2071,12 +2072,67 @@ fn overlays(
             );
         }
 
+        // z1..z3 — the trade button's chrome (M93x).
+        {
+            use rewo_world::merchant_screen as ms;
+            let by = ms::button_y(0) + 10;
+            let bare = mer_frame(0, 0, false, None, false, None, gpu, off, wr)?;
+            let plain = mer_frame(3, 0, false, None, false, None, gpu, off, wr)?;
+            // Hovering row 0's own 88x20 box. `container_panel_for_open_menu`
+            // takes GUI pixels (M93t's correction).
+            let hover_at = (
+                (ms::TRADE_BUTTON_X + 40) as f64,
+                (ms::button_y(0) + 10) as f64,
+            );
+            let hovered = mer_frame(3, 0, false, None, false, Some(hover_at), gpu, off, wr)?;
+            // A pixel in the button's face, clear of the item icons.
+            let face = ms::TRADE_BUTTON_X + 30;
+            c.record(
+                "z1.a_visible_offer_draws_a_button_under_its_items",
+                at_mer(&plain, face, by) != at_mer(&bare, face, by),
+                format!(
+                    "the button's face reads {:?} with three offers and {:?} with none —                      drawn BEFORE the arrow and the icons, which sit on top of it",
+                    at_mer(&plain, face, by),
+                    at_mer(&bare, face, by)
+                ),
+            );
+            // NAMED rather than merely different. The first cut asserted only
+            // that the two frames differ, which is symmetric — inverting the
+            // pair swaps the readings and passes. It was caught by z3 firing
+            // instead of this one, which is why reading WHICH witness a
+            // mutation kills matters as much as that one does. Same flaw
+            // M93t's x5 had, and the values are the sprites' own: `button` is
+            // (111,111,111) at this pixel and `button_highlighted` (117,117,117).
+            c.record(
+                "z2.hovering_a_row_swaps_the_button_sprite",
+                at_mer(&plain, face, by) == [111, 111, 111]
+                    && at_mer(&hovered, face, by) == [117, 117, 117],
+                format!(
+                    "plain reads {:?} and hovered {:?} — `button_highlighted` is six values                      lighter throughout, and `TradeOfferButton` is never INACTIVE, so the                      disabled sprite is unreachable",
+                    at_mer(&plain, face, by),
+                    at_mer(&hovered, face, by)
+                ),
+            );
+            // The right corner: destination x 87 samples source x 199, the
+            // sheet's black border. A naive 1:1 blit of x 0..88 — the obvious
+            // wrong implementation — would put source x 87 (a mid-face 112)
+            // there instead, read out of the PNG.
+            let right = at_mer(&plain, ms::TRADE_BUTTON_X + ms::TRADE_BUTTON_W - 1, by);
+            c.record(
+                "z3.the_right_corner_is_the_SHEETS_right_edge_not_a_mid_face_pixel",
+                right[0] < 60,
+                format!(
+                    "the button's last column reads {right:?}; source x 199 is the sheet's                      black border, where a 1:1 blit from x 0 would sample x 87 — (112,112,112)"
+                ),
+            );
+        }
+
         // y9 — the discounted price pair (M93w): one icon, TWO numbers, and a
         // strikethrough through the first.
         {
             use rewo_world::merchant_screen as ms;
-            let plain = mer_frame(3, 0, false, None, false, gpu, off, wr)?;
-            let cut = mer_frame(3, 0, false, None, true, gpu, off, wr)?;
+            let plain = mer_frame(3, 0, false, None, false, None, gpu, off, wr)?;
+            let cut = mer_frame(3, 0, false, None, true, None, gpu, off, wr)?;
             // The strikethrough's own row, at COST_A_X + 7, item y + 12.
             let (sx, sy) = (
                 ms::COST_A_X + ms::STRIKETHROUGH_DX + 4,
@@ -2120,7 +2176,7 @@ fn overlays(
 
         // y4 — scrolling moves WHICH offers are drawn, not where the rows are.
         // With 9 offers and scroll 2, offer 8 occupies row 6.
-        let scrolled = mer_frame(9, 2, false, None, false, gpu, off, wr)?;
+        let scrolled = mer_frame(9, 2, false, None, false, None, gpu, off, wr)?;
         let bottom = (ax, ms::row_item_y(6) + 3 + 4);
         let unscrolled_bottom = at_mer(&nine, bottom.0, bottom.1);
         let scrolled_bottom = at_mer(&scrolled, bottom.0, bottom.1);

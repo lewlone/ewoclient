@@ -58,9 +58,9 @@ click sends an index. **M93t** is the **`EditBox`** — a text-entry subsystem
 Rewo had never had — wiring the anvil end to end, and finding a missing chrome
 blit because `anvil.png` hides a red placeholder under the name field.
 
-Current measurement, taken 2026-08-04: **1927 tests, 0 failures** (world 715,
+Current measurement, taken 2026-08-04: **1929 tests, 0 failures** (world 717,
 net 596, gpu 255, data 208, app 97, mesh 45, proto 11 — all seven confirmed
-reporting); `containershot` **73/73**, `inventoryshot` 152/152, `itemshot`
+reporting); `containershot` **76/76**, `inventoryshot` 152/152, `itemshot`
 75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check` 22/22 with
 validation ON and 0 validation errors, re-run for M93q** — the first M93
 milestone to touch a render path, so the earlier "M93 adds no render path"
@@ -212,7 +212,7 @@ So, in ratio order:
    | **beacon** | ✅ **complete** (M93l + M93m): press, `set_beacon`, click wiring and screen-owned state. The confirm closes the **client's** screen only — Rewo resolves no *serverbound* `container_close`, a gap that predates this and affects **every** screen close |
    | **anvil** | ✅ **complete end to end** (M93n + M93t): rename semantics, `rename_item`, and the **`EditBox`** — a subsystem Rewo had never had. Character input via `KeyEvent.text` (the seam it never read), the caret, selection, the four shortcuts, word motion, and the field's own background sprite, which `anvil.png` hides a **red placeholder** under. Left: the clipboard is **in-process**, not the OS's (no crate pulls it in); IME pre-edit is absent |
    | **stonecutter** | ✅ **complete end to end** (M93s): the recipe list, the grid, the three button chromes, the result icons, the scrollbar and every input path. **The class-C claim was wrong** — the third of this arc, after M91's furnace recipes and M93's merchant quick-move. The list is jar-derivable and the hard part was its ORDER, which is a wire contract because a click sends an *index*: `RecipeManager.prepare` loads into a `SortedMap<Identifier, _>` and `Identifier.compareTo` is **path first, then namespace** |
-   | **merchant** | ✅ **complete** (M93u–M93w): `merchant_offers` decodes, `select_trade` sends, the seven rows render with their items, arrow and scrollbar, the **XP bar** draws all three layers with its future segment derived, and a **discounted price** shows both numbers with the base struck through. **The class-C label was wrong a fourth time.** Left: the trade button's own `Button.Plain` chrome; and a cost carrying a component predicate declines rather than guesses (M41 has a digest, not per-component values) |
+   | **merchant** | ✅ **complete** (M93u–M93x): `merchant_offers` decodes, `select_trade` sends, the seven rows render with their nine-sliced **button chrome**, items, arrow and scrollbar, the **XP bar** draws all three layers with its future segment derived, and a **discounted price** shows both numbers with the base struck through. **The class-C label was wrong a fourth time.** The one remaining limit is not a widget: a cost carrying a component predicate declines rather than guesses (M41 has a digest, not per-component values), which is one-directional |
 
    **The crafter uses `container_slot_state_changed` (id 20), not
    `container_button_click` (17)** — `CrafterMenu` has no `clickMenuButton`
@@ -2370,6 +2370,45 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M93x — the trade button's chrome, and reading WHICH witness fires (2026-08-04)
+
+`TradeOfferButton extends Button.Plain`, so its chrome is
+`AbstractButton.extractDefaultSprite` — `widget/button` nine-sliced from a
+200×20 sheet with border 3, and an **empty label**, so nothing but the sprite.
+
+**Only two of `WidgetSprites`' four cases are reachable.** Vanilla toggles the
+button's `visible` (`index < offers.size()`) and never its `active`, so a row
+past the end of the list draws *nothing* rather than a greyed button, and
+`button_disabled` would be dead weight in the atlas.
+
+**The slicing is the find.** At 88×20 against a 200×20 sheet the height matches
+exactly, so the nine-slice degenerates to horizontal-only — and vanilla's
+`NineSlice` **tiles** its edges and centre rather than stretching them. A button
+narrower than its sheet therefore draws **one partial tile**: the middle is a
+1:1 slice of the sheet's first `w - 6` face pixels. Stretching the 194-px middle
+into 82 — what "scale the middle" produces — would resample every pixel of the
+button's face and visibly blur it.
+
+Three witnesses, with values read out of the PNGs rather than found by trial:
+the face is `(111,111,111)` plain and `(117,117,117)` hovered, and the button's
+**last column is `(0,0,0)`** — source x 199, the sheet's black border, where a
+naive 1:1 blit from x 0 would sample x 87 and give `(112,112,112)`.
+
+**The transferable part is which witness fired.** All three mutations died, but
+inverting the hover pair was killed by **z3**, not by z2 — because z2 asserted
+only that the two frames *differ*, which is symmetric, so swapping them passes.
+Exactly M93t's x5 flaw, and it surfaced *only* because the kill came from the
+wrong witness. z2 now names both values and fires on its own mutation.
+**Reading which witness a mutation kills is worth as much as reading whether one
+did.**
+
+**Measured.** 1929 tests / 0 failures; `containershot` 73 → **76**;
+`inventoryshot` 152, `itemshot` 75, `handshot` 34, `mobshot` 246/246; **`live
+--render-check` 22/22, validation ON, 0 errors**; demo PNG `2cc56b4acbfb92cb`
+byte-identical. 3 mutations, 3 killed.
+
+---
 
 ### M93w — the discounted price pair (2026-08-04)
 
