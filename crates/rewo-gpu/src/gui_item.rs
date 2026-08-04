@@ -993,6 +993,46 @@ fn build_pipeline(
 mod tests {
     use super::*;
 
+    /// The two accessibility defaults, against `Options.java`'s own literals.
+    ///
+    /// Added by M93q's sweep, which found both **unguarded**: `handshot`'s `n3`
+    /// asserts every glint vertex carries `GLINT_STRENGTH` while *reading*
+    /// `GLINT_STRENGTH` for the expectation, so a wrong value moves the render
+    /// and the witness together. Mutating it 0.75 → 0.55 — a 27% change in the
+    /// foil's alpha — left `handshot` (34 witnesses), `inventoryshot` (152) and
+    /// this whole crate's tests green. The same holds for `GLINT_SPEED`, which
+    /// `inventoryshot` feeds into `glint_offsets` to predict `glint_offsets`.
+    ///
+    /// ```java
+    /// private final OptionInstance<Double> glintSpeed = new OptionInstance<>(
+    ///    "options.glintSpeed", …, OptionInstance.UnitDouble.INSTANCE, 0.5, …);
+    /// private final OptionInstance<Double> glintStrength = new OptionInstance<>(
+    ///    "options.glintStrength", …, OptionInstance.UnitDouble.INSTANCE, 0.75, …);
+    /// ```
+    #[test]
+    fn the_glint_accessibility_defaults_are_vanillas() {
+        assert_eq!(GLINT_STRENGTH, 0.75, "Options.glintStrength's default");
+        assert_eq!(GLINT_SPEED, 0.5, "Options.glintSpeed's default");
+        // Neither is the other's, which is the transposition a single-value
+        // check cannot see and the one a reader is most likely to make.
+        assert_ne!(GLINT_STRENGTH, GLINT_SPEED);
+    }
+
+    /// The three texture scales, likewise — these *are* pinned in `itemshot`
+    /// (`n1` and `a2` compare against `8.0`, `0.5` and `0.16`), so this is a
+    /// second lock rather than a first one, and it costs nothing to keep the
+    /// four glint numbers stated in one place.
+    #[test]
+    fn the_three_glint_texture_scales_are_vanillas() {
+        // GUI/hand `ITEM_GLINT_TEXTURING`, `ENTITY_GLINT_TEXTURING`, and the
+        // armour variant — a factor of 16 and then 3.125 apart, which is why a
+        // worn piece wears far broader bands than a dropped one.
+        assert_eq!(GLINT_SCALE_ITEM, 8.0);
+        assert_eq!(GLINT_SCALE_ENTITY, 0.5);
+        assert_eq!(GLINT_SCALE_ARMOR, 0.16);
+        assert_eq!(GLINT_SCALE_ITEM / GLINT_SCALE_ENTITY, 16.0);
+    }
+
     /// A sprite's identity `gui` maps `0..16` model units onto exactly the
     /// slot — this is what makes the absent transform *right* rather than
     /// missing.

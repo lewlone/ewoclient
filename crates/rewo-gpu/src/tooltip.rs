@@ -861,6 +861,38 @@ fn progress_bar(x: i32, y: i32, weight: Fraction) -> ProgressBar {
 mod tests {
     use super::*;
 
+    /// `DARK_GRAY` against `TextColor`'s own literal.
+    ///
+    /// ```java
+    /// public static final TextColor DARK_GRAY = named("dark_gray", 5592405);
+    /// ```
+    ///
+    /// Added by M93q's sweep, which found it unguarded: `inventoryshot`'s
+    /// advanced-tooltip witness asserts `dark_gray == Some(DARK_GRAY)` while
+    /// reading `DARK_GRAY` for the expectation, so the two move together.
+    /// Mutating it `0x555555` → `0x3F3F3F` left the gate's 152 witnesses green
+    /// — and `0x3F3F3F` is the exact wrong grey M93p shipped for the loom,
+    /// which is the point: a plausible flat grey is what a guess produces, and
+    /// no amount of pixel-reading catches one when the reader shares the value.
+    ///
+    /// Note 26.2 moved the RGB **off** `ChatFormatting`, whose enum rows now
+    /// carry only the legacy char (`DARK_GRAY('8')`); reading the colour there
+    /// finds nothing, which is why the citation is `TextColor`.
+    #[test]
+    fn dark_gray_is_text_colors_own_value() {
+        assert_eq!(5592405, 0x555555, "the decompile's decimal, spelled out");
+        for (i, c) in DARK_GRAY.iter().enumerate() {
+            assert_eq!(
+                (c * 255.0).round() as u32,
+                0x55,
+                "channel {i} of ChatFormatting.DARK_GRAY"
+            );
+        }
+        // Not GRAY (0xAAAAAA) — the neighbouring formatting code, and the
+        // confusion this constant's name invites.
+        assert_ne!((DARK_GRAY[0] * 255.0).round() as u32, 0xAA);
+    }
+
     fn bundle(n: usize) -> Bundle {
         Bundle {
             counts: vec![1; n],

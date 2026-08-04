@@ -48,10 +48,12 @@ single-input `quickMoveStack`s (merchant, anvil, beacon, stonecutter,
 grindstone, cartography table and loom — **seven of eight**, leaving only
 smithing, genuinely blocked on class C) and then the bespoke widgets: the
 crafter's toggles, the beacon's press, the anvil's rename, and the loom
-**complete end to end** through its rendered pattern preview (M93q).
+**complete end to end** through its rendered pattern preview (M93q). **M93r**
+is the sweep M93q called for — three self-calibrating witnesses in ~1,400,
+all three values correct, all three now pinned against their source.
 
-Current measurement, taken 2026-08-04: **1861 tests, 0 failures** (world 665,
-net 588, gpu 252, data 204, app 96, mesh 45, proto 11 — all seven confirmed
+Current measurement, taken 2026-08-04: **1865 tests, 0 failures** (world 665,
+net 588, gpu 255, data 204, app 97, mesh 45, proto 11 — all seven confirmed
 reporting); `containershot` **52/52**, `inventoryshot` 152/152, `itemshot`
 75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check` 22/22 with
 validation ON and 0 validation errors, re-run for M93q** — the first M93
@@ -938,6 +940,18 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    the fill primitive while `container_panel_for_open_menu` hardcoded
    `loom: None`, so the entire loom arm could have been deleted with both
    staying green.
+
+   **The sweep ran (M93r) and found three holes in ~1,400 witnesses** —
+   `GLINT_STRENGTH`, `DARK_GRAY`, and a `DYE_DIFFUSE_COLORS` duplicated across
+   two crates that do not depend on each other. All three values were correct;
+   all three are pinned now. Two shapes that look like the bug and are **not**:
+   an **enum comparison** (a variant is an identity, not a value) and a
+   constant used as a **search key** (a wrong one makes `find` return `None`
+   and the witness fails). **Prefer a derivation to a literal where one
+   exists** — `SHEEP_WOOL_COLORS` is pinned as `floor(diffuse * 0.75)` with
+   white overridden, and 12 of its 16 rows would differ under `round`, so that
+   test proves the *rule*. Re-run the sweep after any milestone that adds a
+   transcribed colour or magnitude the renderer and a gate both read.
 
 0b. **(M92) A mutation harness that restores by `mv` silently grades the
    mutated binary.** `mv`/`cp` preserve the original file's mtime, which is
@@ -2349,6 +2363,86 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M93r — the self-calibrating-witness sweep (2026-08-04)
+
+M93q's closing line asked for a sweep: *anywhere a `*shot` witness computes an
+expectation from a `pub const` the renderer also reads.* This is it, over ~1,400
+witnesses in 34 gates.
+
+**Method.** Every SCREAMING `pub const` in the rewo crates read by **both** a
+gate and a production file — **96 of 480** — narrowed to value-shaped ones
+(colours, magnitudes, scales), then each checked two ways: is the **value**
+right, against the decompile; and is it **pinned** to a literal anywhere.
+Mutation is the only real evidence for the second, so every claim was mutated.
+
+**The result is mostly reassuring, and the reasons are worth recording so the
+sweep is not redone.** Two shapes look exactly like the bug and are not:
+
+- **An enum comparison** (`== PotWobble::Positive`, `== HumanoidArm::Left`,
+  `== DeathAction::None`) names *which outcome* is expected. A variant is an
+  identity, not a transcribed value; there is no number to get wrong.
+- **A constant used as a search key self-guards.** `blockentityshot`'s `t5`
+  finds a sign by `line_height == HANGING_LINE_HEIGHT` and then asserts
+  `line_y` against literals `[-18.0, -9.0, 0.0, 9.0]` — a wrong constant makes
+  `find` return `None` and the witness fails.
+
+And most value-shaped constants are already pinned to a literal — **often
+inside the gate rather than a unit test**: `lb::BAR_W == 182`,
+`scale_armor == 0.16`, `(scale_item, scale_entity) == (8.0, 0.5)`,
+`(ANCHOR_ACCEL - 0.013962634015954637).abs() < 1e-17`,
+`DYE_DIFFUSE_COLORS[14] == 0xB02E26`. A first detector that looked only in
+`#[cfg(test)]` blocks reported every one of those as unpinned, so **the
+false-positive rate of the mechanical search is high and the shortlist must be
+read**.
+
+**Three real holes, each proven by mutation:**
+
+| constant | mutation | survived |
+|---|---|---|
+| `GLINT_STRENGTH` | `0.75 → 0.55` (27% of the foil's alpha) | `handshot` 34, `inventoryshot` 152, all `rewo-gpu` tests |
+| `DARK_GRAY` | `0x555555 → 0x3F3F3F` | `inventoryshot` 152 |
+| `DYE_DIFFUSE_COLORS` | duplicated across two crates | **no test could compare them** |
+
+`handshot`'s `n3` asserts every glint vertex carries `GLINT_STRENGTH` while
+*reading* `GLINT_STRENGTH` — M93q's shape exactly. `inventoryshot`'s advanced
+tooltip does the same with `DARK_GRAY`, and the mutation used is the exact wrong
+grey M93p shipped for the loom, which is the point: **a plausible flat grey is
+what a guess produces**, and no amount of pixel-reading catches one when the
+reader shares the value. The third is a different failure: `DYE_DIFFUSE_COLORS`
+exists in `rewo-data` (banners/signs, `&[u32]`) *and* `rewo-gpu` (tropical fish,
+the sheep derivation, `[[u8;3];16]`), and **neither crate depends on the other**,
+so no test *could* have compared them — the agreement test has to live in
+`rewo-app`, which sees both.
+
+**All three values are correct.** This is process debt, not a rendering bug.
+The pins state each number against its source: `Options.java`'s two
+accessibility defaults (`glintSpeed` 0.5, `glintStrength` 0.75),
+`TextColor.named("dark_gray", 5592405)`, and `DyeColor`'s third constructor
+argument. Note 26.2 moved the RGB **off** `ChatFormatting` — its rows now carry
+only the legacy char (`DARK_GRAY('8')`) — so reading the colour there finds
+nothing and the citation is `TextColor`.
+
+**The best pin in the codebase is a derivation, not a literal.**
+`SHEEP_WOOL_COLORS` is self-calibrating in `mobshot` and needs no fix, because
+`entities.rs` already pins it *by rule*: `floor(diffuse * 0.75)` with white
+overridden to `0xE6E6E6`, against its own literal diffuse table. That is
+strictly stronger than a literal, because **12 of the 16 rows would differ under
+`round`** — so the test proves the *rule* and not merely the numbers. Prefer
+this form wherever a table is derived.
+
+**And a near-miss worth knowing:** there are two different `TITLE_SCALE`s —
+`rewo_gpu::hud` 4 (the HUD title, `Hud.java`'s `scale(4.0F)`) and
+`rewo_world::death_screen` 2 (`DeathScreen`'s own named field). Both are right.
+A mechanical search that keys on the name alone reports one value for both.
+
+**Gates.** 1865 tests / 0 failures across seven crates (world 665, net 588, gpu
+255, data 204, app 97, mesh 45, proto 11); `containershot` 52, `inventoryshot`
+152, `itemshot` 75, `handshot` 34, `mobshot` 246/246; demo PNG
+`2cc56b4acbfb92cb` byte-identical. 5 mutations, all 5 alive before the pins and
+all 5 killed after.
+
+---
 
 ### M93q — the overlay colour quad, and two ways a pixel gate goes blind (2026-08-03)
 
