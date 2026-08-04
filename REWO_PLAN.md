@@ -56,16 +56,36 @@ class-C `update_recipes` and which was not: the recipe list is jar-derivable,
 and the hard part was reproducing its ORDER, which is a wire contract because a
 click sends an index. **M93t** is the **`EditBox`** — a text-entry subsystem
 Rewo had never had — wiring the anvil end to end, and finding a missing chrome
-blit because `anvil.png` hides a red placeholder under the name field.
+blit because `anvil.png` hides a red placeholder under the name field. **M93u**
+is the **merchant**, the fourth class-C claim to fall: `merchant_offers` really
+is class C, but the *trade list widget* needed only the packet, which is a
+plain decode. **M93v/w/x** are its parts — the XP bar, the discounted price
+pair, and the button chrome, the last of which is where *reading which witness
+a mutation kills* earned its place beside reading whether one did. **M93y** is
+the **recipe book's decode** — four packets and the `SlotDisplay` /
+`RecipeDisplay` trees — and the first class-C label in the arc that turned out
+to be **correct**. **M93z** is that book's **UI model**: window-relative
+geometry, tabs, collections, the three-stage filter and pagination.
 
-Current measurement, taken 2026-08-04: **1942 tests, 0 failures** (world 717,
-net 609, gpu 255, data 212, app 97, mesh 45, proto 11 — all seven confirmed
-reporting); `containershot` **76/76**, `inventoryshot` 152/152, `itemshot`
-75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check` 22/22 with
-validation ON and 0 validation errors, re-run for M93q** — the first M93
-milestone to touch a render path, so the earlier "M93 adds no render path"
-caveat expires here; demo PNG `2cc56b4acbfb92cb`, byte-identical.
-`REWO_PACKET_COVERAGE.md` is at **109 / 0 / 32** — M93 adds no packet.
+Current measurement, taken 2026-08-04 after M93z: **1956 tests, 0 failures**
+(world 731, net 609, gpu 255, data 212, app 97, mesh 45, proto 11 — all seven
+confirmed reporting); `containershot` **76/76**, `inventoryshot` 152/152,
+`itemshot` 75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check`
+22/22 with validation ON and 0 validation errors, re-run for M93q and M93y** —
+the first M93 milestone to touch a render path was M93q, so the earlier "M93
+adds no render path" caveat expired there; demo PNG `2cc56b4acbfb92cb`,
+byte-identical. `REWO_PACKET_COVERAGE.md` is at **114 / 0 / 27**, class C
+20 → **16** (M93y's four packets; M93z adds none).
+
+**A drift worth naming, because it is this section's own documented failure
+mode running in reverse.** At M93z this block's *prose* had been updated
+through M93t while its *coverage number* still said 109 / 0 / 32 — four
+milestones and five packets stale. CLAUDE.md warns that §0.0's prose goes stale
+faster than its numbers; here the numbers went stale first, because a milestone
+that ships a *finding* remembers to write the paragraph and forgets the table.
+The machine-checked table in `ids.rs` (M74) is what catches the packet counts;
+nothing checks this paragraph, so **read `git log --oneline` before trusting
+it**.
 Everything below this paragraph is the 2026-08-02 audit and is accurate as of
 that date.
 
@@ -2370,6 +2390,83 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M93z — the recipe book's UI model, and the filter button that toggles one stage of three (2026-08-04)
+
+M93y decoded the four packets and named the book as the subsystem that had to
+follow. This is its **model** — tabs, collections, filtering, pagination,
+geometry. The **render is separate and is not here**, on the same M63 split the
+milestone before it used.
+
+**It is positioned against the WINDOW, and nothing else Rewo draws is.** Every
+other screen is panel-relative: `container_panel` centres a sheet and everything
+is an offset inside it. `getXOrigin` is `(width - 147) / 2 - xOffset` — centred
+on the *window*, then pushed left by `OFFSET_X` (86) to flank the menu — and
+**`xOffset` collapses to 0 on a narrow window**, which is what makes the book
+cover the menu on a small screen rather than hang off the edge. Deriving its
+origin from the open menu's panel is right at one window size and wrong at every
+other, and the failure is invisible until someone resizes.
+
+**`updateCollections` is three `removeIf` stages and the first is
+unconditional:**
+
+```java
+collection.removeIf(c -> !c.hasAnySelected());              // always
+if (!searchTarget.isEmpty()) collection.removeIf(…);        // only when searching
+if (isFiltering) collection.removeIf(c -> !c.hasCraftable());  // the button
+```
+
+The filter button toggles **only the third**. A reader who takes it as gating
+the filter drops the first stage with it — and a book with no `hasAnySelected`
+stage lists furnace recipes in a crafting table, because "show all recipes" in
+vanilla still means *all recipes this menu can make*.
+
+**The crafting tab lists `equipment` first.** The registry's own id order is
+building_blocks, redstone, equipment, misc; `includedCategories()` is a
+different, hand-written order. Deriving a tab's contents from registry ids is
+the obvious implementation and it reorders every crafting collection.
+
+**Three of the 13 registry categories belong to no tab.** The four tabs cover
+10; stonecutter, smithing and campfire are in `allCollections` and reachable
+from **no tab at all**, because those screens have their own UI (M93s built the
+stonecutter's). So `tab_of` returns `Option`, and a lookup that assumed
+totality would have to invent a home for three real categories.
+
+**Zero collections give zero pages, not one**, and `clamp_page`'s test is
+`totalPages <= currentPage` — an index *equal* to the count resets too — with
+the reset going to the **front**, not to the new last page. Shrinking the list
+under a reader sends them to page 0.
+
+**Ordering is deliberately not claimed as a contract.** A group's collection
+takes the position of its **first-seen** member and later members append to the
+entry already placed. Insertion order is preserved here because a stable book is
+better than an arbitrary one, **not because vanilla guarantees it** — the input
+is a `HashMap`'s `values()`, so vanilla's own collection order is unstable
+between runs. That is the opposite of M93s's stonecutter list, where the index a
+click sends over the wire made the order load-bearing.
+
+**The witness was wrong before the code was, again.** The last finding's test
+shrank the list to 20 collections and then asserted the reset was not to "the
+new last page" — but 20 collections is **one** page, whose last index *is* 0, so
+`assert_ne!(0, 0)` failed and the fixture could not have expressed its claim
+either way. It now shrinks a five-page list, where front and end differ. Same
+shape as M93s's shear and M93t's three: *when a witness fails, suspect the
+witness first.*
+
+**Measured.** **1956 tests / 0 failures** across seven crates; `containershot`
+76, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical. **10
+mutations, 10 killed** — including the two that matter most, dropping the
+unconditional first filter stage and putting the crafting tab in registry-id
+order.
+
+**Open.** The book's **render**: the 147x166 panel, the four tabs, the 20 grid
+buttons, the page arrows, the search field (M93t's `EditBox` is what it would be
+built on) and the filter toggle. Ghost placement into a container's slots. The
+two serverbound packets (`recipe_book_seen_recipe`,
+`recipe_book_change_settings`) stay named and unsent, because nothing can yet
+click what would send them — the model makes them *reachable*, not sent.
+
+---
 
 ### M93y — the recipe book's decode, and a class-C claim that IS one (2026-08-04)
 
