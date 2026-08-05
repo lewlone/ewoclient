@@ -398,15 +398,21 @@ impl RenderCheck {
         // 63-slot menu, which is the failure worth naming rather than the one
         // that is merely absent.
         // M94 — and that the recipe book itself was drawn. A shut book carries
-        // no quads at all, so this is 0 unless the book's builder ran: the
-        // panel plus four tabs plus the filter toggle is six at minimum, with
-        // no unlocked recipes to fill the grid.
+        // no quads at all, so this is 0 unless the book's builder ran.
+        //
+        // The minimum is the panel, the book's OWN tab count and the filter
+        // toggle, with no unlocked recipes to fill the grid. Read from
+        // `CRAFTING_TABS` rather than written as a literal: M95 corrected that
+        // count from four to five, and a literal would have been quietly
+        // generous by one from then on.
+        let min_quads = 1 + rewo_world::recipe_book_screen::CRAFTING_TABS.len() + 1;
         row(
             "r23 the recipe book was drawn in the windowed client",
-            self.book_quads_max >= 6,
+            self.book_quads_max >= min_quads,
             format!(
-                "{} quads at peak (panel + 4 tabs + filter = 6 with an empty grid)",
-                self.book_quads_max
+                "{} quads at peak (panel + {} crafting tabs + filter = {min_quads} with an empty grid)",
+                self.book_quads_max,
+                rewo_world::recipe_book_screen::CRAFTING_TABS.len()
             ),
         );
         row(
@@ -9186,8 +9192,8 @@ mod tests {
             rewo_gpu::container::gui_origin_for(w, h, 176.0, chest.layout().image_h as f32);
         let (_, ptop, _) = rewo_gpu::container::gui_origin(w, h);
         assert!(ctop < ptop, "the taller panel starts higher");
-        let cr = menu_slot_rects(&chest, w, h);
-        let pr = menu_slot_rects(&player, w, h);
+        let cr = menu_slot_rects(&chest, w, h, false);
+        let pr = menu_slot_rects(&player, w, h, false);
         assert_eq!(cr.len(), 90);
         assert_eq!(pr.len(), 46);
         // Slot 0 of each sits at its own layout's first position.
@@ -11511,7 +11517,7 @@ fn apply_screen(
     ));
 
     let (mut icons, mut labels) =
-        screen_icons(menu, items, &session.trim_materials, w, h, session.menus.open(), cut, merchant);
+        screen_icons(menu, items, &session.trim_materials, w, h, session.menus.open(), cut, merchant, book.as_ref());
     if let Some((icon, label)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h) {
         icons.push(icon);
         labels.extend(label);
@@ -11571,7 +11577,7 @@ fn apply_screen(
     // Every visible slot's durability bar, plus the cursor's. The screen's
     // rects and the hotbar's go through the same builder.
     {
-        let rects = menu_slot_rects(menu, w, h);
+        let rects = menu_slot_rects(menu, w, h, book.is_some());
         let mut stacks: Vec<_> = (0..menu.slot_count())
             .map(|i| (menu.menu_slot(i), rects[i]))
             .collect();
@@ -13110,24 +13116,25 @@ pub(crate) struct EnchantPlayer<'a> {
 /// `AbstractFurnaceMenu`, which returns the type its subclass was built with.
 /// Every other screen returns `None` here and draws no book, which is why a
 /// chest is unaffected by any of this.
-fn book_type_of(layout: &rewo_world::menu_layout::MenuLayout) -> Option<usize> {
+fn book_type_of(
+    layout: &rewo_world::menu_layout::MenuLayout,
+) -> Option<rewo_world::recipe_book_screen::BookType> {
+    use rewo_world::recipe_book_screen::BookType;
     // Keyed on the registry NAME, not the protocol id: the id is the server's
     // and a version bump renumbers it, while these four names are what the
-    // decompile's class names correspond to.
-    //
-    // The index is `RecipeBookSettings`' own positional order — crafting,
-    // furnace, blast furnace, smoker — which M93y records as the wire contract.
+    // decompile's class names correspond to. (M94's gate learned the hard way
+    // that 13 is `enchantment`, not `crafting`.)
     if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
         // The player's own inventory IS a `RecipeBookMenu`: `InventoryMenu`
         // returns CRAFTING. It has no menu registry id because it is never
         // opened by `open_screen`.
-        return Some(0);
+        return Some(BookType::Crafting);
     }
     match layout.name {
-        "crafting" => Some(0),
-        "furnace" => Some(1),
-        "blast_furnace" => Some(2),
-        "smoker" => Some(3),
+        "crafting" => Some(BookType::Crafting),
+        "furnace" => Some(BookType::Furnace),
+        "blast_furnace" => Some(BookType::BlastFurnace),
+        "smoker" => Some(BookType::Smoker),
         _ => None,
     }
 }
@@ -13139,6 +13146,15 @@ pub(crate) struct BookRender {
     /// `(hasCraftable, hasMultipleRecipes)` for each collection on the page.
     pub slots: Vec<(bool, bool)>,
     pub hover: rewo_world::recipe_book_screen::BookHover,
+    /// Which book this is, which decides its tab list and its filter art
+    /// (M95). M94 assumed four tabs for every book; a crafting book has FIVE.
+    pub book: rewo_world::recipe_book_screen::BookType,
+    /// The item each visible slot shows this frame, already cycled — `None`
+    /// for a collection whose result needs a context Rewo has not got.
+    pub slot_items: Vec<Option<i32>>,
+    /// Per visible slot: several recipes AND one shared result display, the
+    /// pair of conditions that draws the shadow copy.
+    pub slot_shadowed: Vec<bool>,
 }
 
 /// The recipe book for the menu currently on screen (M94), or `None` when it
@@ -13162,53 +13178,92 @@ fn live_recipe_book(session: &rewo_net::play::PlaySession) -> Option<BookRender>
         .open()
         .map(|m| m.menu.layout())
         .unwrap_or_else(|| session.inventory.layout());
-    let kind = book_type_of(layout)?;
-    let st = match kind {
-        0 => session.recipe_book_settings.crafting,
-        1 => session.recipe_book_settings.furnace,
-        2 => session.recipe_book_settings.blast_furnace,
-        _ => session.recipe_book_settings.smoker,
+    let book = book_type_of(layout)?;
+    let st = match book {
+        rb::BookType::Crafting => session.recipe_book_settings.crafting,
+        rb::BookType::Furnace => session.recipe_book_settings.furnace,
+        rb::BookType::BlastFurnace => session.recipe_book_settings.blast_furnace,
+        rb::BookType::Smoker => session.recipe_book_settings.smoker,
     };
     if !st.open {
         return None;
     }
-    // The entries the server has unlocked, grouped exactly as
-    // `categorizeAndGroupRecipes` does, then narrowed to the selected tab.
     let names = session.recipe_display_ids.as_ref()?;
-    let entries: Vec<(i32, Option<i32>, &str)> = session
+    // The entries the server has unlocked, with the RESULT items each one
+    // stands for — resolved once here, because the cycle needs the per-entry
+    // list and the chrome needs only its length.
+    let entries: Vec<(i32, Option<i32>, &str, Vec<i32>)> = session
         .recipe_book
         .values()
-        .filter_map(|e| Some((e.id, e.group, names.category.name(e.category)?)))
+        .filter_map(|e| {
+            Some((
+                e.id,
+                e.group,
+                names.category.name(e.category)?,
+                e.display.result().items(),
+            ))
+        })
         .collect();
-    let all = rb::collections(&entries);
+    let flat: Vec<(i32, Option<i32>, &str)> =
+        entries.iter().map(|(a, b, c, _)| (*a, *b, *c)).collect();
+    let all = rb::collections(&flat);
     let selected_tab = 0usize;
-    let tab = rb::Tab::ALL[selected_tab];
-    // Stage one of `updateCollections` is the tab's own membership; the
-    // `hasAnySelected` stage is unconditional and is what a collection from
-    // another tab fails.
+    let tabs = book.tabs();
+    // Stage one of `updateCollections` is the tab's own membership. Tab 0 is
+    // the SEARCH tab, whose categories are the book's whole set — so with the
+    // selection pinned to 0 this shows everything the book has.
+    let wanted = tabs[selected_tab].categories;
     let mine: Vec<_> = all
         .iter()
-        .filter(|c| tab.included().contains(&c.category.as_str()))
+        .filter(|c| wanted.contains(&c.category.as_str()))
         .collect();
     let total_pages = rb::total_pages(mine.len());
     let page = rb::clamp_page(0, mine.len(), false);
     let range = rb::page_range(page, mine.len());
-    let slots: Vec<(bool, bool)> = mine[range]
-        .iter()
-        // `hasCraftable` — see the note above. `hasMultipleRecipes` is the
-        // SELECTED entries, and with no filter every recipe in a group is
-        // selected, so a grouped collection reports several.
-        .map(|c| (false, c.recipes.len() > 1))
-        .collect();
+    // `Mth.floor(time / 30)` — vanilla's `time` advances by the partial tick
+    // each render, so this is the session's tick clock divided by the swap
+    // period. Shared by every slot, which is why a page of several-recipe
+    // collections flips together rather than each on its own phase.
+    let cycle = (session.ticks as f32 / rewo_net::recipe_book::TICKS_TO_SWAP_SLOT)
+        .floor() as i32;
+    let mut slots = Vec::new();
+    let mut slot_items = Vec::new();
+    let mut slot_shadowed = Vec::new();
+    for c in &mine[range] {
+        // Each collection's entries, in the order they were added, with the
+        // items each resolves to.
+        let per_entry: Vec<Vec<i32>> = c
+            .recipes
+            .iter()
+            .map(|id| {
+                entries
+                    .iter()
+                    .find(|(eid, ..)| eid == id)
+                    .map(|(.., items)| items.clone())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let multiple = per_entry.len() > 1;
+        // `allRecipesHaveSameResultDisplay` — every display item across every
+        // entry the same. Rewo compares item IDS, where vanilla compares whole
+        // stacks with `isSameItemSameComponents`; two recipes yielding the same
+        // item with different components would shadow here and not in vanilla.
+        let mut seen = per_entry.iter().flatten();
+        let first = seen.next().copied();
+        let same_result = seen.all(|i| Some(*i) == first);
+        slots.push((false, multiple));
+        slot_items.push(rewo_net::recipe_book::display_item(&per_entry, cycle));
+        slot_shadowed.push(multiple && same_result);
+    }
     Some(BookRender {
         view: Some(rb::BookView {
-            tabs: rb::Tab::ALL.len(),
+            tabs: tabs.len(),
             selected_tab,
             page,
             total_pages,
             shown: slots.len(),
             filtering: st.filtering,
-            furnace_family: kind != 0,
+            furnace_family: book.furnace_family(),
         }),
         slots,
         // Nothing can hover the book: the cursor would have to be converted
@@ -13216,6 +13271,9 @@ fn live_recipe_book(session: &rewo_net::play::PlaySession) -> Option<BookRender>
         // has. Recorded rather than approximated from the panel's origin, which
         // is a pixel out on odd window widths.
         hover: rb::BookHover::default(),
+        book,
+        slot_items,
+        slot_shadowed,
     })
 }
 
@@ -13375,13 +13433,30 @@ fn sheet_index(texture: &str) -> Option<usize> {
 /// different slot count *and* a different panel, and the panel is what centres
 /// it — a six-row chest is 176x222, so measuring its slots from a 176x166
 /// origin puts every one of them 28 px low.
-fn menu_slot_rects(menu: &rewo_world::inventory::Inventory, w: f32, h: f32) -> Vec<(f32, f32, f32)> {
+/// Where each of a menu's slots sits on screen.
+///
+/// `book_open` is not optional decoration: an open recipe book MOVES the menu
+/// (M94), and this origin has to move with the panel's or every icon lands 77 px
+/// left of the slot it belongs to. M94 threaded the book through the panel draw
+/// and the hover and **missed this path**, which is the one-accessor rule half
+/// applied — the same shape as M90's `slot_kind`, and missed for the same
+/// reason: a function taking bare numbers does not look like it belongs to the
+/// menu.
+fn menu_slot_rects(
+    menu: &rewo_world::inventory::Inventory,
+    w: f32,
+    h: f32,
+    book_open: bool,
+) -> Vec<(f32, f32, f32)> {
     let layout = menu.layout();
-    let (left, top, scale) = rewo_gpu::container::gui_origin_for(
+    let (left, top, scale) = rewo_gpu::container::gui_origin_placed(
         w,
         h,
-        layout.image_w as f32,
-        layout.image_h as f32,
+        rewo_gpu::container::Placement::with_book(
+            layout.image_w as f32,
+            layout.image_h as f32,
+            book_open,
+        ),
     );
     (0..menu.slot_count())
         .map(|i| {
@@ -13398,7 +13473,7 @@ fn menu_slot_rects(menu: &rewo_world::inventory::Inventory, w: f32, h: f32) -> V
 /// The player inventory's slot rects — [`menu_slot_rects`] for the menu that
 /// was the only one before M87.
 fn screen_slot_rects(w: f32, h: f32) -> Vec<(f32, f32, f32)> {
-    menu_slot_rects(&rewo_world::inventory::Inventory::default(), w, h)
+    menu_slot_rects(&rewo_world::inventory::Inventory::default(), w, h, false)
 }
 
 /// This frame's icons and stack counts for the open screen.
@@ -14125,8 +14200,12 @@ pub(crate) fn screen_icons(
     cut: Option<&CutView>,
     // M93u — and the merchant's trade rows, likewise.
     merchant: Option<&MerchantView>,
+    // M95 — the recipe book, whose tab icons and recipe results are items.
+    // Its presence also MOVES the menu, so it moves every icon measured from
+    // the menu's origin too.
+    book: Option<&BookRender>,
 ) -> (Vec<rewo_gpu::gui_item::GuiItem>, Vec<rewo_gpu::world::OwnedTextLine>) {
-    let rects = menu_slot_rects(inv, w, h);
+    let rects = menu_slot_rects(inv, w, h, book.is_some());
     let (_, _, scale) = rewo_gpu::container::gui_origin(w, h);
     let mut icons = Vec::new();
     let mut labels = Vec::new();
@@ -14142,6 +14221,41 @@ pub(crate) fn screen_icons(
                 icons.push(icon);
             }
             labels.extend(count_label(stack, rect.0, rect.1, scale));
+        }
+    }
+    // M95 — the recipe book's items: the tab icons and the page's results.
+    //
+    // On the BOOK's origin, not the menu's — the book is window-anchored and
+    // the gap between the two alternates with the window's parity (M94).
+    //
+    // **No count label**, for the stonecutter's reason one screen over: both
+    // `fakeItem` and `graphics.item` draw the model alone, and
+    // `itemDecorations` is a separate call neither makes. A recipe yielding 8
+    // torches shows no "8".
+    if let Some(b) = book.and_then(|b| b.view.map(|v| (b, v))) {
+        let (bk, view) = b;
+        let (bl, bt, _) = rewo_gpu::container::recipe_book_origin(w, h);
+        let tabs = bk.book.tabs();
+        for icon in rewo_world::recipe_book_screen::book_icons(view, tabs, &bk.slot_shadowed) {
+            use rewo_world::recipe_book_screen::BookIconKind as K;
+            let id = match icon.kind {
+                K::TabPrimary(i) => tabs.get(i).and_then(|t| items.id(t.primary)),
+                K::TabSecondary(i) => tabs.get(i).and_then(|t| t.secondary).and_then(|n| items.id(n)),
+                // The SAME item for both copies: the shadow is the display
+                // stack drawn twice, not a second recipe's result.
+                K::Slot { index, .. } => bk.slot_items.get(index).copied().flatten(),
+            };
+            let Some(id) = id else { continue };
+            if let Some(g) = icon_for(
+                items,
+                trim_materials,
+                rewo_world::inventory::ItemSlot::plain(id, 1),
+                bl + icon.x as f32 * scale,
+                bt + icon.y as f32 * scale,
+                16.0 * scale,
+            ) {
+                icons.push(g);
+            }
         }
     }
     // M93s — the stonecutter's recipe buttons, which are ITEMS and so belong

@@ -1139,6 +1139,8 @@ fn overlays(
                 Some(open),
                 None,
                 None,
+                // The book is shut for every icon witness here.
+                None,
             )
             .0
             .len()
@@ -2198,6 +2200,12 @@ fn overlays(
     {
         use rewo_world::recipe_book_screen as rb;
         let (bl, bt, bsc) = rewo_gpu::container::recipe_book_origin(W as f32, H as f32);
+        let book_items = rewo_data::items::Items::load(
+            &rewo_data::DataPaths::for_version("26.2")
+                .ok_or("containershot: no data dir")?
+                .registries_json(),
+        )?;
+        let dirt_id = book_items.id("dirt").expect("dirt");
         let at_book = |img: &[u8], gx: i32, gy: i32| -> [u8; 3] {
             let x = (bl + (gx as f32 + 0.5) * bsc) as u32;
             let y = (bt + (gy as f32 + 0.5) * bsc) as u32;
@@ -2206,7 +2214,10 @@ fn overlays(
         };
         let book = |shown: usize, total: usize, page: usize| crate::live_cmd::BookRender {
             view: Some(rb::BookView {
-                tabs: 4,
+                // The book's OWN count. Hard-coding 4 here was M93z's error
+                // surviving in the fixture: a crafting book has five tabs, and
+                // b8 measured 26 icons against the 27 it named.
+                tabs: rb::BookType::Crafting.tabs().len(),
                 selected_tab: 0,
                 page,
                 total_pages: total,
@@ -2223,6 +2234,11 @@ fn overlays(
             // pass 20.
             slots: vec![(true, false); rb::ITEMS_PER_PAGE],
             hover: rb::BookHover::default(),
+            book: rb::BookType::Crafting,
+            // A dirt icon per visible cell, and no shadow copies — the item
+            // witnesses vary these where they need to.
+            slot_items: vec![Some(dirt_id); rb::ITEMS_PER_PAGE],
+            slot_shadowed: vec![false; rb::ITEMS_PER_PAGE],
         };
         // The crafting table - one of the four menus that actually has a book.
         // Menu type 12; 13 is `enchantment`, which an earlier draft of this
@@ -2388,6 +2404,166 @@ fn overlays(
                 "slot 0 reads {:?} craftable and {:?} not - `slot_craftable.png`'s 139 against `slot_uncraftable.png`'s 106",
                 at_book(&open, c0x + 12, c0y + 12),
                 at_book(&unc_frame, c0x + 12, c0y + 12)
+            ),
+        );
+
+        // b8 - the book's ITEMS. Counted rather than probed for a pixel: an
+        // icon is a 3D model rendered by another pass, so its colour at a given
+        // texel is a property of the model and the GUI lighting rather than of
+        // the placement this milestone is about.
+        //
+        // The count is exact and each term is named, so a change in either
+        // half shows: five tabs, of which two carry a pair, is seven; plus one
+        // per visible slot.
+        let icons_of = |b: Option<&crate::live_cmd::BookRender>| -> usize {
+            let inv = rewo_world::inventory::Inventory::default();
+            crate::live_cmd::screen_icons(
+                &inv,
+                &book_items,
+                &[],
+                W as f32,
+                H as f32,
+                None,
+                None,
+                None,
+                b,
+            )
+            .0
+            .len()
+        };
+        let base = icons_of(None);
+        let with_book = icons_of(Some(&full));
+        c.record(
+            "b8.the_book_draws_an_icon_per_tab_and_per_visible_slot",
+            with_book - base == 7 + rb::ITEMS_PER_PAGE,
+            format!(
+                "{} icons over the shut-book baseline of {base}: 5 crafting tabs of which 2 carry a pair = 7, plus one per visible slot",
+                with_book - base
+            ),
+        );
+
+        // b9 - a shadowed slot draws TWO icons of the same item, not one.
+        let shadowed = crate::live_cmd::BookRender {
+            slot_shadowed: vec![true; rb::ITEMS_PER_PAGE],
+            ..full.clone()
+        };
+        c.record(
+            "b9.a_shadowed_slot_draws_the_display_stack_twice",
+            icons_of(Some(&shadowed)) - with_book == rb::ITEMS_PER_PAGE,
+            format!(
+                "shadowing all 20 slots adds exactly {} icons - one per slot, the same stack drawn again",
+                icons_of(Some(&shadowed)) - with_book
+            ),
+        );
+
+        // b10 - a slot whose result Rewo cannot resolve draws NO icon, rather
+        // than a placeholder. `SlotDisplay::Tag` and friends need a context
+        // Rewo has not got, and an arbitrary tag member would be a confident
+        // wrong answer.
+        let unresolved = crate::live_cmd::BookRender {
+            slot_items: vec![None; rb::ITEMS_PER_PAGE],
+            ..full.clone()
+        };
+        c.record(
+            "b10.an_unresolvable_result_draws_nothing_rather_than_a_guess",
+            with_book - icons_of(Some(&unresolved)) == rb::ITEMS_PER_PAGE,
+            format!(
+                "dropping all 20 results removes exactly {} icons and leaves the 7 tab icons",
+                with_book - icons_of(Some(&unresolved))
+            ),
+        );
+
+        // b11 - the tab icons come from the BOOK's own list, whose length
+        // differs per book: crafting 5 (2 paired) = 7 icons, smoker 2 (0
+        // paired) = 2. M94 assumed four tabs for every book.
+        let smoker = crate::live_cmd::BookRender {
+            book: rb::BookType::Smoker,
+            view: Some(rb::BookView {
+                tabs: rb::BookType::Smoker.tabs().len(),
+                ..full.view.unwrap()
+            }),
+            ..full.clone()
+        };
+        c.record(
+            "b11.each_book_draws_its_OWN_tab_list",
+            icons_of(Some(&smoker)) - base == 2 + rb::ITEMS_PER_PAGE
+                && rb::BookType::Crafting.tabs().len() == 5
+                && rb::BookType::Smoker.tabs().len() == 2,
+            format!(
+                "a smoker book adds {} icons against a crafting book's {} - 2 tabs neither of which is paired, against 5 tabs of which 2 are",
+                icons_of(Some(&smoker)) - base,
+                with_book - base
+            ),
+        );
+
+        // b12 / b13 - WHERE the icons land.
+        //
+        // b8..b11 count icons, and a count cannot see a wrong origin: two
+        // mutations survived them, one putting the book's icons on the menu's
+        // origin and one leaving the menu's icons on a centred origin while an
+        // open book moved the panel. Both are the failure this milestone exists
+        // to avoid, and both need a position, so here it is.
+        let icons_at = |b: Option<&crate::live_cmd::BookRender>,
+                        inv: &rewo_world::inventory::Inventory|
+         -> Vec<rewo_gpu::gui_item::GuiItem> {
+            crate::live_cmd::screen_icons(
+                inv,
+                &book_items,
+                &[],
+                W as f32,
+                H as f32,
+                None,
+                None,
+                None,
+                b,
+            )
+            .0
+        };
+        let empty_inv = rewo_world::inventory::Inventory::default();
+        let placed = icons_at(Some(&full), &empty_inv);
+        // Slot 0's icon, which `book_icons` puts at grid_slot(0) + 4.
+        let (g0x, g0y) = rb::grid_slot(0);
+        let want = (bl + (g0x + 4) as f32 * bsc, bt + (g0y + 4) as f32 * bsc);
+        c.record(
+            "b12.the_books_icons_sit_on_the_BOOKs_origin",
+            placed
+                .iter()
+                .any(|i| (i.x - want.0).abs() < 0.01 && (i.y - want.1).abs() < 0.01),
+            format!(
+                "an icon lands at {want:?}, the book's origin plus grid slot 0 plus 4 - the menu's origin is {:?}, which is where the surviving mutation put it",
+                rewo_gpu::container::gui_origin(W as f32, H as f32)
+            ),
+        );
+
+        // b13 - and the MENU's icons move with the panel when the book opens.
+        //
+        // A stocked player inventory, so there is an icon to find; slot 36 is
+        // the first hotbar slot.
+        // The menu's icon is told apart from the book's by its ITEM, not by
+        // where it is: the book's cells all hold dirt, so a sword in the menu
+        // is unambiguous. Filtering by position would be circular, since
+        // position is exactly what this measures - and the first draft did
+        // that and found nothing, because the book's right edge is right of
+        // the player panel's left edge.
+        let sword_id = book_items.id("diamond_sword").expect("diamond_sword");
+        let sword = book_items.name(sword_id).expect("named").to_string();
+        let mut stocked = rewo_world::inventory::Inventory::default();
+        stocked.set_slot(0, 36, Some(rewo_world::inventory::ItemSlot::plain(sword_id, 1)));
+        let shut_icons = icons_at(None, &stocked);
+        let open_icons = icons_at(Some(&full), &stocked);
+        let first_menu_icon = |v: &[rewo_gpu::gui_item::GuiItem]| -> Option<f32> {
+            v.iter().find(|i| i.model == sword).map(|i| i.x)
+        };
+        let shift = match (first_menu_icon(&shut_icons), first_menu_icon(&open_icons)) {
+            (Some(a), Some(b)) => Some((b - a) / bsc),
+            _ => None,
+        };
+        c.record(
+            "b13.the_menus_icons_move_with_the_panel_the_book_pushed",
+            shift.is_some_and(|d| (d - 77.0).abs() < 0.01),
+            format!(
+                "a menu icon moves {:?} GUI px when the book opens - the same 77 the panel moves in b2, because the icon is measured from the panel's origin",
+                shift
             ),
         );
 

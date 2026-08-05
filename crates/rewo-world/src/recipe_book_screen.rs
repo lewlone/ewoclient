@@ -110,54 +110,210 @@ pub fn page_range(page: usize, collections: usize) -> std::ops::Range<usize> {
     start..(start + ITEMS_PER_PAGE).min(collections)
 }
 
-/// `SearchRecipeBookCategory` — the four tabs.
+/// Where a tab's button sits, relative to the book's origin.
+///
+/// `index` is its position among the **visible** tabs — `updateTabs` makes
+/// every search tab visible unconditionally and asks `updateVisibility` for the
+/// rest, then lays out only the ones that survive.
+pub fn tab_position(index: i32) -> (i32, i32) {
+    (TAB_DX, TAB_DY + TAB_PITCH * index)
+}
+
+/// One tab of one book — its icon(s) and the categories it shows (M95).
+///
+/// **This replaces M93z's `Tab`, which was wrong.** That enum was the four
+/// `SearchRecipeBookCategory` values, and those are *the search tab of each of
+/// the four books*, not the tabs within one book. `includedCategories()` is
+/// what the **search tab** contains. Each book has its own hand-written tab
+/// list: crafting **five**, furnace four, blast furnace three, smoker two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tab {
+pub struct BookTab {
+    /// The item(s) drawn on the tab. One icon or two — `TabInfo` has a
+    /// three-argument constructor for the pairs, and the pair is drawn at
+    /// +3/+14 against a single icon's +9.
+    pub primary: &'static str,
+    pub secondary: Option<&'static str>,
+    /// The categories this tab shows. A **search** tab lists the book's whole
+    /// set; a category tab exactly one.
+    pub categories: &'static [&'static str],
+    /// Whether this is the search tab — the one `updateTabs` makes visible
+    /// unconditionally, where a category tab's visibility depends on having a
+    /// collection with `hasAnySelected`.
+    ///
+    /// **Explicit, not derived from the category count.** Vanilla's
+    /// discriminator is the *type* — `SearchRecipeBookCategory` against
+    /// `RecipeBookCategory` — and a count heuristic gets the **smoker** wrong,
+    /// because its search tab includes exactly one category (`smoker_food`),
+    /// the same one its single category tab does. A rule that works for three
+    /// books out of four is worse than no rule.
+    pub search: bool,
+}
+
+impl BookTab {
+    pub fn is_search(&self) -> bool {
+        self.search
+    }
+}
+
+/// `CraftingRecipeBookComponent.TABS` — **five**, the first of them search.
+///
+/// The search tab's icon is a **compass**: `TabInfo(SearchRecipeBookCategory)`
+/// is `new ItemStack(Items.COMPASS)`, and all four books' search tabs share it.
+pub const CRAFTING_TABS: &[BookTab] = &[
+    BookTab {
+        primary: "compass",
+        secondary: None,
+        search: true,
+        categories: &[
+            "minecraft:crafting_equipment",
+            "minecraft:crafting_building_blocks",
+            "minecraft:crafting_misc",
+            "minecraft:crafting_redstone",
+        ],
+    },
+    BookTab {
+        primary: "iron_axe",
+        secondary: Some("golden_sword"),
+        search: false,
+        categories: &["minecraft:crafting_equipment"],
+    },
+    BookTab {
+        primary: "bricks",
+        secondary: None,
+        search: false,
+        categories: &["minecraft:crafting_building_blocks"],
+    },
+    BookTab {
+        primary: "lava_bucket",
+        secondary: Some("apple"),
+        search: false,
+        categories: &["minecraft:crafting_misc"],
+    },
+    BookTab {
+        primary: "redstone",
+        secondary: None,
+        search: false,
+        categories: &["minecraft:crafting_redstone"],
+    },
+];
+
+/// `FurnaceScreen.TABS` — four.
+pub const FURNACE_TABS: &[BookTab] = &[
+    BookTab {
+        primary: "compass",
+        secondary: None,
+        search: true,
+        categories: &[
+            "minecraft:furnace_food",
+            "minecraft:furnace_blocks",
+            "minecraft:furnace_misc",
+        ],
+    },
+    BookTab {
+        primary: "porkchop",
+        secondary: None,
+        search: false,
+        categories: &["minecraft:furnace_food"],
+    },
+    BookTab {
+        primary: "stone",
+        secondary: None,
+        search: false,
+        categories: &["minecraft:furnace_blocks"],
+    },
+    BookTab {
+        primary: "lava_bucket",
+        secondary: Some("emerald"),
+        search: false,
+        categories: &["minecraft:furnace_misc"],
+    },
+];
+
+/// `BlastFurnaceScreen.TABS` — three.
+pub const BLAST_FURNACE_TABS: &[BookTab] = &[
+    BookTab {
+        primary: "compass",
+        secondary: None,
+        search: true,
+        categories: &[
+            "minecraft:blast_furnace_blocks",
+            "minecraft:blast_furnace_misc",
+        ],
+    },
+    BookTab {
+        primary: "redstone_ore",
+        secondary: None,
+        search: false,
+        categories: &["minecraft:blast_furnace_blocks"],
+    },
+    BookTab {
+        primary: "iron_shovel",
+        secondary: Some("golden_leggings"),
+        search: false,
+        categories: &["minecraft:blast_furnace_misc"],
+    },
+];
+
+/// `SmokerScreen.TABS` — two.
+pub const SMOKER_TABS: &[BookTab] = &[
+    BookTab {
+        primary: "compass",
+        secondary: None,
+        search: true,
+        categories: &["minecraft:smoker_food"],
+    },
+    BookTab {
+        primary: "porkchop",
+        secondary: None,
+        search: false,
+        categories: &["minecraft:smoker_food"],
+    },
+];
+
+/// The four books, in `RecipeBookSettings`' positional order (M93y).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BookType {
+    #[default]
     Crafting,
     Furnace,
     BlastFurnace,
     Smoker,
 }
 
-impl Tab {
-    /// In declaration order, which is the order the tabs stack down the left.
-    pub const ALL: [Tab; 4] = [Tab::Crafting, Tab::Furnace, Tab::BlastFurnace, Tab::Smoker];
+impl BookType {
+    pub const ALL: [BookType; 4] = [
+        BookType::Crafting,
+        BookType::Furnace,
+        BookType::BlastFurnace,
+        BookType::Smoker,
+    ];
 
-    /// `includedCategories()`, by registry name.
-    ///
-    /// **Crafting lists `equipment` first**, not `building_blocks` — the
-    /// registry's own id order is building_blocks, redstone, equipment, misc,
-    /// and the tab's is a different, hand-written order. Deriving a tab's
-    /// contents from registry ids would reorder every crafting collection.
-    pub fn included(self) -> &'static [&'static str] {
+    /// `RecipeBookSettings`' index — and `RecipeBookType`'s ordinal.
+    pub fn index(self) -> usize {
         match self {
-            Tab::Crafting => &[
-                "minecraft:crafting_equipment",
-                "minecraft:crafting_building_blocks",
-                "minecraft:crafting_misc",
-                "minecraft:crafting_redstone",
-            ],
-            Tab::Furnace => &[
-                "minecraft:furnace_food",
-                "minecraft:furnace_blocks",
-                "minecraft:furnace_misc",
-            ],
-            Tab::BlastFurnace => &[
-                "minecraft:blast_furnace_blocks",
-                "minecraft:blast_furnace_misc",
-            ],
-            Tab::Smoker => &["minecraft:smoker_food"],
+            BookType::Crafting => 0,
+            BookType::Furnace => 1,
+            BookType::BlastFurnace => 2,
+            BookType::Smoker => 3,
         }
     }
 
-    /// Where this tab's button sits, relative to the book's origin.
+    pub fn tabs(self) -> &'static [BookTab] {
+        match self {
+            BookType::Crafting => CRAFTING_TABS,
+            BookType::Furnace => FURNACE_TABS,
+            BookType::BlastFurnace => BLAST_FURNACE_TABS,
+            BookType::Smoker => SMOKER_TABS,
+        }
+    }
+
+    /// Whether this book's filter toggle uses the furnace art.
     ///
-    /// `index` is its position among the **visible** tabs, which for the four
-    /// search categories is always their declaration order: `updateTabs` sets
-    /// `visible = true` unconditionally for a `SearchRecipeBookCategory` and
-    /// only asks `updateVisibility` for the others.
-    pub fn position(index: i32) -> (i32, i32) {
-        (TAB_DX, TAB_DY + TAB_PITCH * index)
+    /// `CraftingRecipeBookComponent` and `FurnaceRecipeBookComponent` are the
+    /// only two subclasses, and all three furnaces share the second — so this
+    /// is "not crafting", not "is a furnace by name".
+    pub fn furnace_family(self) -> bool {
+        self != BookType::Crafting
     }
 }
 
@@ -174,11 +330,17 @@ pub const CATEGORIES_WITHOUT_A_TAB: [&str; 3] = [
     "minecraft:campfire",
 ];
 
-/// Which tab a category belongs to, or `None` for the three above.
-pub fn tab_of(category: &str) -> Option<Tab> {
-    Tab::ALL
-        .into_iter()
-        .find(|t| t.included().contains(&category))
+/// Which of a book's tabs a category belongs to, or `None`.
+///
+/// The **search tab is skipped**: it contains every category the book has, so
+/// including it would make this answer 0 for everything. The question this
+/// asks is "which category tab", which is what a collection needs.
+pub fn category_tab_of(book: BookType, category: &str) -> Option<usize> {
+    book.tabs()
+        .iter()
+        .enumerate()
+        .find(|(_, t)| !t.is_search() && t.categories.contains(&category))
+        .map(|(i, _)| i)
 }
 
 /// One `RecipeCollection` — the recipes that share a cell in the grid.
@@ -521,7 +683,7 @@ pub fn book_chrome(view: BookView, slots: &[(bool, bool)], hover: BookHover) -> 
 
     for i in 0..view.tabs {
         let selected = i == view.selected_tab;
-        let (tx, ty) = Tab::position(i as i32);
+        let (tx, ty) = tab_position(i as i32);
         out.push(BookQuad {
             sprite: BookSprite::Tab { selected },
             x: tx + tab_x_shift(selected),
@@ -588,7 +750,75 @@ pub struct BookHover {
     pub filter: bool,
 }
 
-/// A recipe button is 25x25 — the same as the grid pitch, so the buttons abut
+/// Where every ITEM the book draws goes, in book-relative GUI pixels (M95).
+///
+/// Separate from [`book_chrome`] because these are items, not sprites: they go
+/// through the GUI item pass, which draws a model rather than an atlas rect.
+/// The caller resolves *which* item — a tab's is a registry name from
+/// [`BookTab`], a slot's comes off the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BookIcon {
+    pub x: i32,
+    pub y: i32,
+    pub kind: BookIconKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BookIconKind {
+    /// Tab `index`'s first icon.
+    TabPrimary(usize),
+    /// Its second, on the four tabs that have one.
+    TabSecondary(usize),
+    /// Recipe slot `index`. `back` is the SHADOW copy a multi-recipe
+    /// collection draws behind the real one.
+    Slot { index: usize, back: bool },
+}
+
+/// Every item position the book draws, in vanilla's own order: the tabs' icons
+/// (each after its own tab sprite), then the page's slots.
+///
+/// `multi` says, per visible slot, whether the collection has several recipes
+/// **and they all share a result display** — which is the pair of conditions
+/// that draws the shadow copy. Either alone draws one item.
+pub fn book_icons(view: BookView, tabs: &[BookTab], multi: &[bool]) -> Vec<BookIcon> {
+    let mut out = Vec::new();
+    for (i, tab) in tabs.iter().enumerate().take(view.tabs) {
+        let (tx, ty) = tab_position(i as i32);
+        for (n, (dx, dy)) in tab_icon_offsets(tab.secondary.is_some(), i == view.selected_tab)
+            .into_iter()
+            .enumerate()
+        {
+            out.push(BookIcon {
+                x: tx + dx,
+                y: ty + dy,
+                kind: if n == 0 {
+                    BookIconKind::TabPrimary(i)
+                } else {
+                    BookIconKind::TabSecondary(i)
+                },
+            });
+        }
+    }
+    for index in 0..view.shown {
+        let (sx, sy) = grid_slot(index);
+        let (back, front) = recipe_item_offsets(multi.get(index).copied().unwrap_or(false));
+        if let Some(b) = back {
+            out.push(BookIcon {
+                x: sx + b,
+                y: sy + b,
+                kind: BookIconKind::Slot { index, back: true },
+            });
+        }
+        out.push(BookIcon {
+            x: sx + front,
+            y: sy + front,
+            kind: BookIconKind::Slot { index, back: false },
+        });
+    }
+    out
+}
+
+/// A recipe button is 25x25/// A recipe button is 25x25 — the same as the grid pitch, so the buttons abut
 /// with no gap and a click can never fall between two.
 pub const SLOT_SIZE: i32 = 25;
 
@@ -608,6 +838,87 @@ mod tests {
             shown,
             filtering: false,
             furnace_family: false,
+        }
+    }
+
+    #[test]
+    fn every_tab_draws_its_icons_over_its_own_sprite() {
+        let mut v = view(0, 1, 0);
+        v.tabs = 5;
+        let icons = book_icons(v, CRAFTING_TABS, &[]);
+        // Five tabs; two of the five carry a pair, so seven icons.
+        assert_eq!(icons.len(), 7);
+        assert_eq!(
+            icons.iter().filter(|i| matches!(i.kind, BookIconKind::TabSecondary(_))).count(),
+            2,
+            "equipment and misc"
+        );
+        // Tab 0 is selected, so its icon rides the 2 px shift with its sprite.
+        let (tx, ty) = tab_position(0);
+        assert_eq!(icons[0].x, tx + 9 - 2);
+        assert_eq!(icons[0].y, ty + 5);
+        // Tab 1 is not, and carries a PAIR at +3/+14.
+        let (t1x, t1y) = tab_position(1);
+        assert_eq!(icons[1].x, t1x + 3);
+        assert_eq!(icons[2].x, t1x + 14);
+        assert_eq!((icons[1].y, icons[2].y), (t1y + 5, t1y + 5));
+    }
+
+    /// The shadow copy exists only when a collection has SEVERAL recipes AND
+    /// they share a result display. Either alone draws one item.
+    #[test]
+    fn only_a_multi_recipe_slot_with_one_result_draws_two_items() {
+        let mut v = view(3, 1, 0);
+        v.tabs = 0;
+        let icons = book_icons(v, &[], &[false, true, false]);
+        let slots: Vec<_> = icons
+            .iter()
+            .filter_map(|i| match i.kind {
+                BookIconKind::Slot { index, back } => Some((index, back, i.x, i.y)),
+                _ => None,
+            })
+            .collect();
+        // Four: one each for slots 0 and 2, two for slot 1.
+        assert_eq!(slots.len(), 4);
+        assert_eq!(slots.iter().filter(|s| s.1).count(), 1, "one shadow");
+        let (sx, sy) = grid_slot(1);
+        assert!(slots.contains(&(1, true, sx + 5, sy + 5)), "the shadow at +5");
+        assert!(slots.contains(&(1, false, sx + 3, sy + 3)), "the front at +3");
+        // A single-recipe slot sits at +4, between the two.
+        let (zx, zy) = grid_slot(0);
+        assert!(slots.contains(&(0, false, zx + 4, zy + 4)));
+    }
+
+    /// A page shorter than 20 draws icons only for the slots it has — the same
+    /// `shown` the chrome respects, so the two cannot disagree about how many
+    /// cells there are.
+    #[test]
+    fn the_icons_and_the_chrome_agree_about_how_many_slots_there_are() {
+        let v = view(5, 3, 2);
+        let cells = book_chrome(v, &vec![(true, false); ITEMS_PER_PAGE], BookHover::default())
+            .into_iter()
+            .filter(|q| matches!(q.sprite, BookSprite::Slot(_)))
+            .count();
+        let items = book_icons(v, &[], &vec![false; ITEMS_PER_PAGE])
+            .into_iter()
+            .filter(|i| matches!(i.kind, BookIconKind::Slot { .. }))
+            .count();
+        assert_eq!(cells, 5);
+        assert_eq!(items, 5);
+    }
+
+    /// An icon sits INSIDE its 25x25 cell, whichever offset it takes.
+    #[test]
+    fn every_slot_icon_lands_inside_its_own_cell() {
+        let mut v = view(ITEMS_PER_PAGE, 1, 0);
+        v.tabs = 0;
+        for multi in [false, true] {
+            for i in book_icons(v, &[], &vec![multi; ITEMS_PER_PAGE]) {
+                let BookIconKind::Slot { index, .. } = i.kind else { continue };
+                let (sx, sy) = grid_slot(index);
+                assert!(i.x >= sx && i.x + 16 <= sx + SLOT_SIZE, "slot {index} x");
+                assert!(i.y >= sy && i.y + 16 <= sy + SLOT_SIZE, "slot {index} y");
+            }
         }
     }
 
@@ -959,35 +1270,130 @@ mod tests {
         assert_eq!(page_range(9, 5), 5..5);
     }
 
+    /// M93z modelled the four `SearchRecipeBookCategory` values as "the tabs".
+    /// They are the SEARCH TAB OF EACH OF THE FOUR BOOKS. A crafting book has
+    /// five tabs, and the first of them is the search tab whose contents are
+    /// that enum's `includedCategories()`.
     #[test]
-    fn the_crafting_tab_does_not_follow_the_registrys_id_order() {
-        // The registry is building_blocks, redstone, equipment, misc; the tab
-        // is equipment FIRST. Deriving from ids would reorder every crafting
-        // collection on screen.
-        assert_eq!(Tab::Crafting.included()[0], "minecraft:crafting_equipment");
-        assert_eq!(Tab::Crafting.included().len(), 4);
-        assert_eq!(Tab::Smoker.included(), ["minecraft:smoker_food"]);
+    fn a_book_has_its_own_tabs_and_the_first_is_SEARCH() {
+        assert_eq!(BookType::Crafting.tabs().len(), 5, "NOT 4");
+        assert_eq!(BookType::Furnace.tabs().len(), 4);
+        assert_eq!(BookType::BlastFurnace.tabs().len(), 3);
+        assert_eq!(BookType::Smoker.tabs().len(), 2);
+        for b in BookType::ALL {
+            assert!(b.tabs()[0].is_search(), "{b:?} tab 0 is the search tab");
+            assert_eq!(b.tabs()[0].primary, "compass", "every search tab is a compass");
+            // ...and no OTHER tab is a search tab.
+            assert!(b.tabs()[1..].iter().all(|t| !t.is_search()));
+        }
+    }
+
+    /// The search tab's list is `SearchRecipeBookCategory`'s, in its own
+    /// hand-written order — equipment FIRST, where the registry's id order is
+    /// building_blocks, redstone, equipment, misc.
+    #[test]
+    fn the_search_tabs_categories_do_not_follow_the_registrys_id_order() {
+        let search = &BookType::Crafting.tabs()[0];
+        assert_eq!(search.categories[0], "minecraft:crafting_equipment");
+        assert_eq!(search.categories.len(), 4);
+        assert_eq!(
+            BookType::Smoker.tabs()[0].categories,
+            ["minecraft:smoker_food"]
+        );
+    }
+
+    /// The search tab is the union of the book's category tabs — so a
+    /// collection reachable from a category tab is reachable from search, and
+    /// the two cannot drift.
+    #[test]
+    fn the_search_tab_is_exactly_the_union_of_the_category_tabs() {
+        for b in BookType::ALL {
+            let mut from_categories: Vec<&str> = b.tabs()[1..]
+                .iter()
+                .flat_map(|t| t.categories.iter().copied())
+                .collect();
+            from_categories.sort();
+            from_categories.dedup();
+            let mut search: Vec<&str> = b.tabs()[0].categories.to_vec();
+            search.sort();
+            assert_eq!(search, from_categories, "{b:?}");
+        }
     }
 
     #[test]
-    fn three_categories_belong_to_NO_tab() {
-        // 13 in the registry, 10 across the four tabs.
-        let covered: usize = Tab::ALL.iter().map(|t| t.included().len()).sum();
-        assert_eq!(covered, 10);
-        assert_eq!(covered + CATEGORIES_WITHOUT_A_TAB.len(), 13);
+    fn three_categories_belong_to_NO_book_at_all() {
+        // 13 in the registry, 10 across the four books' search tabs.
+        let mut covered: Vec<&str> = BookType::ALL
+            .iter()
+            .flat_map(|b| b.tabs()[0].categories.iter().copied())
+            .collect();
+        covered.sort();
+        covered.dedup();
+        assert_eq!(covered.len(), 10);
+        assert_eq!(covered.len() + CATEGORIES_WITHOUT_A_TAB.len(), 13);
         for c in CATEGORIES_WITHOUT_A_TAB {
-            assert_eq!(tab_of(c), None, "{c} must not resolve to a tab");
+            assert!(!covered.contains(&c), "{c} must belong to no book");
+            assert_eq!(category_tab_of(BookType::Crafting, c), None);
         }
-        assert_eq!(tab_of("minecraft:furnace_food"), Some(Tab::Furnace));
-        assert_eq!(tab_of("minecraft:crafting_misc"), Some(Tab::Crafting));
-        assert_eq!(tab_of("minecraft:not_a_category"), None);
+    }
+
+    /// `category_tab_of` skips the search tab, or it would answer 0 for every
+    /// category the book has.
+    #[test]
+    fn a_category_resolves_to_its_CATEGORY_tab_not_to_search() {
+        assert_eq!(
+            category_tab_of(BookType::Crafting, "minecraft:crafting_equipment"),
+            Some(1)
+        );
+        assert_eq!(
+            category_tab_of(BookType::Crafting, "minecraft:crafting_redstone"),
+            Some(4)
+        );
+        assert_eq!(category_tab_of(BookType::Crafting, "minecraft:furnace_food"), None);
+        assert_eq!(category_tab_of(BookType::Crafting, "minecraft:not_a_category"), None);
+        // The search tab DOES contain it, which is what makes skipping it the
+        // load-bearing part.
+        assert!(BookType::Crafting.tabs()[0]
+            .categories
+            .contains(&"minecraft:crafting_equipment"));
+    }
+
+    /// Two icons or one, and the pair is only ever on the tabs vanilla gives
+    /// two — checked against the decompile's own lists rather than by a rule.
+    #[test]
+    fn the_paired_icon_tabs_are_the_four_vanilla_declares() {
+        let paired: Vec<(&str, &str)> = BookType::ALL
+            .iter()
+            .flat_map(|b| b.tabs())
+            .filter_map(|t| t.secondary.map(|sec| (t.primary, sec)))
+            .collect();
+        assert_eq!(
+            paired,
+            vec![
+                ("iron_axe", "golden_sword"),
+                ("lava_bucket", "apple"),
+                ("lava_bucket", "emerald"),
+                ("iron_shovel", "golden_leggings"),
+            ]
+        );
+    }
+
+    /// The filter art is "not crafting", not "named like a furnace" — there
+    /// are only two `RecipeBookComponent` subclasses and the three furnaces
+    /// share one.
+    #[test]
+    fn the_filter_art_splits_crafting_from_everything_else() {
+        assert!(!BookType::Crafting.furnace_family());
+        for b in [BookType::Furnace, BookType::BlastFurnace, BookType::Smoker] {
+            assert!(b.furnace_family(), "{b:?}");
+        }
     }
 
     #[test]
     fn the_tabs_stack_down_the_left_at_a_pitch_of_27() {
-        assert_eq!(Tab::position(0), (-30, 3));
-        assert_eq!(Tab::position(1), (-30, 30));
-        assert_eq!(Tab::position(3), (-30, 3 + 81));
+        assert_eq!(tab_position(0), (-30, 3));
+        assert_eq!(tab_position(1), (-30, 30));
+        assert_eq!(tab_position(3), (-30, 3 + 81));
     }
 
     #[test]

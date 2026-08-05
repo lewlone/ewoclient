@@ -382,6 +382,96 @@ pub fn parse_settings(body: &[u8]) -> Result<BookSettings, String> {
     })
 }
 
+impl SlotDisplay {
+    /// `resolveForStacks` — the item ids this display stands for, in order
+    /// (M95).
+    ///
+    /// Vanilla resolves through a `ContextMap`, which carries the fuel table,
+    /// the item tags and the enchantment/potion registries. Rewo resolves the
+    /// arms that need **no context** and yields nothing for the rest, so an
+    /// unresolvable display draws an empty slot rather than a wrong item:
+    ///
+    /// * `Item` and `Stack` are the two a recipe RESULT is in practice.
+    /// * `Composite` flat-maps, which is how "any of these" is expressed.
+    /// * `WithRemainder` resolves its **input**; the remainder only decorates
+    ///   the stack for the ingredient display, and a result never has one.
+    /// * `Empty` is nothing, which is not a failure.
+    ///
+    /// `AnyFuel`, `Tag`, `Dyed`, `SmithingTrim`, `WithAnyPotion` and
+    /// `OnlyWithComponent` all need the context and yield nothing. That is
+    /// visible — an ingredient slot that would show a rotating set of tag
+    /// members shows none — and it is the honest state, because the alternative
+    /// is picking an arbitrary member and calling it the recipe.
+    pub fn resolve_items(&self, out: &mut Vec<i32>) {
+        match self {
+            SlotDisplay::Item(id) => out.push(*id),
+            SlotDisplay::Stack(t) => out.push(t.item_id),
+            SlotDisplay::Composite(v) => {
+                for d in v {
+                    d.resolve_items(out);
+                }
+            }
+            SlotDisplay::WithRemainder { input, .. } => input.resolve_items(out),
+            SlotDisplay::Empty
+            | SlotDisplay::AnyFuel
+            | SlotDisplay::Tag(_)
+            | SlotDisplay::Dyed { .. }
+            | SlotDisplay::SmithingTrim { .. }
+            | SlotDisplay::WithAnyPotion(_)
+            | SlotDisplay::OnlyWithComponent(..) => {}
+        }
+    }
+
+    pub fn items(&self) -> Vec<i32> {
+        let mut v = Vec::new();
+        self.resolve_items(&mut v);
+        v
+    }
+}
+
+impl RecipeDisplay {
+    /// The display's **result** — the item a recipe button shows.
+    pub fn result(&self) -> &SlotDisplay {
+        match self {
+            RecipeDisplay::CraftingShapeless { result, .. }
+            | RecipeDisplay::CraftingShaped { result, .. }
+            | RecipeDisplay::Furnace { result, .. }
+            | RecipeDisplay::Stonecutter { result, .. }
+            | RecipeDisplay::Smithing { result, .. } => result,
+        }
+    }
+}
+
+/// `ContainerSelectTime` — `Mth.floor(time / 30.0F)`, with `time` advanced by
+/// the partial tick each render (M95).
+pub const TICKS_TO_SWAP_SLOT: f32 = 30.0;
+
+/// `RecipeButton.getDisplayStack` — which of a collection's items is on show.
+///
+/// A **two-level** cycle, and the second level is easy to miss:
+/// `offsetIndex = currentIndex / entryCount` selects *within* an entry's own
+/// display items while `entryIndex = currentIndex % entryCount` selects the
+/// entry. So a collection of three recipes whose results each have two forms
+/// cycles through six over 3 minutes, not three.
+///
+/// Returns `None` for an entry with no resolvable items, which is
+/// `ItemStack.EMPTY` — vanilla draws nothing rather than skipping to the next.
+pub fn display_item(entries: &[Vec<i32>], current_index: i32) -> Option<i32> {
+    if entries.is_empty() {
+        return None;
+    }
+    let n = entries.len() as i32;
+    let offset_index = current_index.div_euclid(n);
+    let entry_index = current_index - n * offset_index;
+    let items = entries.get(entry_index as usize)?;
+    if items.is_empty() {
+        return None;
+    }
+    items
+        .get((offset_index % items.len() as i32) as usize)
+        .copied()
+}
+
 /// `ClientboundPlaceGhostRecipePacket` — a container id and one display.
 pub fn parse_place_ghost(
     body: &[u8],
@@ -404,6 +494,76 @@ pub const SEEN_RECIPE_IS_ONE_VARINT: () = ();
 
 #[cfg(test)]
 mod tests {
+
+    /// The arms that need no context resolve; the six that do yield NOTHING,
+    /// so an unresolvable display draws an empty slot rather than a wrong item.
+    #[test]
+    fn a_display_resolves_only_what_it_can_without_a_context() {
+        assert_eq!(SlotDisplay::Item(7).items(), vec![7]);
+        assert_eq!(SlotDisplay::Empty.items(), Vec::<i32>::new());
+        assert_eq!(
+            SlotDisplay::Composite(vec![
+                SlotDisplay::Item(1),
+                SlotDisplay::Item(2),
+                SlotDisplay::Empty,
+            ])
+            .items(),
+            vec![1, 2],
+            "flat-mapped, in order"
+        );
+        // `WithRemainder` resolves its INPUT — the remainder decorates an
+        // ingredient and is never part of a result.
+        assert_eq!(
+            SlotDisplay::WithRemainder {
+                input: Box::new(SlotDisplay::Item(3)),
+                remainder: Box::new(SlotDisplay::Item(99)),
+            }
+            .items(),
+            vec![3],
+        );
+        // Each context-needing arm yields nothing rather than guessing.
+        assert_eq!(SlotDisplay::AnyFuel.items(), Vec::<i32>::new());
+        assert_eq!(SlotDisplay::Tag("c:ingots".into()).items(), Vec::<i32>::new());
+        assert_eq!(
+            SlotDisplay::WithAnyPotion(Box::new(SlotDisplay::Item(4))).items(),
+            Vec::<i32>::new(),
+            "the base is NOT yielded — a potion display is not its bottle"
+        );
+    }
+
+    /// The cycle is TWO levels: the modulo picks the entry and the DIVISION
+    /// picks which of that entry's own items. Reading only the modulo makes a
+    /// collection of three recipes with two forms each cycle through three.
+    #[test]
+    fn the_display_cycle_walks_entries_and_their_items_independently() {
+        let entries = vec![vec![10, 11], vec![20], vec![30, 31]];
+        // Index 0..2 walks the entries at offset 0.
+        assert_eq!(display_item(&entries, 0), Some(10));
+        assert_eq!(display_item(&entries, 1), Some(20));
+        assert_eq!(display_item(&entries, 2), Some(30));
+        // Index 3..5 walks them again at offset 1 — and entry 1, which has one
+        // item, repeats it rather than running off the end.
+        assert_eq!(display_item(&entries, 3), Some(11));
+        assert_eq!(display_item(&entries, 4), Some(20));
+        assert_eq!(display_item(&entries, 5), Some(31));
+        // Six distinct steps before it repeats, not three.
+        assert_eq!(display_item(&entries, 6), Some(10));
+    }
+
+    #[test]
+    fn an_entry_with_no_resolvable_items_shows_nothing() {
+        // `ItemStack.EMPTY` — vanilla draws nothing rather than skipping to
+        // the next entry, so the slot really is blank for its turn.
+        let entries = vec![vec![1], vec![], vec![3]];
+        assert_eq!(display_item(&entries, 1), None);
+        assert_eq!(display_item(&entries, 0), Some(1));
+        assert_eq!(display_item(&Vec::new(), 0), None);
+    }
+
+    #[test]
+    fn the_swap_period_is_thirty_ticks() {
+        assert_eq!(TICKS_TO_SWAP_SLOT, 30.0);
+    }
     use super::*;
 
     fn ids() -> Option<RecipeDisplayIds> {
