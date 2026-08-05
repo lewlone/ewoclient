@@ -4419,6 +4419,52 @@ inside the 10-minute tool cap.
 `2cc56b4acbfb92cb` byte-identical; **205 mutations across M93a–y, 199 killed,
 2 shown equivalent, 1 alive by construction (named)**.
 
+### M95 — the recipe book's items, and the tab structure M93z got wrong
+
+Tab icons and recipe results, on the book's origin — plus a correction to each
+of the two milestones before it.
+
+**M93z modelled the tabs wrong.** Its `Tab` enum was the four
+`SearchRecipeBookCategory` values, and those are *the search tab of each of the
+four books*, not the tabs within one. Each book has its own hand-written list —
+**crafting five, furnace four, blast furnace three, smoker two** — the first of
+each a search tab with a **compass** icon. M94 therefore drew four tabs on every
+book. And the search flag must be **explicit**: a smoker's search tab holds
+exactly one category, the same one its single category tab does, so a
+"several categories" heuristic is right for three books out of four.
+
+**M94 left the menu's icons behind** — it threaded the displacement through the
+panel and the hover and missed `menu_slot_rects`, so with the book open every
+slot icon sat 77 px left of its slot. M90's reason: *a function taking bare
+numbers does not look like it belongs to the menu.*
+
+**The items:** `getDisplayStack`'s cycle is **two levels** (`% entryCount` picks
+the recipe, `/ entryCount` picks which of *that* recipe's display items), so
+three recipes with two forms each cycle through six, not three;
+`resolveForStacks` resolves only the context-free arms (`Item`, `Stack`,
+`Composite`, and `WithRemainder`'s **input**) and yields **nothing** for the six
+that need a `ContextMap`, because an arbitrary tag member would be a confident
+wrong answer; the shadow copy is the **same stack drawn twice**.
+
+**Three gate findings.** b8 measured 26 icons against the 27 it named — the
+missing one was M93z's error surviving in the gate's own **fixture**. **Two
+mutations survived b8–b11**, one putting the book's icons on the menu's origin
+and one leaving the menu's icons centred: **counting icons cannot see a wrong
+origin**, so b12/b13 measure positions. And b13's first draft told the two
+apart **by position**, which is circular when position is what it measures.
+
+**A harness bug of M93v's family**: the mutation runner's `'PASS —' in out` used
+`text=True`, which decodes with the Windows locale codec, so the em dash became
+mojibake and **every gate verdict read KILLED whether or not anything failed** —
+which is what hid the two survivors. Uses the exit code now. Third detector bug
+of this arc, all the same shape: *cannot tell "passed" from "could not tell".*
+
+**1992 tests**; `containershot` 83 → **89**; `live --render-check` 23/23,
+validation ON, 0 errors; demo PNG `2cc56b4acbfb92cb` byte-identical; **14
+mutations, 14 killed**. **Open:** `hasCraftable` is still false everywhere (it
+needs `StackedItemContents`); nothing can click the book; no search box, page
+counter, overlay popup, ghost slots or recipe tooltips.
+
 ### M94 — the recipe book renders, and two errors only the windowed client could show
 
 M93z built the model; this draws it. Panel, tabs, recipe slots, arrows, filter.

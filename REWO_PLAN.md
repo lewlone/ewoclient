@@ -68,16 +68,19 @@ to be **correct**. **M93z** is that book's **UI model**: window-relative
 geometry, tabs, collections, the three-stage filter and pagination. **M94**
 renders it — and found that opening the book **moves the menu**, so the book's
 render is not a pure addition, plus two design errors that only the *windowed*
-client could show.
+client could show. **M95** draws its items, and corrected **both** of the two
+before it: M93z's tab model (each book has its own list — crafting five, smoker
+two — not the four `SearchRecipeBookCategory` values) and M94's menu
+displacement, which never reached the slot ICONS.
 
-Current measurement, taken 2026-08-04 after M94: **1979 tests, 0 failures**
-(world 754, net 609, gpu 255, data 212, app 103, mesh 45, proto 11 — all seven
-confirmed reporting); `containershot` **83/83**, `inventoryshot` 152/152,
+Current measurement, taken 2026-08-05 after M95: **1992 tests, 0 failures**
+(world 758, net 613, gpu 255, data 212, app 104, mesh 45, proto 11 — all seven
+confirmed reporting); `containershot` **89/89**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check`
-23/23 with validation ON and 0 validation errors, re-run for M94** — which is
-where it earned its keep twice over (see M94's §15 entry); demo PNG
+23/23 with validation ON and 0 validation errors, re-run for M94 and M95** —
+M94 is where it earned its keep twice over (see its §15 entry); demo PNG
 `2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at
-**114 / 0 / 27**, class C **16** (M93y's four packets; M93z and M94 add none).
+**114 / 0 / 27**, class C **16** (M93y's four packets; M93z–M95 add none).
 
 **A drift worth naming, because it is this section's own documented failure
 mode running in reverse.** At M93z this block's *prose* had been updated
@@ -2393,6 +2396,86 @@ current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
 
+### M95 — the recipe book's items, and the tab structure M93z got wrong (2026-08-05)
+
+The tab icons and the page's recipe results, on the book's own origin — plus two
+corrections the work uncovered, one in each of the two milestones before it.
+
+**M93z modelled the tabs wrong.** Its `Tab` enum was the four
+`SearchRecipeBookCategory` values, and those are *the search tab of each of the
+four books*, not the tabs within one book: `includedCategories()` is what the
+**search tab** contains. Each book has its own hand-written list —
+**crafting five, furnace four, blast furnace three, smoker two** — and the first
+of each is a search tab whose icon is a **compass**. So M94 drew four tabs on
+every book: one short on a crafting book, two too many on a smoker.
+
+The search flag is **explicit, not derived from the category count**. A smoker's
+search tab includes exactly one category, the same one its single category tab
+does, so a count heuristic is right for three books out of four — which is worse
+than no heuristic. The test caught that before the code shipped.
+
+**M94 left the menu's icons behind.** It threaded the book's displacement
+through the panel draw and the hover and missed `menu_slot_rects`, so with the
+book open every slot icon sat 77 px left of the slot it belongs to. The
+one-accessor rule half applied, and missed for M90's reason: *a function taking
+bare numbers does not look like it belongs to the menu.*
+
+**The item side**, all decompile-exact:
+
+- **`getDisplayStack`'s cycle is two levels.** `entryIndex = currentIndex %
+  entryCount` picks the recipe and `offsetIndex = currentIndex / entryCount`
+  picks which of *that recipe's own* display items — so a collection of three
+  recipes with two forms each cycles through six over three minutes, not three.
+  Reading only the modulo loses half of them.
+- **`resolveForStacks` resolves only what needs no context.** `Item`, `Stack`,
+  `Composite` (flat-mapped) and `WithRemainder` — its **input**, because the
+  remainder decorates an ingredient and a result never has one. The six arms that
+  need a `ContextMap` yield **nothing**, so an unresolvable display draws an
+  empty slot: picking an arbitrary tag member would be a confident wrong answer.
+- **The shadow copy is the same stack drawn twice**, at (5, 3), and only when a
+  collection has several recipes **and** they share a result display.
+
+**Three gate findings.**
+
+- **b8 measured 26 icons against the 27 it named**, and the missing one was
+  M93z's error surviving in the gate's own *fixture*, which still said
+  `tabs: 4`. It reads the book's own count now.
+- **Two mutations survived b8–b11** — one putting the book's icons on the menu's
+  origin, one leaving the menu's icons centred while the book moved the panel.
+  **Counting icons cannot see a wrong origin.** b12 and b13 measure positions,
+  and both mutations die against them.
+- **b13's first draft told the book's icons from the menu's by position**, which
+  is circular when position is the thing under test — and found nothing, because
+  the book's right edge is right of the player panel's left edge. It tells them
+  apart by **item** now.
+
+**And a harness bug of M93v's family.** The mutation runner's `'PASS —' in out`
+test used `text=True`, which decodes with the Windows locale codec, so the em
+dash became mojibake and **every gate verdict read KILLED whether or not
+anything failed**. Two of the five had genuinely failed; the two survivors above
+were hiding behind it. It uses the exit code now. Third harness/detector bug of
+this arc, and all three are the same shape: *a detector that cannot tell "passed"
+from "could not tell".*
+
+`r23`'s threshold is now derived from `CRAFTING_TABS.len()` rather than written
+as a literal, because M95 moved that count and a literal would have been quietly
+generous by one from then on.
+
+**Measured.** **1992 tests / 0 failures**; `containershot` 83 → **89**;
+**`live --render-check` 23/23, validation ON, 0 errors** (debug build, own server
+on a free port, stopped and removed); `inventoryshot` 152, `itemshot` 75,
+`handshot` 34, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical.
+**14 mutations, 14 killed.**
+
+**Open.** `hasCraftable` is still `false` for every collection, so every slot
+wears the *uncraftable* chrome — it needs `StackedItemContents`, vanilla's
+"can I make this from what I hold" solver. Nothing can click the book, so the
+selected tab is pinned to 0 (which is the search tab, so the page does show
+everything) and hover never reaches the arrows or the filter. No search box, no
+page counter, no overlay popup, no ghost slots, and no tooltips on a recipe.
+
+---
+
 ### M94 — the recipe book renders, and two design errors only the windowed client could show (2026-08-04)
 
 M93z built the book's model; this draws it. The 147x166 panel, the four tabs,
@@ -2547,6 +2630,11 @@ totality would have to invent a home for three real categories.
 `totalPages <= currentPage` — an index *equal* to the count resets too — with
 the reset going to the **front**, not to the new last page. Shrinking the list
 under a reader sends them to page 0.
+
+> **⚠ CORRECTED BY M95.** This entry's `Tab` enum — the four
+> `SearchRecipeBookCategory` values — is not "the tabs". It is the *search tab
+> of each of the four books*. A crafting book has **five** tabs, a smoker
+> **two**, and `includedCategories()` is what the search tab contains. See M95.
 
 **Ordering is deliberately not claimed as a contract.** A group's collection
 takes the position of its **first-seen** member and later members append to the
