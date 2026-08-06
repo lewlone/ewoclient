@@ -265,6 +265,12 @@ pub struct Ids {
     /// refusing to connect over a packet you may not send is worse than
     /// declining the click.
     pub sb_play_container_button_click: Option<i32>,
+    /// `ServerboundRecipeBookChangeSettingsPacket` (M98) — the book's own
+    /// open/filter state, echoed back so the server persists it.
+    pub sb_play_recipe_book_change_settings: Option<i32>,
+    /// `ServerboundPlaceRecipePacket` (M98) — click a recipe, ask the server to
+    /// lay it out on the grid.
+    pub sb_play_place_recipe: Option<i32>,
     /// `container_slot_state_changed` (M93h) — the crafter's slot toggles.
     ///
     /// A **different packet** from `container_button_click`, not a mode of it:
@@ -650,6 +656,8 @@ impl Ids {
             sb_play_client_command: opt!(p, P, S, "client_command"),
             sb_play_container_click: opt!(p, P, S, "container_click"),
             sb_play_container_button_click: opt!(p, P, S, "container_button_click"),
+            sb_play_recipe_book_change_settings: opt!(p, P, S, "recipe_book_change_settings"),
+            sb_play_place_recipe: opt!(p, P, S, "place_recipe"),
             sb_play_container_slot_state_changed: opt!(p, P, S, "container_slot_state_changed"),
             sb_play_set_beacon: opt!(p, P, S, "set_beacon"),
             sb_play_rename_item: opt!(p, P, S, "rename_item"),

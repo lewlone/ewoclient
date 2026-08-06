@@ -4419,6 +4419,50 @@ inside the 10-minute tool cap.
 `2cc56b4acbfb92cb` byte-identical; **205 mutations across M93a–y, 199 killed,
 2 shown equivalent, 1 alive by construction (named)**.
 
+### M98 — the book takes clicks, and one it does not want is still swallowed
+
+Tabs, pages, the filter, hover, and the two serverbound packets. The book had
+been drawable and inert since M94.
+
+**The order is a contract and it is not the draw order:** the **page** first
+(arrows, then cells), then the search box, then the filter, then the tabs — and
+the whole book before `super.mouseClicked`, so it dispatches ahead of every
+other screen widget. **And a second rule in the else-branch:** a click the book
+does *not* want is still **swallowed** when the window is too narrow and the
+book is open, because there the book covers the menu.
+
+**Four inversions.** A **selected tab's hit rect does not move with its sprite**
+— the 2 px shift is draw-time only, so its leftmost two columns are painted and
+unclickable. The **magnifier counts as the search box** and its rect *overlaps*
+the box rather than abutting it. A click anywhere but the **page** unfocuses the
+search field, because `setFocused(false)` sits unconditionally in the
+else-branch and the page path returns before reaching it. And **switching tabs
+resets the page**, while re-selecting the tab you are on does nothing
+(`selectedTab != button`).
+
+**The packets:** `recipe_book_change_settings` carries an ordinal and **both**
+flags, read out of the local settings rather than passed — so toggling the
+filter re-reports open, and vice versa, because the server persists both.
+`place_recipe` places **the recipe the cycle is showing**, not the collection's
+first. A right-click on a multi-recipe cell is consumed and does nothing (no
+overlay; placing an unchosen recipe is worse than nothing).
+
+**The hover comes from the same `book_hit` the press uses**, with the cursor
+converted to book space once in `apply_screen` — M95's note that this needed the
+renderer was wrong.
+
+**A surviving mutation was a weak fixture, not an equivalent mutant** — M93z's
+lesson again: swapping `clamp_page` for a clamp-to-last-page survived a
+**one-page** fixture, where reset-to-front and clamp-to-last are both 0.
+
+**2039 tests**; containershot 89, inventoryshot 152, itemshot 75, handshot 34,
+mobshot 246/246; **`live --render-check` 23/23**, validation ON, 0 errors (run
+because `apply_screen`'s signature changed and a new dispatch sits at the front
+of the click chain); demo PNG `2cc56b4acbfb92cb` byte-identical; **15 mutations,
+15 killed**. **Open:** the search box focuses and does nothing (needs the recipe
+search tree); no page counter, overlay, ghost slots or tooltips; `useMaxItems`
+is always false.
+
 ### M97 — closing M96's own recorded gap: the book's derivation, graded
 
 M96 shipped `hasCraftable` graded at its two **ends** — the solver's tests

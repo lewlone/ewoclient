@@ -3930,6 +3930,71 @@ impl PlaySession {
         self.send(p)
     }
 
+    /// `RecipeBookComponent.sendUpdateSettings` (M98).
+    ///
+    /// **Reads both flags out of the local settings rather than taking them**,
+    /// which is what vanilla does — so the caller flips the one it means and
+    /// this reports the pair. Sending only the changed field would leave the
+    /// server's copy of the other stale, and the server persists these across
+    /// sessions.
+    ///
+    /// `book_type` is `RecipeBookType`'s ordinal, the same positional order
+    /// `RecipeBookSettings` uses inbound (M93y).
+    pub fn recipe_book_change_settings(&mut self, book_type: usize) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_recipe_book_change_settings else {
+            return Err("recipe_book_change_settings unavailable".into());
+        };
+        let st = match book_type {
+            0 => self.recipe_book_settings.crafting,
+            1 => self.recipe_book_settings.furnace,
+            2 => self.recipe_book_settings.blast_furnace,
+            3 => self.recipe_book_settings.smoker,
+            _ => return Err("recipe_book_change_settings: no such book".into()),
+        };
+        let mut p = PacketWriter::packet(id);
+        p.buf
+            .extend_from_slice(&crate::recipe_book_change_settings_body(
+                book_type as i32,
+                st.open,
+                st.filtering,
+            ));
+        self.send(p)
+    }
+
+    /// Flip a book's filter locally, then tell the server (M98).
+    ///
+    /// The order is vanilla's: `toggleFiltering()` writes the local setting and
+    /// `sendUpdateSettings()` reads it back out. Reporting the value before
+    /// writing it would tell the server the state it already had.
+    pub fn toggle_recipe_book_filter(&mut self, book_type: usize) -> Result<(), String> {
+        let st = match book_type {
+            0 => &mut self.recipe_book_settings.crafting,
+            1 => &mut self.recipe_book_settings.furnace,
+            2 => &mut self.recipe_book_settings.blast_furnace,
+            3 => &mut self.recipe_book_settings.smoker,
+            _ => return Err("toggle_recipe_book_filter: no such book".into()),
+        };
+        st.filtering = !st.filtering;
+        self.recipe_book_change_settings(book_type)
+    }
+
+    /// `ServerboundPlaceRecipePacket` (M98) — click a recipe in the book.
+    ///
+    /// `use_max_items` is shift-held. The container is the SHOWN menu's, on
+    /// M89's rule: a book click belongs to whatever screen is up.
+    pub fn place_recipe(&mut self, recipe: i32, use_max_items: bool) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_place_recipe else {
+            return Err("place_recipe unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        p.buf.extend_from_slice(&crate::place_recipe_body(
+            self.shown_container_id(),
+            recipe,
+            use_max_items,
+        ));
+        self.send(p)
+    }
+
     /// `MultiPlayerGameMode.handleSlotStateChanged` (M93h) — a crafter toggle.
     ///
     /// Like `container_button_click` this carries **no state id**: it is not a

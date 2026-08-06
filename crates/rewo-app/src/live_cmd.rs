@@ -3843,6 +3843,9 @@ fn run_headless(
             None,
             // …nor a merchant.
             None,
+            // …and the book's selection is its default, since nothing can
+            // click it headlessly.
+            Default::default(),
         );
         headless_screen_labels = labels;
     } else {
@@ -4698,6 +4701,19 @@ impl ApplicationHandler for LiveApp {
                         MouseButton::Right => 1,
                         _ => return,
                     };
+                    // M98 — the recipe book is pressed before EVERYTHING:
+                    // `AbstractRecipeBookScreen.mouseClicked` runs the book and
+                    // only calls `super` when the book declines.
+                    if book_press(
+                        session,
+                        &mut self.screen,
+                        &items,
+                        b == 1,
+                        ext.width as f32,
+                        ext.height as f32,
+                    ) {
+                        return;
+                    }
                     // M92f — an enchanting row is pressed BEFORE the slot
                     // logic, and only then. `EnchantmentScreen.mouseClicked`
                     // runs its three-row loop first and calls
@@ -6331,6 +6347,8 @@ impl LiveApp {
                     .map(|m| cut_view(&mut self.screen, m, &items));
                 // M93t — likewise the anvil's field, seeded here so the render
                 // and the key handler see one box.
+                // M98 — the book's own selection, from the screen state.
+                let book_state = self.screen.book;
                 let anvil_field = session
                     .menus
                     .open()
@@ -6374,6 +6392,7 @@ impl LiveApp {
                     cut.as_ref(),
                     anvil_field.as_ref(),
                     merchant.as_ref(),
+                    book_state,
                 );
                 self.screen_labels = labels;
                 // M94 — OUTSIDE the `container_panel_height` guard below: the
@@ -9071,6 +9090,28 @@ mod tests {
         }
     }
 
+    /// `book_render_from` with the two inputs no M97 witness varies — the
+    /// book's own selection (default) and the cursor (absent, so no hover).
+    /// M98 added both; funnelling through one helper keeps those witnesses
+    /// about what they were written for.
+    fn render(
+        book: rb96::BookType,
+        filtering: bool,
+        entries: &[super::BookEntry<'_>],
+        held: &mut StackedContents,
+        cycle: i32,
+    ) -> super::BookRender {
+        super::book_render_from(
+            book,
+            filtering,
+            entries,
+            held,
+            cycle,
+            rb96::BookState::default(),
+            None,
+        )
+    }
+
     fn held(items: &[(i32, i32)]) -> StackedContents {
         let mut c = StackedContents::new();
         for &(item, count) in items {
@@ -9088,7 +9129,7 @@ mod tests {
     fn a_slot_is_craftable_exactly_when_the_held_items_satisfy_it() {
         let e = [entry(1, None, EQUIP, &[7], Some(&[&[10], &[11]]))];
         let got = |items: &[(i32, i32)]| {
-            super::book_render_from(rb96::BookType::Crafting, false, &e, &mut held(items), 0)
+            render(rb96::BookType::Crafting, false, &e, &mut held(items), 0)
                 .slots[0]
                 .0
         };
@@ -9105,7 +9146,7 @@ mod tests {
     #[test]
     fn an_entry_with_no_requirements_is_never_craftable() {
         let e = [entry(1, None, EQUIP, &[7], None)];
-        let r = super::book_render_from(
+        let r = render(
             rb96::BookType::Crafting,
             false,
             &e,
@@ -9117,7 +9158,7 @@ mod tests {
         // there is nothing to satisfy. The two states are distinct.
         let e2 = [entry(1, None, EQUIP, &[7], Some(&[]))];
         let r2 =
-            super::book_render_from(rb96::BookType::Crafting, false, &e2, &mut held(&[]), 0);
+            render(rb96::BookType::Crafting, false, &e2, &mut held(&[]), 0);
         assert!(r2.slots[0].0);
     }
 
@@ -9131,7 +9172,7 @@ mod tests {
             entry(2, Some(5), EQUIP, &[7], Some(&[&[10]])),
         ];
         let r =
-            super::book_render_from(rb96::BookType::Crafting, false, &e, &mut held(&[(10, 1)]), 0);
+            render(rb96::BookType::Crafting, false, &e, &mut held(&[(10, 1)]), 0);
         assert_eq!(r.slots.len(), 1, "one grouped collection");
         assert!(r.slots[0].0, "the second recipe is affordable");
         assert!(r.slots[0].1, "and it has several recipes");
@@ -9147,7 +9188,7 @@ mod tests {
             entry(2, None, EQUIP, &[8], Some(&[&[10]])),
         ];
         let r =
-            super::book_render_from(rb96::BookType::Crafting, false, &e, &mut held(&[(10, 1)]), 0);
+            render(rb96::BookType::Crafting, false, &e, &mut held(&[(10, 1)]), 0);
         assert_eq!(r.slots.len(), 2);
         assert!(r.slots[0].0 && r.slots[1].0, "both, from one item");
     }
@@ -9162,10 +9203,10 @@ mod tests {
             entry(3, None, "minecraft:smoker_food", &[9], None),
             entry(4, None, "minecraft:stonecutter", &[9], None),
         ];
-        let r = super::book_render_from(rb96::BookType::Crafting, false, &e, &mut held(&[]), 0);
+        let r = render(rb96::BookType::Crafting, false, &e, &mut held(&[]), 0);
         assert_eq!(r.slots.len(), 2, "equipment and misc, not smoker or stonecutter");
         let smoker =
-            super::book_render_from(rb96::BookType::Smoker, false, &e, &mut held(&[]), 0);
+            render(rb96::BookType::Smoker, false, &e, &mut held(&[]), 0);
         assert_eq!(smoker.slots.len(), 1);
     }
 
@@ -9178,7 +9219,7 @@ mod tests {
             entry(2, Some(5), EQUIP, &[71], Some(&[&[10]])),
         ];
         let at = |cycle: i32| {
-            super::book_render_from(rb96::BookType::Crafting, false, &e, &mut held(&[]), cycle)
+            render(rb96::BookType::Crafting, false, &e, &mut held(&[]), cycle)
                 .slot_items[0]
         };
         assert_eq!(at(0), Some(70));
@@ -9200,7 +9241,7 @@ mod tests {
         ];
         let one = [entry(1, None, EQUIP, &[70], None)];
         let shadowed = |e: &[super::BookEntry<'_>]| {
-            super::book_render_from(rb96::BookType::Crafting, false, e, &mut held(&[]), 0)
+            render(rb96::BookType::Crafting, false, e, &mut held(&[]), 0)
                 .slot_shadowed[0]
         };
         assert!(shadowed(&same));
@@ -9216,7 +9257,7 @@ mod tests {
         let e: Vec<_> = (0..45)
             .map(|i| entry(i, None, &cats[i as usize], &[70], None))
             .collect();
-        let r = super::book_render_from(rb96::BookType::Crafting, false, &e, &mut held(&[]), 0);
+        let r = render(rb96::BookType::Crafting, false, &e, &mut held(&[]), 0);
         let v = r.view.unwrap();
         assert_eq!(v.total_pages, 3);
         assert_eq!(v.shown, rb96::ITEMS_PER_PAGE);
@@ -9229,9 +9270,120 @@ mod tests {
         let e = [entry(1, None, EQUIP, &[7], None)];
         for filtering in [false, true] {
             let r =
-                super::book_render_from(rb96::BookType::Crafting, filtering, &e, &mut held(&[]), 0);
+                render(rb96::BookType::Crafting, filtering, &e, &mut held(&[]), 0);
             assert_eq!(r.view.unwrap().filtering, filtering);
         }
+    }
+
+    /// The book's selection reaches the view (M98) — and is CLAMPED, because a
+    /// tab index outlives the book it was chosen in.
+    #[test]
+    fn a_tab_index_too_big_for_this_book_clamps_rather_than_panicking() {
+        let e = [entry(1, None, "minecraft:smoker_food", &[7], None)];
+        // Tab 4 exists on a crafting book (five tabs) and not on a smoker (two).
+        let st = rb96::BookState { selected_tab: 4, page: 0, search_focused: false };
+        let r = super::book_render_from(
+            rb96::BookType::Smoker,
+            false,
+            &e,
+            &mut held(&[]),
+            0,
+            st,
+            None,
+        );
+        assert_eq!(r.view.unwrap().selected_tab, 1, "clamped to the last tab");
+    }
+
+    /// A page index that outlived its list resets to the FRONT, not to the new
+    /// last page — `clamp_page`'s rule, reached through the real derivation.
+    ///
+    /// The fixture needs more than one page left for the two readings to
+    /// differ, which is M93z's lesson a second time: the first draft used five
+    /// collections (one page), where reset-to-front and clamp-to-last are both
+    /// 0, and a mutation replacing the reset with a clamp survived it.
+    #[test]
+    fn a_page_index_that_outlived_its_list_resets_to_the_FRONT() {
+        let three_pages: Vec<_> = (0..45)
+            .map(|i| entry(i, None, EQUIP, &[7], None))
+            .collect();
+        let page_of = |page: usize, e: &[super::BookEntry<'_>]| {
+            let st = rb96::BookState { selected_tab: 0, page, search_focused: false };
+            super::book_render_from(rb96::BookType::Crafting, false, e, &mut held(&[]), 0, st, None)
+                .view
+                .unwrap()
+                .page
+        };
+        assert_eq!(page_of(2, &three_pages), 2, "still in range");
+        // Out of range by one: `totalPages <= currentPage`, so page 3 of three
+        // pages resets — and to 0, where a clamp would give 2.
+        assert_eq!(page_of(3, &three_pages), 0);
+        assert_eq!(page_of(9, &three_pages), 0, "and far out of range too");
+        // A one-page list, where the two readings coincide and so prove
+        // nothing on their own.
+        let one_page: Vec<_> = (0..5).map(|i| entry(i, None, EQUIP, &[7], None)).collect();
+        assert_eq!(page_of(3, &one_page), 0);
+    }
+
+    /// The hover comes from the SAME `book_hit` a press uses, so what lights up
+    /// is what a click would take.
+    #[test]
+    fn the_hover_lights_what_a_click_would_take() {
+        use rewo_world::recipe_book_screen as rb;
+        // 45 collections, so there is a forward arrow to hover.
+        let e: Vec<_> = (0..45)
+            .map(|i| entry(i, None, EQUIP, &[7], None))
+            .collect();
+        let at = |bx: i32, by: i32| {
+            super::book_render_from(
+                rb96::BookType::Crafting,
+                false,
+                &e,
+                &mut held(&[]),
+                0,
+                rb96::BookState::default(),
+                Some((bx, by)),
+            )
+            .hover
+        };
+        let f = at(rb::PAGE_FORWARD_X + 6, rb::PAGE_ARROW_Y + 8);
+        assert!(f.page_forward && !f.page_backward && !f.filter);
+        let fl = at(rb::FILTER_X + 5, rb::FILTER_Y + 5);
+        assert!(fl.filter && !fl.page_forward);
+        // On page 0 the BACK arrow is not drawn, so it cannot be hovered
+        // either — one gate, both.
+        let b = at(rb::PAGE_BACK_X + 6, rb::PAGE_ARROW_Y + 8);
+        assert!(!b.page_backward);
+        // Bare panel hovers nothing.
+        let none = at(70, 29);
+        assert!(!none.filter && !none.page_forward && !none.page_backward);
+        // And no cursor at all hovers nothing.
+        let absent = super::book_render_from(
+            rb96::BookType::Crafting,
+            false,
+            &e,
+            &mut held(&[]),
+            0,
+            rb96::BookState::default(),
+            None,
+        )
+        .hover;
+        assert!(!absent.filter && !absent.page_forward && !absent.page_backward);
+    }
+
+    /// A left-click places the recipe the CYCLE is on, not the collection's
+    /// first — `getCurrentRecipe`, the same index `getDisplayStack` reads.
+    #[test]
+    fn a_click_places_the_recipe_the_cycle_is_showing() {
+        let e = [
+            entry(11, Some(5), EQUIP, &[70], Some(&[&[1]])),
+            entry(22, Some(5), EQUIP, &[71], Some(&[&[1]])),
+        ];
+        let at = |cycle: i32| {
+            render(rb96::BookType::Crafting, false, &e, &mut held(&[]), cycle).slot_recipes[0]
+        };
+        assert_eq!(at(0), Some(11));
+        assert_eq!(at(1), Some(22), "the second recipe, matching the shown item");
+        assert_eq!(at(2), Some(11), "and it wraps with the display");
     }
 
     /// `rewo-gpu` restates the recipe book's geometry rather than importing it,
@@ -11173,6 +11325,11 @@ fn apply_hand(
 #[derive(Default)]
 pub struct ScreenState {
     pub screens: rewo_world::screen::Screens,
+    /// The recipe book's own selection (M98) — the tab, the page and whether
+    /// the search field has focus. **Screen state, not menu state**: the
+    /// server's `RecipeBookSettings` carries open and filtering and nothing
+    /// else, so these three exist only here.
+    pub book: rewo_world::recipe_book_screen::BookState,
     /// Cursor position in screen pixels. Only tracked while a screen is
     /// open; the rest of the time the cursor is grabbed and its position is
     /// meaningless.
@@ -11610,6 +11767,10 @@ fn apply_screen(
     // M93u — the merchant's trade list, resolved by the caller for the same
     // reason: it needs the screen-local scroll.
     merchant: Option<&MerchantView>,
+    // M98 — the recipe book's own tab and page, for the same reason as the
+    // three above: `apply_screen` holds no `ScreenState`, which is what keeps
+    // it drivable from a gate.
+    book_state: rewo_world::recipe_book_screen::BookState,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
@@ -11655,7 +11816,16 @@ fn apply_screen(
     // its presence has to reach `screen_to_gui_placed` below as well: an open
     // book MOVES the menu, and a hover resolved against a centred panel while
     // the panel is drawn 77 px right would be wrong by more than four slots.
-    let book = live_recipe_book(session, items);
+    // M98 — the cursor in the book's own space, computed ONCE here so the
+    // hover and the press cannot read different numbers.
+    let book_mouse = {
+        let (bl, bt, scale) = rewo_gpu::container::recipe_book_origin(w, h);
+        Some((
+            ((mouse.0 - bl as f64) / scale as f64).floor() as i32,
+            ((mouse.1 - bt as f64) / scale as f64).floor() as i32,
+        ))
+    };
+    let book = live_recipe_book(session, items, book_state, book_mouse);
     // Which menu is on screen: the open container if there is one, else the
     // player's own. Chosen ONCE and threaded everywhere, because the panel,
     // the icons, the hover and the durability bars are all measured from the
@@ -12275,6 +12445,84 @@ fn anvil_flush(
 ///
 /// The scrollbar grab, like the stonecutter's, does **not** consume the press:
 /// vanilla sets `isDragging` and falls through to `super.mouseClicked`.
+/// The recipe book's press (M98).
+///
+/// **First of all**, and with a second rule under it:
+///
+/// ```java
+/// if (this.recipeBookComponent.mouseClicked(...)) { … return true; }
+/// else return this.widthTooNarrow && this.recipeBookComponent.isVisible()
+///     ? true : super.mouseClicked(...);
+/// ```
+///
+/// So a click the book does not want is still **swallowed** when the window is
+/// too narrow and the book is open — the case where the book covers the menu.
+/// Letting it fall through there would click a slot the player cannot see.
+///
+/// Returns whether the press was consumed.
+fn book_press(
+    session: &mut PlaySession,
+    screen: &mut ScreenState,
+    items: &rewo_data::items::Items,
+    right: bool,
+    w: f32,
+    h: f32,
+) -> bool {
+    use rewo_world::recipe_book_screen as rb;
+    // `!minecraft.player.isSpectator()` — a spectator cannot click the book at
+    // all, and the guard is on the whole method rather than on any one widget.
+    if session.own_game_mode().is_some_and(|g| g.is_spectator()) {
+        return false;
+    }
+    let (bl, bt, scale) = rewo_gpu::container::recipe_book_origin(w, h);
+    let bx = ((screen.mouse.0 - bl as f64) / scale as f64).floor() as i32;
+    let by = ((screen.mouse.1 - bt as f64) / scale as f64).floor() as i32;
+    let Some(view) = live_recipe_book(session, items, screen.book, Some((bx, by)))
+        .and_then(|b| b.view)
+    else {
+        return false;
+    };
+    let hit = rb::book_hit(bx, by, view, view.tabs);
+    let narrow = rb::width_too_narrow((w / scale) as i32);
+    match screen.book.press(hit, right) {
+        Some(rb::BookAction::ToggleFilter) => {
+            // `toggleFiltering()` then `sendUpdateSettings()` — the local flag
+            // moves first and the packet reports it, which is why this is one
+            // call rather than two.
+            if let Err(e) = session.toggle_recipe_book_filter(shown_book_index(session))
+            {
+                log::warn!("rewo: recipe book filter: {e}");
+            }
+            true
+        }
+        Some(rb::BookAction::Recipe { index, right }) => {
+            // A right-click opens vanilla's which-of-these overlay, which Rewo
+            // does not have — so it is consumed and does nothing, rather than
+            // placing a recipe the player did not choose.
+            if !right {
+                let recipe = live_recipe_book(session, items, screen.book, Some((bx, by)))
+                    .and_then(|b| b.slot_recipes.get(index).copied().flatten());
+                if let Some(id) = recipe {
+                    // `useMaxItems` is shift-held; Rewo does not track the
+                    // modifier here yet, so a click always places one.
+                    if let Err(e) = session.place_recipe(id, false) {
+                        log::warn!("rewo: place_recipe: {e}");
+                    }
+                }
+            }
+            true
+        }
+        Some(rb::BookAction::Navigated) => true,
+        // Missed the book — swallowed anyway on a narrow window.
+        None => narrow,
+    }
+}
+
+/// Which of the four `RecipeBookSettings` slots the shown menu reads (M98).
+fn shown_book_index(session: &PlaySession) -> usize {
+    book_type_of(session.shown_menu().layout()).map_or(0, |b| b.index())
+}
+
 fn merchant_press(
     session: &mut PlaySession,
     screen: &mut ScreenState,
@@ -13357,6 +13605,9 @@ pub(crate) struct BookRender {
     /// Per visible slot: several recipes AND one shared result display, the
     /// pair of conditions that draws the shadow copy.
     pub slot_shadowed: Vec<bool>,
+    /// The recipe id each visible slot would place if clicked (M98) — the one
+    /// the display cycle is on, not the collection's first.
+    pub slot_recipes: Vec<Option<i32>>,
 }
 
 /// The recipe book for the menu currently on screen (M94), or `None` when it
@@ -13371,6 +13622,12 @@ pub(crate) struct BookRender {
 fn live_recipe_book(
     session: &rewo_net::play::PlaySession,
     items: &rewo_data::items::Items,
+    state: rewo_world::recipe_book_screen::BookState,
+    // M98 — the cursor in BOOK coordinates, or `None` when it is not being
+    // tracked. Book space rather than screen: the conversion needs the window
+    // size, and doing it once at the caller keeps the hover and the press
+    // reading the same number.
+    book_mouse: Option<(i32, i32)>,
 ) -> Option<BookRender> {
     use rewo_world::recipe_book_screen as rb;
     let layout = session
@@ -13424,7 +13681,15 @@ fn live_recipe_book(
     // period. Shared by every slot, which is why a page of several-recipe
     // collections flips together rather than each on its own phase.
     let cycle = (session.ticks as f32 / rewo_net::recipe_book::TICKS_TO_SWAP_SLOT).floor() as i32;
-    Some(book_render_from(book, st.filtering, &entries, &mut held, cycle))
+    Some(book_render_from(
+        book,
+        st.filtering,
+        &entries,
+        &mut held,
+        cycle,
+        state,
+        book_mouse,
+    ))
 }
 
 /// One unlocked recipe, with everything already resolved (M97).
@@ -13456,13 +13721,19 @@ pub(crate) fn book_render_from(
     entries: &[BookEntry<'_>],
     held: &mut rewo_world::stacked_contents::StackedContents,
     cycle: i32,
+    // M98 — the tab and page a click chose. Clamped here rather than trusted:
+    // a tab index survives a book-type change (a furnace book has fewer tabs
+    // than a crafting one) and a page survives the list shrinking under it.
+    state: rewo_world::recipe_book_screen::BookState,
+    // The cursor in book coordinates, for the arrows' and filter's hover art.
+    book_mouse: Option<(i32, i32)>,
 ) -> BookRender {
     use rewo_world::recipe_book_screen as rb;
     let flat: Vec<(i32, Option<i32>, &str)> =
         entries.iter().map(|e| (e.id, e.group, e.category)).collect();
     let all = rb::collections(&flat);
-    let selected_tab = 0usize;
     let tabs = book.tabs();
+    let selected_tab = state.selected_tab.min(tabs.len() - 1);
     // Stage one of `updateCollections` is the tab's own membership. Tab 0 is
     // the SEARCH tab, whose categories are the book's whole set — so with the
     // selection pinned to 0 this shows everything the book has.
@@ -13472,12 +13743,13 @@ pub(crate) fn book_render_from(
         .filter(|c| wanted.contains(&c.category.as_str()))
         .collect();
     let total_pages = rb::total_pages(mine.len());
-    let page = rb::clamp_page(0, mine.len(), false);
+    let page = rb::clamp_page(state.page, mine.len(), false);
     let range = rb::page_range(page, mine.len());
     let find = |id: &i32| entries.iter().find(|e| e.id == *id);
     let mut slots = Vec::new();
     let mut slot_items = Vec::new();
     let mut slot_shadowed = Vec::new();
+    let mut slot_recipes = Vec::new();
     for c in &mine[range] {
         let per_entry: Vec<Vec<i32>> = c
             .recipes
@@ -13503,7 +13775,35 @@ pub(crate) fn book_render_from(
         slots.push((craftable, multiple));
         slot_items.push(rewo_net::recipe_book::display_item(&per_entry, cycle));
         slot_shadowed.push(multiple && same_result);
+        // `getCurrentRecipe` — the entry the cycle is showing, which is what a
+        // left-click places. Not the collection's first: clicking while the
+        // cycle is on the second of two recipes places the SECOND.
+        let n = c.recipes.len() as i32;
+        slot_recipes.push(if n == 0 {
+            None
+        } else {
+            c.recipes
+                .get((cycle - n * cycle.div_euclid(n)) as usize)
+                .copied()
+        });
     }
+    let view = rb::BookView {
+        tabs: tabs.len(),
+        selected_tab,
+        page,
+        total_pages,
+        shown: slots.len(),
+        filtering,
+        furnace_family: book.furnace_family(),
+    };
+    let hover = match book_mouse.and_then(|(bx, by)| rb::book_hit(bx, by, view, tabs.len())) {
+        Some(rb::BookHit::PageForward) => rb::BookHover { page_forward: true, ..Default::default() },
+        Some(rb::BookHit::PageBackward) => {
+            rb::BookHover { page_backward: true, ..Default::default() }
+        }
+        Some(rb::BookHit::Filter) => rb::BookHover { filter: true, ..Default::default() },
+        _ => rb::BookHover::default(),
+    };
     BookRender {
         view: Some(rb::BookView {
             tabs: tabs.len(),
@@ -13515,14 +13815,14 @@ pub(crate) fn book_render_from(
             furnace_family: book.furnace_family(),
         }),
         slots,
-        // Nothing can hover the book: the cursor would have to be converted
-        // into book space, which needs the window size that only the renderer
-        // has. Recorded rather than approximated from the panel's origin, which
-        // is a pixel out on odd window widths.
-        hover: rb::BookHover::default(),
+        // M98 — from the SAME `book_hit` the press uses, so what lights up is
+        // what a click would take. Deriving the hover from its own rects would
+        // be two chances to disagree.
+        hover,
         book,
         slot_items,
         slot_shadowed,
+        slot_recipes,
     }
 }
 
