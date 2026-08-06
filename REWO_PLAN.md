@@ -77,10 +77,12 @@ two of vanilla's own guards to be provably inert. **M97** closes M96's own
 recorded gap, grading the derivation between the solver and the chrome, and
 **M98** makes the book clickable — tabs, pages, the filter, and the two
 serverbound packets. **M99** adds the search, and found that the suffix array
-vanilla indexes with is unnecessary for the one consumer that reads it.
+vanilla indexes with is unnecessary for the one consumer that reads it. **M100**
+draws the field — text, caret, hint — and found its nine-sliced background
+degenerating to two blits, because the sprite is a 1-bit two-colour image.
 
-Current measurement, taken 2026-08-06 after M99: **2053 tests, 0 failures**
-(**world 799, net 613, gpu 255, data 212, app 118, mesh 45, proto 11** — read
+Current measurement, taken 2026-08-06 after M100: **2059 tests, 0 failures**
+(**world 799, net 613, gpu 255, data 212, app 124, mesh 45, proto 11** — read
 off the runner per crate, and they sum to 2039). **The earlier breakdowns in
 this paragraph were estimated, not measured**, and did not sum to the totals
 beside them; the totals were always a real sum, so only the splits were wrong.
@@ -2405,6 +2407,71 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M100 — the search field's text, and a nine-slice that degenerates to two blits (2026-08-06)
+
+The field typed and filtered since M99 and drew nothing. Now it draws its
+background, text, caret, selection and hint.
+
+**The nine-slice is two blits, and that is a measurement.**
+`widget/text_field` is 200x20 with `border: 1`, which normally means nine
+regions with the edges and centre **tiled**. But the PNG is **1-bit paletted** —
+exactly two colours, the border 160-grey (white when focused) and the interior
+black, both fully opaque, read out of the palette. Every one of the nine regions
+is therefore uniform, and a stretched 1x1 source is **pixel-identical** to a
+tiled one. So: one blit of the whole rect sampling a border texel, then one of
+the interior sampling a centre texel — the 1 px the first still shows around the
+second *is* the border. Nine blits would draw the same pixels; two is what the
+measurement licenses.
+
+**The hint goes on focus, not on the first character.** The guard is
+`hint != null && displayed.isEmpty() && !isFocused()`, so clicking an empty
+search box blanks "Search..." before anything is typed — which reads as a bug
+until you check it. And the hint is a styled **component**
+(`SEARCH_HINT_STYLE` = GRAY + ITALIC), so its own colour wins over the field's
+`setTextColor(-1)` white. The italic is not reproduced: Rewo's bitmap pass has
+no slant, and the colour is what distinguishes a hint from real text.
+
+**The bordered case decides all three text numbers, and none is the obvious
+one:** `textX = getX() + 4` (inset, not flush),
+`textY = getY() + (height - 8) / 2` — **3** for a 14-tall field, not `getY()` —
+and `getInnerWidth() = width - 8`, so **73** rather than the field's 81, because
+the inset comes off *both* ends. `EditBox` defaults to bordered and the book
+never calls `setBordered(false)`.
+
+**The third meaning of `WidgetSprites::get` on one screen.** The field passes
+`(isActive(), isFocused())` — exactly what the record's names say — where a tab
+passes `selected` as *focused* and the filter passes `filtering` as *enabled*
+(both M94). Assuming one convention across this screen is wrong two times out of
+three.
+
+**The renderer is extracted from the anvil's rather than copied.** The caret's x
+is the width of the run before it, `insert` decides bar-versus-underscore, and
+the selection rect is clamped against the inner width — a second copy of that is
+three chances to drift, and the drift would be a caret one pixel out: invisible
+in review, obvious in use. The anvil's witnesses are unchanged.
+
+**A staging bug worth remembering**, because it cost a server cycle:
+`io.open(p, 'w')` **truncates when the file object is created**, which is before
+its argument is evaluated — so `open(p,'w').write(sub(open(p).read()))` silently
+wrote an *empty* `server.properties`, Minecraft regenerated a default on port
+25565, and the run failed to initialise with a bare "Failed to initialize
+server". Read first, then write, and assert the substitution took.
+
+**Measured.** **2059 tests / 0 failures**; `containershot` 89, `inventoryshot`
+152, `itemshot` 75, `handshot` 34, `mobshot` 246/246; **`live --render-check`
+23/23, validation ON, 0 errors**, where **r23 rose 8 → 10 quads** — the field's
+two background blits reaching the windowed client, visible in the count; demo
+PNG `2cc56b4acbfb92cb` byte-identical. **9 mutations, 9 killed.**
+
+**Open.** The caret does not **blink**: `showCursor` also requires
+`TextCursorUtils.isCursorVisible(millis - focusedTime)`, a 300 ms alternation,
+and neither this field nor the anvil's (M93t) reproduces it — a shared gap in the
+extracted renderer, not a new one. The page counter text, the which-of-these
+overlay, ghost slots, recipe tooltips, `useMaxItems`, and the craft-slot half of
+`fillStackedContents` (M96) all remain.
+
+---
 
 ### M99 — the search box, and a suffix array the consumer does not need (2026-08-06)
 

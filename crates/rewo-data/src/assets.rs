@@ -1622,7 +1622,17 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     "gui/sprites/recipe_book/furnace_filter_disabled.png",
     "gui/sprites/recipe_book/furnace_filter_enabled_highlighted.png",
     "gui/sprites/recipe_book/furnace_filter_disabled_highlighted.png",
+    // 116..=117 — the search field's background (M100), PLAIN first.
+    //
+    // `EditBox.SPRITES.get(isActive(), isFocused())`, and unlike the book's
+    // tabs and its filter this one means what the argument names say.
+    "gui/sprites/widget/text_field.png",
+    "gui/sprites/widget/text_field_highlighted.png",
 ];
+
+/// The search field's background pair, **plain first** —
+/// `+ usize::from(focused)` (M100).
+pub const BOOK_SEARCH_FIELD: usize = 116;
 
 /// The recipe book's tab pair, **plain first** — `+ usize::from(selected)`
 /// (M94).
