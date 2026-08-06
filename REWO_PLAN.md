@@ -73,10 +73,11 @@ before it: M93z's tab model (each book has its own list — crafting five, smoke
 two — not the four `SearchRecipeBookCategory` values) and M94's menu
 displacement, which never reached the slot ICONS. **M96** ports vanilla's
 craftable matcher, so the book finally greys what you cannot make — and found
-two of vanilla's own guards to be provably inert.
+two of vanilla's own guards to be provably inert. **M97** closes M96's own
+recorded gap, grading the derivation between the solver and the chrome.
 
-Current measurement, taken 2026-08-06 after M96: **2010 tests, 0 failures**
-(world 776, net 617, gpu 255, data 212, app 104, mesh 45, proto 11 — all seven
+Current measurement, taken 2026-08-06 after M97: **2019 tests, 0 failures**
+(world 776, net 617, gpu 255, data 212, app 113, mesh 45, proto 11 — all seven
 confirmed reporting); `containershot` **89/89**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check`
 23/23 with validation ON and 0 validation errors, re-run for M94 and M95** —
@@ -2397,6 +2398,51 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M97 — closing M96's own recorded gap: the book's derivation, graded (2026-08-06)
+
+M96 shipped `hasCraftable` graded at its two **ends** — the solver's sixteen
+tests below it, the gate's chrome witness above it — and nothing in between. The
+arithmetic that turns an inventory into a per-slot flag, which is the part M96
+actually added, was untested. That is the shape M92 named and M93b closed a
+milestone later; this is the same close.
+
+**The obstacle was structural, not effort.** `PlaySession` owns a socket and
+cannot be built in a test, so the fix is M71's lesson rather than a fixture:
+*logic in a place with no test module is untestable, so move it.*
+`live_recipe_book` is now the session half — lookups only — and
+`book_render_from` is the derivation: grouping, tab membership, paging, the
+display cycle, and craftable. The second half takes plain values, and every
+interesting rule lives there.
+
+**Nine tests, each naming a rule neither end could see:** the flag follows what
+is held, in both directions; an entry with **no** requirements is never
+craftable while one declaring an **empty** list is (the distinction
+`canCraft`'s opening line makes, and one the solver alone cannot express because
+it never sees the entry); `hasCraftable` is **any** of a collection's recipes;
+asking about one collection does not spend another's items (the solver restores
+— a consuming one would light the first slot and grey the second); the page
+holds this book's categories and no others; the cycle reaches the rendered item
+and wraps; the shadow needs **both** several recipes and one shared result; a
+45-recipe book pages with a full first page; the filter flag reaches the view.
+
+**10 mutations, 10 killed** — including the two that matter most: *"nothing is
+ever craftable"*, which is exactly M96's pre-state and would otherwise have been
+indistinguishable from it, and *"an absent requirement list counts as
+craftable"*.
+
+**Measured.** **2019 tests / 0 failures**; `containershot` 89, `inventoryshot`
+152, `mobshot` 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical. No render
+path changed.
+
+**Open.** Nothing can click the book, so the selected tab and page stay 0 and
+hover never reaches the arrows or the filter — the cursor would have to be
+converted into book space, which needs the window size only the renderer has.
+No search box, page counter, overlay popup, ghost slots or recipe tooltips. And
+the craft-slot half of `fillStackedContents` is still missing (M96's recorded
+approximation).
+
+---
 
 ### M96 — the craftable solver, and two of vanilla's guards that do not matter (2026-08-06)
 

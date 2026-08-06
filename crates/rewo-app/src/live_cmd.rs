@@ -9044,6 +9044,196 @@ fn celestial_state_of(day_ticks: Option<i64>) -> CelestialState {
 
 #[cfg(test)]
 mod tests {
+    // -- the recipe book's derivation (M97) ---------------------------------
+    //
+    // M96 graded this at its two ends - the solver's own tests and the gate's
+    // chrome witness - and not in between. These drive `book_render_from`,
+    // which is the whole arithmetic: grouping, tab membership, paging, the
+    // display cycle, and `hasCraftable`.
+
+    use rewo_world::recipe_book_screen as rb96;
+    use rewo_world::stacked_contents::{Ingredient, StackedContents};
+
+    fn entry<'a>(
+        id: i32,
+        group: Option<i32>,
+        category: &'a str,
+        results: &[i32],
+        ingredients: Option<&[&[i32]]>,
+    ) -> super::BookEntry<'a> {
+        super::BookEntry {
+            id,
+            group,
+            category,
+            results: results.to_vec(),
+            ingredients: ingredients
+                .map(|v| v.iter().map(|ids| Ingredient::of(ids)).collect()),
+        }
+    }
+
+    fn held(items: &[(i32, i32)]) -> StackedContents {
+        let mut c = StackedContents::new();
+        for &(item, count) in items {
+            c.account(item, count);
+        }
+        c
+    }
+
+    const EQUIP: &str = "minecraft:crafting_equipment";
+    const MISC: &str = "minecraft:crafting_misc";
+
+    /// The whole point of M96, end to end: a slot's craftable flag follows
+    /// what the player is holding.
+    #[test]
+    fn a_slot_is_craftable_exactly_when_the_held_items_satisfy_it() {
+        let e = [entry(1, None, EQUIP, &[7], Some(&[&[10], &[11]]))];
+        let got = |items: &[(i32, i32)]| {
+            super::book_render_from(rb96::BookType::Crafting, false, &e, &mut held(items), 0)
+                .slots[0]
+                .0
+        };
+        assert!(got(&[(10, 1), (11, 1)]), "both ingredients held");
+        assert!(!got(&[(10, 1)]), "one missing");
+        assert!(!got(&[]), "nothing held");
+        // Holding MORE than enough is still craftable.
+        assert!(got(&[(10, 64), (11, 64)]));
+    }
+
+    /// `canCraft` opens with `craftingRequirements.isEmpty() ? false`, so an
+    /// entry that carried none is never craftable however much you hold — the
+    /// state the solver alone cannot express, because it never sees the entry.
+    #[test]
+    fn an_entry_with_no_requirements_is_never_craftable() {
+        let e = [entry(1, None, EQUIP, &[7], None)];
+        let r = super::book_render_from(
+            rb96::BookType::Crafting,
+            false,
+            &e,
+            &mut held(&[(10, 64), (11, 64)]),
+            0,
+        );
+        assert!(!r.slots[0].0);
+        // ...while the same entry declaring an EMPTY list is craftable, since
+        // there is nothing to satisfy. The two states are distinct.
+        let e2 = [entry(1, None, EQUIP, &[7], Some(&[]))];
+        let r2 =
+            super::book_render_from(rb96::BookType::Crafting, false, &e2, &mut held(&[]), 0);
+        assert!(r2.slots[0].0);
+    }
+
+    /// `hasCraftable()` is ANY of the collection's recipes, so a group with one
+    /// affordable member lights up.
+    #[test]
+    fn a_collection_is_craftable_if_ANY_of_its_recipes_is() {
+        // Two recipes in one group: the first needs an item we lack.
+        let e = [
+            entry(1, Some(5), EQUIP, &[7], Some(&[&[99]])),
+            entry(2, Some(5), EQUIP, &[7], Some(&[&[10]])),
+        ];
+        let r =
+            super::book_render_from(rb96::BookType::Crafting, false, &e, &mut held(&[(10, 1)]), 0);
+        assert_eq!(r.slots.len(), 1, "one grouped collection");
+        assert!(r.slots[0].0, "the second recipe is affordable");
+        assert!(r.slots[0].1, "and it has several recipes");
+    }
+
+    /// The solver is asked once per recipe and RESTORES what it took, so two
+    /// collections needing the same item do not starve each other. A solver
+    /// that consumed would light the first and grey the second.
+    #[test]
+    fn asking_about_one_collection_does_not_spend_anothers_items() {
+        let e = [
+            entry(1, None, EQUIP, &[7], Some(&[&[10]])),
+            entry(2, None, EQUIP, &[8], Some(&[&[10]])),
+        ];
+        let r =
+            super::book_render_from(rb96::BookType::Crafting, false, &e, &mut held(&[(10, 1)]), 0);
+        assert_eq!(r.slots.len(), 2);
+        assert!(r.slots[0].0 && r.slots[1].0, "both, from one item");
+    }
+
+    /// The search tab shows every category the book has; a category from
+    /// ANOTHER book does not appear at all.
+    #[test]
+    fn the_page_holds_this_books_categories_and_no_others() {
+        let e = [
+            entry(1, None, EQUIP, &[7], None),
+            entry(2, None, MISC, &[8], None),
+            entry(3, None, "minecraft:smoker_food", &[9], None),
+            entry(4, None, "minecraft:stonecutter", &[9], None),
+        ];
+        let r = super::book_render_from(rb96::BookType::Crafting, false, &e, &mut held(&[]), 0);
+        assert_eq!(r.slots.len(), 2, "equipment and misc, not smoker or stonecutter");
+        let smoker =
+            super::book_render_from(rb96::BookType::Smoker, false, &e, &mut held(&[]), 0);
+        assert_eq!(smoker.slots.len(), 1);
+    }
+
+    /// The cycle reaches the rendered item, and it is the SHARED clock — every
+    /// slot advances together.
+    #[test]
+    fn the_display_cycle_reaches_the_slot_items() {
+        let e = [
+            entry(1, Some(5), EQUIP, &[70], Some(&[&[10]])),
+            entry(2, Some(5), EQUIP, &[71], Some(&[&[10]])),
+        ];
+        let at = |cycle: i32| {
+            super::book_render_from(rb96::BookType::Crafting, false, &e, &mut held(&[]), cycle)
+                .slot_items[0]
+        };
+        assert_eq!(at(0), Some(70));
+        assert_eq!(at(1), Some(71));
+        assert_eq!(at(2), Some(70), "and it wraps");
+    }
+
+    /// The shadow copy needs BOTH conditions — several recipes and one shared
+    /// result. Two recipes yielding different items draw one icon.
+    #[test]
+    fn the_shadow_needs_several_recipes_AND_one_result() {
+        let same = [
+            entry(1, Some(5), EQUIP, &[70], None),
+            entry(2, Some(5), EQUIP, &[70], None),
+        ];
+        let differ = [
+            entry(1, Some(5), EQUIP, &[70], None),
+            entry(2, Some(5), EQUIP, &[71], None),
+        ];
+        let one = [entry(1, None, EQUIP, &[70], None)];
+        let shadowed = |e: &[super::BookEntry<'_>]| {
+            super::book_render_from(rb96::BookType::Crafting, false, e, &mut held(&[]), 0)
+                .slot_shadowed[0]
+        };
+        assert!(shadowed(&same));
+        assert!(!shadowed(&differ), "several recipes, different results");
+        assert!(!shadowed(&one), "one recipe");
+    }
+
+    /// The view's `shown` is what the page actually holds, and its
+    /// `total_pages` counts every collection — so a 45-recipe book pages.
+    #[test]
+    fn a_long_book_pages_and_the_first_page_is_full() {
+        let cats: Vec<String> = (0..45).map(|_| EQUIP.to_string()).collect();
+        let e: Vec<_> = (0..45)
+            .map(|i| entry(i, None, &cats[i as usize], &[70], None))
+            .collect();
+        let r = super::book_render_from(rb96::BookType::Crafting, false, &e, &mut held(&[]), 0);
+        let v = r.view.unwrap();
+        assert_eq!(v.total_pages, 3);
+        assert_eq!(v.shown, rb96::ITEMS_PER_PAGE);
+        assert_eq!(r.slots.len(), rb96::ITEMS_PER_PAGE);
+    }
+
+    /// The filter flag reaches the view, which is what picks the toggle's art.
+    #[test]
+    fn the_filter_flag_reaches_the_view() {
+        let e = [entry(1, None, EQUIP, &[7], None)];
+        for filtering in [false, true] {
+            let r =
+                super::book_render_from(rb96::BookType::Crafting, filtering, &e, &mut held(&[]), 0);
+            assert_eq!(r.view.unwrap().filtering, filtering);
+        }
+    }
+
     /// `rewo-gpu` restates the recipe book's geometry rather than importing it,
     /// because the renderer deliberately does not depend on `rewo-world` (M94).
     /// This is the crate that sees both, so this is where the copy is paid for.
@@ -13199,22 +13389,19 @@ fn live_recipe_book(
         return None;
     }
     let names = session.recipe_display_ids.as_ref()?;
-    // The entries the server has unlocked, with the RESULT items each one
-    // stands for — resolved once here, because the cycle needs the per-entry
-    // list and the chrome needs only its length.
-    let entries: Vec<(i32, Option<i32>, &str, Vec<i32>, Option<Vec<_>>)> = session
+    let entries: Vec<BookEntry<'_>> = session
         .recipe_book
         .values()
         .filter_map(|e| {
-            Some((
-                e.id,
-                e.group,
-                names.category.name(e.category)?,
-                e.display.result().items(),
+            Some(BookEntry {
+                id: e.id,
+                group: e.group,
+                category: names.category.name(e.category)?,
+                results: e.display.result().items(),
                 // M96 — the ingredient slots, tags resolved against the
                 // server's own `update_tags` payload.
-                e.ingredients(&session.tags),
-            ))
+                ingredients: e.ingredients(&session.tags),
+            })
         })
         .collect();
     // What the player is holding, for `hasCraftable`.
@@ -13229,15 +13416,50 @@ fn live_recipe_book(
     let mut held = rewo_world::stacked_contents::StackedContents::new();
     for slot in 0..session.inventory.slot_count() {
         if let Some(st) = session.inventory.menu_slot(slot) {
-            // `accountSimpleStack` — `isUsableForCrafting` rejects a stack
-            // with damage or components; Rewo knows only whether a stack
-            // carries a component patch at all, which is the nearest honest
-            // test it can make.
             held.account_stack(st.item_id, st.count, max_stack_of(items, st.item_id));
         }
     }
+    // `Mth.floor(time / 30)` — vanilla's `time` advances by the partial tick
+    // each render, so this is the session's tick clock divided by the swap
+    // period. Shared by every slot, which is why a page of several-recipe
+    // collections flips together rather than each on its own phase.
+    let cycle = (session.ticks as f32 / rewo_net::recipe_book::TICKS_TO_SWAP_SLOT).floor() as i32;
+    Some(book_render_from(book, st.filtering, &entries, &mut held, cycle))
+}
+
+/// One unlocked recipe, with everything already resolved (M97).
+///
+/// The seam between the session and the derivation: the session half is
+/// lookups, the derivation half is the grouping, paging, cycling and craftable
+/// arithmetic — and only the second half is worth grading, which is why it is
+/// on this side of the line.
+pub(crate) struct BookEntry<'a> {
+    pub id: i32,
+    pub group: Option<i32>,
+    pub category: &'a str,
+    /// The result display's item ids, in order.
+    pub results: Vec<i32>,
+    /// `None` when `craftingRequirements` was absent — never craftable.
+    pub ingredients: Option<Vec<rewo_world::stacked_contents::Ingredient>>,
+}
+
+/// The book's per-frame state, from resolved inputs (M97).
+///
+/// Split out of [`live_recipe_book`] because a `PlaySession` owns a socket and
+/// cannot be built in a test — M71's lesson: logic in a place with no test
+/// module is untestable, so move it. M96 shipped this arithmetic graded only at
+/// its two ends (the solver's own tests, and the chrome witness), with the
+/// derivation between them untested — the M92/M93b shape.
+pub(crate) fn book_render_from(
+    book: rewo_world::recipe_book_screen::BookType,
+    filtering: bool,
+    entries: &[BookEntry<'_>],
+    held: &mut rewo_world::stacked_contents::StackedContents,
+    cycle: i32,
+) -> BookRender {
+    use rewo_world::recipe_book_screen as rb;
     let flat: Vec<(i32, Option<i32>, &str)> =
-        entries.iter().map(|(a, b, c, ..)| (*a, *b, *c)).collect();
+        entries.iter().map(|e| (e.id, e.group, e.category)).collect();
     let all = rb::collections(&flat);
     let selected_tab = 0usize;
     let tabs = book.tabs();
@@ -13252,39 +13474,16 @@ fn live_recipe_book(
     let total_pages = rb::total_pages(mine.len());
     let page = rb::clamp_page(0, mine.len(), false);
     let range = rb::page_range(page, mine.len());
-    // `Mth.floor(time / 30)` — vanilla's `time` advances by the partial tick
-    // each render, so this is the session's tick clock divided by the swap
-    // period. Shared by every slot, which is why a page of several-recipe
-    // collections flips together rather than each on its own phase.
-    let cycle = (session.ticks as f32 / rewo_net::recipe_book::TICKS_TO_SWAP_SLOT)
-        .floor() as i32;
+    let find = |id: &i32| entries.iter().find(|e| e.id == *id);
     let mut slots = Vec::new();
     let mut slot_items = Vec::new();
     let mut slot_shadowed = Vec::new();
     for c in &mine[range] {
-        // Each collection's entries, in the order they were added, with the
-        // items each resolves to.
         let per_entry: Vec<Vec<i32>> = c
             .recipes
             .iter()
-            .map(|id| {
-                entries
-                    .iter()
-                    .find(|(eid, ..)| eid == id)
-                    .map(|(_, _, _, items, _)| items.clone())
-                    .unwrap_or_default()
-            })
+            .map(|id| find(id).map(|e| e.results.clone()).unwrap_or_default())
             .collect();
-        // `hasCraftable()` — ANY of the collection's recipes is affordable.
-        // A recipe whose `craftingRequirements` were absent is never craftable,
-        // which is `canCraft`'s own opening line rather than a default.
-        let craftable = c.recipes.iter().any(|id| {
-            entries
-                .iter()
-                .find(|(eid, ..)| eid == id)
-                .and_then(|(_, _, _, _, ing)| ing.as_ref())
-                .is_some_and(|ing| held.try_pick(ing, 1))
-        });
         let multiple = per_entry.len() > 1;
         // `allRecipesHaveSameResultDisplay` — every display item across every
         // entry the same. Rewo compares item IDS, where vanilla compares whole
@@ -13293,18 +13492,26 @@ fn live_recipe_book(
         let mut seen = per_entry.iter().flatten();
         let first = seen.next().copied();
         let same_result = seen.all(|i| Some(*i) == first);
+        // `hasCraftable()` — ANY of the collection's recipes is affordable.
+        // A recipe whose `craftingRequirements` were absent is never craftable,
+        // which is `canCraft`'s own opening line rather than a default.
+        let craftable = c.recipes.iter().any(|id| {
+            find(id)
+                .and_then(|e| e.ingredients.as_ref())
+                .is_some_and(|ing| held.try_pick(ing, 1))
+        });
         slots.push((craftable, multiple));
         slot_items.push(rewo_net::recipe_book::display_item(&per_entry, cycle));
         slot_shadowed.push(multiple && same_result);
     }
-    Some(BookRender {
+    BookRender {
         view: Some(rb::BookView {
             tabs: tabs.len(),
             selected_tab,
             page,
             total_pages,
             shown: slots.len(),
-            filtering: st.filtering,
+            filtering,
             furnace_family: book.furnace_family(),
         }),
         slots,
@@ -13316,7 +13523,7 @@ fn live_recipe_book(
         book,
         slot_items,
         slot_shadowed,
-    })
+    }
 }
 
 /// The book's chrome as blits, with its semantic sprites resolved to atlas
