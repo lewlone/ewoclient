@@ -74,11 +74,17 @@ two — not the four `SearchRecipeBookCategory` values) and M94's menu
 displacement, which never reached the slot ICONS. **M96** ports vanilla's
 craftable matcher, so the book finally greys what you cannot make — and found
 two of vanilla's own guards to be provably inert. **M97** closes M96's own
-recorded gap, grading the derivation between the solver and the chrome.
+recorded gap, grading the derivation between the solver and the chrome, and
+**M98** makes the book clickable — tabs, pages, the filter, and the two
+serverbound packets.
 
-Current measurement, taken 2026-08-06 after M97: **2019 tests, 0 failures**
-(world 776, net 617, gpu 255, data 212, app 113, mesh 45, proto 11 — all seven
-confirmed reporting); `containershot` **89/89**, `inventoryshot` 152/152,
+Current measurement, taken 2026-08-06 after M98: **2039 tests, 0 failures**
+(**world 790, net 613, gpu 255, data 212, app 113, mesh 45, proto 11** — read
+off the runner per crate, and they sum to 2039). **The earlier breakdowns in
+this paragraph were estimated, not measured**, and did not sum to the totals
+beside them; the totals were always a real sum, so only the splits were wrong.
+Read them off `cargo test`'s own per-binary lines rather than apportioning a
+total by hand.; `containershot` **89/89**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check`
 23/23 with validation ON and 0 validation errors, re-run for M94 and M95** —
 M94 is where it earned its keep twice over (see its §15 entry); demo PNG
@@ -2398,6 +2404,88 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M98 — the book takes clicks, and one it does not want is still swallowed (2026-08-06)
+
+Tab selection, page turning, the filter toggle, hover feedback, and the two
+serverbound packets. The book had been drawable and inert since M94.
+
+**The order is a contract, and it is not the draw order.**
+`RecipeBookComponent.mouseClicked` tests the **page** first (arrows, then recipe
+cells), then the search box, then the filter, then the tabs — and the whole book
+runs before `super.mouseClicked`, so it dispatches ahead of every other screen
+widget Rewo has.
+
+**And there is a second rule under it**, easy to miss because it lives in the
+else-branch:
+
+```java
+else return this.widthTooNarrow && isVisible() ? true : super.mouseClicked(...)
+```
+
+A click the book **does not want** is still consumed when the window is too
+narrow and the book is open — the case where the book covers the menu. Letting
+it fall through clicks a slot the player cannot see.
+
+**Four more inversions**, each mutation-tested:
+
+- **A selected tab's hit rect does not move with its sprite.** The 2 px shift is
+  applied at draw time (`xPos = getX(); if (selected) xPos -= 2`) while `clicked`
+  tests `getX()`, so a selected tab's leftmost two columns are painted and not
+  clickable. Shifting the rect too is the natural "fix" and diverges.
+- **The magnifier counts as clicking the search box**, and its rect *overlaps*
+  the box (8..33 against 25..106) rather than abutting it — harmless only
+  because both resolve to the same hit.
+- **A click anywhere in the book but the page unfocuses the search field**:
+  `setFocused(false)` sits in the else-branch unconditionally, before the filter
+  and the tabs, and the page path returns early without reaching it. Focus
+  survives an arrow and a recipe, and nothing else.
+- **Switching tabs resets the page** (`updateCollections(true, …)`), and
+  re-selecting the tab you are on does nothing at all — the guard is
+  `selectedTab != button`.
+
+**The two packets.** `recipe_book_change_settings` is an ordinal plus **both**
+flags, and `sendUpdateSettings` reads them out of the local settings rather than
+taking them — so toggling the filter re-reports the open state and vice versa,
+because the server persists both. `place_recipe` is two var-ints then shift-held,
+and it places **the recipe the cycle is showing** (`getCurrentRecipe`), not the
+collection's first: clicking while the display is on the second of two places
+the second.
+
+A **right-click** on a multi-recipe cell is consumed and does nothing. Vanilla
+opens its which-of-these overlay there; Rewo has no overlay, and placing a
+recipe the player did not choose would be worse than nothing.
+
+**The hover comes from the same `book_hit` the press uses**, so what lights up is
+what a click would take — and the cursor is converted to book space **once** in
+`apply_screen`, so the two cannot read different numbers. M95's note that this
+needed the renderer was wrong: `recipe_book_origin` is public and `apply_screen`
+has the window size.
+
+**A surviving mutation was not equivalent, it was a weak fixture** — M93z's
+lesson a second time. Replacing `clamp_page` with a clamp-to-last-page survived,
+because the test used five collections (**one** page), where reset-to-front and
+clamp-to-last are both 0. Three pages distinguish them: vanilla resets page 3 to
+**0** where a clamp gives **2**.
+
+**Measured.** **2039 tests / 0 failures**; `containershot` 89, `inventoryshot`
+152, `itemshot` 75, `handshot` 34, `mobshot` 246/246; **`live --render-check`
+23/23, validation ON, 0 errors** — run because this changed `apply_screen`'s
+signature and put a new dispatch at the front of the click chain, where a
+regression would break every screen's input; demo PNG `2cc56b4acbfb92cb`
+byte-identical. **15 mutations, 15 killed.**
+
+Also fixed a doc comment M95's insert had duplicated onto one line — it
+compiled, so nothing caught it.
+
+**Open.** The search box is hit-tested and focusable and **does nothing yet** —
+typing into it needs M93t's `EditBox` wired plus vanilla's recipe search tree,
+which Rewo does not build. No page counter text, no which-of-these overlay, no
+ghost slots, no recipe tooltips. `useMaxItems` is always false (the shift
+modifier is not threaded to the press). And the craft-slot half of
+`fillStackedContents` is still missing (M96's recorded approximation).
+
+---
 
 ### M97 — closing M96's own recorded gap: the book's derivation, graded (2026-08-06)
 
