@@ -80,14 +80,18 @@ serverbound packets. **M99** adds the search, and found that the suffix array
 vanilla indexes with is unnecessary for the one consumer that reads it. **M100**
 draws the field — text, caret, hint — and found its nine-sliced background
 degenerating to two blits, because the sprite is a 1-bit two-colour image.
+**M101** makes the caret blink, and in doing so found that the field it blinks
+in had never scrolled and that the anvil's had never been pinned.
 
-Current measurement, taken 2026-08-06 after M100: **2059 tests, 0 failures**
-(**world 799, net 613, gpu 255, data 212, app 124, mesh 45, proto 11** — read
+Current measurement, taken 2026-08-06 after M101: **2068 tests, 0 failures**
+(**world 805, net 613, gpu 255, data 212, app 127, mesh 45, proto 11** — read
 off the runner per crate, and they sum to 2039). **The earlier breakdowns in
 this paragraph were estimated, not measured**, and did not sum to the totals
 beside them; the totals were always a real sum, so only the splits were wrong.
 Read them off `cargo test`'s own per-binary lines rather than apportioning a
-total by hand.; `containershot` **89/89**, `inventoryshot` 152/152,
+total by hand — and read them **before** writing the sentence: M100 and M101
+were each written with a guessed split and corrected a step later, which is
+three occurrences of the same habit.; `containershot` **89/89**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check`
 23/23 with validation ON and 0 validation errors, re-run for M94 and M95** —
 M94 is where it earned its keep twice over (see its §15 entry); demo PNG
@@ -2407,6 +2411,67 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M101 — the caret blinks, and the field it blinks in never scrolled (2026-08-06)
+
+M100 recorded the blink as a shared gap between the recipe book's field and the
+anvil's. Fixing it in the extracted renderer fixes both — and exposed two older
+bugs, one of them eight milestones old.
+
+**The blink.** `showCursor = isFocused() && isCursorVisible(millis -
+focusedTime) && cursorOnScreen` — **three** conditions, where M93t's renderer had
+only the first. `isCursorVisible` is `timeInMs / 300 % 2 == 0`, and the phase is
+measured from `focusedTime`, which `setFocused(true)` resets and
+`setFocused(false)` does **not**. So a freshly focused field shows its caret at
+once rather than being dark half the times you click into one.
+
+`setFocused` is gated on `canLoseFocus || focused`, and **the anvil sets
+`canLoseFocus` false** — so its field ignores being unfocused and its caret
+blinks for as long as the screen is open, where the book's stops when focus
+moves away. Live behaviour, not an inert transcription.
+
+**First older bug.** M93t's comment said *"setCanLoseFocus(false) and
+setInitialFocus"* and the code did only the second half. Nothing pinned the
+focus, so a click elsewhere could take it and the caret with it — the comment
+has been describing behaviour the code did not have since M93t. The three lines
+are now `anvil_field_new()`, a function, because they sat in a path needing a
+`PlaySession` and so could not be reached from a test. *Which is exactly why
+nothing caught it.*
+
+**Second older bug, and the caret's own gate is what surfaced it: the field
+never scrolled.** Vanilla's `insertText → setCursorPosition → scrollTo` keeps the
+cursor inside the visible run; Rewo's `set_cursor_position` cannot call
+`scroll_to`, because `scroll_to` needs the font width and a Rewo `EditBox` does
+not own one. So nothing ever moved `display_pos`, and a field typed past its
+visible width kept showing the head of the string. **Before this milestone the
+caret was drawn anyway, at a bogus x; with `cursorOnScreen` correct it vanished
+instead — and that is what made the gap visible.** `follow_cursor` is the missing
+half, called by every input path that moves the cursor, for both fields (the
+anvil's 50-character name overflows its ~104 px box too).
+
+**The headless renderer takes a fixed clock of 0.** A caret that blinks would
+make the same scene render two ways depending on when the gate ran, and a witness
+cannot hold that constant. At 0 the caret is visible, which is the state the
+existing anvil witnesses were written against — `containershot` is unchanged.
+
+**Measured.** **2068 tests / 0 failures**; `containershot` 89, `inventoryshot`
+152, `itemshot` 75, `handshot` 34, `mobshot` 246/246; demo PNG
+`2cc56b4acbfb92cb` byte-identical. **11 mutations, 11 killed** — two of them only
+after the witnesses that could reach them were written: an off-screen caret
+(reachable only *without* `follow_cursor`, which is the state the field was
+permanently in before this) and the anvil's pin (reachable only once its
+construction became a function).
+
+`live --render-check` not re-run: the blink changes *when* an existing quad is
+emitted, not whether the path exists, and M100 measured that path at 23/23 two
+commits earlier.
+
+**Open.** `plainSubstrByWidth`'s tail form is used by `scroll_to` and only the
+leftward branch of it is exercised. The book still lacks the page counter text,
+the which-of-these overlay, ghost slots and recipe tooltips; `useMaxItems` is
+always false; and M96's craft-slot approximation stands.
+
+---
 
 ### M100 — the search field's text, and a nine-slice that degenerates to two blits (2026-08-06)
 

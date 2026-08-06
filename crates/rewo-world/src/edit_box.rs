@@ -125,6 +125,20 @@ pub struct EditBox {
     editable: bool,
     focused: bool,
     active: bool,
+    /// `canLoseFocus` (M101). **The anvil's field sets this false**
+    /// (`AnvilScreen.init`), so `setFocused(false)` on it is a no-op and its
+    /// caret blinks for as long as the screen is open — where the recipe book's
+    /// field, which leaves it true, stops when the focus moves away.
+    can_lose_focus: bool,
+    /// `focusedTime` in milliseconds (M101).
+    ///
+    /// The caret's blink phase is measured from **the moment focus was taken**,
+    /// not from an absolute clock, so a freshly focused field always shows the
+    /// caret on its first frame rather than half the time. Initialised to the
+    /// construction time in vanilla (`Util.getMillis()`), not to zero — kept as
+    /// `None` here so a field that has never been focused has no phase at all,
+    /// which is the same thing without needing a clock at construction.
+    focused_time_ms: Option<u64>,
     /// Whether `onValueChange` has fired since the caller last looked.
     ///
     /// Vanilla's `setResponder` takes a `Consumer<String>` called from exactly
@@ -142,6 +156,9 @@ impl Default for EditBox {
     }
 }
 
+/// `TextCursorUtils.CURSOR_BLINK_INTERVAL_MS`.
+pub const CURSOR_BLINK_INTERVAL_MS: u64 = 300;
+
 impl EditBox {
     pub fn new(max_length: usize) -> Self {
         Self {
@@ -153,6 +170,8 @@ impl EditBox {
             editable: true,
             focused: false,
             active: true,
+            can_lose_focus: true,
+            focused_time_ms: None,
             value_changed: false,
         }
     }
@@ -190,8 +209,38 @@ impl EditBox {
         self.editable = editable;
     }
 
+    /// `setFocused` — **gated on `canLoseFocus || focused`**, so a field that
+    /// cannot lose focus ignores being told to (M101), and resetting the blink
+    /// phase happens only on the way *in*.
     pub fn set_focused(&mut self, focused: bool) {
+        self.set_focused_at(focused, 0);
+    }
+
+    /// [`set_focused`] with the current time, which the blink phase needs.
+    pub fn set_focused_at(&mut self, focused: bool, now_ms: u64) {
+        if !(self.can_lose_focus || focused) {
+            return;
+        }
         self.focused = focused;
+        if focused {
+            self.focused_time_ms = Some(now_ms);
+        }
+    }
+
+    pub fn set_can_lose_focus(&mut self, can_lose_focus: bool) {
+        self.can_lose_focus = can_lose_focus;
+    }
+
+    /// `TextCursorUtils.isCursorVisible(millis - focusedTime)` —
+    /// `timeInMs / 300 % 2 == 0`, so the caret is on for the first 300 ms after
+    /// focus and alternates from there.
+    ///
+    /// A field that has never been focused reports the caret **visible**, which
+    /// matches vanilla's construction-time `focusedTime`: at `millis ==
+    /// focusedTime` the quotient is 0.
+    pub fn cursor_visible(&self, now_ms: u64) -> bool {
+        let since = now_ms.saturating_sub(self.focused_time_ms.unwrap_or(now_ms));
+        (since / CURSOR_BLINK_INTERVAL_MS) % 2 == 0
     }
 
     pub fn is_focused(&self) -> bool {
@@ -411,8 +460,30 @@ impl EditBox {
         }
     }
 
+    /// `setCursorPosition` — **without** vanilla's trailing `scrollTo` (M101).
+    ///
+    /// Vanilla's is `cursorPos = clamp(...); scrollTo(cursorPos)`, and it can do
+    /// that because an `EditBox` owns its `Font`. Rewo's takes the width
+    /// function as a parameter, so the scroll cannot happen here — it is
+    /// [`follow_cursor`]'s job, called by whoever handled the input and
+    /// therefore has the font.
+    ///
+    /// Before M101 nothing called it at all, so `display_pos` never moved and a
+    /// field typed past its visible width kept showing the head of the string
+    /// with the caret drawn at a bogus x. The caret's `cursorOnScreen` gate is
+    /// what surfaced it: with the gate correct, the caret vanished instead.
     pub fn set_cursor_position(&mut self, pos: usize) {
         self.cursor_pos = pos.min(self.value.len());
+    }
+
+    /// `scrollTo(cursorPos)` — keep the caret inside the visible run.
+    ///
+    /// Call this after any input that moves the cursor. Split from
+    /// [`set_cursor_position`] only because the width function lives with the
+    /// caller; the two together are vanilla's one method.
+    pub fn follow_cursor(&mut self, inner_width: i32, width: &dyn Fn(&[u16]) -> i32) {
+        let pos = self.cursor_pos;
+        self.scroll_to(pos, inner_width, width);
     }
 
     pub fn set_highlight_pos(&mut self, pos: usize) {
@@ -598,6 +669,96 @@ pub fn plain_substr_by_width_tail(s: &[u16], max_width: i32, width: &dyn Fn(&[u1
 
 #[cfg(test)]
 mod tests {
+
+    /// Typing past the visible width scrolls the run so the caret stays in it —
+    /// vanilla's `insertText -> setCursorPosition -> scrollTo`, which Rewo has
+    /// to drive from the caller because the width function is not the box's.
+    #[test]
+    fn following_the_cursor_scrolls_a_long_value_into_view() {
+        // Six pixels a glyph, and an inner width of 73 — so twelve fit.
+        let w = |u: &[u16]| (u.len() as i32) * 6;
+        let mut f = EditBox::new(50);
+        f.set_focused(true);
+        for ch in "abcdefghijklmnopqrstuvwxyz".chars() {
+            f.char_typed(ch);
+            f.follow_cursor(73, &w);
+        }
+        // The caret is at the end, and the visible run reaches it.
+        let displayed = f.displayed(73, &w).len();
+        let rel = f.cursor_position() - f.display_pos();
+        assert!(rel <= displayed, "the caret is inside the visible run");
+        assert!(f.display_pos() > 0, "and the run has scrolled");
+        // Without the follow it would not have: the head of the string stays.
+        let mut g = EditBox::new(50);
+        g.set_focused(true);
+        for ch in "abcdefghijklmnopqrstuvwxyz".chars() {
+            g.char_typed(ch);
+        }
+        assert_eq!(g.display_pos(), 0);
+        assert!(g.cursor_position() - g.display_pos() > g.displayed(73, &w).len());
+    }
+
+    /// `isCursorVisible(millis - focusedTime)` — on for the first 300 ms after
+    /// focus, then alternating.
+    #[test]
+    fn the_caret_blinks_from_the_moment_focus_was_taken() {
+        let mut f = EditBox::new(32);
+        f.set_focused_at(true, 10_000);
+        assert!(f.cursor_visible(10_000), "visible the instant it is focused");
+        assert!(f.cursor_visible(10_299));
+        assert!(!f.cursor_visible(10_300), "off for the second 300 ms");
+        assert!(!f.cursor_visible(10_599));
+        assert!(f.cursor_visible(10_600), "and on again");
+    }
+
+    /// The phase is measured from the FOCUS, not from an absolute clock — so
+    /// re-focusing restarts it and the caret is immediately visible, rather
+    /// than being off half the time you click into a field.
+    #[test]
+    fn refocusing_restarts_the_blink_rather_than_continuing_it() {
+        let mut f = EditBox::new(32);
+        f.set_focused_at(true, 0);
+        assert!(!f.cursor_visible(400), "mid-off-phase");
+        // Re-focus at that same moment: visible again at once.
+        f.set_focused_at(true, 400);
+        assert!(f.cursor_visible(400));
+    }
+
+    /// A field that has never been focused reports the caret visible, which is
+    /// vanilla's construction-time `focusedTime` by another route.
+    #[test]
+    fn a_never_focused_field_has_no_phase() {
+        let f = EditBox::new(32);
+        assert!(f.cursor_visible(0));
+        assert!(f.cursor_visible(123_456), "any clock, since there is no phase");
+    }
+
+    /// `setFocused` is gated on `canLoseFocus || focused`, so a pinned field
+    /// ignores being unfocused — the anvil's case.
+    #[test]
+    fn a_field_that_cannot_lose_focus_ignores_being_unfocused() {
+        let mut f = EditBox::new(32);
+        f.set_can_lose_focus(false);
+        f.set_focused(true);
+        f.set_focused(false);
+        assert!(f.is_focused(), "the unfocus was ignored");
+        // And one that CAN lose focus obeys.
+        let mut g = EditBox::new(32);
+        g.set_focused(true);
+        g.set_focused(false);
+        assert!(!g.is_focused());
+    }
+
+    /// Losing focus does NOT reset the phase — only taking it does, so an
+    /// unfocus-then-refocus is the only thing that restarts the blink.
+    #[test]
+    fn losing_focus_leaves_the_phase_alone() {
+        let mut f = EditBox::new(32);
+        f.set_focused_at(true, 0);
+        f.set_focused_at(false, 400);
+        f.focused = true; // as if focus returned without going through the setter
+        assert!(!f.cursor_visible(400), "still the phase from time 0");
+    }
     use super::*;
 
     fn boxed(v: &str) -> EditBox {

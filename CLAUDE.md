@@ -4419,6 +4419,40 @@ inside the 10-minute tool cap.
 `2cc56b4acbfb92cb` byte-identical; **205 mutations across M93a–y, 199 killed,
 2 shown equivalent, 1 alive by construction (named)**.
 
+### M101 — the caret blinks, and the field it blinks in never scrolled
+
+M100 recorded the blink as a shared gap between the book's field and the anvil's.
+Fixing it in the extracted renderer fixed both — and exposed two older bugs.
+
+**`showCursor` is THREE conditions** — `isFocused() && isCursorVisible(millis -
+focusedTime) && cursorOnScreen` — where M93t had only the first. The blink is
+`/300 % 2 == 0` measured from `focusedTime`, which `setFocused(true)` resets and
+`setFocused(false)` does not, so a freshly focused field shows its caret at once.
+And `setFocused` is gated on `canLoseFocus || focused`: **the anvil sets that
+false**, so its caret blinks as long as the screen is open where the book's stops
+on losing focus.
+
+**First older bug:** M93t's comment claimed `setCanLoseFocus(false)` and the code
+did only `setInitialFocus`. Nothing pinned the focus for eight milestones,
+because those lines sat in a path needing a `PlaySession` and so were unreachable
+from a test — they are `anvil_field_new()` now.
+
+**Second older bug, surfaced by the caret's own gate: the field never scrolled.**
+Vanilla's `insertText → setCursorPosition → scrollTo` keeps the cursor visible;
+Rewo's `set_cursor_position` cannot, because `scroll_to` needs a font width the
+`EditBox` does not own. So `display_pos` never moved and a field typed past its
+width kept showing the head of the string. **Before this the caret was drawn
+anyway at a bogus x; with `cursorOnScreen` correct it vanished — which is what
+made the gap visible.** `follow_cursor` is the missing half, called from every
+input path, for both fields.
+
+The headless renderer takes a **fixed clock of 0**: a blinking caret would render
+the same scene two ways depending on when the gate ran.
+
+**2068 tests**; containershot 89, inventoryshot 152, itemshot 75, handshot 34,
+mobshot 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical; **11 mutations, 11
+killed** — two only after witnesses that could reach them were written.
+
 ### M100 — the search field's text, and a nine-slice that degenerates to two blits
 
 The field typed and filtered since M99 and drew nothing.
