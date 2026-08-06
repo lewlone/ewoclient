@@ -11465,7 +11465,7 @@ fn apply_screen(
     // its presence has to reach `screen_to_gui_placed` below as well: an open
     // book MOVES the menu, and a hover resolved against a centred panel while
     // the panel is drawn 77 px right would be wrong by more than four slots.
-    let book = live_recipe_book(session);
+    let book = live_recipe_book(session, items);
     // Which menu is on screen: the open container if there is one, else the
     // player's own. Chosen ONCE and threaded everywhere, because the panel,
     // the icons, the hover and the durability bars are all measured from the
@@ -13139,6 +13139,18 @@ fn book_type_of(
     }
 }
 
+/// An item's `getMaxStackSize`, for `accountStack`'s `min` (M96).
+///
+/// Falls back to 64, which is the default `Item.Properties` value and so the
+/// right answer for the 1,242 of 1,537 items that do not override it.
+fn max_stack_of(items: &rewo_data::items::Items, id: i32) -> i32 {
+    items
+        .name(id)
+        .map_or(rewo_data::item_props_table::DEFAULT_MAX_STACK, |n| {
+            rewo_data::item_props_table::max_stack_size(n)
+        })
+}
+
 /// Everything the recipe book's chrome needs for one frame (M94).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BookRender {
@@ -13165,13 +13177,11 @@ pub(crate) struct BookRender {
 /// The selected tab and the current page are **client** state that only a
 /// click can change, and nothing can click the book yet, so both are pinned to
 /// 0 and the tab column renders with the first tab selected. `hasCraftable` is
-/// likewise reported as `false` for every collection, because it needs
-/// `StackedItemContents` — vanilla's "can I make this from what I am holding"
-/// solver — which Rewo has not ported. The consequence is visible and
-/// deliberately not faked: every slot draws the *uncraftable* chrome. Guessing
-/// `true` would be worse, since it is the state that tells a player a recipe is
-/// available.
-fn live_recipe_book(session: &rewo_net::play::PlaySession) -> Option<BookRender> {
+/// answered as of M96 — see `held` below for the one input it still misses.
+fn live_recipe_book(
+    session: &rewo_net::play::PlaySession,
+    items: &rewo_data::items::Items,
+) -> Option<BookRender> {
     use rewo_world::recipe_book_screen as rb;
     let layout = session
         .menus
@@ -13192,7 +13202,7 @@ fn live_recipe_book(session: &rewo_net::play::PlaySession) -> Option<BookRender>
     // The entries the server has unlocked, with the RESULT items each one
     // stands for — resolved once here, because the cycle needs the per-entry
     // list and the chrome needs only its length.
-    let entries: Vec<(i32, Option<i32>, &str, Vec<i32>)> = session
+    let entries: Vec<(i32, Option<i32>, &str, Vec<i32>, Option<Vec<_>>)> = session
         .recipe_book
         .values()
         .filter_map(|e| {
@@ -13201,11 +13211,33 @@ fn live_recipe_book(session: &rewo_net::play::PlaySession) -> Option<BookRender>
                 e.group,
                 names.category.name(e.category)?,
                 e.display.result().items(),
+                // M96 — the ingredient slots, tags resolved against the
+                // server's own `update_tags` payload.
+                e.ingredients(&session.tags),
             ))
         })
         .collect();
+    // What the player is holding, for `hasCraftable`.
+    //
+    // `fillStackedContents` over the INVENTORY only — vanilla also folds in
+    // the open menu's craft slots (`fillCraftSlotsStackedContents`), which
+    // matters for a table with items already on the grid. Rewo counts the
+    // inventory alone, so a recipe whose last ingredient is sitting on the
+    // grid reads as uncraftable. Recorded rather than approximated: the menu's
+    // craft slots differ per menu class and picking the wrong range would be a
+    // confident wrong answer.
+    let mut held = rewo_world::stacked_contents::StackedContents::new();
+    for slot in 0..session.inventory.slot_count() {
+        if let Some(st) = session.inventory.menu_slot(slot) {
+            // `accountSimpleStack` — `isUsableForCrafting` rejects a stack
+            // with damage or components; Rewo knows only whether a stack
+            // carries a component patch at all, which is the nearest honest
+            // test it can make.
+            held.account_stack(st.item_id, st.count, max_stack_of(items, st.item_id));
+        }
+    }
     let flat: Vec<(i32, Option<i32>, &str)> =
-        entries.iter().map(|(a, b, c, _)| (*a, *b, *c)).collect();
+        entries.iter().map(|(a, b, c, ..)| (*a, *b, *c)).collect();
     let all = rb::collections(&flat);
     let selected_tab = 0usize;
     let tabs = book.tabs();
@@ -13239,10 +13271,20 @@ fn live_recipe_book(session: &rewo_net::play::PlaySession) -> Option<BookRender>
                 entries
                     .iter()
                     .find(|(eid, ..)| eid == id)
-                    .map(|(.., items)| items.clone())
+                    .map(|(_, _, _, items, _)| items.clone())
                     .unwrap_or_default()
             })
             .collect();
+        // `hasCraftable()` — ANY of the collection's recipes is affordable.
+        // A recipe whose `craftingRequirements` were absent is never craftable,
+        // which is `canCraft`'s own opening line rather than a default.
+        let craftable = c.recipes.iter().any(|id| {
+            entries
+                .iter()
+                .find(|(eid, ..)| eid == id)
+                .and_then(|(_, _, _, _, ing)| ing.as_ref())
+                .is_some_and(|ing| held.try_pick(ing, 1))
+        });
         let multiple = per_entry.len() > 1;
         // `allRecipesHaveSameResultDisplay` — every display item across every
         // entry the same. Rewo compares item IDS, where vanilla compares whole
@@ -13251,7 +13293,7 @@ fn live_recipe_book(session: &rewo_net::play::PlaySession) -> Option<BookRender>
         let mut seen = per_entry.iter().flatten();
         let first = seen.next().copied();
         let same_result = seen.all(|i| Some(*i) == first);
-        slots.push((false, multiple));
+        slots.push((craftable, multiple));
         slot_items.push(rewo_net::recipe_book::display_item(&per_entry, cycle));
         slot_shadowed.push(multiple && same_result);
     }
