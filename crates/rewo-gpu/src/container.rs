@@ -742,6 +742,13 @@ pub struct ContainerPanel {
     pub blits: Vec<PanelBlit>,
     pub gui_w: f32,
     pub gui_h: f32,
+    /// Quads drawn **after** the GUI icons (M103) — the ghost recipe's white
+    /// veil, which vanilla fills *over* the item it washes.
+    ///
+    /// A separate list rather than an ordering flag on `overlays`, because the
+    /// icons are a different pass entirely: everything in `overlays` lands in
+    /// the back half of this one and the icons go down between the halves.
+    pub front_overlays: Vec<(usize, PanelBlit)>,
     /// What this screen paints over its background sheet (M91, M92): the
     /// sprite's index in `rewo_data::assets::MENU_OVERLAY_SPRITES`, and where
     /// it goes.
@@ -1187,6 +1194,29 @@ impl ContainerPass {
         //    icons have gone down between them.
         if let Some((x, y, size)) = hl {
             quad(&mut v, x, y, size, size, self.highlight_front, WHITE, WHITE);
+        }
+        // M103 — the ghost recipe's veil, over the icons it washes.
+        if open {
+            for &(sprite, b) in panel.map_or(&[][..], |p| &p.front_overlays[..]) {
+                if b.w <= 0.0 || b.h <= 0.0 {
+                    continue;
+                }
+                let r = if sprite == FILL_SPRITE {
+                    Rect { u0: -1.0, v0: -1.0, u1: -1.0, v1: -1.0 }
+                } else {
+                    self.overlay_rect_px(sprite, b.sx, b.sy, b.sw, b.sh)
+                };
+                quad(
+                    &mut v,
+                    left + b.dx * scale,
+                    top + b.dy * scale,
+                    b.w * scale,
+                    b.h * scale,
+                    r,
+                    b.tint,
+                    b.tint,
+                );
+            }
         }
         // The bars belong with the front half — they go over the icons —
         // and they are built whether or not the screen is open, because the

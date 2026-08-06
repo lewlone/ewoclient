@@ -9123,6 +9123,90 @@ fn celestial_state_of(day_ticks: Option<i64>) -> CelestialState {
 
 #[cfg(test)]
 mod tests {
+    // -- the ghost recipe (M103) ---------------------------------------------
+
+    /// The washes are two lists, and the veil is NOT widened for a big result
+    /// slot — only the wash beneath it is.
+    #[test]
+    fn the_ghosts_two_washes_go_in_different_halves_and_only_one_widens() {
+        use rewo_world::ghost_slots as gs;
+        let layout = &rewo_world::menu_layout::PLAYER;
+        let g = [gs::Ghost { slot: 0, items: vec![1], is_result: true }];
+        // A crafting table screen: the result's wash is big.
+        let (under, over) = super::ghost_washes(&g, layout, false);
+        assert_eq!(under.len(), 1);
+        assert_eq!(over.len(), 1, "one of each, per ghost");
+        assert_eq!((under[0].1.w, under[0].1.h), (24.0, 24.0), "the big wash");
+        assert_eq!((over[0].1.w, over[0].1.h), (16.0, 16.0), "the veil stays 16");
+        // …and the big one starts 4 px up and left of the veil.
+        assert_eq!(under[0].1.dx, over[0].1.dx - 4.0);
+        assert_eq!(under[0].1.dy, over[0].1.dy - 4.0);
+
+        // The player's own inventory: not big, so the two coincide.
+        let (u2, o2) = super::ghost_washes(&g, layout, true);
+        assert_eq!((u2[0].1.w, u2[0].1.h), (16.0, 16.0));
+        assert_eq!((u2[0].1.dx, u2[0].1.dy), (o2[0].1.dx, o2[0].1.dy));
+    }
+
+    /// The two washes are DIFFERENT colours — red under, white over.
+    #[test]
+    fn the_wash_under_is_red_and_the_veil_is_white() {
+        use rewo_world::ghost_slots as gs;
+        let g = [gs::Ghost { slot: 1, items: vec![1], is_result: false }];
+        let (under, over) = super::ghost_washes(&g, &rewo_world::menu_layout::PLAYER, false);
+        // alpha 48/255 on both.
+        assert!((under[0].1.tint[3] - 48.0 / 255.0).abs() < 1e-6);
+        assert!((over[0].1.tint[3] - 48.0 / 255.0).abs() < 1e-6);
+        // Red: full red, no green or blue.
+        assert_eq!(under[0].1.tint[0], 1.0);
+        assert_eq!((under[0].1.tint[1], under[0].1.tint[2]), (0.0, 0.0));
+        // White: all three.
+        assert_eq!(
+            (over[0].1.tint[0], over[0].1.tint[1], over[0].1.tint[2]),
+            (1.0, 1.0, 1.0)
+        );
+        assert_ne!(under[0].1.tint, over[0].1.tint);
+    }
+
+    /// Both washes are FILL quads, so they carry no sprite — the container pass
+    /// reads a negative `u` as untextured.
+    #[test]
+    fn the_washes_are_untextured_fills() {
+        use rewo_world::ghost_slots as gs;
+        let g = [gs::Ghost { slot: 1, items: vec![1], is_result: false }];
+        let (under, over) = super::ghost_washes(&g, &rewo_world::menu_layout::PLAYER, false);
+        assert_eq!(under[0].0, rewo_gpu::container::FILL_SPRITE);
+        assert_eq!(over[0].0, rewo_gpu::container::FILL_SPRITE);
+    }
+
+    /// A ghost on a slot the layout does not have is dropped rather than drawn
+    /// at the origin.
+    #[test]
+    fn a_ghost_on_a_slot_that_does_not_exist_is_dropped() {
+        use rewo_world::ghost_slots as gs;
+        let g = [gs::Ghost { slot: 999, items: vec![1], is_result: false }];
+        let (under, over) = super::ghost_washes(&g, &rewo_world::menu_layout::PLAYER, false);
+        assert!(under.is_empty() && over.is_empty());
+    }
+
+    /// Each ghost lands on its own slot's position, not all at one place.
+    #[test]
+    fn each_ghost_lands_on_its_own_slot() {
+        use rewo_world::ghost_slots as gs;
+        let g = [
+            gs::Ghost { slot: 1, items: vec![1], is_result: false },
+            gs::Ghost { slot: 2, items: vec![2], is_result: false },
+        ];
+        let (under, _) = super::ghost_washes(&g, &rewo_world::menu_layout::PLAYER, false);
+        assert_eq!(under.len(), 2);
+        assert_ne!((under[0].1.dx, under[0].1.dy), (under[1].1.dx, under[1].1.dy));
+        // And they match the layout's own positions.
+        for (n, slot) in [1usize, 2].into_iter().enumerate() {
+            let (sx, sy) = rewo_world::menu_layout::PLAYER.position(slot).unwrap();
+            assert_eq!((under[n].1.dx, under[n].1.dy), (sx as f32, sy as f32));
+        }
+    }
+
     // -- the two crafting fills (M102) ---------------------------------------
 
     /// A player menu holding one stack in a given slot.
@@ -12340,6 +12424,13 @@ fn apply_screen(
             ((mouse.1 - bt as f64) / scale as f64).floor() as i32,
         ))
     };
+    // M103 — the ghost recipe, from `place_ghost_recipe`, and its two washes.
+    let ghosts = live_ghosts(session);
+    let (ghost_under, ghost_over) = ghost_washes(
+        &ghosts,
+        session.shown_menu().layout(),
+        session.menus.open().is_none(),
+    );
     let book = live_recipe_book(
         session,
         items,
@@ -12394,6 +12485,8 @@ fn apply_screen(
             cut,
             anvil_fills: &anvil_fills,
             merchant,
+            ghost_under: &ghost_under,
+            ghost_over: &ghost_over,
         },
         Some(rewo_gpu::container::screen_to_gui_placed(
             mouse,
@@ -12408,7 +12501,22 @@ fn apply_screen(
     ));
 
     let (mut icons, mut labels) =
-        screen_icons(menu, items, &session.trim_materials, w, h, session.menus.open(), cut, merchant, book.as_ref());
+        screen_icons(
+            menu,
+            items,
+            &session.trim_materials,
+            w,
+            h,
+            session.menus.open(),
+            cut,
+            merchant,
+            book.as_ref(),
+            &ghosts,
+            // The ghost's items rotate on the SAME 30-tick clock the book's
+            // recipe cells use (M95) — `slotSelectTime` is one object shared by
+            // the page, the overlay and the ghost.
+            (session.ticks as f32 / rewo_net::recipe_book::TICKS_TO_SWAP_SLOT).floor() as i32,
+        );
     if let Some((icon, label)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h) {
         icons.push(icon);
         labels.extend(label);
@@ -12428,6 +12536,8 @@ fn apply_screen(
                 cut,
                 anvil_fills: &anvil_fills,
                 merchant,
+                ghost_under: &ghost_under,
+                ghost_over: &ghost_over,
             },
             Some(rewo_gpu::container::screen_to_gui_placed(
                 mouse,
@@ -12623,7 +12733,14 @@ fn container_panel(
         blits,
         gui_w: screen.image_w as f32,
         gui_h: screen.image_h as f32,
-        overlays: menu_overlays(layout, open, player, mouse_gui),
+        overlays: {
+            let mut o = menu_overlays(layout, open, player, mouse_gui);
+            // M103 — the ghost's red wash goes UNDER the icons, so with the
+            // screen's own overlays.
+            o.extend_from_slice(player.ghost_under);
+            o
+        },
+        front_overlays: player.ghost_over.to_vec(),
     })
 }
 
@@ -14096,6 +14213,11 @@ pub(crate) struct EnchantPlayer<'a> {
     /// would light nothing, which is M93i's "correct on the wire, invisible on
     /// screen" one screen over.
     pub beacon_override: Option<rewo_world::menu_screen::BeaconChoice>,
+    /// M103 — the ghost recipe's two washes, already measured. Resolved by the
+    /// caller for the reason the beacon's choice and the anvil's fills are: the
+    /// slot positions need the layout, and `apply_screen` holds no ScreenState.
+    pub ghost_under: &'a [(usize, rewo_gpu::container::PanelBlit)],
+    pub ghost_over: &'a [(usize, rewo_gpu::container::PanelBlit)],
 }
 
 /// Which of `RecipeBookSettings`' four `TypeSettings` a menu reads (M94).
@@ -14243,6 +14365,125 @@ fn live_recipe_book(
         book_mouse,
         query,
     ))
+}
+
+/// The ghost recipe's two washes, split into the halves they belong in (M103).
+///
+/// Returns `(under, over)`. Vanilla's order per slot is fill, item, fill — so
+/// the red goes with the panel's overlays and the white goes after the icons,
+/// which is why they cannot be one list.
+pub(crate) fn ghost_washes(
+    ghosts: &[rewo_world::ghost_slots::Ghost],
+    layout: &rewo_world::menu_layout::MenuLayout,
+    player_inventory: bool,
+) -> (
+    Vec<(usize, rewo_gpu::container::PanelBlit)>,
+    Vec<(usize, rewo_gpu::container::PanelBlit)>,
+) {
+    use rewo_world::ghost_slots as gs;
+    let big = gs::big_result_slot(player_inventory);
+    let argb = |v: u32| {
+        [
+            ((v >> 16) & 255) as f32 / 255.0,
+            ((v >> 8) & 255) as f32 / 255.0,
+            (v & 255) as f32 / 255.0,
+            ((v >> 24) & 255) as f32 / 255.0,
+        ]
+    };
+    let mut under = Vec::new();
+    let mut over = Vec::new();
+    for g in ghosts {
+        let Some((sx, sy)) = layout.position(g.slot) else { continue };
+        let (dx, dy, size) = gs::wash_rect(g.is_result, big);
+        let fill = |tint: [f32; 4], dx: i32, dy: i32, size: i32| {
+            (
+                rewo_gpu::container::FILL_SPRITE,
+                rewo_gpu::container::PanelBlit {
+                    dx: (sx as i32 + dx) as f32,
+                    dy: (sy as i32 + dy) as f32,
+                    w: size as f32,
+                    h: size as f32,
+                    sx: 0.0,
+                    sy: 0.0,
+                    sw: 0.0,
+                    sh: 0.0,
+                    tint,
+                },
+            )
+        };
+        under.push(fill(argb(gs::WASH_UNDER), dx, dy, size));
+        // The veil is always the plain 16x16 at the slot: only the wash BELOW
+        // widens for a big result slot. Widening both would ring the icon in
+        // white.
+        over.push(fill(argb(gs::WASH_OVER), 0, 0, 16));
+    }
+    (under, over)
+}
+
+/// The ghost recipe for the shown menu, from `place_ghost_recipe` (M103).
+///
+/// M93y decoded that packet into `PlaySession::ghost_recipe` and nothing
+/// consumed it — it is the only decoded-but-unrendered packet left in this
+/// area. `handlePlaceRecipe` is gated on the container id matching the open
+/// menu, so a ghost for a screen you have since closed is dropped rather than
+/// drawn over whatever replaced it.
+pub(crate) fn live_ghosts(
+    session: &rewo_net::play::PlaySession,
+) -> Vec<rewo_world::ghost_slots::Ghost> {
+    use rewo_net::recipe_book::RecipeDisplay as D;
+    use rewo_world::ghost_slots as gs;
+    let Some((container, display)) = session.ghost_recipe.as_ref() else {
+        return Vec::new();
+    };
+    // The ghost belongs to a container id; the shown menu has one too, and a
+    // mismatch means the ghost is stale.
+    if *container != session.shown_container_id() {
+        return Vec::new();
+    }
+    let layout = session.shown_menu().layout();
+    let book = match book_type_of(layout) {
+        Some(b) => b,
+        None => return Vec::new(),
+    };
+    let items = |d: &rewo_net::recipe_book::SlotDisplay| d.items();
+    let (menu, inputs, shape) = match display {
+        D::CraftingShaped { width, height, ingredients, .. } => (
+            // `getGridWidth/Height` — 2x2 for the player's own inventory, 3x3
+            // for a crafting table.
+            gs::crafting_menu(
+                if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID { 2 } else { 3 },
+                if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID { 2 } else { 3 },
+            ),
+            ingredients.iter().map(items).collect::<Vec<_>>(),
+            Some((*width as usize, *height as usize)),
+        ),
+        D::CraftingShapeless { ingredients, .. } => (
+            gs::crafting_menu(
+                if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID { 2 } else { 3 },
+                if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID { 2 } else { 3 },
+            ),
+            ingredients.iter().map(items).collect(),
+            None,
+        ),
+        D::Furnace { ingredient, fuel, .. } => (
+            gs::FURNACE_MENU,
+            vec![items(ingredient), items(fuel)],
+            None,
+        ),
+        // A stonecutter or smithing display: `fillGhostRecipe`'s switch has no
+        // case, so the result alone is ghosted — and neither screen has a book,
+        // so this is unreachable in practice and transcribed anyway.
+        _ => (
+            gs::GhostMenu { result: 0, grid: None, furnace: None },
+            Vec::new(),
+            None,
+        ),
+    };
+    let fuel_empty = menu
+        .furnace
+        .is_some_and(|(_, f)| session.shown_menu().menu_slot(f).is_none());
+    let _ = book;
+    gs::layout(menu, items(display.result()), &inputs, shape, fuel_empty)
 }
 
 /// `fillStackedContents` + `fillCraftSlotsStackedContents` (M102).
@@ -14713,6 +14954,9 @@ pub(crate) fn container_panel_for_open_menu(
             // overlays when it wants a fill (M93q's o19/o20).
             anvil_fills: &[],
             merchant,
+            // A gate drives no ghost recipe either.
+            ghost_under: &[],
+            ghost_over: &[],
         },
         mouse_gui,
     )
@@ -15521,6 +15765,9 @@ pub(crate) fn screen_icons(
     // Its presence also MOVES the menu, so it moves every icon measured from
     // the menu's origin too.
     book: Option<&BookRender>,
+    // M103 — the ghost recipe's slots, and the cycle index its items rotate on.
+    ghosts: &[rewo_world::ghost_slots::Ghost],
+    cycle: i32,
 ) -> (Vec<rewo_gpu::gui_item::GuiItem>, Vec<rewo_gpu::world::OwnedTextLine>) {
     let rects = menu_slot_rects(inv, w, h, book.is_some());
     let (_, _, scale) = rewo_gpu::container::gui_origin(w, h);
@@ -15538,6 +15785,36 @@ pub(crate) fn screen_icons(
                 icons.push(icon);
             }
             labels.extend(count_label(stack, rect.0, rect.1, scale));
+        }
+    }
+    // M103 — the ghost recipe's items, in the menu's own slots. Between the two
+    // washes by construction: the red is in the panel's overlays (back half) and
+    // the white in its front overlays, and the icon pass runs between them.
+    //
+    // **No count label** except on the result, which is `itemDecorations`'
+    // own rule — an input ghost never shows a number even when the recipe wants
+    // several of that ingredient.
+    for g in ghosts {
+        let Some(id) = g.item(cycle) else { continue };
+        let Some((sx, sy)) = inv.layout().position(g.slot) else { continue };
+        let (left, top, _) = rewo_gpu::container::gui_origin_placed(
+            w,
+            h,
+            rewo_gpu::container::Placement::with_book(
+                inv.layout().image_w as f32,
+                inv.layout().image_h as f32,
+                book.is_some(),
+            ),
+        );
+        if let Some(icon) = icon_for(
+            items,
+            trim_materials,
+            rewo_world::inventory::ItemSlot::plain(id, 1),
+            left + sx as f32 * scale,
+            top + sy as f32 * scale,
+            16.0 * scale,
+        ) {
+            icons.push(icon);
         }
     }
     // M95 — the recipe book's items: the tab icons and the page's results.
