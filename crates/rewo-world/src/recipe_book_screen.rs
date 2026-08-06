@@ -897,11 +897,30 @@ pub fn book_hit(bx: i32, by: i32, view: BookView, tab_count: usize) -> Option<Bo
 pub struct BookState {
     pub selected_tab: usize,
     pub page: usize,
-    /// Whether the search field has focus. A click anywhere else in the book
-    /// **unfocuses it** — `mouseClicked`'s else-branch calls
-    /// `setFocused(false)` before it goes on to the filter and the tabs, so
-    /// losing focus is not conditional on hitting something.
-    pub search_focused: bool,
+}
+
+/// What a press does to the search field's focus (M99).
+///
+/// `None` leaves it alone; `Some(v)` sets it. A **pure function of the hit**,
+/// which is the point: the focus itself lives in the `EditBox` and nowhere else.
+///
+/// An earlier cut kept a `search_focused` flag on [`BookState`] *as well*, and
+/// mirrored it into the widget — two places holding one fact, which is how a
+/// field comes to look focused and swallow nothing (`can_consume_input` gates
+/// every keystroke on the widget's own flag). A test caught that, and a mutation
+/// deleting the mirror survived because nothing could drive it. With one owner
+/// there is no mirror to delete.
+///
+/// The rule: the **page**'s own widgets return early in
+/// `RecipeBookComponent.mouseClicked`, so they never reach the
+/// `setFocused(false)` in the else-branch — everything below it unfocuses,
+/// unconditionally, before the filter and the tabs are even tested.
+pub fn focus_change(hit: Option<BookHit>) -> Option<bool> {
+    match hit? {
+        BookHit::PageForward | BookHit::PageBackward | BookHit::Slot(_) => None,
+        BookHit::Search => Some(true),
+        BookHit::Filter | BookHit::Tab(_) => Some(false),
+    }
 }
 
 /// What a press changed, for the caller to act on (M98).
@@ -930,13 +949,6 @@ impl BookState {
     /// forward press cannot arrive on the last page.
     pub fn press(&mut self, hit: Option<BookHit>, right: bool) -> Option<BookAction> {
         let hit = hit?;
-        // Only the page's own widgets are reached before the search box loses
-        // focus, and the page path returns early — so a click on an arrow or a
-        // cell leaves focus alone, while anything below unfocuses.
-        match hit {
-            BookHit::PageForward | BookHit::PageBackward | BookHit::Slot(_) => {}
-            _ => self.search_focused = false,
-        }
         Some(match hit {
             BookHit::PageForward => {
                 self.page += 1;
@@ -947,10 +959,9 @@ impl BookState {
                 BookAction::Navigated
             }
             BookHit::Slot(index) => BookAction::Recipe { index, right },
-            BookHit::Search => {
-                self.search_focused = true;
-                BookAction::Navigated
-            }
+            // The focus itself is [`focus_change`]'s business, not this
+            // method's — see its docs for why that split exists.
+            BookHit::Search => BookAction::Navigated,
             BookHit::Filter => BookAction::ToggleFilter,
             BookHit::Tab(i) => {
                 if i != self.selected_tab {
@@ -1102,7 +1113,7 @@ mod tests {
     /// the guard is `selectedTab != button`.
     #[test]
     fn switching_tabs_resets_the_page_and_reselecting_does_nothing() {
-        let mut st = BookState { selected_tab: 0, page: 2, search_focused: false };
+        let mut st = BookState { selected_tab: 0, page: 2 };
         assert_eq!(st.press(Some(BookHit::Tab(0)), false), Some(BookAction::Navigated));
         assert_eq!(st.page, 2, "re-selecting the same tab leaves the page alone");
         assert_eq!(st.press(Some(BookHit::Tab(3)), false), Some(BookAction::Navigated));
@@ -1111,7 +1122,7 @@ mod tests {
 
     #[test]
     fn the_arrows_move_the_page_by_one() {
-        let mut st = BookState { selected_tab: 0, page: 1, search_focused: false };
+        let mut st = BookState { selected_tab: 0, page: 1 };
         st.press(Some(BookHit::PageForward), false);
         assert_eq!(st.page, 2);
         st.press(Some(BookHit::PageBackward), false);
@@ -1124,21 +1135,16 @@ mod tests {
     /// early without reaching it.
     #[test]
     fn only_a_click_on_the_page_leaves_the_search_focused() {
-        let focused = || BookState { selected_tab: 0, page: 1, search_focused: true };
         for hit in [BookHit::PageForward, BookHit::PageBackward, BookHit::Slot(0)] {
-            let mut st = focused();
-            st.press(Some(hit), false);
-            assert!(st.search_focused, "{hit:?} leaves focus alone");
+            assert_eq!(focus_change(Some(hit)), None, "{hit:?} leaves focus alone");
         }
         for hit in [BookHit::Filter, BookHit::Tab(1)] {
-            let mut st = focused();
-            st.press(Some(hit), false);
-            assert!(!st.search_focused, "{hit:?} unfocuses");
+            assert_eq!(focus_change(Some(hit)), Some(false), "{hit:?} unfocuses");
         }
-        // And clicking the box itself focuses it.
-        let mut st = BookState::default();
-        st.press(Some(BookHit::Search), false);
-        assert!(st.search_focused);
+        assert_eq!(focus_change(Some(BookHit::Search)), Some(true));
+        // A miss leaves it alone too — the whole method returns before the
+        // else-branch when nothing in the book is hit.
+        assert_eq!(focus_change(None), None);
     }
 
     #[test]
