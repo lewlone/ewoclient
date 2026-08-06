@@ -4419,6 +4419,47 @@ inside the 10-minute tool cap.
 `2cc56b4acbfb92cb` byte-identical; **205 mutations across M93a–y, 199 killed,
 2 shown equivalent, 1 alive by construction (named)**.
 
+### M100 — the search field's text, and a nine-slice that degenerates to two blits
+
+The field typed and filtered since M99 and drew nothing.
+
+**The nine-slice is two blits, measured not assumed.** `widget/text_field` is
+200x20 border 1 — but the PNG is **1-bit paletted**, exactly two colours (border
+160-grey, white when focused; interior black). Every one of the nine regions is
+uniform, so a stretched 1x1 source is **pixel-identical** to a tiled one: one
+blit of the whole rect from a border texel, one of the interior from a centre
+texel, and the 1 px the first still shows *is* the border.
+
+**The hint goes on FOCUS, not on the first character** —
+`displayed.isEmpty() && !isFocused()` — so clicking an empty box blanks
+"Search..." before you type. It is a styled component (GRAY + ITALIC), so its
+own colour beats the field's white; the italic is not reproduced (no slant in
+the bitmap pass).
+
+**The bordered case decides all three text numbers and none is obvious:**
+`textX = getX() + 4`, `textY = getY() + (height - 8) / 2` (**3**, not `getY()`),
+`getInnerWidth() = width - 8` (**73**, not 81 — the inset comes off both ends).
+
+**Third meaning of `WidgetSprites::get` on one screen:** the field passes
+`(isActive(), isFocused())`, exactly what the names say, where a tab passes
+`selected` as *focused* and the filter passes `filtering` as *enabled*. One
+convention across this screen is wrong two times out of three.
+
+The renderer is **extracted** from the anvil's, not copied — a second copy of
+the caret-x/insert/selection arithmetic is three chances to drift by a pixel.
+
+**A staging trap:** `io.open(p,'w')` truncates when the file object is created,
+*before* its argument is evaluated — so `open(p,'w').write(sub(open(p).read()))`
+wrote an empty `server.properties`, Minecraft regenerated a default, and the run
+died with a bare "Failed to initialize server". Read first, then write.
+
+**2059 tests**; containershot 89, inventoryshot 152, itemshot 75, handshot 34,
+mobshot 246/246; **`live --render-check` 23/23** validation ON 0 errors, r23
+rising 8 → 10 quads as the field's two blits reach the windowed client; demo PNG
+`2cc56b4acbfb92cb` byte-identical; **9 mutations, 9 killed**. **Open:** the caret
+does not blink (`isCursorVisible`, 300 ms) — a shared gap with the anvil's field,
+not a new one.
+
 ### M99 — the search box, and a suffix array the consumer does not need
 
 `updateCollections`' second stage (M93z's unfed `matches_search`) plus typing.
