@@ -1139,8 +1139,11 @@ fn overlays(
                 Some(open),
                 None,
                 None,
-                // The book is shut for every icon witness here.
+                // The book is shut for every icon witness here, and there is
+                // no ghost recipe (M103).
                 None,
+                &[],
+                0,
             )
             .0
             .len()
@@ -2430,6 +2433,8 @@ fn overlays(
                 None,
                 None,
                 b,
+                &[],
+                0,
             )
             .0
             .len()
@@ -2519,6 +2524,8 @@ fn overlays(
                 None,
                 None,
                 b,
+                &[],
+                0,
             )
             .0
         };

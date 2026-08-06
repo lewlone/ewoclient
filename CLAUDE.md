@@ -4419,6 +4419,43 @@ inside the 10-minute tool cap.
 `2cc56b4acbfb92cb` byte-identical; **205 mutations across M93a–y, 199 killed,
 2 shown equivalent, 1 alive by construction (named)**.
 
+### M103 — the ghost recipe, and two vanilla quirks no Minecraft grid can show
+
+M93y decoded `place_ghost_recipe` and nothing consumed it — the last
+decoded-but-unrendered packet in this area.
+
+**The item is sandwiched between two washes of DIFFERENT colours** — `0x30FF0000`
+red *under*, `0x30FFFFFF` white *over*, both alpha 48. They land in different
+halves of the container pass (the icons are a separate pass that runs between
+them), hence a new `front_overlays` list. **And only the wash beneath widens**
+for a big result slot; widening the veil too rings the icon in white.
+`isBiggerResultSlot()` is **true by default**, false only for `InventoryScreen`.
+
+**The families place differently:** shaped crafting **centres** a small recipe in
+a big grid via `PlaceRecipeHelper`; shapeless fills the first
+`min(ingredients, slots)` in order. A furnace ghosts its **fuel only if the fuel
+slot is empty**. A stonecutter or smithing display ghosts the result alone.
+
+**Two `placeRecipe` quirks no Minecraft grid can show**, each found by a mutation
+that survived until a non-Minecraft fixture existed: the centring test is
+**strict** and `<=` is indistinguishable on 2x2/3x3 (a 4x4 shows it); and the row
+skip advances the row a **second** time, which needs `gridHeight >= 5` to matter
+(a 6-tall grid shows it). My doc had claimed the strictness mattered generally —
+corrected.
+
+A witness was wrong twice more: a 3-wide 1-tall recipe centres **vertically** in
+a 3x3, and the row skip advances **one** row rather than jumping to `startPos`.
+
+**And the mutation harness gave a false SURVIVED** — second wrong verdict today
+after M95's em-dash decode. A shapeless off-by-one reported SURVIVED in batch and
+died immediately when run alone; the rest were run directly. *A harness wrong
+twice is a detector to check, not to trust.*
+
+**2101 tests**; containershot 89, inventoryshot 152, itemshot 75, handshot 34,
+mobshot 246/246; **`live --render-check` 23/23** validation ON 0 errors (run
+because `set_state` changed); demo PNG `2cc56b4acbfb92cb` byte-identical; **12
+mutations, 12 killed**.
+
 ### M102 — the two crafting fills, and a fourth comment that described what the code did not do
 
 M96 recorded one approximation and left another unrecorded, both in the same

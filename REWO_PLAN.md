@@ -83,10 +83,12 @@ degenerating to two blits, because the sprite is a 1-bit two-colour image.
 **M101** makes the caret blink, and in doing so found that the field it blinks
 in had never scrolled and that the anvil's had never been pinned. **M102** closes
 M96's craft-slot approximation and finds that M96 had also walked the wrong
-range and never applied the predicate its own comment named.
+range and never applied the predicate its own comment named. **M103** renders the
+ghost recipe — the last decoded-but-unrendered packet in this area — and finds
+two `placeRecipe` quirks that no Minecraft grid can distinguish.
 
-Current measurement, taken 2026-08-06 after M102: **2077 tests, 0 failures**
-(**world 809, net 613, gpu 255, data 212, app 132, mesh 45, proto 11** — read
+Current measurement, taken 2026-08-06 after M103: **2101 tests, 0 failures**
+(**world 828, net 613, gpu 255, data 212, app 137, mesh 45, proto 11** — read
 off the runner per crate, and they sum to 2039). **The earlier breakdowns in
 this paragraph were estimated, not measured**, and did not sum to the totals
 beside them; the totals were always a real sum, so only the splits were wrong.
@@ -2413,6 +2415,82 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M103 — the ghost recipe, and two vanilla quirks no Minecraft grid can show (2026-08-06)
+
+M93y decoded `place_ghost_recipe` into `PlaySession::ghost_recipe` and nothing
+consumed it — the last decoded-but-unrendered packet in this area. This is the
+consumer: which slot each ingredient lands in, and what is drawn over it.
+
+**The item is sandwiched between two washes of different colours.**
+
+```java
+fill(x, y, x + 16, y + 16, 822018048);   // 0x30FF0000 — RED
+fakeItem(itemStack, x, y);
+fill(x, y, x + 16, y + 16, 822083583);   // 0x30FFFFFF — WHITE
+```
+
+Both alpha 48, and they are **not the same colour**: a red tint behind and a
+white veil in front. Reading either as "a grey wash", or drawing one and not the
+other, changes what a ghost looks like entirely. They also land in **different
+halves** of the container pass — the red with the panel's overlays and the white
+in a new `front_overlays` list drawn after the GUI icons, because the icons are a
+separate pass that runs between the two.
+
+**And only the wash beneath widens.** `isResultSlotBig` makes the result's
+*under* wash 24x24 at `(x - 4, y - 4)`; the veil stays 16x16 at the slot.
+Widening both rings the icon in white. `isBiggerResultSlot()` is also **true by
+default** and false only for `InventoryScreen`, so the player's own 2x2 result
+gets the plain wash and every other screen's gets the big one — the name suggests
+the big case is the exception and the override says otherwise.
+
+**The two families place ingredients differently**, and not just into different
+slots: shaped crafting goes through `PlaceRecipeHelper`, so a small recipe is
+**centred** in a big grid; shapeless fills the first `min(ingredients, slots)` in
+order with no centring at all. A furnace ghosts its ingredient always and its
+**fuel only if the fuel slot is empty** — so a furnace with coal in it shows no
+fuel ghost, and missing that guard means a ghost over fuel you already put there.
+A stonecutter or smithing display ghosts the result alone, because
+`fillGhostRecipe`'s switch has no case for it.
+
+**Two quirks of `placeRecipe` that no Minecraft grid can show**, both found by
+mutations that survived every witness until a non-Minecraft fixture was written:
+
+- The centring test `recipeHeight < gridHeight / 2.0F` is **strict**, and `<=` is
+  indistinguishable on 2x2 and 3x3 — the difference needs an even dimension whose
+  half the recipe matches exactly, and a 2x2's computed start is 0 either way
+  while a 3x3's half is never an integer. **A 4x4 shows it.**
+- The row skip advances `gridYPos` a **second** time, on top of the for-loop's
+  own. That only matters for a shape at least 2 tall *and* centred, which needs
+  `gridHeight >= 5`. **A 6-tall grid shows it.**
+
+My doc had claimed the strictness mattered generally; it does not, and it is now
+transcribed for fidelity with the reason written down beside it.
+
+**A witness was wrong twice more, both about placement:** a 3-wide 1-tall recipe
+centres **vertically** in a 3x3 (the middle row, cells 3/4/5), and the row skip
+advances **one** row rather than jumping to `startPos`, so a shape whose start is
+2 begins at row 1.
+
+**And the mutation harness gave a false SURVIVED** — its second wrong verdict
+today after the em-dash decode (M95). A shapeless off-by-one reported SURVIVED in
+batch and dies immediately when run alone. The three remaining mutations were run
+directly rather than through it. *A harness that has been wrong twice is a
+detector to check, not to trust.*
+
+**Measured.** **2101 tests / 0 failures**; `containershot` 89, `inventoryshot`
+152, `itemshot` 75, `handshot` 34, `mobshot` 246/246; **`live --render-check`
+23/23, validation ON, 0 errors** — run because this changed `set_state`, where a
+regression would hit every container; demo PNG `2cc56b4acbfb92cb` byte-identical.
+**12 mutations, 12 killed.**
+
+**Open.** The ghost draws no **tooltip** (`GhostSlots.extractTooltip`), and the
+result's count decoration is modelled as "only the result gets one" without a
+count to show, since a `SlotDisplay` carries no stack size Rewo reads. The book's
+remaining pieces are the page counter text, the which-of-these overlay
+(`OverlayRecipeComponent`), recipe tooltips, and `useMaxItems`.
+
+---
 
 ### M102 — the two crafting fills, and a fourth comment that described what the code did not do (2026-08-06)
 
