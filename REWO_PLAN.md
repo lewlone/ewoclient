@@ -71,10 +71,12 @@ render is not a pure addition, plus two design errors that only the *windowed*
 client could show. **M95** draws its items, and corrected **both** of the two
 before it: M93z's tab model (each book has its own list — crafting five, smoker
 two — not the four `SearchRecipeBookCategory` values) and M94's menu
-displacement, which never reached the slot ICONS.
+displacement, which never reached the slot ICONS. **M96** ports vanilla's
+craftable matcher, so the book finally greys what you cannot make — and found
+two of vanilla's own guards to be provably inert.
 
-Current measurement, taken 2026-08-05 after M95: **1992 tests, 0 failures**
-(world 758, net 613, gpu 255, data 212, app 104, mesh 45, proto 11 — all seven
+Current measurement, taken 2026-08-06 after M96: **2010 tests, 0 failures**
+(world 776, net 617, gpu 255, data 212, app 104, mesh 45, proto 11 — all seven
 confirmed reporting); `containershot` **89/89**, `inventoryshot` 152/152,
 `itemshot` 75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check`
 23/23 with validation ON and 0 validation errors, re-run for M94 and M95** —
@@ -2395,6 +2397,86 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M96 — the craftable solver, and two of vanilla's guards that do not matter (2026-08-06)
+
+`StackedContents`, vanilla's "can I make this from what I hold" matcher, ported
+and wired. Named as the blocker by M35, M94 and M95: every recipe slot wore the
+*uncraftable* chrome because nothing could answer the question.
+
+**It is a bipartite matching, not a subtraction.** The obvious implementation —
+walk the ingredients decrementing a count — is wrong whenever two ingredients
+have overlapping accept-sets. One `#planks` slot and one `oak_planks` slot,
+against a stack of oak and a stack of birch, is craftable only if `#planks`
+takes the birch; a greedy walk spends the oak first and reports it uncraftable.
+Vanilla finds it with augmenting paths (`RecipePicker`), and that is what is
+transcribed.
+
+**Two of my own witnesses were wrong before the code was.** Both asserted that
+one item *type* can satisfy only one ingredient slot — so a stack of 64 dirt
+could not fill a nine-slot recipe. The code was right: `try_pick` loops, `take`s
+`capacity` per satisfied ingredient, and `hasAtLeast` re-reads the decremented
+amount. The matching is over **(item, ingredient) pairs**; what runs out is the
+count, not the type.
+
+**Two mutations survived, and both are genuinely equivalent** — worth recording
+because the natural assumption is the opposite:
+
+- **Transposing either bit-matrix index** (`item * ingredientCount + ingredient`
+  → the other way round) changes nothing. Each region is written and read only
+  through its own index function, and both formulas are bijections onto the same
+  range, so it is a relabelling. The module doc had claimed this was *"the one
+  place a transposition would silently answer for a different pair"*; that claim
+  is corrected in place.
+- **Dropping the `count > 0` filter** on candidate items changes nothing either:
+  a zero-count item enters the matrix and `hasAtLeast` refuses it at every
+  positive capacity. It is an optimisation, not a rule.
+
+**Settled by a brute-force oracle, not by argument.** An exhaustive search over
+assignments — sharing no code, order or bit layout with the matcher — run over
+every problem with three item types (counts 0..=2), three ingredient slots (all
+eight accept-subsets each) and capacities 1..=2: **27,648 problems, all
+agreeing**. Both survivors survive that too, which is what makes "equivalent" a
+measurement rather than a claim.
+
+**The wire half.** M93y walked `craftingRequirements` and discarded it, so the
+ingredients are captured now — each a `HolderSet`, which is an inline id list
+**or a tag name** (M41's two-form encoding). A tag resolves against the server's
+own `update_tags` payload, **which M69 decoded and nothing had consumed until
+now**. An unknown tag yields nothing and so makes its ingredient unsatisfiable:
+greying a recipe you could make is a smaller lie than lighting one you cannot.
+
+`canCraft` opens with `craftingRequirements.isEmpty() ? false`, so a recipe that
+carried none is **never craftable** — not trivially craftable, which is what an
+empty ingredient list would otherwise mean to the solver. The two states are
+kept distinct.
+
+**One recorded approximation.** Vanilla fills the contents from the inventory
+**and** the open menu's craft slots (`fillCraftSlotsStackedContents`); Rewo
+counts the inventory alone, so a recipe whose last ingredient is already sitting
+on the grid reads as uncraftable. Not approximated, because the craft-slot range
+differs per menu class and picking the wrong one would be a confident wrong
+answer.
+
+**Two process notes.** A hung mutant left its test binary running and holding
+the link output, so the *next* mutation reported `BUILD-FAIL` rather than the
+previous one's hang — and a botched harness left a mutation **on disk**, which
+only a grep caught. The harness reaps strays now, and treats a hang as a kill.
+
+**Measured.** **2010 tests / 0 failures** (16 for the solver alone);
+`containershot` 89, `inventoryshot` 152, `mobshot` 246/246; demo PNG
+`2cc56b4acbfb92cb` byte-identical. **13 mutations: 11 killed, 2 shown equivalent
+against the oracle.** `live --render-check` not re-run — M96 adds no render
+path, only a value flowing into one M94 already covers.
+
+**Open.** The derivation `live_recipe_book` performs — inventory → solver →
+per-slot flag — is graded by the solver's own tests and by the chrome witness at
+each end, but **not end to end**, because driving it needs a `PlaySession`; that
+is the M92/M93b sweep shape and the next thing to close here. Nothing can click
+the book, so tab and page stay 0. No search box, page counter, overlay popup,
+ghost slots or recipe tooltips.
+
+---
 
 ### M95 — the recipe book's items, and the tab structure M93z got wrong (2026-08-05)
 

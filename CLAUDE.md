@@ -4419,6 +4419,59 @@ inside the 10-minute tool cap.
 `2cc56b4acbfb92cb` byte-identical; **205 mutations across M93a–y, 199 killed,
 2 shown equivalent, 1 alive by construction (named)**.
 
+### M96 — the craftable solver, and two of vanilla's guards that do not matter
+
+`StackedContents` ported, fed and wired — the blocker M35, M94 and M95 all
+named. Every recipe slot wore the *uncraftable* chrome because nothing could
+answer the question.
+
+**It is a bipartite matching, not a subtraction.** Walking the ingredients
+decrementing a count is wrong whenever accept-sets overlap: one `#planks` slot
+and one `oak_planks` slot, against a stack of oak and a stack of birch, is
+craftable only if `#planks` takes the birch. Vanilla finds it with augmenting
+paths (`RecipePicker`).
+
+**Two of my own witnesses were wrong before the code was** — both claimed one
+item *type* satisfies one slot only, so a stack of 64 dirt could not fill a
+nine-slot recipe. `try_pick` loops, `take`s per satisfied ingredient, and
+`hasAtLeast` re-reads the decremented amount: the matching is over **(item,
+ingredient) pairs** and what runs out is the count, not the type.
+
+**Two mutations survived and both are genuinely equivalent**, which is the
+opposite of the natural assumption. Transposing either bit-matrix index is a
+**relabelling** — each region is read and written only through its own index
+function and both formulas are bijections onto the same range (the module doc
+claimed the reverse; corrected in place). And dropping the `count > 0` filter is
+an **optimisation**: a zero-count item enters the matrix and `hasAtLeast`
+refuses it anyway. Settled by a **brute-force oracle** sharing no code, order or
+bit layout — 27,648 problems (3 item types × counts 0..=2 × 3 slots × all 8
+accept-subsets × capacities 1..=2), all agreeing — so "equivalent" is a
+measurement, not a claim.
+
+**The wire half:** M93y walked `craftingRequirements` and discarded it, so the
+ingredients are captured now — each a `HolderSet`, an inline id list **or a tag
+name**, and a tag resolves against `update_tags`, **which M69 decoded and
+nothing had consumed**. An unknown tag yields nothing, so its ingredient is
+unsatisfiable: greying a recipe you could make is a smaller lie than lighting
+one you cannot. `canCraft` opens `craftingRequirements.isEmpty() ? false`, so a
+recipe carrying none is **never** craftable — the two states stay distinct.
+
+**Recorded approximation:** vanilla fills from the inventory **and** the open
+menu's craft slots; Rewo counts the inventory alone, so a recipe whose last
+ingredient sits on the grid reads uncraftable. The craft-slot range differs per
+menu class and guessing it would be a confident wrong answer.
+
+**Process:** a hung mutant left its test binary holding the link output, so the
+*next* mutation reported BUILD-FAIL rather than the previous one's hang — and a
+botched harness left a mutation **on disk**, caught only by a grep. The harness
+reaps strays now and counts a hang as a kill.
+
+**2010 tests**; `containershot` 89, `inventoryshot` 152, `mobshot` 246/246; demo
+PNG `2cc56b4acbfb92cb` byte-identical; **13 mutations — 11 killed, 2 proven
+equivalent**. **Open:** the inventory→solver→flag derivation is graded at both
+ends but not end to end (driving it needs a `PlaySession` — the M92/M93b sweep
+shape); nothing can click the book.
+
 ### M95 — the recipe book's items, and the tab structure M93z got wrong
 
 Tab icons and recipe results, on the book's origin — plus a correction to each
