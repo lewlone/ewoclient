@@ -88,12 +88,16 @@ pub struct ItemSlot {
     ///
     /// **Not [`Self::enchanted`]**, and the difference is not academic. That
     /// field is assigned from `hasFoil()`, which M43 proved respects
-    /// `ENCHANTMENT_GLINT_OVERRIDE` in *both* directions — so a glinting
-    /// golden apple would pass a grindstone's `mayPlace` and a Sharpness V
-    /// sword told not to glint would fail it. It is also `isEnchanted()`,
-    /// which reads `minecraft:enchantments` alone, and an **enchanted book**
-    /// carries `stored_enchantments`: the canonical grindstone input is
-    /// exactly the case that field misses.
+    /// `hasAnyEnchantments` — `ENCHANTMENTS` **or** `STORED_ENCHANTMENTS`, which
+    /// is what a grindstone's `mayPlace` asks and why an enchanted **book**
+    /// (whose enchantments are *stored*) is a valid input.
+    ///
+    /// **It is NOT `isEnchanted()`.** That reads `minecraft:enchantments`
+    /// alone and lives on [`SlotText::is_enchanted`]; this field is the wider
+    /// predicate. An earlier version of this comment said the two were the same
+    /// thing, which made three near-identical flags read as two — the other
+    /// being `enchanted`, which is `has_foil()` and agrees with neither
+    /// whenever `ENCHANTMENT_GLINT_OVERRIDE` is present (M43).
     pub any_enchantments: bool,
     /// `minecraft:unbreakable`'s presence in the patch (M93e). The prototype
     /// never carries it, so the patch is the whole answer.
@@ -571,6 +575,39 @@ impl Inventory {
     /// What this stack's components say, if anything was recorded.
     pub fn text_of(&self, stack: ItemSlot) -> Option<&SlotText> {
         self.texts.get(&stack.components)
+    }
+
+    /// `Inventory.isUsableForCrafting` (M102).
+    ///
+    /// ```java
+    /// return !item.isDamaged() && !item.isEnchanted() && !item.has(CUSTOM_NAME);
+    /// ```
+    ///
+    /// The recipe book's contents come through `accountSimpleStack`, which
+    /// gates on this — so a chipped pickaxe, an enchanted book or a renamed
+    /// stack **does not count toward what you can craft**, even though it is
+    /// sitting in your inventory. M96 named this predicate in a comment and
+    /// applied nothing, so every stack counted.
+    ///
+    /// It lives on `Inventory` rather than on [`ItemSlot`] because two of its
+    /// three inputs are on the text side: only the damage travels with the
+    /// stack.
+    ///
+    /// **`isEnchanted()` is `ENCHANTMENTS` alone**, and the field to read is
+    /// [`SlotText::is_enchanted`] — *not* `ItemSlot::any_enchantments`, which
+    /// is `hasAnyEnchantments` (enchantments **or** stored), and not
+    /// `ItemSlot::enchanted`, which is `has_foil()`. Three near-identical flags,
+    /// one right answer; M93 recorded the same trap for the grindstone one
+    /// field over.
+    pub fn is_usable_for_crafting(&self, stack: ItemSlot) -> bool {
+        // `isDamaged()` is `isDamageableItem() && getDamageValue() > 0` — so an
+        // undamaged tool passes, and a stack that cannot take damage at all
+        // passes whatever its `damage` says.
+        let damaged = stack.max_damage.is_some() && stack.damage.unwrap_or(0) > 0;
+        let text = self.text_of(stack);
+        let enchanted = text.is_some_and(|t| t.is_enchanted);
+        let named = text.is_some_and(|t| t.name.is_some());
+        !damaged && !enchanted && !named
     }
 }
 
@@ -1571,6 +1608,64 @@ impl Inventory {
 
 #[cfg(test)]
 mod tests {
+
+    /// `isUsableForCrafting` — three independent disqualifiers, and a plain
+    /// stack passes all three.
+    #[test]
+    fn a_plain_stack_is_usable_for_crafting_and_three_things_disqualify_it() {
+        let mut inv = Inventory::default();
+        let plain = ItemSlot::plain(1, 1);
+        assert!(inv.is_usable_for_crafting(plain));
+
+        // 1. DAMAGED — and only if it is damageable at all.
+        let chipped = ItemSlot { damage: Some(3), max_damage: Some(59), ..plain };
+        assert!(!inv.is_usable_for_crafting(chipped));
+        let fresh = ItemSlot { damage: Some(0), max_damage: Some(59), ..plain };
+        assert!(inv.is_usable_for_crafting(fresh), "isDamaged needs damage > 0");
+        // A stack that cannot take damage passes whatever its damage says —
+        // `isDamageableItem()` gates the comparison.
+        let odd = ItemSlot { damage: Some(3), max_damage: None, ..plain };
+        assert!(inv.is_usable_for_crafting(odd));
+
+        // 2. ENCHANTED, and 3. NAMED — both on the text side.
+        let tagged = ItemSlot { components: 7, has_components: true, ..plain };
+        inv.texts.insert(
+            7,
+            SlotText { is_enchanted: true, ..Default::default() },
+        );
+        assert!(!inv.is_usable_for_crafting(tagged));
+        inv.texts.insert(
+            7,
+            SlotText { name: Some("Bob".into()), ..Default::default() },
+        );
+        assert!(!inv.is_usable_for_crafting(tagged));
+        // A stack with a patch that carries neither still passes.
+        inv.texts.insert(7, SlotText::default());
+        assert!(inv.is_usable_for_crafting(tagged));
+    }
+
+    /// `isEnchanted()` is `ENCHANTMENTS` alone, which is `SlotText::is_enchanted`
+    /// — **not** `any_enchantments` (enchantments OR stored) and not `enchanted`
+    /// (`has_foil`). An enchanted BOOK is the case that separates them.
+    #[test]
+    fn the_crafting_gate_reads_isEnchanted_and_not_its_two_neighbours() {
+        let mut inv = Inventory::default();
+        let book = ItemSlot {
+            components: 9,
+            has_components: true,
+            // Stored enchantments, so the wider predicate is true…
+            any_enchantments: true,
+            // …and the glint shows…
+            enchanted: true,
+            ..ItemSlot::plain(1, 1)
+        };
+        // …but `isEnchanted()` is false, so the book IS usable for crafting.
+        inv.texts.insert(9, SlotText { is_enchanted: false, ..Default::default() });
+        assert!(
+            inv.is_usable_for_crafting(book),
+            "a stored-enchantment book passes: isEnchanted reads ENCHANTMENTS alone"
+        );
+    }
     use super::*;
 
     /// The original hard-coded `slot_position`, frozen at the commit before
