@@ -818,6 +818,151 @@ pub fn book_icons(view: BookView, tabs: &[BookTab], multi: &[bool]) -> Vec<BookI
     out
 }
 
+/// What the cursor is over, in the book (M98).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BookHit {
+    PageForward,
+    PageBackward,
+    /// A visible recipe cell, by its index on the page.
+    Slot(usize),
+    /// The search field, or the magnifier left of it — vanilla treats a click
+    /// on the icon as a click on the box.
+    Search,
+    Filter,
+    Tab(usize),
+}
+
+/// The magnifier icon's rect, in book coordinates.
+///
+/// `ScreenRectangle.of(HORIZONTAL, xo + 8, searchBox.getY(), searchBox.getX() -
+/// getXOrigin(), searchBox.getHeight())` — so x 8, and a width of **25**, which
+/// is the search box's own x. It therefore **overlaps the box** rather than
+/// abutting it, and the overlap is harmless only because both resolve to the
+/// same hit.
+pub const MAGNIFIER_X: i32 = 8;
+pub const MAGNIFIER_W: i32 = SEARCH_X;
+
+fn inside(px: i32, py: i32, x: i32, y: i32, w: i32, h: i32) -> bool {
+    // `AbstractWidget.clicked` — inclusive of the top-left, exclusive of the
+    // bottom-right.
+    px >= x && py >= y && px < x + w && py < y + h
+}
+
+/// What a click at book-relative `(bx, by)` lands on, in **vanilla's
+/// resolution order** (M98).
+///
+/// `RecipeBookComponent.mouseClicked` tests, in order: the **page** (its arrows,
+/// then its recipe buttons), then the search box and its magnifier, then the
+/// filter toggle, then the tabs. That order is a contract, not the draw order —
+/// and it is why a recipe cell wins over anything that overlapped it.
+///
+/// **A selected tab's hit rect does not move with its sprite.** The 2 px
+/// leftward shift is applied at draw time only (`xPos = getX(); if (selected)
+/// xPos -= 2`), while `clicked` tests `getX()` — so the leftmost two columns of
+/// a selected tab are painted and not clickable. Shifting the rect too would be
+/// the natural "fix" and would diverge.
+pub fn book_hit(bx: i32, by: i32, view: BookView, tab_count: usize) -> Option<BookHit> {
+    let (fwd, back) = page_arrows_visible(view.page, view.total_pages);
+    if fwd && inside(bx, by, PAGE_FORWARD_X, PAGE_ARROW_Y, PAGE_ARROW_W, PAGE_ARROW_H) {
+        return Some(BookHit::PageForward);
+    }
+    if back && inside(bx, by, PAGE_BACK_X, PAGE_ARROW_Y, PAGE_ARROW_W, PAGE_ARROW_H) {
+        return Some(BookHit::PageBackward);
+    }
+    for index in 0..view.shown {
+        let (sx, sy) = grid_slot(index);
+        if inside(bx, by, sx, sy, SLOT_SIZE, SLOT_SIZE) {
+            return Some(BookHit::Slot(index));
+        }
+    }
+    if inside(bx, by, MAGNIFIER_X, SEARCH_Y, MAGNIFIER_W, SEARCH_H)
+        || inside(bx, by, SEARCH_X, SEARCH_Y, SEARCH_W, SEARCH_H)
+    {
+        return Some(BookHit::Search);
+    }
+    if inside(bx, by, FILTER_X, FILTER_Y, FILTER_W, FILTER_H) {
+        return Some(BookHit::Filter);
+    }
+    for i in 0..tab_count.min(view.tabs) {
+        let (tx, ty) = tab_position(i as i32);
+        if inside(bx, by, tx, ty, TAB_W, TAB_H) {
+            return Some(BookHit::Tab(i));
+        }
+    }
+    None
+}
+
+/// The book's own screen state — what only a click can change (M98).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BookState {
+    pub selected_tab: usize,
+    pub page: usize,
+    /// Whether the search field has focus. A click anywhere else in the book
+    /// **unfocuses it** — `mouseClicked`'s else-branch calls
+    /// `setFocused(false)` before it goes on to the filter and the tabs, so
+    /// losing focus is not conditional on hitting something.
+    pub search_focused: bool,
+}
+
+/// What a press changed, for the caller to act on (M98).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BookAction {
+    /// The filter toggled — the caller flips it and tells the server.
+    ToggleFilter,
+    /// A recipe cell was clicked with the given button. `right` opens the
+    /// which-of-these overlay in vanilla; Rewo has no overlay, so a right-click
+    /// on a multi-recipe cell is reported and does nothing.
+    Recipe { index: usize, right: bool },
+    /// The tab or page moved; nothing leaves the client.
+    Navigated,
+}
+
+impl BookState {
+    /// Apply a press. Returns `None` when the click missed the book entirely,
+    /// which is what tells the caller to let it fall through to the menu.
+    ///
+    /// **Switching tabs resets the page** — `onTabButtonPress` calls
+    /// `updateCollections(true, …)`, whose `resetPage` is the `clamp_page`
+    /// argument M93z modelled. Re-selecting the tab already selected does
+    /// nothing at all: the guard is `selectedTab != button`.
+    /// The page is not clamped here: `book_hit` only reports an arrow that is
+    /// **visible**, and `page_arrows_visible` is what gates that — so a
+    /// forward press cannot arrive on the last page.
+    pub fn press(&mut self, hit: Option<BookHit>, right: bool) -> Option<BookAction> {
+        let hit = hit?;
+        // Only the page's own widgets are reached before the search box loses
+        // focus, and the page path returns early — so a click on an arrow or a
+        // cell leaves focus alone, while anything below unfocuses.
+        match hit {
+            BookHit::PageForward | BookHit::PageBackward | BookHit::Slot(_) => {}
+            _ => self.search_focused = false,
+        }
+        Some(match hit {
+            BookHit::PageForward => {
+                self.page += 1;
+                BookAction::Navigated
+            }
+            BookHit::PageBackward => {
+                self.page = self.page.saturating_sub(1);
+                BookAction::Navigated
+            }
+            BookHit::Slot(index) => BookAction::Recipe { index, right },
+            BookHit::Search => {
+                self.search_focused = true;
+                BookAction::Navigated
+            }
+            BookHit::Filter => BookAction::ToggleFilter,
+            BookHit::Tab(i) => {
+                if i != self.selected_tab {
+                    self.selected_tab = i;
+                    self.page = 0;
+                }
+                BookAction::Navigated
+            }
+        })
+    }
+}
+
 /// A recipe button is 25x25/// A recipe button is 25x25 — the same as the grid pitch, so the buttons abut
 /// with no gap and a click can never fall between two.
 pub const SLOT_SIZE: i32 = 25;
@@ -839,6 +984,190 @@ mod tests {
             filtering: false,
             furnace_family: false,
         }
+    }
+
+    fn full_view(shown: usize, total: usize, page: usize) -> BookView {
+        BookView {
+            tabs: CRAFTING_TABS.len(),
+            selected_tab: 0,
+            page,
+            total_pages: total,
+            shown,
+            filtering: false,
+            furnace_family: false,
+        }
+    }
+
+    #[test]
+    fn a_click_outside_everything_misses_the_book() {
+        let v = full_view(20, 1, 0);
+        // Bare panel between the search row and the grid.
+        assert_eq!(book_hit(70, 29, v, CRAFTING_TABS.len()), None);
+        // Well outside the panel on the right, past the tabs' side.
+        assert_eq!(book_hit(200, 80, v, CRAFTING_TABS.len()), None);
+    }
+
+    #[test]
+    fn a_recipe_cell_is_hit_over_its_own_25_by_25() {
+        let v = full_view(20, 1, 0);
+        let (sx, sy) = grid_slot(7);
+        assert_eq!(book_hit(sx, sy, v, 5), Some(BookHit::Slot(7)), "top-left is in");
+        assert_eq!(
+            book_hit(sx + SLOT_SIZE - 1, sy + SLOT_SIZE - 1, v, 5),
+            Some(BookHit::Slot(7)),
+            "bottom-right corner is in"
+        );
+        // Exclusive on the far edges — the next cell's territory.
+        assert_eq!(book_hit(sx + SLOT_SIZE, sy, v, 5), Some(BookHit::Slot(8)));
+    }
+
+    /// A cell past the end of the page is not clickable, even though its
+    /// geometry exists.
+    #[test]
+    fn an_invisible_cell_is_not_clickable() {
+        let (sx, sy) = grid_slot(19);
+        assert_eq!(
+            book_hit(sx + 12, sy + 12, full_view(20, 1, 0), 5),
+            Some(BookHit::Slot(19))
+        );
+        assert_eq!(book_hit(sx + 12, sy + 12, full_view(5, 3, 2), 5), None);
+    }
+
+    /// An arrow is clickable only where it is drawn — the same
+    /// `page_arrows_visible` gate.
+    #[test]
+    fn an_arrow_is_clickable_only_when_it_is_drawn() {
+        let mid = full_view(20, 3, 1);
+        let first = full_view(20, 3, 0);
+        let one = full_view(3, 1, 0);
+        let f = (PAGE_FORWARD_X + 6, PAGE_ARROW_Y + 8);
+        let b = (PAGE_BACK_X + 6, PAGE_ARROW_Y + 8);
+        assert_eq!(book_hit(f.0, f.1, mid, 5), Some(BookHit::PageForward));
+        assert_eq!(book_hit(b.0, b.1, mid, 5), Some(BookHit::PageBackward));
+        assert_eq!(book_hit(b.0, b.1, first, 5), None, "no page to go back to");
+        assert_eq!(book_hit(f.0, f.1, one, 5), None, "one page, no arrows");
+    }
+
+    /// The magnifier counts as the search box, and it OVERLAPS it — 8..33
+    /// against the box's 25..106.
+    #[test]
+    fn the_magnifier_counts_as_the_search_box() {
+        let v = full_view(20, 1, 0);
+        assert_eq!(book_hit(MAGNIFIER_X, SEARCH_Y + 7, v, 5), Some(BookHit::Search));
+        assert_eq!(book_hit(SEARCH_X + 40, SEARCH_Y + 7, v, 5), Some(BookHit::Search));
+        assert!(MAGNIFIER_X + MAGNIFIER_W > SEARCH_X, "they overlap by construction");
+        // Just left of the magnifier is nothing.
+        assert_eq!(book_hit(MAGNIFIER_X - 1, SEARCH_Y + 7, v, 5), None);
+    }
+
+    /// A selected tab's HIT RECT does not move with its sprite: the 2 px shift
+    /// is applied at draw time only, so a selected tab's leftmost two columns
+    /// are painted and not clickable.
+    #[test]
+    fn a_selected_tabs_hit_rect_does_not_follow_its_sprite() {
+        let mut v = full_view(20, 1, 0);
+        v.selected_tab = 0;
+        let (tx, ty) = tab_position(0);
+        assert_eq!(book_hit(tx, ty + 13, v, 5), Some(BookHit::Tab(0)));
+        // The two columns the shift paints into are NOT hits.
+        assert_eq!(book_hit(tx - 1, ty + 13, v, 5), None);
+        assert_eq!(book_hit(tx + tab_x_shift(true), ty + 13, v, 5), None);
+    }
+
+    #[test]
+    fn each_tab_is_hit_at_its_own_pitch() {
+        let v = full_view(20, 1, 0);
+        for i in 0..CRAFTING_TABS.len() {
+            let (tx, ty) = tab_position(i as i32);
+            assert_eq!(book_hit(tx + 17, ty + 13, v, CRAFTING_TABS.len()), Some(BookHit::Tab(i)));
+        }
+        // A sixth tab does not exist on a crafting book.
+        let (tx, ty) = tab_position(5);
+        assert_eq!(book_hit(tx + 17, ty + 13, v, CRAFTING_TABS.len()), None);
+    }
+
+    #[test]
+    fn the_filter_toggle_is_hit_over_its_own_rect() {
+        let v = full_view(20, 1, 0);
+        assert_eq!(book_hit(FILTER_X, FILTER_Y, v, 5), Some(BookHit::Filter));
+        assert_eq!(
+            book_hit(FILTER_X + FILTER_W - 1, FILTER_Y + FILTER_H - 1, v, 5),
+            Some(BookHit::Filter)
+        );
+        assert_eq!(book_hit(FILTER_X + FILTER_W, FILTER_Y, v, 5), None);
+    }
+
+    /// Switching tabs RESETS the page — `onTabButtonPress` passes
+    /// `resetPage = true`. Re-selecting the tab you are on does nothing, since
+    /// the guard is `selectedTab != button`.
+    #[test]
+    fn switching_tabs_resets_the_page_and_reselecting_does_nothing() {
+        let mut st = BookState { selected_tab: 0, page: 2, search_focused: false };
+        assert_eq!(st.press(Some(BookHit::Tab(0)), false), Some(BookAction::Navigated));
+        assert_eq!(st.page, 2, "re-selecting the same tab leaves the page alone");
+        assert_eq!(st.press(Some(BookHit::Tab(3)), false), Some(BookAction::Navigated));
+        assert_eq!((st.selected_tab, st.page), (3, 0));
+    }
+
+    #[test]
+    fn the_arrows_move_the_page_by_one() {
+        let mut st = BookState { selected_tab: 0, page: 1, search_focused: false };
+        st.press(Some(BookHit::PageForward), false);
+        assert_eq!(st.page, 2);
+        st.press(Some(BookHit::PageBackward), false);
+        assert_eq!(st.page, 1);
+    }
+
+    /// A click anywhere in the book but the PAGE unfocuses the search box —
+    /// `mouseClicked`'s else-branch calls `setFocused(false)` unconditionally
+    /// before it goes on to the filter and the tabs, and the page path returns
+    /// early without reaching it.
+    #[test]
+    fn only_a_click_on_the_page_leaves_the_search_focused() {
+        let focused = || BookState { selected_tab: 0, page: 1, search_focused: true };
+        for hit in [BookHit::PageForward, BookHit::PageBackward, BookHit::Slot(0)] {
+            let mut st = focused();
+            st.press(Some(hit), false);
+            assert!(st.search_focused, "{hit:?} leaves focus alone");
+        }
+        for hit in [BookHit::Filter, BookHit::Tab(1)] {
+            let mut st = focused();
+            st.press(Some(hit), false);
+            assert!(!st.search_focused, "{hit:?} unfocuses");
+        }
+        // And clicking the box itself focuses it.
+        let mut st = BookState::default();
+        st.press(Some(BookHit::Search), false);
+        assert!(st.search_focused);
+    }
+
+    #[test]
+    fn a_miss_returns_no_action_so_the_click_falls_through() {
+        let mut st = BookState::default();
+        assert_eq!(st.press(None, false), None);
+        assert_eq!(st, BookState::default(), "and changes nothing");
+    }
+
+    #[test]
+    fn a_recipe_click_reports_its_index_and_button() {
+        let mut st = BookState::default();
+        assert_eq!(
+            st.press(Some(BookHit::Slot(4)), false),
+            Some(BookAction::Recipe { index: 4, right: false })
+        );
+        assert_eq!(
+            st.press(Some(BookHit::Slot(4)), true),
+            Some(BookAction::Recipe { index: 4, right: true })
+        );
+    }
+
+    #[test]
+    fn the_filter_reports_a_toggle_rather_than_flipping_itself() {
+        // The flag lives in the server-synced settings, not in `BookState` —
+        // so pressing it asks the caller to flip and tell the server, which is
+        // what `toggleFiltering` + `sendUpdateSettings` do in that order.
+        let mut st = BookState::default();
+        assert_eq!(st.press(Some(BookHit::Filter), false), Some(BookAction::ToggleFilter));
     }
 
     #[test]

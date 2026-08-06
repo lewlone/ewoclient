@@ -1443,6 +1443,45 @@ pub fn container_button_click_body(container_id: i32, button: i32) -> Vec<u8> {
     w.buf
 }
 
+/// `ServerboundRecipeBookChangeSettingsPacket` (M98).
+///
+/// ```java
+/// output.writeEnum(this.bookType);
+/// output.writeBoolean(this.isOpen);
+/// output.writeBoolean(this.isFiltering);
+/// ```
+///
+/// `writeEnum` is `writeVarInt(ordinal)`, so the book type is
+/// `RecipeBookType`'s ordinal — crafting, furnace, blast furnace, smoker — the
+/// **same positional order** `RecipeBookSettings` uses on the way in (M93y). One
+/// order, both directions.
+///
+/// **It carries `isOpen` as well as `isFiltering`**, and `sendUpdateSettings`
+/// reads both out of the book's settings rather than taking them as arguments —
+/// so toggling the filter also re-reports the open state, and opening the book
+/// also re-reports the filter. Sending only the field that changed would leave
+/// the server's copy of the other one stale.
+pub fn recipe_book_change_settings_body(book_type: i32, open: bool, filtering: bool) -> Vec<u8> {
+    let mut w = rewo_proto::writer::PacketWriter::default();
+    w.varint(book_type);
+    w.u8(u8::from(open));
+    w.u8(u8::from(filtering));
+    w.buf
+}
+
+/// `ServerboundPlaceRecipePacket` (M98) — `(containerId, recipe, useMaxItems)`.
+///
+/// `useMaxItems` is **shift-held**, from `event.hasShiftDown()`: a plain click
+/// lays out one, a shift-click as many as the inventory allows. It is a single
+/// boolean byte after two var-ints.
+pub fn place_recipe_body(container_id: i32, recipe: i32, use_max_items: bool) -> Vec<u8> {
+    let mut w = rewo_proto::writer::PacketWriter::default();
+    w.varint(container_id);
+    w.varint(recipe);
+    w.u8(u8::from(use_max_items));
+    w.buf
+}
+
 /// `ServerboundContainerSlotStateChangedPacket` (M93h) — the crafter's toggle.
 ///
 /// ```java
@@ -4619,6 +4658,29 @@ mod award_stats_tests {
     #[test]
     fn the_button_click_body_is_two_varints() {
         assert_eq!(container_button_click_body(3, 1), vec![3u8, 1]);
+    }
+
+    /// The book type is an ORDINAL, and both booleans always ride along.
+    #[test]
+    fn the_change_settings_body_is_an_ordinal_and_two_flags() {
+        // Smoker (ordinal 3), open, not filtering.
+        assert_eq!(recipe_book_change_settings_body(3, true, false), vec![3u8, 1, 0]);
+        // Crafting (0), shut, filtering — proving both flags are independent
+        // and neither is derived from the other.
+        assert_eq!(recipe_book_change_settings_body(0, false, true), vec![0u8, 0, 1]);
+        assert_eq!(recipe_book_change_settings_body(0, false, false), vec![0u8, 0, 0]);
+        assert_eq!(recipe_book_change_settings_body(0, true, true), vec![0u8, 1, 1]);
+    }
+
+    /// `useMaxItems` is shift-held, and it is the LAST field — after both
+    /// var-ints.
+    #[test]
+    fn the_place_recipe_body_is_two_varints_then_shift() {
+        assert_eq!(place_recipe_body(1, 42, false), vec![1u8, 42, 0]);
+        assert_eq!(place_recipe_body(1, 42, true), vec![1u8, 42, 1]);
+        // A recipe id past 127 takes two var-int bytes, which is what keeps the
+        // trailing flag from being read as part of it.
+        assert_eq!(place_recipe_body(0, 300, true), vec![0u8, 0xAC, 0x02, 1]);
         assert_eq!(container_button_click_body(0, 0), vec![0u8, 0]);
         // A two-byte body is the whole packet: anything longer means a state
         // id or a slot map crept in from `container_click`, which sits beside

@@ -2239,6 +2239,7 @@ fn overlays(
             // witnesses vary these where they need to.
             slot_items: vec![Some(dirt_id); rb::ITEMS_PER_PAGE],
             slot_shadowed: vec![false; rb::ITEMS_PER_PAGE],
+            slot_recipes: vec![None; rb::ITEMS_PER_PAGE],
         };
         // The crafting table - one of the four menus that actually has a book.
         // Menu type 12; 13 is `enchantment`, which an earlier draft of this
