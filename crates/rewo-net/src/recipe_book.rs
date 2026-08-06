@@ -131,10 +131,16 @@ pub struct Entry {
     pub group: Option<i32>,
     /// `RecipeBookCategory`'s raw registry id.
     pub category: i32,
-    /// Whether `craftingRequirements` was present. Its contents are walked and
-    /// discarded — a list of `Ingredient`s, which is what the recipe book uses
-    /// to grey out a recipe you cannot afford, and nothing here greys anything.
-    pub has_requirements: bool,
+    /// `craftingRequirements` — the ingredient slots, each a set of item ids
+    /// or a tag name (M96).
+    ///
+    /// `None` means the field was absent, and vanilla's `canCraft` opens with
+    /// `craftingRequirements.isEmpty() ? false` — so **a recipe with no
+    /// requirements is never craftable**, rather than trivially craftable,
+    /// which is the reading the shape invites.
+    ///
+    /// M93y walked these and discarded them; the solver they feed is M96.
+    pub requirements: Option<Vec<IngredientSet>>,
     /// `FLAG_NOTIFICATION` (1) — the recipe pops a toast.
     pub notification: bool,
     /// `FLAG_HIGHLIGHT` (2) — the book's tab glows.
@@ -142,6 +148,18 @@ pub struct Entry {
 }
 
 /// `ClientboundRecipeBookAddPacket`.
+/// One ingredient slot as the wire carries it (M96).
+///
+/// A `HolderSet<Item>`, which is **either** an inline id list **or** a tag
+/// name — the same two-form encoding M41 records, and the reason resolving an
+/// ingredient needs the tag data from `update_tags` rather than the packet
+/// alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IngredientSet {
+    Ids(Vec<i32>),
+    Tag(String),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct BookAdd {
     pub entries: Vec<Entry>,
@@ -294,35 +312,38 @@ fn entry(r: &mut PacketReader, ids: &RecipeDisplayIds) -> Result<Entry, ()> {
         n => Some(n - 1),
     };
     let category = r.varint().map_err(|_| ())?;
-    let has_requirements = boolean(r)?;
-    if has_requirements {
+    let requirements = if boolean(r)? {
         // `Ingredient.CONTENTS_STREAM_CODEC.list()` — a list of HolderSets.
         let n = r.varint().map_err(|_| ())?;
         if !(0..=1024).contains(&n) {
             return Err(());
         }
+        let mut out = Vec::with_capacity(n.min(64) as usize);
         for _ in 0..n {
             // `holderSet`: the var-int is `count + 1`, and a literal **0**
             // means a TAG NAME follows rather than an empty set (M41).
-            match r.varint().map_err(|_| ())? {
-                0 => {
-                    r.string(32767).map_err(|_| ())?;
-                }
+            out.push(match r.varint().map_err(|_| ())? {
+                0 => IngredientSet::Tag(r.string(32767).map_err(|_| ())?),
                 c => {
+                    let mut ids = Vec::with_capacity((c - 1).min(64) as usize);
                     for _ in 0..(c - 1) {
-                        r.varint().map_err(|_| ())?;
+                        ids.push(r.varint().map_err(|_| ())?);
                     }
+                    IngredientSet::Ids(ids)
                 }
-            }
+            });
         }
-    }
+        Some(out)
+    } else {
+        None
+    };
     let flags = r.u8().map_err(|_| ())?;
     Ok(Entry {
         id,
         display,
         group,
         category,
-        has_requirements,
+        requirements,
         notification: flags & 1 != 0,
         highlight: flags & 2 != 0,
     })
@@ -429,6 +450,46 @@ impl SlotDisplay {
     }
 }
 
+impl IngredientSet {
+    /// The item ids this slot accepts (M96).
+    ///
+    /// A tag is looked up in the server's own `update_tags` payload
+    /// (`minecraft:item`), which M69 decodes and nothing consumed until now.
+    /// **An unknown tag yields nothing**, which makes the ingredient
+    /// unsatisfiable and the recipe uncraftable — the safe direction: greying a
+    /// recipe you could make is a smaller lie than lighting one you cannot.
+    pub fn resolve(&self, tags: &crate::tags::TagOverrides) -> Vec<i32> {
+        match self {
+            IngredientSet::Ids(v) => v.clone(),
+            IngredientSet::Tag(name) => tags
+                .tag("minecraft:item", name)
+                .map(|v| v.to_vec())
+                .unwrap_or_default(),
+        }
+    }
+}
+
+impl Entry {
+    /// `RecipeDisplayEntry.canCraft`'s ingredient list, resolved.
+    ///
+    /// `None` when `craftingRequirements` was absent — which vanilla turns
+    /// into **not craftable**, not "no requirements to meet".
+    pub fn ingredients(
+        &self,
+        tags: &crate::tags::TagOverrides,
+    ) -> Option<Vec<rewo_world::stacked_contents::Ingredient>> {
+        Some(
+            self.requirements
+                .as_ref()?
+                .iter()
+                .map(|i| rewo_world::stacked_contents::Ingredient {
+                    accepts: i.resolve(tags),
+                })
+                .collect(),
+        )
+    }
+}
+
 impl RecipeDisplay {
     /// The display's **result** — the item a recipe button shows.
     pub fn result(&self) -> &SlotDisplay {
@@ -494,6 +555,62 @@ pub const SEEN_RECIPE_IS_ONE_VARINT: () = ();
 
 #[cfg(test)]
 mod tests {
+
+    /// An ingredient is either an inline id list or a TAG NAME, and a tag
+    /// resolves against the server's own `update_tags` payload.
+    #[test]
+    fn an_ingredient_resolves_ids_directly_and_a_tag_through_update_tags() {
+        let mut tags = crate::tags::TagOverrides::default();
+        tags.apply(&crate::tags::TagUpdate {
+            registries: vec![crate::tags::RegistryTags {
+                registry: "minecraft:item".into(),
+                tags: vec![("minecraft:planks".into(), vec![10, 11, 12])],
+            }],
+        });
+        assert_eq!(IngredientSet::Ids(vec![1, 2]).resolve(&tags), vec![1, 2]);
+        assert_eq!(
+            IngredientSet::Tag("minecraft:planks".into()).resolve(&tags),
+            vec![10, 11, 12]
+        );
+        // An UNKNOWN tag yields nothing, which makes its ingredient
+        // unsatisfiable — greying a recipe you could make is a smaller lie
+        // than lighting one you cannot.
+        assert!(IngredientSet::Tag("minecraft:nope".into())
+            .resolve(&tags)
+            .is_empty());
+        // ...and so is a tag looked up before the server has said anything.
+        assert!(IngredientSet::Tag("minecraft:planks".into())
+            .resolve(&crate::tags::TagOverrides::default())
+            .is_empty());
+    }
+
+    /// `canCraft` opens with `craftingRequirements.isEmpty() ? false`, so an
+    /// entry that carried none is **never** craftable — not trivially
+    /// craftable, which is what an empty ingredient list would otherwise mean
+    /// to the solver.
+    #[test]
+    fn an_entry_with_no_requirements_yields_no_ingredients_at_all() {
+        let tags = crate::tags::TagOverrides::default();
+        let mut e = Entry {
+            id: 1,
+            display: RecipeDisplay::Stonecutter {
+                input: SlotDisplay::Empty,
+                result: SlotDisplay::Item(1),
+                station: SlotDisplay::Empty,
+            },
+            group: None,
+            category: 0,
+            requirements: None,
+            notification: false,
+            highlight: false,
+        };
+        assert!(e.ingredients(&tags).is_none(), "absent, not empty");
+        // An explicitly EMPTY list is a different thing and does resolve —
+        // the solver then finds nothing to satisfy and answers true, which is
+        // vanilla's behaviour for a zero-ingredient recipe that declared one.
+        e.requirements = Some(Vec::new());
+        assert_eq!(e.ingredients(&tags).map(|v| v.len()), Some(0));
+    }
 
     /// The arms that need no context resolve; the six that do yield NOTHING,
     /// so an unresolvable display draws an empty slot rather than a wrong item.
