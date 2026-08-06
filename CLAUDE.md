@@ -4419,6 +4419,44 @@ inside the 10-minute tool cap.
 `2cc56b4acbfb92cb` byte-identical; **205 mutations across M93a–y, 199 killed,
 2 shown equivalent, 1 alive by construction (named)**.
 
+### M102 — the two crafting fills, and a fourth comment that described what the code did not do
+
+M96 recorded one approximation and left another unrecorded, both in the same
+eight lines. `hasCraftable`'s contents come from **two disjoint fills** —
+`Inventory.fillStackedContents` (the ITEMS) and
+`menu.fillCraftSlotsStackedContents` (the GRID).
+
+**The range:** `Inventory.items` is menu slots **5..46** — not the 2x2 grid
+(1..5, which arrives through the second fill) and not the craft **result**
+(slot 0, which arrives through neither). M96 walked all 46, which double-counts
+the grid *and* adds the result, so a recipe could read as craftable off its own
+output.
+
+**The predicate:** `accountSimpleStack` gates on `isUsableForCrafting` =
+`!isDamaged() && !isEnchanted() && !has(CUSTOM_NAME)`. M96's comment named it and
+applied nothing. **Fourth comment this session describing behaviour its code did
+not have** (M93t's `setCanLoseFocus`, M96's note, `any_enchantments`' doc, this).
+
+**`isEnchanted()` is the middle of three near-identical flags:**
+`ItemSlot::enchanted` is `has_foil()`; `ItemSlot::any_enchantments` is
+ENCHANTMENTS **or** STORED (the grindstone's `hasAnyEnchantments`);
+`SlotText::is_enchanted` is ENCHANTMENTS alone and is the right one.
+`any_enchantments`' doc claimed to be `isEnchanted()` too — corrected. An
+enchanted **book** separates them, and M93 recorded this trap one field over.
+
+**The fills differ in gating, not just range:** the crafting container is gated,
+the furnace **block entity** calls bare `accountStack` and contributes its whole
+container **including the result**. A damaged pickaxe counts in a furnace and not
+on a grid.
+
+A mutation deleting the craft-slot half **survived** — the fill sat in a
+`PlaySession` path — so it moved to `crafting_contents`, taking the max-stack
+lookup as a closure. M97's lesson, fourth application.
+
+**2077 tests**; containershot 89, inventoryshot 152, itemshot 75, handshot 34,
+mobshot 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical; **12 mutations, 12
+killed**; no render path changed.
+
 ### M101 — the caret blinks, and the field it blinks in never scrolled
 
 M100 recorded the blink as a shared gap between the book's field and the anvil's.

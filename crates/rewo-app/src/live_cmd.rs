@@ -9123,6 +9123,132 @@ fn celestial_state_of(day_ticks: Option<i64>) -> CelestialState {
 
 #[cfg(test)]
 mod tests {
+    // -- the two crafting fills (M102) ---------------------------------------
+
+    /// A player menu holding one stack in a given slot.
+    fn inv_with(slots: &[(usize, rewo_world::inventory::ItemSlot)]) -> rewo_world::inventory::Inventory {
+        let mut inv = rewo_world::inventory::Inventory::default();
+        for &(slot, st) in slots {
+            inv.set_slot(0, slot as i32, Some(st));
+        }
+        inv
+    }
+
+    fn dirt() -> rewo_world::inventory::ItemSlot {
+        rewo_world::inventory::ItemSlot::plain(1, 1)
+    }
+
+    /// Both fills run, and they are disjoint: a stack on the player's 2x2 grid
+    /// counts EXACTLY once, through the craft-slot half.
+    #[test]
+    fn the_grid_is_counted_once_through_the_craft_slot_fill() {
+        let max = |_: i32| 64;
+        let ing = [Ingredient::of(&[1])];
+        // Slot 1 is the player's crafting grid — outside PLAYER_ITEM_SLOTS.
+        let mut c = super::crafting_contents(
+            &inv_with(&[(1, dirt())]),
+            None,
+            rb96::BookType::Crafting,
+            &max,
+        );
+        assert!(c.try_pick(&ing, 1), "one on the grid satisfies one ingredient");
+        // …and only once: two ingredients need two items, so one is not enough.
+        let mut c2 = super::crafting_contents(
+            &inv_with(&[(1, dirt())]),
+            None,
+            rb96::BookType::Crafting,
+            &max,
+        );
+        assert!(
+            !c2.try_pick(&[Ingredient::of(&[1]), Ingredient::of(&[1])], 1),
+            "double-counting the grid would make this pass"
+        );
+    }
+
+    /// The craft RESULT (slot 0) counts for nothing — a recipe must not read as
+    /// craftable off its own output.
+    #[test]
+    fn the_craft_result_counts_for_nothing() {
+        let max = |_: i32| 64;
+        let mut c = super::crafting_contents(
+            &inv_with(&[(0, dirt())]),
+            None,
+            rb96::BookType::Crafting,
+            &max,
+        );
+        assert!(!c.try_pick(&[Ingredient::of(&[1])], 1));
+    }
+
+    /// A container's craft slots are added on top of the player's items, which
+    /// is what makes a part-finished craft readable — the M96 gap.
+    #[test]
+    fn an_open_menus_craft_slots_are_added_to_the_players_items() {
+        let max = |_: i32| 64;
+        let ing = [Ingredient::of(&[1]), Ingredient::of(&[1])];
+        // One in the hotbar, one on the open table's grid.
+        let player = inv_with(&[(36, dirt())]);
+        let table = inv_with(&[(1, dirt())]);
+        let mut both = super::crafting_contents(&player, Some(&table), rb96::BookType::Crafting, &max);
+        assert!(both.try_pick(&ing, 1), "one from each half");
+        // Without the table's half, one short.
+        let mut alone = super::crafting_contents(&player, None, rb96::BookType::Crafting, &max);
+        assert!(!alone.try_pick(&ing, 1));
+    }
+
+    /// A furnace contributes its whole container, RESULT INCLUDED, and
+    /// ungated — where a crafting grid excludes its result and is gated.
+    #[test]
+    fn a_furnaces_result_slot_counts_where_a_crafting_tables_does_not() {
+        let max = |_: i32| 64;
+        let ing = [Ingredient::of(&[1])];
+        // Slot 2 is the furnace's result.
+        let furnace = inv_with(&[(2, dirt())]);
+        let mut f = super::crafting_contents(
+            &rewo_world::inventory::Inventory::default(),
+            Some(&furnace),
+            rb96::BookType::Furnace,
+            &max,
+        );
+        assert!(f.try_pick(&ing, 1), "a furnace's output counts");
+        // The same slot under a crafting table's range (1..10) is a grid cell,
+        // so it counts there too — the discriminating slot is 0, which the
+        // crafting range excludes and the furnace range includes.
+        let mut zero = super::crafting_contents(
+            &rewo_world::inventory::Inventory::default(),
+            Some(&inv_with(&[(0, dirt())])),
+            rb96::BookType::Furnace,
+            &max,
+        );
+        assert!(zero.try_pick(&ing, 1), "furnace slot 0 is its ingredient slot");
+    }
+
+    /// The furnace half is UNGATED: a damaged stack in a furnace counts, and the
+    /// same stack on a crafting grid does not.
+    #[test]
+    fn the_furnace_half_ignores_isUsableForCrafting_and_the_crafting_half_does_not() {
+        let max = |_: i32| 64;
+        let ing = [Ingredient::of(&[1])];
+        let chipped = rewo_world::inventory::ItemSlot {
+            damage: Some(3),
+            max_damage: Some(59),
+            ..dirt()
+        };
+        let mut f = super::crafting_contents(
+            &rewo_world::inventory::Inventory::default(),
+            Some(&inv_with(&[(1, chipped)])),
+            rb96::BookType::Furnace,
+            &max,
+        );
+        assert!(f.try_pick(&ing, 1), "a furnace takes a damaged stack");
+        let mut t = super::crafting_contents(
+            &rewo_world::inventory::Inventory::default(),
+            Some(&inv_with(&[(1, chipped)])),
+            rb96::BookType::Crafting,
+            &max,
+        );
+        assert!(!t.try_pick(&ing, 1), "a crafting grid does not");
+    }
+
     // -- the recipe book's derivation (M97) ---------------------------------
     //
     // M96 graded this at its two ends - the solver's own tests and the gate's
@@ -14093,21 +14219,15 @@ fn live_recipe_book(
             })
         })
         .collect();
-    // What the player is holding, for `hasCraftable`.
-    //
-    // `fillStackedContents` over the INVENTORY only — vanilla also folds in
-    // the open menu's craft slots (`fillCraftSlotsStackedContents`), which
-    // matters for a table with items already on the grid. Rewo counts the
-    // inventory alone, so a recipe whose last ingredient is sitting on the
-    // grid reads as uncraftable. Recorded rather than approximated: the menu's
-    // craft slots differ per menu class and picking the wrong range would be a
-    // confident wrong answer.
-    let mut held = rewo_world::stacked_contents::StackedContents::new();
-    for slot in 0..session.inventory.slot_count() {
-        if let Some(st) = session.inventory.menu_slot(slot) {
-            held.account_stack(st.item_id, st.count, max_stack_of(items, st.item_id));
-        }
-    }
+    // What the player is holding, for `hasCraftable` — see
+    // [`crafting_contents`], which is where the rules live so a test can reach
+    // them (M97's lesson, fourth application).
+    let mut held = crafting_contents(
+        &session.inventory,
+        session.menus.open().map(|m| &m.menu),
+        book,
+        &|id| max_stack_of(items, id),
+    );
     // `Mth.floor(time / 30)` — vanilla's `time` advances by the partial tick
     // each render, so this is the session's tick clock divided by the swap
     // period. Shared by every slot, which is why a page of several-recipe
@@ -14123,6 +14243,59 @@ fn live_recipe_book(
         book_mouse,
         query,
     ))
+}
+
+/// `fillStackedContents` + `fillCraftSlotsStackedContents` (M102).
+///
+/// Vanilla calls **two** fills and they are disjoint:
+///
+/// ```java
+/// player.getInventory().fillStackedContents(contents);   // the ITEMS
+/// menu.fillCraftSlotsStackedContents(contents);          // the GRID
+/// ```
+///
+/// `Inventory.items` is armour + storage + hotbar + offhand —
+/// `PLAYER_ITEM_SLOTS`, **5..46**. It contains neither the 2x2 crafting grid
+/// (1..5, which belongs to `InventoryMenu`) nor the craft **result** (slot 0,
+/// which belongs to nothing). Walking the whole 46-slot menu is the obvious
+/// reading and it double-counts the grid *and* adds the result — so a recipe
+/// would read as craftable off its own output.
+///
+/// The inventory fill is `accountSimpleStack`, hence gated on
+/// `isUsableForCrafting`; the craft-slot fill's gating depends on the family
+/// (`craft_slots`). M96 named the predicate in a comment and applied nothing.
+///
+/// Extracted from `live_recipe_book` because that function needs a
+/// `PlaySession` and so cannot be reached from a test — a mutation deleting the
+/// craft-slot half survived until this split.
+pub(crate) fn crafting_contents(
+    player: &rewo_world::inventory::Inventory,
+    open: Option<&rewo_world::inventory::Inventory>,
+    book: rewo_world::recipe_book_screen::BookType,
+    // `getMaxStackSize` per item id. A closure rather than the whole registry,
+    // so this stays a function of plain values and its tests do not need the
+    // user's decompile on disk.
+    max_stack: &dyn Fn(i32) -> i32,
+) -> rewo_world::stacked_contents::StackedContents {
+    use rewo_world::recipe_book_screen as rb;
+    let mut held = rewo_world::stacked_contents::StackedContents::new();
+    let mut account = |inv: &rewo_world::inventory::Inventory, slot: usize, gated: bool| {
+        if let Some(st) = inv.menu_slot(slot) {
+            if !gated || inv.is_usable_for_crafting(st) {
+                held.account_stack(st.item_id, st.count, max_stack(st.item_id));
+            }
+        }
+    };
+    for slot in rb::PLAYER_ITEM_SLOTS {
+        account(player, slot, true);
+    }
+    let shown = open.unwrap_or(player);
+    if let Some(cs) = rb::craft_slots(book, open.is_none()) {
+        for slot in cs.range.clone() {
+            account(shown, slot, cs.gated);
+        }
+    }
+    held
 }
 
 /// One unlocked recipe, with everything already resolved (M97).

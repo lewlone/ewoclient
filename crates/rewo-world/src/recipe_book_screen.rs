@@ -153,6 +153,61 @@ pub fn tab_position(index: i32) -> (i32, i32) {
     (TAB_DX, TAB_DY + TAB_PITCH * index)
 }
 
+/// `Inventory.items` as menu slots — armour, storage, hotbar and offhand.
+///
+/// **5..46**, so neither the player menu's 2x2 crafting grid (1..5) nor its
+/// craft result (slot 0). The grid arrives through
+/// `fillCraftSlotsStackedContents` instead, and the result through nothing at
+/// all — counting it would let a recipe read as craftable from its own output.
+pub const PLAYER_ITEM_SLOTS: std::ops::Range<usize> = 5..46;
+
+/// Which of an open menu's slots feed `fillCraftSlotsStackedContents` (M102).
+///
+/// `RecipeBookMenu` declares it abstract and the two families answer
+/// differently — and **not just with different ranges**:
+///
+/// * `AbstractCraftingMenu` contributes `craftSlots`, the **input grid only**.
+///   Its result slot is excluded, which matters: a crafted item sitting in the
+///   output would otherwise count as an ingredient for itself.
+/// * `AbstractFurnaceMenu` contributes the whole `container` — **including the
+///   result slot** — because a furnace's container is three slots and
+///   `fillStackedContents` walks all of them.
+///
+/// And the two use **different accounting**: the crafting container calls
+/// `accountSimpleStack`, which gates on `isUsableForCrafting`, while the furnace
+/// block entity calls bare `accountStack`, which does not. So a damaged pickaxe
+/// in a furnace's fuel slot counts and the same pickaxe on a crafting grid does
+/// not. Four lines apart in the decompile, and inverting either half is
+/// invisible without a fixture that has a damaged stack in the right place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CraftSlots {
+    /// Menu slot indices, inclusive-exclusive.
+    pub range: std::ops::Range<usize>,
+    /// Whether `isUsableForCrafting` gates them — true for the crafting family,
+    /// false for the furnace family.
+    pub gated: bool,
+}
+
+/// The craft slots of the menu a book is open over, or `None` for a menu with
+/// no book at all.
+///
+/// The player's own inventory is `InventoryMenu`, whose grid is **2x2 at menu
+/// slots 1..5** — the result is slot 0. A crafting table is 3x3 at 1..10.
+pub fn craft_slots(book: BookType, player_inventory: bool) -> Option<CraftSlots> {
+    if player_inventory {
+        return Some(CraftSlots { range: 1..5, gated: true });
+    }
+    Some(match book {
+        // `CraftingMenu`: result 0, grid 1..=9.
+        BookType::Crafting => CraftSlots { range: 1..10, gated: true },
+        // `AbstractFurnaceMenu`: the container is ingredient 0, fuel 1,
+        // result 2 — and all three are contributed.
+        BookType::Furnace | BookType::BlastFurnace | BookType::Smoker => {
+            CraftSlots { range: 0..3, gated: false }
+        }
+    })
+}
+
 /// One tab of one book — its icon(s) and the categories it shows (M95).
 ///
 /// **This replaces M93z's `Tab`, which was wrong.** That enum was the four
@@ -1643,6 +1698,47 @@ mod tests {
     /// They are the SEARCH TAB OF EACH OF THE FOUR BOOKS. A crafting book has
     /// five tabs, and the first of them is the search tab whose contents are
     /// that enum's `includedCategories()`.
+    /// The player's items are 5..46 — NOT the whole 46-slot menu, which would
+    /// double-count the 2x2 grid and add the craft result.
+    #[test]
+    fn the_players_item_slots_exclude_the_grid_and_the_result() {
+        assert_eq!(PLAYER_ITEM_SLOTS, 5..46);
+        assert!(!PLAYER_ITEM_SLOTS.contains(&0), "the craft RESULT");
+        for grid in 1..5 {
+            assert!(!PLAYER_ITEM_SLOTS.contains(&grid), "grid slot {grid}");
+        }
+        assert!(PLAYER_ITEM_SLOTS.contains(&5), "armour starts here");
+        assert!(PLAYER_ITEM_SLOTS.contains(&45), "and the offhand ends it");
+        // The grid arrives through the craft-slot fill instead, so between the
+        // two every slot but 0 is accounted exactly once.
+        let grid = craft_slots(BookType::Crafting, true).unwrap();
+        assert_eq!(grid.range, 1..5);
+        for s in 0..46usize {
+            let n = usize::from(PLAYER_ITEM_SLOTS.contains(&s)) + usize::from(grid.range.contains(&s));
+            assert_eq!(n, usize::from(s != 0), "slot {s} accounted {n} times");
+        }
+    }
+
+    /// The two families differ in RANGE and in GATING, and the furnace's
+    /// includes its result slot.
+    #[test]
+    fn the_craft_slots_differ_by_family_in_both_range_and_gating() {
+        let craft = craft_slots(BookType::Crafting, false).unwrap();
+        assert_eq!(craft.range, 1..10, "a 3x3 grid, result at 0 excluded");
+        assert!(craft.gated, "accountSimpleStack");
+
+        for b in [BookType::Furnace, BookType::BlastFurnace, BookType::Smoker] {
+            let f = craft_slots(b, false).unwrap();
+            assert_eq!(f.range, 0..3, "the whole container, {b:?}");
+            assert!(f.range.contains(&2), "INCLUDING the result slot");
+            assert!(!f.gated, "bare accountStack — no isUsableForCrafting");
+        }
+        // The player's own inventory is the crafting family's 2x2.
+        let player = craft_slots(BookType::Crafting, true).unwrap();
+        assert_eq!(player.range, 1..5);
+        assert!(player.gated);
+    }
+
     #[test]
     fn a_book_has_its_own_tabs_and_the_first_is_SEARCH() {
         assert_eq!(BookType::Crafting.tabs().len(), 5, "NOT 4");
