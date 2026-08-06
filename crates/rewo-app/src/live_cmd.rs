@@ -3844,9 +3844,12 @@ fn run_headless(
             // …nor a merchant.
             None,
             // …and the book's selection is its default, since nothing can
-            // click it headlessly, with an empty search.
+            // click it headlessly, with an empty search field.
             Default::default(),
             "",
+            &rewo_world::edit_box::EditBox::new(
+                rewo_world::recipe_book_screen::SEARCH_MAX_LENGTH,
+            ),
         );
         headless_screen_labels = labels;
     } else {
@@ -6432,6 +6435,7 @@ impl LiveApp {
                     merchant.as_ref(),
                     book_state,
                     &book_query,
+                    &self.screen.book_search,
                 );
                 self.screen_labels = labels;
                 // M94 — OUTSIDE the `container_panel_height` guard below: the
@@ -9544,6 +9548,116 @@ mod tests {
         assert_ne!(rewo_world::edit_box::EditBox::default().max_length(), 50);
     }
 
+    // -- the search field's render (M100) -------------------------------------
+
+    fn field_of(text: &str, focused: bool) -> rewo_world::edit_box::EditBox {
+        use rewo_world::recipe_book_screen as rb;
+        let mut f = rewo_world::edit_box::EditBox::new(rb::SEARCH_MAX_LENGTH);
+        f.set_focused(true);
+        for ch in text.chars() {
+            f.char_typed(ch);
+        }
+        f.set_focused(focused);
+        f
+    }
+
+    /// A stub advance table: every glyph 6 wide, which is the vanilla default
+    /// and enough to make the caret's x a checkable number.
+    fn advances() -> [u8; 256] {
+        [6u8; 256]
+    }
+
+    /// The field's text is inset FOUR px and centred vertically — the bordered
+    /// case, which is the book's, and not `getY()`.
+    #[test]
+    fn the_fields_text_geometry_is_the_BORDERED_one() {
+        use rewo_world::recipe_book_screen as rb;
+        assert_eq!(rb::SEARCH_TEXT_X, rb::SEARCH_X + 4);
+        assert_eq!(rb::SEARCH_TEXT_Y, rb::SEARCH_Y + 3, "(14 - 8) / 2");
+        assert_eq!(rb::SEARCH_INNER_W, 73, "81 - 8, taken off BOTH ends");
+        assert_ne!(rb::SEARCH_INNER_W, rb::SEARCH_W);
+        assert_ne!(rb::SEARCH_TEXT_Y, rb::SEARCH_Y, "the unbordered case");
+    }
+
+    /// The background is TWO blits, and the second is inset one pixel on every
+    /// side — which is what leaves the border showing.
+    #[test]
+    fn the_fields_background_is_two_blits_and_the_inner_one_is_inset() {
+        use rewo_world::recipe_book_screen as rb;
+        let (_, fills) = super::book_field_render(&field_of("", false), &advances(), 1280.0, 720.0);
+        assert!(fills.len() >= 2);
+        let (outer, inner) = (fills[0].1, fills[1].1);
+        assert_eq!((outer.dx, outer.dy), (rb::SEARCH_X as f32, rb::SEARCH_Y as f32));
+        assert_eq!((outer.w, outer.h), (rb::SEARCH_W as f32, rb::SEARCH_H as f32));
+        assert_eq!((inner.dx, inner.dy), (outer.dx + 1.0, outer.dy + 1.0));
+        assert_eq!((inner.w, inner.h), (outer.w - 2.0, outer.h - 2.0));
+        // Both sample a 1x1 source, which is only exact because every region of
+        // the sprite is uniform — a 1-bit paletted image of two colours.
+        assert_eq!((outer.sw, outer.sh), (1.0, 1.0));
+        assert_eq!((inner.sw, inner.sh), (1.0, 1.0));
+        // …from DIFFERENT texels: the border's and the interior's.
+        assert_ne!((outer.sx, outer.sy), (inner.sx, inner.sy));
+    }
+
+    /// Focus swaps the background sprite, and this is the one use of
+    /// `WidgetSprites::get` on the book that means what its names say.
+    #[test]
+    fn focus_swaps_the_fields_background_sprite() {
+        let plain = super::book_field_render(&field_of("", false), &advances(), 1280.0, 720.0).1;
+        let lit = super::book_field_render(&field_of("", true), &advances(), 1280.0, 720.0).1;
+        assert_ne!(plain[0].0, lit[0].0, "a different sprite index");
+        assert_eq!(lit[0].0, plain[0].0 + 1, "highlighted is the pair's second");
+    }
+
+    /// The hint goes when the field takes FOCUS, not when the first character
+    /// arrives — `displayed.isEmpty() && !isFocused()`.
+    #[test]
+    fn the_hint_goes_on_focus_not_on_the_first_character() {
+        use rewo_world::recipe_book_screen as rb;
+        let hint_of = |text: &str, focused: bool| {
+            super::book_field_render(&field_of(text, focused), &advances(), 1280.0, 720.0)
+                .0
+                .into_iter()
+                .find(|l| l.text == rb::SEARCH_HINT)
+        };
+        assert!(hint_of("", false).is_some(), "empty and unfocused");
+        assert!(hint_of("", true).is_none(), "FOCUSED and still empty");
+        assert!(hint_of("iron", false).is_none(), "unfocused but not empty");
+        assert!(hint_of("iron", true).is_none());
+        // Its colour is the hint style's grey, not the field's white.
+        let h = hint_of("", false).unwrap();
+        assert_eq!(h.color, rb::SEARCH_HINT_COLOR);
+        assert_ne!(h.color, [1.0, 1.0, 1.0]);
+    }
+
+    /// The typed text is drawn at the field's text origin, in white.
+    #[test]
+    fn the_typed_text_is_drawn_where_the_field_says() {
+        use rewo_world::recipe_book_screen as rb;
+        let (labels, _) =
+            super::book_field_render(&field_of("iron", true), &advances(), 1280.0, 720.0);
+        let (bl, bt, scale) = rewo_gpu::container::recipe_book_origin(1280.0, 720.0);
+        let text = labels.iter().find(|l| l.text == "iron").expect("the text");
+        assert_eq!(text.x, bl + rb::SEARCH_TEXT_X as f32 * scale);
+        assert_eq!(text.y, bt + rb::SEARCH_TEXT_Y as f32 * scale);
+        assert_eq!(text.color, [1.0, 1.0, 1.0], "setTextColor(-1)");
+    }
+
+    /// A focused field draws a caret and an unfocused one does not.
+    #[test]
+    fn only_a_focused_field_draws_a_caret() {
+        let caret = |focused: bool| {
+            let (labels, fills) =
+                super::book_field_render(&field_of("iron", focused), &advances(), 1280.0, 720.0);
+            // The append caret is the character "_"; the insert caret is a
+            // 1-px fill. Either counts.
+            labels.iter().any(|l| l.text == "_")
+                || fills.iter().skip(2).any(|(_, b)| b.w == 1.0 && b.h == 11.0)
+        };
+        assert!(caret(true));
+        assert!(!caret(false));
+    }
+
     /// `rewo-gpu` restates the recipe book's geometry rather than importing it,
     /// because the renderer deliberately does not depend on `rewo-world` (M94).
     /// This is the crate that sees both, so this is where the copy is paid for.
@@ -11964,6 +12078,8 @@ fn apply_screen(
     book_state: rewo_world::recipe_book_screen::BookState,
     // M99 — and its search field's contents, already lowercased.
     book_query: &str,
+    // M100 — and the field itself, for its text, caret and selection.
+    book_field: &rewo_world::edit_box::EditBox,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
@@ -12050,7 +12166,16 @@ fn apply_screen(
     // clears last frame's, and set even when `container_panel` returns `None`
     // (the player's own inventory), which is one of the four screens that has
     // one.
-    wr.set_recipe_book(book.as_ref().and_then(recipe_book_panel));
+    // M100 — the search field's own quads and text. Built only when the book is
+    // open, and only when there is a font to measure with.
+    let (book_field_labels, book_field_fills) = match (book.as_ref(), baked.font.as_ref()) {
+        (Some(_), Some(f)) => book_field_render(book_field, &f.advance, w, h),
+        _ => (Vec::new(), Vec::new()),
+    };
+    wr.set_recipe_book(
+        book.as_ref()
+            .and_then(|b| recipe_book_panel(b, &book_field_fills)),
+    );
     wr.set_container_panel(container_panel(
         layout,
         session.menus.open(),
@@ -12117,6 +12242,8 @@ fn apply_screen(
     // selection travelled with the panel as solid quads — M93q's `FILL_SPRITE`
     // doing the job it was built for, one screen over.
     labels.extend(anvil_labels);
+    // M100 — the book's search field, over the book's own panel.
+    labels.extend(book_field_labels);
     apply_gui_icons(wr, gpu, gui, &icons);
 
     let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
@@ -14094,6 +14221,77 @@ pub(crate) fn book_render_from(
     }
 }
 
+/// The search field's background, text, caret and selection (M100).
+///
+/// # The nine-slice degenerates to two blits
+///
+/// `widget/text_field` is 200x20 with `border: 1` — but it is a **1-bit
+/// paletted** image of exactly two colours: the border 160-grey (white when
+/// focused) and the interior black, both fully opaque, measured out of the PNG.
+/// Every one of the nine regions is therefore uniform, and a stretched 1x1
+/// source is **pixel-identical** to a tiled one.
+///
+/// So: one blit of the whole rect sampling a border texel, then one of the
+/// interior sampling a centre texel. The 1 px the first blit still shows around
+/// the second *is* the border. Nine blits would draw the same pixels; two is
+/// what the measurement licenses.
+fn book_field_render(
+    field: &rewo_world::edit_box::EditBox,
+    advance: &[u8; 256],
+    w: f32,
+    h: f32,
+) -> (
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<(usize, rewo_gpu::container::PanelBlit)>,
+) {
+    use rewo_data::assets as a;
+    use rewo_world::recipe_book_screen as rb;
+    let origin = rewo_gpu::container::recipe_book_origin(w, h);
+    // `SPRITES.get(isActive(), isFocused())` — the one use of that record on
+    // this screen that means what its argument names say.
+    let sprite = a::BOOK_SEARCH_FIELD + usize::from(rb::search_sprite_focused(field.is_focused()));
+    let quad = |dx: i32, dy: i32, w: i32, h: i32, sx: f32, sy: f32| {
+        (
+            sprite,
+            rewo_gpu::container::PanelBlit {
+                dx: dx as f32,
+                dy: dy as f32,
+                w: w as f32,
+                h: h as f32,
+                sx,
+                sy,
+                // A 1x1 source, stretched — exact because the region is
+                // uniform. See the note above.
+                sw: 1.0,
+                sh: 1.0,
+                tint: [1.0; 4],
+            },
+        )
+    };
+    let mut fills = vec![
+        // The border colour over the whole rect…
+        quad(rb::SEARCH_X, rb::SEARCH_Y, rb::SEARCH_W, rb::SEARCH_H, 0.0, 0.0),
+        // …then the interior, one pixel in on every side.
+        quad(
+            rb::SEARCH_X + 1,
+            rb::SEARCH_Y + 1,
+            rb::SEARCH_W - 2,
+            rb::SEARCH_H - 2,
+            100.0,
+            10.0,
+        ),
+    ];
+    let (labels, text_fills, _) = edit_box_render(
+        field,
+        advance,
+        origin,
+        (rb::SEARCH_TEXT_X, rb::SEARCH_TEXT_Y, rb::SEARCH_INNER_W),
+        Some((rb::SEARCH_HINT, rb::SEARCH_HINT_COLOR)),
+    );
+    fills.extend(text_fills);
+    (labels, fills)
+}
+
 /// The book's chrome as blits, with its semantic sprites resolved to atlas
 /// indices.
 ///
@@ -14104,6 +14302,9 @@ pub(crate) fn book_render_from(
 /// than an index.
 pub(crate) fn recipe_book_panel(
     b: &BookRender,
+    // M100 — the search field's own quads, appended AFTER the chrome so the
+    // field's background sits over the panel and its caret over that.
+    field: &[(usize, rewo_gpu::container::PanelBlit)],
 ) -> Option<rewo_gpu::container::RecipeBookPanel> {
     use rewo_data::assets as a;
     use rewo_world::recipe_book_screen as rb;
@@ -14155,6 +14356,7 @@ pub(crate) fn recipe_book_panel(
             }
         }
     }
+    overlays.extend_from_slice(field);
     Some(rewo_gpu::container::RecipeBookPanel { blits, overlays })
 }
 
@@ -15358,6 +15560,32 @@ fn anvil_field_render(
     let (left, top, scale) =
         rewo_gpu::container::gui_origin_for(w, h, layout.image_w as f32, layout.image_h as f32);
     let (fx, fy, inner) = ANVIL_FIELD;
+    edit_box_render(local, advance, (left, top, scale), (fx, fy, inner), None)
+}
+
+/// One `EditBox`'s text, caret and selection — shared by the anvil's name field
+/// (M93t) and the recipe book's search (M100).
+///
+/// Extracted rather than copied: the caret's x is the width of the run before
+/// it, the `insert` rule decides whether the caret is a bar or an underscore,
+/// and the selection's rect is clamped against the inner width. A second copy
+/// of that is three chances to drift, and the drift would be a caret one pixel
+/// out — invisible in review and obvious in use.
+///
+/// `origin` is the surface's `(left, top, scale)` in screen pixels; `field` is
+/// `(x, y, inner_width)` in that surface's own coordinates. `hint` is the text
+/// drawn when the field is **empty and unfocused**, with its own colour.
+fn edit_box_render(
+    local: &rewo_world::edit_box::EditBox,
+    advance: &[u8; 256],
+    (left, top, scale): (f32, f32, f32),
+    (fx, fy, inner): (i32, i32, i32),
+    hint: Option<(&str, [f32; 3])>,
+) -> (
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<(usize, rewo_gpu::container::PanelBlit)>,
+    Option<String>,
+) {
     let width = |u: &[u16]| rewo_gpu::text::width(&String::from_utf16_lossy(u), advance);
     let displayed = local.displayed(inner, &width).to_vec();
     let rel_cursor = local.cursor_position().saturating_sub(local.display_pos());
@@ -15379,6 +15607,27 @@ fn anvil_field_render(
             shadow: true,
             text,
         });
+    }
+
+    // `if (hint != null && displayed.isEmpty() && !isFocused())` — the hint
+    // goes when the field takes FOCUS, not when the first character arrives.
+    // Clicking an empty search box therefore blanks "Search..." before you
+    // type, which reads as a bug until you check the guard.
+    if let Some((text, color)) = hint {
+        if displayed.is_empty() && !local.is_focused() {
+            labels.push(rewo_gpu::world::OwnedTextLine {
+                x: left + fx as f32 * scale,
+                y: top + fy as f32 * scale,
+                px: scale,
+                // The hint is a styled COMPONENT, so its own colour wins over
+                // the field's — `SEARCH_HINT_STYLE` is gray, where the book
+                // sets the field itself to white.
+                color,
+                alpha: 1.0,
+                shadow: true,
+                text: text.to_string(),
+            });
+        }
     }
 
     // `insert = cursorPos < value.length() || value.length() >= maxLength` —

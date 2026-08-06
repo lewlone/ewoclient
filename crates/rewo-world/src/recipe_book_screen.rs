@@ -49,6 +49,40 @@ pub const SEARCH_W: i32 = 81;
 pub const SEARCH_H: i32 = 14;
 pub const SEARCH_MAX_LENGTH: usize = 50;
 
+/// The field's own text geometry, derived from its rect (M100).
+///
+/// `EditBox` defaults to **bordered** and the book never calls
+/// `setBordered(false)`, which decides all three:
+///
+/// * `textX = getX() + 4` — the text is inset four pixels, not flush.
+/// * `textY = getY() + (height - 8) / 2` — vertically centred, so **3** for a
+///   14-tall field. Not `getY()`, which is the unbordered case.
+/// * `getInnerWidth() = width - 8` — so the visible text is clipped to **73**
+///   px, not the field's 81. Eight, not four: the inset is taken off both ends.
+pub const SEARCH_TEXT_X: i32 = SEARCH_X + 4;
+pub const SEARCH_TEXT_Y: i32 = SEARCH_Y + (SEARCH_H - 8) / 2;
+pub const SEARCH_INNER_W: i32 = SEARCH_W - 8;
+
+/// `gui.recipebook.search_hint`, drawn when the field is empty **and
+/// unfocused**.
+pub const SEARCH_HINT: &str = "Search...";
+
+/// `SEARCH_HINT_STYLE` is `GRAY, ITALIC` — `ChatFormatting.GRAY` is
+/// `0xAAAAAA`. The italic is not reproduced: Rewo's bitmap font pass has no
+/// slant, and the colour is the part that distinguishes a hint from real text.
+pub const SEARCH_HINT_COLOR: [f32; 3] = [0.666_666_7, 0.666_666_7, 0.666_666_7];
+
+/// The field's own background sprite — `SPRITES.get(isActive(), isFocused())`.
+///
+/// **The third meaning of `WidgetSprites::get` on this one screen**, and the
+/// only one that is the record's plain reading: a tab passes `selected` as
+/// *focused* (M94) and the filter passes `filtering` as *enabled* (M94), while
+/// this passes exactly what the names say. Assuming one convention across the
+/// screen is wrong twice out of three times.
+pub fn search_sprite_focused(focused: bool) -> bool {
+    focused
+}
+
 /// The filter toggle — `create(xo + 110, yo + 12, 26, 16, …)`.
 pub const FILTER_X: i32 = 110;
 pub const FILTER_Y: i32 = 12;

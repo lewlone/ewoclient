@@ -2267,7 +2267,9 @@ fn overlays(
             // The book is set BESIDE the panel, not inside it — the seam
             // `--render-check`'s r23 forced, because the player's own
             // inventory has no `ContainerPanel` and still has a book.
-            wr.set_recipe_book(b.and_then(crate::live_cmd::recipe_book_panel));
+            // The gate drives no search field (M100), so the book draws its
+            // chrome and no field quads.
+            wr.set_recipe_book(b.and_then(|x| crate::live_cmd::recipe_book_panel(x, &[])));
             wr.set_container(true, None);
             shot(gpu, off, wr)
         };
@@ -2347,7 +2349,7 @@ fn overlays(
         // that the constant could be anything and no pixel would notice. The
         // constant itself is pinned by a unit test; this is the half that says
         // it reaches the draw.
-        let mut zeroed = crate::live_cmd::recipe_book_panel(&full).unwrap();
+        let mut zeroed = crate::live_cmd::recipe_book_panel(&full, &[]).unwrap();
         for b in &mut zeroed.blits {
             b.sx = 0.0;
             b.sy = 0.0;
