@@ -3850,6 +3850,9 @@ fn run_headless(
             &rewo_world::edit_box::EditBox::new(
                 rewo_world::recipe_book_screen::SEARCH_MAX_LENGTH,
             ),
+            // Headless: a fixed clock, so a caret's blink cannot make the same
+            // scene render two ways between runs.
+            0,
         );
         headless_screen_labels = labels;
     } else {
@@ -4436,6 +4439,11 @@ impl ApplicationHandler for LiveApp {
                                     self.screen.book_search.key_pressed(input, &mut clip);
                                 self.clipboard = clip;
                                 if consumed {
+                                    follow_cursor(
+                                        &mut self.screen.book_search,
+                                        self.baked.as_ref(),
+                                        rewo_world::recipe_book_screen::SEARCH_INNER_W,
+                                    );
                                     return;
                                 }
                                 clip = self.clipboard.clone();
@@ -4444,6 +4452,7 @@ impl ApplicationHandler for LiveApp {
                                 session,
                                 &mut self.screen,
                                 &items,
+                                self.baked.as_ref(),
                                 rewo_world::edit_box::Input::new(key, mods),
                                 &mut clip,
                             );
@@ -4460,10 +4469,17 @@ impl ApplicationHandler for LiveApp {
                         {
                             let mut any = false;
                             for ch in text.chars() {
-                                if self.screen.book_search.is_focused() {
-                                    any |= self.screen.book_search.char_typed(ch);
+                                if self.screen.book_search.is_focused()
+                                    && self.screen.book_search.char_typed(ch)
+                                {
+                                    any = true;
+                                    follow_cursor(
+                                        &mut self.screen.book_search,
+                                        self.baked.as_ref(),
+                                        rewo_world::recipe_book_screen::SEARCH_INNER_W,
+                                    );
                                 }
-                                any |= anvil_char(session, &mut self.screen, &items, ch);
+                                any |= anvil_char(session, &mut self.screen, &items, self.baked.as_ref(), ch);
                             }
                             if any {
                                 return;
@@ -6436,6 +6452,7 @@ impl LiveApp {
                     book_state,
                     &book_query,
                     &self.screen.book_search,
+                    self.started.elapsed().as_millis() as u64,
                 );
                 self.screen_labels = labels;
                 // M94 — OUTSIDE the `container_panel_height` guard below: the
@@ -9584,7 +9601,7 @@ mod tests {
     #[test]
     fn the_fields_background_is_two_blits_and_the_inner_one_is_inset() {
         use rewo_world::recipe_book_screen as rb;
-        let (_, fills) = super::book_field_render(&field_of("", false), &advances(), 1280.0, 720.0);
+        let (_, fills) = super::book_field_render(&field_of("", false), &advances(), 1280.0, 720.0, 0);
         assert!(fills.len() >= 2);
         let (outer, inner) = (fills[0].1, fills[1].1);
         assert_eq!((outer.dx, outer.dy), (rb::SEARCH_X as f32, rb::SEARCH_Y as f32));
@@ -9603,8 +9620,8 @@ mod tests {
     /// `WidgetSprites::get` on the book that means what its names say.
     #[test]
     fn focus_swaps_the_fields_background_sprite() {
-        let plain = super::book_field_render(&field_of("", false), &advances(), 1280.0, 720.0).1;
-        let lit = super::book_field_render(&field_of("", true), &advances(), 1280.0, 720.0).1;
+        let plain = super::book_field_render(&field_of("", false), &advances(), 1280.0, 720.0, 0).1;
+        let lit = super::book_field_render(&field_of("", true), &advances(), 1280.0, 720.0, 0).1;
         assert_ne!(plain[0].0, lit[0].0, "a different sprite index");
         assert_eq!(lit[0].0, plain[0].0 + 1, "highlighted is the pair's second");
     }
@@ -9615,7 +9632,7 @@ mod tests {
     fn the_hint_goes_on_focus_not_on_the_first_character() {
         use rewo_world::recipe_book_screen as rb;
         let hint_of = |text: &str, focused: bool| {
-            super::book_field_render(&field_of(text, focused), &advances(), 1280.0, 720.0)
+            super::book_field_render(&field_of(text, focused), &advances(), 1280.0, 720.0, 0)
                 .0
                 .into_iter()
                 .find(|l| l.text == rb::SEARCH_HINT)
@@ -9635,7 +9652,7 @@ mod tests {
     fn the_typed_text_is_drawn_where_the_field_says() {
         use rewo_world::recipe_book_screen as rb;
         let (labels, _) =
-            super::book_field_render(&field_of("iron", true), &advances(), 1280.0, 720.0);
+            super::book_field_render(&field_of("iron", true), &advances(), 1280.0, 720.0, 0);
         let (bl, bt, scale) = rewo_gpu::container::recipe_book_origin(1280.0, 720.0);
         let text = labels.iter().find(|l| l.text == "iron").expect("the text");
         assert_eq!(text.x, bl + rb::SEARCH_TEXT_X as f32 * scale);
@@ -9643,12 +9660,73 @@ mod tests {
         assert_eq!(text.color, [1.0, 1.0, 1.0], "setTextColor(-1)");
     }
 
+    /// The blink reaches the RENDER: the same focused field draws a caret in
+    /// one 300 ms window and none in the next (M101).
+    #[test]
+    fn the_caret_blinks_in_the_rendered_output() {
+        use rewo_world::recipe_book_screen as rb;
+        let mut f = rewo_world::edit_box::EditBox::new(rb::SEARCH_MAX_LENGTH);
+        f.set_focused_at(true, 1_000);
+        for ch in "iron".chars() {
+            f.char_typed(ch);
+        }
+        let drawn = |now: u64| {
+            let (labels, fills) = super::book_field_render(&f, &advances(), 1280.0, 720.0, now);
+            labels.iter().any(|l| l.text == "_")
+                || fills.iter().skip(2).any(|(_, b)| b.w == 1.0 && b.h == 11.0)
+        };
+        assert!(drawn(1_000), "on, the instant it was focused");
+        assert!(drawn(1_299));
+        assert!(!drawn(1_300), "off for the next 300 ms");
+        assert!(drawn(1_600), "and on again");
+    }
+
+    /// The anvil's field is pinned focused, so a click elsewhere cannot take
+    /// its caret away — `setCanLoseFocus(false)`.
+    #[test]
+    fn the_anvils_field_is_pinned_focused() {
+        let mut f = super::anvil_field_new();
+        assert!(f.is_focused(), "focused from the moment it is built");
+        f.set_focused(false);
+        assert!(f.is_focused(), "and it cannot lose it");
+        assert_eq!(f.max_length(), rewo_world::anvil::MAX_NAME_LENGTH);
+    }
+
+    /// A caret outside the visible run is NOT drawn — `cursorOnScreen`, the
+    /// third of `showCursor`'s conditions, which M93t's renderer omitted.
+    ///
+    /// Reachable only without `follow_cursor`: with it, every input keeps the
+    /// cursor inside the run, which is the point of M101's other half. So the
+    /// fixture types without following — the state the field was permanently in
+    /// before M101, and the state a programmatic cursor move still produces.
+    #[test]
+    fn a_caret_outside_the_visible_run_is_not_drawn() {
+        use rewo_world::recipe_book_screen as rb;
+        let mut f = rewo_world::edit_box::EditBox::new(rb::SEARCH_MAX_LENGTH);
+        f.set_focused_at(true, 0);
+        // 26 glyphs at 6 px is 156, well past the 73 px inner width.
+        for ch in "abcdefghijklmnopqrstuvwxyz".chars() {
+            f.char_typed(ch);
+        }
+        let caret = |field: &rewo_world::edit_box::EditBox| {
+            let (labels, fills) = super::book_field_render(field, &advances(), 1280.0, 720.0, 0);
+            labels.iter().any(|l| l.text == "_")
+                || fills.iter().skip(2).any(|(_, b)| b.w == 1.0 && b.h == 11.0)
+        };
+        assert!(!caret(&f), "the cursor is past the visible run");
+        // Follow it, and the caret comes back — the two halves of M101 meeting.
+        let advance = advances();
+        let width = move |u: &[u16]| rewo_gpu::text::width(&String::from_utf16_lossy(u), &advance);
+        f.follow_cursor(rb::SEARCH_INNER_W, &width);
+        assert!(caret(&f), "and following the cursor restores it");
+    }
+
     /// A focused field draws a caret and an unfocused one does not.
     #[test]
     fn only_a_focused_field_draws_a_caret() {
         let caret = |focused: bool| {
             let (labels, fills) =
-                super::book_field_render(&field_of("iron", focused), &advances(), 1280.0, 720.0);
+                super::book_field_render(&field_of("iron", focused), &advances(), 1280.0, 720.0, 0);
             // The append caret is the character "_"; the insert caret is a
             // 1-px fill. Either counts.
             labels.iter().any(|l| l.text == "_")
@@ -12080,6 +12158,8 @@ fn apply_screen(
     book_query: &str,
     // M100 — and the field itself, for its text, caret and selection.
     book_field: &rewo_world::edit_box::EditBox,
+    // M101 — wall-clock milliseconds, for both fields' caret blink.
+    now_ms: u64,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
@@ -12090,7 +12170,7 @@ fn apply_screen(
     // with two chances to disagree.
     let (anvil_labels, anvil_fills) = match (baked.font.as_ref(), anvil_field) {
         (Some(f), Some(a)) => {
-            let (l, fills, _) = anvil_field_render(a, &f.advance, w, h);
+            let (l, fills, _) = anvil_field_render(a, &f.advance, w, h, now_ms);
             (l, fills)
         }
         _ => (Vec::new(), Vec::new()),
@@ -12169,7 +12249,7 @@ fn apply_screen(
     // M100 — the search field's own quads and text. Built only when the book is
     // open, and only when there is a font to measure with.
     let (book_field_labels, book_field_fills) = match (book.as_ref(), baked.font.as_ref()) {
-        (Some(_), Some(f)) => book_field_render(book_field, &f.advance, w, h),
+        (Some(_), Some(f)) => book_field_render(book_field, &f.advance, w, h, now_ms),
         _ => (Vec::new(), Vec::new()),
     };
     wr.set_recipe_book(
@@ -12677,6 +12757,8 @@ fn anvil_key(
     session: &mut PlaySession,
     screen: &mut ScreenState,
     items: &rewo_data::items::Items,
+    // M101 — for `follow_cursor`, whose width function needs the font.
+    baked: Option<&assets::BakedAssets>,
     input: rewo_world::edit_box::Input,
     clipboard: &mut String,
 ) -> bool {
@@ -12699,6 +12781,9 @@ fn anvil_key(
         let handled = local.field.key_pressed(input, clipboard);
         rewo_world::anvil::key_consumed(handled, local.field.can_consume_input())
     };
+    if let Some(a) = screen.anvil.as_mut() {
+        follow_cursor(&mut a.field, baked, ANVIL_FIELD.2);
+    }
     anvil_flush(session, screen, slot0);
     handled
 }
@@ -12709,6 +12794,7 @@ fn anvil_char(
     session: &mut PlaySession,
     screen: &mut ScreenState,
     items: &rewo_data::items::Items,
+    baked: Option<&assets::BakedAssets>,
     ch: char,
 ) -> bool {
     let Some(open) = session.menus.open() else {
@@ -12722,6 +12808,9 @@ fn anvil_char(
         .menu_slot(0)
         .and_then(|s| items.name(s.item_id).map(|n| (s, n)));
     let handled = anvil_local(screen, open, items).field.char_typed(ch);
+    if let Some(a) = screen.anvil.as_mut() {
+        follow_cursor(&mut a.field, baked, ANVIL_FIELD.2);
+    }
     anvil_flush(session, screen, slot0);
     handled
 }
@@ -13074,10 +13163,7 @@ fn anvil_local<'a>(
         None => true,
     };
     if stale {
-        let mut field = rewo_world::edit_box::EditBox::new(rewo_world::anvil::MAX_NAME_LENGTH);
-        // `setCanLoseFocus(false)` and `setInitialFocus(this.name)` — the field
-        // is focused from the moment the screen opens and cannot lose it.
-        field.set_focused(true);
+        let mut field = anvil_field_new();
         let hover = slot0
             .and_then(|(id, _)| items.name(id))
             .map(display_name_of)
@@ -14221,6 +14307,43 @@ pub(crate) fn book_render_from(
     }
 }
 
+/// The anvil's name field, as `AnvilScreen.init` builds it (M101).
+///
+/// `setCanLoseFocus(false)` and `setInitialFocus(this.name)` — focused from the
+/// moment the screen opens and unable to lose it, so its caret blinks for as
+/// long as the screen is up.
+///
+/// A function rather than three lines inline, because those three lines sit
+/// inside a path that needs a `PlaySession` and so cannot be reached from a
+/// test — M93t wrote the comment and did only the first half, and nothing
+/// caught it for eight milestones. Here the claim is one call to something
+/// graded below.
+fn anvil_field_new() -> rewo_world::edit_box::EditBox {
+    let mut field = rewo_world::edit_box::EditBox::new(rewo_world::anvil::MAX_NAME_LENGTH);
+    field.set_can_lose_focus(false);
+    field.set_focused(true);
+    field
+}
+
+/// `scrollTo(cursorPos)` for the book's field (M101).
+///
+/// Vanilla folds this into `setCursorPosition`; Rewo cannot, because the width
+/// function is the caller's — so every input path that moves the cursor calls
+/// it. Missing it leaves a field typed past its visible width showing the head
+/// of the string with no caret at all.
+fn follow_cursor(
+    field: &mut rewo_world::edit_box::EditBox,
+    baked: Option<&assets::BakedAssets>,
+    inner_width: i32,
+) {
+    let Some(font) = baked.and_then(|b| b.font.as_ref()) else {
+        return;
+    };
+    let advance = font.advance;
+    let width = move |u: &[u16]| rewo_gpu::text::width(&String::from_utf16_lossy(u), &advance);
+    field.follow_cursor(inner_width, &width);
+}
+
 /// The search field's background, text, caret and selection (M100).
 ///
 /// # The nine-slice degenerates to two blits
@@ -14240,6 +14363,7 @@ fn book_field_render(
     advance: &[u8; 256],
     w: f32,
     h: f32,
+    now_ms: u64,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<(usize, rewo_gpu::container::PanelBlit)>,
@@ -14287,6 +14411,7 @@ fn book_field_render(
         origin,
         (rb::SEARCH_TEXT_X, rb::SEARCH_TEXT_Y, rb::SEARCH_INNER_W),
         Some((rb::SEARCH_HINT, rb::SEARCH_HINT_COLOR)),
+        now_ms,
     );
     fills.extend(text_fills);
     (labels, fills)
@@ -15551,6 +15676,7 @@ fn anvil_field_render(
     advance: &[u8; 256],
     w: f32,
     h: f32,
+    now_ms: u64,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<(usize, rewo_gpu::container::PanelBlit)>,
@@ -15560,7 +15686,7 @@ fn anvil_field_render(
     let (left, top, scale) =
         rewo_gpu::container::gui_origin_for(w, h, layout.image_w as f32, layout.image_h as f32);
     let (fx, fy, inner) = ANVIL_FIELD;
-    edit_box_render(local, advance, (left, top, scale), (fx, fy, inner), None)
+    edit_box_render(local, advance, (left, top, scale), (fx, fy, inner), None, now_ms)
 }
 
 /// One `EditBox`'s text, caret and selection — shared by the anvil's name field
@@ -15581,6 +15707,8 @@ fn edit_box_render(
     (left, top, scale): (f32, f32, f32),
     (fx, fy, inner): (i32, i32, i32),
     hint: Option<(&str, [f32; 3])>,
+    // Wall-clock milliseconds, for the caret's blink phase (M101).
+    now_ms: u64,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<(usize, rewo_gpu::container::PanelBlit)>,
@@ -15671,7 +15799,10 @@ fn edit_box_render(
         ));
     }
 
-    if local.is_focused() {
+    // `showCursor = isFocused() && isCursorVisible(millis - focusedTime) &&
+    // cursorOnScreen` — THREE conditions. M93t had only the first, so the
+    // anvil's caret was solid and drawn even when scrolled out of view.
+    if local.is_focused() && local.cursor_visible(now_ms) && on_screen {
         if insert {
             // `fill(x, y - 1, x + 1, y + lineHeight)`, lineHeight 9 + 1.
             fills.push((
@@ -15706,6 +15837,11 @@ fn edit_box_render(
 }
 
 /// [`anvil_field_render`] for `containershot`.
+///
+/// The clock is fixed at **0** (M101): a caret that blinks would make the same
+/// scene render two ways depending on when the gate ran, and a witness cannot
+/// hold that constant. At 0 the caret is visible, which is the state the
+/// existing anvil witnesses were written against.
 pub(crate) fn anvil_field_render_for_test(
     local: &rewo_world::edit_box::EditBox,
     advance: &[u8; 256],
@@ -15716,7 +15852,7 @@ pub(crate) fn anvil_field_render_for_test(
     Vec<(usize, rewo_gpu::container::PanelBlit)>,
     Option<String>,
 ) {
-    anvil_field_render(local, advance, w, h)
+    anvil_field_render(local, advance, w, h, 0)
 }
 
 /// `AbstractContainerScreen.extractCarriedItem` — the cursor stack, offset by
