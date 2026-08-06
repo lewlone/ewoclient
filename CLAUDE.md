@@ -4419,6 +4419,32 @@ inside the 10-minute tool cap.
 `2cc56b4acbfb92cb` byte-identical; **205 mutations across M93a–y, 199 killed,
 2 shown equivalent, 1 alive by construction (named)**.
 
+### M97 — closing M96's own recorded gap: the book's derivation, graded
+
+M96 shipped `hasCraftable` graded at its two **ends** — the solver's tests
+below, the gate's chrome witness above — and nothing in between. The arithmetic
+turning an inventory into a per-slot flag, which is what M96 added, was
+untested: M92's shape, M93b's close.
+
+**The obstacle was structural.** `PlaySession` owns a socket and cannot be built
+in a test, so the fix is M71's lesson rather than a fixture — *logic in a place
+with no test module is untestable, so move it.* `live_recipe_book` is the
+session half (lookups) and `book_render_from` the derivation (grouping, tab
+membership, paging, cycle, craftable), taking plain values.
+
+Nine tests name rules neither end could see — notably that an entry with **no**
+requirements is never craftable while one declaring an **empty** list is (the
+distinction `canCraft`'s opening line makes, which the solver alone cannot
+express because it never sees the entry), and that asking about one collection
+does not spend another's items (a consuming solver would light the first slot
+and grey the second).
+
+**10 mutations, 10 killed** — including *"nothing is ever craftable"*, which is
+exactly M96's pre-state and would otherwise have been indistinguishable from it.
+
+**2019 tests**; containershot 89, inventoryshot 152, mobshot 246/246; demo PNG
+`2cc56b4acbfb92cb` byte-identical; no render path changed.
+
 ### M96 — the craftable solver, and two of vanilla's guards that do not matter
 
 `StackedContents` ported, fed and wired — the blocker M35, M94 and M95 all
