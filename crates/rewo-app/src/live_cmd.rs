@@ -3844,8 +3844,9 @@ fn run_headless(
             // …nor a merchant.
             None,
             // …and the book's selection is its default, since nothing can
-            // click it headlessly.
+            // click it headlessly, with an empty search.
             Default::default(),
+            "",
         );
         headless_screen_labels = labels;
     } else {
@@ -4419,6 +4420,23 @@ impl ApplicationHandler for LiveApp {
                             (self.session.as_mut(), glfw_key(event.physical_key))
                         {
                             let mut clip = std::mem::take(&mut self.clipboard);
+                            // M99 — the book's search field first, when it has
+                            // focus. Only one field can be focused at a time
+                            // (a click on the book unfocuses nothing else, but
+                            // the anvil's is only reachable while an anvil is
+                            // open and the book's only while the book is), so
+                            // the order is belt-and-braces rather than a
+                            // contract.
+                            if self.screen.book_search.is_focused() {
+                                let input = rewo_world::edit_box::Input::new(key, mods);
+                                let consumed =
+                                    self.screen.book_search.key_pressed(input, &mut clip);
+                                self.clipboard = clip;
+                                if consumed {
+                                    return;
+                                }
+                                clip = self.clipboard.clone();
+                            }
                             let consumed = anvil_key(
                                 session,
                                 &mut self.screen,
@@ -4439,6 +4457,9 @@ impl ApplicationHandler for LiveApp {
                         {
                             let mut any = false;
                             for ch in text.chars() {
+                                if self.screen.book_search.is_focused() {
+                                    any |= self.screen.book_search.char_typed(ch);
+                                }
                                 any |= anvil_char(session, &mut self.screen, &items, ch);
                             }
                             if any {
@@ -4704,10 +4725,24 @@ impl ApplicationHandler for LiveApp {
                     // M98 — the recipe book is pressed before EVERYTHING:
                     // `AbstractRecipeBookScreen.mouseClicked` runs the book and
                     // only calls `super` when the book declines.
+                    // The bake's display names, or an empty map when there is
+                    // no bake — in which case `search_entry_of` falls back to
+                    // the id's prettified path, which is the same fallback the
+                    // tooltip takes. Degrading rather than disabling the book's
+                    // clicks.
+                    static NO_NAMES: std::sync::OnceLock<
+                        std::collections::HashMap<String, String>,
+                    > = std::sync::OnceLock::new();
+                    let display = self
+                        .baked
+                        .as_ref()
+                        .map(|b| &b.item_names)
+                        .unwrap_or_else(|| NO_NAMES.get_or_init(Default::default));
                     if book_press(
                         session,
                         &mut self.screen,
                         &items,
+                        display,
                         b == 1,
                         ext.width as f32,
                         ext.height as f32,
@@ -6349,6 +6384,9 @@ impl LiveApp {
                 // and the key handler see one box.
                 // M98 — the book's own selection, from the screen state.
                 let book_state = self.screen.book;
+                // M99 — and its search text, lowercased once here.
+                let book_query =
+                    rewo_world::recipe_search::normalize(&self.screen.book_search.value());
                 let anvil_field = session
                     .menus
                     .open()
@@ -6393,6 +6431,7 @@ impl LiveApp {
                     anvil_field.as_ref(),
                     merchant.as_ref(),
                     book_state,
+                    &book_query,
                 );
                 self.screen_labels = labels;
                 // M94 — OUTSIDE the `container_panel_height` guard below: the
@@ -9087,6 +9126,21 @@ mod tests {
             results: results.to_vec(),
             ingredients: ingredients
                 .map(|v| v.iter().map(|ids| Ingredient::of(ids)).collect()),
+            // M99 — no searchable text, which every witness below relies on
+            // being inert: `matches` skips the stage on an empty query.
+            search: Default::default(),
+        }
+    }
+
+    /// [`entry`] with searchable text, for the M99 witnesses.
+    fn searchable<'a>(id: i32, category: &'a str, name: &str, item: &str) -> super::BookEntry<'a> {
+        let (ns, path) = item.split_once(':').unwrap();
+        super::BookEntry {
+            search: rewo_world::recipe_search::SearchEntry {
+                names: vec![name.to_lowercase()],
+                ids: vec![(ns.to_string(), path.to_string())],
+            },
+            ..entry(id, None, category, &[70], None)
         }
     }
 
@@ -9109,6 +9163,7 @@ mod tests {
             cycle,
             rb96::BookState::default(),
             None,
+            "",
         )
     }
 
@@ -9281,7 +9336,7 @@ mod tests {
     fn a_tab_index_too_big_for_this_book_clamps_rather_than_panicking() {
         let e = [entry(1, None, "minecraft:smoker_food", &[7], None)];
         // Tab 4 exists on a crafting book (five tabs) and not on a smoker (two).
-        let st = rb96::BookState { selected_tab: 4, page: 0, search_focused: false };
+        let st = rb96::BookState { selected_tab: 4, page: 0 };
         let r = super::book_render_from(
             rb96::BookType::Smoker,
             false,
@@ -9290,6 +9345,7 @@ mod tests {
             0,
             st,
             None,
+            "",
         );
         assert_eq!(r.view.unwrap().selected_tab, 1, "clamped to the last tab");
     }
@@ -9307,8 +9363,17 @@ mod tests {
             .map(|i| entry(i, None, EQUIP, &[7], None))
             .collect();
         let page_of = |page: usize, e: &[super::BookEntry<'_>]| {
-            let st = rb96::BookState { selected_tab: 0, page, search_focused: false };
-            super::book_render_from(rb96::BookType::Crafting, false, e, &mut held(&[]), 0, st, None)
+            let st = rb96::BookState { selected_tab: 0, page };
+            super::book_render_from(
+                rb96::BookType::Crafting,
+                false,
+                e,
+                &mut held(&[]),
+                0,
+                st,
+                None,
+                "",
+            )
                 .view
                 .unwrap()
                 .page
@@ -9342,6 +9407,7 @@ mod tests {
                 0,
                 rb96::BookState::default(),
                 Some((bx, by)),
+                "",
             )
             .hover
         };
@@ -9365,7 +9431,8 @@ mod tests {
             0,
             rb96::BookState::default(),
             None,
-        )
+                "",
+            )
         .hover;
         assert!(!absent.filter && !absent.page_forward && !absent.page_backward);
     }
@@ -9384,6 +9451,97 @@ mod tests {
         assert_eq!(at(0), Some(11));
         assert_eq!(at(1), Some(22), "the second recipe, matching the shown item");
         assert_eq!(at(2), Some(11), "and it wraps with the display");
+    }
+
+    // -- the search (M99) ----------------------------------------------------
+
+    fn search_render(entries: &[super::BookEntry<'_>], query: &str) -> super::BookRender {
+        super::book_render_from(
+            rb96::BookType::Crafting,
+            false,
+            entries,
+            &mut held(&[]),
+            0,
+            rb96::BookState::default(),
+            None,
+            query,
+        )
+    }
+
+    /// The search narrows the page, and an EMPTY query narrows nothing —
+    /// vanilla skips the stage rather than running it with an empty string.
+    #[test]
+    fn the_search_narrows_the_page_and_an_empty_query_does_not() {
+        let e = [
+            searchable(1, EQUIP, "Diamond Sword", "minecraft:diamond_sword"),
+            searchable(2, EQUIP, "Golden Apple", "minecraft:golden_apple"),
+            searchable(3, MISC, "Iron Ingot", "minecraft:iron_ingot"),
+        ];
+        assert_eq!(search_render(&e, "").slots.len(), 3, "no query, no filter");
+        assert_eq!(search_render(&e, "sword").slots.len(), 1);
+        assert_eq!(search_render(&e, "gold").slots.len(), 1);
+        assert_eq!(search_render(&e, "o").slots.len(), 3, "a substring of all three");
+        assert_eq!(search_render(&e, "zzz").slots.len(), 0);
+    }
+
+    /// A colon-less query searches names only — the id is not consulted.
+    #[test]
+    fn a_query_without_a_colon_does_not_reach_the_ids() {
+        // The name says Plank and the id says oak.
+        let e = [searchable(1, EQUIP, "Wooden Plank", "minecraft:oak_planks")];
+        assert_eq!(search_render(&e, "plank").slots.len(), 1);
+        assert_eq!(search_render(&e, "oak").slots.len(), 0, "the id is not searched");
+        assert_eq!(search_render(&e, "minecraft:oak").slots.len(), 1, "with a colon it is");
+    }
+
+    /// The page's total re-counts against the FILTERED list, so a search that
+    /// leaves one page removes the arrows.
+    #[test]
+    fn a_search_recounts_the_pages() {
+        let mut e: Vec<_> = (0..45)
+            .map(|i| searchable(i, EQUIP, "Cobblestone", "minecraft:cobblestone"))
+            .collect();
+        e.push(searchable(99, EQUIP, "Diamond Sword", "minecraft:diamond_sword"));
+        assert_eq!(search_render(&e, "").view.unwrap().total_pages, 3);
+        let one = search_render(&e, "sword");
+        assert_eq!(one.view.unwrap().total_pages, 1);
+        assert_eq!(one.slots.len(), 1);
+    }
+
+    /// A collection's searchable text is the UNION of its recipes', so a group
+    /// survives if any member matches — `flatMap` over `getRecipes()`.
+    #[test]
+    fn a_grouped_collection_matches_on_any_of_its_recipes() {
+        let mut a = searchable(1, EQUIP, "Diamond Sword", "minecraft:diamond_sword");
+        let mut b = searchable(2, EQUIP, "Golden Apple", "minecraft:golden_apple");
+        a.group = Some(5);
+        b.group = Some(5);
+        let e = [a, b];
+        assert_eq!(search_render(&e, "").slots.len(), 1, "one grouped collection");
+        assert_eq!(search_render(&e, "sword").slots.len(), 1);
+        assert_eq!(search_render(&e, "apple").slots.len(), 1, "the OTHER member");
+        assert_eq!(search_render(&e, "iron").slots.len(), 0);
+    }
+
+    /// The field is built with the BOOK's maximum (50), not `EditBox`'s default
+    /// (32) — a long search would otherwise be silently truncated, and the
+    /// difference is invisible until someone types past 32.
+    #[test]
+    fn the_search_field_carries_the_books_own_maximum() {
+        let st = super::ScreenState::default();
+        let mut field = st.book_search;
+        // `char_typed` is gated on `can_consume_input`, which needs focus — the
+        // coupling `book_press` mirrors from `BookState::search_focused`.
+        field.set_focused(true);
+        for _ in 0..60 {
+            field.char_typed('a');
+        }
+        assert_eq!(
+            field.value().chars().count(),
+            rewo_world::recipe_book_screen::SEARCH_MAX_LENGTH
+        );
+        assert_eq!(rewo_world::recipe_book_screen::SEARCH_MAX_LENGTH, 50);
+        assert_ne!(rewo_world::edit_box::EditBox::default().max_length(), 50);
     }
 
     /// `rewo-gpu` restates the recipe book's geometry rather than importing it,
@@ -11322,7 +11480,6 @@ fn apply_hand(
 ///
 /// Conflating the two is the mistake this split exists to prevent: a death
 /// screen must free the cursor without making `slot_at` meaningful.
-#[derive(Default)]
 pub struct ScreenState {
     pub screens: rewo_world::screen::Screens,
     /// The recipe book's own selection (M98) — the tab, the page and whether
@@ -11330,6 +11487,17 @@ pub struct ScreenState {
     /// server's `RecipeBookSettings` carries open and filtering and nothing
     /// else, so these three exist only here.
     pub book: rewo_world::recipe_book_screen::BookState,
+    /// The book's search field (M99), beside `book` rather than inside it
+    /// because an `EditBox` is not `Copy` and `BookState` is passed by value
+    /// through the render path.
+    ///
+    /// **Constructed with the book's own maximum, not `EditBox::default()`'s.**
+    /// `initVisuals` calls `setMaxLength(50)` while the default is 32, so
+    /// deriving `Default` for this field would silently truncate a long search
+    /// at 32 characters — and the difference is invisible until someone types
+    /// past it. That is why `ScreenState`'s `Default` is written out below
+    /// rather than derived.
+    pub book_search: rewo_world::edit_box::EditBox,
     /// Cursor position in screen pixels. Only tracked while a screen is
     /// open; the rest of the time the cursor is grabbed and its position is
     /// meaningless.
@@ -11371,6 +11539,29 @@ pub struct ScreenState {
     /// server re-opening the same slot gets a fresh menu, and comparing
     /// against the screen state would miss it.
     pub container_shown: Option<i32>,
+}
+
+impl Default for ScreenState {
+    fn default() -> Self {
+        Self {
+            // M99 — `initVisuals`' own `setMaxLength(50)`. Everything else is
+            // its type's default; only this one field has a value the type
+            // cannot know.
+            book_search: rewo_world::edit_box::EditBox::new(
+                rewo_world::recipe_book_screen::SEARCH_MAX_LENGTH,
+            ),
+            screens: Default::default(),
+            book: Default::default(),
+            mouse: Default::default(),
+            close_requests_seen: Default::default(),
+            beacon: Default::default(),
+            cut: Default::default(),
+            anvil: Default::default(),
+            merchant: Default::default(),
+            close_beacon: Default::default(),
+            container_shown: Default::default(),
+        }
+    }
 }
 
 impl ScreenState {
@@ -11771,6 +11962,8 @@ fn apply_screen(
     // three above: `apply_screen` holds no `ScreenState`, which is what keeps
     // it drivable from a gate.
     book_state: rewo_world::recipe_book_screen::BookState,
+    // M99 — and its search field's contents, already lowercased.
+    book_query: &str,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
@@ -11825,7 +12018,14 @@ fn apply_screen(
             ((mouse.1 - bt as f64) / scale as f64).floor() as i32,
         ))
     };
-    let book = live_recipe_book(session, items, book_state, book_mouse);
+    let book = live_recipe_book(
+        session,
+        items,
+        book_state,
+        book_mouse,
+        book_query,
+        &baked.item_names,
+    );
     // Which menu is on screen: the open container if there is one, else the
     // player's own. Chosen ONCE and threaded everywhere, because the panel,
     // the icons, the hover and the durability bars are all measured from the
@@ -12464,6 +12664,10 @@ fn book_press(
     session: &mut PlaySession,
     screen: &mut ScreenState,
     items: &rewo_data::items::Items,
+    // M99 — the search's inputs, so the press resolves the SAME page the render
+    // did: a search narrows the page, and hit-testing against an unfiltered one
+    // would place a recipe the player is not looking at.
+    display: &std::collections::HashMap<String, String>,
     right: bool,
     w: f32,
     h: f32,
@@ -12477,14 +12681,22 @@ fn book_press(
     let (bl, bt, scale) = rewo_gpu::container::recipe_book_origin(w, h);
     let bx = ((screen.mouse.0 - bl as f64) / scale as f64).floor() as i32;
     let by = ((screen.mouse.1 - bt as f64) / scale as f64).floor() as i32;
-    let Some(view) = live_recipe_book(session, items, screen.book, Some((bx, by)))
-        .and_then(|b| b.view)
+    let query = rewo_world::recipe_search::normalize(&screen.book_search.value());
+    let Some(view) =
+        live_recipe_book(session, items, screen.book, Some((bx, by)), &query, display)
+            .and_then(|b| b.view)
     else {
         return false;
     };
     let hit = rb::book_hit(bx, by, view, view.tabs);
     let narrow = rb::width_too_narrow((w / scale) as i32);
-    match screen.book.press(hit, right) {
+    let action = screen.book.press(hit, right);
+    // The `EditBox` is the ONLY owner of "is the search focused" — see
+    // `focus_change`'s docs for why the duplicate flag it replaced was a bug.
+    if let Some(v) = rb::focus_change(hit) {
+        screen.book_search.set_focused(v);
+    }
+    match action {
         Some(rb::BookAction::ToggleFilter) => {
             // `toggleFiltering()` then `sendUpdateSettings()` — the local flag
             // moves first and the packet reports it, which is why this is one
@@ -12500,8 +12712,9 @@ fn book_press(
             // does not have — so it is consumed and does nothing, rather than
             // placing a recipe the player did not choose.
             if !right {
-                let recipe = live_recipe_book(session, items, screen.book, Some((bx, by)))
-                    .and_then(|b| b.slot_recipes.get(index).copied().flatten());
+                let recipe =
+                    live_recipe_book(session, items, screen.book, Some((bx, by)), &query, display)
+                        .and_then(|b| b.slot_recipes.get(index).copied().flatten());
                 if let Some(id) = recipe {
                     // `useMaxItems` is shift-held; Rewo does not track the
                     // modifier here yet, so a click always places one.
@@ -13628,6 +13841,10 @@ fn live_recipe_book(
     // size, and doing it once at the caller keeps the hover and the press
     // reading the same number.
     book_mouse: Option<(i32, i32)>,
+    // M99 — the search field's contents, already lowercased, and the item
+    // display-name map the search indexes.
+    query: &str,
+    display: &std::collections::HashMap<String, String>,
 ) -> Option<BookRender> {
     use rewo_world::recipe_book_screen as rb;
     let layout = session
@@ -13658,6 +13875,8 @@ fn live_recipe_book(
                 // M96 — the ingredient slots, tags resolved against the
                 // server's own `update_tags` payload.
                 ingredients: e.ingredients(&session.tags),
+                // M99 — what the search indexes.
+                search: search_entry_of(&e.display.result().items(), items, display),
             })
         })
         .collect();
@@ -13689,6 +13908,7 @@ fn live_recipe_book(
         cycle,
         state,
         book_mouse,
+        query,
     ))
 }
 
@@ -13706,6 +13926,37 @@ pub(crate) struct BookEntry<'a> {
     pub results: Vec<i32>,
     /// `None` when `craftingRequirements` was absent — never craftable.
     pub ingredients: Option<Vec<rewo_world::stacked_contents::Ingredient>>,
+    /// The result items' names and ids, lowercased, for the search (M99).
+    pub search: rewo_world::recipe_search::SearchEntry,
+}
+
+/// What the search indexes for one recipe's result items (M99).
+///
+/// `getTooltipLines` over the results, plus their registry keys. For Rewo the
+/// tooltip of a bare item id is its **display name** and nothing else, since
+/// every other line comes from a component and a recipe's result carries none —
+/// so this is exact rather than an approximation, and stops being exact only
+/// if results ever arrive with components.
+pub(crate) fn search_entry_of(
+    results: &[i32],
+    items: &rewo_data::items::Items,
+    display: &std::collections::HashMap<String, String>,
+) -> rewo_world::recipe_search::SearchEntry {
+    let mut out = rewo_world::recipe_search::SearchEntry::default();
+    for id in results {
+        let Some(name) = items.name(*id) else { continue };
+        // A missing translation falls back to the id's own path, prettified —
+        // the same fallback the tooltip takes, so a search finds what the
+        // tooltip shows.
+        let shown = display
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| display_name_of(name));
+        out.names.push(shown.to_lowercase());
+        let (ns, path) = name.split_once(':').unwrap_or(("minecraft", name));
+        out.ids.push((ns.to_lowercase(), path.to_lowercase()));
+    }
+    out
 }
 
 /// The book's per-frame state, from resolved inputs (M97).
@@ -13727,6 +13978,8 @@ pub(crate) fn book_render_from(
     state: rewo_world::recipe_book_screen::BookState,
     // The cursor in book coordinates, for the arrows' and filter's hover art.
     book_mouse: Option<(i32, i32)>,
+    // The search field's contents, already lowercased (M99).
+    query: &str,
 ) -> BookRender {
     use rewo_world::recipe_book_screen as rb;
     let flat: Vec<(i32, Option<i32>, &str)> =
@@ -13738,9 +13991,24 @@ pub(crate) fn book_render_from(
     // the SEARCH tab, whose categories are the book's whole set — so with the
     // selection pinned to 0 this shows everything the book has.
     let wanted = tabs[selected_tab].categories;
+    // `updateCollections`' stages, in order (M93z): the tab's membership, then
+    // the SEARCH, then the filter. The search stage is skipped entirely on an
+    // empty query rather than run with one — see `recipe_search::matches`.
     let mine: Vec<_> = all
         .iter()
         .filter(|c| wanted.contains(&c.category.as_str()))
+        .filter(|c| {
+            // A collection's searchable text is the union of its recipes',
+            // which is what `flatMap` over `getRecipes()` gives.
+            let mut e = rewo_world::recipe_search::SearchEntry::default();
+            for id in &c.recipes {
+                if let Some(src) = entries.iter().find(|x| x.id == *id) {
+                    e.names.extend(src.search.names.iter().cloned());
+                    e.ids.extend(src.search.ids.iter().cloned());
+                }
+            }
+            rewo_world::recipe_search::matches(&e, query)
+        })
         .collect();
     let total_pages = rb::total_pages(mine.len());
     let page = rb::clamp_page(state.page, mine.len(), false);

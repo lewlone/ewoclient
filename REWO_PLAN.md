@@ -76,10 +76,11 @@ craftable matcher, so the book finally greys what you cannot make — and found
 two of vanilla's own guards to be provably inert. **M97** closes M96's own
 recorded gap, grading the derivation between the solver and the chrome, and
 **M98** makes the book clickable — tabs, pages, the filter, and the two
-serverbound packets.
+serverbound packets. **M99** adds the search, and found that the suffix array
+vanilla indexes with is unnecessary for the one consumer that reads it.
 
-Current measurement, taken 2026-08-06 after M98: **2039 tests, 0 failures**
-(**world 790, net 613, gpu 255, data 212, app 113, mesh 45, proto 11** — read
+Current measurement, taken 2026-08-06 after M99: **2053 tests, 0 failures**
+(**world 799, net 613, gpu 255, data 212, app 118, mesh 45, proto 11** — read
 off the runner per crate, and they sum to 2039). **The earlier breakdowns in
 this paragraph were estimated, not measured**, and did not sum to the totals
 beside them; the totals were always a real sum, so only the splits were wrong.
@@ -2404,6 +2405,74 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M99 — the search box, and a suffix array the consumer does not need (2026-08-06)
+
+`updateCollections`' second stage — the one M93z modelled as `matches_search`
+and left unfed — plus typing into the field.
+
+**The suffix array is not needed for this consumer, and that is a measurement
+rather than a shortcut.** Vanilla indexes each collection into a `SuffixArray`,
+which adds every *suffix* of every indexed string, so `search(q)` returns the
+elements where `q` occurs anywhere. The array exists to make that fast and to
+return matches in a defined order — and **neither property is used here**: the
+result is poured into a set and read only through `contains`, and the survivors
+keep the order they already had (`removeIf`, not a re-sort). A plain `contains`
+is exactly equivalent for this consumer.
+
+**Two indexes, and a colon picks between them.** `FullTextSearchTree` holds a
+**name** index (the results' tooltip lines) and an **id** index (their registry
+keys), and `IdSearchTree.search` dispatches on the first `:`:
+
+- no colon → **names only**. A colon-less query does not search ids at all,
+  which is easy to get wrong because the tree holds both.
+- a colon → `namespace ∩ (path ∪ name)`, with both halves **trimmed**.
+
+For Rewo the "tooltip lines" of a result are its **display name** and nothing
+else — every other line comes from a component and a recipe's result arrives as
+a bare item id — so that is exact here rather than an approximation, and stops
+being exact the day results carry components.
+
+**An empty query skips the stage** rather than matching everything, and the two
+differ: an empty string is a substring of everything, so a collection with *no*
+searchable text is **kept** by the skip and **dropped** by a match-everything
+reading.
+
+**A duplicate flag was a bug, and removing it was the fix.** The first cut kept
+`search_focused` on `BookState` *and* mirrored it into the `EditBox`, whose
+`can_consume_input` gates every keystroke on its **own** flag — two places
+holding one fact. A test caught it (typing produced nothing), and then a mutation
+deleting the mirror **survived**, because nothing can drive `book_press` without
+a `PlaySession`. So the flag is gone: `focus_change` is a pure function of the
+hit, unit-tested and mutation-covered, and the `EditBox` is the only owner.
+*There is no mirror left to delete.* Better than covering the mirror — shrink
+the untestable surface instead of pretending to reach it.
+
+**Two more found by tests rather than by reading:**
+
+- The field is built with the **book's** maximum (50), not `EditBox::default`'s
+  32 — `ScreenState`'s `Default` is written out rather than derived for exactly
+  this one field, because a silently truncated search is invisible until someone
+  types past 32 characters.
+- A witness could not isolate the colon query's **name** half: it searched
+  `plank` against the name "Wooden Plank" and the path `oak_planks`, where
+  *both* match, so dropping the name half survived. `wooden` is in the name and
+  not the path. **Third time this session a fixture could not express its own
+  claim** (M93z's page, M98's clamp, this).
+
+**Measured.** **2053 tests / 0 failures**; `containershot` 89, `inventoryshot`
+152, `itemshot` 75, `handshot` 34, `mobshot` 246/246; demo PNG
+`2cc56b4acbfb92cb` byte-identical. **17 mutations, 17 killed.**
+`live --render-check` not re-run — M99 adds no render path; the field's text is
+not drawn, so nothing new reaches the frame.
+
+**Open.** The field's **text is not rendered**: it accepts keystrokes and filters
+the page, and nothing draws the characters or the caret. That is M93t's anvil
+seam one screen over. Also still open: the page counter text, the
+which-of-these overlay, ghost slots, recipe tooltips, `useMaxItems`, and the
+craft-slot half of `fillStackedContents` (M96).
+
+---
 
 ### M98 — the book takes clicks, and one it does not want is still swallowed (2026-08-06)
 

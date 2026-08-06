@@ -4419,6 +4419,43 @@ inside the 10-minute tool cap.
 `2cc56b4acbfb92cb` byte-identical; **205 mutations across M93a–y, 199 killed,
 2 shown equivalent, 1 alive by construction (named)**.
 
+### M99 — the search box, and a suffix array the consumer does not need
+
+`updateCollections`' second stage (M93z's unfed `matches_search`) plus typing.
+
+**The suffix array is unnecessary here, measured rather than assumed.** Vanilla
+indexes every *suffix*, so a search is a substring match; the array exists for
+speed and for a defined result order, and **neither is used** — the result goes
+into a set read only via `contains`, and survivors keep their existing order
+(`removeIf`, not a re-sort). `contains` is exactly equivalent.
+
+**Two indexes, a colon picks between them:** no colon → **names only** (the ids
+are *not* searched, though the tree holds them); a colon →
+`namespace ∩ (path ∪ name)` with both halves **trimmed**. For Rewo a result's
+"tooltip lines" are its display name alone — exact, since a recipe's result is a
+bare id with no components. **An empty query skips the stage** rather than
+matching everything: a collection with no searchable text is kept by the skip
+and dropped by a match-everything reading.
+
+**A duplicate flag was the bug and removing it was the fix.** The first cut kept
+`search_focused` on `BookState` *and* mirrored it into the `EditBox`, whose
+`can_consume_input` gates keystrokes on its **own** flag. A test caught it
+(typing produced nothing); then a mutation deleting the mirror **survived**,
+because `book_press` needs a `PlaySession`. So the flag is gone — `focus_change`
+is a pure function of the hit and the `EditBox` is the only owner. **Shrink the
+untestable surface rather than pretend to cover it.**
+
+Two more caught by tests: the field takes the **book's** max length (50), not
+`EditBox::default`'s 32, so `ScreenState`'s `Default` is written out rather than
+derived; and a witness could not isolate the colon query's name half because
+`plank` matches both "Wooden Plank" and `oak_planks` — third time this session a
+fixture could not express its own claim.
+
+**2053 tests**; containershot 89, inventoryshot 152, itemshot 75, handshot 34,
+mobshot 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical; **17 mutations, 17
+killed**. **Open:** the field's *text* is not drawn — it types and filters, and
+nothing renders the characters or caret (M93t's anvil seam, one screen over).
+
 ### M98 — the book takes clicks, and one it does not want is still swallowed
 
 Tabs, pages, the filter, hover, and the two serverbound packets. The book had
