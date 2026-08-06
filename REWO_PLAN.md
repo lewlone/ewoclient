@@ -81,10 +81,12 @@ vanilla indexes with is unnecessary for the one consumer that reads it. **M100**
 draws the field — text, caret, hint — and found its nine-sliced background
 degenerating to two blits, because the sprite is a 1-bit two-colour image.
 **M101** makes the caret blink, and in doing so found that the field it blinks
-in had never scrolled and that the anvil's had never been pinned.
+in had never scrolled and that the anvil's had never been pinned. **M102** closes
+M96's craft-slot approximation and finds that M96 had also walked the wrong
+range and never applied the predicate its own comment named.
 
-Current measurement, taken 2026-08-06 after M101: **2068 tests, 0 failures**
-(**world 805, net 613, gpu 255, data 212, app 127, mesh 45, proto 11** — read
+Current measurement, taken 2026-08-06 after M102: **2077 tests, 0 failures**
+(**world 809, net 613, gpu 255, data 212, app 132, mesh 45, proto 11** — read
 off the runner per crate, and they sum to 2039). **The earlier breakdowns in
 this paragraph were estimated, not measured**, and did not sum to the totals
 beside them; the totals were always a real sum, so only the splits were wrong.
@@ -2411,6 +2413,73 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M102 — the two crafting fills, and a fourth comment that described what the code did not do (2026-08-06)
+
+M96 recorded one approximation and left another unrecorded, and both are in the
+same eight lines. Vanilla builds `hasCraftable`'s contents from **two disjoint
+fills**; M96 wrote one of them, walked the wrong range for it, and named a
+predicate it never applied.
+
+```java
+player.getInventory().fillStackedContents(contents);   // the ITEMS
+menu.fillCraftSlotsStackedContents(contents);          // the GRID
+```
+
+**The range.** `Inventory.items` is armour + storage + hotbar + offhand — menu
+slots **5..46**. It contains neither the 2x2 crafting grid (1..5, which belongs
+to `InventoryMenu` and arrives through the *second* fill) nor the craft
+**result** (slot 0, which belongs to neither). M96 walked the whole 46-slot menu,
+which double-counts the grid **and** adds the result — so a recipe could read as
+craftable off its own output.
+
+**The predicate.** `accountSimpleStack` gates on `Inventory.isUsableForCrafting`
+= `!isDamaged() && !isEnchanted() && !has(CUSTOM_NAME)`. M96's comment named it
+and the code applied nothing, so a chipped pickaxe, an enchanted book and a
+renamed stack all counted. **That is the fourth comment this session found
+describing behaviour its code did not have** — M93t's `setCanLoseFocus` (M101),
+M96's own note, the `any_enchantments` doc below, and this.
+
+**`isEnchanted()` is the middle of three near-identical flags, and only one is
+right:**
+
+| field | means |
+|---|---|
+| `ItemSlot::enchanted` | `has_foil()` — the glint |
+| `ItemSlot::any_enchantments` | ENCHANTMENTS **or** STORED — the grindstone's `hasAnyEnchantments` |
+| `SlotText::is_enchanted` | ENCHANTMENTS alone — **`isEnchanted()`** |
+
+`any_enchantments`' own doc claimed it was *also* `isEnchanted()`; it is not, and
+the comment is corrected. An enchanted **book** separates them: its enchantments
+are *stored*, so it is usable for crafting and would still pass a grindstone's
+test. M93 recorded this trap one field over and it caught me one field back.
+
+**The two fills differ in gating, not just in range.** The crafting container
+calls `accountSimpleStack` (gated); the furnace **block entity** calls bare
+`accountStack` (ungated), and contributes its whole container **including the
+result slot**. So a damaged pickaxe in a furnace's fuel slot counts and the same
+pickaxe on a crafting grid does not — four lines apart in the decompile, and
+inverting either half is invisible without a fixture that has a damaged stack in
+the right place. There is one now.
+
+**A mutation deleting the craft-slot half survived**, because the fill sat in
+`live_recipe_book`, which needs a `PlaySession`. Extracted to
+`crafting_contents`, taking the max-stack lookup as a **closure** so it is a
+function of plain values — M97's lesson, fourth application, and the third time
+this session that *"move it so a test can reach it"* was the fix rather than a
+better witness.
+
+**Measured.** **2077 tests / 0 failures**; `containershot` 89, `inventoryshot`
+152, `itemshot` 75, `handshot` 34, `mobshot` 246/246; demo PNG
+`2cc56b4acbfb92cb` byte-identical. **12 mutations, 12 killed.** No render path
+changed.
+
+**Open.** The book's remaining pieces are the page counter text, the
+which-of-these overlay (`OverlayRecipeComponent`), ghost slots (`GhostSlots`,
+whose packet M93y decoded and nothing consumes), recipe tooltips, and
+`useMaxItems` — the shift modifier is not threaded to the press.
+
+---
 
 ### M101 — the caret blinks, and the field it blinks in never scrolled (2026-08-06)
 
