@@ -1628,6 +1628,28 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     // tabs and its filter this one means what the argument names say.
     "gui/sprites/widget/text_field.png",
     "gui/sprites/widget/text_field_highlighted.png",
+    // 118 — the which-of-these overlay's panel (M104). A 32x32 NINE-SLICE with
+    // border 4, and the only sprite in this list that is one: it is drawn at
+    // `cols * 25 + 8` by `rows * 25 + 8`, which is never 32x32, so it always
+    // takes the general path. `rewo_world::nine_slice` cuts it up.
+    "gui/sprites/recipe_book/overlay_recipe.png",
+    // 119..=126 — its buttons, two families of four, CRAFTING then FURNACE.
+    //
+    // The order inside each family is `getSprite`'s own two-way fork flattened
+    // craftable-first, hover innermost:
+    //   `OVERLAY_BUTTON + 2 * usize::from(!craftable) + usize::from(hovered)`
+    //
+    // Eight and not four because, exactly as with the filter toggle above, the
+    // two families are different art — and unlike the filter, which family a
+    // button wears is decided by the MENU rather than by the recipe it shows.
+    "gui/sprites/recipe_book/crafting_overlay.png",
+    "gui/sprites/recipe_book/crafting_overlay_highlighted.png",
+    "gui/sprites/recipe_book/crafting_overlay_disabled.png",
+    "gui/sprites/recipe_book/crafting_overlay_disabled_highlighted.png",
+    "gui/sprites/recipe_book/furnace_overlay.png",
+    "gui/sprites/recipe_book/furnace_overlay_highlighted.png",
+    "gui/sprites/recipe_book/furnace_overlay_disabled.png",
+    "gui/sprites/recipe_book/furnace_overlay_disabled_highlighted.png",
 ];
 
 /// The search field's background pair, **plain first** —
@@ -1645,6 +1667,16 @@ pub const BOOK_PAGE_ARROW: usize = 104;
 /// The filter toggle's two families of four, crafting then furnace.
 pub const BOOK_FILTER: usize = 108;
 pub const BOOK_FILTER_FURNACE: usize = 112;
+
+/// The which-of-these overlay's nine-sliced panel (M104).
+pub const BOOK_OVERLAY_PANEL: usize = 118;
+/// Its buttons — crafting family at this index, furnace family at `+ 4`, and
+/// within a family `+ 2 * usize::from(!craftable) + usize::from(hovered)`.
+pub const BOOK_OVERLAY_BUTTON: usize = 119;
+/// The `.mcmeta`'s declared sheet size and border for [`BOOK_OVERLAY_PANEL`]:
+/// `{"type": "nine_slice", "width": 32, "height": 32, "border": 4}`.
+pub const BOOK_OVERLAY_PANEL_SHEET: (i32, i32) = (32, 32);
+pub const BOOK_OVERLAY_PANEL_BORDER: i32 = 4;
 
 /// The loom's three pattern-button chromes, in `LoomScreen`'s test order:
 /// selected, highlighted, plain (M93q).

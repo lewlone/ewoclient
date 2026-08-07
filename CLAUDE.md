@@ -1635,14 +1635,14 @@ next unit of work is a **subsystem**, not a packet.*
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
-**Everything is shipped, gated and merged to `main`** as of 2026-08-03
-(M93) — **1860 tests / 0 failures** (all seven crates confirmed reporting),
-`mobshot` 246/246, `containershot` **49/49**, `inventoryshot` 152/152,
-`itemshot` 75/75, `handshot` 34/34, `live --render-check` 22/22 with validation
-ON and 0 VUIDs (M92's measurement — M93 adds no render path), demo PNG
-`2cc56b4acbfb92cb`. No branch or worktree holds a commit off
-`main`. The long-unmerged-branch risk closed on 2026-07-27 and has stayed
-closed; branch new work from `main` and keep it that way.
+**Everything is shipped, gated and merged to `main`** as of 2026-08-07
+(M104) — **2139 tests / 0 failures** (world 860, net 613, gpu 255, data 212,
+app 143, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
+`containershot` **96/96**, `inventoryshot` 152/152, `itemshot` 75/75, `handshot`
+34/34, `swingshot` 97/97, `live --render-check` **24/24** with validation ON and
+0 validation errors, demo PNG `2cc56b4acbfb92cb`. No branch or worktree holds a
+commit off `main`. The long-unmerged-branch risk closed on 2026-07-27 and has
+stayed closed; branch new work from `main` and keep it that way.
 
 > **⚠ §0.0's prose goes stale faster than its numbers.** The 2026-08-02 pass
 > found the handoff still claiming M57 at `aadd8e9` and still offering two
@@ -4455,6 +4455,81 @@ twice is a detector to check, not to trust.*
 mobshot 246/246; **`live --render-check` 23/23** validation ON 0 errors (run
 because `set_state` changed); demo PNG `2cc56b4acbfb92cb` byte-identical; **12
 mutations, 12 killed**.
+
+### M104 — the which-of-these overlay, and three clamps that round three different ways
+
+M98 wrote the gap into `BookAction::Recipe`'s own doc — *"Rewo has no overlay,
+so a right-click on a multi-recipe cell is reported and does nothing."* This
+reads that note.
+
+**`OverlayRecipeComponent.init` nudges the panel back on screen in whole 25-px
+steps, three times, and the three roundings are not stylistic.** The horizontal
+clamp truncates with a C-style `(int)` cast, so a positive quotient floors — an
+overlay overhanging by 1..24 px is not moved at all, and one overhanging by 38
+moves 25 and still overhangs by 13. The bottom clamp takes `Mth.ceil` of a
+**positive** quotient and is the only one guaranteed to clear its bound. The top
+clamp takes `Mth.ceil` of a **negative** one, and since `Mth.ceil` is a true
+ceiling, `ceil(-0.6) == 0` makes it a complete no-op below one step. Same
+function, opposite effect, decided by the sign alone. Reaching for a symmetric
+"clamp into the box" diverges on the whole right-hand column.
+
+**`centerY`'s `+ 13` is inert, and no fixture can catch it.** Every cell's `y`
+is `31 + 25r`, so `y ≡ 6 (mod 25)`, and the two candidate bounds are 13 apart —
+inside one quantisation step, so both overflows land in the same `ceil` bucket
+for every cell and every count. The witness was written asserting the opposite,
+failed, and became an exhaustive proof of inertness instead. It joins
+`extractRenderState`'s unread `int border = 4;`.
+
+**It opens on a right-click and accepts only left-clicks**, so a second
+right-click closes it. **An open overlay is modal** — the overlay branch is an
+unconditional `return true`, so a click on the arrows, the search box, the tabs
+or the menu's own slots underneath all reach it and nothing else. **Selecting
+does not close it** (only the else-branch calls `setVisible(false)`), which
+reads like an oversight and is what makes the feature usable. **And it is a
+snapshot, not a view**: `init` resolves everything once and `updateCollections`
+leaves it alone, so crafting while it is open does not re-sort or re-grey it —
+which is why `Open` is stored rather than recomputed.
+
+Smaller inversions: the 4-or-5 row width keys off the **total** (16 recipes are
+four rows of four, 17 are four rows of five); the padding is asymmetric (4/5 and
+5/4); the button is 24 on a 25 pitch so there **is** a gutter a click falls
+into; `Pos` is the ingredient's **centre**, because `scale(0.375F)` sits between
+two translates; the ingredient cycle is **one** level where the cell's is two,
+on the same clock; the button class follows the **menu**, not the display; and
+shaped centres through `PlaceRecipeHelper` while shapeless is a bare
+`i % 3, i / 3` with the 3 a literal.
+
+**`blitNineSlicedSprite` became tested geometry** in `rewo_world::nine_slice`.
+`rewo_gpu::screen::nine_slice` already exists and is left alone — different
+pass, different vertex format, and **no unit tests at all** — so this is the
+arithmetic on its own, with tests, rather than a silent second copy. On
+`overlay_recipe` the tile-vs-stretch choice is **unobservable** (flat centre,
+edge bands constant along their repeat axis), recorded so a green pixel gate is
+not read as having graded it.
+
+**The witnesses were wrong nine times and the code twice**, and the shapes
+repeat: a binding shadowed 200 lines away made three gate witnesses probe the
+recipe cell's corner (and the rename then missed the one using `c0y` alone); an
+`any` over two right-hand corners could only see total failure; two fixtures
+could not express their claim (a mutant equivalent *by construction*, and two
+**symmetric** shaped fixtures blind to a transposition — a 2x1 recipe, centring
+on one axis only, is what pins it); a control depended on what happened to be
+underneath (a button's centre and the cell it covers are both 139); and one
+witness counted quads instead of placing them.
+
+**67 mutations, 65 killed, 2 proven equivalent.** A killed battery **left a
+mutation on disk** when it hit the 10-minute cap and its `finally` never ran —
+caught by grepping the markers first. And `cargo run -q` swallowed a compile
+error, so a debug print that never appeared read as "branch not reached" rather
+than "did not build" — third detector error of that shape in the log.
+
+**2139 tests** (world 860, net 613, gpu 255, data 212, app 143, mesh 45, proto
+11); `containershot` 89 → **96**; **`live --render-check` 24/24** validation ON
+0 errors, with a new r24 that required splitting `book_quads_max` in two,
+because the claim is a *difference* and one max cannot see it; demo PNG
+`2cc56b4acbfb92cb` byte-identical. **Open:** overlay and recipe tooltips,
+`tryPlaceRecipe`'s `lastPlacedRecipe` guard (unmodelled since M98), `useMaxItems`,
+and the page counter text.
 
 ### M102 — the two crafting fills, and a fourth comment that described what the code did not do
 

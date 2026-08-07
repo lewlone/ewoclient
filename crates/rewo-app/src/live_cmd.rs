@@ -156,8 +156,18 @@ struct RenderCheck {
     /// origin, the layout's own slot rects — stayed unexercised here. That is
     /// the exact shape of the blind spot M86 was: a path nothing drives.
     container_frames: u64,
-    /// M94 — the most quads the recipe book drew in any frame.
+    /// M94 — the most quads the recipe book drew in any frame **with no
+    /// which-of-these overlay open**. Split from the field below by M104 so
+    /// the two are comparable; r23's threshold is a floor, so its meaning is
+    /// unchanged.
     book_quads_max: usize,
+    /// M104 — and the most it drew on a frame where one WAS open.
+    ///
+    /// A pair rather than one max, because the claim is a DIFFERENCE: an
+    /// overlay adds a nine-sliced panel and a button each. One max over the
+    /// whole run could not tell an overlay that drew from one that did not,
+    /// since the book alone already clears any absolute threshold.
+    book_overlay_quads_max: usize,
     /// The panel height the RENDERER was holding while a container was open.
     ///
     /// Read back from `WorldRenderer::container_panel_height`, not from the
@@ -413,6 +423,28 @@ impl RenderCheck {
                 "{} quads at peak (panel + {} crafting tabs + filter = {min_quads} with an empty grid)",
                 self.book_quads_max,
                 rewo_world::recipe_book_screen::CRAFTING_TABS.len()
+            ),
+        );
+        // M104 — and that the which-of-these overlay reached the windowed
+        // draw. Nothing here can right-click a recipe cell (that needs the
+        // cursor over a specific cell AND a server that has sent a
+        // multi-recipe group), so the `Open` is injected through the same
+        // `open_overlay` the click path calls — M17's rule, that injection is
+        // the deterministic proof where a live encounter depends on timing
+        // nothing here controls. What that leaves to the unit tests is the
+        // click ROUTING; what it proves is the render path, which is the only
+        // thing this gate can see and M86's whole reason for existing.
+        //
+        // The floor is derived from the claim rather than from the emitter: an
+        // overlay is at least one panel quad plus one button each, so three
+        // buttons must add at least four. Reading `overlay_chrome`'s own
+        // length here would make it self-calibrating.
+        row(
+            "r24 the which-of-these overlay was drawn in the windowed client",
+            self.book_overlay_quads_max >= self.book_quads_max + 4,
+            format!(
+                "{} quads at peak with an overlay open against {} without — at least a panel quad and one per button",
+                self.book_overlay_quads_max, self.book_quads_max
             ),
         );
         row(
@@ -3853,6 +3885,9 @@ fn run_headless(
             // Headless: a fixed clock, so a caret's blink cannot make the same
             // scene render two ways between runs.
             0,
+            // Headless never opens the which-of-these overlay: nothing can
+            // right-click a recipe cell without a cursor.
+            None,
         );
         headless_screen_labels = labels;
     } else {
@@ -4194,6 +4229,8 @@ struct LiveApp {
     brewing_injected: bool,
     /// M94 — whether `--render-check` has opened the recipe book yet.
     book_injected: bool,
+    /// M104 — whether it has injected the which-of-these overlay yet.
+    book_overlay_injected: bool,
     /// M94 — whether the crafting-table injection has happened.
     book_menu_injected: bool,
     /// M88 — whether `--render-check` has injected its container open yet.
@@ -5151,6 +5188,14 @@ impl LiveApp {
     }
 
     fn set_screen_open(&mut self, open: bool) {
+        // M104 — the which-of-these overlay does not survive the screen.
+        // `RecipeBookComponent.setVisible(false)` calls
+        // `recipeBookPage.setInvisible()`, and the component's `init` rebuilds
+        // the page from scratch — so neither closing a screen nor opening one
+        // can leave an overlay stranded over a book that has moved on. Cleared
+        // on OPEN as well as close, because it is a snapshot of a page that
+        // may no longer exist.
+        self.screen.book_overlay = None;
         if open {
             let (gw, gh) = self.gui_size();
             self.screen
@@ -5915,6 +5960,42 @@ impl LiveApp {
                     }
                 }
             }
+            // M104 — and then the which-of-these overlay, through the SAME
+            // `open_overlay` a right-click calls.
+            //
+            // Injected rather than clicked because a click needs the cursor
+            // over a particular cell AND a server that has sent a multi-recipe
+            // group, neither of which this gate controls — M17's rule. It must
+            // come after the crafting table (0.90), because `set_screen_open`
+            // clears the overlay: a snapshot of a page must not survive the
+            // screen it was taken on.
+            if !self.book_overlay_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.95 && self.book_menu_injected {
+                    // Only `filtering` and `furnace_family` are read out of
+                    // the view, and both are false for a crafting table's
+                    // unfiltered book — the rest is named so the fixture reads
+                    // as a whole `BookView` rather than a partial one.
+                    let view = rewo_world::recipe_book_screen::BookView {
+                        tabs: rewo_world::recipe_book_screen::CRAFTING_TABS.len(),
+                        selected_tab: 0,
+                        page: 0,
+                        total_pages: 1,
+                        shown: 1,
+                        filtering: false,
+                        furnace_family: false,
+                    };
+                    let collection = (0..3)
+                        .map(|i| rewo_world::recipe_overlay::Button {
+                            recipe: i,
+                            craftable: i == 0,
+                            slots: Vec::new(),
+                        })
+                        .collect();
+                    self.screen.book_overlay = Some(open_overlay(collection, 0, view));
+                    self.book_overlay_injected = true;
+                }
+            }
             // M92 — near the end, replace it with a BREWING STAND and give it
             // data, so the frame loop has to reach the overlay builder.
             //
@@ -6453,6 +6534,7 @@ impl LiveApp {
                     &book_query,
                     &self.screen.book_search,
                     self.started.elapsed().as_millis() as u64,
+                    self.screen.book_overlay.as_ref(),
                 );
                 self.screen_labels = labels;
                 // M94 — OUTSIDE the `container_panel_height` guard below: the
@@ -6460,10 +6542,16 @@ impl LiveApp {
                 // commonest screen with a book, so counting inside that guard
                 // measures zero forever. r23's first two red runs were this
                 // and the field placement it forced.
+                // M104 — split by whether an overlay was up, because the claim
+                // one frame over is a DIFFERENCE and not a threshold.
+                let overlay_up = self.screen.book_overlay.is_some();
                 if let Some(c) = self.check.as_mut() {
-                    c.book_quads_max = c
-                        .book_quads_max
-                        .max(state.world_renderer.container_panel_book_quads());
+                    let q = state.world_renderer.container_panel_book_quads();
+                    if overlay_up {
+                        c.book_overlay_quads_max = c.book_overlay_quads_max.max(q);
+                    } else {
+                        c.book_quads_max = c.book_quads_max.max(q);
+                    }
                 }
                 // M88 — read the panel back OUT of the renderer, after the
                 // draw path set it. Asking the open menu's layout instead
@@ -6904,6 +6992,7 @@ fn run_windowed(
         advanced_tooltips: false,
         container_injected: false,
         book_injected: false,
+        book_overlay_injected: false,
         book_menu_injected: false,
         brewing_injected: false,
         screen_forced_open: false,
@@ -9360,6 +9449,15 @@ mod tests {
             // M99 — no searchable text, which every witness below relies on
             // being inert: `matches` skips the stage on an empty query.
             search: Default::default(),
+            // M104 — a shapeless recipe whose ingredients are the crafting
+            // requirements, so a collection built from these has a grid the
+            // which-of-these overlay can draw.
+            shape: rewo_world::recipe_overlay::Shape::Shapeless {
+                ingredients: ingredients.map_or(0, |v| v.len()),
+            },
+            grid_items: ingredients
+                .map(|v| v.iter().map(|ids| ids.to_vec()).collect())
+                .unwrap_or_default(),
         }
     }
 
@@ -9752,6 +9850,119 @@ mod tests {
         assert_eq!(search_render(&e, "sword").slots.len(), 1);
         assert_eq!(search_render(&e, "apple").slots.len(), 1, "the OTHER member");
         assert_eq!(search_render(&e, "iron").slots.len(), 0);
+    }
+
+    // -- the which-of-these overlay's derivation (M104) ---------------------
+    //
+    // Between the model (which knows the arithmetic and no recipes) and the
+    // pixel gate (which is handed a finished `Open`) sits the step that turns
+    // a page cell into a placed popup. That step is what M92 found is untested
+    // by construction whenever a gate supplies what production derives.
+
+    fn book_view(furnace_family: bool, filtering: bool) -> rb96::BookView {
+        rb96::BookView {
+            tabs: 5,
+            selected_tab: 0,
+            page: 0,
+            total_pages: 1,
+            shown: 1,
+            filtering,
+            furnace_family,
+        }
+    }
+
+    fn button(recipe: i32, craftable: bool) -> rewo_world::recipe_overlay::Button {
+        rewo_world::recipe_overlay::Button { recipe, craftable, slots: Vec::new() }
+    }
+
+    /// A collection reaches the overlay craftable-first, and the flag travels
+    /// with the recipe rather than being recomputed against a later inventory.
+    #[test]
+    fn opening_the_overlay_promotes_the_craftable_recipes() {
+        let open = super::open_overlay(
+            vec![button(7, false), button(8, true), button(9, false)],
+            0,
+            book_view(false, false),
+        );
+        assert_eq!(
+            open.buttons.iter().map(|b| b.recipe).collect::<Vec<_>>(),
+            vec![8, 7, 9],
+            "craftable first, then the collection's own order"
+        );
+        assert_eq!(open.craftable_flags(), vec![true, false, false]);
+    }
+
+    /// Filtering drops the uncraftable half instead of greying it — so the
+    /// overlay a filtered book opens is SHORTER, not differently coloured.
+    #[test]
+    fn a_filtered_book_opens_an_overlay_of_craftable_recipes_only() {
+        let all = vec![button(7, false), button(8, true)];
+        let unfiltered = super::open_overlay(all.clone(), 0, book_view(false, false));
+        let filtered = super::open_overlay(all, 0, book_view(false, true));
+        assert_eq!(unfiltered.buttons.len(), 2);
+        assert_eq!(filtered.buttons.len(), 1);
+        assert_eq!(filtered.buttons[0].recipe, 8);
+    }
+
+    /// The panel is placed from the clicked CELL, through the clamps — and the
+    /// right-hand column is where the clamps show.
+    #[test]
+    fn the_overlay_is_placed_from_the_cell_that_opened_it() {
+        let two = vec![button(1, true), button(2, true)];
+        // Cell 0 (column 0) is well inside every bound, so the panel's origin
+        // IS the cell's corner.
+        let left = super::open_overlay(two.clone(), 0, book_view(false, false));
+        assert_eq!(left.origin, rb96::grid_slot(0));
+        // Cell 4 (column 4) overhangs, and the horizontal clamp moves it one
+        // button width — one, not two, because that clamp truncates.
+        let right = super::open_overlay(two, 4, book_view(false, false));
+        assert_eq!(right.origin.0, rb96::grid_slot(4).0 - 25);
+        assert_eq!(right.origin.1, rb96::grid_slot(4).1, "the row is untouched");
+    }
+
+    /// The button family follows the MENU, which is what `view` carries.
+    #[test]
+    fn the_overlays_family_comes_from_the_book_not_the_recipes() {
+        let one = vec![button(1, true), button(2, true)];
+        assert!(!super::open_overlay(one.clone(), 0, book_view(false, false)).furnace);
+        assert!(super::open_overlay(one, 0, book_view(true, false)).furnace);
+    }
+
+    /// `slot_collections` carries per-recipe affordability, where `slots`
+    /// carries only whether ANY of them is — and the two must not disagree.
+    #[test]
+    fn a_collections_recipes_are_graded_one_by_one_for_the_overlay() {
+        // Two recipes in one group: the first needs an item held, the second
+        // does not exist in the inventory at all.
+        let mut a = entry(1, Some(9), EQUIP, &[7], Some(&[&[10]]));
+        let mut b = entry(2, Some(9), EQUIP, &[7], Some(&[&[99]]));
+        a.group = Some(9);
+        b.group = Some(9);
+        let got = render(rb96::BookType::Crafting, false, &[a, b], &mut held(&[(10, 1)]), 0);
+        assert_eq!(got.slots[0].0, true, "the CELL is craftable — any of them");
+        let per = &got.slot_collections[0];
+        assert_eq!(
+            per.iter().map(|x| (x.recipe, x.craftable)).collect::<Vec<_>>(),
+            vec![(1, true), (2, false)],
+            "and the overlay sees them one by one, in the collection's order"
+        );
+    }
+
+    /// An ingredient that resolves to nothing contributes no grid position,
+    /// and because neither placement arm counts, the rest do not shift.
+    #[test]
+    fn an_unresolvable_ingredient_drops_its_position_and_moves_no_other() {
+        let full = entry(1, None, EQUIP, &[7], Some(&[&[10], &[11], &[12]]));
+        let holey = entry(2, None, MISC, &[7], Some(&[&[10], &[], &[12]]));
+        let got = render(rb96::BookType::Crafting, false, &[full, holey], &mut held(&[]), 0);
+        let slots_of = |n: usize| got.slot_collections[n][0].slots.clone();
+        let a = slots_of(0);
+        let b = slots_of(1);
+        assert_eq!(a.len(), 3);
+        assert_eq!(b.len(), 2, "the empty one is skipped");
+        // The survivors keep the positions they had, rather than closing up.
+        assert_eq!(b[0].0, a[0].0);
+        assert_eq!(b[1].0, a[2].0, "ingredient 2 did NOT slide into slot 1");
     }
 
     /// The field is built with the BOOK's maximum (50), not `EditBox`'s default
@@ -11900,6 +12111,13 @@ pub struct ScreenState {
     /// past it. That is why `ScreenState`'s `Default` is written out below
     /// rather than derived.
     pub book_search: rewo_world::edit_box::EditBox,
+    /// The open which-of-these overlay (M104), beside `book` for the same
+    /// reason `book_search` is: it holds a `Vec` and `BookState` is `Copy`.
+    ///
+    /// **A snapshot taken when the right-click opened it**, not a view — see
+    /// `recipe_overlay::Open`. Its lifetime is exactly "until the next click",
+    /// because every click while it is up either selects in it or shuts it.
+    pub book_overlay: Option<rewo_world::recipe_overlay::Open>,
     /// Cursor position in screen pixels. Only tracked while a screen is
     /// open; the rest of the time the cursor is grabbed and its position is
     /// meaningless.
@@ -11954,6 +12172,7 @@ impl Default for ScreenState {
             ),
             screens: Default::default(),
             book: Default::default(),
+            book_overlay: Default::default(),
             mouse: Default::default(),
             close_requests_seen: Default::default(),
             beacon: Default::default(),
@@ -12370,6 +12589,11 @@ fn apply_screen(
     book_field: &rewo_world::edit_box::EditBox,
     // M101 — wall-clock milliseconds, for both fields' caret blink.
     now_ms: u64,
+    // M104 — and the open which-of-these overlay, supplied for the same reason
+    // the four above are: it is screen-local state that `apply_screen` cannot
+    // reach, and supplying it is what lets a gate drive the render path the
+    // live client takes rather than a copy of it (M45/M93q).
+    book_overlay: Option<&rewo_world::recipe_overlay::Open>,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
@@ -12469,10 +12693,9 @@ fn apply_screen(
         (Some(_), Some(f)) => book_field_render(book_field, &f.advance, w, h, now_ms),
         _ => (Vec::new(), Vec::new()),
     };
-    wr.set_recipe_book(
-        book.as_ref()
-            .and_then(|b| recipe_book_panel(b, &book_field_fills)),
-    );
+    wr.set_recipe_book(book.as_ref().and_then(|b| {
+        recipe_book_panel(b, &book_field_fills, book_overlay, book_mouse)
+    }));
     wr.set_container_panel(container_panel(
         layout,
         session.menus.open(),
@@ -12516,6 +12739,7 @@ fn apply_screen(
             // recipe cells use (M95) — `slotSelectTime` is one object shared by
             // the page, the overlay and the ghost.
             (session.ticks as f32 / rewo_net::recipe_book::TICKS_TO_SWAP_SLOT).floor() as i32,
+            book_overlay,
         );
     if let Some((icon, label)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h) {
         icons.push(icon);
@@ -13140,6 +13364,29 @@ fn book_press(
     let (bl, bt, scale) = rewo_gpu::container::recipe_book_origin(w, h);
     let bx = ((screen.mouse.0 - bl as f64) / scale as f64).floor() as i32;
     let by = ((screen.mouse.1 - bt as f64) / scale as f64).floor() as i32;
+    // M104 — an OPEN which-of-these overlay eats every click, wherever it
+    // lands. `RecipeBookPage.mouseClicked`'s overlay branch is an unconditional
+    // `return true`, so while it is up the whole screen is modal: a click on
+    // the page's arrows, on the search box, on the tabs, or on the menu's own
+    // slots underneath all reach the overlay and nothing else.
+    if let Some(open) = screen.book_overlay.as_ref() {
+        match open.click_at(bx, by, right) {
+            rewo_world::recipe_overlay::Click::Select(i) => {
+                let recipe = open.buttons.get(i).map(|b| b.recipe);
+                // **The overlay STAYS OPEN.** The selecting branch does not
+                // call `setVisible(false)` — only the else does — so picking a
+                // variant leaves the popup up and you can pick another. That
+                // reads like an oversight and is what makes the feature usable.
+                if let Some(id) = recipe {
+                    if let Err(e) = session.place_recipe(id, false) {
+                        log::warn!("rewo: place_recipe: {e}");
+                    }
+                }
+            }
+            rewo_world::recipe_overlay::Click::Close => screen.book_overlay = None,
+        }
+        return true;
+    }
     let query = rewo_world::recipe_search::normalize(&screen.book_search.value());
     let Some(view) =
         live_recipe_book(session, items, screen.book, Some((bx, by)), &query, display)
@@ -13167,13 +13414,24 @@ fn book_press(
             true
         }
         Some(rb::BookAction::Recipe { index, right }) => {
-            // A right-click opens vanilla's which-of-these overlay, which Rewo
-            // does not have — so it is consumed and does nothing, rather than
-            // placing a recipe the player did not choose.
-            if !right {
-                let recipe =
-                    live_recipe_book(session, items, screen.book, Some((bx, by)), &query, display)
-                        .and_then(|b| b.slot_recipes.get(index).copied().flatten());
+            let render =
+                live_recipe_book(session, items, screen.book, Some((bx, by)), &query, display);
+            if right {
+                // M104 — open the which-of-these overlay, but only on a cell
+                // holding more than one recipe: `!button.isOnlyOption()`.
+                //
+                // `isOnlyOption` is `size() == 1`, not `size() > 1` negated —
+                // an empty collection opens an (empty) overlay in vanilla too.
+                let collection = render
+                    .as_ref()
+                    .and_then(|b| b.slot_collections.get(index))
+                    .cloned()
+                    .unwrap_or_default();
+                if collection.len() != 1 {
+                    screen.book_overlay = Some(open_overlay(collection, index, view));
+                }
+            } else {
+                let recipe = render.and_then(|b| b.slot_recipes.get(index).copied().flatten());
                 if let Some(id) = recipe {
                     // `useMaxItems` is shift-held; Rewo does not track the
                     // modifier here yet, so a click always places one.
@@ -14282,6 +14540,14 @@ pub(crate) struct BookRender {
     /// The recipe id each visible slot would place if clicked (M98) — the one
     /// the display cycle is on, not the collection's first.
     pub slot_recipes: Vec<Option<i32>>,
+    /// Per visible slot, its whole collection resolved into overlay buttons —
+    /// **in the collection's own order**, not the overlay's (M104).
+    ///
+    /// The promotion to craftable-first happens when the overlay is opened,
+    /// because that is when vanilla does it and because the overlay is a
+    /// snapshot: re-promoting each frame would re-sort an open overlay under
+    /// the cursor. See `rewo_world::recipe_overlay::Open`.
+    pub slot_collections: Vec<Vec<rewo_world::recipe_overlay::Button>>,
 }
 
 /// The recipe book for the menu currently on screen (M94), or `None` when it
@@ -14338,6 +14604,9 @@ fn live_recipe_book(
                 ingredients: e.ingredients(&session.tags),
                 // M99 — what the search indexes.
                 search: search_entry_of(&e.display.result().items(), items, display),
+                // M104 — the which-of-these overlay's ingredient grid.
+                shape: e.display.overlay_shape(),
+                grid_items: e.display.overlay_ingredients(),
             })
         })
         .collect();
@@ -14555,6 +14824,11 @@ pub(crate) struct BookEntry<'a> {
     pub ingredients: Option<Vec<rewo_world::stacked_contents::Ingredient>>,
     /// The result items' names and ids, lowercased, for the search (M99).
     pub search: rewo_world::recipe_search::SearchEntry,
+    /// How the which-of-these overlay lays this recipe's ingredients out, and
+    /// what each of them resolves to (M104). Read together: the shape decides
+    /// where ingredient `n` goes, the list decides what it shows.
+    pub shape: rewo_world::recipe_overlay::Shape,
+    pub grid_items: Vec<Vec<i32>>,
 }
 
 /// What the search indexes for one recipe's result items (M99).
@@ -14645,6 +14919,7 @@ pub(crate) fn book_render_from(
     let mut slot_items = Vec::new();
     let mut slot_shadowed = Vec::new();
     let mut slot_recipes = Vec::new();
+    let mut slot_collections = Vec::new();
     for c in &mine[range] {
         let per_entry: Vec<Vec<i32>> = c
             .recipes
@@ -14659,14 +14934,50 @@ pub(crate) fn book_render_from(
         let mut seen = per_entry.iter().flatten();
         let first = seen.next().copied();
         let same_result = seen.all(|i| Some(*i) == first);
-        // `hasCraftable()` — ANY of the collection's recipes is affordable.
+        // Per-recipe affordability, which the which-of-these overlay needs one
+        // by one (M104) where the cell needs only whether ANY of them is.
         // A recipe whose `craftingRequirements` were absent is never craftable,
         // which is `canCraft`'s own opening line rather than a default.
-        let craftable = c.recipes.iter().any(|id| {
-            find(id)
-                .and_then(|e| e.ingredients.as_ref())
-                .is_some_and(|ing| held.try_pick(ing, 1))
-        });
+        let per_recipe: Vec<bool> = c
+            .recipes
+            .iter()
+            .map(|id| {
+                find(id)
+                    .and_then(|e| e.ingredients.as_ref())
+                    .is_some_and(|ing| held.try_pick(ing, 1))
+            })
+            .collect();
+        // `hasCraftable()` — ANY of them.
+        let craftable = per_recipe.iter().any(|&c| c);
+        slot_collections.push(
+            c.recipes
+                .iter()
+                .zip(&per_recipe)
+                .map(|(&id, &can)| {
+                    let (shape, grid) = find(&id)
+                        .map(|e| (e.shape, e.grid_items.clone()))
+                        .unwrap_or((rewo_world::recipe_overlay::Shape::Other, Vec::new()));
+                    rewo_world::recipe_overlay::Button {
+                        recipe: id,
+                        craftable: can,
+                        // `if (!items.isEmpty())` — an ingredient that resolves
+                        // to nothing contributes no position, and because
+                        // neither placement arm derives its position from a
+                        // running counter, dropping one does not shift the rest.
+                        slots: rewo_world::recipe_overlay::grid_positions(
+                            book.furnace_family(),
+                            shape,
+                        )
+                        .into_iter()
+                        .filter_map(|p| {
+                            let items = grid.get(p.ingredient).cloned().unwrap_or_default();
+                            (!items.is_empty()).then_some((p, items))
+                        })
+                        .collect(),
+                    }
+                })
+                .collect(),
+        );
         slots.push((craftable, multiple));
         slot_items.push(rewo_net::recipe_book::display_item(&per_entry, cycle));
         slot_shadowed.push(multiple && same_result);
@@ -14718,6 +15029,50 @@ pub(crate) fn book_render_from(
         slot_items,
         slot_shadowed,
         slot_recipes,
+        slot_collections,
+    }
+}
+
+/// Build the which-of-these overlay a right-click on page cell `index` opens
+/// (M104).
+///
+/// A free function of plain values rather than a method reaching into the
+/// session, so a test can drive it — M97's lesson, and M92's finding one layer
+/// on: the arithmetic between "a collection" and "a placed popup" is exactly
+/// what neither the model's tests nor a pixel gate can see on its own.
+///
+/// The `centre` it passes is the one `RecipeBookPage.mouseClicked` passes, and
+/// its `+ 13` on the vertical half is *inert* — see
+/// `recipe_overlay::origin`'s tests for the proof, and note the constant is
+/// still written out rather than dropped.
+pub(crate) fn open_overlay(
+    collection: Vec<rewo_world::recipe_overlay::Button>,
+    index: usize,
+    view: rewo_world::recipe_book_screen::BookView,
+) -> rewo_world::recipe_overlay::Open {
+    use rewo_world::recipe_book_screen as rb;
+    use rewo_world::recipe_overlay as ro;
+    // Craftable first, and the flag rides along rather than being recomputed:
+    // the overlay is a snapshot, so its ordering and its greying are fixed at
+    // this moment together.
+    let pairs: Vec<(ro::Button, bool)> = collection
+        .into_iter()
+        .map(|b| {
+            let c = b.craftable;
+            (b, c)
+        })
+        .collect();
+    let buttons: Vec<ro::Button> =
+        ro::promote(&pairs, view.filtering).into_iter().map(|(b, _)| b).collect();
+    ro::Open {
+        origin: ro::origin(
+            rb::grid_slot(index),
+            buttons.len(),
+            (rb::IMAGE_W / 2, 13 + rb::IMAGE_H / 2),
+            ro::BUTTON_PITCH as f32,
+        ),
+        furnace: view.furnace_family,
+        buttons,
     }
 }
 
@@ -14844,22 +15199,37 @@ pub(crate) fn recipe_book_panel(
     // M100 — the search field's own quads, appended AFTER the chrome so the
     // field's background sits over the panel and its caret over that.
     field: &[(usize, rewo_gpu::container::PanelBlit)],
+    // M104 — the open which-of-these overlay, if any, and the cursor in book
+    // pixels for its hover. Drawn LAST, which is `graphics.nextStratum()`.
+    open: Option<&rewo_world::recipe_overlay::Open>,
+    book_mouse: Option<(i32, i32)>,
 ) -> Option<rewo_gpu::container::RecipeBookPanel> {
     use rewo_data::assets as a;
     use rewo_world::recipe_book_screen as rb;
     let view = b.view?;
     let mut blits = Vec::new();
     let mut overlays = Vec::new();
-    for q in rb::book_chrome(view, &b.slots, b.hover) {
+    let chrome = rb::book_chrome(view, &b.slots, b.hover)
+        .into_iter()
+        .chain(open.into_iter().flat_map(|o| {
+            rb::overlay_chrome(
+                o.origin,
+                &o.craftable_flags(),
+                o.furnace,
+                book_mouse.and_then(|(bx, by)| o.hovered(bx, by)),
+            )
+        }));
+    for q in chrome {
+        let (sx, sy, sw, sh) = q.src.unwrap_or((0, 0, q.w, q.h));
         let blit = rewo_gpu::container::PanelBlit {
             dx: q.x as f32,
             dy: q.y as f32,
             w: q.w as f32,
             h: q.h as f32,
-            sx: 0.0,
-            sy: 0.0,
-            sw: q.w as f32,
-            sh: q.h as f32,
+            sx: sx as f32,
+            sy: sy as f32,
+            sw: sw as f32,
+            sh: sh as f32,
             tint: [1.0; 4],
         };
         match q.sprite {
@@ -14893,6 +15263,16 @@ pub(crate) fn recipe_book_panel(
                 let base = if furnace { a::BOOK_FILTER_FURNACE } else { a::BOOK_FILTER };
                 overlays.push((base + rb::filter_sprite_offset(filtering, hovered), blit))
             }
+            // M104 — the only sprite in this list that is nine-sliced, so the
+            // one whose `src` is not the whole of it.
+            rb::BookSprite::OverlayPanel => overlays.push((a::BOOK_OVERLAY_PANEL, blit)),
+            rb::BookSprite::OverlayButton { furnace, craftable, hovered } => overlays.push((
+                a::BOOK_OVERLAY_BUTTON
+                    + if furnace { 4 } else { 0 }
+                    + 2 * usize::from(!craftable)
+                    + usize::from(hovered),
+                blit,
+            )),
         }
     }
     overlays.extend_from_slice(field);
@@ -15768,6 +16148,10 @@ pub(crate) fn screen_icons(
     // M103 — the ghost recipe's slots, and the cycle index its items rotate on.
     ghosts: &[rewo_world::ghost_slots::Ghost],
     cycle: i32,
+    // M104 — the open which-of-these overlay, whose ingredient grids are items
+    // too. Supplied rather than reached for, so a gate drives the same call
+    // the live client makes (M45).
+    overlay: Option<&rewo_world::recipe_overlay::Open>,
 ) -> (Vec<rewo_gpu::gui_item::GuiItem>, Vec<rewo_gpu::world::OwnedTextLine>) {
     let rects = menu_slot_rects(inv, w, h, book.is_some());
     let (_, _, scale) = rewo_gpu::container::gui_origin(w, h);
@@ -15849,6 +16233,42 @@ pub(crate) fn screen_icons(
                 16.0 * scale,
             ) {
                 icons.push(g);
+            }
+        }
+    }
+    // M104 — the which-of-these overlay's ingredient grids. On the BOOK's
+    // origin like the cells above, and drawn after them because the overlay is
+    // a stratum over the whole book.
+    //
+    // **6 px, not 16**: `scale(0.375F)` sits between two translates, so the
+    // trailing `-8, -8` is scaled with it and `Pos` is the ingredient's CENTRE.
+    // `item_rect` is where that composition lives.
+    //
+    // No count label, for the same reason the cells have none: `graphics.item`
+    // draws the model alone.
+    if let Some(o) = overlay {
+        let (bl, bt, _) = rewo_gpu::container::recipe_book_origin(w, h);
+        for (i, b) in o.buttons.iter().enumerate() {
+            let button = rewo_world::recipe_overlay::button_origin(o.origin, i, o.total());
+            for (pos, choices) in &b.slots {
+                // One-level cycle, on the same clock the cells use — so a cell
+                // and the overlay it opened can be showing different items on
+                // the same frame.
+                let Some(n) = rewo_world::recipe_overlay::select_ingredient(choices.len(), cycle)
+                else {
+                    continue;
+                };
+                let (ix, iy, size) = rewo_world::recipe_overlay::item_rect(button, *pos);
+                if let Some(g) = icon_for(
+                    items,
+                    trim_materials,
+                    rewo_world::inventory::ItemSlot::plain(choices[n], 1),
+                    bl + ix * scale,
+                    bt + iy * scale,
+                    size * scale,
+                ) {
+                    icons.push(g);
+                }
             }
         }
     }
