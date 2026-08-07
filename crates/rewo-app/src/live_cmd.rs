@@ -161,6 +161,13 @@ struct RenderCheck {
     /// the two are comparable; r23's threshold is a floor, so its meaning is
     /// unchanged.
     book_quads_max: usize,
+    /// M105 — frames on which the book drew its `x/y` page counter.
+    ///
+    /// A LABEL, not a quad, so `book_quads_max` cannot see it: the counter goes
+    /// through the text pass. It needs a book of more than one page, which
+    /// needs more unlocked recipes than a fresh player has — hence the caller
+    /// requirement, the same shape as r14's hotbar staging.
+    book_page_label_frames: u64,
     /// M104 — and the most it drew on a frame where one WAS open.
     ///
     /// A pair rather than one max, because the claim is a DIFFERENCE: an
@@ -445,6 +452,19 @@ impl RenderCheck {
             format!(
                 "{} quads at peak with an overlay open against {} without — at least a panel quad and one per button",
                 self.book_overlay_quads_max, self.book_quads_max
+            ),
+        );
+        // M105 — the counter reaches the windowed frame's label list. It is a
+        // caller requirement like r14's hotbar: a fresh player's book is one
+        // page and draws no counter at all, so `recipe give @s *` has to be
+        // staged. Failing closed on an unstaged run is the gate refusing to
+        // certify a path it never saw.
+        row(
+            "r25 the recipe book drew its page counter",
+            self.book_page_label_frames > 0,
+            format!(
+                "{} of {} frames — needs a multi-page book, i.e. REWO_PRECMD with `recipe give @s *`",
+                self.book_page_label_frames, self.frames
             ),
         );
         row(
@@ -6539,6 +6559,19 @@ impl LiveApp {
                     self.started.elapsed().as_millis() as u64,
                     self.screen.book_overlay.as_ref(),
                 );
+                // M105 — the page counter is a LABEL, so it is counted here
+                // rather than among the book's quads. Matched on the
+                // model's own geometry (the counter is the only text the book
+                // draws on that row) rather than on its content, which is a
+                // translation and would tie the gate to a language.
+                if let Some(c) = self.check.as_mut() {
+                    let (_, bt, sc) = rewo_gpu::container::recipe_book_origin(sw, sh);
+                    let row = bt
+                        + rewo_world::recipe_book_screen::PAGE_LABEL_Y as f32 * sc;
+                    if labels.iter().any(|l| (l.y - row).abs() < 0.5) {
+                        c.book_page_label_frames += 1;
+                    }
+                }
                 self.screen_labels = labels;
                 // M94 — OUTSIDE the `container_panel_height` guard below: the
                 // player's own inventory has no container panel and is the
