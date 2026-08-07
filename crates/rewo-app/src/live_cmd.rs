@@ -10202,6 +10202,50 @@ mod tests {
         assert!(c.shadow, "the 5-arg overload passes true");
     }
 
+    /// The FIRST tooltip of a frame wins, not the last (M106c).
+    ///
+    /// `setTooltipForNextFrameInternal`'s body is
+    /// `if (this.deferredTooltip == null || replaceExisting)` — so the
+    /// container's, set before the book's two, is the one that survives. The
+    /// call order reads the other way, which is what makes this worth pinning.
+    #[test]
+    fn the_first_tooltip_of_a_frame_wins() {
+        fn pick(
+            m: Option<&'static str>,
+            b: Option<&'static str>,
+            g: Option<&'static str>,
+        ) -> Option<&'static str> {
+            super::frame_tooltip(&mut (), |_| m, |_| b, |_| g)
+        }
+        assert_eq!(pick(Some("menu"), Some("book"), Some("ghost")), Some("menu"));
+        assert_eq!(pick(None, Some("book"), Some("ghost")), Some("book"));
+        assert_eq!(pick(None, None, Some("ghost")), Some("ghost"));
+        assert_eq!(pick(None, None, None), None);
+        // The menu's beats the ghost's with no page tooltip in play, which is
+        // the pair that is actually reachable together: a ghost sits ON a menu
+        // slot, while a page cell and a menu slot can never both be hovered.
+        assert_eq!(pick(Some("menu"), None, Some("ghost")), Some("menu"));
+        // And the later producers are not even evaluated once one has spoken —
+        // `deferredTooltip` is assigned, not compared.
+        let mut ran = 0;
+        assert_eq!(
+            super::frame_tooltip(
+                &mut ran,
+                |_| Some("menu"),
+                |n| {
+                    *n += 1;
+                    Some("book")
+                },
+                |n| {
+                    *n += 1;
+                    Some("ghost")
+                },
+            ),
+            Some("menu")
+        );
+        assert_eq!(ran, 0, "neither later producer ran");
+    }
+
     /// The hover highlight resolves through the placement the book MOVED
     /// (M106b).
     ///
@@ -12928,6 +12972,12 @@ fn apply_screen(
     // consolidation buys is that the five consumers can no longer disagree
     // with each other, which is the failure that actually happened.
     let book_open = book.is_some();
+    // The ghost's items rotate on the SAME 30-tick clock the book's recipe
+    // cells use (M95) — `slotSelectTime` is one object shared by the page, the
+    // overlay and the ghost. Bound once so the icons and the ghost's tooltip
+    // cannot be a frame apart on it.
+    let ghost_cycle =
+        (session.ticks as f32 / rewo_net::recipe_book::TICKS_TO_SWAP_SLOT).floor() as i32;
     // M105 — one call rather than two, so the composition of the field's text
     // with the page counter is inside a function a test can reach. This
     // function cannot be one: it needs a `PlaySession`.
@@ -12979,10 +13029,7 @@ fn apply_screen(
             merchant,
             book.as_ref(),
             &ghosts,
-            // The ghost's items rotate on the SAME 30-tick clock the book's
-            // recipe cells use (M95) — `slotSelectTime` is one object shared by
-            // the page, the overlay and the ghost.
-            (session.ticks as f32 / rewo_net::recipe_book::TICKS_TO_SWAP_SLOT).floor() as i32,
+            ghost_cycle,
             book_overlay,
         );
     if let Some((icon, label)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h) {
@@ -13058,7 +13105,11 @@ fn apply_screen(
     // The tooltip's box and its one line. Both need the font's advances, so a
     // build with no baked font simply draws no tooltip.
     let tooltip = wr.font_advance().and_then(|advance| {
-        let menu_tooltip = screen_tooltip(
+        // M106c — the frame's three producers, in vanilla's precedence. Named
+        // rather than chained with `or_else` here: see `frame_tooltip`.
+        frame_tooltip(
+        &mut glyphs,
+        |glyphs| screen_tooltip(
             menu,
             items,
             &baked.item_names,
@@ -13079,13 +13130,10 @@ fn apply_screen(
                 .game_mode()
                 .is_some_and(|m| m.is_spectator()),
             book_open,
-        );
-        // M106 — the book's cell tooltip, SECOND. Vanilla calls it after the
-        // container's and it still loses, because
-        // `setTooltipForNextFrameInternal` only assigns when the slot is empty:
-        // the first tooltip of a frame wins. Ordering these the way the calls
-        // read would invert it.
-        menu_tooltip.or_else(|| {
+        ),
+        // The book's cell tooltip, SECOND. Vanilla calls it AFTER the
+        // container's and it still loses — first-wins, not last-wins.
+        |glyphs| {
             book_tooltip(
                 book.as_ref()?,
                 book_overlay.is_some(),
@@ -13099,7 +13147,24 @@ fn apply_screen(
                 mouse,
                 (w, h),
             )
-        })
+        },
+        // And the ghost's, THIRD — `RecipeBookComponent.extractTooltip` runs
+        // the page's then the ghost's.
+        |glyphs| {
+            ghost_tooltip(
+                &ghosts,
+                ghost_cycle,
+                layout,
+                book_open,
+                items,
+                &baked.item_names,
+                &advance,
+                glyphs.as_deref_mut(),
+                mouse,
+                (w, h),
+            )
+        },
+        )
     });
     wr.set_container_tooltip(tooltip.as_ref().map(|(draw, _, _)| draw.clone()));
 
@@ -15465,6 +15530,27 @@ fn hovered_slot_position(
     h: f32,
     book_open: bool,
 ) -> Option<(i32, i32)> {
+    let slot = hovered_menu_slot(layout, mouse, w, h, book_open)?;
+    layout.position(slot).map(|(x, y)| (x as i32, y as i32))
+}
+
+/// `AbstractContainerScreen.getHoveredSlot` — which menu slot the cursor is
+/// over, through the book-aware placement.
+///
+/// **Rewo does not model `AbstractRecipeBookScreen.isHovering`'s narrow-window
+/// override**, which returns false for every slot while the book is visible and
+/// the window is under 379 GUI px — the case where the book covers the menu. In
+/// vanilla that makes `hoveredSlot` null there, suppressing the highlight, the
+/// item tooltip, the ghost tooltip and the number/Q/F keyboard actions
+/// together. It is one predicate with five consumers and belongs in its own
+/// change, not smuggled in with a tooltip.
+pub(crate) fn hovered_menu_slot(
+    layout: &'static rewo_world::menu_layout::MenuLayout,
+    mouse: (f64, f64),
+    w: f32,
+    h: f32,
+    book_open: bool,
+) -> Option<usize> {
     let (gx, gy) = rewo_gpu::container::screen_to_gui_placed(
         mouse,
         w,
@@ -15475,8 +15561,112 @@ fn hovered_slot_position(
             book_open,
         ),
     );
-    let slot = layout.slot_at(gx, gy)?;
-    layout.position(slot).map(|(x, y)| (x as i32, y as i32))
+    layout.slot_at(gx, gy)
+}
+
+/// [`hovered_menu_slot`] under its own name, so a gate can assert that a
+/// witness's cursor really is over the slot it thinks it is.
+///
+/// b22 first passed for the wrong reason: it compared a book-open cursor
+/// against a book-shut conversion, so the `None` it was reading came from the
+/// 77 px placement shift and not from the guard it names. A mutation deleting
+/// that guard survived. This exists so the witness can say which of the two it
+/// is measuring.
+pub(crate) fn hovered_menu_slot_for_gate(
+    layout: &'static rewo_world::menu_layout::MenuLayout,
+    mouse: (f64, f64),
+    w: f32,
+    h: f32,
+    book_open: bool,
+) -> Option<usize> {
+    hovered_menu_slot(layout, mouse, w, h, book_open)
+}
+
+/// Which of a frame's three tooltip producers wins (M106c).
+///
+/// `setTooltipForNextFrameInternal` is
+/// `if (this.deferredTooltip == null || replaceExisting)`, and `replaceExisting`
+/// is false on every path any of these three takes — so the **first** tooltip
+/// set in a frame wins, and the calls that follow it are discarded.
+///
+/// That inverts the reading of `AbstractRecipeBookScreen.extractRenderState`,
+/// which calls the container's `extractTooltip` and *then* the book's, as
+/// though the book overwrote it. Writing this as a named function rather than
+/// an `or_else` chain at the call site is the point: the parameters say which
+/// producer is which, so getting the order wrong is a named mistake instead of
+/// an anonymous one, and the rule has somewhere to be tested.
+///
+/// The producers are closures because two of the three are only worth
+/// evaluating when the earlier ones declined — the container's tooltip walks a
+/// component patch and the book's measures a page.
+///
+/// `ctx` is threaded through them rather than captured because all three want
+/// the same `&mut GlyphCache`, and three closures cannot hold it at once. The
+/// reborrow per call is what makes the laziness expressible at all.
+fn frame_tooltip<T, C>(
+    ctx: &mut C,
+    menu: impl FnOnce(&mut C) -> Option<T>,
+    book_page: impl FnOnce(&mut C) -> Option<T>,
+    ghost: impl FnOnce(&mut C) -> Option<T>,
+) -> Option<T> {
+    if let Some(t) = menu(ctx) {
+        return Some(t);
+    }
+    if let Some(t) = book_page(ctx) {
+        return Some(t);
+    }
+    ghost(ctx)
+}
+
+/// The tooltip of a GHOST ingredient under the cursor (M106c).
+///
+/// `GhostSlots.extractTooltip` — keyed on the hovered menu slot, showing the
+/// item the ghost's own cycle is on.
+///
+/// **This is where first-wins becomes observable.** The container's tooltip is
+/// set earlier in the frame and `setTooltipForNextFrameInternal` only assigns
+/// when nothing has claimed the slot, so a ghost drawn over a slot that already
+/// holds an item describes the REAL item, not the ghost. Ordering these
+/// producers the way their calls read — the book's last, therefore winning —
+/// would show the ghost's name over a filled slot, which is plausible and
+/// wrong.
+///
+/// **Gated on the book being open**, unlike the ghost's own render:
+/// `extractGhostRecipe` is called unconditionally from `extractSlots` while
+/// `extractTooltip` sits inside `if (this.isVisible())`. So shutting the book
+/// leaves the ghost painted and stops it describing itself.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ghost_tooltip(
+    ghosts: &[rewo_world::ghost_slots::Ghost],
+    cycle: i32,
+    layout: &'static rewo_world::menu_layout::MenuLayout,
+    book_open: bool,
+    items: &rewo_data::items::Items,
+    names: &std::collections::HashMap<String, String>,
+    advance: &[u8; 256],
+    glyphs: Option<&mut rewo_gpu::velvet_glyph::GlyphCache>,
+    mouse: (f64, f64),
+    (w, h): (f32, f32),
+) -> Option<(
+    rewo_gpu::container::TooltipDraw,
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<rewo_gpu::velvet_text::OwnedRun>,
+)> {
+    if !book_open {
+        return None;
+    }
+    let slot = hovered_menu_slot(layout, mouse, w, h, book_open)?;
+    // `this.ingredients.get(hoveredSlot)` — a map keyed by the slot, so a
+    // hovered slot with no ghost is simply absent rather than a miss to
+    // recover from.
+    let ghost = ghosts.iter().find(|g| g.slot == slot)?;
+    let item = ghost.item(cycle)?;
+    let item_name = items.name(item)?;
+    let lines = vec![vec![rewo_gpu::tooltip::Span::new(
+        names.get(item_name)?.to_string(),
+        rarity_color(stack_rarity(Some(item_name), None, false)),
+    )]];
+    tooltip_layout(lines, advance, glyphs, mouse, (w, h))
 }
 
 /// Every label and fill the open book contributes (M105).

@@ -3011,6 +3011,177 @@ fn overlays(
             )
             .0
         };
+        // -- the ghost's tooltip, and first-wins (M106c) ---------------------
+        //
+        // The one place the precedence is observable. A page cell and a menu
+        // slot can never both be hovered, but a GHOST sits ON a menu slot — so
+        // hovering a ghost over a slot that already holds an item asks both
+        // producers at once, and vanilla's answer is the REAL item, because
+        // `setTooltipForNextFrameInternal` only assigns when nothing has
+        // claimed the frame yet.
+        let ghost_of = |slot: usize, item: i32| vec![rewo_world::ghost_slots::Ghost {
+            slot,
+            items: vec![item],
+            is_result: false,
+        }];
+        // Menu slot 1 of a crafting table — the same slot b19 uses, and the
+        // one `shifted` has a dirt stack in.
+        let stone_id = book_items.id("stone").expect("stone");
+        let stone_name = baked
+            .item_names
+            .get("minecraft:stone")
+            .cloned()
+            .ok_or("containershot: no display name for minecraft:stone")?;
+        // The cursor over slot 1's centre, at the origin THAT CASE uses. Taking
+        // one position for both would let b22 pass on the placement shift
+        // rather than on the guard it names — which is what it did first, and
+        // a mutation deleting the guard survived.
+        let over_slot1_at = |book_open: bool| {
+            let (l, t, sc) = rewo_gpu::container::gui_origin_placed(
+                W as f32,
+                H as f32,
+                rewo_gpu::container::Placement::with_book(
+                    craft.image_w as f32,
+                    craft.image_h as f32,
+                    book_open,
+                ),
+            );
+            let (sx, sy) = craft.position(1).expect("slot 1");
+            (
+                (l + (sx as f32 + 8.0) * sc) as f64,
+                (t + (sy as f32 + 8.0) * sc) as f64,
+            )
+        };
+        let over_slot1 = over_slot1_at(true);
+        let ghost_says = |book_open: bool, slot: usize| -> Option<String> {
+            crate::live_cmd::ghost_tooltip(
+                &ghost_of(slot, stone_id),
+                0,
+                craft,
+                book_open,
+                &book_items,
+                &baked.item_names,
+                advance,
+                None,
+                over_slot1_at(book_open),
+                (W as f32, H as f32),
+            )
+            .and_then(|(_, lines, _)| lines.first().map(|l| l.text.clone()))
+        };
+        c.record(
+            "b21.a_hovered_ghost_names_the_ingredient_it_stands_for",
+            ghost_says(true, 1).as_deref() == Some(stone_name.as_str())
+                && ghost_says(true, 2).is_none(),
+            format!(
+                "a ghost on slot 1 gives {:?} under a cursor on slot 1; a ghost on slot 2 gives {:?} under the same cursor",
+                ghost_says(true, 1),
+                ghost_says(true, 2)
+            ),
+        );
+        // A tag ingredient stands for several items and rotates through them on
+        // the same 30-tick clock the cells use. Without this the fixture cannot
+        // express the claim at all: a one-item ghost makes `item(cycle)` and
+        // `items.first()` the same function, so a build that lost the cycle
+        // would pass b21 unchanged.
+        let alternating = vec![rewo_world::ghost_slots::Ghost {
+            slot: 1,
+            items: vec![dirt_id, stone_id],
+            is_result: false,
+        }];
+        let cycled = |cycle: i32| -> Option<String> {
+            crate::live_cmd::ghost_tooltip(
+                &alternating,
+                cycle,
+                craft,
+                true,
+                &book_items,
+                &baked.item_names,
+                advance,
+                None,
+                over_slot1,
+                (W as f32, H as f32),
+            )
+            .and_then(|(_, lines, _)| lines.first().map(|l| l.text.clone()))
+        };
+        c.record(
+            "b24.a_multi_item_ghost_names_the_one_its_cycle_is_on",
+            cycled(0).as_deref() == Some(dirt_name.as_str())
+                && cycled(1).as_deref() == Some(stone_name.as_str())
+                && cycled(2).as_deref() == Some(dirt_name.as_str()),
+            format!(
+                "cycle 0 -> {:?}, 1 -> {:?}, 2 -> {:?}; `GhostSlot.getItem` is `items.get(index % size)` and the tooltip must read the same index the ICON is drawn from",
+                cycled(0),
+                cycled(1),
+                cycled(2)
+            ),
+        );
+
+        c.record(
+            "b22.shutting_the_book_stops_the_ghost_describing_itself",
+            ghost_says(false, 1).is_none()
+                && ghost_says(true, 1).is_some()
+                // …and the shut case's cursor really is over slot 1, so the
+                // `None` is the guard and not a missed hit test.
+                && crate::live_cmd::hovered_menu_slot_for_gate(
+                    craft,
+                    over_slot1_at(false),
+                    W as f32,
+                    H as f32,
+                    false,
+                ) == Some(1),
+            format!(
+                "book open -> {:?}, shut -> {:?} with the cursor over slot 1 in BOTH cases; `extractGhostRecipe` is called unconditionally from `extractSlots` while `extractTooltip` sits inside `if (isVisible())`, so the ghost stays PAINTED either way",
+                ghost_says(true, 1),
+                ghost_says(false, 1)
+            ),
+        );
+        // b23 — the precedence itself, through the same two production
+        // functions the frame chains, in the frame's own order.
+        let menu_says = {
+            let (l, t, sc) = rewo_gpu::container::gui_origin_placed(
+                W as f32,
+                H as f32,
+                rewo_gpu::container::Placement::with_book(
+                    craft.image_w as f32,
+                    craft.image_h as f32,
+                    true,
+                ),
+            );
+            let (sx, sy) = craft.position(1).expect("slot 1");
+            crate::live_cmd::screen_tooltip(
+                &shifted,
+                &book_items,
+                &baked.item_names,
+                lang,
+                &[],
+                &baked.enchantment_text,
+                &Default::default(),
+                None,
+                rewo_gpu::tooltip::TooltipFlag::NORMAL,
+                advance,
+                None,
+                (
+                    (l + (sx as f32 + 8.0) * sc) as f64,
+                    (t + (sy as f32 + 8.0) * sc) as f64,
+                ),
+                (W as f32, H as f32),
+                craft,
+                None,
+                false,
+                true,
+            )
+            .and_then(|(_, lines, _)| lines.first().map(|l| l.text.clone()))
+        };
+        c.record(
+            "b23.a_real_item_beats_the_ghost_drawn_over_it",
+            menu_says.as_deref() == Some(dirt_name.as_str())
+                && ghost_says(true, 1).as_deref() == Some(stone_name.as_str()),
+            format!(
+                "slot 1 holds {dirt_name:?} and carries a {stone_name:?} ghost, and the two producers answer DIFFERENTLY under one cursor — the menu {menu_says:?}, the ghost {:?}. Which of them the frame keeps is `frame_tooltip`'s rule, pinned by a unit test; asserting it here as well would only be this gate re-deriving the same `or` and agreeing with itself.",
+                ghost_says(true, 1)
+            ),
+        );
+
         c.record(
             "b20.the_book_shift_is_real_at_this_window_size",
             (origin_of(true) - origin_of(false)).abs() > craft.image_w as f32 * 0.25,
