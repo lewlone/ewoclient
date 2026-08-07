@@ -1703,8 +1703,8 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-07
-(M111) — **2288 tests / 0 failures** (world 949, net 648, gpu 255, data 212,
-app 168, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
+(M112) — **2293 tests / 0 failures** (world 949, net 648, gpu 255, data 212,
+app 173, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, `live --render-check` **28/28** with
 validation ON and 0 validation errors, demo PNG `2cc56b4acbfb92cb`.
@@ -1712,8 +1712,11 @@ validation ON and 0 validation errors, demo PNG `2cc56b4acbfb92cb`.
 `ChatComponent`, the wrap under it, the `MessageSignatureCache` without which
 `delete_chat` cannot be read, the text, the backdrop fills (which took a colour
 channel on the HUD vertex), the **`ChatScreen`** you type into, and its
-scrollbar. What is left of chat all needs a subsystem Rewo lacks. No branch or
-worktree holds a commit off `main`. The long-unmerged-branch risk closed on 2026-07-27 and has
+scrollbar. What is left of chat all needs a subsystem Rewo lacks. **M112** then
+closed `isHovering`'s narrow-window override and found the recipe book's 77 px
+displacement missing from four more consumers — the click, the double-click, the
+drag and the item-hover highlight. No branch or worktree holds a commit off
+`main`. The long-unmerged-branch risk closed on 2026-07-27 and has
 stayed closed; branch new work from `main` and keep it that way.
 
 > **⚠ §0.0's prose goes stale faster than its numbers.** The 2026-08-02 pass
