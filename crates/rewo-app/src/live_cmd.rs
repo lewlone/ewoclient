@@ -161,6 +161,13 @@ struct RenderCheck {
     /// the two are comparable; r23's threshold is a floor, so its meaning is
     /// unchanged.
     book_quads_max: usize,
+    /// M111 — frames on which the chat SCROLLBAR was drawn.
+    ///
+    /// It exists only while the screen is open AND the backlog exceeds the box
+    /// (`virtualHeight != chatHeight`), so the gate injects 25 lines to reach
+    /// it — otherwise this would be a witness over a path the run cannot enter,
+    /// which is worse than no witness at all.
+    chat_scrollbar_frames: u64,
     /// M110 — frames on which the CHAT SCREEN was open and drew its input bar.
     ///
     /// Separate from `chat_line_frames`, which counts the read-only HUD box
@@ -518,6 +525,16 @@ impl RenderCheck {
             format!(
                 "{} of {} frames had the screen up with its input bar in the                  backdrop list",
                 self.chat_screen_frames, self.frames
+            ),
+        );
+        // M111 — and the scrollbar within it, which needs more chat than the
+        // box holds and so is a strictly narrower claim than r27's.
+        row(
+            "r28 the chat scrollbar was drawn",
+            self.chat_scrollbar_frames > 0,
+            format!(
+                "{} of {} frames drew the bar's two rects (needs a backlog past                  the focused box's 20 rows, which the run injects)",
+                self.chat_scrollbar_frames, self.frames
             ),
         );
         row(
@@ -6190,6 +6207,30 @@ impl LiveApp {
             if !self.chat_injected {
                 let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
                 if self.started.elapsed().as_secs_f32() >= limit * 0.2 {
+                    // M111 — 25 lines, because the scrollbar's guard is
+                    // `virtualHeight != chatHeight`: it does not exist until
+                    // there is more chat than the focused box's twenty rows,
+                    // and a run's own join messages come to about six. Without
+                    // these r28 would be a witness over a path the gate cannot
+                    // reach, which is worse than no witness.
+                    //
+                    // Injected as raw `system_chat` bodies through the
+                    // production router (M17's rule: injection is the
+                    // deterministic proof where a live trigger depends on
+                    // timing nothing here controls).
+                    if let Some(session) = self.session.as_mut() {
+                        let id = session.ids.cb_play_system_chat;
+                        for i in 0..25u8 {
+                            let text = format!("scrollbar filler {i}");
+                            let mut body: Vec<u8> = vec![8];
+                            body.extend_from_slice(&(text.len() as u16).to_be_bytes());
+                            body.extend_from_slice(text.as_bytes());
+                            body.push(0); // overlay = false
+                            if let Some(pid) = id {
+                                session.inject_packet(pid, &body);
+                            }
+                        }
+                    }
                     self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Message);
                     self.chat_injected = true;
                 }
@@ -7006,7 +7047,7 @@ impl LiveApp {
         // so a row's backdrop and its glyphs cannot disagree about which rows
         // exist. Set every frame, including when it is empty: a stale backdrop
         // under nothing is a black bar hanging over the world.
-        let mut backdrops = chat_backdrops(
+        let mut backdrops = hud_fills(
             &session.chat,
             session.ticks as i32,
             px,
@@ -7020,11 +7061,27 @@ impl LiveApp {
             let gw = (extent.width as f32 / px) as i32;
             let gh = (extent.height as f32 / px) as i32;
             backdrops.push(chat_input_backdrop(px, gw, gh));
+            // M111 — the scrollbar, which only exists while the screen is up
+            // (`isForeground`). It reads the same `visible_lines` count the
+            // rows do, because vanilla passes `forEachLine`'s own return here.
+            let bar = chat_scrollbar(
+                &session.chat,
+                session.ticks as i32,
+                px,
+                extent.height as f32,
+                &rewo_world::chat::ChatOptions::default(),
+            );
+            if !bar.is_empty() {
+                if let Some(c) = self.check.as_mut() {
+                    c.chat_scrollbar_frames += 1;
+                }
+            }
+            backdrops.extend(bar);
             if let Some(c) = self.check.as_mut() {
                 c.chat_screen_frames += 1;
             }
         }
-        state.world_renderer.set_chat_backdrops(backdrops);
+        state.world_renderer.set_hud_fills(backdrops);
         // The input bar goes on the same list, after the rows, so it sits over
         // them the way `ChatScreen.extractRenderState` draws its fill before
         // handing off to the chat component — one list, and the order in it is
@@ -7654,20 +7711,56 @@ fn chat_input_lines(
     out
 }
 
-/// The bar behind the input, as a [`rewo_gpu::hud::ChatBackdrop`].
+/// The chat scrollbar's two rects (M111), in screen pixels.
+///
+/// Reachable only while the chat screen is open, so the caller gates it — and
+/// the visible-line count is `forEachLine`'s own return, which is why it comes
+/// from the same `visible_lines` the rows and their fills read rather than
+/// from `linesPerPage`: a page that is not full gives a shorter thumb.
+fn chat_scrollbar(
+    chat: &rewo_world::chat::ChatComponent,
+    gui_tick: i32,
+    px: f32,
+    screen_h: f32,
+    opts: &rewo_world::chat::ChatOptions,
+) -> Vec<rewo_gpu::hud::HudFill> {
+    let chat_px = px * opts.scale as f32;
+    let chat_bottom = ((screen_h / chat_px) - rewo_world::chat::BOTTOM_MARGIN as f32).floor();
+    let max_width = (opts.width() as f32 / opts.scale as f32).ceil();
+    let visible = chat.visible_lines(gui_tick, true, opts).len() as i32;
+    chat.scrollbar(visible, chat_bottom as i32, max_width as i32, opts)
+        .into_iter()
+        .flatten()
+        .map(|r| rewo_gpu::hud::HudFill {
+            // The pose is translated by `MESSAGE_INDENT` before these, exactly
+            // as it is before the rows' fills.
+            x: (r.x + rewo_world::chat::MESSAGE_INDENT) as f32 * chat_px,
+            y: r.y as f32 * chat_px,
+            w: r.w as f32 * chat_px,
+            h: r.h as f32 * chat_px,
+            alpha: r.alpha as f32 / 255.0,
+            rgb: srgb_bytes_to_linear(r.rgb),
+        })
+        .collect()
+}
+
+/// The bar behind the input, as a [`rewo_gpu::hud::HudFill`].
 ///
 /// `fill(2, height - 14, width - 2, height - 2, getBackgroundColor(Integer.MIN_VALUE))`
 /// — a fixed alpha 128, which does **not** follow the text-background slider
 /// the chat rows' own fills read. See
 /// [`rewo_world::chat_screen::INPUT_BACKDROP_ALPHA`].
-fn chat_input_backdrop(px: f32, gui_w: i32, gui_h: i32) -> rewo_gpu::hud::ChatBackdrop {
+fn chat_input_backdrop(px: f32, gui_w: i32, gui_h: i32) -> rewo_gpu::hud::HudFill {
     let (x, y, w, h) = rewo_world::chat_screen::input_backdrop_rect(gui_w, gui_h);
-    rewo_gpu::hud::ChatBackdrop {
+    rewo_gpu::hud::HudFill {
         x: x as f32 * px,
         y: y as f32 * px,
         w: w as f32 * px,
         h: h as f32 * px,
         alpha: rewo_world::chat_screen::INPUT_BACKDROP_ALPHA,
+        // `getBackgroundColor` builds it with `colorFromFloat(_, 0, 0, 0)` —
+        // black, like the rows'.
+        rgb: [0.0; 3],
     }
 }
 
@@ -7745,6 +7838,22 @@ fn chat_lines(
         .collect()
 }
 
+/// An 0xRRGGBB byte triple into the LINEAR space the HUD's vertex tint
+/// multiplies in.
+///
+/// The attachment is SRGB and the atlas is an SRGB image, so `texture()` has
+/// already decoded by the time the tint applies — a caller handing over the
+/// stored byte would be a third of a stop too bright. Black hid this for two
+/// milestones because it is 0 in both spaces; the scrollbar's `0x3333AA` does
+/// not. Same finding as M50's glint, one pass over.
+/// **Built on `rewo_gpu`'s per-channel `srgb_to_linear`** rather than a second
+/// transfer function: two copies of a curve are two chances to differ by a
+/// hundredth, and this one is already the renderer's.
+fn srgb_bytes_to_linear(rgb: u32) -> [f32; 3] {
+    let ch = |shift: u32| srgb_to_linear(((rgb >> shift) & 0xFF) as f32 / 255.0);
+    [ch(16), ch(8), ch(0)]
+}
+
 /// The chat box's backdrop fills (M109), in GUI pixels.
 ///
 /// ```java
@@ -7774,14 +7883,14 @@ fn chat_lines(
 ///   The text's multiplier has a 0.1 floor (`chatOpacity * 0.9 + 0.1`) and the
 ///   background's has none, so at "Text Background: 0" the fill vanishes
 ///   entirely while the text stays faintly visible.
-fn chat_backdrops(
+fn hud_fills(
     chat: &rewo_world::chat::ChatComponent,
     gui_tick: i32,
     px: f32,
     screen_h: f32,
     opts: &rewo_world::chat::ChatOptions,
     focused: bool,
-) -> Vec<rewo_gpu::hud::ChatBackdrop> {
+) -> Vec<rewo_gpu::hud::HudFill> {
     let chat_px = px * opts.scale as f32;
     let chat_bottom = ((screen_h / chat_px) - rewo_world::chat::BOTTOM_MARGIN as f32).floor();
     let entry_height = opts.entry_height() as f32;
@@ -7793,7 +7902,7 @@ fn chat_backdrops(
         .map(|line| {
             let entry_bottom = chat_bottom - line.index as f32 * entry_height;
             let entry_top = entry_bottom - entry_height;
-            rewo_gpu::hud::ChatBackdrop {
+            rewo_gpu::hud::HudFill {
                 // `fill(-4, …)` under a pose translated by +4.
                 x: (rewo_world::chat::MESSAGE_INDENT as f32 - 4.0) * chat_px,
                 y: entry_top * chat_px,
@@ -7801,6 +7910,8 @@ fn chat_backdrops(
                 w: (max_width + 12.0) * chat_px,
                 h: entry_height * chat_px,
                 alpha: line.alpha * bg,
+                // `ARGB.black(a)` sets only the alpha byte.
+                rgb: [0.0; 3],
             }
         })
         .collect()
@@ -9910,7 +10021,7 @@ mod tests {
     #[test]
     fn the_backdrop_is_asymmetric_about_the_text() {
         let opts = rewo_world::chat::ChatOptions::default();
-        let b = super::chat_backdrops(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts, false);
+        let b = super::hud_fills(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts, false);
         assert_eq!(b.len(), 1);
         // Four pixels left of the text, which sits at 4.
         assert_eq!(b[0].x, 0.0);
@@ -9926,7 +10037,7 @@ mod tests {
     fn each_fill_covers_its_own_row_and_meets_the_next() {
         let opts = rewo_world::chat::ChatOptions::default();
         let c = chat_fixture(3, 0);
-        let b = super::chat_backdrops(&c, 0, 1.0, 720.0, &opts, false);
+        let b = super::hud_fills(&c, 0, 1.0, 720.0, &opts, false);
         let l = super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3], false);
         assert_eq!(b.len(), l.len());
         for i in 0..b.len() {
@@ -9948,10 +10059,10 @@ mod tests {
         let mut opts = rewo_world::chat::ChatOptions::default();
         let c = chat_fixture(1, 0);
         // Default: background 0.5, text 1.0.
-        assert_eq!(super::chat_backdrops(&c, 0, 1.0, 720.0, &opts, false)[0].alpha, 0.5);
+        assert_eq!(super::hud_fills(&c, 0, 1.0, 720.0, &opts, false)[0].alpha, 0.5);
         assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3], false)[0].alpha, 1.0);
         opts.text_background_opacity = 0.0;
-        assert_eq!(super::chat_backdrops(&c, 0, 1.0, 720.0, &opts, false)[0].alpha, 0.0);
+        assert_eq!(super::hud_fills(&c, 0, 1.0, 720.0, &opts, false)[0].alpha, 0.0);
         // The text is untouched by it — a shared multiplier would zero both.
         assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3], false)[0].alpha, 1.0);
     }
@@ -9963,10 +10074,10 @@ mod tests {
         let opts = rewo_world::chat::ChatOptions::default();
         let c = chat_fixture(1, 0);
         // 190 ticks: half through the fade, squared -> 0.25, times bg 0.5.
-        let b = super::chat_backdrops(&c, 190, 1.0, 720.0, &opts, false);
+        let b = super::hud_fills(&c, 190, 1.0, 720.0, &opts, false);
         assert!((b[0].alpha - 0.125).abs() < 1e-5);
         // Fully faded rows are not emitted at all.
-        assert!(super::chat_backdrops(&c, 200, 1.0, 720.0, &opts, false).is_empty());
+        assert!(super::hud_fills(&c, 200, 1.0, 720.0, &opts, false).is_empty());
     }
 
     /// `maxWidth` is a CEIL here and a FLOOR in the wrap budget. They agree at
@@ -9976,7 +10087,7 @@ mod tests {
         let mut opts = rewo_world::chat::ChatOptions::default();
         opts.scale = 0.75;
         // 320 / 0.75 = 426.66… -> ceil 427, floor 426.
-        let b = super::chat_backdrops(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts, false);
+        let b = super::hud_fills(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts, false);
         let chat_px = 0.75_f32;
         assert!(((b[0].w / chat_px) - (427.0 + 12.0)).abs() < 1e-3, "{}", b[0].w / chat_px);
     }
@@ -10040,8 +10151,8 @@ mod tests {
         assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3], true).len(), 20);
         // …and the fills follow the text, so a taller box does not draw ten
         // rows of glyphs over twenty rows of backdrop.
-        assert_eq!(super::chat_backdrops(&c, 0, 1.0, 720.0, &opts, false).len(), 10);
-        assert_eq!(super::chat_backdrops(&c, 0, 1.0, 720.0, &opts, true).len(), 20);
+        assert_eq!(super::hud_fills(&c, 0, 1.0, 720.0, &opts, false).len(), 10);
+        assert_eq!(super::hud_fills(&c, 0, 1.0, 720.0, &opts, true).len(), 20);
 
         // At 300 ticks every message is long faded, and the focused view shows
         // them anyway — `AlphaCalculator.FULLY_VISIBLE` rather than
@@ -10050,6 +10161,52 @@ mod tests {
         let focused = super::chat_lines(&c, 300, 1.0, 720.0, &opts, [1.0; 3], true);
         assert_eq!(focused.len(), 20);
         assert!(focused.iter().all(|l| l.alpha == 1.0));
+    }
+
+    /// The scrollbar reaches the frame's fill list, in screen pixels, and its
+    /// colour is converted OUT of sRGB.
+    ///
+    /// The conversion is the half that hides: black is 0 in both spaces, so
+    /// M109 and M110's fills could pass their bytes straight through and this
+    /// is the first fill whose colour is not black.
+    #[test]
+    fn the_scrollbar_reaches_the_frame_in_linear_colour() {
+        let opts = rewo_world::chat::ChatOptions::default();
+        let c = chat_fixture(30, 0);
+        let bars = super::chat_scrollbar(&c, 0, 1.0, 720.0, &opts);
+        assert_eq!(bars.len(), 2, "a body and a highlight");
+        // `scrollBarStartX = maxWidth + 4`, plus the pose's MESSAGE_INDENT.
+        assert_eq!(bars[0].x, 328.0);
+        assert_eq!((bars[0].w, bars[1].w), (2.0, 1.0));
+        assert_eq!(bars[1].x, 329.0);
+        // 96/255.
+        assert!((bars[0].alpha - 96.0 / 255.0).abs() < 1e-6);
+        // 0x3333AA's blue channel decoded: (0xAA/255 + 0.055)/1.055 ^ 2.4.
+        let expect_b = ((0xAA as f32 / 255.0 + 0.055) / 1.055).powf(2.4);
+        assert!((bars[0].rgb[2] - expect_b).abs() < 1e-5);
+        // …and NOT the raw byte, which is what a pass-through would give.
+        assert!((bars[0].rgb[2] - 0xAA as f32 / 255.0).abs() > 0.1);
+        // The highlight is a light grey, brighter than the body in every
+        // channel — a swap would be invisible to a single-channel check.
+        for i in 0..3 {
+            assert!(bars[1].rgb[i] > bars[0].rgb[i], "channel {i}");
+        }
+    }
+
+    /// Nothing to scroll, nothing drawn — and the fills list is otherwise
+    /// unchanged, so a short chat does not gain a stray rect.
+    #[test]
+    fn a_chat_that_fits_draws_no_scrollbar() {
+        let opts = rewo_world::chat::ChatOptions::default();
+        assert!(super::chat_scrollbar(&chat_fixture(5, 0), 0, 1.0, 720.0, &opts).is_empty());
+        assert!(super::chat_scrollbar(
+            &rewo_world::chat::ChatComponent::new(),
+            0,
+            1.0,
+            720.0,
+            &opts
+        )
+        .is_empty());
     }
 
     /// The input field's caret sits after the text before the cursor, and the

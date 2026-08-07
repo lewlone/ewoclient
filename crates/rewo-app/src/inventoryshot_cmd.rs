@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 157;
+const EXPECTED_WITNESSES: usize = 158;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -4300,7 +4300,7 @@ fn pixels_inner(
     // ── M109: the chat backdrop's tint reaches the fragment ─────────────────
     //
     // These grade the PASS, not the geometry: the rects are hand-built here so
-    // a mutation to `chat_backdrops`' arithmetic cannot make them pass, and
+    // a mutation to `hud_fills`' arithmetic cannot make them pass, and
     // conversely the arithmetic is graded by unit tests in `live_cmd` that
     // never touch a GPU. Splitting them is what stops the gate re-deriving the
     // rule it is checking (M93q).
@@ -4314,14 +4314,15 @@ fn pixels_inner(
     // The hotbar is 182x22 centred at the bottom; at 256x256 the GUI scale is 1,
     // so it spans y 234..256. A band inside it, clear of the icon rows.
     let (bx, by, bw, bh) = (40u32, 236u32, 170u32, 8u32);
-    let band = rewo_gpu::hud::ChatBackdrop {
+    let band = rewo_gpu::hud::HudFill {
         x: bx as f32,
         y: by as f32,
         w: bw as f32,
         h: bh as f32,
         alpha: 0.5,
+        rgb: [0.0; 3],
     };
-    wr.set_chat_backdrops(vec![band]);
+    wr.set_hud_fills(vec![band]);
     let dimmed = shot(gpu, off, wr, &[])?;
     let n = changed(&dimmed, &hud_only, bx, by, bw, bh);
     c.record(
@@ -4341,7 +4342,7 @@ fn pixels_inner(
 
     // The alpha is a varying, not a baked texel: doubling it darkens strictly
     // more. A constant would leave these two frames identical.
-    wr.set_chat_backdrops(vec![rewo_gpu::hud::ChatBackdrop {
+    wr.set_hud_fills(vec![rewo_gpu::hud::HudFill {
         alpha: 0.25,
         ..band
     }]);
@@ -4387,19 +4388,43 @@ fn pixels_inner(
     // performance property this gate cannot see and does not claim. What is
     // asserted here is the identity itself, which is what stops a
     // fully-faded row leaving a visible black bar.
-    wr.set_chat_backdrops(vec![rewo_gpu::hud::ChatBackdrop {
+    wr.set_hud_fills(vec![rewo_gpu::hud::HudFill {
         alpha: 0.0,
         ..band
     }]);
     let zero = shot(gpu, off, wr, &[])?;
-    wr.set_chat_backdrops(Vec::new());
+    wr.set_hud_fills(Vec::new());
     let cleared = shot(gpu, off, wr, &[])?;
+
+    // M111 — the fill's COLOUR reaches the fragment, not only its alpha.
+    //
+    // Every fill before the scrollbar was black, so `rgb` could have been
+    // dropped on the floor and nothing here would have moved. A white fill
+    // over the same band must BRIGHTEN it, which black cannot do at any alpha.
+    wr.set_hud_fills(vec![rewo_gpu::hud::HudFill {
+        rgb: [1.0; 3],
+        ..band
+    }]);
+    let lightened = shot(gpu, off, wr, &[])?;
+    let brighter = sum(&lightened) > sum(&hud_only);
+    let darker = sum(&dimmed) < sum(&hud_only);
+    c.record(
+        "cb6.the_fills_colour_reaches_the_fragment_not_only_its_alpha",
+        brighter && darker,
+        format!(
+            "band luminance {} white > {} unfilled > {} black, at the same alpha              — the two directions are the witness, because a dropped `rgb`              leaves every fill black and only the darkening half would still              pass",
+            sum(&lightened),
+            sum(&hud_only),
+            sum(&dimmed)
+        ),
+    );
+    wr.set_hud_fills(Vec::new());
     c.record(
         "cb4.a_zero_alpha_fill_and_an_empty_list_are_both_byte_identical_to_none",
         zero == hud_only && cleared == hud_only,
         format!(
             "zero-alpha {} and empty-list {} against the unfilled frame — the second \
-             half is the sensitivity partner for `set_chat_backdrops` REPLACING \
+             half is the sensitivity partner for `set_hud_fills` REPLACING \
              rather than accumulating, which is what stops a stale black bar \
              hanging over the world after the last message fades",
             if zero == hud_only { "matches" } else { "DIFFERS" },
@@ -4460,7 +4485,7 @@ fn pixels_inner(
             probe.0, probe.1, probe.2
         ),
     );
-    wr.set_chat_backdrops(Vec::new());
+    wr.set_hud_fills(Vec::new());
 
     // The sensitivity partner for all three: with no items the frame is exactly
     // what the HUD alone draws.

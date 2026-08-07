@@ -63,7 +63,12 @@ pub struct HudGauges {
     pub cooldowns: [f32; 9],
 }
 
-/// One `graphics.fill` behind a chat row (M109), in **GUI pixels**.
+/// One `graphics.fill` the HUD pass draws, in **GUI pixels**.
+///
+/// Named for what it is rather than for its first caller: M109 added it for the
+/// chat rows' backdrops, M110's input bar joined it, and M111's scrollbar needs
+/// a **colour** as well as an alpha — which is what turned a "chat backdrop"
+/// into a tinted fill.
 ///
 /// `ChatComponent.extractRenderState` draws these before any text:
 ///
@@ -79,14 +84,17 @@ pub struct HudGauges {
 /// at `maxWidth + 12`, eight past where a full-width line can reach. Centring
 /// it would be the tidy reading and is not vanilla's.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ChatBackdrop {
+pub struct HudFill {
     pub x: f32,
     pub y: f32,
     pub w: f32,
     pub h: f32,
-    /// `ARGB.black(alpha * backgroundOpacity)`'s alpha, 0..1. The colour is
-    /// black by construction — `ARGB.black` sets only the alpha byte.
     pub alpha: f32,
+    /// The fill's colour in **LINEAR** space, because the atlas is an SRGB
+    /// image and `texture()` has already decoded by the time the vertex tint
+    /// multiplies in. A caller holding an sRGB byte must convert — black is 0
+    /// in both and hid this for two milestones; `0x3333AA` does not.
+    pub rgb: [f32; 3],
 }
 
 /// A sprite's atlas placement: normalized UV rect + pixel size.
@@ -377,7 +385,7 @@ impl HudPass {
         food: i32,
         slot: u8,
         gauges: HudGauges,
-        chat: &[ChatBackdrop],
+        chat: &[HudFill],
     ) {
         let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
         // Auto GUI scale (vanilla: largest integer fitting a ~320×240 base).
@@ -535,9 +543,7 @@ impl HudPass {
                 b.h,
                 &self.white_fill,
                 1.0,
-                // `ARGB.black(a)` is `as8BitChannel(a) << 24` — a FLOOR, and
-                // the colour is black by construction; only the alpha varies.
-                [0.0, 0.0, 0.0, b.alpha],
+                [b.rgb[0], b.rgb[1], b.rgb[2], b.alpha],
             );
         }
 
