@@ -11,6 +11,7 @@ pub mod edit_box;
 pub mod merchant_screen;
 pub mod ghost_slots;
 pub mod recipe_book_screen;
+pub mod recipe_overlay;
 pub mod recipe_search;
 pub mod stacked_contents;
 pub mod attributes;
