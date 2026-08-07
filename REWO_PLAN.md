@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: shipped and headlessly verified through M109 (2026-08-07).** `main`
+**Status: shipped and headlessly verified through M110 (2026-08-07).** `main`
 carries all of it and no branch or worktree holds a commit off it; the
 long-standing branch risk (everything from M10 on living on one unmerged
 branch) closed on 2026-07-27 and has stayed closed. See §0.0 for the
@@ -19,7 +19,7 @@ trusting a paragraph.**
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-07 after M109)
+## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-07 after M110)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -38,7 +38,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M109 shipped, all merged to `main`
+### Where it is: M0–M110 shipped, all merged to `main`
 
 **Update (2026-08-03, the M87–M93 container arc).** Seven milestones landed
 after the cold-start audit below, **all merged to `main`**: M87 the
@@ -99,9 +99,12 @@ two bugs found on the way, the last two consumers of M94's menu displacement
 (the hover highlight and the item tooltip) and a furnace whose "crafting slots"
 include three of the player's hotbar slots.
 
-Current measurement, taken 2026-08-07 after M109: **2251 tests, 0 failures**
-(**world 917, net 648, gpu 255, data 212, app 163, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2251). **Breakdowns written before the
+Current measurement, taken 2026-08-07 after M110: **2280 tests, 0 failures**
+(**world 943, net 648, gpu 255, data 212, app 166, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2280). **Read each crate's EXIT CODE, not
+just its count**: a crate whose tests fail to compile prints no `test result`
+line at all, contributes 0, and reads as silence — M110 hit exactly that and
+the only signal was the total falling. **Breakdowns written before the
 2026-08-06 pass were estimated, not measured**, and did not sum to the totals
 beside them; the totals were always a real sum, so only the splits were wrong.
 Read them off `cargo test`'s own per-binary lines rather than apportioning a
@@ -109,8 +112,8 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **157/157**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` 26/26 with validation ON and 0
-validation errors, re-run for M108** (M94 is where it earned its keep twice over
+34/34, `mobshot` 246/246, **`live --render-check` 27/27 with validation ON and 0
+validation errors, re-run for M110** (M94 is where it earned its keep twice over
 — see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
 `REWO_PACKET_COVERAGE.md` is at **115 / 0 / 26**, class C **15** — M96–M107
 consume packets M93y already decoded, and M108 resolved `delete_chat`.
@@ -143,12 +146,15 @@ best-scoped work on the board:
   not to be deferred but UNREACHABLE**: `extractRenderState` gates it on
   `isForeground`, and only `ChatScreen` passes `FOREGROUND`. It comes free with
   the item below and cannot come before it.
-* **A `ChatScreen`.** Nothing can type into the box, focus it, or scroll it, so
-  `getHeight(focused)`, `scrollChat` and `recentChat` are built and exercised
-  only by their own tests. M93t's `EditBox` is the seam and it already exists.
-  This is the same missing subsystem as the three remaining class-C chat
-  packets (`commands`, `command_suggestions`, `custom_chat_completions`) and as
-  the recipe book's Enter-key re-place, so it unblocks more than chat.
+* ~~A `ChatScreen`~~ — **shipped as M110**. `T` and `/` open it, the arrows
+  walk the send history, drafts survive a close, and `focused` stops being a
+  hardcoded `false`. What it leaves: **the scrollbar**, which is now
+  REACHABLE for the first time (`isForeground` is finally true) and is the one
+  piece of `extractRenderState` still untranscribed — small, self-contained,
+  and pixel-gradeable through M109's tint. The three class-C chat packets
+  (`commands`, `command_suggestions`, `custom_chat_completions`) are now the
+  only thing between Rewo and command autocomplete, and the recipe book's
+  Enter-key re-place is unblocked.
 * **The decoration** — `boundChatType.decorate`, which turns a message into
   `<Steve> hi` and is the most visible thing chat is still missing. M78
   recorded the blocker: the `minecraft:chat_type` registry's contents from
@@ -17822,3 +17828,90 @@ redo: 13 killed, 1 proven equivalent, 1 no-op control that correctly survived.
 `ChatScreen` — nothing can type into the box, focus it, or scroll it — which
 also unblocks the scrollbar, the three remaining class-C chat packets, and the
 recipe book's Enter-key re-place.
+
+### M110 — `ChatScreen`, and a history slot that is not an entry (2026-08-07)
+
+M108 built the chat store and M109 its backdrop; both only read. This is the
+half that writes — `T` and `/` open a box you can type into, the arrows walk
+the send history, a draft survives a close, and the scroll works. It also makes
+`focused` mean something: it had been a hardcoded `false` in both of M108's
+derivations, with a comment saying so because there was no screen to make it
+true.
+
+**The model is separate from the wiring on purpose.** Every effect leaves
+`rewo_world::chat_screen` as a `ChatAction` value, so the whole thing is
+reachable from a test rather than living in the winit handler — M97's lesson,
+and the reason the findings below are each pinned by a witness.
+
+Findings:
+
+* **`normalizeChatMessage` collapses INTERNAL whitespace.**
+  `StringUtil.trimChatMessage(StringUtils.normalizeSpace(msg.trim()))` — Apache
+  Commons' `normalizeSpace` replaces every run of whitespace *inside* the
+  string with a single space, so `"a     b"` is sent as `"a b"`. A `.trim()`,
+  which is what the method name suggests, leaves the run, and the difference is
+  invisible on every message that has no double space in it.
+* **`historyPos` starts one PAST the list, and that slot is a buffer rather
+  than an entry.** Leaving it saves what you were typing; returning restores
+  that rather than the last sent message. Modelling the position as a plain
+  list index loses a half-composed message the instant Up is pressed. The
+  buffer is written only when leaving the live slot, so walking further up
+  cannot overwrite it, and the `newPos != historyPos` guard makes both ends
+  inert.
+* **`isDraftRestorable` is asymmetric.** `MESSAGE` returns a bare `true`;
+  `COMMAND` returns `this == draft.chatMethod`. So `/` after a half-typed
+  sentence gives a fresh slash rather than one bolted onto it — and a draft's
+  own method comes from its **text** (`startsWith("/")`), not from the key that
+  opened the screen.
+* **Backspace on an untouched draft clears the whole field**, and that branch
+  runs *before* `super.keyPressed`. After it, backspace deletes one character —
+  which is what a reader expects and not what vanilla does. The draft also
+  renders GRAY and ITALIC until the first edit.
+* **`shouldDiscardDraft` keeps the draft on Esc.** It is
+  `exitReason != INTERRUPTED && (exitReason != INTENTIONAL || !saveChatDrafts)`,
+  so with drafts on only a *submitted* message discards one. Reading it as "Esc
+  throws it away" loses the text on the one exit taken deliberately.
+* **The wheel is clamped BEFORE it is multiplied.** One notch is seven lines
+  however large a trackpad's delta is, so the speed is a property of the client
+  rather than of the device; shift holds it to one.
+* Page Up scrolls `linesPerPage - 1`, keeping one line of overlap.
+  `isConfirmation` is Enter **or** keypad Enter. A command is sent without its
+  slash (`substring(1)`), while `addRecentChat` stores it **with** the slash —
+  the history replays what you wrote, not what went on the wire.
+* The input field is asymmetric (4 px in on the left, its width reaching the
+  right edge) where the bar behind it is symmetric, and that bar's alpha is a
+  fixed **128** from `getBackgroundColor(Integer.MIN_VALUE)`, which does *not*
+  follow the text-background slider M109's chat-row fills read.
+
+**`focused` is not cosmetic.** The focused box is 20 rows against 10, the fade
+is off entirely, and `scrollChat` clamps against `getLinesPerPage()` — so
+passing `false` while the screen is up clamps the scroll against the unfocused
+box's ten rows and stops it short of the backlog.
+
+**Gate:** `live --render-check` 26/26 → **27/27**, validation ON, 0 errors.
+**r27 is a separate witness from r26 on purpose**: r26 counts the read-only HUD
+box, which is non-zero from the first message whether or not a screen exists,
+so it structurally cannot see whether `T` opens anything. The gate force-opens
+the screen a fifth of the way in, because a windowed run has no keyboard and
+without that the path is one nothing drives — the M86 shape.
+
+**An instrument failure caught on the way, and it is M91's exactly.**
+`cargo build` was green while `cargo test -p rewo-app` did not **compile** —
+the signature change rippled into the test module — and the totalling loop used
+here counts `test result: ok` lines, so a crate whose tests fail to build
+contributes 0 and reads as silence. The total falling 2251 → 2114 was the only
+signal. **The loop now reports each crate's exit code**, which is the same fix
+M109's mutation batteries needed one layer down.
+
+**Measured:** 2251 → **2280 tests**, 0 failures (world 943, net 648, gpu 255,
+data 212, app 166, mesh 45, proto 11). All 33 serverless gates green by exit
+code; demo PNG `2cc56b4acbfb92cb`, byte-identical. 16 mutations across four
+batteries: 14 killed, one no-op CONTROL that correctly survived, and one that
+survived because it was written malformed (`.clamp(0, max).max(0)` does not
+remove a clamp) and was re-run in both directions.
+
+**Open:** no `CommandSuggestions` (needs the class-C `commands` tree), no
+clickable chat text (Rewo flattens components at the wire, so there is no
+`Style` to find), no chat abilities or restricted prompt, and **the scrollbar
+is now reachable but still not drawn** — `isForeground` is finally true, and
+its geometry is the one piece of `extractRenderState` left untranscribed.

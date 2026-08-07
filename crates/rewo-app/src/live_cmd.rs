@@ -161,6 +161,14 @@ struct RenderCheck {
     /// the two are comparable; r23's threshold is a floor, so its meaning is
     /// unchanged.
     book_quads_max: usize,
+    /// M110 — frames on which the CHAT SCREEN was open and drew its input bar.
+    ///
+    /// Separate from `chat_line_frames`, which counts the read-only HUD box
+    /// M108 built: that one is non-zero from the first message whether or not
+    /// a screen exists, so it cannot see whether `T` opens anything. The gate
+    /// force-opens the screen a fifth of the way in, the same way it injects a
+    /// container for r19 — a windowed run has no keyboard.
+    chat_screen_frames: u64,
     /// M108 — frames on which the chat box put at least one line into the
     /// windowed frame's label list.
     ///
@@ -499,6 +507,17 @@ impl RenderCheck {
             format!(
                 "{} of {} frames carried at least one wrapped chat line                  (near-total is CORRECT: the run is 8 s = 160 ticks and the                  fade starts at 180, so nothing can fade inside it)",
                 self.chat_line_frames, self.frames
+            ),
+        );
+        // M110 — the chat SCREEN, as distinct from r26's read-only box. A zero
+        // means `T` reaches nothing in the windowed client, which is the
+        // failure M86 existed to catch and which r26 structurally cannot see.
+        row(
+            "r27 the chat screen opened and drew its input bar",
+            self.chat_screen_frames > 0,
+            format!(
+                "{} of {} frames had the screen up with its input bar in the                  backdrop list",
+                self.chat_screen_frames, self.frames
             ),
         );
         row(
@@ -4083,7 +4102,8 @@ fn run_headless(
     // text is built, or a headless `--out` render shows an empty chat box for
     // messages the session has already decoded.
     apply_chat(&mut session, world_renderer.font_advance().copied());
-    let (mut headless_text, _) = build_text(&session, gui_px(1280, 720), 720.0, None, true);
+    let (mut headless_text, _) =
+        build_text(&session, gui_px(1280, 720), 720.0, None, true, false);
     headless_text.extend(headless_screen_labels);
     world_renderer.set_text(headless_text);
     world_renderer.anim_tick(&mut gpu, session.ticks)?;
@@ -4226,6 +4246,15 @@ struct LiveApp {
     /// isolated from the desktop. Swapping in a real one is a change at this
     /// one field.
     clipboard: String,
+    /// `ChatScreen` (M110), when it is open.
+    ///
+    /// `Option` rather than a flag on the screen framework because it owns an
+    /// `EditBox` and a history cursor, and because vanilla's own model is a
+    /// screen instance rather than a mode — `ChatComponent.isChatFocused()` is
+    /// `gui.screen() instanceof ChatScreen`.
+    chat_screen: Option<rewo_world::chat_screen::ChatScreen>,
+    /// `ChatComponent.latestDraft`, which outlives the screen that made it.
+    chat_draft: Option<rewo_world::chat_screen::Draft>,
     /// The slot the last left click landed on and when, for the double click
     /// that becomes `PICKUP_ALL` (M40).
     last_click: Option<usize>,
@@ -4301,6 +4330,8 @@ struct LiveApp {
     /// Latched so the inject happens once rather than every frame past the
     /// threshold, which would re-open the menu and reset its state each frame.
     container_injected: bool,
+    /// Whether `--render-check` has force-opened the chat screen yet (M110).
+    chat_injected: bool,
     /// Whether `--render-check` has force-opened the inventory yet (M89).
     /// Frames before this are the ones that prove `open_screen` opens the
     /// screen on its own.
@@ -4510,6 +4541,39 @@ impl ApplicationHandler for LiveApp {
                 }
                 if matches!(event.physical_key, PhysicalKey::Code(KeyCode::AltLeft)) {
                     self.alt = p;
+                }
+                // M110 — the chat screen owns the keyboard entirely while it
+                // is open, and it goes ahead of every other screen because
+                // `Gui.screen` is ONE slot: with a chat screen in it there is
+                // no inventory to route to. Opening it is handled after this
+                // block, so `T` cannot both open the screen and be typed into
+                // it on the same event.
+                if self.chat_screen.is_some() {
+                    if p {
+                        if let Some(key) = glfw_key(event.physical_key) {
+                            let mods = (i32::from(self.shift))
+                                | (i32::from(self.ctrl) << 1)
+                                | (i32::from(self.alt) << 2);
+                            self.chat_key(key, mods);
+                        }
+                        if let Some(text) = event.text.as_ref() {
+                            let chars: Vec<char> = text.chars().collect();
+                            if let Some(s) = self.chat_screen.as_mut() {
+                                for ch in chars {
+                                    s.char_typed(ch);
+                                }
+                            }
+                        }
+                    }
+                    // Shift is tracked either way: it holds the wheel to one
+                    // line and is read by `mouse_scrolled`.
+                    if !matches!(
+                        event.physical_key,
+                        PhysicalKey::Code(KeyCode::ShiftLeft)
+                            | PhysicalKey::Code(KeyCode::ShiftRight)
+                    ) {
+                        return;
+                    }
                 }
                 if self.screen.inventory_open() {
                     if p {
@@ -4739,6 +4803,20 @@ impl ApplicationHandler for LiveApp {
                         } else {
                             self.open_stats();
                         }
+                    }
+                    // T and `/` open the chat screen (M110).
+                    //
+                    // Two keys, one screen, differing only in the prefix the
+                    // field starts with — and in which drafts they will
+                    // restore, which is `ChatMethod.isDraftRestorable` and not
+                    // symmetric. The routing branch above returns before this
+                    // whenever a chat screen is already open, so `T` cannot
+                    // both open the screen and be typed into it.
+                    PhysicalKey::Code(KeyCode::KeyT) if p => {
+                        self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Message);
+                    }
+                    PhysicalKey::Code(KeyCode::Slash) if p => {
+                        self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Command);
                     }
                     // E opens and closes the inventory (M35).
                     PhysicalKey::Code(KeyCode::KeyE) if p => {
@@ -5464,6 +5542,132 @@ impl LiveApp {
         self.screen.screens.open(screen);
     }
 
+    /// One key press while the chat screen is up (M110).
+    ///
+    /// The adapter M97's lesson keeps producing: every rule lives in
+    /// `rewo_world::chat_screen` and reaches a test; this turns the returned
+    /// `ChatAction` into the two things only the app can do — talk to the
+    /// socket and close the screen.
+    fn chat_key(&mut self, key: i32, modifiers: i32) {
+        use rewo_world::chat_screen::{ChatAction, ExitReason};
+        // Esc is `onClose`, and it is checked here rather than inside the
+        // model because `Screen.keyPressed` handles it before the focused
+        // widget — an `EditBox` with `canLoseFocus` false would otherwise
+        // swallow it.
+        if key == 256 {
+            if let Some(s) = self.chat_screen.as_mut() {
+                s.close();
+            }
+            self.close_chat_screen();
+            return;
+        }
+        let (recent, per_page) = match self.session.as_ref() {
+            Some(session) => (
+                session.chat.recent_chat().to_vec(),
+                rewo_world::chat::ChatOptions::default().lines_per_page(true),
+            ),
+            None => (Vec::new(), 20),
+        };
+        let mut clip = std::mem::take(&mut self.clipboard);
+        let action = match self.chat_screen.as_mut() {
+            Some(s) => s.key_pressed(
+                rewo_world::edit_box::Input { key, modifiers },
+                &mut clip,
+                &recent,
+                per_page,
+            ),
+            None => ChatAction::None,
+        };
+        self.clipboard = clip;
+        let advance = self.advance();
+        // Which variant it was, captured before `action` is consumed.
+        let is_command = matches!(action, ChatAction::Command(_));
+        match action {
+            ChatAction::Send(msg) | ChatAction::Command(msg) => {
+                if let Some(session) = self.session.as_mut() {
+                    // `addRecentChat` takes the message as TYPED, before
+                    // `handleChatInput` strips the slash — the history replays
+                    // what you wrote, not what went on the wire.
+                    let typed = if is_command {
+                        format!("/{msg}")
+                    } else {
+                        msg.clone()
+                    };
+                    session.chat.add_recent_chat(&typed);
+                    let sent = if is_command {
+                        session.send_command(&msg)
+                    } else {
+                        session.send_chat(&msg)
+                    };
+                    if let Err(e) = sent {
+                        log::warn!("chat: send failed: {e}");
+                    }
+                }
+            }
+            ChatAction::Scroll(n) => {
+                if let Some(session) = self.session.as_mut() {
+                    let width_of = move |s: &str| match &advance {
+                        Some(a) => rewo_gpu::text::width(s, a),
+                        None => 0,
+                    };
+                    let ctx = rewo_world::chat::WrapContext {
+                        options: rewo_world::chat::ChatOptions::default(),
+                        // The box is TALLER while the screen is open, and
+                        // `scrollChat` clamps against `getLinesPerPage()` — so
+                        // `false` here would clamp the focused view against the
+                        // unfocused box's ten rows and stop the scroll short.
+                        focused: true,
+                        width_of: &width_of,
+                        deleted_marker_text: DELETED_CHAT_MESSAGE,
+                    };
+                    session.chat.scroll_chat(n, &ctx);
+                }
+            }
+            ChatAction::Close | ChatAction::None | ChatAction::NotHandled => {}
+        }
+        // `closeOnSubmit` is true for this screen, so a submitted message
+        // closes it — the model records that as `ExitReason::Done` rather than
+        // returning a `Close`, because the two are the same event in vanilla.
+        if matches!(
+            self.chat_screen.as_ref().map(|s| s.exit_reason()),
+            Some(ExitReason::Done)
+        ) {
+            self.close_chat_screen();
+        }
+    }
+
+    /// `T` / `/` — `ChatComponent.openScreen`.
+    fn open_chat_screen(&mut self, method: rewo_world::chat_screen::ChatMethod) {
+        let recent_len = self
+            .session
+            .as_ref()
+            .map(|s| s.chat.recent_chat().len())
+            .unwrap_or(0);
+        self.chat_screen = Some(rewo_world::chat_screen::ChatScreen::open(
+            method,
+            self.chat_draft.as_ref(),
+            recent_len,
+        ));
+        self.grab_for_screen(false);
+    }
+
+    /// `Gui.setScreen(null)` — and `ChatScreen.removed`, which is where the
+    /// draft is decided and the chat scroll goes back to the bottom.
+    fn close_chat_screen(&mut self) {
+        use rewo_world::chat_screen::DraftOutcome;
+        if let Some(s) = self.chat_screen.take() {
+            match s.removed(true) {
+                DraftOutcome::Discard => self.chat_draft = None,
+                DraftOutcome::Save(d) => self.chat_draft = Some(d),
+                DraftOutcome::Keep => {}
+            }
+            if let Some(session) = self.session.as_mut() {
+                session.chat.reset_chat_scroll();
+            }
+        }
+        self.grab_for_screen(true);
+    }
+
     /// Close whichever of M85's screens is up and hand the cursor back.
     fn close_view_screen(&mut self) {
         self.view = ScreenView::None;
@@ -5975,6 +6179,19 @@ impl LiveApp {
                             self.book_injected = true;
                         }
                     }
+                }
+            }
+            // M110 — force-open the chat screen a fifth of the way in. A
+            // windowed run has no keyboard, so without this `T` reaches
+            // nothing the gate can see and r27 measures a path no test drives
+            // — the M86 shape. It goes in EARLY and stays open: the screen is
+            // closed by nothing here, so every later frame carries its bar and
+            // the count is unambiguous.
+            if !self.chat_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.2 {
+                    self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Message);
+                    self.chat_injected = true;
                 }
             }
             if !self.container_injected {
@@ -6780,21 +6997,52 @@ impl LiveApp {
         // store needs the font and the GUI clock, which is why this cannot
         // live where the packets are decoded.
         apply_chat(session, state.world_renderer.font_advance().copied());
+        // `ChatComponent.isChatFocused()` — `gui.screen() instanceof
+        // ChatScreen`. It changes the box height, suppresses the fade, and is
+        // what `scrollChat` clamps against, so the two derivations below and
+        // the key handler must all read the same answer.
+        let chat_focused = self.chat_screen.is_some();
         // M109 — the fills, from the same `visible_lines` the text comes from
         // so a row's backdrop and its glyphs cannot disagree about which rows
         // exist. Set every frame, including when it is empty: a stale backdrop
         // under nothing is a black bar hanging over the world.
-        state
-            .world_renderer
-            .set_chat_backdrops(chat_backdrops(
-                &session.chat,
-                session.ticks as i32,
-                px,
-                extent.height as f32,
-                &rewo_world::chat::ChatOptions::default(),
-            ));
+        let mut backdrops = chat_backdrops(
+            &session.chat,
+            session.ticks as i32,
+            px,
+            extent.height as f32,
+            &rewo_world::chat::ChatOptions::default(),
+            chat_focused,
+        );
+        if chat_focused {
+            // The input bar goes on the same list AFTER the rows, so it sits
+            // over them — one list, and its order is the order on screen.
+            let gw = (extent.width as f32 / px) as i32;
+            let gh = (extent.height as f32 / px) as i32;
+            backdrops.push(chat_input_backdrop(px, gw, gh));
+            if let Some(c) = self.check.as_mut() {
+                c.chat_screen_frames += 1;
+            }
+        }
+        state.world_renderer.set_chat_backdrops(backdrops);
+        // The input bar goes on the same list, after the rows, so it sits over
+        // them the way `ChatScreen.extractRenderState` draws its fill before
+        // handing off to the chat component — one list, and the order in it is
+        // the order on screen.
+
         let fps = (!self.cpu.is_empty()).then(|| 1000.0 / self.cpu.average().max(0.001));
-        let (mut text, chat_count) = build_text(session, px, extent.height as f32, fps, self.debug);
+        let (mut text, chat_count) =
+            build_text(session, px, extent.height as f32, fps, self.debug, chat_focused);
+        if let Some(cs) = self.chat_screen.as_ref() {
+            let (gw, gh) = ((extent.width as f32 / px) as i32, (extent.height as f32 / px) as i32);
+            text.extend(chat_input_lines(
+                cs,
+                px,
+                gw,
+                gh,
+                self.started.elapsed().as_millis() as u64,
+            ));
+        }
         if chat_count > 0 {
             if let Some(c) = self.check.as_mut() {
                 c.chat_line_frames += 1;
@@ -7068,6 +7316,9 @@ fn run_windowed(
         ctrl: false,
         alt: false,
         clipboard: String::new(),
+        chat_screen: None,
+        chat_draft: None,
+        chat_injected: false,
         drag: DragState::default(),
         last_click: None,
         last_click_at: std::time::Instant::now(),
@@ -7269,6 +7520,7 @@ fn build_text(
     screen_h: f32,
     fps: Option<f32>,
     debug: bool,
+    chat_focused: bool,
 ) -> (Vec<rewo_gpu::world::OwnedTextLine>, usize) {
     use rewo_gpu::world::OwnedTextLine;
     let white = [0.93, 0.93, 0.93];
@@ -7337,10 +7589,86 @@ fn build_text(
         screen_h,
         &rewo_world::chat::ChatOptions::default(),
         white,
+        chat_focused,
     );
     let chat_count = chat.len();
     lines.extend(chat);
     (lines, chat_count)
+}
+
+/// The chat screen's input line and caret (M110), in screen pixels.
+///
+/// `EditBox(font, 4, height - 12, width - 4, 12)` with `setBordered(false)`,
+/// so there is no widget chrome — the only fill is the screen's own bar, which
+/// [`chat_input_backdrop`] emits, and the text sits at the box's own inset.
+///
+/// **An untouched restored draft renders grey and italic**
+/// (`formatChat` returns `Style.EMPTY.withColor(GRAY).withItalic(true)` while
+/// `isDraft`), which is the visual half of the rule that backspace clears the
+/// whole field. Rewo's bitmap text pass carries one colour per line and no
+/// slant, so the colour is reproduced and the italic is not — named here
+/// rather than silently dropped.
+fn chat_input_lines(
+    screen: &rewo_world::chat_screen::ChatScreen,
+    px: f32,
+    gui_w: i32,
+    gui_h: i32,
+    now_ms: u64,
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
+    use rewo_gpu::world::OwnedTextLine;
+    let (x, y, _w, h) = rewo_world::chat_screen::input_rect(gui_w, gui_h);
+    // `EditBox.renderWidget`'s unbordered text origin: the box's own x, and
+    // vertically centred by `(height - 8) / 2` — 2 here, not 0 and not 3.
+    let text_x = x as f32 * px;
+    let text_y = (y + (h - 8) / 2) as f32 * px;
+    let color = if screen.is_draft() {
+        // `ChatFormatting.GRAY` — 0xAAAAAA.
+        [0.667, 0.667, 0.667]
+    } else {
+        [0.93, 0.93, 0.93]
+    };
+    let value = screen.input.value();
+    let mut out = vec![OwnedTextLine {
+        x: text_x,
+        y: text_y,
+        px,
+        color,
+        alpha: 1.0,
+        shadow: true,
+        text: value.clone(),
+    }];
+    // The caret, as the anvil's field draws it: a `_` at the cursor when the
+    // blink says so. `setCanLoseFocus(false)` means it never stops.
+    if screen.input.cursor_visible(now_ms) {
+        let before: String = value.chars().take(screen.input.cursor_position()).collect();
+        out.push(OwnedTextLine {
+            x: text_x + before.chars().count() as f32 * 6.0 * px,
+            y: text_y,
+            px,
+            color: [0.93, 0.93, 0.93],
+            alpha: 1.0,
+            shadow: true,
+            text: "_".to_string(),
+        });
+    }
+    out
+}
+
+/// The bar behind the input, as a [`rewo_gpu::hud::ChatBackdrop`].
+///
+/// `fill(2, height - 14, width - 2, height - 2, getBackgroundColor(Integer.MIN_VALUE))`
+/// — a fixed alpha 128, which does **not** follow the text-background slider
+/// the chat rows' own fills read. See
+/// [`rewo_world::chat_screen::INPUT_BACKDROP_ALPHA`].
+fn chat_input_backdrop(px: f32, gui_w: i32, gui_h: i32) -> rewo_gpu::hud::ChatBackdrop {
+    let (x, y, w, h) = rewo_world::chat_screen::input_backdrop_rect(gui_w, gui_h);
+    rewo_gpu::hud::ChatBackdrop {
+        x: x as f32 * px,
+        y: y as f32 * px,
+        w: w as f32 * px,
+        h: h as f32 * px,
+        alpha: rewo_world::chat_screen::INPUT_BACKDROP_ALPHA,
+    }
 }
 
 /// The chat box's text, from `ChatComponent.extractRenderState`.
@@ -7383,6 +7711,7 @@ fn chat_lines(
     screen_h: f32,
     opts: &rewo_world::chat::ChatOptions,
     color: [f32; 3],
+    focused: bool,
 ) -> Vec<rewo_gpu::world::OwnedTextLine> {
     use rewo_gpu::world::OwnedTextLine;
     // `getScale()` is a second multiplier on top of the GUI scale, so a chat
@@ -7393,10 +7722,9 @@ fn chat_lines(
     let entry_height = opts.entry_height() as f32;
     let to_message_y = opts.entry_bottom_to_message_y() as f32;
     let text_opacity = opts.text_opacity();
-    // Focused chat is a taller box with no fade. Rewo has no chat screen, so
-    // the HUD is always the unfocused view — a fact about the client's state,
-    // not a default.
-    let focused = false;
+    // Focused chat is a taller box with no fade. Supplied by the caller
+    // (M110) rather than hardcoded: it is a fact about whether a `ChatScreen`
+    // is open, which is exactly what `ChatComponent.isChatFocused` asks.
     chat.visible_lines(gui_tick, focused, opts)
         .into_iter()
         .map(|line| {
@@ -7452,6 +7780,7 @@ fn chat_backdrops(
     px: f32,
     screen_h: f32,
     opts: &rewo_world::chat::ChatOptions,
+    focused: bool,
 ) -> Vec<rewo_gpu::hud::ChatBackdrop> {
     let chat_px = px * opts.scale as f32;
     let chat_bottom = ((screen_h / chat_px) - rewo_world::chat::BOTTOM_MARGIN as f32).floor();
@@ -7459,7 +7788,6 @@ fn chat_backdrops(
     // `Mth.ceil(this.getWidth() / scale)`.
     let max_width = (opts.width() as f32 / opts.scale as f32).ceil();
     let bg = opts.text_background_opacity as f32;
-    let focused = false;
     chat.visible_lines(gui_tick, focused, opts)
         .into_iter()
         .map(|line| {
@@ -9532,7 +9860,7 @@ mod tests {
     #[test]
     fn the_bottom_chat_row_sits_forty_pixels_off_the_bottom_less_the_baseline() {
         let opts = rewo_world::chat::ChatOptions::default();
-        let lines = super::chat_lines(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts, [1.0; 3]);
+        let lines = super::chat_lines(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts, [1.0; 3], false);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].y, 672.0);
         // `pose.translate(4, 0)` — not 0, and not the F3 block's 3.
@@ -9545,7 +9873,7 @@ mod tests {
     #[test]
     fn chat_rows_stack_upward_one_entry_height_apart() {
         let opts = rewo_world::chat::ChatOptions::default();
-        let lines = super::chat_lines(&chat_fixture(3, 0), 0, 1.0, 720.0, &opts, [1.0; 3]);
+        let lines = super::chat_lines(&chat_fixture(3, 0), 0, 1.0, 720.0, &opts, [1.0; 3], false);
         assert_eq!(lines.len(), 3);
         // `visible_lines` emits top-first, so index 0 here is the oldest and
         // highest.
@@ -9568,7 +9896,7 @@ mod tests {
         let mut opts = rewo_world::chat::ChatOptions::default();
         opts.line_spacing = 1.0;
         assert_eq!(opts.entry_height(), 18);
-        let lines = super::chat_lines(&chat_fixture(2, 0), 0, 1.0, 720.0, &opts, [1.0; 3]);
+        let lines = super::chat_lines(&chat_fixture(2, 0), 0, 1.0, 720.0, &opts, [1.0; 3], false);
         // chatBottom 680, minus 12.
         assert_eq!(lines[1].y, 668.0);
         // …and the pitch is the row height, so the two readings cannot be
@@ -9582,7 +9910,7 @@ mod tests {
     #[test]
     fn the_backdrop_is_asymmetric_about_the_text() {
         let opts = rewo_world::chat::ChatOptions::default();
-        let b = super::chat_backdrops(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts);
+        let b = super::chat_backdrops(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts, false);
         assert_eq!(b.len(), 1);
         // Four pixels left of the text, which sits at 4.
         assert_eq!(b[0].x, 0.0);
@@ -9598,8 +9926,8 @@ mod tests {
     fn each_fill_covers_its_own_row_and_meets_the_next() {
         let opts = rewo_world::chat::ChatOptions::default();
         let c = chat_fixture(3, 0);
-        let b = super::chat_backdrops(&c, 0, 1.0, 720.0, &opts);
-        let l = super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3]);
+        let b = super::chat_backdrops(&c, 0, 1.0, 720.0, &opts, false);
+        let l = super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3], false);
         assert_eq!(b.len(), l.len());
         for i in 0..b.len() {
             assert_eq!(b[i].h, 9.0);
@@ -9620,12 +9948,12 @@ mod tests {
         let mut opts = rewo_world::chat::ChatOptions::default();
         let c = chat_fixture(1, 0);
         // Default: background 0.5, text 1.0.
-        assert_eq!(super::chat_backdrops(&c, 0, 1.0, 720.0, &opts)[0].alpha, 0.5);
-        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3])[0].alpha, 1.0);
+        assert_eq!(super::chat_backdrops(&c, 0, 1.0, 720.0, &opts, false)[0].alpha, 0.5);
+        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3], false)[0].alpha, 1.0);
         opts.text_background_opacity = 0.0;
-        assert_eq!(super::chat_backdrops(&c, 0, 1.0, 720.0, &opts)[0].alpha, 0.0);
+        assert_eq!(super::chat_backdrops(&c, 0, 1.0, 720.0, &opts, false)[0].alpha, 0.0);
         // The text is untouched by it — a shared multiplier would zero both.
-        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3])[0].alpha, 1.0);
+        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3], false)[0].alpha, 1.0);
     }
 
     /// The fade reaches the fill too, so a message dims its own backdrop with
@@ -9635,10 +9963,10 @@ mod tests {
         let opts = rewo_world::chat::ChatOptions::default();
         let c = chat_fixture(1, 0);
         // 190 ticks: half through the fade, squared -> 0.25, times bg 0.5.
-        let b = super::chat_backdrops(&c, 190, 1.0, 720.0, &opts);
+        let b = super::chat_backdrops(&c, 190, 1.0, 720.0, &opts, false);
         assert!((b[0].alpha - 0.125).abs() < 1e-5);
         // Fully faded rows are not emitted at all.
-        assert!(super::chat_backdrops(&c, 200, 1.0, 720.0, &opts).is_empty());
+        assert!(super::chat_backdrops(&c, 200, 1.0, 720.0, &opts, false).is_empty());
     }
 
     /// `maxWidth` is a CEIL here and a FLOOR in the wrap budget. They agree at
@@ -9648,7 +9976,7 @@ mod tests {
         let mut opts = rewo_world::chat::ChatOptions::default();
         opts.scale = 0.75;
         // 320 / 0.75 = 426.66… -> ceil 427, floor 426.
-        let b = super::chat_backdrops(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts);
+        let b = super::chat_backdrops(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts, false);
         let chat_px = 0.75_f32;
         assert!(((b[0].w / chat_px) - (427.0 + 12.0)).abs() < 1e-3, "{}", b[0].w / chat_px);
     }
@@ -9660,7 +9988,7 @@ mod tests {
     #[test]
     fn the_gui_scale_multiplies_the_whole_box() {
         let opts = rewo_world::chat::ChatOptions::default();
-        let lines = super::chat_lines(&chat_fixture(1, 0), 0, 2.0, 720.0, &opts, [1.0; 3]);
+        let lines = super::chat_lines(&chat_fixture(1, 0), 0, 2.0, 720.0, &opts, [1.0; 3], false);
         assert_eq!(lines[0].px, 2.0);
         assert_eq!(lines[0].x, 8.0);
         // floor(720/2 - 40) = 320 chat px, minus 8, times 2.
@@ -9674,16 +10002,16 @@ mod tests {
     fn the_fade_and_the_text_opacity_both_reach_the_line() {
         let opts = rewo_world::chat::ChatOptions::default();
         let c = chat_fixture(1, 0);
-        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3])[0].alpha, 1.0);
+        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3], false)[0].alpha, 1.0);
         // 190 ticks: half way through the 20-tick fade, squared -> 0.25.
-        let faded = super::chat_lines(&c, 190, 1.0, 720.0, &opts, [1.0; 3]);
+        let faded = super::chat_lines(&c, 190, 1.0, 720.0, &opts, [1.0; 3], false);
         assert!((faded[0].alpha - 0.25).abs() < 1e-5);
         // Past 200 the line is not emitted at all, rather than emitted at 0.
-        assert!(super::chat_lines(&c, 200, 1.0, 720.0, &opts, [1.0; 3]).is_empty());
+        assert!(super::chat_lines(&c, 200, 1.0, 720.0, &opts, [1.0; 3], false).is_empty());
 
         let mut dim = rewo_world::chat::ChatOptions::default();
         dim.opacity = 0.0;
-        let lines = super::chat_lines(&c, 0, 1.0, 720.0, &dim, [1.0; 3]);
+        let lines = super::chat_lines(&c, 0, 1.0, 720.0, &dim, [1.0; 3], false);
         assert!((lines[0].alpha - 0.1).abs() < 1e-6, "the floor is 0.1, not 0");
     }
 
@@ -9692,10 +10020,73 @@ mod tests {
     #[test]
     fn the_unfocused_box_holds_ten_rows() {
         let opts = rewo_world::chat::ChatOptions::default();
-        let lines = super::chat_lines(&chat_fixture(30, 0), 0, 1.0, 720.0, &opts, [1.0; 3]);
+        let lines = super::chat_lines(&chat_fixture(30, 0), 0, 1.0, 720.0, &opts, [1.0; 3], false);
         assert_eq!(lines.len(), 10);
         assert_eq!(lines.last().unwrap().text, "m29");
         assert_eq!(lines.first().unwrap().text, "m20");
+    }
+
+    /// The whole point of threading `focused` through (M110): with the chat
+    /// screen open the box is TALLER and the fade is off.
+    ///
+    /// Hardcoding `false` — which is what these two derivations did until the
+    /// screen existed — leaves the focused view showing ten rows of twenty and
+    /// fading messages out from under someone who is reading them.
+    #[test]
+    fn the_focused_box_is_taller_and_does_not_fade() {
+        let opts = rewo_world::chat::ChatOptions::default();
+        let c = chat_fixture(30, 0);
+        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3], false).len(), 10);
+        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3], true).len(), 20);
+        // …and the fills follow the text, so a taller box does not draw ten
+        // rows of glyphs over twenty rows of backdrop.
+        assert_eq!(super::chat_backdrops(&c, 0, 1.0, 720.0, &opts, false).len(), 10);
+        assert_eq!(super::chat_backdrops(&c, 0, 1.0, 720.0, &opts, true).len(), 20);
+
+        // At 300 ticks every message is long faded, and the focused view shows
+        // them anyway — `AlphaCalculator.FULLY_VISIBLE` rather than
+        // `timeBased`.
+        assert!(super::chat_lines(&c, 300, 1.0, 720.0, &opts, [1.0; 3], false).is_empty());
+        let focused = super::chat_lines(&c, 300, 1.0, 720.0, &opts, [1.0; 3], true);
+        assert_eq!(focused.len(), 20);
+        assert!(focused.iter().all(|l| l.alpha == 1.0));
+    }
+
+    /// The input field's caret sits after the text before the cursor, and the
+    /// bar behind it is the screen's own rather than a chat row's.
+    #[test]
+    fn the_input_line_carries_its_text_and_a_caret() {
+        use rewo_world::chat_screen::{ChatMethod, ChatScreen};
+        let mut s = ChatScreen::open(ChatMethod::Message, None, 0);
+        s.char_typed('h');
+        s.char_typed('i');
+        // `focused_time_ms` is unset until `set_focused_at`, so the blink's
+        // clock starts at 0 and the caret is visible at t = 0.
+        let lines = super::chat_input_lines(&s, 1.0, 320, 240, 0);
+        assert_eq!(lines[0].text, "hi");
+        // `EditBox(font, 4, height - 12, …)` with `(height - 8) / 2` centring.
+        assert_eq!((lines[0].x, lines[0].y), (4.0, 230.0));
+        assert_eq!(lines[1].text, "_");
+        // Two characters at 6 px each.
+        assert_eq!(lines[1].x, 4.0 + 12.0);
+
+        let bar = super::chat_input_backdrop(1.0, 320, 240);
+        assert_eq!((bar.x, bar.y, bar.w, bar.h), (2.0, 226.0, 316.0, 12.0));
+        // A fixed 128/255 — NOT the text-background slider the rows read.
+        assert!((bar.alpha - 128.0 / 255.0).abs() < 1e-6);
+    }
+
+    /// An untouched restored draft renders grey; an edited one does not.
+    #[test]
+    fn a_restored_draft_renders_grey_until_it_is_edited() {
+        use rewo_world::chat_screen::{ChatMethod, ChatScreen, Draft};
+        let draft = Draft::of("remembered");
+        let mut s = ChatScreen::open(ChatMethod::Message, Some(&draft), 0);
+        let grey = super::chat_input_lines(&s, 1.0, 320, 240, 0)[0].color;
+        assert_eq!(grey, [0.667, 0.667, 0.667], "ChatFormatting.GRAY");
+        s.char_typed('!');
+        let normal = super::chat_input_lines(&s, 1.0, 320, 240, 0)[0].color;
+        assert_ne!(normal, grey);
     }
 
     /// An empty chat produces no lines at all — not one blank row.
@@ -9709,6 +10100,7 @@ mod tests {
             720.0,
             &opts,
             [1.0; 3],
+            false,
         )
         .is_empty());
     }

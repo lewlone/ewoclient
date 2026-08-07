@@ -1696,23 +1696,23 @@ Repo hygiene: the twenty stale `claude/rewo-m93*` branches and the two leftover
 agent worktrees were verified fully merged and clean, then pruned.*
 ---
 
-## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, particles, the first-person hand, the Velvet type stack, the container arc, the recipe book, and the chat HUD)
+## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, particles, the first-person hand, the Velvet type stack, the container arc, the recipe book, and chat)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-07
-(M109) — **2251 tests / 0 failures** (world 917, net 648, gpu 255, data 212,
-app 163, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
+(M110) — **2280 tests / 0 failures** (world 943, net 648, gpu 255, data 212,
+app 166, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **157/157**, `itemshot` 75/75,
-`handshot` 34/34, `swingshot` 97/97, `live --render-check` **26/26** with
+`handshot` 34/34, `swingshot` 97/97, `live --render-check` **27/27** with
 validation ON and 0 validation errors, demo PNG `2cc56b4acbfb92cb`.
-**The recipe book is closed** (M105–M107) and **M108–M109 shipped the chat
-HUD** — `ChatComponent`, the wrap under it, the `MessageSignatureCache` without
-which `delete_chat` cannot be read, the text, and the backdrop fills (which
-took a colour channel on the HUD vertex). No branch or worktree holds a commit
-off `main`. The long-unmerged-branch risk closed on 2026-07-27 and has
+**The recipe book is closed** (M105–M107) and **M108–M110 shipped chat** —
+`ChatComponent`, the wrap under it, the `MessageSignatureCache` without which
+`delete_chat` cannot be read, the text, the backdrop fills (which took a colour
+channel on the HUD vertex), and the **`ChatScreen`** you type into. No branch or
+worktree holds a commit off `main`. The long-unmerged-branch risk closed on 2026-07-27 and has
 stayed closed; branch new work from `main` and keep it that way.
 
 > **⚠ §0.0's prose goes stale faster than its numbers.** The 2026-08-02 pass
