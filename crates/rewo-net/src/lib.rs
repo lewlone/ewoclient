@@ -18,6 +18,7 @@ pub mod boss_bar;
 pub mod bundle;
 pub mod chat_sign;
 pub mod chat_style;
+pub mod chat_wire;
 pub mod chunk_batch;
 pub mod client_state;
 pub mod component_wire;
