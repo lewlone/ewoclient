@@ -784,6 +784,11 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // M93y — the recipe book's display registries, supplied for the same
     // reason: built-in registries live in the report, not on the wire.
     session.recipe_display_ids = Some(data.recipe_display_ids);
+    // M113 — the `command_argument_type` registry, for the same reason and
+    // from the same place: a built-in registry lives in the report, not on the
+    // wire, and the Brigadier tree cannot be read past its first
+    // non-singleton argument without it.
+    session.command_argument_types = Some(data.command_argument_types.clone());
     // Client-side relighting of our own edits — the server only sends light
     // on chunk load, never for a placed torch or a broken roof.
     session.set_light_tables(

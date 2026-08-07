@@ -793,6 +793,12 @@ pub struct PlaySession {
     /// `rewo-net` reads no wall clock of its own, so a harness driving raw
     /// packets gets a deterministic trust level.
     pub chat_clock_millis: i64,
+    /// The Brigadier command tree (M113), empty until `commands` arrives.
+    pub commands: crate::commands::CommandTree,
+    /// The `command_argument_type` registry, supplied by the caller from the
+    /// datagen report — it is a **built-in** registry (M92's rule), and the
+    /// tree cannot be read past its first non-singleton argument without it.
+    pub command_argument_types: Option<rewo_data::command_argument_types::CommandArgumentTypes>,
     /// The chat HUD's store (M108). Lives here because the events that feed
     /// it do; it is *driven* from the app, which owns the font it wraps with
     /// and the GUI clock it stamps with — see [`Self::apply_chat_events`].
@@ -1558,6 +1564,8 @@ impl<'a> Connection<'a> {
             signature_cache: crate::chat_wire::MessageSignatureCache::default(),
             chat_clock_millis: 0,
             chat: rewo_world::chat::ChatComponent::new(),
+            commands: crate::commands::CommandTree::default(),
+            command_argument_types: None,
             chat_overlay: None,
             health: 20.0,
             food: 20,
@@ -3025,6 +3033,28 @@ impl PlaySession {
                     }
                 }
                 Err(e) => log::warn!("net: player_chat decode failed: {e}"),
+            }
+        } else if id == ids.cb_play_commands {
+            // The argument-type registry is a BUILT-IN one, so it comes from
+            // the report rather than the wire (M92's rule) — and without it
+            // the tree cannot be read past its first non-singleton argument,
+            // which is why a missing table is a warn-and-drop rather than a
+            // partial parse.
+            match self.command_argument_types.as_ref() {
+                Some(types) => {
+                    match crate::commands::read_commands(body, &|i| types.name(i)) {
+                        Ok(tree) => {
+                            log::info!(
+                                "net: command tree — {} nodes, {} top-level",
+                                tree.nodes.len(),
+                                tree.top_level().len()
+                            );
+                            self.commands = tree;
+                        }
+                        Err(e) => log::warn!("net: commands decode failed: {e}"),
+                    }
+                }
+                None => log::debug!("net: commands arrived before the argument-type table"),
             }
         } else if id == ids.cb_play_delete_chat {
             let mut r = PacketReader::new(body);
