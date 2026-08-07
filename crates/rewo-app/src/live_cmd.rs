@@ -5019,7 +5019,12 @@ impl ApplicationHandler for LiveApp {
                     let layout = session.shown_menu().layout();
                     let slot =
                         self.screen
-                            .hovered(layout, ext.width as f32, ext.height as f32);
+                            .hovered(
+                            layout,
+                            ext.width as f32,
+                            ext.height as f32,
+                            book_visible(session),
+                        );
                     let now = std::time::Instant::now();
                     let doubled = b == 0
                         && slot.is_some()
@@ -5137,10 +5142,14 @@ impl ApplicationHandler for LiveApp {
                 if self.screen.inventory_open() {
                     if let Some(ext) = self.state.as_ref().map(|s| s.window.inner_size()) {
                         let layout = self.shown_layout();
-                        if let Some(slot) =
-                            self.screen
-                                .hovered(layout, ext.width as f32, ext.height as f32)
-                        {
+                        let book_open =
+                            self.session.as_ref().is_some_and(book_visible);
+                        if let Some(slot) = self.screen.hovered(
+                            layout,
+                            ext.width as f32,
+                            ext.height as f32,
+                            book_open,
+                        ) {
                             self.drag.add(slot);
                         }
                     }
@@ -6788,7 +6797,10 @@ impl LiveApp {
         let hovered = self
             .screen
             .inventory_open()
-            .then(|| self.screen.hovered(session.shown_menu().layout(), sw, sh))
+            .then(|| {
+                self.screen
+                    .hovered(session.shown_menu().layout(), sw, sh, book_visible(session))
+            })
             .flatten();
         if let Some(baked) = self.baked.as_ref() {
             if let Some(c) = self.check.as_mut() {
@@ -10163,6 +10175,173 @@ mod tests {
         assert!(focused.iter().all(|l| l.alpha == 1.0));
     }
 
+    /// **The bug M112 fixes**: `ScreenState::hovered` converted through
+    /// `Placement::centred` while the render converts through
+    /// `Placement::with_book`, so with the book open the two disagree by the
+    /// 77 GUI px `updateScreenPosition` moves the panel.
+    ///
+    /// Written before the fix and left as the regression guard. M89 and M106b
+    /// each recorded "a per-call-site choice is how they come to disagree";
+    /// this is the third time, and it reached the CLICK rather than a tooltip.
+    #[test]
+    fn the_hover_and_the_render_agree_about_where_a_slot_is() {
+        let layout = &rewo_world::menu_layout::PLAYER;
+        // A window wide enough for the book to displace the panel: 1280 at GUI
+        // scale 4 is 320 GUI px, which is NARROW, so pick one that is not.
+        let (w, h) = (1920.0f32, 1080.0f32);
+        let scale = rewo_gpu::hud::gui_scale(w, h);
+        let gui_w = w / scale;
+        assert!(
+            gui_w >= rewo_world::recipe_book_screen::WIDTH_TOO_NARROW_BELOW as f32,
+            "the fixture must be a WIDE window or the displacement is 0 and              this test cannot see anything ({gui_w} GUI px)"
+        );
+        // The cursor over the centre of the panel as the book-open render
+        // places it.
+        let (ox, _oy, _s) = rewo_gpu::container::gui_origin_placed(
+            w,
+            h,
+            rewo_gpu::container::Placement::with_book(
+                layout.image_w as f32,
+                layout.image_h as f32,
+                true,
+            ),
+        );
+        // Slot 9's own position, converted forward to a screen point.
+        let (sx, sy) = layout.position(9).unwrap();
+        let mouse = (
+            (ox + (sx as f32 + 8.0) * scale) as f64,
+            {
+                let (_, oy2, _) = rewo_gpu::container::gui_origin_placed(
+                    w,
+                    h,
+                    rewo_gpu::container::Placement::with_book(
+                        layout.image_w as f32,
+                        layout.image_h as f32,
+                        true,
+                    ),
+                );
+                (oy2 + (sy as f32 + 8.0) * scale) as f64
+            },
+        );
+        let mut screen = super::ScreenState::default();
+        screen.mouse = mouse;
+        assert_eq!(
+            screen.hovered(layout, w, h, true),
+            Some(9),
+            "the hover must resolve the slot the render drew under the cursor"
+        );
+        // …and with the book SHUT the same screen point is a different slot,
+        // which is what makes the parameter load-bearing rather than cosmetic.
+        assert_ne!(screen.hovered(layout, w, h, false), Some(9));
+    }
+
+    /// A menu with no recipe book is never displaced and never suppressed.
+    ///
+    /// The witness that did not exist while this rule lived inside a
+    /// `PlaySession`-taking function: a mutation answering `true` for a
+    /// bookless menu survived the whole suite, and it would shift a chest's
+    /// panel 77 px and blank its hover on a narrow window.
+    #[test]
+    fn a_menu_with_no_book_is_never_displaced() {
+        use rewo_world::recipe_book_screen::BookType;
+        let mut open = rewo_net::recipe_book::BookSettings::default();
+        open.crafting.open = true;
+        open.furnace.open = true;
+        open.blast_furnace.open = true;
+        open.smoker.open = true;
+        assert!(!super::book_visible_for(None, &open), "a chest has no book");
+        // …and every type that DOES have one reads its own flag, so this is
+        // not "always false".
+        for b in [
+            BookType::Crafting,
+            BookType::Furnace,
+            BookType::BlastFurnace,
+            BookType::Smoker,
+        ] {
+            assert!(super::book_visible_for(Some(b), &open), "{b:?}");
+            assert!(
+                !super::book_visible_for(
+                    Some(b),
+                    &rewo_net::recipe_book::BookSettings::default()
+                ),
+                "{b:?} shut"
+            );
+        }
+    }
+
+    /// Each book type reads **its own** flag, not another's — four settings
+    /// that a single shared bool would collapse.
+    #[test]
+    fn each_book_type_reads_its_own_flag() {
+        use rewo_world::recipe_book_screen::BookType;
+        let mut only_furnace = rewo_net::recipe_book::BookSettings::default();
+        only_furnace.furnace.open = true;
+        assert!(super::book_visible_for(Some(BookType::Furnace), &only_furnace));
+        assert!(!super::book_visible_for(Some(BookType::Crafting), &only_furnace));
+        assert!(!super::book_visible_for(Some(BookType::Smoker), &only_furnace));
+        assert!(!super::book_visible_for(
+            Some(BookType::BlastFurnace),
+            &only_furnace
+        ));
+    }
+
+    /// `isHovering`'s narrow-window override: under 379 GUI px the book covers
+    /// the menu, and vanilla answers "no slot" for every slot rather than
+    /// letting a click reach through the panel on top of it.
+    #[test]
+    fn a_narrow_window_with_the_book_open_hovers_nothing() {
+        let layout = &rewo_world::menu_layout::PLAYER;
+        // 1280x720 at GUI scale 3 is 426 GUI px — wide. 1280x480 gives scale 2
+        // and 640, also wide. A genuinely narrow one needs a small window.
+        let (w, h) = (1024.0f32, 768.0f32);
+        let scale = rewo_gpu::hud::gui_scale(w, h);
+        let gui_w = (w / scale) as i32;
+        assert!(
+            rewo_world::recipe_book_screen::width_too_narrow(gui_w),
+            "the fixture must be NARROW or this test cannot see the override              ({gui_w} GUI px against {})",
+            rewo_world::recipe_book_screen::WIDTH_TOO_NARROW_BELOW
+        );
+        // Dead centre of the panel — unambiguously over a slot with the book
+        // shut, which is the control that makes the `None` mean the override
+        // and not a cursor that simply missed.
+        let mouse = (w as f64 / 2.0, h as f64 / 2.0);
+        assert!(
+            super::hovered_menu_slot(layout, mouse, w, h, false).is_some(),
+            "the control: with the book shut this point IS over a slot"
+        );
+        assert_eq!(
+            super::hovered_menu_slot(layout, mouse, w, h, true),
+            None,
+            "and with it open on a narrow window, nothing is hovered"
+        );
+    }
+
+    /// …and on a WIDE window the book displaces the panel instead of covering
+    /// it, so slots stay hoverable. Without this partner the override could be
+    /// "the book always suppresses the hover", which is a different rule.
+    #[test]
+    fn a_wide_window_with_the_book_open_still_hovers() {
+        let layout = &rewo_world::menu_layout::PLAYER;
+        let (w, h) = (1920.0f32, 1080.0f32);
+        let scale = rewo_gpu::hud::gui_scale(w, h);
+        assert!(!rewo_world::recipe_book_screen::width_too_narrow((w / scale) as i32));
+        let (ox, oy, _) = rewo_gpu::container::gui_origin_placed(
+            w,
+            h,
+            rewo_gpu::container::Placement::with_book(
+                layout.image_w as f32,
+                layout.image_h as f32,
+                true,
+            ),
+        );
+        let (sx, sy) = layout.position(9).unwrap();
+        let mouse = (
+            (ox + (sx as f32 + 8.0) * scale) as f64,
+            (oy + (sy as f32 + 8.0) * scale) as f64,
+        );
+        assert_eq!(super::hovered_menu_slot(layout, mouse, w, h, true), Some(9));
+    }
+
     /// The scrollbar reaches the frame's fill list, in screen pixels, and its
     /// colour is converted OUT of sRGB.
     ///
@@ -13531,18 +13710,20 @@ impl ScreenState {
     /// then looks it up in the wrong slot list. The two errors do not cancel.
     fn hovered(
         &self,
-        layout: &rewo_world::menu_layout::MenuLayout,
+        layout: &'static rewo_world::menu_layout::MenuLayout,
         w: f32,
         h: f32,
+        book_open: bool,
     ) -> Option<usize> {
-        let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
-            self.mouse,
-            w,
-            h,
-            layout.image_w as f32,
-            layout.image_h as f32,
-        );
-        layout.slot_at(gx, gy)
+        // **Through `hovered_menu_slot`, not its own conversion.** This method
+        // used `screen_to_gui_for`, which is `Placement::centred` — so with
+        // the recipe book open it resolved the cursor against a panel 77 GUI
+        // px from the one the render drew, and it feeds the CLICK, the
+        // double-click detector and the item-hover highlight. M89 and M106b
+        // each fixed a consumer of the same predicate and each recorded that a
+        // per-call-site choice is how they come to disagree; this is the third
+        // time, and the first to reach an input path rather than a tooltip.
+        hovered_menu_slot(layout, self.mouse, w, h, book_open)
     }
 }
 
@@ -16012,6 +16193,52 @@ pub(crate) struct BookRender {
 /// click can change, and nothing can click the book yet, so both are pinned to
 /// 0 and the tab column renders with the first tab selected. `hasCraftable` is
 /// answered as of M96 — see `held` below for the one input it still misses.
+/// `RecipeBookComponent.isVisible()` — whether the book is showing.
+///
+/// **One predicate, consulted by the render's placement and by every hover.**
+/// `ScreenState::hovered` had its own conversion through `Placement::centred`
+/// and so ignored the book entirely; M89 and M106b each fixed one consumer of
+/// this same question and each recorded that a per-call-site choice is how
+/// they come to disagree.
+///
+/// It is the **settings flag for the open menu's book type**, which is what
+/// `initVisuals` sets `this.visible` from. [`live_recipe_book`] additionally
+/// requires the display registries, so `book.is_some()` is narrower in
+/// principle — and identical in practice, because those come from the bake at
+/// session setup rather than off the wire, so they are present before any
+/// menu can open. A menu with no book at all answers `false`.
+pub(crate) fn book_visible(session: &rewo_net::play::PlaySession) -> bool {
+    let layout = session
+        .menus
+        .open()
+        .map(|m| m.menu.layout())
+        .unwrap_or_else(|| session.inventory.layout());
+    book_visible_for(book_type_of(layout), &session.recipe_book_settings)
+}
+
+/// [`book_visible`]'s rule, over plain values.
+///
+/// Lifted out because `PlaySession` owns a socket and cannot be constructed in
+/// a test — M71's finding, and M97's fix. A mutation making a bookless menu
+/// answer `true` survived the whole suite while this lived inside the
+/// session-taking function, and a bookless menu answering `true` would
+/// displace a chest's panel by 77 px and suppress its hover on a narrow
+/// window.
+pub(crate) fn book_visible_for(
+    book: Option<rewo_world::recipe_book_screen::BookType>,
+    settings: &rewo_net::recipe_book::BookSettings,
+) -> bool {
+    use rewo_world::recipe_book_screen as rb;
+    match book {
+        Some(rb::BookType::Crafting) => settings.crafting.open,
+        Some(rb::BookType::Furnace) => settings.furnace.open,
+        Some(rb::BookType::BlastFurnace) => settings.blast_furnace.open,
+        Some(rb::BookType::Smoker) => settings.smoker.open,
+        // A menu with no book — a chest, a beacon — is never displaced.
+        None => false,
+    }
+}
+
 fn live_recipe_book(
     session: &rewo_net::play::PlaySession,
     items: &rewo_data::items::Items,
@@ -16684,6 +16911,27 @@ pub(crate) fn hovered_menu_slot(
     h: f32,
     book_open: bool,
 ) -> Option<usize> {
+    // `AbstractRecipeBookScreen.isHovering` (M112):
+    //
+    //     return (!this.widthTooNarrow || !this.recipeBookComponent.isVisible())
+    //            && super.isHovering(...);
+    //
+    // On a window under 379 GUI px the book does not sit BESIDE the menu, it
+    // sits OVER it — `updateScreenPosition`'s 177 px shift collapses to 0 —
+    // so vanilla answers "no slot" for every slot rather than letting a click
+    // reach through the panel that is covering it. Without this, a narrow
+    // window lets a click on the book land on whatever menu slot happens to be
+    // underneath.
+    //
+    // Placed here rather than at each consumer because it is ONE predicate
+    // with several: the highlight, both tooltips, the click, the double-click
+    // detector, the drag and the number/Q/F actions all arrive through this
+    // function.
+    let scale = rewo_gpu::hud::gui_scale(w, h);
+    let gui_w = (w / scale) as i32;
+    if book_open && rewo_world::recipe_book_screen::width_too_narrow(gui_w) {
+        return None;
+    }
     let (gx, gy) = rewo_gpu::container::screen_to_gui_placed(
         mouse,
         w,
@@ -18826,7 +19074,8 @@ fn click_screen(
     w: f32,
     h: f32,
 ) {
-    let Some(slot) = screen.hovered(session.shown_menu().layout(), w, h) else {
+    let book_open = book_visible(session);
+    let Some(slot) = screen.hovered(session.shown_menu().layout(), w, h, book_open) else {
         return;
     };
     // M107 — `AbstractRecipeBookScreen.slotClicked` calls
