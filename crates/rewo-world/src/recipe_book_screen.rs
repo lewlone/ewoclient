@@ -1200,7 +1200,159 @@ impl BookState {
     }
 }
 
-/// A recipe button is 25x25/// A recipe button is 25x25 — the same as the grid pitch, so the buttons abut
+/// `RecipeBookComponent.isCraftingSlot` — whether clicking this menu slot
+/// resets the place guard and clears the ghost (M107).
+///
+/// The two families answer by **different means**, and the furnace's is the
+/// interesting one:
+///
+/// * `CraftingRecipeBookComponent` compares SLOT OBJECTS —
+///   `menu.getResultSlot() == slot || menu.getInputGridSlots().contains(slot)`
+///   — so it is exactly the result plus the grid, and nothing can collide with
+///   it.
+/// * `FurnaceRecipeBookComponent` switches on **`slot.index`**, the slot's index
+///   inside its own `Container`, and accepts 0, 1 and 2 without asking which
+///   container that is. `addInventoryHotbarSlots` gives the player's hotbar
+///   container indices 0..8 — so **hotbar slots 0, 1 and 2 are "crafting slots"
+///   of a furnace**, and clicking one clears the ghost and resets the guard
+///   exactly as touching the furnace's own three slots does.
+///
+/// That is transcribed rather than corrected. It is observable (put a ghost up
+/// in a furnace, click your first hotbar slot, watch it vanish), and the
+/// "obvious" repair — testing the container too — would diverge.
+pub fn is_crafting_slot(book: BookType, player_inventory: bool, menu_slot: usize) -> bool {
+    match book {
+        // Result 0 plus the grid: 1..5 for the player's 2x2, 1..10 for a
+        // crafting table's 3x3.
+        BookType::Crafting => {
+            menu_slot == 0 || craft_slots(book, player_inventory).is_some_and(|c| c.range.contains(&menu_slot))
+        }
+        BookType::Furnace | BookType::BlastFurnace | BookType::Smoker => {
+            // The furnace's own three…
+            menu_slot < 3
+                // …and the three hotbar slots that share their container index.
+                || HOTBAR_INDEX_COLLISION.contains(&menu_slot)
+        }
+    }
+}
+
+/// The furnace menu slots whose *container* index is 0, 1 or 2 without being
+/// the furnace's own — the player's first three hotbar slots.
+///
+/// A furnace menu is three slots, then 27 main-inventory slots, then the nine
+/// hotbar slots, and `addInventoryHotbarSlots` numbers the hotbar 0..8 inside
+/// the player's container. So menu slots 30, 31 and 32.
+pub const HOTBAR_INDEX_COLLISION: std::ops::Range<usize> = 30..33;
+
+/// `RecipeBookComponent.lastPlacedRecipe` and the guard that reads it (M107).
+///
+/// The whole of the state is one nullable recipe id, and the whole of the rule
+/// is `tryPlaceRecipe`'s opening line — but both halves invert against the
+/// obvious reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlaceGuard {
+    /// The last recipe this component sent, or `None` when the grid has been
+    /// touched since.
+    pub last_placed: Option<i32>,
+}
+
+impl PlaceGuard {
+    /// `tryPlaceRecipe` — whether the click places, and whether the whole
+    /// component consumes it.
+    ///
+    /// `if (!collection.isCraftable(recipe) && recipe.equals(lastPlacedRecipe))
+    /// return false;`
+    ///
+    /// **Both halves are required.** A CRAFTABLE recipe can be clicked over and
+    /// over — each click places another one — and the guard only ever
+    /// suppresses a *repeat* of a recipe that could not be made. Reading it as
+    /// "don't place the same recipe twice" breaks bulk crafting; reading it as
+    /// "don't place what you can't craft" breaks the first click, which is the
+    /// one that fills the ghost.
+    ///
+    /// `lastPlacedRecipe` is then written **unconditionally**, craftable or
+    /// not, so the memory always names the most recent placement.
+    ///
+    /// **A `false` return is not merely "no packet".** It propagates out of
+    /// `RecipeBookComponent.mouseClicked` as the whole component declining, so
+    /// `lastRecipe`/`lastRecipeCollection` are left alone (the Enter key will
+    /// still re-place the previous one, not this) and the narrow-window
+    /// auto-close does not fire. The click then falls through to the screen,
+    /// where `hasClickedOutside` refuses it because the cursor is over the
+    /// book — so the net effect is that a second click on an uncraftable recipe
+    /// does nothing at all.
+    pub fn try_place(&mut self, recipe: i32, craftable: bool) -> bool {
+        if !craftable && self.last_placed == Some(recipe) {
+            return false;
+        }
+        self.last_placed = Some(recipe);
+        true
+    }
+
+    /// `slotClicked` — touching a crafting slot forgets the last placement.
+    ///
+    /// The inputs changed, so a recipe that could not be made a moment ago
+    /// might be now, and the guard must not keep refusing it. Vanilla clears
+    /// the ghost in the same breath.
+    pub fn crafting_slot_clicked(&mut self) {
+        self.last_placed = None;
+    }
+}
+
+/// Everything a click on a recipe does, decided in one place (M107).
+///
+/// The executor is a handful of session calls; the *rules* are here, so a test
+/// can ask what a click should do without a `PlaySession` to run it against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlaceEffects {
+    /// `handlePlaceRecipe` — `Some(use_max_items)`, or `None` when the guard
+    /// suppressed the click.
+    pub send: Option<bool>,
+    /// `ghostSlots.clear()`, which sits **after** the guard's early return —
+    /// so a suppressed click leaves the previous ghost on screen.
+    pub clear_ghost: bool,
+    /// `setVisible(false)` on a window too narrow to show the book beside the
+    /// menu.
+    pub close_book: bool,
+}
+
+/// Resolve a click on a recipe, advancing the guard.
+///
+/// Note what a **suppressed** click does not do: no packet, no ghost clear, no
+/// close, and — one level up, where this cannot see it — no update of
+/// `lastRecipe`/`lastRecipeCollection`, because `tryPlaceRecipe`'s `false`
+/// returns out of `mouseClicked` before those are written.
+pub fn place_effects(
+    guard: &mut PlaceGuard,
+    recipe: i32,
+    craftable: bool,
+    use_max_items: bool,
+    too_narrow: bool,
+) -> PlaceEffects {
+    if !guard.try_place(recipe, craftable) {
+        return PlaceEffects::default();
+    }
+    PlaceEffects {
+        send: Some(use_max_items),
+        clear_ghost: true,
+        close_book: place_closes_book(too_narrow),
+    }
+}
+
+/// `isOffsetNextToMainGUI()` — whether a successful placement leaves the book
+/// open (M107).
+///
+/// `xOffset == 86`, and `xOffset` is `widthTooNarrow ? 0 : 86`. So on a window
+/// too narrow to show both, placing a recipe **closes the book**, because it is
+/// covering the menu you are about to look at. On a wide one it stays.
+///
+/// Note the direction: the method name asks whether the book is *beside* the
+/// GUI, and the call site is `if (!isOffsetNextToMainGUI()) setVisible(false)`.
+pub fn place_closes_book(too_narrow: bool) -> bool {
+    too_narrow
+}
+
+/// A recipe button is 25x25 — the same as the grid pitch, so the buttons abut
 /// with no gap and a click can never fall between two.
 pub const SLOT_SIZE: i32 = 25;
 
@@ -1819,6 +1971,124 @@ mod tests {
         // …and the gate still applies: a one-page book shows nothing even when
         // the key is missing.
         assert_eq!(page_label(0, 1, PAGE_LABEL_KEY), None);
+    }
+
+    /// The guard needs BOTH halves: a repeat, AND uncraftable (M107).
+    #[test]
+    fn only_a_repeat_of_an_UNCRAFTABLE_recipe_is_suppressed() {
+        let mut g = PlaceGuard::default();
+        // A craftable recipe places every time — this is bulk crafting.
+        assert!(g.try_place(7, true));
+        assert!(g.try_place(7, true));
+        assert!(g.try_place(7, true));
+        // An uncraftable one places ONCE — that first click is what fills the
+        // ghost, and suppressing it would leave the player no feedback at all.
+        let mut g = PlaceGuard::default();
+        assert!(g.try_place(7, false), "the first click still goes");
+        assert!(!g.try_place(7, false), "and the second does not");
+        // A DIFFERENT uncraftable recipe is not a repeat.
+        assert!(g.try_place(8, false));
+        assert!(!g.try_place(8, false));
+        assert!(g.try_place(7, false), "back to 7, which is no longer the last");
+    }
+
+    #[test]
+    fn a_craftable_placement_still_arms_the_guard() {
+        // `lastPlacedRecipe = recipe` sits AFTER the guard and is
+        // unconditional, so a craftable click arms it for the uncraftable one
+        // that may follow — which is what happens when you use up the last of
+        // an ingredient.
+        let mut g = PlaceGuard::default();
+        assert!(g.try_place(7, true));
+        assert_eq!(g.last_placed, Some(7));
+        assert!(!g.try_place(7, false), "the ingredients ran out");
+    }
+
+    #[test]
+    fn touching_a_crafting_slot_forgets_the_last_placement() {
+        let mut g = PlaceGuard::default();
+        assert!(g.try_place(7, false));
+        assert!(!g.try_place(7, false));
+        g.crafting_slot_clicked();
+        assert_eq!(g.last_placed, None);
+        assert!(g.try_place(7, false), "the inputs changed, so try again");
+    }
+
+    /// `FurnaceRecipeBookComponent.isCraftingSlot` switches on the slot's
+    /// index inside its own container and never asks which container — so the
+    /// player's first three hotbar slots answer true (M107).
+    #[test]
+    fn a_furnaces_crafting_slots_include_three_hotbar_slots() {
+        for slot in 0..3 {
+            assert!(is_crafting_slot(BookType::Furnace, false, slot), "{slot}");
+        }
+        for slot in 30..33 {
+            assert!(
+                is_crafting_slot(BookType::Furnace, false, slot),
+                "hotbar {slot} shares a container index with a furnace slot"
+            );
+        }
+        // …and nothing else does. Menu slot 3 is the first main-inventory
+        // slot, whose container index is 9.
+        for slot in [3usize, 4, 29, 33, 38] {
+            assert!(!is_crafting_slot(BookType::Furnace, false, slot), "{slot}");
+        }
+        // The crafting family compares slot OBJECTS, so it has no such
+        // collision: result 0 plus the grid, and the grid's size follows the
+        // menu.
+        assert!(is_crafting_slot(BookType::Crafting, true, 0), "the result");
+        assert!(is_crafting_slot(BookType::Crafting, true, 4), "2x2 grid");
+        assert!(!is_crafting_slot(BookType::Crafting, true, 5), "past a 2x2");
+        assert!(is_crafting_slot(BookType::Crafting, false, 9), "3x3 grid");
+        assert!(!is_crafting_slot(BookType::Crafting, false, 10));
+        for slot in 30..33 {
+            assert!(!is_crafting_slot(BookType::Crafting, false, slot));
+        }
+    }
+
+    /// A suppressed click does NOTHING — not even clear the ghost (M107).
+    #[test]
+    fn a_suppressed_click_leaves_the_ghost_where_it_was() {
+        let mut g = PlaceGuard::default();
+        let first = place_effects(&mut g, 7, false, false, false);
+        assert_eq!(first.send, Some(false));
+        assert!(first.clear_ghost, "the first click clears and refills it");
+        let second = place_effects(&mut g, 7, false, false, false);
+        assert_eq!(second, PlaceEffects::default());
+        assert_eq!(second.send, None, "no packet");
+        assert!(!second.clear_ghost, "`ghostSlots.clear()` is AFTER the guard");
+        assert!(!second.close_book, "and so is `setVisible(false)`");
+    }
+
+    #[test]
+    fn use_max_items_rides_through_untouched() {
+        let mut g = PlaceGuard::default();
+        assert_eq!(place_effects(&mut g, 7, true, true, false).send, Some(true));
+        assert_eq!(place_effects(&mut g, 7, true, false, false).send, Some(false));
+        // …and it does not leak into the other two effects.
+        let shifted = place_effects(&mut g, 8, true, true, false);
+        let plain = place_effects(&mut g, 9, true, false, false);
+        assert_eq!(shifted.clear_ghost, plain.clear_ghost);
+        assert_eq!(shifted.close_book, plain.close_book);
+    }
+
+    #[test]
+    fn a_placement_closes_a_narrow_books_but_not_a_wide_ones() {
+        let mut g = PlaceGuard::default();
+        assert!(place_effects(&mut g, 7, true, false, true).close_book);
+        assert!(!place_effects(&mut g, 7, true, false, false).close_book);
+    }
+
+    /// A placement closes the book only when the window is too narrow to show
+    /// both (M107).
+    #[test]
+    fn placing_closes_the_book_only_when_it_covers_the_menu() {
+        assert!(place_closes_book(true));
+        assert!(!place_closes_book(false));
+        // Tied to the SAME threshold the layout uses, so the book cannot
+        // decide it is beside the menu for one purpose and over it for another.
+        assert_eq!(place_closes_book(width_too_narrow(320)), true);
+        assert_eq!(place_closes_book(width_too_narrow(640)), false);
     }
 
     /// The overlay suppresses the page's tooltip, and only a CELL has one

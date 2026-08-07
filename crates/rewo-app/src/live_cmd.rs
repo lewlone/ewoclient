@@ -4529,7 +4529,7 @@ impl ApplicationHandler for LiveApp {
                                 click_screen(
                                     session,
                                     &items,
-                                    &self.screen,
+                                    &mut self.screen,
                                     action,
                                     ext.width as f32,
                                     ext.height as f32,
@@ -4798,6 +4798,9 @@ impl ApplicationHandler for LiveApp {
                         session,
                         &mut self.screen,
                         &items,
+                        // M107 — `event.hasShiftDown()`, straight through to
+                        // `useMaxItems`.
+                        self.shift,
                         display,
                         b == 1,
                         ext.width as f32,
@@ -4887,7 +4890,7 @@ impl ApplicationHandler for LiveApp {
                     click_screen(
                         session,
                         &items,
-                        &self.screen,
+                        &mut self.screen,
                         action,
                         ext.width as f32,
                         ext.height as f32,
@@ -12388,6 +12391,12 @@ pub struct ScreenState {
     /// `recipe_overlay::Open`. Its lifetime is exactly "until the next click",
     /// because every click while it is up either selects in it or shuts it.
     pub book_overlay: Option<rewo_world::recipe_overlay::Open>,
+    /// `RecipeBookComponent.lastPlacedRecipe` (M107) — which recipe the last
+    /// click sent, so a repeat of an UNCRAFTABLE one can be suppressed.
+    ///
+    /// Screen state rather than session state, like `book` and `book_search`:
+    /// nothing on the wire carries it, and vanilla keeps it on the component.
+    pub place_guard: rewo_world::recipe_book_screen::PlaceGuard,
     /// Cursor position in screen pixels. Only tracked while a screen is
     /// open; the rest of the time the cursor is grabbed and its position is
     /// meaningless.
@@ -12443,6 +12452,7 @@ impl Default for ScreenState {
             screens: Default::default(),
             book: Default::default(),
             book_overlay: Default::default(),
+            place_guard: Default::default(),
             mouse: Default::default(),
             close_requests_seen: Default::default(),
             beacon: Default::default(),
@@ -13667,6 +13677,10 @@ fn book_press(
     session: &mut PlaySession,
     screen: &mut ScreenState,
     items: &rewo_data::items::Items,
+    // M107 — `event.hasShiftDown()`, which vanilla passes straight through to
+    // `useMaxItems`: shift-clicking a recipe places as many as the ingredients
+    // allow rather than one.
+    shift: bool,
     // M99 — the search's inputs, so the press resolves the SAME page the render
     // did: a search narrows the page, and hit-testing against an unfiltered one
     // would place a recipe the player is not looking at.
@@ -13684,6 +13698,9 @@ fn book_press(
     let (bl, bt, scale) = rewo_gpu::container::recipe_book_origin(w, h);
     let bx = ((screen.mouse.0 - bl as f64) / scale as f64).floor() as i32;
     let by = ((screen.mouse.1 - bt as f64) / scale as f64).floor() as i32;
+    // Bound before the overlay branch, because both placement paths need it and
+    // one `let` is how they cannot disagree.
+    let narrow = rb::width_too_narrow((w / scale) as i32);
     // M104 — an OPEN which-of-these overlay eats every click, wherever it
     // lands. `RecipeBookPage.mouseClicked`'s overlay branch is an unconditional
     // `return true`, so while it is up the whole screen is modal: a click on
@@ -13692,15 +13709,13 @@ fn book_press(
     if let Some(open) = screen.book_overlay.as_ref() {
         match open.click_at(bx, by, right) {
             rewo_world::recipe_overlay::Click::Select(i) => {
-                let recipe = open.buttons.get(i).map(|b| b.recipe);
+                let picked = open.buttons.get(i).map(|b| (b.recipe, b.craftable));
                 // **The overlay STAYS OPEN.** The selecting branch does not
                 // call `setVisible(false)` — only the else does — so picking a
                 // variant leaves the popup up and you can pick another. That
                 // reads like an oversight and is what makes the feature usable.
-                if let Some(id) = recipe {
-                    if let Err(e) = session.place_recipe(id, false) {
-                        log::warn!("rewo: place_recipe: {e}");
-                    }
+                if let Some((id, craftable)) = picked {
+                    place_from_book(session, screen, id, craftable, shift, narrow);
                 }
             }
             rewo_world::recipe_overlay::Click::Close => screen.book_overlay = None,
@@ -13715,7 +13730,6 @@ fn book_press(
         return false;
     };
     let hit = rb::book_hit(bx, by, view, view.tabs);
-    let narrow = rb::width_too_narrow((w / scale) as i32);
     let action = screen.book.press(hit, right);
     // The `EditBox` is the ONLY owner of "is the search focused" — see
     // `focus_change`'s docs for why the duplicate flag it replaced was a bug.
@@ -13751,13 +13765,25 @@ fn book_press(
                     screen.book_overlay = Some(open_overlay(collection, index, view));
                 }
             } else {
-                let recipe = render.and_then(|b| b.slot_recipes.get(index).copied().flatten());
-                if let Some(id) = recipe {
-                    // `useMaxItems` is shift-held; Rewo does not track the
-                    // modifier here yet, so a click always places one.
-                    if let Err(e) = session.place_recipe(id, false) {
-                        log::warn!("rewo: place_recipe: {e}");
-                    }
+                let picked = render.as_ref().and_then(|b| {
+                    let id = (*b.slot_recipes.get(index)?)?;
+                    // **`isCraftable(recipe)`, not `hasCraftable()`.** The
+                    // cell's `(craftable, multiple)` pair carries the
+                    // COLLECTION's answer, which is true when ANY of its
+                    // recipes can be made — so on a group holding one craftable
+                    // and one not, using it would let the uncraftable one be
+                    // clicked forever. The per-recipe flag rides on the same
+                    // `Button`s the which-of-these overlay is built from.
+                    let craftable = b
+                        .slot_collections
+                        .get(index)?
+                        .iter()
+                        .find(|btn| btn.recipe == id)
+                        .is_some_and(|btn| btn.craftable);
+                    Some((id, craftable))
+                });
+                if let Some((id, craftable)) = picked {
+                    place_from_book(session, screen, id, craftable, shift, narrow);
                 }
             }
             true
@@ -13766,6 +13792,67 @@ fn book_press(
         // Missed the book — swallowed anyway on a narrow window.
         None => narrow,
     }
+}
+
+/// `RecipeBookComponent.tryPlaceRecipe` and what its caller does with the
+/// answer (M107).
+///
+/// Both placement paths — a page cell and a which-of-these button — funnel
+/// through here, because vanilla has one `tryPlaceRecipe` and the guard is
+/// stateful: two copies would each hold half the history and neither would
+/// suppress correctly.
+///
+/// Three things happen on a successful placement, and only the packet is
+/// obvious:
+///
+/// * **The ghost is cleared first.** `ghostSlots.clear()` runs before
+///   `handlePlaceRecipe`, so a failed placement leaves the screen briefly with
+///   no ghost until the server's reply refills it. Keeping the old one would
+///   show the previous recipe's ingredients against the new request.
+/// * **The book closes on a narrow window** — `if (!isOffsetNextToMainGUI())
+///   setVisible(false)`, and `xOffset` is 0 exactly when the window is too
+///   narrow. There the book covers the menu you are about to look at.
+/// * `lastRecipe`/`lastRecipeCollection` are recorded for the Enter-key
+///   re-place. **Rewo has no key path into the book yet**, so those are not
+///   modelled; what matters here is that a SUPPRESSED click must not record
+///   them either, and it does not, because it never gets past the guard.
+///
+/// Returns whether the click placed.
+fn place_from_book(
+    session: &mut PlaySession,
+    screen: &mut ScreenState,
+    recipe: i32,
+    craftable: bool,
+    use_max_items: bool,
+    narrow: bool,
+) -> bool {
+    let effects = rewo_world::recipe_book_screen::place_effects(
+        &mut screen.place_guard,
+        recipe,
+        craftable,
+        use_max_items,
+        narrow,
+    );
+    let Some(use_max_items) = effects.send else {
+        return false;
+    };
+    if effects.clear_ghost {
+        session.ghost_recipe = None;
+    }
+    if let Err(e) = session.place_recipe(recipe, use_max_items) {
+        log::warn!("rewo: place_recipe: {e}");
+    }
+    if effects.close_book {
+        // `setVisible(false)` — which also shuts the which-of-these overlay
+        // (`recipeBookPage.setInvisible()`) and tells the server.
+        screen.book_overlay = None;
+        let book = shown_book_index(session);
+        session.set_recipe_book_open(book, false);
+        if let Err(e) = session.recipe_book_change_settings(book) {
+            log::warn!("rewo: recipe book settings: {e}");
+        }
+    }
+    true
 }
 
 /// Which of the four `RecipeBookSettings` slots the shown menu reads (M98).
@@ -17688,7 +17775,7 @@ fn finish_drag(
 fn click_screen(
     session: &mut PlaySession,
     items: &rewo_data::items::Items,
-    screen: &ScreenState,
+    screen: &mut ScreenState,
     action: SlotAction,
     w: f32,
     h: f32,
@@ -17696,6 +17783,23 @@ fn click_screen(
     let Some(slot) = screen.hovered(session.shown_menu().layout(), w, h) else {
         return;
     };
+    // M107 — `AbstractRecipeBookScreen.slotClicked` calls
+    // `recipeBookComponent.slotClicked(slot)` after `super`, and that resets
+    // `lastPlacedRecipe` and clears the ghost whenever the slot is a crafting
+    // one. Placed HERE rather than after the send, because vanilla's reset is
+    // gated only on which slot was clicked: a click that moves nothing still
+    // clears it.
+    {
+        let layout = session.shown_menu().layout();
+        let player_inventory =
+            layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID;
+        if book_type_of(layout).is_some_and(|b| {
+            rewo_world::recipe_book_screen::is_crafting_slot(b, player_inventory, slot)
+        }) {
+            screen.place_guard.crafting_slot_clicked();
+            session.ghost_recipe = None;
+        }
+    }
     let props = |id: i32| item_props(items, id);
     use rewo_world::inventory as inv;
     let slot = slot as i32;
