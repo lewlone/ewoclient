@@ -600,6 +600,12 @@ pub struct WorldRenderer {
     /// Live HUD state (health 0..20, food 0..20, selected slot 0..8); when
     /// `None`, no HUD draws (view/demo/bench aren't "playing").
     hud_state: Option<(f32, i32, u8, crate::hud::HudGauges)>,
+    /// This frame's chat backdrops (M109). A separate field from
+    /// [`Self::hud_state`] because it is set on a different cadence — the HUD
+    /// state comes from the packet stream and this comes from the chat store's
+    /// own geometry — and because an empty slice is a meaningful value (no
+    /// chat on screen) rather than an absent one.
+    chat_backdrops: Vec<crate::hud::ChatBackdrop>,
     text: Option<TextPass>,
     /// The Velvet type stack (M52b) — real variable-font text, for the pieces
     /// that need per-run styling the bitmap pass cannot express (tooltips
@@ -1130,6 +1136,7 @@ impl WorldRenderer {
                 locator: None,
                 locator_state: None,
                 hud_state: None,
+                chat_backdrops: Vec::new(),
                 text: None,
                 text_lines: Vec::new(),
                 camera_eye: [0.0; 3],
@@ -2251,6 +2258,15 @@ impl WorldRenderer {
         self.hud_state = Some((health, food, slot, gauges));
     }
 
+    /// Set this frame's chat backdrops (M109), in GUI pixels.
+    ///
+    /// **Replaces**, and an empty slice is how chat says it has nothing to
+    /// draw — a stale backdrop under nothing would be a black bar hanging over
+    /// the world after the last message faded.
+    pub fn set_chat_backdrops(&mut self, rects: Vec<crate::hud::ChatBackdrop>) {
+        self.chat_backdrops = rects;
+    }
+
     /// Attach the locator bar (M83). Independent of `init_hud` because its
     /// sprites bake separately — see `rewo_data::assets::LocatorSprites`.
     pub fn init_locator_bar(
@@ -2883,7 +2899,7 @@ impl WorldRenderer {
         }
         if let (Some(hud), Some((health, food, slot, gauges))) = (self.hud.as_mut(), self.hud_state)
         {
-            hud.draw(gpu, cb, extent, health, food, slot, gauges);
+            hud.draw(gpu, cb, extent, health, food, slot, gauges, &self.chat_backdrops);
             if screen.is_none() {
                 // M83 — the contextual bar's slot, which is the XP bar's slot:
                 // `Hud.nextContextualInfoState` picks one of them and the

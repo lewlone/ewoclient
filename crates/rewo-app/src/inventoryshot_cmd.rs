@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 152;
+const EXPECTED_WITNESSES: usize = 157;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -4296,6 +4296,171 @@ fn pixels_inner(
     // like with like — it asserts byte-identity against a frame captured
     // before the screen existed.
     wr.set_container(false, None);
+
+    // ── M109: the chat backdrop's tint reaches the fragment ─────────────────
+    //
+    // These grade the PASS, not the geometry: the rects are hand-built here so
+    // a mutation to `chat_backdrops`' arithmetic cannot make them pass, and
+    // conversely the arithmetic is graded by unit tests in `live_cmd` that
+    // never touch a GPU. Splitting them is what stops the gate re-deriving the
+    // rule it is checking (M93q).
+    //
+    // **They probe the HOTBAR, not the sky.** `CLEAR` is black and the backdrop
+    // is black, so over the sky the fill is exactly invisible — which n3 asserts
+    // rather than leaves implied, because a probe placed there would pass
+    // against a pass that draws nothing at all. That is the detector error this
+    // gate's own history keeps producing (M38's three, M34's non-black count).
+    let hud_only = shot(gpu, off, wr, &[])?;
+    // The hotbar is 182x22 centred at the bottom; at 256x256 the GUI scale is 1,
+    // so it spans y 234..256. A band inside it, clear of the icon rows.
+    let (bx, by, bw, bh) = (40u32, 236u32, 170u32, 8u32);
+    let band = rewo_gpu::hud::ChatBackdrop {
+        x: bx as f32,
+        y: by as f32,
+        w: bw as f32,
+        h: bh as f32,
+        alpha: 0.5,
+    };
+    wr.set_chat_backdrops(vec![band]);
+    let dimmed = shot(gpu, off, wr, &[])?;
+    let n = changed(&dimmed, &hud_only, bx, by, bw, bh);
+    c.record(
+        "cb1.the_backdrop_covers_the_hotbar_rather_than_hiding_under_it",
+        n == (bw * bh) as i64,
+        format!(
+            "{n} of {} pixels under the fill changed — **all** of them, which is the \
+             ordering claim and not merely 'something darkened'. Vanilla draws chat \
+             in a later stratum than the hotbar (`Hud` line 236 against 225, and \
+             `extractChat` opens with its own `nextStratum`), so the fill goes over \
+             the hotbar's opaque body. Emitted first instead, that body masks it and \
+             this reads 966 — a `> 800` threshold, which is what this witness said \
+             first, cannot tell the two apart",
+            bw * bh
+        ),
+    );
+
+    // The alpha is a varying, not a baked texel: doubling it darkens strictly
+    // more. A constant would leave these two frames identical.
+    wr.set_chat_backdrops(vec![rewo_gpu::hud::ChatBackdrop {
+        alpha: 0.25,
+        ..band
+    }]);
+    let faint = shot(gpu, off, wr, &[])?;
+    let sum = |img: &[u8]| -> i64 {
+        let mut s = 0i64;
+        for yy in by..by + bh {
+            for xx in bx..bx + bw {
+                let i = ((yy * W + xx) * 4) as usize;
+                s += img[i] as i64 + img[i + 1] as i64 + img[i + 2] as i64;
+            }
+        }
+        s
+    };
+    let (s_none, s_faint, s_dim) = (sum(&hud_only), sum(&faint), sum(&dimmed));
+    c.record(
+        "cb2.the_alpha_is_a_varying_not_a_baked_texel",
+        s_none > s_faint && s_faint > s_dim,
+        format!(
+            "band luminance {s_none} unfilled > {s_faint} at alpha 0.25 > {s_dim} at 0.5 \
+             — the cooldown overlay's tint comes from a texel and could only ever \
+             produce one of these"
+        ),
+    );
+
+    // Black over black is invisible, which is why n1 probes the hotbar. Stated
+    // as a witness so the choice of probe is a recorded fact rather than a
+    // preference — and so a future reader does not "fix" it by moving the band
+    // somewhere quieter.
+    let sky = changed(&dimmed, &hud_only, 8, 8, 64, 64);
+    c.record(
+        "cb3.over_the_black_sky_the_black_fill_changes_nothing",
+        sky == 0,
+        format!("{sky} pixels changed in a 64x64 patch of empty sky under no fill"),
+    );
+
+    // A zero-alpha fill is byte-identical to no fill at all.
+    //
+    // **Not because of the shader's `c.a < 0.004` discard**, which is what this
+    // comment said first and which a mutation proved equivalent: straight alpha
+    // blending gives `src*0 + dst*1 = dst`, so the pixel is unchanged with or
+    // without the discard. The discard saves the blend, not the pixel — a
+    // performance property this gate cannot see and does not claim. What is
+    // asserted here is the identity itself, which is what stops a
+    // fully-faded row leaving a visible black bar.
+    wr.set_chat_backdrops(vec![rewo_gpu::hud::ChatBackdrop {
+        alpha: 0.0,
+        ..band
+    }]);
+    let zero = shot(gpu, off, wr, &[])?;
+    wr.set_chat_backdrops(Vec::new());
+    let cleared = shot(gpu, off, wr, &[])?;
+    c.record(
+        "cb4.a_zero_alpha_fill_and_an_empty_list_are_both_byte_identical_to_none",
+        zero == hud_only && cleared == hud_only,
+        format!(
+            "zero-alpha {} and empty-list {} against the unfilled frame — the second \
+             half is the sensitivity partner for `set_chat_backdrops` REPLACING \
+             rather than accumulating, which is what stops a stale black bar \
+             hanging over the world after the last message fades",
+            if zero == hud_only { "matches" } else { "DIFFERS" },
+            if cleared == hud_only { "matches" } else { "DIFFERS" },
+        ),
+    );
+
+    // The blend happens in LINEAR space, because the attachment is
+    // `R8G8B8A8_SRGB`. Predicting the byte naively — `dst * (1 - a)` on the
+    // stored value — is the reading M50 found wrong for the glint, and it is
+    // wrong here too by a wide margin. Both predictions are computed so the
+    // witness says WHICH space rather than merely "some darkening happened".
+    let to_linear = |b: u8| {
+        let s = b as f32 / 255.0;
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let to_srgb = |l: f32| {
+        let s = if l <= 0.003_130_8 {
+            l * 12.92
+        } else {
+            1.055 * l.powf(1.0 / 2.4) - 0.055
+        };
+        (s * 255.0).round().clamp(0.0, 255.0) as i32
+    };
+    // The brightest pixel the fill ACTUALLY REACHES, so the two predictions are
+    // far apart and quantisation cannot blur them together.
+    //
+    // "Brightest in the band" is not the same thing and was the first version:
+    // the hotbar sprite has opaque and transparent regions, so a probe chosen
+    // by brightness alone can land on a pixel the fill covers or does not, and
+    // the first run picked one that went 226 -> 226. `dimmed[i] != hud_only[i]`
+    // is the condition that makes the choice mean what its name says.
+    let mut probe = (bx, by, 0u8);
+    for yy in by..by + bh {
+        for xx in bx..bx + bw {
+            let i = ((yy * W + xx) * 4) as usize;
+            if dimmed[i] != hud_only[i] && hud_only[i] > probe.2 {
+                probe = (xx, yy, hud_only[i]);
+            }
+        }
+    }
+    let i = ((probe.1 * W + probe.0) * 4) as usize;
+    let got = dimmed[i] as i32;
+    let linear_pred = to_srgb(to_linear(probe.2) * 0.5);
+    let gamma_pred = (probe.2 as f32 * 0.5).round() as i32;
+    c.record(
+        "cb5.the_fill_blends_in_linear_space_not_gamma",
+        (got - linear_pred).abs() <= 2 && (got - gamma_pred).abs() > 4,
+        format!(
+            "({},{}) went {} -> {got}; linear-space prediction {linear_pred}, \
+             gamma-space {gamma_pred}. The attachment is R8G8B8A8_SRGB, so the \
+             blend reads decoded values and the store re-encodes — the naive \
+             prediction is the one M50 found wrong for the glint",
+            probe.0, probe.1, probe.2
+        ),
+    );
+    wr.set_chat_backdrops(Vec::new());
 
     // The sensitivity partner for all three: with no items the frame is exactly
     // what the HUD alone draws.
