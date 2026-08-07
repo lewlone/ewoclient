@@ -3961,6 +3961,24 @@ impl PlaySession {
         self.send(p)
     }
 
+    /// `RecipeBookComponent.setVisible` — write a book's open flag locally
+    /// (M107).
+    ///
+    /// Separate from the send, unlike [`Self::toggle_recipe_book_filter`],
+    /// because the caller has other local state to settle in between (the
+    /// which-of-these overlay goes too) and because vanilla's `setVisible` is
+    /// itself several statements before `sendUpdateSettings()`.
+    pub fn set_recipe_book_open(&mut self, book_type: usize, open: bool) {
+        let st = match book_type {
+            0 => &mut self.recipe_book_settings.crafting,
+            1 => &mut self.recipe_book_settings.furnace,
+            2 => &mut self.recipe_book_settings.blast_furnace,
+            3 => &mut self.recipe_book_settings.smoker,
+            _ => return,
+        };
+        st.open = open;
+    }
+
     /// Flip a book's filter locally, then tell the server (M98).
     ///
     /// The order is vanilla's: `toggleFiltering()` writes the local setting and

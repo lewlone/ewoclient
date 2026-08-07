@@ -161,6 +161,13 @@ struct RenderCheck {
     /// the two are comparable; r23's threshold is a floor, so its meaning is
     /// unchanged.
     book_quads_max: usize,
+    /// M105 — frames on which the book drew its `x/y` page counter.
+    ///
+    /// A LABEL, not a quad, so `book_quads_max` cannot see it: the counter goes
+    /// through the text pass. It needs a book of more than one page, which
+    /// needs more unlocked recipes than a fresh player has — hence the caller
+    /// requirement, the same shape as r14's hotbar staging.
+    book_page_label_frames: u64,
     /// M104 — and the most it drew on a frame where one WAS open.
     ///
     /// A pair rather than one max, because the claim is a DIFFERENCE: an
@@ -445,6 +452,19 @@ impl RenderCheck {
             format!(
                 "{} quads at peak with an overlay open against {} without — at least a panel quad and one per button",
                 self.book_overlay_quads_max, self.book_quads_max
+            ),
+        );
+        // M105 — the counter reaches the windowed frame's label list. It is a
+        // caller requirement like r14's hotbar: a fresh player's book is one
+        // page and draws no counter at all, so `recipe give @s *` has to be
+        // staged. Failing closed on an unstaged run is the gate refusing to
+        // certify a path it never saw.
+        row(
+            "r25 the recipe book drew its page counter",
+            self.book_page_label_frames > 0,
+            format!(
+                "{} of {} frames — needs a multi-page book, i.e. REWO_PRECMD with `recipe give @s *`",
+                self.book_page_label_frames, self.frames
             ),
         );
         row(
@@ -4529,7 +4549,7 @@ impl ApplicationHandler for LiveApp {
                                 click_screen(
                                     session,
                                     &items,
-                                    &self.screen,
+                                    &mut self.screen,
                                     action,
                                     ext.width as f32,
                                     ext.height as f32,
@@ -4798,6 +4818,9 @@ impl ApplicationHandler for LiveApp {
                         session,
                         &mut self.screen,
                         &items,
+                        // M107 — `event.hasShiftDown()`, straight through to
+                        // `useMaxItems`.
+                        self.shift,
                         display,
                         b == 1,
                         ext.width as f32,
@@ -4887,7 +4910,7 @@ impl ApplicationHandler for LiveApp {
                     click_screen(
                         session,
                         &items,
-                        &self.screen,
+                        &mut self.screen,
                         action,
                         ext.width as f32,
                         ext.height as f32,
@@ -6536,6 +6559,19 @@ impl LiveApp {
                     self.started.elapsed().as_millis() as u64,
                     self.screen.book_overlay.as_ref(),
                 );
+                // M105 — the page counter is a LABEL, so it is counted here
+                // rather than among the book's quads. Matched on the
+                // model's own geometry (the counter is the only text the book
+                // draws on that row) rather than on its content, which is a
+                // translation and would tie the gate to a language.
+                if let Some(c) = self.check.as_mut() {
+                    let (_, bt, sc) = rewo_gpu::container::recipe_book_origin(sw, sh);
+                    let row = bt
+                        + rewo_world::recipe_book_screen::PAGE_LABEL_Y as f32 * sc;
+                    if labels.iter().any(|l| (l.y - row).abs() < 0.5) {
+                        c.book_page_label_frames += 1;
+                    }
+                }
                 self.screen_labels = labels;
                 // M94 — OUTSIDE the `container_panel_height` guard below: the
                 // player's own inventory has no container panel and is the
@@ -10081,6 +10117,276 @@ mod tests {
         assert_eq!(text.color, [1.0, 1.0, 1.0], "setTextColor(-1)");
     }
 
+    // -- the page counter (M105) --------------------------------------------
+
+    /// A language map holding the real `en_us.json` entry, so these read what
+    /// the client shows.
+    fn page_lang() -> rewo_data::lang::Language {
+        let mut m = std::collections::HashMap::new();
+        m.insert(
+            rewo_world::recipe_book_screen::PAGE_LABEL_KEY.to_string(),
+            "%s/%s".to_string(),
+        );
+        rewo_data::lang::Language::from_map(m)
+    }
+
+    fn book_of(page: usize, total: usize) -> super::BookRender {
+        use rewo_world::recipe_book_screen as rb;
+        super::BookRender {
+            view: Some(rb::BookView {
+                tabs: rb::CRAFTING_TABS.len(),
+                selected_tab: 0,
+                page,
+                total_pages: total,
+                shown: 0,
+                filtering: false,
+                furnace_family: false,
+            }),
+            book: rb::BookType::Crafting,
+            ..Default::default()
+        }
+    }
+
+    fn counter(page: usize, total: usize) -> Option<rewo_gpu::world::OwnedTextLine> {
+        let (labels, _) = super::book_labels(
+            &book_of(page, total),
+            &field_of("", false),
+            &page_lang(),
+            &advances(),
+            1280.0,
+            720.0,
+            0,
+        );
+        // By text rather than by index: the field contributes a hint label on
+        // this fixture, so "the last one" would name whichever happened to be
+        // pushed last and would keep passing if the two swapped.
+        labels.into_iter().find(|l| l.text.contains('/'))
+    }
+
+    /// The counter reaches the composed label list at all — the step
+    /// `apply_screen` cannot be asked about, since it needs a `PlaySession`.
+    #[test]
+    fn the_page_counter_reaches_the_books_labels() {
+        assert_eq!(counter(0, 3).map(|l| l.text), Some("1/3".to_string()));
+        // …and the field's own text is still there beside it, so composing the
+        // two did not replace one with the other.
+        let (labels, _) = super::book_labels(
+            &book_of(0, 3),
+            &field_of("iron", true),
+            &page_lang(),
+            &advances(),
+            1280.0,
+            720.0,
+            0,
+        );
+        assert!(labels.iter().any(|l| l.text == "iron"), "the search text");
+        assert!(labels.iter().any(|l| l.text == "1/3"), "the counter");
+    }
+
+    /// `if (this.totalPages > 1)` — a single-page book draws no counter, and a
+    /// shut book contributes none because it has no view.
+    #[test]
+    fn a_single_page_book_draws_no_counter() {
+        assert!(counter(0, 1).is_none(), "one page");
+        assert!(counter(0, 0).is_none(), "an empty book");
+        assert!(counter(0, 2).is_some(), "two pages");
+        let (labels, _) = super::book_labels(
+            &super::BookRender::default(),
+            &field_of("", false),
+            &page_lang(),
+            &advances(),
+            1280.0,
+            720.0,
+            0,
+        );
+        assert!(
+            !labels.iter().any(|l| l.text.contains('/')),
+            "no view, no counter"
+        );
+    }
+
+    /// The x is `73 - width / 2` in BOOK pixels, and the width is MEASURED.
+    ///
+    /// The two fixtures differ in label length by one character, so a build
+    /// that centred on a constant — or that measured the wrong string — puts
+    /// them at the same x. With the stub table's 6 px glyphs the difference is
+    /// exactly 3 book pixels.
+    #[test]
+    fn the_counter_is_placed_by_its_measured_width() {
+        use rewo_world::recipe_book_screen as rb;
+        let (bl, bt, scale) = rewo_gpu::container::recipe_book_origin(1280.0, 720.0);
+        let short = counter(0, 3).expect("1/3");
+        let long = counter(0, 10).expect("1/10");
+        assert_eq!(short.text, "1/3");
+        assert_eq!(long.text, "1/10");
+        assert_eq!(short.x, bl + rb::page_label_x(3 * 6) as f32 * scale);
+        assert_eq!(long.x, bl + rb::page_label_x(4 * 6) as f32 * scale);
+        assert_ne!(short.x, long.x, "a constant x would agree here");
+        assert_eq!(short.x - long.x, 3.0 * scale, "half the extra glyph");
+        // The row is the same for both — only the x tracks the width.
+        assert_eq!(short.y, bt + rb::PAGE_LABEL_Y as f32 * scale);
+        assert_eq!(long.y, short.y);
+    }
+
+    /// Colour `-1` is opaque white, and the five-argument `graphics.text`
+    /// delegates with `dropShadow = true`.
+    #[test]
+    fn the_counter_is_white_and_shadowed() {
+        let c = counter(0, 3).unwrap();
+        assert_eq!(c.color, [1.0, 1.0, 1.0]);
+        assert_eq!(c.alpha, 1.0, "ARGB.alpha(-1) — and text() skips alpha 0");
+        assert!(c.shadow, "the 5-arg overload passes true");
+    }
+
+    /// The FIRST tooltip of a frame wins, not the last (M106c).
+    ///
+    /// `setTooltipForNextFrameInternal`'s body is
+    /// `if (this.deferredTooltip == null || replaceExisting)` — so the
+    /// container's, set before the book's two, is the one that survives. The
+    /// call order reads the other way, which is what makes this worth pinning.
+    #[test]
+    fn the_first_tooltip_of_a_frame_wins() {
+        fn pick(
+            m: Option<&'static str>,
+            b: Option<&'static str>,
+            g: Option<&'static str>,
+        ) -> Option<&'static str> {
+            super::frame_tooltip(&mut (), |_| m, |_| b, |_| g)
+        }
+        assert_eq!(pick(Some("menu"), Some("book"), Some("ghost")), Some("menu"));
+        assert_eq!(pick(None, Some("book"), Some("ghost")), Some("book"));
+        assert_eq!(pick(None, None, Some("ghost")), Some("ghost"));
+        assert_eq!(pick(None, None, None), None);
+        // The menu's beats the ghost's with no page tooltip in play, which is
+        // the pair that is actually reachable together: a ghost sits ON a menu
+        // slot, while a page cell and a menu slot can never both be hovered.
+        assert_eq!(pick(Some("menu"), None, Some("ghost")), Some("menu"));
+        // And the later producers are not even evaluated once one has spoken —
+        // `deferredTooltip` is assigned, not compared.
+        let mut ran = 0;
+        assert_eq!(
+            super::frame_tooltip(
+                &mut ran,
+                |_| Some("menu"),
+                |n| {
+                    *n += 1;
+                    Some("book")
+                },
+                |n| {
+                    *n += 1;
+                    Some("ghost")
+                },
+            ),
+            Some("menu")
+        );
+        assert_eq!(ran, 0, "neither later producer ran");
+    }
+
+    /// The hover highlight resolves through the placement the book MOVED
+    /// (M106b).
+    ///
+    /// The cursor is put at the true centre of a slot in each case, so a
+    /// conversion that ignored the book would miss it by 77 GUI px — four
+    /// columns on an 18 px pitch, and often off the panel entirely.
+    #[test]
+    fn the_hover_highlight_follows_the_panel_the_book_pushed() {
+        // The crafting table: one of the four menus that has a book.
+        let craft = rewo_world::menu_layout::layout_of(12).unwrap();
+        let (w, h) = (1280.0f32, 720.0f32);
+        let at = |slot: usize, book_open: bool| {
+            let (l, t, sc) = rewo_gpu::container::gui_origin_placed(
+                w,
+                h,
+                rewo_gpu::container::Placement::with_book(
+                    craft.image_w as f32,
+                    craft.image_h as f32,
+                    book_open,
+                ),
+            );
+            let (sx, sy) = craft.position(slot).unwrap();
+            super::hovered_slot_position(
+                craft,
+                (
+                    (l + (sx as f32 + 8.0) * sc) as f64,
+                    (t + (sy as f32 + 8.0) * sc) as f64,
+                ),
+                w,
+                h,
+                book_open,
+            )
+        };
+        let want = craft.position(1).map(|(x, y)| (x as i32, y as i32));
+        assert_eq!(at(1, false), want, "book shut");
+        assert_eq!(at(1, true), want, "book OPEN — the panel moved with it");
+        // And the shift is real at this size, so the two cases are not the
+        // same test written twice.
+        let left = |book_open: bool| {
+            rewo_gpu::container::gui_origin_placed(
+                w,
+                h,
+                rewo_gpu::container::Placement::with_book(
+                    craft.image_w as f32,
+                    craft.image_h as f32,
+                    book_open,
+                ),
+            )
+            .0
+        };
+        assert_ne!(left(true), left(false));
+        // Off the panel entirely is `None`, not slot 0 — otherwise every miss
+        // would light the top-left slot.
+        assert_eq!(
+            super::hovered_slot_position(craft, (0.0, 0.0), w, h, false),
+            None
+        );
+    }
+
+    /// `if (!lines.isEmpty())` in `setTooltipForNextFrameInternal` — an empty
+    /// list sets NO tooltip, which is not the same as an empty box (M106).
+    ///
+    /// **No current caller can reach this**: `screen_tooltip`'s two producers
+    /// both start with a name line, and so does `book_tooltip`. A mutation
+    /// deleting the guard therefore survived every behavioural witness, and
+    /// the choice was to drop the guard or to pin it. It is pinned, because it
+    /// is vanilla's rule for a shared entry point rather than a property of
+    /// today's two producers — the third one to arrive gets it for free. This
+    /// test names its own unreachability so the next reader does not go looking
+    /// for the path that exercises it.
+    #[test]
+    fn an_empty_line_list_sets_no_tooltip_rather_than_an_empty_box() {
+        assert!(
+            super::tooltip_layout(Vec::new(), &advances(), None, (100.0, 100.0), (1280.0, 720.0))
+                .is_none()
+        );
+        // …and one line still does, so the guard is not simply "never".
+        assert!(super::tooltip_layout(
+            vec![vec![rewo_gpu::tooltip::Span::new("x".to_string(), [1.0; 3])]],
+            &advances(),
+            None,
+            (100.0, 100.0),
+            (1280.0, 720.0),
+        )
+        .is_some());
+    }
+
+    /// A missing translation renders the bare key — `getOrDefault` returns it
+    /// and a template with no specifiers survives substitution unchanged.
+    #[test]
+    fn a_missing_translation_shows_the_key() {
+        use rewo_world::recipe_book_screen as rb;
+        let empty = rewo_data::lang::Language::from_map(Default::default());
+        let (labels, _) = super::book_labels(
+            &book_of(0, 3),
+            &field_of("", false),
+            &empty,
+            &advances(),
+            1280.0,
+            720.0,
+            0,
+        );
+        assert!(labels.iter().any(|l| l.text == rb::PAGE_LABEL_KEY));
+    }
+
     /// The blink reaches the RENDER: the same focused field draws a caret in
     /// one 300 ms window and none in the next (M101).
     #[test]
@@ -12118,6 +12424,12 @@ pub struct ScreenState {
     /// `recipe_overlay::Open`. Its lifetime is exactly "until the next click",
     /// because every click while it is up either selects in it or shuts it.
     pub book_overlay: Option<rewo_world::recipe_overlay::Open>,
+    /// `RecipeBookComponent.lastPlacedRecipe` (M107) — which recipe the last
+    /// click sent, so a repeat of an UNCRAFTABLE one can be suppressed.
+    ///
+    /// Screen state rather than session state, like `book` and `book_search`:
+    /// nothing on the wire carries it, and vanilla keeps it on the component.
+    pub place_guard: rewo_world::recipe_book_screen::PlaceGuard,
     /// Cursor position in screen pixels. Only tracked while a screen is
     /// open; the rest of the time the cursor is grabbed and its position is
     /// meaningless.
@@ -12173,6 +12485,7 @@ impl Default for ScreenState {
             screens: Default::default(),
             book: Default::default(),
             book_overlay: Default::default(),
+            place_guard: Default::default(),
             mouse: Default::default(),
             close_requests_seen: Default::default(),
             beacon: Default::default(),
@@ -12689,8 +13002,32 @@ fn apply_screen(
     // one.
     // M100 — the search field's own quads and text. Built only when the book is
     // open, and only when there is a font to measure with.
+    // M106b — ONE binding for "the book is open", read by the panel's origin,
+    // the slot rects, the hover highlight, the tooltip and the enchanting
+    // rows. Each of those used to spell `book_open` at its own call site,
+    // which is how the tooltip and the highlight came to be the two that
+    // never learnt about the shift (M89's rule: a per-call-site choice is how
+    // they come to disagree).
+    //
+    // This is `apply_screen`'s composition root and no test reaches it — the
+    // function needs a `PlaySession`. A mutation pinning this to `false`
+    // therefore survives, and is recorded rather than papered over; what the
+    // consolidation buys is that the five consumers can no longer disagree
+    // with each other, which is the failure that actually happened.
+    let book_open = book.is_some();
+    // The ghost's items rotate on the SAME 30-tick clock the book's recipe
+    // cells use (M95) — `slotSelectTime` is one object shared by the page, the
+    // overlay and the ghost. Bound once so the icons and the ghost's tooltip
+    // cannot be a frame apart on it.
+    let ghost_cycle =
+        (session.ticks as f32 / rewo_net::recipe_book::TICKS_TO_SWAP_SLOT).floor() as i32;
+    // M105 — one call rather than two, so the composition of the field's text
+    // with the page counter is inside a function a test can reach. This
+    // function cannot be one: it needs a `PlaySession`.
     let (book_field_labels, book_field_fills) = match (book.as_ref(), baked.font.as_ref()) {
-        (Some(_), Some(f)) => book_field_render(book_field, &f.advance, w, h, now_ms),
+        (Some(b), Some(f)) => {
+            book_labels(b, book_field, &baked.lang, &f.advance, w, h, now_ms)
+        }
         _ => (Vec::new(), Vec::new()),
     };
     wr.set_recipe_book(book.as_ref().and_then(|b| {
@@ -12718,7 +13055,7 @@ fn apply_screen(
             rewo_gpu::container::Placement::with_book(
                 layout.image_w as f32,
                 layout.image_h as f32,
-                book.is_some(),
+                book_open,
             ),
         )),
     ));
@@ -12735,10 +13072,7 @@ fn apply_screen(
             merchant,
             book.as_ref(),
             &ghosts,
-            // The ghost's items rotate on the SAME 30-tick clock the book's
-            // recipe cells use (M95) — `slotSelectTime` is one object shared by
-            // the page, the overlay and the ghost.
-            (session.ticks as f32 / rewo_net::recipe_book::TICKS_TO_SWAP_SLOT).floor() as i32,
+            ghost_cycle,
             book_overlay,
         );
     if let Some((icon, label)) = carried_icon(menu, items, &session.trim_materials, mouse, w, h) {
@@ -12770,7 +13104,7 @@ fn apply_screen(
                 rewo_gpu::container::Placement::with_book(
                     layout.image_w as f32,
                     layout.image_h as f32,
-                    book.is_some(),
+                    book_open,
                 ),
             )),
         ),
@@ -12786,25 +13120,15 @@ fn apply_screen(
     labels.extend(book_field_labels);
     apply_gui_icons(wr, gpu, gui, &icons);
 
-    let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
-        mouse,
-        w,
-        h,
-        layout.image_w as f32,
-        layout.image_h as f32,
-    );
     wr.set_container(
         true,
-        layout
-            .slot_at(gx, gy)
-            .and_then(|s| layout.position(s))
-            .map(|(x, y)| (x as i32, y as i32)),
+        hovered_slot_position(layout, mouse, w, h, book_open),
     );
 
     // Every visible slot's durability bar, plus the cursor's. The screen's
     // rects and the hotbar's go through the same builder.
     {
-        let rects = menu_slot_rects(menu, w, h, book.is_some());
+        let rects = menu_slot_rects(menu, w, h, book_open);
         let mut stacks: Vec<_> = (0..menu.slot_count())
             .map(|i| (menu.menu_slot(i), rects[i]))
             .collect();
@@ -12824,7 +13148,11 @@ fn apply_screen(
     // The tooltip's box and its one line. Both need the font's advances, so a
     // build with no baked font simply draws no tooltip.
     let tooltip = wr.font_advance().and_then(|advance| {
-        screen_tooltip(
+        // M106c — the frame's three producers, in vanilla's precedence. Named
+        // rather than chained with `or_else` here: see `frame_tooltip`.
+        frame_tooltip(
+        &mut glyphs,
+        |glyphs| screen_tooltip(
             menu,
             items,
             &baked.item_names,
@@ -12844,6 +13172,41 @@ fn apply_screen(
                 .game_state
                 .game_mode()
                 .is_some_and(|m| m.is_spectator()),
+            book_open,
+        ),
+        // The book's cell tooltip, SECOND. Vanilla calls it AFTER the
+        // container's and it still loses — first-wins, not last-wins.
+        |glyphs| {
+            book_tooltip(
+                book.as_ref()?,
+                book_overlay.is_some(),
+                book_mouse,
+                items,
+                &baked.item_names,
+                &baked.lang,
+                flag,
+                &advance,
+                glyphs.as_deref_mut(),
+                mouse,
+                (w, h),
+            )
+        },
+        // And the ghost's, THIRD — `RecipeBookComponent.extractTooltip` runs
+        // the page's then the ghost's.
+        |glyphs| {
+            ghost_tooltip(
+                &ghosts,
+                ghost_cycle,
+                layout,
+                book_open,
+                items,
+                &baked.item_names,
+                &advance,
+                glyphs.as_deref_mut(),
+                mouse,
+                (w, h),
+            )
+        },
         )
     });
     wr.set_container_tooltip(tooltip.as_ref().map(|(draw, _, _)| draw.clone()));
@@ -13347,6 +13710,10 @@ fn book_press(
     session: &mut PlaySession,
     screen: &mut ScreenState,
     items: &rewo_data::items::Items,
+    // M107 — `event.hasShiftDown()`, which vanilla passes straight through to
+    // `useMaxItems`: shift-clicking a recipe places as many as the ingredients
+    // allow rather than one.
+    shift: bool,
     // M99 — the search's inputs, so the press resolves the SAME page the render
     // did: a search narrows the page, and hit-testing against an unfiltered one
     // would place a recipe the player is not looking at.
@@ -13364,6 +13731,9 @@ fn book_press(
     let (bl, bt, scale) = rewo_gpu::container::recipe_book_origin(w, h);
     let bx = ((screen.mouse.0 - bl as f64) / scale as f64).floor() as i32;
     let by = ((screen.mouse.1 - bt as f64) / scale as f64).floor() as i32;
+    // Bound before the overlay branch, because both placement paths need it and
+    // one `let` is how they cannot disagree.
+    let narrow = rb::width_too_narrow((w / scale) as i32);
     // M104 — an OPEN which-of-these overlay eats every click, wherever it
     // lands. `RecipeBookPage.mouseClicked`'s overlay branch is an unconditional
     // `return true`, so while it is up the whole screen is modal: a click on
@@ -13372,15 +13742,13 @@ fn book_press(
     if let Some(open) = screen.book_overlay.as_ref() {
         match open.click_at(bx, by, right) {
             rewo_world::recipe_overlay::Click::Select(i) => {
-                let recipe = open.buttons.get(i).map(|b| b.recipe);
+                let picked = open.buttons.get(i).map(|b| (b.recipe, b.craftable));
                 // **The overlay STAYS OPEN.** The selecting branch does not
                 // call `setVisible(false)` — only the else does — so picking a
                 // variant leaves the popup up and you can pick another. That
                 // reads like an oversight and is what makes the feature usable.
-                if let Some(id) = recipe {
-                    if let Err(e) = session.place_recipe(id, false) {
-                        log::warn!("rewo: place_recipe: {e}");
-                    }
+                if let Some((id, craftable)) = picked {
+                    place_from_book(session, screen, id, craftable, shift, narrow);
                 }
             }
             rewo_world::recipe_overlay::Click::Close => screen.book_overlay = None,
@@ -13395,7 +13763,6 @@ fn book_press(
         return false;
     };
     let hit = rb::book_hit(bx, by, view, view.tabs);
-    let narrow = rb::width_too_narrow((w / scale) as i32);
     let action = screen.book.press(hit, right);
     // The `EditBox` is the ONLY owner of "is the search focused" — see
     // `focus_change`'s docs for why the duplicate flag it replaced was a bug.
@@ -13431,13 +13798,25 @@ fn book_press(
                     screen.book_overlay = Some(open_overlay(collection, index, view));
                 }
             } else {
-                let recipe = render.and_then(|b| b.slot_recipes.get(index).copied().flatten());
-                if let Some(id) = recipe {
-                    // `useMaxItems` is shift-held; Rewo does not track the
-                    // modifier here yet, so a click always places one.
-                    if let Err(e) = session.place_recipe(id, false) {
-                        log::warn!("rewo: place_recipe: {e}");
-                    }
+                let picked = render.as_ref().and_then(|b| {
+                    let id = (*b.slot_recipes.get(index)?)?;
+                    // **`isCraftable(recipe)`, not `hasCraftable()`.** The
+                    // cell's `(craftable, multiple)` pair carries the
+                    // COLLECTION's answer, which is true when ANY of its
+                    // recipes can be made — so on a group holding one craftable
+                    // and one not, using it would let the uncraftable one be
+                    // clicked forever. The per-recipe flag rides on the same
+                    // `Button`s the which-of-these overlay is built from.
+                    let craftable = b
+                        .slot_collections
+                        .get(index)?
+                        .iter()
+                        .find(|btn| btn.recipe == id)
+                        .is_some_and(|btn| btn.craftable);
+                    Some((id, craftable))
+                });
+                if let Some((id, craftable)) = picked {
+                    place_from_book(session, screen, id, craftable, shift, narrow);
                 }
             }
             true
@@ -13446,6 +13825,67 @@ fn book_press(
         // Missed the book — swallowed anyway on a narrow window.
         None => narrow,
     }
+}
+
+/// `RecipeBookComponent.tryPlaceRecipe` and what its caller does with the
+/// answer (M107).
+///
+/// Both placement paths — a page cell and a which-of-these button — funnel
+/// through here, because vanilla has one `tryPlaceRecipe` and the guard is
+/// stateful: two copies would each hold half the history and neither would
+/// suppress correctly.
+///
+/// Three things happen on a successful placement, and only the packet is
+/// obvious:
+///
+/// * **The ghost is cleared first.** `ghostSlots.clear()` runs before
+///   `handlePlaceRecipe`, so a failed placement leaves the screen briefly with
+///   no ghost until the server's reply refills it. Keeping the old one would
+///   show the previous recipe's ingredients against the new request.
+/// * **The book closes on a narrow window** — `if (!isOffsetNextToMainGUI())
+///   setVisible(false)`, and `xOffset` is 0 exactly when the window is too
+///   narrow. There the book covers the menu you are about to look at.
+/// * `lastRecipe`/`lastRecipeCollection` are recorded for the Enter-key
+///   re-place. **Rewo has no key path into the book yet**, so those are not
+///   modelled; what matters here is that a SUPPRESSED click must not record
+///   them either, and it does not, because it never gets past the guard.
+///
+/// Returns whether the click placed.
+fn place_from_book(
+    session: &mut PlaySession,
+    screen: &mut ScreenState,
+    recipe: i32,
+    craftable: bool,
+    use_max_items: bool,
+    narrow: bool,
+) -> bool {
+    let effects = rewo_world::recipe_book_screen::place_effects(
+        &mut screen.place_guard,
+        recipe,
+        craftable,
+        use_max_items,
+        narrow,
+    );
+    let Some(use_max_items) = effects.send else {
+        return false;
+    };
+    if effects.clear_ghost {
+        session.ghost_recipe = None;
+    }
+    if let Err(e) = session.place_recipe(recipe, use_max_items) {
+        log::warn!("rewo: place_recipe: {e}");
+    }
+    if effects.close_book {
+        // `setVisible(false)` — which also shuts the which-of-these overlay
+        // (`recipeBookPage.setInvisible()`) and tells the server.
+        screen.book_overlay = None;
+        let book = shown_book_index(session);
+        session.set_recipe_book_open(book, false);
+        if let Err(e) = session.recipe_book_change_settings(book) {
+            log::warn!("rewo: recipe book settings: {e}");
+        }
+    }
+    true
 }
 
 /// Which of the four `RecipeBookSettings` slots the shown menu reads (M98).
@@ -15186,6 +15626,244 @@ fn book_field_render(
     (labels, fills)
 }
 
+/// The GUI-space top-left of the slot the cursor is over, for the highlight
+/// (M106b).
+///
+/// **Through the same [`rewo_gpu::container::Placement`] the pass draws with.**
+/// This was a bare `screen_to_gui_for`, which centres, while
+/// `ContainerPass::set_state` resolves its own origin with
+/// `Placement::with_book` — so with the recipe book open the cursor was
+/// converted against a panel 77 GUI px left of the one the highlight was drawn
+/// against, and the lit slot sat four columns right of the cursor. The
+/// tooltip's conversion had the same bug; the panel, the slot icons
+/// ([`menu_slot_rects`]) and the bespoke-widget hovers did not.
+///
+/// Extracted from `apply_screen` rather than fixed in place because that
+/// function needs a `PlaySession` and no gate reaches it: every `set_container`
+/// call in the whole app passes `hovered: None`, so the derivation had no
+/// witness of any kind. M97's lesson again — move the logic to where a test can
+/// see it.
+fn hovered_slot_position(
+    layout: &'static rewo_world::menu_layout::MenuLayout,
+    mouse: (f64, f64),
+    w: f32,
+    h: f32,
+    book_open: bool,
+) -> Option<(i32, i32)> {
+    let slot = hovered_menu_slot(layout, mouse, w, h, book_open)?;
+    layout.position(slot).map(|(x, y)| (x as i32, y as i32))
+}
+
+/// `AbstractContainerScreen.getHoveredSlot` — which menu slot the cursor is
+/// over, through the book-aware placement.
+///
+/// **Rewo does not model `AbstractRecipeBookScreen.isHovering`'s narrow-window
+/// override**, which returns false for every slot while the book is visible and
+/// the window is under 379 GUI px — the case where the book covers the menu. In
+/// vanilla that makes `hoveredSlot` null there, suppressing the highlight, the
+/// item tooltip, the ghost tooltip and the number/Q/F keyboard actions
+/// together. It is one predicate with five consumers and belongs in its own
+/// change, not smuggled in with a tooltip.
+pub(crate) fn hovered_menu_slot(
+    layout: &'static rewo_world::menu_layout::MenuLayout,
+    mouse: (f64, f64),
+    w: f32,
+    h: f32,
+    book_open: bool,
+) -> Option<usize> {
+    let (gx, gy) = rewo_gpu::container::screen_to_gui_placed(
+        mouse,
+        w,
+        h,
+        rewo_gpu::container::Placement::with_book(
+            layout.image_w as f32,
+            layout.image_h as f32,
+            book_open,
+        ),
+    );
+    layout.slot_at(gx, gy)
+}
+
+/// [`hovered_menu_slot`] under its own name, so a gate can assert that a
+/// witness's cursor really is over the slot it thinks it is.
+///
+/// b22 first passed for the wrong reason: it compared a book-open cursor
+/// against a book-shut conversion, so the `None` it was reading came from the
+/// 77 px placement shift and not from the guard it names. A mutation deleting
+/// that guard survived. This exists so the witness can say which of the two it
+/// is measuring.
+pub(crate) fn hovered_menu_slot_for_gate(
+    layout: &'static rewo_world::menu_layout::MenuLayout,
+    mouse: (f64, f64),
+    w: f32,
+    h: f32,
+    book_open: bool,
+) -> Option<usize> {
+    hovered_menu_slot(layout, mouse, w, h, book_open)
+}
+
+/// Which of a frame's three tooltip producers wins (M106c).
+///
+/// `setTooltipForNextFrameInternal` is
+/// `if (this.deferredTooltip == null || replaceExisting)`, and `replaceExisting`
+/// is false on every path any of these three takes — so the **first** tooltip
+/// set in a frame wins, and the calls that follow it are discarded.
+///
+/// That inverts the reading of `AbstractRecipeBookScreen.extractRenderState`,
+/// which calls the container's `extractTooltip` and *then* the book's, as
+/// though the book overwrote it. Writing this as a named function rather than
+/// an `or_else` chain at the call site is the point: the parameters say which
+/// producer is which, so getting the order wrong is a named mistake instead of
+/// an anonymous one, and the rule has somewhere to be tested.
+///
+/// The producers are closures because two of the three are only worth
+/// evaluating when the earlier ones declined — the container's tooltip walks a
+/// component patch and the book's measures a page.
+///
+/// `ctx` is threaded through them rather than captured because all three want
+/// the same `&mut GlyphCache`, and three closures cannot hold it at once. The
+/// reborrow per call is what makes the laziness expressible at all.
+fn frame_tooltip<T, C>(
+    ctx: &mut C,
+    menu: impl FnOnce(&mut C) -> Option<T>,
+    book_page: impl FnOnce(&mut C) -> Option<T>,
+    ghost: impl FnOnce(&mut C) -> Option<T>,
+) -> Option<T> {
+    if let Some(t) = menu(ctx) {
+        return Some(t);
+    }
+    if let Some(t) = book_page(ctx) {
+        return Some(t);
+    }
+    ghost(ctx)
+}
+
+/// The tooltip of a GHOST ingredient under the cursor (M106c).
+///
+/// `GhostSlots.extractTooltip` — keyed on the hovered menu slot, showing the
+/// item the ghost's own cycle is on.
+///
+/// **This is where first-wins becomes observable.** The container's tooltip is
+/// set earlier in the frame and `setTooltipForNextFrameInternal` only assigns
+/// when nothing has claimed the slot, so a ghost drawn over a slot that already
+/// holds an item describes the REAL item, not the ghost. Ordering these
+/// producers the way their calls read — the book's last, therefore winning —
+/// would show the ghost's name over a filled slot, which is plausible and
+/// wrong.
+///
+/// **Gated on the book being open**, unlike the ghost's own render:
+/// `extractGhostRecipe` is called unconditionally from `extractSlots` while
+/// `extractTooltip` sits inside `if (this.isVisible())`. So shutting the book
+/// leaves the ghost painted and stops it describing itself.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ghost_tooltip(
+    ghosts: &[rewo_world::ghost_slots::Ghost],
+    cycle: i32,
+    layout: &'static rewo_world::menu_layout::MenuLayout,
+    book_open: bool,
+    items: &rewo_data::items::Items,
+    names: &std::collections::HashMap<String, String>,
+    advance: &[u8; 256],
+    glyphs: Option<&mut rewo_gpu::velvet_glyph::GlyphCache>,
+    mouse: (f64, f64),
+    (w, h): (f32, f32),
+) -> Option<(
+    rewo_gpu::container::TooltipDraw,
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<rewo_gpu::velvet_text::OwnedRun>,
+)> {
+    if !book_open {
+        return None;
+    }
+    let slot = hovered_menu_slot(layout, mouse, w, h, book_open)?;
+    // `this.ingredients.get(hoveredSlot)` — a map keyed by the slot, so a
+    // hovered slot with no ghost is simply absent rather than a miss to
+    // recover from.
+    let ghost = ghosts.iter().find(|g| g.slot == slot)?;
+    let item = ghost.item(cycle)?;
+    let item_name = items.name(item)?;
+    let lines = vec![vec![rewo_gpu::tooltip::Span::new(
+        names.get(item_name)?.to_string(),
+        rarity_color(stack_rarity(Some(item_name), None, false)),
+    )]];
+    tooltip_layout(lines, advance, glyphs, mouse, (w, h))
+}
+
+/// Every label and fill the open book contributes (M105).
+///
+/// The field's text and the page counter belong to different objects — an
+/// `EditBox` on the component, and `RecipeBookPage`'s own `extractRenderState`
+/// — but they share both preconditions (an open book, a font to measure with)
+/// and they are drawn into one list. Composing them here rather than at the
+/// call site is deliberate: `apply_screen` needs a `PlaySession` and so cannot
+/// be reached from a test, and a composition step performed there would be
+/// deletable with every unit test still green. That is M99's lesson — shrink
+/// the untestable surface rather than pretend to cover it.
+fn book_labels(
+    b: &BookRender,
+    field: &rewo_world::edit_box::EditBox,
+    lang: &rewo_data::lang::Language,
+    advance: &[u8; 256],
+    w: f32,
+    h: f32,
+    now_ms: u64,
+) -> (
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<(usize, rewo_gpu::container::PanelBlit)>,
+) {
+    let (mut labels, fills) = book_field_render(field, advance, w, h, now_ms);
+    labels.extend(b.view.and_then(|v| book_page_label(v, lang, advance, w, h)));
+    (labels, fills)
+}
+
+/// The `x/y` page counter under the recipe grid (M105).
+///
+/// The one piece of the book vanilla draws as bare text rather than through a
+/// widget: `RecipeBookPage.extractRenderState` opens with it, before the
+/// buttons and the arrows. Its model constants have existed since M93z with
+/// nothing reading them.
+///
+/// Three details that a call site alone does not carry:
+///
+/// * **The five-argument `graphics.text` delegates to the six-argument one with
+///   `dropShadow = true`.** Transcribing the visible arguments and defaulting
+///   the shadow to `false` loses it with nothing to notice.
+/// * **Colour `-1` is `0xFFFFFFFF`** — opaque white. `text` also early-returns
+///   on `ARGB.alpha(color) == 0`, which is why the alpha is worth reading
+///   rather than assuming.
+/// * The x is computed **by hand** as `xo - width / 2 + 73` rather than through
+///   the `centeredText` helper sitting a few lines away in the same class. The
+///   two are arithmetically identical here; the hand-written form is kept
+///   because it is what the class does.
+fn book_page_label(
+    view: rewo_world::recipe_book_screen::BookView,
+    lang: &rewo_data::lang::Language,
+    advance: &[u8; 256],
+    w: f32,
+    h: f32,
+) -> Option<rewo_gpu::world::OwnedTextLine> {
+    use rewo_world::recipe_book_screen as rb;
+    // `Language.getOrDefault` returns the key when the map has no entry, and a
+    // template with no specifiers survives `decomposeTemplate` unchanged — so
+    // `or_key` is vanilla's behaviour, not a local fallback.
+    let text = rb::page_label(view.page, view.total_pages, lang.or_key(rb::PAGE_LABEL_KEY))?;
+    let (bl, bt, scale) = rewo_gpu::container::recipe_book_origin(w, h);
+    // Measured with the SAME advances the text pass will draw with. Measuring
+    // one font and drawing another is what M52b found in the tooltip when it
+    // moved to Newsreader; here there is only the bitmap font, and passing the
+    // table in keeps it that way by construction.
+    let width = rewo_gpu::text::width(&text, advance);
+    Some(rewo_gpu::world::OwnedTextLine {
+        x: bl + rb::page_label_x(width) as f32 * scale,
+        y: bt + rb::PAGE_LABEL_Y as f32 * scale,
+        px: scale,
+        color: [1.0, 1.0, 1.0],
+        alpha: 1.0,
+        shadow: true,
+        text,
+    })
+}
+
 /// The book's chrome as blits, with its semantic sprites resolved to atlas
 /// indices.
 ///
@@ -15839,6 +16517,11 @@ pub(crate) fn screen_tooltip(
     open: Option<&rewo_world::menu::OpenMenu>,
     // `player.isSpectator()` — the fifth of the hint's conditions.
     spectator: bool,
+    // M106b — whether the recipe book is open, which MOVES the menu. The panel,
+    // its slot icons and its hover highlight all resolve their origin through
+    // `Placement::with_book`; this one resolved through the centred form, so
+    // with the book up it named a slot 77 GUI px right of the cursor.
+    book_open: bool,
 ) -> Option<(
     rewo_gpu::container::TooltipDraw,
     Vec<rewo_gpu::world::OwnedTextLine>,
@@ -15850,12 +16533,15 @@ pub(crate) fn screen_tooltip(
     if inv.carried().is_some() {
         return None;
     }
-    let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
+    let (gx, gy) = rewo_gpu::container::screen_to_gui_placed(
         mouse,
         w,
         h,
-        layout.image_w as f32,
-        layout.image_h as f32,
+        rewo_gpu::container::Placement::with_book(
+            layout.image_w as f32,
+            layout.image_h as f32,
+            book_open,
+        ),
     );
     let slot = layout.slot_at(gx, gy)?;
     // M93k — the crafter's `gui.togglable_slot` hint, which is shown on an
@@ -15995,7 +16681,119 @@ pub(crate) fn screen_tooltip(
         Some(l) => l,
         None => item_lines()?,
     };
+    tooltip_layout(lines, advance, glyphs, mouse, (w, h))
+}
 
+/// The tooltip of the recipe cell under the cursor (M106).
+///
+/// `RecipeBookPage.extractTooltip` — `Screen.getTooltipFromItem(displayStack)`
+/// plus a "Right Click for More" line when the collection holds more than one
+/// recipe.
+///
+/// **This loses to the menu's own tooltip, and that is not the order it is
+/// called in.** `AbstractRecipeBookScreen` runs `this.extractTooltip` (the
+/// container's) and *then* `recipeBookComponent.extractTooltip`, which reads as
+/// "the book overwrites it" — and `setTooltipForNextFrameInternal`'s body is
+/// `if (this.deferredTooltip == null || replaceExisting)`, with
+/// `replaceExisting` false on every path either of them takes. So the FIRST
+/// tooltip of a frame wins and the book's is discarded. Hence the caller's
+/// `screen_tooltip(..).or_else(..)` rather than the reverse.
+///
+/// For a page cell the two can never both fire — the book sits beside the menu
+/// on a wide window, and on a narrow one `AbstractRecipeBookScreen.isHovering`
+/// returns false for every slot, so there is no hovered slot to describe. It is
+/// the GHOST tooltip that makes first-wins observable; see [`ghost_tooltip`].
+///
+/// The stack is Rewo's `slot_items` id, which carries no components (M95): a
+/// recipe result that shipped with a custom name or lore would show its plain
+/// name here. The advanced block is still produced, because F3+H adds the
+/// registry id to a book cell in vanilla too.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn book_tooltip(
+    b: &BookRender,
+    overlay_open: bool,
+    book_mouse: Option<(i32, i32)>,
+    items: &rewo_data::items::Items,
+    names: &std::collections::HashMap<String, String>,
+    lang: &rewo_data::lang::Language,
+    flag: rewo_gpu::tooltip::TooltipFlag,
+    advance: &[u8; 256],
+    glyphs: Option<&mut rewo_gpu::velvet_glyph::GlyphCache>,
+    mouse: (f64, f64),
+    (w, h): (f32, f32),
+) -> Option<(
+    rewo_gpu::container::TooltipDraw,
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<rewo_gpu::velvet_text::OwnedRun>,
+)> {
+    use rewo_world::recipe_book_screen as rb;
+    let view = b.view?;
+    let (bx, by) = book_mouse?;
+    let slot = rb::page_tooltip_slot(rb::book_hit(bx, by, view, view.tabs), overlay_open)?;
+    // `getDisplayStack()` — the item the cycle is currently on, which is
+    // already what `slot_items` holds. A collection whose result needs a
+    // context Rewo cannot build has `None` and shows nothing, rather than a
+    // tooltip for some other member of the group.
+    let item = (*b.slot_items.get(slot)?)?;
+    let item_name = items.name(item)?;
+    let mut lines: Vec<rewo_gpu::tooltip::Line> = vec![vec![rewo_gpu::tooltip::Span::new(
+        names.get(item_name)?.to_string(),
+        rarity_color(stack_rarity(Some(item_name), None, false)),
+    )]];
+    {
+        let has = |c: &str| stack_has_component(item_name, c, None, None);
+        let durability = rewo_gpu::tooltip::DurabilityState {
+            // A recipe result is undamaged by construction: the display stack
+            // comes from the recipe, not from an inventory.
+            damage: 0,
+            max: rewo_data::item_props_table::max_damage(item_name).unwrap_or(0),
+            has_max_damage: has("minecraft:max_damage").unwrap_or(false),
+            has_damage: has("minecraft:damage").unwrap_or(false),
+            unbreakable: has("minecraft:unbreakable").unwrap_or(false),
+        };
+        let advanced = rewo_gpu::tooltip::advanced_lines(
+            flag,
+            durability,
+            true,
+            rewo_data::item_components_table::prototype_component_count(item_name),
+        );
+        lines.extend(advanced_tooltip_lines(&advanced, item_name, lang));
+    }
+    // `if (this.hasMultipleRecipes()) texts.add(MORE_RECIPES_TOOLTIP)` — LAST,
+    // after everything the item contributed, including the advanced block.
+    if b.slots.get(slot).is_some_and(|&(_, multiple)| multiple) {
+        lines.push(vec![rewo_gpu::tooltip::Span::new(
+            lang.or_key(rb::MORE_RECIPES_KEY).to_string(),
+            [1.0, 1.0, 1.0],
+        )]);
+    }
+    tooltip_layout(lines, advance, glyphs, mouse, (w, h))
+}
+
+/// Turn a resolved set of tooltip lines into its box, position and glyph runs
+/// (M106).
+///
+/// Extracted from [`screen_tooltip`] unchanged so the recipe book's own
+/// tooltips can share it. The comment it was extracted from already said why —
+/// "the measure, position and glyph-run code is the same for any tooltip, and a
+/// second copy of it is how two tooltips come to sit in different places" — and
+/// M106 is the second producer that makes it true rather than prospective.
+fn tooltip_layout(
+    lines: Vec<rewo_gpu::tooltip::Line>,
+    advance: &[u8; 256],
+    glyphs: Option<&mut rewo_gpu::velvet_glyph::GlyphCache>,
+    mouse: (f64, f64),
+    (w, h): (f32, f32),
+) -> Option<(
+    rewo_gpu::container::TooltipDraw,
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<rewo_gpu::velvet_text::OwnedRun>,
+)> {
+    // `if (!lines.isEmpty())` in `setTooltipForNextFrameInternal` — an empty
+    // list sets no tooltip at all, which is not the same as an empty box.
+    if lines.is_empty() {
+        return None;
+    }
     // Measure with the font that will DRAW. Once the tooltip renders in
     // Newsreader, sizing it with the bitmap advances measures a font it no
     // longer uses -- which shows up as text spilling out of its box, and is
@@ -17010,7 +17808,7 @@ fn finish_drag(
 fn click_screen(
     session: &mut PlaySession,
     items: &rewo_data::items::Items,
-    screen: &ScreenState,
+    screen: &mut ScreenState,
     action: SlotAction,
     w: f32,
     h: f32,
@@ -17018,6 +17816,23 @@ fn click_screen(
     let Some(slot) = screen.hovered(session.shown_menu().layout(), w, h) else {
         return;
     };
+    // M107 — `AbstractRecipeBookScreen.slotClicked` calls
+    // `recipeBookComponent.slotClicked(slot)` after `super`, and that resets
+    // `lastPlacedRecipe` and clears the ghost whenever the slot is a crafting
+    // one. Placed HERE rather than after the send, because vanilla's reset is
+    // gated only on which slot was clicked: a click that moves nothing still
+    // clears it.
+    {
+        let layout = session.shown_menu().layout();
+        let player_inventory =
+            layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID;
+        if book_type_of(layout).is_some_and(|b| {
+            rewo_world::recipe_book_screen::is_crafting_slot(b, player_inventory, slot)
+        }) {
+            screen.place_guard.crafting_slot_clicked();
+            session.ghost_recipe = None;
+        }
+    }
     let props = |id: i32| item_props(items, id);
     use rewo_world::inventory as inv;
     let slot = slot as i32;

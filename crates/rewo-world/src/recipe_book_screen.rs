@@ -692,6 +692,36 @@ pub fn page_label_x(text_width: i32) -> i32 {
     PAGE_LABEL_CENTRE_X - text_width / 2
 }
 
+/// The counter's translation key. Its value in `en_us.json` is **`%s/%s`** —
+/// no spaces, so a three-page book's first page reads `1/3` and not `1 / 3`.
+pub const PAGE_LABEL_KEY: &str = "gui.recipebook.page";
+
+/// The counter's text, or `None` on the frames it is not drawn at all.
+///
+/// `if (this.totalPages > 1)` — a book that fits on one page shows **no**
+/// counter, rather than a permanent `1/1`. That gate is here rather than at the
+/// caller because it is the same fact as the two arrows' visibility
+/// ([`page_arrows_visible`], also `totalPages > 1`): a page with nothing to
+/// page to says nothing about paging.
+///
+/// `page` is the **0-based** current page, as it is everywhere else in this
+/// module; vanilla passes `currentPage + 1` into the format and leaves
+/// `totalPages` alone, so only one of the two arguments is converted. Reading
+/// the `+ 1` as a 1-based convention and applying it to both gives `1/4` on a
+/// three-page book — a wrong number that still counts up correctly and so
+/// survives casual use.
+///
+/// `template` is the resolved format string, taken from the language map by the
+/// caller. Passing the **key itself** when the map has no entry is not a
+/// fallback invented here: `Language.getOrDefault` returns the key, and
+/// `decomposeTemplate` on a string with no specifiers yields it unchanged, so
+/// vanilla renders the bare key too.
+pub fn page_label(page: usize, total: usize, template: &str) -> Option<String> {
+    (total > 1).then(|| {
+        rewo_data::lang::format(template, &[&(page + 1).to_string(), &total.to_string()])
+    })
+}
+
 /// The filter toggle's sprite, as an index into a four-entry
 /// `(enabled, disabled, enabled_highlighted, disabled_highlighted)` group.
 ///
@@ -1049,6 +1079,45 @@ pub fn book_hit(bx: i32, by: i32, view: BookView, tab_count: usize) -> Option<Bo
     None
 }
 
+/// The line a multi-recipe cell adds under its item's tooltip (M106).
+///
+/// **It carries no count.** The string is `'Right Click for More'` — the same
+/// words whether the collection holds two recipes or twenty — so a "+N more
+/// recipes" line is not what vanilla shows. It is added on
+/// `hasMultipleRecipes()`, `selectedEntries.size() > 1`, which is the same
+/// predicate that picks the `slot_many_*` chrome and the one that decides
+/// whether a right-click opens the which-of-these overlay at all: the line is
+/// the affordance for that click, and the three agree by construction.
+pub const MORE_RECIPES_KEY: &str = "gui.recipebook.moreRecipes";
+
+/// Which recipe cell the page shows a tooltip for, if any (M106).
+///
+/// `if (screen() != null && this.hoveredButton != null && !this.overlay.isVisible())`.
+///
+/// **The overlay suppresses it.** While the which-of-these popup is up, the
+/// cells underneath still hover — `extractRenderState` runs the buttons' hover
+/// pass whatever the overlay is doing — and vanilla drops the tooltip anyway.
+/// That is the same modality M104 found on the click side, arriving through a
+/// different mechanism: the click is swallowed by an unconditional `return
+/// true`, and the tooltip by this explicit guard.
+///
+/// `hoveredButton` comes from each button's OWN rect rather than from the
+/// resolution order [`book_hit`] uses, and the two agree here only because no
+/// other widget's rect overlaps the grid: the arrows sit at y 137..154 and the
+/// grid ends at 131, the search box and filter end at 28, and the tabs hang off
+/// the left edge entirely. Reusing `book_hit` is therefore exact **and** keeps
+/// the hover reading the same number the press does, which is the coupling M98
+/// wanted; it would stop being exact if a widget ever overlapped a cell.
+pub fn page_tooltip_slot(hit: Option<BookHit>, overlay_open: bool) -> Option<usize> {
+    if overlay_open {
+        return None;
+    }
+    match hit? {
+        BookHit::Slot(i) => Some(i),
+        _ => None,
+    }
+}
+
 /// The book's own screen state — what only a click can change (M98).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BookState {
@@ -1131,7 +1200,159 @@ impl BookState {
     }
 }
 
-/// A recipe button is 25x25/// A recipe button is 25x25 — the same as the grid pitch, so the buttons abut
+/// `RecipeBookComponent.isCraftingSlot` — whether clicking this menu slot
+/// resets the place guard and clears the ghost (M107).
+///
+/// The two families answer by **different means**, and the furnace's is the
+/// interesting one:
+///
+/// * `CraftingRecipeBookComponent` compares SLOT OBJECTS —
+///   `menu.getResultSlot() == slot || menu.getInputGridSlots().contains(slot)`
+///   — so it is exactly the result plus the grid, and nothing can collide with
+///   it.
+/// * `FurnaceRecipeBookComponent` switches on **`slot.index`**, the slot's index
+///   inside its own `Container`, and accepts 0, 1 and 2 without asking which
+///   container that is. `addInventoryHotbarSlots` gives the player's hotbar
+///   container indices 0..8 — so **hotbar slots 0, 1 and 2 are "crafting slots"
+///   of a furnace**, and clicking one clears the ghost and resets the guard
+///   exactly as touching the furnace's own three slots does.
+///
+/// That is transcribed rather than corrected. It is observable (put a ghost up
+/// in a furnace, click your first hotbar slot, watch it vanish), and the
+/// "obvious" repair — testing the container too — would diverge.
+pub fn is_crafting_slot(book: BookType, player_inventory: bool, menu_slot: usize) -> bool {
+    match book {
+        // Result 0 plus the grid: 1..5 for the player's 2x2, 1..10 for a
+        // crafting table's 3x3.
+        BookType::Crafting => {
+            menu_slot == 0 || craft_slots(book, player_inventory).is_some_and(|c| c.range.contains(&menu_slot))
+        }
+        BookType::Furnace | BookType::BlastFurnace | BookType::Smoker => {
+            // The furnace's own three…
+            menu_slot < 3
+                // …and the three hotbar slots that share their container index.
+                || HOTBAR_INDEX_COLLISION.contains(&menu_slot)
+        }
+    }
+}
+
+/// The furnace menu slots whose *container* index is 0, 1 or 2 without being
+/// the furnace's own — the player's first three hotbar slots.
+///
+/// A furnace menu is three slots, then 27 main-inventory slots, then the nine
+/// hotbar slots, and `addInventoryHotbarSlots` numbers the hotbar 0..8 inside
+/// the player's container. So menu slots 30, 31 and 32.
+pub const HOTBAR_INDEX_COLLISION: std::ops::Range<usize> = 30..33;
+
+/// `RecipeBookComponent.lastPlacedRecipe` and the guard that reads it (M107).
+///
+/// The whole of the state is one nullable recipe id, and the whole of the rule
+/// is `tryPlaceRecipe`'s opening line — but both halves invert against the
+/// obvious reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlaceGuard {
+    /// The last recipe this component sent, or `None` when the grid has been
+    /// touched since.
+    pub last_placed: Option<i32>,
+}
+
+impl PlaceGuard {
+    /// `tryPlaceRecipe` — whether the click places, and whether the whole
+    /// component consumes it.
+    ///
+    /// `if (!collection.isCraftable(recipe) && recipe.equals(lastPlacedRecipe))
+    /// return false;`
+    ///
+    /// **Both halves are required.** A CRAFTABLE recipe can be clicked over and
+    /// over — each click places another one — and the guard only ever
+    /// suppresses a *repeat* of a recipe that could not be made. Reading it as
+    /// "don't place the same recipe twice" breaks bulk crafting; reading it as
+    /// "don't place what you can't craft" breaks the first click, which is the
+    /// one that fills the ghost.
+    ///
+    /// `lastPlacedRecipe` is then written **unconditionally**, craftable or
+    /// not, so the memory always names the most recent placement.
+    ///
+    /// **A `false` return is not merely "no packet".** It propagates out of
+    /// `RecipeBookComponent.mouseClicked` as the whole component declining, so
+    /// `lastRecipe`/`lastRecipeCollection` are left alone (the Enter key will
+    /// still re-place the previous one, not this) and the narrow-window
+    /// auto-close does not fire. The click then falls through to the screen,
+    /// where `hasClickedOutside` refuses it because the cursor is over the
+    /// book — so the net effect is that a second click on an uncraftable recipe
+    /// does nothing at all.
+    pub fn try_place(&mut self, recipe: i32, craftable: bool) -> bool {
+        if !craftable && self.last_placed == Some(recipe) {
+            return false;
+        }
+        self.last_placed = Some(recipe);
+        true
+    }
+
+    /// `slotClicked` — touching a crafting slot forgets the last placement.
+    ///
+    /// The inputs changed, so a recipe that could not be made a moment ago
+    /// might be now, and the guard must not keep refusing it. Vanilla clears
+    /// the ghost in the same breath.
+    pub fn crafting_slot_clicked(&mut self) {
+        self.last_placed = None;
+    }
+}
+
+/// Everything a click on a recipe does, decided in one place (M107).
+///
+/// The executor is a handful of session calls; the *rules* are here, so a test
+/// can ask what a click should do without a `PlaySession` to run it against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlaceEffects {
+    /// `handlePlaceRecipe` — `Some(use_max_items)`, or `None` when the guard
+    /// suppressed the click.
+    pub send: Option<bool>,
+    /// `ghostSlots.clear()`, which sits **after** the guard's early return —
+    /// so a suppressed click leaves the previous ghost on screen.
+    pub clear_ghost: bool,
+    /// `setVisible(false)` on a window too narrow to show the book beside the
+    /// menu.
+    pub close_book: bool,
+}
+
+/// Resolve a click on a recipe, advancing the guard.
+///
+/// Note what a **suppressed** click does not do: no packet, no ghost clear, no
+/// close, and — one level up, where this cannot see it — no update of
+/// `lastRecipe`/`lastRecipeCollection`, because `tryPlaceRecipe`'s `false`
+/// returns out of `mouseClicked` before those are written.
+pub fn place_effects(
+    guard: &mut PlaceGuard,
+    recipe: i32,
+    craftable: bool,
+    use_max_items: bool,
+    too_narrow: bool,
+) -> PlaceEffects {
+    if !guard.try_place(recipe, craftable) {
+        return PlaceEffects::default();
+    }
+    PlaceEffects {
+        send: Some(use_max_items),
+        clear_ghost: true,
+        close_book: place_closes_book(too_narrow),
+    }
+}
+
+/// `isOffsetNextToMainGUI()` — whether a successful placement leaves the book
+/// open (M107).
+///
+/// `xOffset == 86`, and `xOffset` is `widthTooNarrow ? 0 : 86`. So on a window
+/// too narrow to show both, placing a recipe **closes the book**, because it is
+/// covering the menu you are about to look at. On a wide one it stays.
+///
+/// Note the direction: the method name asks whether the book is *beside* the
+/// GUI, and the call site is `if (!isOffsetNextToMainGUI()) setVisible(false)`.
+pub fn place_closes_book(too_narrow: bool) -> bool {
+    too_narrow
+}
+
+/// A recipe button is 25x25 — the same as the grid pitch, so the buttons abut
 /// with no gap and a click can never fall between two.
 pub const SLOT_SIZE: i32 = 25;
 
@@ -1683,6 +1904,232 @@ mod tests {
         // The width is halved with integer division, so an odd label is not
         // symmetric about the centre either.
         assert_eq!(page_label_x(21), 73 - 10);
+    }
+
+    /// The real `en_us.json` value, so the tests below read what the client
+    /// actually shows rather than a plausible stand-in. Written out rather than
+    /// loaded because that is the point of the first assertion: **no spaces**.
+    const PAGE_TEMPLATE: &str = "%s/%s";
+
+    #[test]
+    fn a_one_page_book_shows_no_counter_at_all() {
+        // `if (this.totalPages > 1)`. Not a permanent `1/1`, and not an empty
+        // string — the text is never laid out, so nothing occupies the row.
+        assert_eq!(page_label(0, 1, PAGE_TEMPLATE), None);
+        assert_eq!(page_label(0, 0, PAGE_TEMPLATE), None, "an empty book");
+        assert_eq!(page_label(0, 2, PAGE_TEMPLATE).as_deref(), Some("1/2"));
+        // The same threshold the arrows use, and for the same reason: for any
+        // page inside its own book, `fwd || back` is false only when the page
+        // is both the first and the last — which is `total <= 1` exactly. So
+        // "the counter is drawn" and "some arrow is drawn" are the same
+        // predicate, and asserting the equality catches either one drifting.
+        //
+        // Written WITHOUT a `|| total > 1` third term: an earlier draft had one,
+        // which made the right-hand side equal to the gate under test and the
+        // arrows irrelevant to it.
+        for total in 0..6 {
+            for page in 0..total.max(1) {
+                let (fwd, back) = page_arrows_visible(page, total);
+                assert_eq!(
+                    page_label(page, total, PAGE_TEMPLATE).is_some(),
+                    fwd || back,
+                    "counter and arrows disagree on page {page} of {total}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_current_page_is_converted_to_1_based() {
+        // `Component.translatable(key, currentPage + 1, totalPages)` — the `+1`
+        // is on the FIRST argument only. Applying it to both gives "1/4" here,
+        // which still counts up correctly and so survives casual use.
+        assert_eq!(page_label(0, 3, PAGE_TEMPLATE).as_deref(), Some("1/3"));
+        assert_eq!(page_label(1, 3, PAGE_TEMPLATE).as_deref(), Some("2/3"));
+        assert_eq!(page_label(2, 3, PAGE_TEMPLATE).as_deref(), Some("3/3"));
+    }
+
+    #[test]
+    fn the_separator_is_a_bare_slash_with_no_spaces() {
+        // `'gui.recipebook.page' = '%s/%s'`. A spaced " / " is what the label
+        // looks like it should be and is 2 px wider, which moves the centred x.
+        let label = page_label(0, 3, PAGE_TEMPLATE).unwrap();
+        assert_eq!(label, "1/3");
+        assert!(!label.contains(' '));
+    }
+
+    #[test]
+    fn a_missing_translation_renders_the_bare_key_rather_than_nothing() {
+        // `Language.getOrDefault` returns the key, and `decomposeTemplate` on a
+        // string with no specifiers yields it unchanged. So this is vanilla's
+        // own behaviour, not a fallback invented here — and it is visible,
+        // which is what makes a missing key get fixed.
+        assert_eq!(
+            page_label(0, 3, PAGE_LABEL_KEY).as_deref(),
+            Some(PAGE_LABEL_KEY)
+        );
+        // …and the gate still applies: a one-page book shows nothing even when
+        // the key is missing.
+        assert_eq!(page_label(0, 1, PAGE_LABEL_KEY), None);
+    }
+
+    /// The guard needs BOTH halves: a repeat, AND uncraftable (M107).
+    #[test]
+    fn only_a_repeat_of_an_UNCRAFTABLE_recipe_is_suppressed() {
+        let mut g = PlaceGuard::default();
+        // A craftable recipe places every time — this is bulk crafting.
+        assert!(g.try_place(7, true));
+        assert!(g.try_place(7, true));
+        assert!(g.try_place(7, true));
+        // An uncraftable one places ONCE — that first click is what fills the
+        // ghost, and suppressing it would leave the player no feedback at all.
+        let mut g = PlaceGuard::default();
+        assert!(g.try_place(7, false), "the first click still goes");
+        assert!(!g.try_place(7, false), "and the second does not");
+        // A DIFFERENT uncraftable recipe is not a repeat.
+        assert!(g.try_place(8, false));
+        assert!(!g.try_place(8, false));
+        assert!(g.try_place(7, false), "back to 7, which is no longer the last");
+    }
+
+    #[test]
+    fn a_craftable_placement_still_arms_the_guard() {
+        // `lastPlacedRecipe = recipe` sits AFTER the guard and is
+        // unconditional, so a craftable click arms it for the uncraftable one
+        // that may follow — which is what happens when you use up the last of
+        // an ingredient.
+        let mut g = PlaceGuard::default();
+        assert!(g.try_place(7, true));
+        assert_eq!(g.last_placed, Some(7));
+        assert!(!g.try_place(7, false), "the ingredients ran out");
+    }
+
+    #[test]
+    fn touching_a_crafting_slot_forgets_the_last_placement() {
+        let mut g = PlaceGuard::default();
+        assert!(g.try_place(7, false));
+        assert!(!g.try_place(7, false));
+        g.crafting_slot_clicked();
+        assert_eq!(g.last_placed, None);
+        assert!(g.try_place(7, false), "the inputs changed, so try again");
+    }
+
+    /// `FurnaceRecipeBookComponent.isCraftingSlot` switches on the slot's
+    /// index inside its own container and never asks which container — so the
+    /// player's first three hotbar slots answer true (M107).
+    #[test]
+    fn a_furnaces_crafting_slots_include_three_hotbar_slots() {
+        for slot in 0..3 {
+            assert!(is_crafting_slot(BookType::Furnace, false, slot), "{slot}");
+        }
+        for slot in 30..33 {
+            assert!(
+                is_crafting_slot(BookType::Furnace, false, slot),
+                "hotbar {slot} shares a container index with a furnace slot"
+            );
+        }
+        // …and nothing else does. Menu slot 3 is the first main-inventory
+        // slot, whose container index is 9.
+        for slot in [3usize, 4, 29, 33, 38] {
+            assert!(!is_crafting_slot(BookType::Furnace, false, slot), "{slot}");
+        }
+        // The crafting family compares slot OBJECTS, so it has no such
+        // collision: result 0 plus the grid, and the grid's size follows the
+        // menu.
+        assert!(is_crafting_slot(BookType::Crafting, true, 0), "the result");
+        assert!(is_crafting_slot(BookType::Crafting, true, 4), "2x2 grid");
+        assert!(!is_crafting_slot(BookType::Crafting, true, 5), "past a 2x2");
+        assert!(is_crafting_slot(BookType::Crafting, false, 9), "3x3 grid");
+        assert!(!is_crafting_slot(BookType::Crafting, false, 10));
+        for slot in 30..33 {
+            assert!(!is_crafting_slot(BookType::Crafting, false, slot));
+        }
+    }
+
+    /// A suppressed click does NOTHING — not even clear the ghost (M107).
+    #[test]
+    fn a_suppressed_click_leaves_the_ghost_where_it_was() {
+        let mut g = PlaceGuard::default();
+        let first = place_effects(&mut g, 7, false, false, false);
+        assert_eq!(first.send, Some(false));
+        assert!(first.clear_ghost, "the first click clears and refills it");
+        let second = place_effects(&mut g, 7, false, false, false);
+        assert_eq!(second, PlaceEffects::default());
+        assert_eq!(second.send, None, "no packet");
+        assert!(!second.clear_ghost, "`ghostSlots.clear()` is AFTER the guard");
+        assert!(!second.close_book, "and so is `setVisible(false)`");
+    }
+
+    #[test]
+    fn use_max_items_rides_through_untouched() {
+        let mut g = PlaceGuard::default();
+        assert_eq!(place_effects(&mut g, 7, true, true, false).send, Some(true));
+        assert_eq!(place_effects(&mut g, 7, true, false, false).send, Some(false));
+        // …and it does not leak into the other two effects.
+        let shifted = place_effects(&mut g, 8, true, true, false);
+        let plain = place_effects(&mut g, 9, true, false, false);
+        assert_eq!(shifted.clear_ghost, plain.clear_ghost);
+        assert_eq!(shifted.close_book, plain.close_book);
+    }
+
+    #[test]
+    fn a_placement_closes_a_narrow_books_but_not_a_wide_ones() {
+        let mut g = PlaceGuard::default();
+        assert!(place_effects(&mut g, 7, true, false, true).close_book);
+        assert!(!place_effects(&mut g, 7, true, false, false).close_book);
+    }
+
+    /// A placement closes the book only when the window is too narrow to show
+    /// both (M107).
+    #[test]
+    fn placing_closes_the_book_only_when_it_covers_the_menu() {
+        assert!(place_closes_book(true));
+        assert!(!place_closes_book(false));
+        // Tied to the SAME threshold the layout uses, so the book cannot
+        // decide it is beside the menu for one purpose and over it for another.
+        assert_eq!(place_closes_book(width_too_narrow(320)), true);
+        assert_eq!(place_closes_book(width_too_narrow(640)), false);
+    }
+
+    /// The overlay suppresses the page's tooltip, and only a CELL has one
+    /// (M106).
+    #[test]
+    fn the_overlay_suppresses_the_pages_tooltip() {
+        assert_eq!(page_tooltip_slot(Some(BookHit::Slot(7)), false), Some(7));
+        assert_eq!(page_tooltip_slot(Some(BookHit::Slot(7)), true), None);
+        // Every other widget the book hit-tests has a tooltip in vanilla
+        // (`Tooltip.create` on both arrows, a `withTooltip` on the filter) —
+        // but through `AbstractWidget`'s own mechanism, not through
+        // `RecipeBookPage.extractTooltip`, which reads `hoveredButton` and
+        // nothing else. So none of them belongs here.
+        for hit in [
+            BookHit::PageForward,
+            BookHit::PageBackward,
+            BookHit::Search,
+            BookHit::Filter,
+            BookHit::Tab(0),
+        ] {
+            assert_eq!(page_tooltip_slot(Some(hit), false), None, "{hit:?}");
+        }
+        assert_eq!(page_tooltip_slot(None, false), None, "off the book");
+    }
+
+    /// No widget's rect overlaps the recipe grid, which is what makes reusing
+    /// `book_hit`'s CLICK order exact for the hover (M106).
+    #[test]
+    fn nothing_overlaps_the_recipe_grid() {
+        let (_, top) = grid_slot(0);
+        let (_, bottom_row) = grid_slot((GRID_COLS * (GRID_ROWS - 1)) as usize);
+        let bottom = bottom_row + SLOT_SIZE;
+        // The arrows sit BELOW the grid…
+        assert!(PAGE_ARROW_Y >= bottom, "{PAGE_ARROW_Y} vs {bottom}");
+        // …and the search box and the filter toggle ABOVE it.
+        assert!(SEARCH_Y + SEARCH_H <= top);
+        assert!(FILTER_Y + FILTER_H <= top);
+        // The tabs hang off the left edge entirely, so no x of theirs can
+        // reach a cell.
+        let (tx, _) = tab_position(0);
+        assert!(tx + TAB_W <= GRID_X, "{} vs {GRID_X}", tx + TAB_W);
     }
 
     /// `WidgetSprites`' `enabled` slot carries "is filtering", not "is the

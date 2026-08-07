@@ -1207,6 +1207,9 @@ fn overlays(
                 crafter_layout,
                 Some(open),
                 spectator,
+                // No book on a crafter's screen, so the centred placement is
+                // the right one here and always was.
+                false,
             )
             .is_some()
         };
@@ -1261,6 +1264,7 @@ fn overlays(
                 (W as f32, H as f32),
                 lay,
                 Some(open),
+                false,
                 false,
             )
             .is_some()
@@ -1349,6 +1353,8 @@ fn overlays(
             (W as f32, H as f32),
             big,
             Some(open6),
+            false,
+            // A chest has no recipe book either.
             false,
         );
         c.record(
@@ -2783,6 +2789,407 @@ fn overlays(
             at_book(&deep, s5x + 12, s5y + 12) != at_book(&open, s5x + 12, s5y + 12),
             "an eight-button overlay is two rows deep and its second row covers the page's second row of cells"
                 .to_string(),
+        );
+
+        // -- the cell's tooltip (M106) --------------------------------------
+        //
+        // Graded on the LINES rather than on pixels, for the reason o14/o15
+        // grade the crafter's hint that way: what a tooltip says is the claim,
+        // and the box it is drawn in is `tooltip_layout`'s business, already
+        // pinned by the witnesses that share it.
+        //
+        // Driven through the production `book_tooltip`, not a local
+        // reassembly of its parts — M93b's rule.
+        let lang = &baked.lang;
+        let advance = &baked
+            .font
+            .as_ref()
+            .ok_or("containershot: no baked font")?
+            .advance;
+        let cell_tip = |b: &crate::live_cmd::BookRender,
+                        overlay_open: bool,
+                        cell: usize|
+         -> Vec<String> {
+            let (cx, cy) = rb::grid_slot(cell);
+            let mouse = (
+                (bl + (cx as f32 + 12.0) * bsc) as f64,
+                (bt + (cy as f32 + 12.0) * bsc) as f64,
+            );
+            crate::live_cmd::book_tooltip(
+                b,
+                overlay_open,
+                Some((cx + 12, cy + 12)),
+                &book_items,
+                &baked.item_names,
+                lang,
+                rewo_gpu::tooltip::TooltipFlag::NORMAL,
+                advance,
+                None,
+                mouse,
+                (W as f32, H as f32),
+            )
+            .map(|(_, lines, _)| lines.into_iter().map(|l| l.text).collect())
+            .unwrap_or_default()
+        };
+        let one = book(20, 1, 0);
+        let mut many = book(20, 1, 0);
+        // `hasMultipleRecipes()` — the second half of the `(craftable,
+        // multiple)` pair, and the same flag that picks the `slot_many_*`
+        // chrome and lets a right-click open the overlay.
+        many.slots = vec![(true, true); rb::ITEMS_PER_PAGE];
+        let more = lang.or_key(rb::MORE_RECIPES_KEY).to_string();
+        // `Items::name` answers the REGISTRY id, so the display-name map is
+        // keyed by `minecraft:dirt` and not `dirt`. Looked up rather than
+        // written as "Dirt": the point of the witness is that the tooltip goes
+        // through the same translation the menu's does, and a literal would
+        // pass against a build that had stopped translating at all.
+        let dirt_name = baked
+            .item_names
+            .get("minecraft:dirt")
+            .cloned()
+            .ok_or("containershot: no display name for minecraft:dirt")?;
+
+        c.record(
+            "b14.a_hovered_cell_names_the_item_it_is_showing",
+            cell_tip(&one, false, 3) == vec![dirt_name.clone()],
+            format!(
+                "hovering cell 3 gives {:?} — the display stack's own name, and nothing else on a single-recipe cell",
+                cell_tip(&one, false, 3)
+            ),
+        );
+        c.record(
+            "b15.the_more_recipes_line_is_added_only_by_a_MULTI_recipe_cell",
+            cell_tip(&many, false, 3) == vec![dirt_name.clone(), more.clone()]
+                && cell_tip(&one, false, 3) == vec![dirt_name.clone()],
+            format!(
+                "multi -> {:?}, single -> {:?}; the string is {more:?} and carries NO count, so a `+N more` line is not what vanilla shows",
+                cell_tip(&many, false, 3),
+                cell_tip(&one, false, 3)
+            ),
+        );
+        c.record(
+            "b16.an_open_overlay_suppresses_the_cells_tooltip",
+            cell_tip(&many, true, 3).is_empty() && !cell_tip(&many, false, 3).is_empty(),
+            format!(
+                "the same hover gives {:?} with the overlay up and {:?} without — the cells still hover underneath it, and vanilla drops the tooltip anyway",
+                cell_tip(&many, true, 3),
+                cell_tip(&many, false, 3)
+            ),
+        );
+        // Two ways of showing nothing, and they are different states: a cell
+        // past the end of the page is not hovered at all, and a cell whose
+        // result Rewo cannot resolve is hovered and has nothing to say.
+        let mut unresolved = book(20, 1, 0);
+        unresolved.slot_items = vec![None; rb::ITEMS_PER_PAGE];
+        let short = book(5, 1, 0);
+        c.record(
+            "b17.an_invisible_or_unresolvable_cell_says_nothing",
+            cell_tip(&short, false, 9).is_empty()
+                && cell_tip(&unresolved, false, 3).is_empty()
+                && !cell_tip(&short, false, 3).is_empty(),
+            format!(
+                "cell 9 of a five-cell page -> {:?}, an unresolvable result -> {:?}, while cell 3 of the same short page still speaks -> {:?}",
+                cell_tip(&short, false, 9),
+                cell_tip(&unresolved, false, 3),
+                cell_tip(&short, false, 3)
+            ),
+        );
+        // The gutter between the grid and the arrows: a cursor that is in the
+        // book but on no cell. Without this, "hovering nothing" is only ever
+        // witnessed by an invisible cell, and a build that answered slot 0 for
+        // every miss would pass b14-b17.
+        c.record(
+            "b18.a_cursor_in_the_book_but_on_no_cell_gets_no_tooltip",
+            crate::live_cmd::book_tooltip(
+                &one,
+                false,
+                Some((rb::PAGE_LABEL_CENTRE_X, rb::PAGE_LABEL_Y)),
+                &book_items,
+                &baked.item_names,
+                lang,
+                rewo_gpu::tooltip::TooltipFlag::NORMAL,
+                advance,
+                None,
+                (0.0, 0.0),
+                (W as f32, H as f32),
+            )
+            .is_none(),
+            format!(
+                "the page-counter row at ({}, {}) is inside the book and on no widget",
+                rb::PAGE_LABEL_CENTRE_X,
+                rb::PAGE_LABEL_Y
+            ),
+        );
+
+        // -- the menu's own tooltip, with the book open (M106b) --------------
+        //
+        // An open book MOVES the menu (M94). The panel, its slot icons and its
+        // hover highlight all resolve their origin through
+        // `Placement::with_book`; `screen_tooltip` resolved through the CENTRED
+        // form, so with the book up it converted the cursor against a panel 77
+        // GUI px left of the real one and named a slot four columns over.
+        //
+        // The witness hovers a REAL slot at its real position and asks for the
+        // item's name. Measuring only "some tooltip appeared" would pass on the
+        // wrong slot whenever that slot also had an item.
+        let mut shifted = rewo_world::inventory::Inventory::default();
+        let dirt = rewo_world::inventory::ItemSlot {
+            item_id: dirt_id,
+            count: 1,
+            has_components: false,
+            components: 0,
+            damage: None,
+            max_damage: None,
+            enchanted: false,
+            any_enchantments: false,
+            unbreakable: false,
+            damage_component_removed: false,
+            has_map_id: false,
+            dye_removed: false,
+            provides_banner_patterns_removed: false,
+            trim_material: None,
+        };
+        // Menu slot 1 of a crafting table: its grid, not its output. Slot 0 is
+        // the result, whose position differs enough that a 77 px error could
+        // land on it by luck.
+        assert!(shifted.set_slot(0, 1, Some(dirt)));
+        let named = |book_open: bool| -> bool {
+            let (l, t, sc) = rewo_gpu::container::gui_origin_placed(
+                W as f32,
+                H as f32,
+                rewo_gpu::container::Placement::with_book(
+                    craft.image_w as f32,
+                    craft.image_h as f32,
+                    book_open,
+                ),
+            );
+            let (sx, sy) = craft.position(1).expect("slot 1");
+            crate::live_cmd::screen_tooltip(
+                &shifted,
+                &book_items,
+                &baked.item_names,
+                lang,
+                &[],
+                &baked.enchantment_text,
+                &Default::default(),
+                None,
+                rewo_gpu::tooltip::TooltipFlag::NORMAL,
+                advance,
+                None,
+                (
+                    (l + (sx as f32 + 8.0) * sc) as f64,
+                    (t + (sy as f32 + 8.0) * sc) as f64,
+                ),
+                (W as f32, H as f32),
+                craft,
+                None,
+                false,
+                book_open,
+            )
+            .is_some_and(|(_, lines, _)| lines.first().is_some_and(|l| l.text == dirt_name))
+        };
+        c.record(
+            "b19.the_menus_tooltip_follows_the_panel_the_book_pushed",
+            named(true) && named(false),
+            format!(
+                "hovering crafting-table slot 1 at its own origin names {dirt_name:?} with the book open -> {} and shut -> {}; the two origins are 77 GUI px apart, more than four slot pitches",
+                named(true),
+                named(false)
+            ),
+        );
+        // …and that the two origins really do differ, so b19 is not passing
+        // because the shift is a no-op at this window size.
+        let origin_of = |book_open: bool| {
+            rewo_gpu::container::gui_origin_placed(
+                W as f32,
+                H as f32,
+                rewo_gpu::container::Placement::with_book(
+                    craft.image_w as f32,
+                    craft.image_h as f32,
+                    book_open,
+                ),
+            )
+            .0
+        };
+        // -- the ghost's tooltip, and first-wins (M106c) ---------------------
+        //
+        // The one place the precedence is observable. A page cell and a menu
+        // slot can never both be hovered, but a GHOST sits ON a menu slot — so
+        // hovering a ghost over a slot that already holds an item asks both
+        // producers at once, and vanilla's answer is the REAL item, because
+        // `setTooltipForNextFrameInternal` only assigns when nothing has
+        // claimed the frame yet.
+        let ghost_of = |slot: usize, item: i32| vec![rewo_world::ghost_slots::Ghost {
+            slot,
+            items: vec![item],
+            is_result: false,
+        }];
+        // Menu slot 1 of a crafting table — the same slot b19 uses, and the
+        // one `shifted` has a dirt stack in.
+        let stone_id = book_items.id("stone").expect("stone");
+        let stone_name = baked
+            .item_names
+            .get("minecraft:stone")
+            .cloned()
+            .ok_or("containershot: no display name for minecraft:stone")?;
+        // The cursor over slot 1's centre, at the origin THAT CASE uses. Taking
+        // one position for both would let b22 pass on the placement shift
+        // rather than on the guard it names — which is what it did first, and
+        // a mutation deleting the guard survived.
+        let over_slot1_at = |book_open: bool| {
+            let (l, t, sc) = rewo_gpu::container::gui_origin_placed(
+                W as f32,
+                H as f32,
+                rewo_gpu::container::Placement::with_book(
+                    craft.image_w as f32,
+                    craft.image_h as f32,
+                    book_open,
+                ),
+            );
+            let (sx, sy) = craft.position(1).expect("slot 1");
+            (
+                (l + (sx as f32 + 8.0) * sc) as f64,
+                (t + (sy as f32 + 8.0) * sc) as f64,
+            )
+        };
+        let over_slot1 = over_slot1_at(true);
+        let ghost_says = |book_open: bool, slot: usize| -> Option<String> {
+            crate::live_cmd::ghost_tooltip(
+                &ghost_of(slot, stone_id),
+                0,
+                craft,
+                book_open,
+                &book_items,
+                &baked.item_names,
+                advance,
+                None,
+                over_slot1_at(book_open),
+                (W as f32, H as f32),
+            )
+            .and_then(|(_, lines, _)| lines.first().map(|l| l.text.clone()))
+        };
+        c.record(
+            "b21.a_hovered_ghost_names_the_ingredient_it_stands_for",
+            ghost_says(true, 1).as_deref() == Some(stone_name.as_str())
+                && ghost_says(true, 2).is_none(),
+            format!(
+                "a ghost on slot 1 gives {:?} under a cursor on slot 1; a ghost on slot 2 gives {:?} under the same cursor",
+                ghost_says(true, 1),
+                ghost_says(true, 2)
+            ),
+        );
+        // A tag ingredient stands for several items and rotates through them on
+        // the same 30-tick clock the cells use. Without this the fixture cannot
+        // express the claim at all: a one-item ghost makes `item(cycle)` and
+        // `items.first()` the same function, so a build that lost the cycle
+        // would pass b21 unchanged.
+        let alternating = vec![rewo_world::ghost_slots::Ghost {
+            slot: 1,
+            items: vec![dirt_id, stone_id],
+            is_result: false,
+        }];
+        let cycled = |cycle: i32| -> Option<String> {
+            crate::live_cmd::ghost_tooltip(
+                &alternating,
+                cycle,
+                craft,
+                true,
+                &book_items,
+                &baked.item_names,
+                advance,
+                None,
+                over_slot1,
+                (W as f32, H as f32),
+            )
+            .and_then(|(_, lines, _)| lines.first().map(|l| l.text.clone()))
+        };
+        c.record(
+            "b24.a_multi_item_ghost_names_the_one_its_cycle_is_on",
+            cycled(0).as_deref() == Some(dirt_name.as_str())
+                && cycled(1).as_deref() == Some(stone_name.as_str())
+                && cycled(2).as_deref() == Some(dirt_name.as_str()),
+            format!(
+                "cycle 0 -> {:?}, 1 -> {:?}, 2 -> {:?}; `GhostSlot.getItem` is `items.get(index % size)` and the tooltip must read the same index the ICON is drawn from",
+                cycled(0),
+                cycled(1),
+                cycled(2)
+            ),
+        );
+
+        c.record(
+            "b22.shutting_the_book_stops_the_ghost_describing_itself",
+            ghost_says(false, 1).is_none()
+                && ghost_says(true, 1).is_some()
+                // …and the shut case's cursor really is over slot 1, so the
+                // `None` is the guard and not a missed hit test.
+                && crate::live_cmd::hovered_menu_slot_for_gate(
+                    craft,
+                    over_slot1_at(false),
+                    W as f32,
+                    H as f32,
+                    false,
+                ) == Some(1),
+            format!(
+                "book open -> {:?}, shut -> {:?} with the cursor over slot 1 in BOTH cases; `extractGhostRecipe` is called unconditionally from `extractSlots` while `extractTooltip` sits inside `if (isVisible())`, so the ghost stays PAINTED either way",
+                ghost_says(true, 1),
+                ghost_says(false, 1)
+            ),
+        );
+        // b23 — the precedence itself, through the same two production
+        // functions the frame chains, in the frame's own order.
+        let menu_says = {
+            let (l, t, sc) = rewo_gpu::container::gui_origin_placed(
+                W as f32,
+                H as f32,
+                rewo_gpu::container::Placement::with_book(
+                    craft.image_w as f32,
+                    craft.image_h as f32,
+                    true,
+                ),
+            );
+            let (sx, sy) = craft.position(1).expect("slot 1");
+            crate::live_cmd::screen_tooltip(
+                &shifted,
+                &book_items,
+                &baked.item_names,
+                lang,
+                &[],
+                &baked.enchantment_text,
+                &Default::default(),
+                None,
+                rewo_gpu::tooltip::TooltipFlag::NORMAL,
+                advance,
+                None,
+                (
+                    (l + (sx as f32 + 8.0) * sc) as f64,
+                    (t + (sy as f32 + 8.0) * sc) as f64,
+                ),
+                (W as f32, H as f32),
+                craft,
+                None,
+                false,
+                true,
+            )
+            .and_then(|(_, lines, _)| lines.first().map(|l| l.text.clone()))
+        };
+        c.record(
+            "b23.a_real_item_beats_the_ghost_drawn_over_it",
+            menu_says.as_deref() == Some(dirt_name.as_str())
+                && ghost_says(true, 1).as_deref() == Some(stone_name.as_str()),
+            format!(
+                "slot 1 holds {dirt_name:?} and carries a {stone_name:?} ghost, and the two producers answer DIFFERENTLY under one cursor — the menu {menu_says:?}, the ghost {:?}. Which of them the frame keeps is `frame_tooltip`'s rule, pinned by a unit test; asserting it here as well would only be this gate re-deriving the same `or` and agreeing with itself.",
+                ghost_says(true, 1)
+            ),
+        );
+
+        c.record(
+            "b20.the_book_shift_is_real_at_this_window_size",
+            (origin_of(true) - origin_of(false)).abs() > craft.image_w as f32 * 0.25,
+            format!(
+                "the panel's left is {} with the book open and {} without",
+                origin_of(true),
+                origin_of(false)
+            ),
         );
     }
 

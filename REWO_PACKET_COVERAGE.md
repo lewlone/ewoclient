@@ -166,7 +166,7 @@ take**, not about how much anyone wants it:
 |---|---|
 | **A** — pure state | Decoding it changes a value Rewo could act or gate on **without drawing anything new**. A witness can prove the decode; no human has to look at it. This is the class the M52–M74 batches drew from. |
 | **B** — needs rendering | The decode is possible today, but the packet's purpose is a visual Rewo does not have (a title overlay, an XP bar, the damage camera tilt). Landing the *feature* needs an eyeball; landing the *decode* does not. |
-| **C** — needs a subsystem Rewo lacks | A chat-input path, a resource-pack fetcher, a map image pipeline, a reconnect flow, an advancement tree, a dialog framework. The decode is not the hard part and shipping it alone buys nothing. (The screen/menu framework and the recipe book were both on this list; M82/M87 and M93y–M104 built them.) |
+| **C** — needs a subsystem Rewo lacks | A chat-input path, a resource-pack fetcher, a map image pipeline, a reconnect flow, an advancement tree, a dialog framework. The decode is not the hard part and shipping it alone buys nothing. (The screen/menu framework and the recipe book were both on this list; M82/M87 and M93y–M107 built them.) |
 | **D** — not applicable | Debug/dev tooling, integrated-server-only warnings, or a reply to a serverbound request Rewo never sends. Each row states which. |
 
 The A/B line is drawn at *what the decode itself unlocks*, so a packet whose
@@ -224,8 +224,8 @@ for. It was written to enumerate what Rewo ignores; what remains is 16 packets
 that need a subsystem (a chat-input path, a map-image pipeline, a
 resource-pack fetcher, a reconnect flow, an advancement tree, a dialog
 framework) and 11 that do not apply. **The recipe book was on that list and is
-no longer** — M93y decoded it, M93z–M104 built the UI, and its four packets are
-`handled`. Picking work
+no longer** — M93y decoded it, M93z–M107 built the UI (M107 closed it), and its
+four packets are `handled`. Picking work
 from here now means **choosing a subsystem**, not choosing a packet — and
 `REWO_FEATURE_SURVEY.md` is the better guide to that than a class-C count is.
 The one thing this document still adjudicates on its own is §4: "handled" is not
