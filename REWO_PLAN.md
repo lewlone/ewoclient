@@ -93,37 +93,61 @@ two `placeRecipe` quirks that no Minecraft grid can distinguish. **M104** is the
 cell, which M98 recorded as reported-and-ignored — and finds three clamps that
 round three different ways, an inert constant no fixture can catch, and an
 overlay that is modal, does not close when you pick from it, and is a snapshot
-rather than a view.
+rather than a view. **M105–M107 then CLOSE the book**: the page counter, the
+cell and ghost tooltips, and `tryPlaceRecipe`'s guard with `useMaxItems` — plus
+two bugs found on the way, the last two consumers of M94's menu displacement
+(the hover highlight and the item tooltip) and a furnace whose "crafting slots"
+include three of the player's hotbar slots.
 
-Current measurement, taken 2026-08-07 after M104: **2139 tests, 0 failures**
-(**world 860, net 613, gpu 255, data 212, app 143, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2139). **Breakdowns written before the
+Current measurement, taken 2026-08-07 after M107: **2161 tests, 0 failures**
+(**world 874, net 613, gpu 255, data 212, app 151, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2161). **Breakdowns written before the
 2026-08-06 pass were estimated, not measured**, and did not sum to the totals
 beside them; the totals were always a real sum, so only the splits were wrong.
 Read them off `cargo test`'s own per-binary lines rather than apportioning a
 total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
-three occurrences of the same habit. `containershot` **96/96**, `inventoryshot`
-152/152, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `mobshot`
-246/246, **`live --render-check` 24/24 with validation ON and 0 validation
-errors, re-run for M104** (M94 is where it earned its keep twice over — see its
-§15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
+three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
+152/152, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
+34/34, `mobshot` 246/246, **`live --render-check` 25/25 with validation ON and 0
+validation errors, re-run for M107** (M94 is where it earned its keep twice over
+— see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
 `REWO_PACKET_COVERAGE.md` is at **114 / 0 / 27**, class C **16** — unchanged by
-M96–M104, which consume packets M93y already decoded.
+M96–M107, which consume packets M93y already decoded.
 
-**What to do next.** The recipe book is nearly closed. What is left of it, in
-descending size: the **which-of-these tooltip** and the page's own recipe
-tooltips (`RecipeBookPage.extractTooltip`, suppressed while the overlay is up);
-`tryPlaceRecipe`'s **`lastPlacedRecipe`** guard, which suppresses a second click
-on the same uncraftable recipe *and returns false from the whole component* so
-the click falls through — reachable from a cell since M98 and from the overlay
-since M104, and never modelled; **`useMaxItems`**, the shift modifier that does
-not reach the book's press; and the **page counter text**, whose model constants
-(`PAGE_LABEL_CENTRE_X`, `page_label_x`) have existed since M93z with nothing
-drawing them. Or leave the book: the 27 absent packets are 11 not-applicable
-plus 16 needing a subsystem (chat input, advancements, resource-pack fetch,
-dialog, map, transfer), and `REWO_FEATURE_SURVEY.md` is the roadmap for
-features rather than milestones.
+**`live --render-check` now has TWO caller requirements, not one.** r14 needs
+items in the hotbar and **r25 needs a MULTI-PAGE recipe book**, so the staged
+invocation is
+`REWO_PRECMD="give @s minecraft:diamond_sword 1;give @s minecraft:dirt 64;recipe give @s *"`.
+A fresh player's book is one page and draws no counter, and r25 fails closed
+there — which was verified by meeting a fresh player, after a first attempt
+looked green because a previous run's `recipe give` had persisted into the
+world save. **A reused server directory is not a fresh one**; make a new
+directory when a witness's precondition is player state.
+
+**What to do next. The recipe book is CLOSED** — M105 the page counter, M106 the
+cell and ghost tooltips, M107 `tryPlaceRecipe`'s guard and `useMaxItems`. All
+four items the previous handoff listed are in, and so are two bugs found on the
+way (see §15's M105–M107 entry).
+
+Three things around the book are named rather than forgotten, and none is the
+obvious next milestone:
+
+* **`AbstractRecipeBookScreen.isHovering`'s narrow-window override**, which
+  returns false for every slot while the book covers the menu. It is ONE
+  predicate with five consumers — the slot highlight, the item tooltip, the
+  ghost tooltip, and the number/Q/F keyboard actions — so it is its own change,
+  not a rider on a tooltip.
+* **A key path into the book**, which Rewo has never had: `keyPressed`'s
+  `isSelection` branch re-places `lastRecipe` on Enter/Space/KP-Enter, and Esc
+  closes the book on a narrow window. Adjacent to the chat-input cluster, which
+  is the same missing subsystem.
+* The **which-of-these overlay's own tooltips**.
+
+Otherwise, leave the book. The 27 absent packets are 11 not-applicable plus 16
+needing a subsystem (chat input, advancements, resource-pack fetch, dialog, map,
+transfer), so **the next unit of work there is a subsystem, not a packet**; and
+`REWO_FEATURE_SURVEY.md` is the roadmap for features rather than milestones.
 
 **A drift worth naming, because it is this section's own documented failure
 mode running in reverse.** At M93z this block's *prose* had been updated
@@ -2522,6 +2546,114 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M105–M107 — closing the recipe book: the counter, the tooltips, the guard (2026-08-07)
+
+The four items §0.0 listed after M104, plus two bugs found on the way. All
+merged; `containershot` 96 → 107, `live --render-check` 24 → 25/25, demo PNG
+`2cc56b4acbfb92cb` byte-identical throughout.
+
+**M105 — the page counter.** `PAGE_LABEL_CENTRE_X`, `PAGE_LABEL_Y` and
+`page_label_x` had existed since M93z with nothing reading them. Four facts a
+call site does not carry: the lang value is **`%s/%s`, no spaces**, so a
+three-page book reads `1/3` and the spaced form is two pixels wider; only the
+**first** argument is converted to 1-based (`currentPage + 1, totalPages` —
+converting both gives `1/4` on a three-page book, a wrong number that still
+counts up); the five-argument `graphics.text` delegates with
+**`dropShadow = true`**; and `if (totalPages > 1)` means a single-page book
+shows **no** counter, which is the same predicate the two arrows use.
+
+**M106a — the recipe cell's tooltip.** The extra line is
+`gui.recipebook.moreRecipes` = **"Right Click for More"** and carries **no
+count** — §0.0 called it "the +N more recipes line", which it is not. It is
+added on `hasMultipleRecipes()`, the same predicate that picks the `slot_many_*`
+chrome and lets a right-click open the overlay, so the three now agree by
+construction. The overlay suppresses the tooltip by an **explicit**
+`!overlay.isVisible()` while the cells go on hovering underneath — a different
+mechanism from M104's click modality, which is an unconditional `return true`.
+
+**The book's tooltip LOSES to the menu's, and that is not the order it is
+called in.** `AbstractRecipeBookScreen` runs the container's `extractTooltip`
+and *then* the book's, which reads as the book overwriting it.
+`setTooltipForNextFrameInternal` is
+`if (this.deferredTooltip == null || replaceExisting)` with `replaceExisting`
+false on every path either takes — so the **first** tooltip of a frame wins.
+
+**M106b — the menu displacement, in the two consumers that never learnt about
+it.** M94 found an open book moves the menu 77 GUI px; M95 found it had not
+reached the slot icons. The hover **highlight** and the item **tooltip** were
+the last two: both converted the cursor with the centred `screen_to_gui_for`
+while `ContainerPass::set_state` places the highlight through
+`Placement::with_book`. Measured: at 1280x720 the crafting table's panel left is
+606 screen px with the book open and 375 without — exactly 77 GUI px at scale 3.
+The fix is **one `book_open` binding** that five consumers read, because M89's
+rule ("a per-call-site choice is how they come to disagree") had now failed
+three times in one file. The highlight's derivation had **no witness of any
+kind** — it lived in `apply_screen`, and every `set_container` call in the whole
+app passes `hovered: None`.
+
+**M106c — the ghost's tooltip, and the one place first-wins is observable.** A
+page cell and a menu slot can never both be hovered; a **ghost sits on a menu
+slot**, so hovering a ghost over a filled slot asks both producers at once, and
+vanilla answers with the real item. The chain is now
+`frame_tooltip(menu, book_page, ghost)` rather than an anonymous `or_else` pair,
+so the parameters say which producer is which and the rule has somewhere to be
+tested. One asymmetry: `extractGhostRecipe` is unconditional while
+`extractTooltip` sits inside `if (isVisible())`, so shutting the book leaves the
+ghost **painted** and stops it describing itself.
+
+**M107 — `tryPlaceRecipe`'s guard, `useMaxItems`, and a furnace whose crafting
+slots include three hotbar slots.** The guard needs **both** halves —
+`!isCraftable(recipe) && recipe.equals(lastPlacedRecipe)` — because reading it
+as "not twice" breaks bulk crafting and as "not uncraftable" breaks the first
+click, which is the one that fills the ghost. `lastPlacedRecipe = recipe` is
+**unconditional**, so a craftable click arms it for the uncraftable one that
+follows. It is `isCraftable(recipe)`, **not** the cell's collection-level
+`hasCraftable()`. A `false` return propagates out of `mouseClicked` as the whole
+component declining, so `ghostSlots.clear()` never runs, `lastRecipe` is not
+recorded, and the narrow-window auto-close does not fire — a second click on an
+uncraftable recipe does nothing at all. A placement **closes the book** when
+the window is too narrow to show it beside the menu.
+
+**`FurnaceRecipeBookComponent.isCraftingSlot` switches on `slot.index` — the
+index inside the slot's own `Container` — and never asks which container.** It
+accepts 0, 1 and 2; `addInventoryHotbarSlots` numbers the player's hotbar 0..8
+inside the player's container; so **menu slots 30, 31 and 32 are "crafting
+slots" of a furnace**, and clicking your first hotbar slot clears the ghost and
+resets the guard. Transcribed, not repaired. The crafting family compares slot
+OBJECTS and has no such collision.
+
+**Process.** Four witnesses were wrong before any code was, all in shapes this
+log already records: `item_names` is keyed by the REGISTRY id, so `"dirt"`
+compared "Dirt" against a fallback while the tooltip was exactly right; a
+counter-vs-arrows equality carried a `|| total > 1` third term that WAS the gate
+under test; b22 read a `None` produced by the placement shift rather than by the
+guard it named, and a mutation deleting that guard survived until each case took
+its cursor at its own origin; and b23 re-derived the precedence with a local
+`or` that would have agreed with any production order. One ghost fixture could
+not express its claim at all — a one-item ghost makes `item(cycle)` and
+`items.first()` the same function.
+
+**Three composition roots have no test seam**, and the mutations that pin them
+to a constant survive by construction: `apply_screen`'s `book_open`, the winit
+handler's `self.shift`, and (closed) M105's label composition, which moved
+inside `book_labels` instead. Each needs a `PlaySession`. Where a rule could be
+lifted out it was — `hovered_slot_position`, `place_effects`, `frame_tooltip`,
+`book_labels` — which is M97's lesson applied four more times.
+
+**r25 had to meet a fresh player to be worth anything.** The counter is a label,
+so `book_quads_max` cannot see it and r23 stayed green through M105 without it
+existing. The first r25 looked green unstaged — because the previous run's
+`recipe give @s *` had persisted into the world save. On a genuinely fresh
+server directory the unstaged run reports `0 of 7952 frames` and exits 1.
+
+**Open on the book**: nothing. `useMaxItems` reaches the click; the counter,
+both tooltips and the guard are in. What is NOT modelled and is named rather
+than forgotten: the Enter-key re-place (`keyPressed`'s `isSelection` branch
+needs a key path into the book, which Rewo has never had), the overlay's own
+tooltips, and `AbstractRecipeBookScreen.isHovering`'s narrow-window override —
+one predicate that suppresses the highlight, both tooltips and the
+number/Q/F keyboard actions together, so it belongs in its own change.
 
 ### M104 — the which-of-these overlay, and three clamps that round three different ways (2026-08-07)
 
