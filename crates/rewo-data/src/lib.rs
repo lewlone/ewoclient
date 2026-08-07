@@ -17,6 +17,7 @@ pub mod block_entity_types;
 pub mod block_light;
 pub mod blocks;
 pub mod cem;
+pub mod command_argument_types;
 pub mod chest_states;
 pub mod copper_golem_poses;
 pub mod components;
@@ -138,6 +139,9 @@ pub struct GameData {
     /// come from the report and never from the wire.
     pub recipe_display_ids: recipe_display::RecipeDisplayIds,
     pub sound_events: sound_events::SoundEvents,
+    /// M113 — the `command_argument_type` registry, without which the
+    /// Brigadier tree cannot be read past its first non-singleton argument.
+    pub command_argument_types: command_argument_types::CommandArgumentTypes,
     /// The three `minecraft:number_format_type` ids a scoreboard objective or
     /// score dispatches its optional number format on (M65).
     pub number_formats: number_formats::NumberFormatTypeIds,
@@ -168,6 +172,8 @@ impl GameData {
         let recipe_display_ids =
             recipe_display::RecipeDisplayIds::load(&paths.registries_json())?;
         let sound_events = sound_events::SoundEvents::load(&paths.registries_json())?;
+        let command_argument_types =
+            command_argument_types::CommandArgumentTypes::load(&paths.registries_json())?;
         let number_formats =
             number_formats::NumberFormatTypeIds::load(&paths.registries_json())?;
         let attributes =
@@ -188,6 +194,7 @@ impl GameData {
             mob_effects,
             recipe_display_ids,
             sound_events,
+            command_argument_types,
             number_formats,
             attributes,
             stat_registries,

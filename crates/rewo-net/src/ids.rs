@@ -445,6 +445,14 @@ pub struct Ids {
     /// own `MessageSignatureCache`. That is why this packet could not be
     /// handled before there was a cache to index: see [`crate::chat_wire`].
     pub cb_play_delete_chat: i32,
+    /// `ClientboundCommandsPacket` (M113) — the Brigadier command tree.
+    ///
+    /// A counted list of nodes then the root index. **An argument node's
+    /// properties have no length prefix and only its own type knows their
+    /// size**, so an unrecognised `command_argument_type` id makes the rest of
+    /// the packet unreadable — vanilla's own reader bails there too. See
+    /// [`crate::commands`].
+    pub cb_play_commands: i32,
     /// `ClientboundGameRuleValuesPacket` — a counted map of
     /// `ResourceKey<GameRule>` → string.
     pub cb_play_game_rule_values: i32,
@@ -710,6 +718,7 @@ impl Ids {
             cb_play_custom_payload: req!(p, P, C, "custom_payload"),
             cb_play_disguised_chat: req!(p, P, C, "disguised_chat"),
             cb_play_delete_chat: req!(p, P, C, "delete_chat"),
+            cb_play_commands: req!(p, P, C, "commands"),
             cb_play_game_rule_values: req!(p, P, C, "game_rule_values"),
             cb_play_player_combat_end: req!(p, P, C, "player_combat_end"),
             cb_play_player_combat_enter: req!(p, P, C, "player_combat_enter"),

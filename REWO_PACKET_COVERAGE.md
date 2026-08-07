@@ -27,11 +27,11 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 115 of them. 26
+1. **141 clientbound-play packets. Rewo resolves and consumes 116 of them. 25
    are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
    `cb_play_*` field set and the dispatch chain agree exactly, which is a real
    (and slightly surprising) property of this codebase — see §1.
-2. **Class A and class B are both empty.** The 26 gaps split 0 / 0 / 15 / 11
+2. **Class A and class B are both empty.** The 25 gaps split 0 / 0 / 14 / 11
    across pure state, needs-rendering, needs-a-missing-subsystem and
    not-applicable — so every packet Rewo can render *is* rendered, and what is
    left needs a subsystem it has not got or is a reply to something it never
@@ -194,23 +194,24 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **115** |
+| Resolved **and** consumed | **116** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **26** |
+| Not resolved at all | **25** |
 | **Total clientbound-play** | **141** |
 
-The 26 gaps, by class:
+The 25 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
 | **B** needs rendering | **0** | 0% |
-| **C** needs a subsystem Rewo lacks | **15** | 58% |
-| **D** not applicable | **11** | 42% |
+| **C** needs a subsystem Rewo lacks | **14** | 56% |
+| **D** not applicable | **11** | 44% |
 
-**M87 was the first bite out of class C** — which has since gone 23 -> 15, the
+**M87 was the first bite out of class C** — which has since gone 23 -> 14, the
 rest of it taken by M91 (the furnace family), M93s (the stonecutter), M93u (the
-merchant), M93y (the recipe book's decode) and M108 (`delete_chat`). It is a worked example of what
+merchant), M93y (the recipe book's decode), M108 (`delete_chat`) and M113 (the
+Brigadier tree). It is a worked example of what
 that class costs. `open_screen` and `container_set_data` are eleven lines of
 decode between them; what made them class C is that neither means anything
 without a *menu model* — the 25 slot layouts, and an `Inventory` that stops
@@ -473,7 +474,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 13 | `chunks_biomes` | handled | `opt!` → `cb_play_chunks_biomes` | |
 | 14 | `clear_titles` | handled | `req!` → `cb_play_clear_titles` | **M79.** One boolean, and it does something the clear itself does not: `clearTitles()` drops the text and zeroes the countdown, and only `resetTimes` puts the three **durations** back to 10 / 70 / 20. So `/title clear` and `/title reset` differ in what the *next* title does, not in what is on screen. |
 | 15 | `command_suggestions` | absent | **C** | Chat/command input. |
-| 16 | `commands` | absent | **C** | The Brigadier command tree. Worthless without command input. |
+| 16 | `commands` | handled | `req!` → `cb_play_commands` | **M113.** A counted list of nodes then the root index. **An argument node's properties have no length prefix and only its own type knows their size**, so an unknown `command_argument_type` id makes the rest of the packet unreadable — vanilla's reader returns `null` *without consuming them* and then reads the next node from the wrong offset, so Rewo makes it a decode error. 44 of the 57 types are `SingletonArgumentInfo` and read nothing; the other 13 are transcribed. The suggestion id is read **after** the properties, not beside its flag. |
 | 17 | `container_close` | handled | `req!` → `cb_play_container_close` | **M74.** One VarInt container id, which vanilla reads and then **ignores** — `handleContainerClose` closes whatever is open without comparing ids. |
 | 18 | `container_set_content` | handled | `req!` → `cb_play_container_set_content` | §4 partial — container id 0 only. |
 | 19 | `container_set_data` | handled | — | M87 decode, **M91/M92 consumers**. VarInt container id then **two signed `readShort`s**, applied only when the id matches the open menu. Every menu that sends it now draws from it: the three furnaces (flame + arrow), the brewing stand (fuel bar, brew arrow, bubbles), the enchanting table (three row states + numerals + cost text) and the beacon (button chrome + effect icons). The slot *meanings* are per-menu and invert against each other — the furnace puts fuel at 0 and the brewing stand puts its tick counter there, and the beacon encodes bsent\ as 0 with ids shifted up by one where the enchanting table uses -1. Negative values are the normal case for the enchanting clues, which is why the shorts must be signed. |

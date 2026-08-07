@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: shipped and headlessly verified through M112 (2026-08-07).** `main`
+**Status: shipped and headlessly verified through M113 (2026-08-07).** `main`
 carries all of it and no branch or worktree holds a commit off it; the
 long-standing branch risk (everything from M10 on living on one unmerged
 branch) closed on 2026-07-27 and has stayed closed. See §0.0 for the
@@ -19,7 +19,7 @@ trusting a paragraph.**
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-07 after M112)
+## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-07 after M113)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -38,7 +38,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M112 shipped, all merged to `main`
+### Where it is: M0–M113 shipped, all merged to `main`
 
 **Update (2026-08-03, the M87–M93 container arc).** Seven milestones landed
 after the cold-start audit below, **all merged to `main`**: M87 the
@@ -99,9 +99,9 @@ two bugs found on the way, the last two consumers of M94's menu displacement
 (the hover highlight and the item tooltip) and a furnace whose "crafting slots"
 include three of the player's hotbar slots.
 
-Current measurement, taken 2026-08-07 after M112: **2293 tests, 0 failures**
-(**world 949, net 648, gpu 255, data 212, app 173, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2293). **Read each crate's EXIT CODE, not
+Current measurement, taken 2026-08-07 after M113: **2313 tests, 0 failures**
+(**world 949, net 664, gpu 255, data 216, app 173, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2313). **Read each crate's EXIT CODE, not
 just its count**: a crate whose tests fail to compile prints no `test result`
 line at all, contributes 0, and reads as silence — M110 hit exactly that and
 the only signal was the total falling. **Breakdowns written before the
@@ -115,8 +115,9 @@ three occurrences of the same habit. `containershot` **107/107**, `inventoryshot
 34/34, `mobshot` 246/246, **`live --render-check` 28/28 with validation ON and 0
 validation errors, re-run for M112** (M94 is where it earned its keep twice over
 — see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
-`REWO_PACKET_COVERAGE.md` is at **115 / 0 / 26**, class C **15** — M96–M107
-consume packets M93y already decoded, and M108 resolved `delete_chat`.
+`REWO_PACKET_COVERAGE.md` is at **116 / 0 / 25**, class C **14** — M96–M107
+consume packets M93y already decoded, M108 resolved `delete_chat` and M113 the
+Brigadier tree.
 
 **`live --render-check` now has TWO caller requirements, not one.** r14 needs
 items in the hotbar and **r25 needs a MULTI-PAGE recipe book**, so the staged
@@ -154,15 +155,19 @@ best-scoped work on the board:
   not to be deferred but UNREACHABLE**: `extractRenderState` gates it on
   `isForeground`, and only `ChatScreen` passes `FOREGROUND`. It comes free with
   the item below and cannot come before it.
-* ~~A `ChatScreen`~~ (M110) and ~~the scrollbar~~ (M111) — both shipped.
-  **Chat is complete for everything vanilla draws without a subsystem Rewo
-  lacks.** What remains all needs one: `CommandSuggestions` (the class-C
-  `commands` tree), clickable chat text (Rewo flattens components at the wire,
-  so there is no `Style` to find), the chat delay queue and its expand link,
-  and the restricted-chat prompt (`ChatAbilities`, a packet Rewo does not
-  decode). The three class-C chat packets are now the only thing between Rewo
-  and command autocomplete, and the recipe book's Enter-key re-place is
-  unblocked.
+* ~~A `ChatScreen`~~ (M110), ~~the scrollbar~~ (M111) and ~~the Brigadier
+  tree~~ (M113) — all shipped. **The best-scoped work now is
+  `CommandSuggestions`**: the tree is decoded, stored, and read by nothing.
+  What it needs is the two remaining chat packets (`command_suggestions`,
+  `custom_chat_completions` — both a plain decode) and then vanilla's own
+  `CommandSuggestions`, which is the popup, Tab-completion and the input
+  field's syntax highlighting. M110's `ChatScreen` already has the four
+  early-outs it owns marked at their call sites.
+
+  Still needing a subsystem Rewo lacks, and named rather than forgotten:
+  clickable chat text (Rewo flattens components at the wire, so there is no
+  `Style` to find), the chat delay queue and its expand link, and the
+  restricted-chat prompt (`ChatAbilities`, a packet Rewo does not decode).
 * **The decoration** — `boundChatType.decorate`, which turns a message into
   `<Steve> hi` and is the most visible thing chat is still missing. M78
   recorded the blocker: the `minecraft:chat_type` registry's contents from
@@ -18069,3 +18074,87 @@ have now been corrected across three milestones (M89, M106b, M112), each found
 the same way — by someone touching an adjacent feature. The durable fix was
 made here: there is one conversion (`hovered_menu_slot`) and one visibility
 predicate (`book_visible_for`), and a consumer that wants either has to ask.
+
+### M113 — the Brigadier command tree, and a walk that has to land exactly (2026-08-07)
+
+The first of the three class-C chat packets, and the one the other two hang
+off: `command_suggestions` is a reply to a request the client only knows to
+make once it can parse what you have typed against this tree.
+
+**An argument node's properties have no length prefix and only its own type
+knows their size** — the `DataComponentPatch` hazard M41 records, except that
+here vanilla's own reader bails rather than recovering:
+
+```java
+ArgumentTypeInfo<?, ?> argumentType = BuiltInRegistries.COMMAND_ARGUMENT_TYPE.byId(id);
+if (argumentType == null) { return null; }
+ArgumentTypeInfo.Template<?> argument = argumentType.deserializeFromNetwork(input);
+```
+
+It returns **without consuming the properties** and then reads the next node
+from a position that is now wrong. Rewo makes an unknown id a decode error: a
+tree read past a desync is a confident wrong answer, and the whole point of the
+tree is to decide what the player may type.
+
+**44 of the 57 types are `SingletonArgumentInfo` and carry zero bytes.** That
+ratio is why this is tractable and why fail-closed costs nothing in practice.
+Three of the other 13 have shapes a reader would guess wrong:
+
+* **`time` has NO flags byte** — `TimeArgument.Info` reads a bare `readInt`.
+  Assuming the numeric-range shape takes the minimum's first byte as flags and
+  then reads three bytes too few.
+* **The numeric ranges are `readInt` / `readLong` / `readFloat` / `readDouble`**
+  — fixed big-endian, in a protocol that is var-int nearly everywhere.
+* The five `resource*` types carry one registry identifier each, via
+  `readRegistryKey`, which is `readIdentifier` wrapped in a `ResourceKey`.
+
+Two more from the node body:
+
+* **The custom-suggestions identifier is read AFTER the properties**, not
+  beside its own flag. Reading it where the flag sits — the natural place —
+  puts it in front of the properties and desynchronises every argument node
+  that has one.
+* **`FLAG_RESTRICTED` (32) is new and carries no body**, so a reader that does
+  not know about it still consumes the right number of bytes and then silently
+  reports a restricted node as an ordinary one.
+* `children` are read **before** the optional `redirect`, which is not the
+  order the flag constants are declared in; and `redirect` is vanilla's literal
+  `0` when absent, so the **flag** is what distinguishes "redirects to node 0"
+  from "does not redirect".
+
+**Caught before it shipped: the registry names are namespaced.**
+`ArgumentTypeInfos.register` passes a bare `"entity"` and `Identifier` fills in
+`minecraft:`, so five types are `brigadier:*` and the rest `minecraft:*`. The
+decoder's match arms were written against the bare names — which **compiles**,
+falls through to the singleton arm, and reads zero bytes where the type has
+properties. Found by writing the registry table's tests, not by reading the
+decoder.
+
+The `command_argument_type` table comes from the datagen report because it is a
+**built-in** registry (M92's rule), and M64's alphabetisation trap applies in
+full: `brigadier:bool` sorting first is a coincidence, and `minecraft:angle`
+sorts before `minecraft:entity` while sitting thirteen ids later. Every id is
+read off `protocol_id`.
+
+**Verified against a real server, not only against bytes I wrote.** A live
+vanilla 26.2 server's tree decodes to **2,017 nodes and 90 top-level
+commands** — and `read_commands` now asserts the reader **lands exactly**,
+because a mis-sized property shape shifts everything after it and produces
+plausible garbage rather than a failure. Leftover bytes are the only cheap
+evidence that all 13 shapes were right, and that guard is what turns "it did
+not error" into "it consumed exactly". It is the single strongest check here,
+and it was added *after* the first live run rather than before — the run proved
+the decode did not fail, which is a weaker claim than the one the guard makes.
+
+**Measured:** 2293 → **2313 tests**, 0 failures (net 664, data 216). All 33
+serverless gates green by exit code; demo PNG `2cc56b4acbfb92cb`,
+byte-identical. `REWO_PACKET_COVERAGE.md` 115/0/26 → **116/0/25**, class C
+15 → **14** — the machine check caught the drift the moment the packet
+resolved, which is what M74 built it for. 8 mutations: 7 killed, 1 no-op
+control that correctly survived.
+
+**Open:** the tree is decoded and stored and **nothing reads it yet**.
+`command_suggestions` and `custom_chat_completions` are the two packets left in
+the chat cluster, and vanilla's `CommandSuggestions` — the popup, the
+Tab-completion and the syntax highlighting in the input field — is what
+consumes all three.
