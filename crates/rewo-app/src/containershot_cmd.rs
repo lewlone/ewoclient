@@ -1207,6 +1207,9 @@ fn overlays(
                 crafter_layout,
                 Some(open),
                 spectator,
+                // No book on a crafter's screen, so the centred placement is
+                // the right one here and always was.
+                false,
             )
             .is_some()
         };
@@ -1261,6 +1264,7 @@ fn overlays(
                 (W as f32, H as f32),
                 lay,
                 Some(open),
+                false,
                 false,
             )
             .is_some()
@@ -1349,6 +1353,8 @@ fn overlays(
             (W as f32, H as f32),
             big,
             Some(open6),
+            false,
+            // A chest has no recipe book either.
             false,
         );
         c.record(
@@ -2912,6 +2918,106 @@ fn overlays(
                 "the page-counter row at ({}, {}) is inside the book and on no widget",
                 rb::PAGE_LABEL_CENTRE_X,
                 rb::PAGE_LABEL_Y
+            ),
+        );
+
+        // -- the menu's own tooltip, with the book open (M106b) --------------
+        //
+        // An open book MOVES the menu (M94). The panel, its slot icons and its
+        // hover highlight all resolve their origin through
+        // `Placement::with_book`; `screen_tooltip` resolved through the CENTRED
+        // form, so with the book up it converted the cursor against a panel 77
+        // GUI px left of the real one and named a slot four columns over.
+        //
+        // The witness hovers a REAL slot at its real position and asks for the
+        // item's name. Measuring only "some tooltip appeared" would pass on the
+        // wrong slot whenever that slot also had an item.
+        let mut shifted = rewo_world::inventory::Inventory::default();
+        let dirt = rewo_world::inventory::ItemSlot {
+            item_id: dirt_id,
+            count: 1,
+            has_components: false,
+            components: 0,
+            damage: None,
+            max_damage: None,
+            enchanted: false,
+            any_enchantments: false,
+            unbreakable: false,
+            damage_component_removed: false,
+            has_map_id: false,
+            dye_removed: false,
+            provides_banner_patterns_removed: false,
+            trim_material: None,
+        };
+        // Menu slot 1 of a crafting table: its grid, not its output. Slot 0 is
+        // the result, whose position differs enough that a 77 px error could
+        // land on it by luck.
+        assert!(shifted.set_slot(0, 1, Some(dirt)));
+        let named = |book_open: bool| -> bool {
+            let (l, t, sc) = rewo_gpu::container::gui_origin_placed(
+                W as f32,
+                H as f32,
+                rewo_gpu::container::Placement::with_book(
+                    craft.image_w as f32,
+                    craft.image_h as f32,
+                    book_open,
+                ),
+            );
+            let (sx, sy) = craft.position(1).expect("slot 1");
+            crate::live_cmd::screen_tooltip(
+                &shifted,
+                &book_items,
+                &baked.item_names,
+                lang,
+                &[],
+                &baked.enchantment_text,
+                &Default::default(),
+                None,
+                rewo_gpu::tooltip::TooltipFlag::NORMAL,
+                advance,
+                None,
+                (
+                    (l + (sx as f32 + 8.0) * sc) as f64,
+                    (t + (sy as f32 + 8.0) * sc) as f64,
+                ),
+                (W as f32, H as f32),
+                craft,
+                None,
+                false,
+                book_open,
+            )
+            .is_some_and(|(_, lines, _)| lines.first().is_some_and(|l| l.text == dirt_name))
+        };
+        c.record(
+            "b19.the_menus_tooltip_follows_the_panel_the_book_pushed",
+            named(true) && named(false),
+            format!(
+                "hovering crafting-table slot 1 at its own origin names {dirt_name:?} with the book open -> {} and shut -> {}; the two origins are 77 GUI px apart, more than four slot pitches",
+                named(true),
+                named(false)
+            ),
+        );
+        // …and that the two origins really do differ, so b19 is not passing
+        // because the shift is a no-op at this window size.
+        let origin_of = |book_open: bool| {
+            rewo_gpu::container::gui_origin_placed(
+                W as f32,
+                H as f32,
+                rewo_gpu::container::Placement::with_book(
+                    craft.image_w as f32,
+                    craft.image_h as f32,
+                    book_open,
+                ),
+            )
+            .0
+        };
+        c.record(
+            "b20.the_book_shift_is_real_at_this_window_size",
+            (origin_of(true) - origin_of(false)).abs() > craft.image_w as f32 * 0.25,
+            format!(
+                "the panel's left is {} with the book open and {} without",
+                origin_of(true),
+                origin_of(false)
             ),
         );
     }

@@ -10202,6 +10202,65 @@ mod tests {
         assert!(c.shadow, "the 5-arg overload passes true");
     }
 
+    /// The hover highlight resolves through the placement the book MOVED
+    /// (M106b).
+    ///
+    /// The cursor is put at the true centre of a slot in each case, so a
+    /// conversion that ignored the book would miss it by 77 GUI px — four
+    /// columns on an 18 px pitch, and often off the panel entirely.
+    #[test]
+    fn the_hover_highlight_follows_the_panel_the_book_pushed() {
+        // The crafting table: one of the four menus that has a book.
+        let craft = rewo_world::menu_layout::layout_of(12).unwrap();
+        let (w, h) = (1280.0f32, 720.0f32);
+        let at = |slot: usize, book_open: bool| {
+            let (l, t, sc) = rewo_gpu::container::gui_origin_placed(
+                w,
+                h,
+                rewo_gpu::container::Placement::with_book(
+                    craft.image_w as f32,
+                    craft.image_h as f32,
+                    book_open,
+                ),
+            );
+            let (sx, sy) = craft.position(slot).unwrap();
+            super::hovered_slot_position(
+                craft,
+                (
+                    (l + (sx as f32 + 8.0) * sc) as f64,
+                    (t + (sy as f32 + 8.0) * sc) as f64,
+                ),
+                w,
+                h,
+                book_open,
+            )
+        };
+        let want = craft.position(1).map(|(x, y)| (x as i32, y as i32));
+        assert_eq!(at(1, false), want, "book shut");
+        assert_eq!(at(1, true), want, "book OPEN — the panel moved with it");
+        // And the shift is real at this size, so the two cases are not the
+        // same test written twice.
+        let left = |book_open: bool| {
+            rewo_gpu::container::gui_origin_placed(
+                w,
+                h,
+                rewo_gpu::container::Placement::with_book(
+                    craft.image_w as f32,
+                    craft.image_h as f32,
+                    book_open,
+                ),
+            )
+            .0
+        };
+        assert_ne!(left(true), left(false));
+        // Off the panel entirely is `None`, not slot 0 — otherwise every miss
+        // would light the top-left slot.
+        assert_eq!(
+            super::hovered_slot_position(craft, (0.0, 0.0), w, h, false),
+            None
+        );
+    }
+
     /// `if (!lines.isEmpty())` in `setTooltipForNextFrameInternal` — an empty
     /// list sets NO tooltip, which is not the same as an empty box (M106).
     ///
@@ -12856,6 +12915,19 @@ fn apply_screen(
     // one.
     // M100 — the search field's own quads and text. Built only when the book is
     // open, and only when there is a font to measure with.
+    // M106b — ONE binding for "the book is open", read by the panel's origin,
+    // the slot rects, the hover highlight, the tooltip and the enchanting
+    // rows. Each of those used to spell `book_open` at its own call site,
+    // which is how the tooltip and the highlight came to be the two that
+    // never learnt about the shift (M89's rule: a per-call-site choice is how
+    // they come to disagree).
+    //
+    // This is `apply_screen`'s composition root and no test reaches it — the
+    // function needs a `PlaySession`. A mutation pinning this to `false`
+    // therefore survives, and is recorded rather than papered over; what the
+    // consolidation buys is that the five consumers can no longer disagree
+    // with each other, which is the failure that actually happened.
+    let book_open = book.is_some();
     // M105 — one call rather than two, so the composition of the field's text
     // with the page counter is inside a function a test can reach. This
     // function cannot be one: it needs a `PlaySession`.
@@ -12890,7 +12962,7 @@ fn apply_screen(
             rewo_gpu::container::Placement::with_book(
                 layout.image_w as f32,
                 layout.image_h as f32,
-                book.is_some(),
+                book_open,
             ),
         )),
     ));
@@ -12942,7 +13014,7 @@ fn apply_screen(
                 rewo_gpu::container::Placement::with_book(
                     layout.image_w as f32,
                     layout.image_h as f32,
-                    book.is_some(),
+                    book_open,
                 ),
             )),
         ),
@@ -12958,25 +13030,15 @@ fn apply_screen(
     labels.extend(book_field_labels);
     apply_gui_icons(wr, gpu, gui, &icons);
 
-    let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
-        mouse,
-        w,
-        h,
-        layout.image_w as f32,
-        layout.image_h as f32,
-    );
     wr.set_container(
         true,
-        layout
-            .slot_at(gx, gy)
-            .and_then(|s| layout.position(s))
-            .map(|(x, y)| (x as i32, y as i32)),
+        hovered_slot_position(layout, mouse, w, h, book_open),
     );
 
     // Every visible slot's durability bar, plus the cursor's. The screen's
     // rects and the hotbar's go through the same builder.
     {
-        let rects = menu_slot_rects(menu, w, h, book.is_some());
+        let rects = menu_slot_rects(menu, w, h, book_open);
         let mut stacks: Vec<_> = (0..menu.slot_count())
             .map(|i| (menu.menu_slot(i), rects[i]))
             .collect();
@@ -13016,6 +13078,7 @@ fn apply_screen(
                 .game_state
                 .game_mode()
                 .is_some_and(|m| m.is_spectator()),
+            book_open,
         );
         // M106 — the book's cell tooltip, SECOND. Vanilla calls it after the
         // container's and it still loses, because
@@ -15378,6 +15441,44 @@ fn book_field_render(
     (labels, fills)
 }
 
+/// The GUI-space top-left of the slot the cursor is over, for the highlight
+/// (M106b).
+///
+/// **Through the same [`rewo_gpu::container::Placement`] the pass draws with.**
+/// This was a bare `screen_to_gui_for`, which centres, while
+/// `ContainerPass::set_state` resolves its own origin with
+/// `Placement::with_book` — so with the recipe book open the cursor was
+/// converted against a panel 77 GUI px left of the one the highlight was drawn
+/// against, and the lit slot sat four columns right of the cursor. The
+/// tooltip's conversion had the same bug; the panel, the slot icons
+/// ([`menu_slot_rects`]) and the bespoke-widget hovers did not.
+///
+/// Extracted from `apply_screen` rather than fixed in place because that
+/// function needs a `PlaySession` and no gate reaches it: every `set_container`
+/// call in the whole app passes `hovered: None`, so the derivation had no
+/// witness of any kind. M97's lesson again — move the logic to where a test can
+/// see it.
+fn hovered_slot_position(
+    layout: &'static rewo_world::menu_layout::MenuLayout,
+    mouse: (f64, f64),
+    w: f32,
+    h: f32,
+    book_open: bool,
+) -> Option<(i32, i32)> {
+    let (gx, gy) = rewo_gpu::container::screen_to_gui_placed(
+        mouse,
+        w,
+        h,
+        rewo_gpu::container::Placement::with_book(
+            layout.image_w as f32,
+            layout.image_h as f32,
+            book_open,
+        ),
+    );
+    let slot = layout.slot_at(gx, gy)?;
+    layout.position(slot).map(|(x, y)| (x as i32, y as i32))
+}
+
 /// Every label and fill the open book contributes (M105).
 ///
 /// The field's text and the page counter belong to different objects — an
@@ -16106,6 +16207,11 @@ pub(crate) fn screen_tooltip(
     open: Option<&rewo_world::menu::OpenMenu>,
     // `player.isSpectator()` — the fifth of the hint's conditions.
     spectator: bool,
+    // M106b — whether the recipe book is open, which MOVES the menu. The panel,
+    // its slot icons and its hover highlight all resolve their origin through
+    // `Placement::with_book`; this one resolved through the centred form, so
+    // with the book up it named a slot 77 GUI px right of the cursor.
+    book_open: bool,
 ) -> Option<(
     rewo_gpu::container::TooltipDraw,
     Vec<rewo_gpu::world::OwnedTextLine>,
@@ -16117,12 +16223,15 @@ pub(crate) fn screen_tooltip(
     if inv.carried().is_some() {
         return None;
     }
-    let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
+    let (gx, gy) = rewo_gpu::container::screen_to_gui_placed(
         mouse,
         w,
         h,
-        layout.image_w as f32,
-        layout.image_h as f32,
+        rewo_gpu::container::Placement::with_book(
+            layout.image_w as f32,
+            layout.image_h as f32,
+            book_open,
+        ),
     );
     let slot = layout.slot_at(gx, gy)?;
     // M93k — the crafter's `gui.togglable_slot` hint, which is shown on an
