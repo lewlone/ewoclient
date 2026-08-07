@@ -692,6 +692,36 @@ pub fn page_label_x(text_width: i32) -> i32 {
     PAGE_LABEL_CENTRE_X - text_width / 2
 }
 
+/// The counter's translation key. Its value in `en_us.json` is **`%s/%s`** —
+/// no spaces, so a three-page book's first page reads `1/3` and not `1 / 3`.
+pub const PAGE_LABEL_KEY: &str = "gui.recipebook.page";
+
+/// The counter's text, or `None` on the frames it is not drawn at all.
+///
+/// `if (this.totalPages > 1)` — a book that fits on one page shows **no**
+/// counter, rather than a permanent `1/1`. That gate is here rather than at the
+/// caller because it is the same fact as the two arrows' visibility
+/// ([`page_arrows_visible`], also `totalPages > 1`): a page with nothing to
+/// page to says nothing about paging.
+///
+/// `page` is the **0-based** current page, as it is everywhere else in this
+/// module; vanilla passes `currentPage + 1` into the format and leaves
+/// `totalPages` alone, so only one of the two arguments is converted. Reading
+/// the `+ 1` as a 1-based convention and applying it to both gives `1/4` on a
+/// three-page book — a wrong number that still counts up correctly and so
+/// survives casual use.
+///
+/// `template` is the resolved format string, taken from the language map by the
+/// caller. Passing the **key itself** when the map has no entry is not a
+/// fallback invented here: `Language.getOrDefault` returns the key, and
+/// `decomposeTemplate` on a string with no specifiers yields it unchanged, so
+/// vanilla renders the bare key too.
+pub fn page_label(page: usize, total: usize, template: &str) -> Option<String> {
+    (total > 1).then(|| {
+        rewo_data::lang::format(template, &[&(page + 1).to_string(), &total.to_string()])
+    })
+}
+
 /// The filter toggle's sprite, as an index into a four-entry
 /// `(enabled, disabled, enabled_highlighted, disabled_highlighted)` group.
 ///
@@ -1683,6 +1713,73 @@ mod tests {
         // The width is halved with integer division, so an odd label is not
         // symmetric about the centre either.
         assert_eq!(page_label_x(21), 73 - 10);
+    }
+
+    /// The real `en_us.json` value, so the tests below read what the client
+    /// actually shows rather than a plausible stand-in. Written out rather than
+    /// loaded because that is the point of the first assertion: **no spaces**.
+    const PAGE_TEMPLATE: &str = "%s/%s";
+
+    #[test]
+    fn a_one_page_book_shows_no_counter_at_all() {
+        // `if (this.totalPages > 1)`. Not a permanent `1/1`, and not an empty
+        // string — the text is never laid out, so nothing occupies the row.
+        assert_eq!(page_label(0, 1, PAGE_TEMPLATE), None);
+        assert_eq!(page_label(0, 0, PAGE_TEMPLATE), None, "an empty book");
+        assert_eq!(page_label(0, 2, PAGE_TEMPLATE).as_deref(), Some("1/2"));
+        // The same threshold the arrows use, and for the same reason: for any
+        // page inside its own book, `fwd || back` is false only when the page
+        // is both the first and the last — which is `total <= 1` exactly. So
+        // "the counter is drawn" and "some arrow is drawn" are the same
+        // predicate, and asserting the equality catches either one drifting.
+        //
+        // Written WITHOUT a `|| total > 1` third term: an earlier draft had one,
+        // which made the right-hand side equal to the gate under test and the
+        // arrows irrelevant to it.
+        for total in 0..6 {
+            for page in 0..total.max(1) {
+                let (fwd, back) = page_arrows_visible(page, total);
+                assert_eq!(
+                    page_label(page, total, PAGE_TEMPLATE).is_some(),
+                    fwd || back,
+                    "counter and arrows disagree on page {page} of {total}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_current_page_is_converted_to_1_based() {
+        // `Component.translatable(key, currentPage + 1, totalPages)` — the `+1`
+        // is on the FIRST argument only. Applying it to both gives "1/4" here,
+        // which still counts up correctly and so survives casual use.
+        assert_eq!(page_label(0, 3, PAGE_TEMPLATE).as_deref(), Some("1/3"));
+        assert_eq!(page_label(1, 3, PAGE_TEMPLATE).as_deref(), Some("2/3"));
+        assert_eq!(page_label(2, 3, PAGE_TEMPLATE).as_deref(), Some("3/3"));
+    }
+
+    #[test]
+    fn the_separator_is_a_bare_slash_with_no_spaces() {
+        // `'gui.recipebook.page' = '%s/%s'`. A spaced " / " is what the label
+        // looks like it should be and is 2 px wider, which moves the centred x.
+        let label = page_label(0, 3, PAGE_TEMPLATE).unwrap();
+        assert_eq!(label, "1/3");
+        assert!(!label.contains(' '));
+    }
+
+    #[test]
+    fn a_missing_translation_renders_the_bare_key_rather_than_nothing() {
+        // `Language.getOrDefault` returns the key, and `decomposeTemplate` on a
+        // string with no specifiers yields it unchanged. So this is vanilla's
+        // own behaviour, not a fallback invented here — and it is visible,
+        // which is what makes a missing key get fixed.
+        assert_eq!(
+            page_label(0, 3, PAGE_LABEL_KEY).as_deref(),
+            Some(PAGE_LABEL_KEY)
+        );
+        // …and the gate still applies: a one-page book shows nothing even when
+        // the key is missing.
+        assert_eq!(page_label(0, 1, PAGE_LABEL_KEY), None);
     }
 
     /// `WidgetSprites`' `enabled` slot carries "is filtering", not "is the

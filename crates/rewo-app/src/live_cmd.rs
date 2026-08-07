@@ -10081,6 +10081,145 @@ mod tests {
         assert_eq!(text.color, [1.0, 1.0, 1.0], "setTextColor(-1)");
     }
 
+    // -- the page counter (M105) --------------------------------------------
+
+    /// A language map holding the real `en_us.json` entry, so these read what
+    /// the client shows.
+    fn page_lang() -> rewo_data::lang::Language {
+        let mut m = std::collections::HashMap::new();
+        m.insert(
+            rewo_world::recipe_book_screen::PAGE_LABEL_KEY.to_string(),
+            "%s/%s".to_string(),
+        );
+        rewo_data::lang::Language::from_map(m)
+    }
+
+    fn book_of(page: usize, total: usize) -> super::BookRender {
+        use rewo_world::recipe_book_screen as rb;
+        super::BookRender {
+            view: Some(rb::BookView {
+                tabs: rb::CRAFTING_TABS.len(),
+                selected_tab: 0,
+                page,
+                total_pages: total,
+                shown: 0,
+                filtering: false,
+                furnace_family: false,
+            }),
+            book: rb::BookType::Crafting,
+            ..Default::default()
+        }
+    }
+
+    fn counter(page: usize, total: usize) -> Option<rewo_gpu::world::OwnedTextLine> {
+        let (labels, _) = super::book_labels(
+            &book_of(page, total),
+            &field_of("", false),
+            &page_lang(),
+            &advances(),
+            1280.0,
+            720.0,
+            0,
+        );
+        // By text rather than by index: the field contributes a hint label on
+        // this fixture, so "the last one" would name whichever happened to be
+        // pushed last and would keep passing if the two swapped.
+        labels.into_iter().find(|l| l.text.contains('/'))
+    }
+
+    /// The counter reaches the composed label list at all — the step
+    /// `apply_screen` cannot be asked about, since it needs a `PlaySession`.
+    #[test]
+    fn the_page_counter_reaches_the_books_labels() {
+        assert_eq!(counter(0, 3).map(|l| l.text), Some("1/3".to_string()));
+        // …and the field's own text is still there beside it, so composing the
+        // two did not replace one with the other.
+        let (labels, _) = super::book_labels(
+            &book_of(0, 3),
+            &field_of("iron", true),
+            &page_lang(),
+            &advances(),
+            1280.0,
+            720.0,
+            0,
+        );
+        assert!(labels.iter().any(|l| l.text == "iron"), "the search text");
+        assert!(labels.iter().any(|l| l.text == "1/3"), "the counter");
+    }
+
+    /// `if (this.totalPages > 1)` — a single-page book draws no counter, and a
+    /// shut book contributes none because it has no view.
+    #[test]
+    fn a_single_page_book_draws_no_counter() {
+        assert!(counter(0, 1).is_none(), "one page");
+        assert!(counter(0, 0).is_none(), "an empty book");
+        assert!(counter(0, 2).is_some(), "two pages");
+        let (labels, _) = super::book_labels(
+            &super::BookRender::default(),
+            &field_of("", false),
+            &page_lang(),
+            &advances(),
+            1280.0,
+            720.0,
+            0,
+        );
+        assert!(
+            !labels.iter().any(|l| l.text.contains('/')),
+            "no view, no counter"
+        );
+    }
+
+    /// The x is `73 - width / 2` in BOOK pixels, and the width is MEASURED.
+    ///
+    /// The two fixtures differ in label length by one character, so a build
+    /// that centred on a constant — or that measured the wrong string — puts
+    /// them at the same x. With the stub table's 6 px glyphs the difference is
+    /// exactly 3 book pixels.
+    #[test]
+    fn the_counter_is_placed_by_its_measured_width() {
+        use rewo_world::recipe_book_screen as rb;
+        let (bl, bt, scale) = rewo_gpu::container::recipe_book_origin(1280.0, 720.0);
+        let short = counter(0, 3).expect("1/3");
+        let long = counter(0, 10).expect("1/10");
+        assert_eq!(short.text, "1/3");
+        assert_eq!(long.text, "1/10");
+        assert_eq!(short.x, bl + rb::page_label_x(3 * 6) as f32 * scale);
+        assert_eq!(long.x, bl + rb::page_label_x(4 * 6) as f32 * scale);
+        assert_ne!(short.x, long.x, "a constant x would agree here");
+        assert_eq!(short.x - long.x, 3.0 * scale, "half the extra glyph");
+        // The row is the same for both — only the x tracks the width.
+        assert_eq!(short.y, bt + rb::PAGE_LABEL_Y as f32 * scale);
+        assert_eq!(long.y, short.y);
+    }
+
+    /// Colour `-1` is opaque white, and the five-argument `graphics.text`
+    /// delegates with `dropShadow = true`.
+    #[test]
+    fn the_counter_is_white_and_shadowed() {
+        let c = counter(0, 3).unwrap();
+        assert_eq!(c.color, [1.0, 1.0, 1.0]);
+        assert_eq!(c.alpha, 1.0, "ARGB.alpha(-1) — and text() skips alpha 0");
+        assert!(c.shadow, "the 5-arg overload passes true");
+    }
+
+    /// A missing translation renders the bare key — `getOrDefault` returns it
+    /// and a template with no specifiers survives substitution unchanged.
+    #[test]
+    fn a_missing_translation_shows_the_key() {
+        use rewo_world::recipe_book_screen as rb;
+        let empty = rewo_data::lang::Language::from_map(Default::default());
+        let (labels, _) = super::book_labels(
+            &book_of(0, 3),
+            &field_of("", false),
+            &empty,
+            &advances(),
+            1280.0,
+            720.0,
+            0,
+        );
+        assert!(labels.iter().any(|l| l.text == rb::PAGE_LABEL_KEY));
+    }
+
     /// The blink reaches the RENDER: the same focused field draws a caret in
     /// one 300 ms window and none in the next (M101).
     #[test]
@@ -12689,8 +12828,13 @@ fn apply_screen(
     // one.
     // M100 — the search field's own quads and text. Built only when the book is
     // open, and only when there is a font to measure with.
+    // M105 — one call rather than two, so the composition of the field's text
+    // with the page counter is inside a function a test can reach. This
+    // function cannot be one: it needs a `PlaySession`.
     let (book_field_labels, book_field_fills) = match (book.as_ref(), baked.font.as_ref()) {
-        (Some(_), Some(f)) => book_field_render(book_field, &f.advance, w, h, now_ms),
+        (Some(b), Some(f)) => {
+            book_labels(b, book_field, &baked.lang, &f.advance, w, h, now_ms)
+        }
         _ => (Vec::new(), Vec::new()),
     };
     wr.set_recipe_book(book.as_ref().and_then(|b| {
@@ -15184,6 +15328,81 @@ fn book_field_render(
     );
     fills.extend(text_fills);
     (labels, fills)
+}
+
+/// Every label and fill the open book contributes (M105).
+///
+/// The field's text and the page counter belong to different objects — an
+/// `EditBox` on the component, and `RecipeBookPage`'s own `extractRenderState`
+/// — but they share both preconditions (an open book, a font to measure with)
+/// and they are drawn into one list. Composing them here rather than at the
+/// call site is deliberate: `apply_screen` needs a `PlaySession` and so cannot
+/// be reached from a test, and a composition step performed there would be
+/// deletable with every unit test still green. That is M99's lesson — shrink
+/// the untestable surface rather than pretend to cover it.
+fn book_labels(
+    b: &BookRender,
+    field: &rewo_world::edit_box::EditBox,
+    lang: &rewo_data::lang::Language,
+    advance: &[u8; 256],
+    w: f32,
+    h: f32,
+    now_ms: u64,
+) -> (
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<(usize, rewo_gpu::container::PanelBlit)>,
+) {
+    let (mut labels, fills) = book_field_render(field, advance, w, h, now_ms);
+    labels.extend(b.view.and_then(|v| book_page_label(v, lang, advance, w, h)));
+    (labels, fills)
+}
+
+/// The `x/y` page counter under the recipe grid (M105).
+///
+/// The one piece of the book vanilla draws as bare text rather than through a
+/// widget: `RecipeBookPage.extractRenderState` opens with it, before the
+/// buttons and the arrows. Its model constants have existed since M93z with
+/// nothing reading them.
+///
+/// Three details that a call site alone does not carry:
+///
+/// * **The five-argument `graphics.text` delegates to the six-argument one with
+///   `dropShadow = true`.** Transcribing the visible arguments and defaulting
+///   the shadow to `false` loses it with nothing to notice.
+/// * **Colour `-1` is `0xFFFFFFFF`** — opaque white. `text` also early-returns
+///   on `ARGB.alpha(color) == 0`, which is why the alpha is worth reading
+///   rather than assuming.
+/// * The x is computed **by hand** as `xo - width / 2 + 73` rather than through
+///   the `centeredText` helper sitting a few lines away in the same class. The
+///   two are arithmetically identical here; the hand-written form is kept
+///   because it is what the class does.
+fn book_page_label(
+    view: rewo_world::recipe_book_screen::BookView,
+    lang: &rewo_data::lang::Language,
+    advance: &[u8; 256],
+    w: f32,
+    h: f32,
+) -> Option<rewo_gpu::world::OwnedTextLine> {
+    use rewo_world::recipe_book_screen as rb;
+    // `Language.getOrDefault` returns the key when the map has no entry, and a
+    // template with no specifiers survives `decomposeTemplate` unchanged — so
+    // `or_key` is vanilla's behaviour, not a local fallback.
+    let text = rb::page_label(view.page, view.total_pages, lang.or_key(rb::PAGE_LABEL_KEY))?;
+    let (bl, bt, scale) = rewo_gpu::container::recipe_book_origin(w, h);
+    // Measured with the SAME advances the text pass will draw with. Measuring
+    // one font and drawing another is what M52b found in the tooltip when it
+    // moved to Newsreader; here there is only the bitmap font, and passing the
+    // table in keeps it that way by construction.
+    let width = rewo_gpu::text::width(&text, advance);
+    Some(rewo_gpu::world::OwnedTextLine {
+        x: bl + rb::page_label_x(width) as f32 * scale,
+        y: bt + rb::PAGE_LABEL_Y as f32 * scale,
+        px: scale,
+        color: [1.0, 1.0, 1.0],
+        alpha: 1.0,
+        shadow: true,
+        text,
+    })
 }
 
 /// The book's chrome as blits, with its semantic sprites resolved to atlas
