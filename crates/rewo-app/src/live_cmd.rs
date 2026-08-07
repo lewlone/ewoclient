@@ -161,6 +161,16 @@ struct RenderCheck {
     /// the two are comparable; r23's threshold is a floor, so its meaning is
     /// unchanged.
     book_quads_max: usize,
+    /// M108 — frames on which the chat box put at least one line into the
+    /// windowed frame's label list.
+    ///
+    /// The count comes from the production derivation (`build_text` returns
+    /// it) rather than from the gate re-deriving `chat_lines` — a gate that
+    /// recomputes the rule it grades agrees with any implementation, which is
+    /// M93q's finding. It needs no caller staging: `--render-check` sends its
+    /// own chat line, so an unstaged run still exercises the whole path from
+    /// `player_chat` through the signature cache to the wrapped line.
+    chat_line_frames: u64,
     /// M105 — frames on which the book drew its `x/y` page counter.
     ///
     /// A LABEL, not a quad, so `book_quads_max` cannot see it: the counter goes
@@ -465,6 +475,30 @@ impl RenderCheck {
             format!(
                 "{} of {} frames — needs a multi-page book, i.e. REWO_PRECMD with `recipe give @s *`",
                 self.book_page_label_frames, self.frames
+            ),
+        );
+        // M108 — the chat box reached the windowed frame. Unlike r14 and r25
+        // this needs no caller staging: the run sends its own chat line, and
+        // the server echoing it back is what drives `player_chat` through the
+        // signature cache, the trust level, the wrap and the geometry. A zero
+        // here means the whole chain is dead in the windowed client, which is
+        // the failure M86 existed to catch.
+        //
+        // **It is structurally blind to the fade**, and the near-total count is
+        // the tell rather than a worry: `RENDER_CHECK_SECONDS` is 8, i.e. 160
+        // ticks, and `AlphaCalculator.timeBased` holds full alpha until 180, so
+        // no message this run receives can fade before it ends. The fade is
+        // graded by unit tests on both sides of the seam
+        // (`the_fade_and_the_text_opacity_both_reach_the_line` here,
+        // `a_message_holds_full_alpha_for_one_hundred_and_eighty_ticks` in
+        // `rewo_world::chat`). Lengthening the run to reach the fade would turn
+        // a gate into a soak for one property two tests already pin.
+        row(
+            "r26 the chat box drew a line in the windowed client",
+            self.chat_line_frames > 0,
+            format!(
+                "{} of {} frames carried at least one wrapped chat line                  (near-total is CORRECT: the run is 8 s = 160 ticks and the                  fade starts at 180, so nothing can fade inside it)",
+                self.chat_line_frames, self.frames
             ),
         );
         row(
@@ -3410,6 +3444,12 @@ fn run_headless(
             }
         }
         // REWO_CHAT: send a chat line once (verifies the chat overlay).
+        //
+        // `--render-check` supplies its own (M108) rather than making this a
+        // third caller requirement beside r14's hotbar and r25's recipe book.
+        // The server echoing the line back is what drives `player_chat`
+        // through the signature cache, the trust level, the wrap and the
+        // geometry, so the whole chain is exercised by the run itself.
         if summoned || session.spawned {
             if let Ok(msg) = std::env::var("REWO_CHAT") {
                 if !msg.is_empty() {
@@ -4043,7 +4083,7 @@ fn run_headless(
     // text is built, or a headless `--out` render shows an empty chat box for
     // messages the session has already decoded.
     apply_chat(&mut session, world_renderer.font_advance().copied());
-    let mut headless_text = build_text(&session, gui_px(1280, 720), 720.0, None, true);
+    let (mut headless_text, _) = build_text(&session, gui_px(1280, 720), 720.0, None, true);
     headless_text.extend(headless_screen_labels);
     world_renderer.set_text(headless_text);
     world_renderer.anim_tick(&mut gpu, session.ticks)?;
@@ -6235,6 +6275,15 @@ impl LiveApp {
                     log::info!("REWO_PRECMD: {one}");
                 }
             }
+            // M108 — `--render-check` sends its own chat line rather than
+            // making this a THIRD caller requirement beside r14's hotbar and
+            // r25's recipe book. The server echoing it back is what drives
+            // `player_chat` through the signature cache, the trust level, the
+            // wrap and the geometry, so r26 grades the whole chain on an
+            // otherwise unstaged run.
+            if self.check.is_some() {
+                let _ = session.send_chat("rewo render-check");
+            }
             log::info!(
                 "live: spawned at ({:.1},{:.1},{:.1})",
                 session.player.x,
@@ -6732,7 +6781,12 @@ impl LiveApp {
         // live where the packets are decoded.
         apply_chat(session, state.world_renderer.font_advance().copied());
         let fps = (!self.cpu.is_empty()).then(|| 1000.0 / self.cpu.average().max(0.001));
-        let mut text = build_text(session, px, extent.height as f32, fps, self.debug);
+        let (mut text, chat_count) = build_text(session, px, extent.height as f32, fps, self.debug);
+        if chat_count > 0 {
+            if let Some(c) = self.check.as_mut() {
+                c.chat_line_frames += 1;
+            }
+        }
         // M66: the held-item name over the hotbar. Needs the font's advances
         // to centre itself, so it is built here rather than in `build_text`.
         if let Some(advance) = state.world_renderer.font_advance() {
@@ -7202,7 +7256,7 @@ fn build_text(
     screen_h: f32,
     fps: Option<f32>,
     debug: bool,
-) -> Vec<rewo_gpu::world::OwnedTextLine> {
+) -> (Vec<rewo_gpu::world::OwnedTextLine>, usize) {
     use rewo_gpu::world::OwnedTextLine;
     let white = [0.93, 0.93, 0.93];
     let mut lines = Vec::new();
@@ -7263,15 +7317,17 @@ fn build_text(
             });
         }
     }
-    lines.extend(chat_lines(
+    let chat = chat_lines(
         &session.chat,
         session.ticks as i32,
         px,
         screen_h,
         &rewo_world::chat::ChatOptions::default(),
         white,
-    ));
-    lines
+    );
+    let chat_count = chat.len();
+    lines.extend(chat);
+    (lines, chat_count)
 }
 
 /// The chat box's text, from `ChatComponent.extractRenderState`.
