@@ -156,8 +156,18 @@ struct RenderCheck {
     /// origin, the layout's own slot rects — stayed unexercised here. That is
     /// the exact shape of the blind spot M86 was: a path nothing drives.
     container_frames: u64,
-    /// M94 — the most quads the recipe book drew in any frame.
+    /// M94 — the most quads the recipe book drew in any frame **with no
+    /// which-of-these overlay open**. Split from the field below by M104 so
+    /// the two are comparable; r23's threshold is a floor, so its meaning is
+    /// unchanged.
     book_quads_max: usize,
+    /// M104 — and the most it drew on a frame where one WAS open.
+    ///
+    /// A pair rather than one max, because the claim is a DIFFERENCE: an
+    /// overlay adds a nine-sliced panel and a button each. One max over the
+    /// whole run could not tell an overlay that drew from one that did not,
+    /// since the book alone already clears any absolute threshold.
+    book_overlay_quads_max: usize,
     /// The panel height the RENDERER was holding while a container was open.
     ///
     /// Read back from `WorldRenderer::container_panel_height`, not from the
@@ -413,6 +423,28 @@ impl RenderCheck {
                 "{} quads at peak (panel + {} crafting tabs + filter = {min_quads} with an empty grid)",
                 self.book_quads_max,
                 rewo_world::recipe_book_screen::CRAFTING_TABS.len()
+            ),
+        );
+        // M104 — and that the which-of-these overlay reached the windowed
+        // draw. Nothing here can right-click a recipe cell (that needs the
+        // cursor over a specific cell AND a server that has sent a
+        // multi-recipe group), so the `Open` is injected through the same
+        // `open_overlay` the click path calls — M17's rule, that injection is
+        // the deterministic proof where a live encounter depends on timing
+        // nothing here controls. What that leaves to the unit tests is the
+        // click ROUTING; what it proves is the render path, which is the only
+        // thing this gate can see and M86's whole reason for existing.
+        //
+        // The floor is derived from the claim rather than from the emitter: an
+        // overlay is at least one panel quad plus one button each, so three
+        // buttons must add at least four. Reading `overlay_chrome`'s own
+        // length here would make it self-calibrating.
+        row(
+            "r24 the which-of-these overlay was drawn in the windowed client",
+            self.book_overlay_quads_max >= self.book_quads_max + 4,
+            format!(
+                "{} quads at peak with an overlay open against {} without — at least a panel quad and one per button",
+                self.book_overlay_quads_max, self.book_quads_max
             ),
         );
         row(
@@ -4197,6 +4229,8 @@ struct LiveApp {
     brewing_injected: bool,
     /// M94 — whether `--render-check` has opened the recipe book yet.
     book_injected: bool,
+    /// M104 — whether it has injected the which-of-these overlay yet.
+    book_overlay_injected: bool,
     /// M94 — whether the crafting-table injection has happened.
     book_menu_injected: bool,
     /// M88 — whether `--render-check` has injected its container open yet.
@@ -5926,6 +5960,42 @@ impl LiveApp {
                     }
                 }
             }
+            // M104 — and then the which-of-these overlay, through the SAME
+            // `open_overlay` a right-click calls.
+            //
+            // Injected rather than clicked because a click needs the cursor
+            // over a particular cell AND a server that has sent a multi-recipe
+            // group, neither of which this gate controls — M17's rule. It must
+            // come after the crafting table (0.90), because `set_screen_open`
+            // clears the overlay: a snapshot of a page must not survive the
+            // screen it was taken on.
+            if !self.book_overlay_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.95 && self.book_menu_injected {
+                    // Only `filtering` and `furnace_family` are read out of
+                    // the view, and both are false for a crafting table's
+                    // unfiltered book — the rest is named so the fixture reads
+                    // as a whole `BookView` rather than a partial one.
+                    let view = rewo_world::recipe_book_screen::BookView {
+                        tabs: rewo_world::recipe_book_screen::CRAFTING_TABS.len(),
+                        selected_tab: 0,
+                        page: 0,
+                        total_pages: 1,
+                        shown: 1,
+                        filtering: false,
+                        furnace_family: false,
+                    };
+                    let collection = (0..3)
+                        .map(|i| rewo_world::recipe_overlay::Button {
+                            recipe: i,
+                            craftable: i == 0,
+                            slots: Vec::new(),
+                        })
+                        .collect();
+                    self.screen.book_overlay = Some(open_overlay(collection, 0, view));
+                    self.book_overlay_injected = true;
+                }
+            }
             // M92 — near the end, replace it with a BREWING STAND and give it
             // data, so the frame loop has to reach the overlay builder.
             //
@@ -6472,10 +6542,16 @@ impl LiveApp {
                 // commonest screen with a book, so counting inside that guard
                 // measures zero forever. r23's first two red runs were this
                 // and the field placement it forced.
+                // M104 — split by whether an overlay was up, because the claim
+                // one frame over is a DIFFERENCE and not a threshold.
+                let overlay_up = self.screen.book_overlay.is_some();
                 if let Some(c) = self.check.as_mut() {
-                    c.book_quads_max = c
-                        .book_quads_max
-                        .max(state.world_renderer.container_panel_book_quads());
+                    let q = state.world_renderer.container_panel_book_quads();
+                    if overlay_up {
+                        c.book_overlay_quads_max = c.book_overlay_quads_max.max(q);
+                    } else {
+                        c.book_quads_max = c.book_quads_max.max(q);
+                    }
                 }
                 // M88 — read the panel back OUT of the renderer, after the
                 // draw path set it. Asking the open menu's layout instead
@@ -6916,6 +6992,7 @@ fn run_windowed(
         advanced_tooltips: false,
         container_injected: false,
         book_injected: false,
+        book_overlay_injected: false,
         book_menu_injected: false,
         brewing_injected: false,
         screen_forced_open: false,
