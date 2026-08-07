@@ -5658,3 +5658,49 @@ than guess.
 - The user's network (Phase H's "chickenedin") is now named **Frogsy** and
   is Rewo's staging target (D1 in the plan); public servers are out of
   scope for Rewo until the user says otherwise (anti-cheat ban risk).
+
+---
+
+## Docs audit, 2026-08-07 (after M107)
+
+A pass over **every** `.md` in the repo root, not just the ones the milestone
+touched. Five documents were stale and two carried statements that were
+actively false. What it found is more useful than the diffs:
+
+- **This file has a GENERATED mirror** (the other of the two agent-instruction
+  files in the repo root — its own header says which it is and gives the
+  regeneration command), and the mirror had drifted **3,061 lines** (2,599
+  against 5,660), about thirty-five milestones. It was still calling the Rewo
+  work branch "72 commits ahead of `origin/main` and unmerged, the largest
+  non-code risk in the project", which has been false since 2026-07-27. Its
+  header already warns about exactly this, having caught a 634-line drift in
+  July. **Regenerate it whenever you edit this file**; it is not a document to
+  hand-edit. Note the generator is a blind whole-file rename, so a sentence
+  naming *both* files reads as nonsense on one side — refer to "the mirror".
+- **`AGENT_LOOP_BRIEF.md` duplicated §0.0's gate list and status**, and both
+  had rotted — 435 tests against a real 2161, `mobshot` 243/243 against
+  246/246, and a "Current state" section still describing the M10–M18 arc as
+  unpushed local work. Rather than reset the numbers, those two sections now
+  **point at §0.0**, which is the only place they belong. Its test-server
+  recipe was also wrong in a way that costs an hour: it said
+  `nohup java … &`, and the server **stops on stdin EOF**, so a backgrounded
+  shell kills it instantly.
+- **`REWO_HEALTH_BAR_SPEC.md` said `crosshairPickEntity` "needs an entity
+  raycast Rewo does not have"** and that the pick clause is fed a hard `false`.
+  **M73 built that raycast** and the clause resolves from it. Corrected in
+  place rather than rewritten, because the reasoning for suppressing was sound.
+- **The mixed-CRLF file list had drifted in BOTH directions** and is now
+  measured rather than remembered: under `crates/rewo-*` it is exactly four —
+  `mobshot_cmd.rs`, `chunk.rs`, `light.rs`, `vanilla_hier.rs`.
+  `entities.rs` and `rewo-data/src/lib.rs` were on the list and have since been
+  normalised to all-LF, and two files were never on it. Re-measure.
+- `README.md`'s "What's next" offered two items that had both shipped (merging
+  the Rewo branch; an inventory model), and its gate count said fourteen where
+  there are **33**.
+
+**The pattern, for the third documented time:** a number with a test behind it
+stays true (`REWO_PACKET_COVERAGE.md`'s table is machine-checked by a unit test
+in `ids.rs` and was exact again), and the sentence next to it does not. The
+generalisable fix is not to re-check prose more often — it is to **stop keeping
+the same number in two places**, which is what the `AGENT_LOOP_BRIEF` sections
+now do by pointing rather than restating.

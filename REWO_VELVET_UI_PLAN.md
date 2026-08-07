@@ -286,7 +286,9 @@ pages and pipelines are built once.
 ## §6 The gate
 
 `rewo hudshot --check` — serverless, validation-required, fail-closed, in the
-`*_cmd.rs` pattern the other fourteen gates follow.
+`*_cmd.rs` pattern every other gate follows. (It said "the other fourteen"
+when written; there are 33 now. A count of a growing set does not belong in a
+sentence nothing checks — see `REWO_PLAN.md` §0.0 for the current list.)
 
 Fidelity is *pixel-faithful*, so the gate asserts against the **ewo-jni
 constants**, not against a screenshot:

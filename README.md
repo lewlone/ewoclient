@@ -23,12 +23,12 @@ A custom Minecraft Java Edition launcher with a "Velvet & Pearl" boudoir aesthet
 
 **Accounts, profiles and social.** Multi-account, hot-swappable client profiles, a remappable keybind registry, and friends/presence integrated with the user's own Minecraft network.
 
-**[Rewo](REWO_PLAN.md)** — a from-scratch native Minecraft client, in the same workspace under `crates/rewo-*`. It speaks the vanilla protocol (26.2 / protocol 776) and renders with raw Vulkan via `ash`, no JVM and no mod loader. It plays online: signed chat, real skins, OptiFine CEM packs rendered natively, a server-exact client light engine, vanilla's lightmap and day/night sky, per-biome colour, real Nether/End dimensions, 88 mob models with their exact animations, the combat and block-entity arcs, and weather. Verified headlessly by fourteen serverless gates.
+**[Rewo](REWO_PLAN.md)** — a from-scratch native Minecraft client, in the same workspace under `crates/rewo-*`. It speaks the vanilla protocol (26.2 / protocol 776) and renders with raw Vulkan via `ash`, no JVM and no mod loader. It plays online: signed chat, real skins, OptiFine CEM packs rendered natively, a server-exact client light engine, vanilla's lightmap and day/night sky, per-biome colour, real Nether/End dimensions, 88 mob models with their exact animations, the combat and block-entity arcs, weather and particles — and the whole GUI half: the inventory with its 3D player preview, the first-person hand, 25 container screens, item tooltips and durability bars, and the recipe book end to end. Verified headlessly by 33 serverless gate commands, each fail-closed and most with Vulkan validation on.
 
 ## What's next
 
-- Merging Rewo's work branch (see [`REWO_PLAN.md`](REWO_PLAN.md) §0.0)
-- An inventory model for Rewo — the blocker for its first-person hand and GUI
+- For Rewo, the next unit of work is a **subsystem, not a packet** — every clientbound-play packet it can render is rendered ([`REWO_PACKET_COVERAGE.md`](REWO_PACKET_COVERAGE.md) is at 114 handled / 0 ignored / 27 absent, and the 27 are 11 not-applicable plus 16 needing chat input, advancements, a resource-pack fetcher, a dialog framework, a map pipeline or transfer). Audio is the largest single gap: the packets decode, nothing makes a sound.
+- [`REWO_FEATURE_SURVEY.md`](REWO_FEATURE_SURVEY.md) is the roadmap for features rather than milestones
 - Hyprland verification for the launcher; a formal pixel-parity pass vs `style/*.png`
 
 See [`CLAUDE.md`](CLAUDE.md) for the full design + roadmap, and [`REWO_PLAN.md`](REWO_PLAN.md) for the native client.

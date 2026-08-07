@@ -1161,9 +1161,17 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    restated rather than in the registry it guarded. Grade a claim against the
    code that would falsify it — `a4` now derives the rendered set from the
    model resolver — and grade it in both directions.
-9. **Some source files are stored with mixed CRLF/LF terminators**
-   (`rewo-data/src/lib.rs`, `rewo-gpu/src/entities.rs`, `rewo-world/src/chunk.rs`
-   at least). An editor that normalises them turns a 30-line change into a
+9. **Some source files are stored with mixed CRLF/LF terminators.** Measured
+   2026-08-07, the whole list under `crates/rewo-*` is **four** files:
+   `rewo-app/src/mobshot_cmd.rs`, `rewo-world/src/chunk.rs`,
+   `rewo-world/src/light.rs`, `rewo-gpu/src/vanilla_hier.rs`. It had drifted in
+   **both** directions from the version this gotcha used to name —
+   `rewo-data/src/lib.rs` and `rewo-gpu/src/entities.rs` have since been
+   normalised to all-LF, and `light.rs`/`vanilla_hier.rs` were never listed —
+   so **re-measure rather than trust the list** — read the file as bytes and
+   compare its CRLF count against its total newline count; both non-zero and
+   unequal means mixed.
+   An editor that normalises them turns a 30-line change into a
    3,400-line diff and trips `git diff --check`, since git reads the added CR
    as trailing whitespace. Check `git diff --stat` against what you meant to
    change.

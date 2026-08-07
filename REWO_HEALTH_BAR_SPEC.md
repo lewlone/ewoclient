@@ -169,13 +169,16 @@ bar scales with `TAG_PX` exactly as a nametag does.
      does take the suppression rules. Letting an invisible armour stand keep a
      health bar because of a naming quirk would be the stranger answer.
 
-   **Still not answerable, and it suppresses rather than guesses.**
-   `crosshairPickEntity` needs an entity raycast Rewo does not have, so the
-   pick clause is transcribed, graded both ways by `labelshot`, and fed `false`
-   live. That is closer to vanilla than the pre-M70 behaviour, not further: the
-   old path showed a custom name unconditionally, which is wrong for every
-   non-visible named mob at all times, where this is wrong only while one is
-   under the crosshair.
+   **Answerable as of M73 — this paragraph used to say it was not.** When this
+   spec was written (M70) `crosshairPickEntity` needed an entity raycast Rewo
+   did not have, so the pick clause was transcribed, graded both ways by
+   `labelshot`, and fed a hard `false` live. **M73 built that raycast** — it is
+   not a second, label-only cast but the same `LocalPlayer.pick` hitResult that
+   decides which block you are mining — and the clause now resolves from it.
+   Left as a correction rather than a rewrite, because the reasoning for
+   suppressing was sound and is worth keeping: showing a custom name
+   unconditionally is wrong for every non-visible named mob at all times, where
+   the suppressed version was wrong only while one was under the crosshair.
 
 ---
 

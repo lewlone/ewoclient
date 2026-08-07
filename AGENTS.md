@@ -1,13 +1,18 @@
-<!-- GENERATED FILE — do not edit directly.
+<!-- GENERATED FILE - do not edit directly.
 
-     AGENTS.md is a verbatim copy of CLAUDE.md with the self-references
-     renamed. The two had drifted 634 lines apart by 2026-07-27 (AGENTS.md was
-     four days and roughly twenty milestones stale), which is exactly the
-     failure mode a duplicated source of truth invites.
+     This file is a verbatim copy of CLAUDE.md with the self-references
+     renamed. The two had drifted 634 lines apart by 2026-07-27 (four days and
+     roughly twenty milestones), and then 3,061 lines apart by 2026-08-07
+     (thirty-five milestones, still calling the Rewo work branch "unmerged, the
+     largest non-code risk"). A duplicated source of truth invites exactly
+     this; regenerating is the whole maintenance burden.
 
      Edit CLAUDE.md, then regenerate:
-         python -c "import io; c=io.open('CLAUDE.md',encoding='utf-8',newline='').read();                     io.open('AGENTS.md','w',encoding='utf-8',newline='').write(c.replace('CLAUDE.md','AGENTS.md'))"
-     and re-add this header. -->
+         python -c "import io; c=io.open('CLAUDE.md',encoding='utf-8',newline='').read(); io.open('AGENTS.md','w',encoding='utf-8',newline='').write(c.replace('CLAUDE.md','AGENTS.md'))"
+     and re-add this header.
+
+     The generator is a blind whole-file rename, so prose that names BOTH
+     files reads as nonsense on one side. Say "the mirror". -->
 
 # EwoClient — Velvet & Pearl Launcher
 
@@ -1619,18 +1624,112 @@ that stars merely dim. The rain fog ramp needed a second, *environmental* fog
 band in the world pass, pinned by four mutation-verified pixel witnesses in
 `lightmapshot`. **561 tests**, fourteen gates green, demo PNG byte-identical to
 M15 onward. All of M10–M33b is now **pushed** to
-`codex/rewo-m19-combat-swings` — 72 commits ahead of `origin/main`, unmerged.*
+`codex/rewo-m19-combat-swings`; **merged to `origin/main` on 2026-07-27** as a
+clean fast-forward, closing the long-standing unmerged-branch risk.*
+
+*Update (2026-08-02 session, docs): **caught this file up from M73 to M86** —
+twenty milestones (M54–M60, M74–M86) that shipped without a AGENTS.md pass, now
+one grouped section at the end of the Rewo part rather than twenty essays. The
+session opened by verifying rather than reading: build clean, **1623 tests / 0
+failures**, `mobshot` 246/246, `HEAD == origin/main == 0ddbc66`, no branch
+holding an unmerged commit, and the fourteen dirty agent worktrees confirmed to
+be litter (every file already on `main`). **The numbers in the docs were exact;
+two of the plans were stale** — `REWO_PLAN.md` §0.0 still said "M0–M57 at
+`aadd8e9`" and still offered the health-bar render half and the bundle grid's
+chrome as the cheapest pickups, both shipped (M59, M58). §0.0's "Where it is"
+and "What to do next" are rewritten, and its second, 2026-07-27 "What to do
+next" is now explicitly marked HISTORICAL, because it still recommends worn
+armour (shipped M46–M50) and a fresh session reading top-down could act on it.
+**The headline state change: `REWO_PACKET_COVERAGE.md` is at 107 / 0 / 34 with
+classes A and B both empty** — every packet Rewo can render is rendered, so the
+next unit of work is a **subsystem**, not a packet.*
+
+*Update (2026-08-07 session, Rewo): **M105–M107 — closing the recipe book.**
+The four items the M104 handoff listed, plus two bugs found on the way. **M105**
+the page counter (`gui.recipebook.page` is `%s/%s`, no spaces; only the FIRST
+argument is converted to 1-based; the five-argument `graphics.text` delegates
+with `dropShadow = true`; a one-page book shows no counter at all). **M106a**
+the recipe cell's tooltip, whose extra line is `"Right Click for More"` and
+carries **no count** — the handoff called it "the +N more recipes line", which
+it is not — and which **loses to the menu's own tooltip even though vanilla
+calls it afterwards**, because `setTooltipForNextFrameInternal` is
+`if (deferredTooltip == null || replaceExisting)` with `replaceExisting` false
+on every path: the FIRST tooltip of a frame wins. **M106b** the menu
+displacement in the last two consumers that never learnt about it — the hover
+highlight and the item tooltip both converted the cursor against a panel 77 GUI
+px from the one they were drawn against, M89's "a per-call-site choice is how
+they come to disagree" failing a third time in one file; the fix is one
+`book_open` binding that five consumers read, and the highlight's derivation
+turned out to have had **no witness of any kind** because every `set_container`
+call in the app passes `hovered: None`. **M106c** the ghost's tooltip, the one
+place first-wins is observable (a ghost sits ON a menu slot, so a filled slot
+asks both producers at once and the real item wins). **M107**
+`tryPlaceRecipe`'s guard — both halves load-bearing, since "not twice" breaks
+bulk crafting and "not uncraftable" breaks the click that fills the ghost —
+plus `useMaxItems`, and the finding that
+`FurnaceRecipeBookComponent.isCraftingSlot` switches on the slot's **container**
+index and never asks which container, so **three of the player's hotbar slots
+are "crafting slots" of a furnace**. Four witnesses were wrong before any code
+was; three composition roots (`apply_screen`, the winit handler) still have no
+test seam and their mutations are named rather than hidden. `live
+--render-check` gained **r25** and therefore a **second caller requirement** —
+the staged invocation now needs `recipe give @s *`, verified by meeting a fresh
+player after a reused server directory made the first attempt look green.*
+
+*Update (2026-08-07 session, Rewo): **M104 — the which-of-these overlay**, which
+finishes the recipe book bar four small items, plus a **doc-staleness pass**.
+The milestone's own entry is in the Rewo section below; the docs half is the
+part worth flagging here, because it is the second time in six days that the
+prose around a machine-checked number was the thing that lied.
+`REWO_PACKET_COVERAGE.md`'s §2 table is verified by a unit test in `ids.rs` and
+was exact at **114 / 0 / 27**, while its §0 handoff prose still said 107 / 34,
+its class table's caption said "the 32 gaps" over rows summing to 27, and its
+class-C definition still listed "a recipe book" as a subsystem Rewo lacks —
+three milestones after M93y decoded it. All corrected. `REWO_PLAN.md` had two
+"What to do next" blocks in flat contradiction (the older one telling the
+reader to prefer it) and a section headed "The current numbers" containing only
+historical ones; both are now labelled by precedence rather than by date.
+AGENTS.md's own top-level Rewo status block was three milestones behind at M93 /
+1860 tests / `containershot` 49-of-49. **The rule this keeps re-teaching: a
+number with a test behind it stays true and the sentence next to it does not.**
+Repo hygiene: the twenty stale `claude/rewo-m93*` branches and the two leftover
+agent worktrees were verified fully merged and clean, then pruned.*
 ---
 
-## Rewo — from-scratch native Minecraft client (M0–M33b shipped: online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather and clouds)
+## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, particles, the first-person hand, the Velvet type stack, the container arc, and the recipe book)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
-**Everything through M33b is shipped, gated and pushed** to
-`codex/rewo-m19-combat-swings` — which is **72 commits ahead of `origin/main`
-and unmerged**, the largest non-code risk in the project. Rewo (from
+**Everything is shipped, gated and merged to `main`** as of 2026-08-07
+(M107) — **2161 tests / 0 failures** (world 874, net 613, gpu 255, data 212,
+app 151, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
+`containershot` **107/107**, `inventoryshot` 152/152, `itemshot` 75/75,
+`handshot` 34/34, `swingshot` 97/97, `live --render-check` **25/25** with
+validation ON and 0 validation errors, demo PNG `2cc56b4acbfb92cb`.
+**The recipe book is closed** — M105 the page counter, M106 the cell and ghost
+tooltips, M107 `tryPlaceRecipe`'s guard and `useMaxItems`. No branch or worktree holds a
+commit off `main`. The long-unmerged-branch risk closed on 2026-07-27 and has
+stayed closed; branch new work from `main` and keep it that way.
+
+> **⚠ §0.0's prose goes stale faster than its numbers.** The 2026-08-02 pass
+> found the handoff still claiming M57 at `aadd8e9` and still offering two
+> "cheapest things to pick up" that had both shipped (M58, M59), while every
+> *measurement* in the same file was exact. `REWO_PACKET_COVERAGE.md` does not
+> have this problem because its table is **machine-checked** against `ids.rs`
+> by a unit test. Treat §15's log and the coverage table as current; treat any
+> forward-looking paragraph as suspect until checked against `git log`.
+
+> **⚠ The M-numbers are not a contiguous index — use commit subjects.**
+> Several sessions have run concurrently with parallel agents, so numbers were
+> assigned independently and reconciled on merge: `M52` appears on more than
+> one piece of work (as does `M61` — the wavy cape and the bundle decoder),
+> `M68` also names two (the motion packets and the sheep's undercoat), `M53` is a *specification* rather than code, and the
+> ladder jumps to M58/M59. **`REWO_PLAN.md` §0.0 carries the authoritative
+> numbering note** — read it rather than inferring order from the numbers.
+> When you need to know what actually shipped, read `git log --oneline`
+> subjects. Rewo (from
 "rewolution", as Ewo came from "ewolution") is a from-scratch Rust Minecraft
 client speaking the vanilla protocol (pin: **26.2 / protocol 776**, read from
 the bundled jar's version.json), rendered with **raw Vulkan via ash** —
@@ -1642,14 +1741,38 @@ is NOT a JVM/mod project — `ewo-jni`/mixin machinery does not apply.
 what to build *after* the M-series milestones, derived from a survey of all
 9,291 open-source client-side Fabric mods on Modrinth (2026-07-26,
 regenerate with `python tools/survey_modrinth.py`). Read it when picking the
-next feature rather than the next milestone. Two things from it are
-load-bearing anywhere in the repo: (1) **Sodium, EntityCulling and Xaero's
-Minimap are source-available but NOT open source** (Polyform Shield / bespoke
-protective / All-Rights-Reserved) — their source must not be read as a
-reference for Rewo, though bundling the jars in EwoLoader is a separate
-question; (2) 33.7% of all client-mod download mass exists only because the
-game is a JVM client with a mod loader, which is the strongest external
-validation Rewo has.
+next feature rather than the next milestone. Three things from it are
+load-bearing anywhere in the repo: (1) **the market leader in every big solved
+category is non-open-source** — Sodium (Polyform Shield), EntityCulling
+(bespoke protective), Xaero's Minimap + JourneyMap (All-Rights-Reserved), Jade
++ WTHIT (CC-BY-NC-SA, NonCommercial); ~509M downloads whose source must not be
+read as reference for Rewo, though bundling the jars in EwoLoader is a
+separate question; (2) **53.4% of all client-mod download mass** exists only because the
+game is a JVM client with a mod loader (modding infrastructure 25.4% +
+JVM performance 17.5% + OptiFine-pack parity 10.5%), which is the strongest
+external validation Rewo has; (3) the 9,291 mods collapse to **75 distinct
+features** — 50 QoL to build, 11 that are one "port the modules + HUD set into
+Rewo" milestone, **5 already at vanilla parity** (M40 tooltips, M41 durability
+bars, M51 screenshots, the crosshair, the selection outline — audit against the
+crates before scheduling anything from this doc), 3 blocked on audio. Counts
+carry a measured **~22-25% error**, the list is a **floor**, and the error is
+**not uniform** — it tracks keyword distinctiveness, so vague-keyword clusters
+(`Reach / hit indicators` 38% wrong) rank too high while distinctive ones
+(`Tooltip overhaul` 0%) are clean. Use it as a prioritisation, never as a
+citation.
+
+**[REWO_VELVET_UI_PLAN.md](REWO_VELVET_UI_PLAN.md) is the Velvet UI spec** —
+the type stack Rewo needs for tooltips, chat and F3, and the record of a
+deliberate **visual freeze**. Read its §8/§9 before touching HUD visuals. The
+short version: the glyph/text/chrome machinery landed and is keeper work; the
+widget transcription **stopped at one widget on purpose**, because EwoClient's
+HUD is getting a visual overhaul and anything transcribed now would be redone.
+The chrome palette is de-baked into a `ShellStyle` table so a redesign is a
+data edit, not a shader edit. §3's colour-space note is the one thing that
+survives the overhaul unchanged, because it is a property of the renderer:
+**the Velvet passes must be built with `world::unorm_of(target_format)` and
+drawn inside `WorldRenderer::with_gamma_space`**, or the pipeline format
+mismatches the attachment.
 
 - **M0–M6 all shipped + headlessly verified + pushed (2026-07-21).** It's a
   playable windowed client (`rewo live`) on offline vanilla 26.2 servers:
@@ -2584,6 +2707,2960 @@ validation Rewo has.
     24/24, `portalshot` 12/12, plus `skyshot`, `lightmapshot`, `tintshot`,
     `meshshot`, `dimensioncheck`. Live: `play --light-check` 884,736 cells / 0
     mismatches, `play --dimension-check` 4/4 + 3/3, physics CORRECTIONS 0.
+- **M34 the inventory, and icons in the hotbar (2026-07-27)** — the client now
+  knows what it is carrying and draws it. **Two coordinate systems** meet here
+  and never line up: the wire's 46 **menu slots** (hotbar from 36, offhand 45)
+  against the game's **inventory indices** (hotbar 0..8), and the three packets
+  are split across them — `container_set_*` speaks the first, `set_held_slot`
+  the second. Three non-obvious decode rules: an out-of-range held slot is
+  **ignored, not clamped**; `container_set_slot` carries its index as a
+  **signed short** among var-ints; any container id but 0 is an open screen
+  this client hasn't got, so it's dropped whole. Icons needed `display.gui` —
+  **absent for a sprite, which is correct** (identity maps 0..16 model units
+  onto exactly the 16 px slot), `scale 0.625` + `rotation [30, 225, 0]` for a
+  block (reaches 8.37 px against the slot's 8). GUI lighting is a **third**
+  model, neither the world's `Direction` shade nor the hand's. Building the
+  gate found two bugs first — `init_gui_items` leaked an image/sampler/pipeline
+  per hotbar change, and the atlas was repacked every frame. Then the gate's
+  own first measurement counted "non-black" pixels **against a painted sky**
+  and measured exactly zero while the PNG showed both icons rendering
+  perfectly; and one witness had its reasoning backwards ("a sprite covers more
+  of its slot than a block" — a sword is mostly transparent), replaced by a
+  mutation rendering the same block with an identity transform. Gate
+  `rewo inventoryshot --check` **16/16**; **578 tests** (517 lib + 61 app);
+  demo PNG byte-identical to M15 onward. **Open:** no inventory *screen* (the
+  other 37 slots are held, never shown), no stack counts or durability bars.
+- **M35 the inventory screen (2026-07-27)** — the panel, all 46 slots, the
+  hover highlight, the stack on the cursor, and clicking. **The click is a
+  prediction the server grades**: the packet carries the client's belief about
+  every changed slot as a `HashedStack`, and the *only* resync trigger is
+  `packet.stateId() != menu.getStateId()`. The first live click was rejected for
+  exactly that — a harness bug, not a code one: it clicked while `/give` was
+  still advancing the id. `tools/gen_item_props.py` extracts the two per-item
+  facts the arithmetic needs, neither on the wire — `max_stack_size` (295 of
+  1537 differ from 64) and `equippable`'s slot (83 items). Layout facts that are
+  not guessable: `isHovering` is an **18x18** box (`left - 1 .. left + w + 1`),
+  so slots tile without a dead column; the hotbar row is a named `top + 58`, not
+  3x18; highlights are drawn at `slot - 4` at 24x24, **bracketing** the icon;
+  the panel is centred by integer division. The backdrop is a **gradient**
+  (0xC0101010 → 0xD0101010), not a fill. The one honest approximation:
+  `isSameItemSameComponents` — Rewo knows *whether* a stack carried components,
+  never what, so a patched stack swaps rather than merging (one-directional by
+  construction; a wrong merge would fuse two tools, a missed one is corrected).
+  **Measured, not squinted at**: the panel looked washed out with a black hole —
+  six of seven probes are byte-identical to `inventory.png` (the seventh is the
+  F3 overlay) and the black is the texture's own window, which vanilla covers
+  with the 3D player. Gate `rewo inventoryshot --check` 16 → **39/39**, plus a
+  live `REWO_CLICK` knob that counts container resyncs (the container
+  `CORRECTIONS`); **586 tests**; demo PNG byte-identical to M15 onward.
+  **Open:** the player preview is not drawn (the most visible gap); no
+  shift-click, drag, number-key swap, Q-drop, tooltips, recipe book or
+  durability bars; armour icons stay blank (their `select` trim definitions are
+  among M22's 147 suppressed).
+- **M36 the player preview (2026-07-27)** — the black rectangle M35 left in the
+  inventory is `inventory.png`'s **own** window (vanilla paints it so the model
+  has something to stand against), and this fills it. Transform =
+  `PictureInPictureRenderer.prepare` then `GuiEntityRenderer.renderToTexture`:
+  `T(w/2,h/2) . S(s,s,-s) . T(0,bbH/2+0.0625) . Rz(pi) . Rx(yAngle)`, with
+  `s = guiScale * 30`. **The step that is easy to miss is on the CAMERA** —
+  `orientation.rotateY(PI)` — and it is load-bearing: `bodyRot = 180 + xAngle`
+  already points the model away from an unturned camera, so the first build
+  rendered Steve's **back**. Rewo's entity pass takes no camera state, so the
+  half turn goes on the model instead. The preview owns a **second
+  `EntityPass`** (two `set_draws` into one vertex ring would cross the draws),
+  built on first open, with its own atlas — hence its own skin upload, since a
+  UV from the world's atlas would land on some mob's texture. It **clears depth**
+  over its window (`vkCmdClearAttachments`, to **0.0** — reversed-Z; vanilla's
+  `Projection.getMatrix` swaps `near`/`far` for the same reason) or the model
+  comes out sliced by the terrain behind the panel. **Measuring beat squinting
+  again**: the render looked too large and mispositioned; the measured feet
+  (191.6 px down a 210 px window) and head (29.6) matched the decompile exactly
+  — the size was right and the eye was wrong, and what *was* wrong was the
+  facing. Gate `inventoryshot --check` 39 -> **44/44**; headless knobs
+  `REWO_PREVIEW_SKIN=<username|url>` and `REWO_MOUSE=x,y`. **Open:** the model
+  stands still (no local-player animation state); lighting is Rewo's entity
+  shading, not vanilla's `ENTITY_IN_UI` rig; armour is not shown on it.
+- **M37 particles (2026-07-27)** — the milestone REWO_PLAN §16 refused to
+  propose, because every gate here is geometry-based and particles looked
+  stochastic. They are not: **`Particle.tick()` contains no randomness at all**,
+  every generator is `java.util.Random`'s 48-bit LCG, and a fixed seed turns
+  spawn offset, velocity, lifetime, colour, quad size and sprite index into
+  assertable numbers. Two anchors stop that being circular, and they retire
+  different failure modes — the JDK's own `Random` is genuinely independent
+  ground truth for the generator (MC's `BitRandomSource` reimplements its
+  formulas), and a Java harness of **verbatim decompile source** grades the
+  physics, which is the only thing that can catch a *misreading* rather than a
+  mistranslation. It caught `+ 0.1` where vanilla writes `+ 0.1F` on its first
+  run — a ~1.5e-9 error, invisible in any screenshot, that shifted every
+  subsequent tick. `nextGaussian` is the one primitive graded to a **ULP bound**
+  instead of to the bit, because `Math.log` is a JIT intrinsic spec'd only to
+  1 ULP, so vanilla's own spawn scatter is not bit-reproducible between two
+  JVMs and a zero-tolerance gate there would assert more than vanilla
+  guarantees. Six kinds (block, smoke, flame, splash, crit, poof); a block-break
+  shard samples the **block** texture and a flame the particle strip, unified
+  into one `sampler2DArray` so both share a pipeline; `BakedAssets::
+  particle_layer` resolves each state's model `#particle` slot, which is why a
+  broken grass_block throws *dirt*-coloured shards. Gate **`rewo particleshot
+  --check` 34/34**, mutation-tested against five breakages. Verified live: the
+  shard colour **tracks the block state** (redstone red / lapis blue / gold
+  yellow), and a real `/setblock … air destroy` spawns exactly **64** shards —
+  the 4×4×4 grid the gate asserts from the other direction. **610 tests**; demo
+  PNG byte-identical to M15 onward.
+- **A frame-diff witness must hold everything but the subject constant, and a
+  world-mutating trigger cannot** (M37, not particle-specific). Measuring the
+  block-break shards' colour by frame-diff gave 0.04 chromaticity agreement with
+  an explicit `block{grass_block}` particle on one run and 0.16 on the next, so
+  the first figure was **retracted rather than defended**. `/setblock … air
+  destroy` changes the world: the removed block covers thousands of pixels, the
+  shards spawn inside the volume it vacated, and the two frames differ in
+  lighting *history* (one relit incrementally from a client edit, the other given
+  the server's light at chunk load). A same-world control removes the largest
+  term but not all of them. **The diagnostic tell, both times, was that
+  restricting to strongly-changed pixels made the discrepancy WORSE** — that is
+  the signature of a contaminated control, where edge-blending would have
+  improved. Measure such a path by a property that does not need a clean frame
+  diff (here: the spawn *count*, and the texture resolution the non-mutating
+  `/particle block{…}` rows already exercise).
+- **M38 the first-person hand (2026-07-28)** — the blocker §0.0 named was M34's
+  inventory model, and with it gone the hand went in: the held item through
+  both geometry paths, the swing, the equip dip, the view sway. **Two bake
+  rules are invertible** — an absent `firstperson_lefthand` falls back to the
+  **right** entry and *only* in first person (`ItemTransforms`' builder has that
+  line; the third-person pair has none), and the left/right **mirror is applied
+  at draw time, not baked** (`ItemTransform.apply` negates `translation.x`,
+  `rotation.y`, `rotation.z`; `handheld` authors its left pre-mirrored so the
+  two cancel, and baking it would double it). **The swing clock is not a new
+  machine**: `LocalPlayer` is an ordinary `LivingEntity` and `Player.aiStep`
+  calls `updateSwingTime`, so it takes an id in M19's swing table —
+  `tick_swings` iterates the swing map, not the entity map — and M34's
+  inventory supplies the held item the duration needs, which is the real join
+  between the two milestones. **Two clocks, easily conflated**: `attackAnim` is
+  the entity's; the equip height is `ItemInHandRenderer`'s own and ticks per
+  *tick*, not per frame. **The hand has its own projection** —
+  `calculateHudFov` returns a hard-coded **70** vertical — and vanilla
+  **clears depth** before drawing it, without which a wall a block away slices
+  your arm off. Three things measured not assumed: the arm chain's translates
+  are block units with cube vertices divided by 16 (with it the arm lands
+  1.1 blocks below the eye; without it, ten blocks away), the item quads really
+  are 0..16, and the pass is the GUI-item pass with two differences (a
+  view-projection push constant, the world's flipped viewport). **The 1.36x was
+  not there**: the render was first committed with that unexplained width
+  discrepancy, bisecting showed the geometry matched a hand derivation to a
+  tenth of a pixel, and the fault was the **detector**, which was also counting
+  the hotbar's dirt icons — re-measured cleanly, every edge lands within a
+  pixel. That was the **third detector error of the milestone**, all the same
+  shape (non-black against a painted sky, brown against a brown hotbar, cyan
+  against a blue sky), so `handshot` is built around avoiding the class: a
+  synthetic **magenta** cube, with an empty frame asserted to contain none.
+  Gate `rewo handshot --check` **22/22** (two of its own witnesses were wrong
+  first — the fallback check used a *stick*, which parents `item/handheld` and
+  authors both hands; and the fail-closed count caught 19 declared as 17).
+  **The bare arm** draws for the main hand only, from one named part with
+  `resetPose()` plus a fixed `zRot` of ±0.1 rad. It rendered as *nothing* at
+  first because **the model's UVs are texels, not fractions** — an arm's span
+  16..56 of a 64 px skin, so remapping without dividing by the skin size sends
+  them outside the atlas, where the sampler clamps to a transparent edge. The
+  geometry was there the whole time (72 verts, uploaded), so looking proved
+  nothing and printing the UV range settled it in one run. **623 tests**; demo
+  PNG byte-identical to M15 onward. **The use-driven poses** landed with the plumbing they
+  needed: right-click became a hold (`use_item` + `RELEASE_USE_ITEM`), and the
+  local use clock needed **no new machine** — `startUsingItem` sets shared-flag
+  bit 0, which `set_living_flags` already decodes, so the local id goes through
+  the same door M23 built. Three invertible details: **`hasCustomArmTransform`
+  moves a transform rather than adding one** (true for EAT/DRINK/SPEAR — the
+  resting offset applies *after* the pose), the **brush cycles on
+  `remaining % 10`** rather than on progress through a duration, and **BLOCK
+  excepts a real shield** (it carries its own display transform and would be
+  posed twice). Spyglass is the absence of a pose — vanilla guards all of
+  `submitArmWithItem` on `!isScoping()`. Two gate witnesses failed first for one
+  reason: **`transform_point3(ZERO)` sees only translation**, so a trailing
+  rotation (the brush sweep) measures as motionless — sample an offset point.
+  Gate **29/29**. **Open:** `SPEAR`'s use rig and the crossbow charge need
+  inputs the wire does not carry; the arm wears the default skin.
+- **M39 shift-click, the quick-move (2026-07-28)** — `ContainerInput.QUICK_MOVE`
+  is a **different input**, not a modifier on PICKUP. **The routing is not "the
+  other half of the inventory"**: `quickMoveStack` checks armour and the
+  off-hand *first*, for an item that fits and whose target is **empty** — which
+  is why shift-clicking a helmet equips it, and why a second helmet does not
+  swap the first out. The crafting result is the one destination walked
+  **backwards**, so a craft fills the hotbar from the right.
+  **`moveItemStackTo` is two asymmetric passes**: the merge pass runs the whole
+  range, the placement pass takes one empty slot and **breaks** — so a stack
+  tops up a partial one before taking an empty, but never scatters across
+  several. `doClick`'s outer `while` is what repeats it. Gate
+  `inventoryshot --check` 44 → **49/49**, plus a live check: shift-click and
+  plain click both accepted with **0 container resyncs**. **Open:** tooltips
+  (needs `en_us.json` + text layout), drag/quick-craft, number-key swap,
+  Q-drop, durability bars, armour icons.
+- **M40 the rest of the inventory screen (2026-07-28)** — armour icons,
+  tooltips, and every remaining interaction. **The suppressed items were
+  suppressed for the wrong reason**: M22 called the five non-`model`
+  definition types state-dependent, but **all 71 `select`s carry a
+  `fallback`** and every `condition` an `on_false`, so for a component-free
+  stack those *are* the answer, not a default. The rule is suppress the
+  **property** you cannot evaluate, not the type — **1,390 → 1,438 resolved,
+  147 → 99 suppressed**. The reduction must recurse (a bow is a `condition`
+  whose `on_true` is a `range_dispatch`), and `display_context` selects
+  different **geometry**, not a transform (a spear is a flat sprite in a slot
+  and a 3D model in the hand), hence `HeldItemModel::gui_quads`. A witness
+  caught the diagnostics naming the definition's *root* type rather than the
+  node the walk stopped at. **Tooltips** are one line — the display name from
+  the jar's `en_us.json`, preferring `block.minecraft.<id>` because
+  `BlockItem` overrides `getDescriptionId` (`item.minecraft.dirt` does not
+  exist); everything vanilla adds beyond it comes from a component Rewo cannot
+  read. Layout traps: the height starts at **-2 for a single line**; the
+  horizontal recovery is a **flip** whose `x` is the **already-offset** one
+  (my witness expected 306, the answer is 318); the vertical is a clamp using
+  `h + 3`. **The interactions**: `SWAP`'s button is a **third coordinate
+  system** (an inventory index, 0..9 or a literal 40) and its range **rejects
+  rather than clamps**; `THROW`'s trailing `while` never runs twice;
+  `PICKUP_ALL` is two passes whose first **skips full stacks**, gated on the
+  clicked slot being empty; `QUICK_CRAFT` packs `type << 2 | header` into one
+  byte, is three packets, and **a one-slot drag collapses into a `PICKUP`**.
+  Gates `inventoryshot` 44 → **70**, `itemshot` 28 → **33**; all four
+  interactions live-verified with **0 container resyncs**. **Blocked, not
+  skipped:** durability bars and enchantment/lore tooltip lines need the
+  *contents* of a `DataComponentPatch`, which Rewo does not decode.
+- **M41 the `DataComponentPatch` decode (2026-07-28)** — the blocker every
+  milestone since M35 named. **The patch has no length prefix**: each entry's
+  value uses that component's own stream codec, so an untranscribed one cannot
+  be *skipped* — the reader parks mid-value and the rest of the packet is
+  garbage. That is why M19 knew 3 of 111 codecs and treated the rest as fatal.
+  Nearly all 104 syncable codecs compose from a dozen primitives, so
+  `rewo-net/src/component_wire.rs` writes them as **data** (a `Shape` tree per
+  component) and one interpreter walks them: **97 of 111 transcribed**, and 7
+  of the 14 remaining are **never network-synchronised**, so there are 7 real
+  gaps. Wire facts that read backwards: **a chat component is one NBT tag**
+  (`fromCodecWithRegistries` — which makes `custom_name`/`item_name`/`lore`
+  walkable with no chat codec at all); **`Unit` is zero bytes**; **`holderSet`'s
+  var-int is `count + 1` and a literal 0 means a *tag name* follows**, not an
+  empty set; `holder` is `id + 1` with 0 = inline while `holderRegistry` is
+  raw; `either` writes **true for the left**. A sorted digest of every entry's
+  (type id, raw bytes) makes **`isSameItemSameComponents` exact** — M35 could
+  only ask "carries components at all", so every patched stack swapped and two
+  identically-enchanted books could not stack; a *removal* folds in its id
+  because `getOrDefault` answers it with the type's default, not the item's
+  prototype. **Durability bars**: `round(13 - damage * 13 / max)` **counts
+  down**, colour is `hsvToRgb(health / 3, 1, 1)`, the draw is a 13x2 black bed
+  under a 1px bar, and `isBarVisible` is `isDamaged()` so a pristine tool has
+  none; only the numerator is on the wire, so `gen_item_props.py` grew a
+  `max_damage` column (84 items). Tooltips gained the name override, lore and
+  `Unbreakable`. **Two witnesses caught real bugs** — the tooltip box was drawn
+  in panel space while its text was in screen space (and `t4` had agreed with
+  the implementation until rewritten to bracket the *text*), and `swingshot`'s
+  "unwalkable" fixture named `enchantments`, which M41 transcribes, so it
+  silently stopped testing its claim (now an impossible id). Gate
+  `inventoryshot` 70 -> **79**; **628 tests**; live: named stacks **merge** and
+  differently-named ones **swap**, 0 container resyncs. **Open:** the
+  enchantment registry (a datapack registry Rewo does not decode) blocks the
+  enchantment tooltip lines and the glint.
+- **M42 the enchantment registry (2026-07-28)** — M41's other half. The
+  registry **has to come from the wire**: `minecraft:enchantment` is a
+  **datapack** registry, so its contents *and its id order* are the server's,
+  and it arrives in Configuration's `registry_data` (kept in wire order — the
+  index **is** the protocol id, the same rule M16 records for dimension types).
+  `max_level` is **top-level in the entry compound, not nested under
+  `definition`**, because `EnchantmentDefinition.CODEC` is a `MapCodec` whose
+  fields inline into the parent. The **strings and tags come from the client
+  jar** — `en_us.json` plus `data/minecraft/tags/enchantment/{curse,
+  tooltip_order}.json`, the vanilla datapack the jar carries (where M19 already
+  reads `ItemTags.SPEARS`). Three `getFullname` rules: the level numeral is
+  suppressed **only when `level == 1 && maxLevel == 1`** (so a level-1 Mending
+  has none and a level-1 Sharpness does — suppressing on `level == 1` alone
+  loses it from every single-level enchant applied); a curse is **red**; and
+  the order is the **`tooltip_order` tag**, then the rest. An unsynced id
+  yields **no line**. **The render caught a bug**: `SlotText::is_empty` gates
+  whether a stack's text is recorded at all and had not been taught the new
+  field, so a stack carrying *only* enchantments looked empty and was dropped.
+  Gate `inventoryshot` 79 -> **85**; **629 tests**; live, a four-enchantment
+  sword renders curse-first-and-red, `Sharpness V`, `Unbreaking III`,
+  `Mending` with no numeral. **Open:** the glint (a second render pass, not a
+  tooltip concern).
+- **M43 the enchantment glint (2026-07-28)** — a **second pass over the same
+  geometry**, and almost all of it is state rather than new maths.
+  `setupGlintTexturing`: two offsets on **110 s and 30 s** periods (so the
+  pattern never visibly repeats), u **negative** and v positive (which sends
+  the sheen diagonally), and the cast to `long` **before** the modulo. **JOML
+  post-multiplies**, so `translation().rotateZ().scale()` reads as
+  scale-then-rotate-then-translate on the coordinate — the reverse of the call
+  order. Scale **8.0** for an item, 0.5 entity, 0.16 armour. **The UV fed in is
+  the quad's own `0..1` coordinate, not its atlas position** — otherwise the
+  pattern depends on where the packer put the item. Three pieces of pipeline
+  state, each load-bearing: `BlendFunction.GLINT` is `(SRC_COLOR, ONE, ZERO,
+  ONE)` so a dark texel adds nothing and alpha is left alone (the headless
+  gates read it back); depth **EQUAL with no write**, which lands the sheen on
+  the item's own fragments and nowhere else; and **REPEAT + LINEAR** sampling,
+  because scale 8 samples far outside `0..1` and the `.mcmeta` sets
+  `blur: true`. The phase is **wall-clock**, not the tick. **The render caught
+  a bug**: `hasFoil()` is *not* `isEnchanted()` — `ENCHANTMENT_GLINT_OVERRIDE`
+  wins **both ways**, so a golden apple can glint and a Sharpness V sword can
+  be told not to. **And three `item_stack` fixtures rotted the same way
+  `swingshot`'s did in M41** — they named a real-but-uncovered component id as
+  their "unknown codec" and M43 gave it one; both now use an *impossible* id.
+  Gate `inventoryshot` 85 -> **91**; **630 tests**; live, all four `hasFoil`
+  cases correct and the sheen moves (311 of 2,500 slot pixels differ across
+  seven seconds). **Open:** the glint on the first-person hand, on ground /
+  mob-held items (scale 0.5) and on worn armour (0.16).
+- **M44 the glint on the first-person hand (2026-07-28)** — M43's transform,
+  blend, depth rule and sampler unchanged (the item scale is 8.0 in both
+  contexts), so the milestone is about where the second pass hangs. **The
+  glint geometry has to be the item geometry to the bit**: the pass
+  depth-tests `EQUAL` against what the hand pass just wrote, so a vertex a
+  fraction of a unit away is rejected fragment by fragment and draws nothing —
+  the glint builder repeats the pose derivation (use branch, swing branch,
+  display transform, left-hand mirror) rather than re-deriving it a second,
+  subtly different way. **Only items glint** — the bare arm is skin, and
+  `submitArmWithItem` takes the arm branch before any foil. `hasFoil` comes
+  from the **inventory**, not the equipment feed, because a server never sends
+  a player their own equipment. **The bug**: the first build drew nothing
+  because `init_hand` *destroys and rebuilds the pass*, and the glint was
+  installed **before** it, so every rebuild threw it away — no error, no
+  warning, no validation message; a rebuilt pass with no glint is perfectly
+  valid, and the only signal was two frames that should have differed and did
+  not. Gate `handshot` 29 -> **34**; **635 tests**. **Open:** ground and
+  mob-held items (scale 0.5) and worn armour (0.16), both through the entity
+  pass.
+- **M45 the glint on world-space items (2026-07-28)** — ground stacks and
+  mob-held ones. `ENTITY_GLINT_TEXTURING`'s scale is **0.5** against the item
+  contexts' 8.0, a factor of sixteen, so a dropped sword wears broad bands
+  where an icon wears a fine weave. **Worn armour is the fourth surface and is
+  not reachable**: Rewo renders no armour on any entity, so the 0.16 scale has
+  nothing to apply to — the glint is complete for everything Rewo draws. The
+  glint quads are pushed **from inside the two item emitters**, beside the
+  vertex they shadow: the pipeline depth-tests `EQUAL`, and a dropped stack
+  carries a death topple, a bob, a spin and a per-copy jitter, so a parallel
+  derivation would have four more chances to disagree. It is a **third vertex
+  range** (solid, text, glint) drawn after the solid pass and before the
+  translucent ones, with **no lightmap term** — vanilla's glint shader
+  multiplies by `GlintAlpha` and the fog fade and nothing else, so a dropped
+  enchanted sword shimmers as brightly in a cave as in daylight. `hasFoil`
+  rides in with the stack (on `HeldItem`, and in the `DATA_ITEM` metadata
+  tuple) because it exists only in the component patch. **The gate measured
+  zero and was right to**: `itemshot` calls `init_entities` directly rather
+  than through the app's helper, so it never installed the glint — the same
+  shape as the `swingshot`/`install_shapes` gap M41 hit, and the general rule
+  is that *a gate reimplementing a slice of the app's setup will miss whatever
+  the app adds to it*. `entities.rs` is also one of the **mixed CRLF/LF** files
+  §0.0 warns about (1,969 CRLF against 3,763 LF), so the scripted edits had to
+  match either ending. Gate `itemshot` 33 -> **37**; **629 tests**.
+- **M46 worn armour (2026-07-28)** — M45 called this "the fourth surface and
+  not reachable"; this makes it reachable. An item names an **asset**
+  (`Equippable.assetId()`, in the prototype, never on the wire — so
+  `gen_item_props.py` extracts it), and the asset names **layers** whose
+  textures are **64x32** sheets, not 64x64 skins. Only two humanoid layers
+  exist because `usesInnerModel` is `slot == LEGS`: the leggings sit *inside*
+  the chestplate at deformation 0.5 against 1.0, which is what stops them
+  z-fighting. **The body is in two pieces at once** — CHEST covers
+  `{body, both arms}` and LEGS covers `{both legs, body}` — and the leg boxes
+  are a **replacement**, `texOffs(0,16)` at `extend(-0.1)`. The armour is posed
+  from the **same `xf` the body just used**, since it is a render layer over a
+  model whose angles are already set. **The layer follows the RENDERER, not the
+  mesh**: all eight `HumanoidArmorLayer` sites are player/zombie/skeleton/
+  piglin families, so an **allay** (arms, no legs), an **illager** and a
+  **creaking** — each with enough humanoid mesh to pass a geometric test — wear
+  nothing in vanilla. **Only the player has a `body` part** (M19 gave it one
+  for `setupAttackAnimation`); every mob's torso cube is on the static root, so
+  a chestplate's body box resolved to nothing and mobs wore armoured arms over
+  a bare chest — **and the witness passed anyway, because it asked the player
+  model**, the one humanoid with the named part. A **trace beat four
+  screenshots**: several rounds of squinting at crops (one of which was a husk,
+  another comparing two live runs whose scenes had drifted) never settled
+  whether the arms were armoured; logging which part each box resolved to
+  answered it in one run, and the bare green mass every crop had been read as
+  "arms" was the **torso**. An armoured zombie also rendered with a villager's
+  texture, which looked exactly like an atlas collision from the fifteen new
+  sheets — it is **pre-existing** (a stashed pre-M46 build reproduces it), needs
+  more than one entity in the scene, and `mobshot` is structurally blind to it
+  because its check substitutes per-face debug colours and so verifies UV/face
+  correspondence rather than which *sheet* is sampled (recorded in §0.0). Gate
+  `itemshot` 37 -> **42**; **629 tests**. **Open:** leather is undyed (a layer
+  is a *list* — dyeable base plus overlay — and Rewo takes the first, so the
+  greyscale base is never tinted by `dyed_color`), no trims, the inventory
+  preview does not wear its armour, and baby mobs use the adult parts.
+- **M47 the leather dye (2026-07-28)** — M46 shipped leather grey and called it
+  "the dyeable base drawn untinted"; both halves were wrong. **Zero is not a
+  black tint, it is "do not draw this layer"** — `renderLayers`' guard is
+  `if (color != 0)`, and that is the entire implementation of
+  `Layer.onlyIfDyed`, whose `Dyeable` carries *no* `color_when_undyed`. Three
+  states hide behind one `Optional<Dyeable>` (absent = untinted always,
+  present-with-a-colour = tinted always, present-without = only when dyed), so
+  it survives as `Option<Option<u32>>`. **An undyed leather piece is brown, not
+  grey**: `LEATHER_COLOR` is `0xA06540`, and the sheet is authored greyscale
+  *because* it is always tinted — there is no path that draws it untinted. A
+  layer type maps to a **list**: surveyed on the jar, 20 humanoid lists of one
+  and 3 of two, all three of them leather's (a dyeable base plus an untinted
+  overlay, which is what keeps the studs their own colour on a dyed piece).
+  `DyedItemColor`'s stream codec is **`ByteBufCodecs.INT`** — a fixed
+  big-endian i32 among the var-ints, M34's trap again — holding an **RGB**,
+  which is why `getOrDefault` is the thing that calls `ARGB.opaque`, and why an
+  absent dye is `0` while a *black* dye is `0xFF000000`. The tint is a **vertex
+  colour** (`submitModel(..., color, ...)`; `entity.fsh` does
+  `texture * vertexColor`), riding the same channel as the directional shade,
+  so untinted is exactly `tint = 1`. **The pixel witness caught a key-format
+  break**: `d4` measures red/green and red/blue over the armour's own pixels,
+  and its first run measured **zero** — correctly, because M47 changed the
+  atlas key to `<layer>/<texture>` while the renderer's slot filter still
+  looked for `"/humanoid"` as a substring, so **all** armour had gone
+  invisible, not just leather. Gate `itemshot` 42 -> **46**; **631 tests**.
+  **Open:** no trims, the glint-order rule is transcribed but unreachable until
+  armour glints, and `usePlayerTexture` (the elytra cape) is read as data and
+  never honoured.
+- **M48 armour trims (2026-07-28)** — the third armour layer, and the one that
+  is **not a texture in the jar**: `armor_trims.json` declares a
+  `paletted_permutations` source and the client generates every
+  `pattern x material` sprite at load by swapping colours through a palette
+  pair. Two invertible details — the match is on **RGB with alpha masked off**
+  (so a half-transparent pixel of a palette colour still maps, taking
+  `pixelAlpha * valueAlpha / 255`), and an **unmatched pixel is not dropped**,
+  because `getOrDefault` returns `opaque(pixelRGB)` whose alpha 255 leaves it
+  untouched. Working in RGBA bytes sidesteps whether `NativeImage.getPixels` is
+  ARGB or ABGR. `trim_material` and `trim_pattern` are two more **datapack**
+  registries (M42's rule: contents *and* id order are the server's; index = id),
+  and their `MapCodec`s inline, so `asset_name`/`override_armor_assets` are
+  top-level fields. **`assetId(equipmentAsset)` is what stops a trim
+  disappearing**: it is `overrides.getOrDefault(equipmentAsset, base)`, keyed by
+  the *equipment asset*, and iron/gold/diamond/netherite/copper each override to
+  `<material>_darker` for their own armour — else an iron trim paints iron onto
+  iron. The trim draws with **depth EQUAL, no write**
+  (`ARMOR_DECAL_CUTOUT_NO_CULL`), M43's glint trick, and it is the only sane
+  option: Rewo's reversed-Z `GREATER` would reject a coplanar redraw outright.
+  Vanilla's two pipelines (`decal` vs not) **collapse to one here** because the
+  trim's geometry is the armour's to the bit. It is a **fourth vertex range**
+  (`solid | text | glint | trim`), drawn under the foil as vanilla does. 612
+  possible sheets means a **demand-filled pool** (M22's item-pool arithmetic
+  again): 64 slots, keyed by sprite path; `ATLAS_H` grew 1280→1408 with the
+  pool at the **top** and the skin/item pools redefined downward, so every
+  existing address is unchanged and `mobshot` stayed 243/243. **A leak the
+  gates caught**: the new pipeline was never destroyed, and
+  `VUID-vkDestroyDevice-device-05137` fired in three gates with **zero failed
+  witnesses** — the 0-VUID bar caught what a green witness count could not.
+  Gate `itemshot` 46 → **51**; **633 tests**. **Open:** trims are not on GUI
+  icons (M40 suppresses the `select` property it cannot evaluate), no
+  `humanoid_baby` layer, and a trim does not glint.
+- **M49 trims on GUI icons (2026-07-28)** — the blocker M48 named. The icon is a
+  **`select` on `minecraft:trim_material`** whose `when` values are material
+  **registry ids** (not the `asset_name` suffix the worn sheet uses), each case
+  naming a different model — 337 of them, each an ordinary two-layer
+  `item/generated`. Its layer1 sprite comes from a **second** paletted-
+  permutations atlas (`items.json`, four 16x16 sheets, same key palette and
+  same sixteen permutations as `armor_trims.json`), so M48's `apply_palette`
+  was already the whole generator. **The bake refactor**: `ItemModels` was
+  keyed by item name and baked once, so a variant goes in under
+  **`"<item>#<material id>"`** rather than the key becoming a pair — every
+  existing lookup is untouched, and `HeldItems::any` falls back from a composed
+  name to the base, which is required and not a nicety (an item can be trimmed
+  with a material its own definition names no case for, and vanilla's answer
+  there is the `fallback`). Variants come from the definition's own `cases`,
+  not the material registry, because this is a bake of the **jar** and the
+  registry is the **server's**. **The bug that hid the whole feature**:
+  everything resolved and the icons still rendered plain, because a multi-layer
+  sprite is **coplanar by construction** (`ItemModelGenerator` puts every layer
+  in the same `z 7.5..8.5` slab) and the GUI pipeline depth-tested strict
+  `GREATER`, rejecting layer1 at exactly layer0's depth. Vanilla tests `LEQUAL`;
+  the reversed-Z counterpart is **`GREATER_OR_EQUAL`** — one word. That is the
+  third time this arc a depth *comparison* was the whole story, so it is worth
+  reaching for first when geometry is provably present and provably invisible.
+  Gate `itemshot` 51 → **54** (`u1`: a variant bakes one more sprite layer than
+  its base; `u2`: an unnamed material falls back to the base's single layer);
+  **633 tests**.
+- **M50 the worn-armour glint, and the glint's colour space (2026-07-28)** —
+  M45 called worn armour "the fourth surface and not reachable"; M46 made it
+  reachable and this draws it. **Two of the facts gathered in advance were
+  wrong.** `VIEW_OFFSET_Z_LAYERING` is not the foil's mechanism: all three
+  armour render types carry it (`ARMOR_CUTOUT_NO_CULL`,
+  `ARMOR_DECAL_CUTOUT_NO_CULL`, `ARMOR_ENTITY_GLINT`), each with the same bias
+  on a fresh `getModelViewMatrixCopy()`, so it **cancels within the stack** —
+  what it separates is armour from *body* — and `RenderPipelines.GLINT` is
+  `DepthStencilState(CompareOp.EQUAL, false)`, so the foil is the same
+  depth-EQUAL pass Rewo had shipped three times. And the foil is **untinted**:
+  `POSITION_TEX` has no Color element, `glint.vsh` declares no colour
+  attribute, and `writeDynamicTransforms` passes `ColorModulator` as WHITE, so
+  `submitModel`'s colour is dropped. The fact that held is the headline —
+  **the trim must not glint**, because `renderLayers` clears `renderFoil`
+  inside the layer loop and submits the trim after it. **Then the real
+  finding**: the foil went in structurally correct and rendered a byte-delta of
+  **exactly 0**. `BlendFunction.GLINT` is `(SRC_COLOR, ONE)`, so the
+  contribution is `src²` — and **squaring is not invariant under the sRGB
+  transfer function**. Vanilla evaluates it in gamma space (no sRGB framebuffer,
+  no sRGB texture views); Rewo was blending in linear, where a mid texel adds
+  +0.9/255 against vanilla's +16/255 and quantises away. **The item glint had
+  the same error since M43** and hid it, because a dropped stack sits against a
+  *dark* background where the sRGB curve is steep enough to show a tiny linear
+  increment (measured on one frame: item 137, armour 0). No fixed-function
+  blend can bridge it — every candidate needs to read the destination — so the
+  glint now renders through a **UNORM view of the same image**
+  (`MUTABLE_FORMAT` + format list on the offscreen image and the swapchain,
+  `world::draw` reopening its scope around each glint draw, sheets uploaded
+  UNORM), and both glint shaders are vanilla's line verbatim. **Without
+  `VK_KHR_swapchain_mutable_format` no glint is drawn at all** — check that
+  first if glints ever go missing. Structure: one `EntityGlint` per sheet over
+  one shared pipeline, a fifth vertex range
+  (`solid | text | glint | trim | armor_glint`), and the foil drawn **before**
+  the trim because `SubmitNodeStorage` drains its phases in ascending `order`.
+  Gate `itemshot` 54 → **62**; **633 tests**; demo PNG byte-identical to M15
+  onward. **Three detector errors, all mine** (M38's pattern again): a `> 8`
+  threshold built for the item glint read a real 5/255 sheen as nothing; a
+  per-channel linear comparison sat below the 8-bit quantisation step; and the
+  first fixture used two *bright* dyes whose red and green pinned at 255. The
+  fix moved the measurement into the space the blend now works in — vanilla's
+  add is base-independent **in bytes**, and the byte delta between two opposite
+  dyes comes out **0**. **The live frame-diff was rejected as an oracle**: a
+  same-item control differed in 41,284 pixels against the test's 16,329, so the
+  wire path was verified by a *property* instead (`ench=[(28,4)]` decoded,
+  `foil=true` at the renderer). And the first live run failed on the
+  **harness**: the summon used the pre-1.21.5 `enchantments:{levels:{…}}`
+  wrapper, so 26.2 silently produced an unenchanted piece — same shape as M35's
+  stale state id and M20.1's build gate.
+### The Velvet type stack, the visual freeze, and four headless subsystems (2026-07-28)
+
+Pushed as `4c0fd6b..f7901f2`. Everything here is **headlessly verified** — the
+demo PNG stayed `2cc56b4acbfb92cb` through all of it, which is the check that
+none of it changes a rendered pixel.
+
+**The module port (`M52a`).** The survey's top-ranked item. Full Bright, FOV
+Control, Zoom, Toggle Sprint, Toggle Sneak, in `crates/rewo-app/src/modules.rs`.
+The catalog is **not** redefined — `ewo_core::modules::REGISTRY` already calls
+itself the single source of truth, so Rewo is its third reader; only `rewo-app`
+takes the dep and `rewo-gpu` keeps taking plain floats. Config reads the **same
+`profiles/<active>/modules.toml` the launcher writes**, so Settings → Modules
+applies to a Native instance with no new contract.
+
+Three invertible details: Full Bright pins vanilla's **maximum gamma** rather
+than bypassing the lightmap, so night vision and darkness keep composing (a
+bypass would silently defeat both); Zoom **divides** whatever FOV is in effect
+rather than setting one, so it composes with FOV Control; Toggle Sprint/Sneak
+guard on `!event.repeat`, or a held key flips the state dozens of times a
+second.
+
+**Two modules are vacuous in Rewo** — `no_view_bob` and `no_damage_tilt`
+disable behaviours Rewo never implemented. They are absent from `RenderModules`
+rather than wired to a no-op, with a test asserting toggling them changes
+nothing. To port the disable you must first build the thing being disabled.
+
+**The Velvet type stack (`M52b`).** See `REWO_VELVET_UI_PLAN.md`. Glyph cache
+(`swash`, quantized key, shelf atlas, variable axes, blurred shadow glyphs),
+text pass, SDF chrome pass, one widget (Coords), and `rewo hudshot --check`
+(41 witnesses, mutation-verified). Load-bearing facts:
+
+- **Rasterize-and-cache, not MSDF.** The fidelity target is pixel-faithful
+  against the Skia originals and SDF reconstruction approximates the outline.
+- **The key is quantized** (1/8 px, 1/2 axis unit) because an unquantized size
+  mints a scaler per frame of a scale drag — the shape of the 2026-05-31 leak.
+- **`swash`'s `linear_scale(s)` multiplies by a FACTOR; `scale(ppem)` divides
+  by units-per-em.** Using the former returns font units: Fraunces' cap height
+  read 25200 instead of 12.6 and every advance was ~1400× too wide. An
+  assertion of `> 0.0` accepted it; only a two-sided bound caught it.
+- **Six Skia `draw_rrect` calls collapse to one fragment shader**, because a
+  mask blur over a rounded rect is a smoothstep over the SDF — no blur pass.
+- **The Velvet passes must be built with `world::unorm_of(target_format)` and
+  drawn inside `with_gamma_space`.** EwoClient's `rgba()` has no transfer
+  function, so Skia composites in gamma space; an sRGB attachment blends in
+  linear. The half that actually bites is the **pipeline format**: a mismatch
+  is a validation error, not a subtle colour shift.
+
+**The visual freeze.** Four steps in, the scope was cut back: the type stack
+lands, the widget transcription **stops at one**, the editor is not started,
+and the palette is de-baked **now** while it is one shader and one widget.
+Reason: the HUD is getting a visual overhaul and anything transcribed now
+would be redone. The music terms deliberately stayed structural — `border.a`
+is the *resting* alpha and the drive gains scale from it, so a new palette
+recolours without flattening the reaction.
+
+**Tooltips through the Velvet pass (`M52b`).** The tooltip line went from
+`(String, [f32;3])` — one string, one colour, nowhere to put "italic" — to
+`tooltip::Line = Vec<Span>`. The fidelity gain is lore: `ItemLore.LORE_STYLE`
+is `withColor(DARK_PURPLE).withItalic(true)` and Rewo had the colour right and
+dropped the slant, because the type could not hold it. The `Span` type is
+**font-agnostic** on purpose, so it outlives the visual direction.
+
+The half that is easy to skip is **measurement**: once the tooltip draws in
+Newsreader, sizing its box with the bitmap advances measures a font it no
+longer uses. Also: vanilla's tooltip `y` is the line's **top** and Velvet lays
+out from the **baseline**, and the atlas sync must run *before* the draw and
+*outside* the rendering scope. The headless path deliberately passes `None`
+and keeps the bitmap tooltip, so the gates' golden images are not moved by a
+typeface change unrelated to what they test.
+
+**Ping (`M52c`), and a correction.** The spec claimed the client could time a
+keep-alive round trip. **It cannot** — `keep_alive` and `ping` are
+*server-initiated* probes; the server sends, the client echoes, and the
+**server** times it. A client cannot measure RTT from a packet it did not
+initiate, and the play protocol gives it nothing to initiate. Vanilla's tab
+list does not compute a ping, it displays one it was told. So the only source
+is `UPDATE_LATENCY` on `player_info_update` — which Rewo was already decoding
+and discarding as `let _latency = r.varint()?;`. One line was the whole gap.
+A **negative latency is a state**, not a decode error (`PlayerTabOverlay`
+buckets `< 0` into the no-connection icon), and `None` ≠ `Some(0)`.
+
+**Chat styling (`M52d`).** `crates/rewo-net/src/chat_style.rs` — legacy `§`
+codes and component trees into styled runs, renderer-agnostic. Six rules a
+plausible implementation gets silently wrong, each pinned: a **colour code
+clears the five format flags** (`§c§lX` is bold red, `§l§cX` is plain red);
+**`§r` resets to the enclosing style, not white**; an unrecognised code
+consumes **both** characters; an explicit `false` beats an inherited `true`;
+a `#` colour is `Integer.parseInt(_, 16)` **not CSS**, so `#f00` is `0x000F00`;
+and a top-level list makes element 0 the **parent** of the rest.
+
+**Component codecs + a latent bug (`M52e`).** The last 7 syncable
+`DataComponentPatch` codecs. The gaps were fatal rather than cosmetic because
+**the patch has no length prefix** — an untranscribed component cannot be
+skipped. `can_place_on` needed a new primitive: it reaches
+`TypedDataComponent`, which is the patch's own rule a second way.
+
+It exposed a **latent bug in M41**: `MAX_DEPTH` charged the budget for every
+combinator including static ones, free only because nothing was deep enough to
+notice. `can_place_on` is — a legitimate adventure predicate would have
+reported `Stuck` and cost the rest of its packet. Only recursive shapes charge
+depth now. The 7 non-syncable components are **named in a test, not counted**,
+so a version that starts syncing one fails as a missing codec.
+
+**Tab list (`M52f`) and chunk cache (`M52g`).** Both model-only, nothing wired.
+The tab list transcribes `PlayerTabOverlay` — cap 80, `MAX_ROWS_PER_COL` 20,
+the four-key comparator (with `wrapping_neg`, because `-Integer.MIN_VALUE`
+wraps in Java), the column-search loop, and the ping buckets. The chunk cache
+is a Bobby-style store with a **version check by equality, not `>=`**, so a
+downgrade cannot misread a newer file; `Container`/`Section`/`Column` fields
+went `pub(crate)` so the encoder **destructures** — adding a field breaks the
+build rather than silently writing an entry that decodes into a plausible
+column missing the new state.
+
+**Known limits, all recorded:** none of the four subsystems is wired to
+anything; `ChunkCache` is not thread-safe and nothing decides when a cached
+column is stale; `TabEntry::team` is always `None` because Rewo does not decode
+the scoreboard-team packet; and `TOOLTIP_TEXT_GUI_PX = 9.0` is an unverified
+calibration guess awaiting one eyeball.
+
+### Three headless wire subsystems (2026-07-28, second batch)
+
+All three chosen by one test — **no eyeball, no design decision** — and each
+completes something already built. Nothing is wired to a renderer.
+
+**`bundle_contents` (committed as M61 — see the numbering caveat above; the
+same number also names the wavy cape).** `container::bundle_chrome` and
+`tooltip::bundle_image` were built and graded by `inventoryshot` but wired to
+nothing, because `walk_item_template` discarded the id, count and nested patch
+it read.
+
+The design choice that matters: **capture and walk consume the same bytes by
+construction, not by two implementations agreeing.** `walk_item_template` is
+now `Ok(read_item_template(..)?.is_some())`. The patch has no length prefix,
+so a capturing reader that drifted from the walking one would corrupt every
+packet carrying a bundle.
+
+Three states, not two: `None` is absence (resolves through
+`BundleContents.EMPTY`), `Some(vec![])` is an *explicitly empty* bundle
+(vanilla draws the empty-bundle blurb, not "no image"), and a removal resolves
+like `None`. `selectedItem` is **not on the wire** — the codec maps through the
+one-arg constructor, so a selection is client-side screen state.
+
+**The blocker moved rather than closed.** It is no longer the decode, it is the
+carrier: `ItemSlot` is `Copy` on purpose (the click arithmetic moves it through
+a dozen struct-update expressions) and `SlotText` would need its `is_empty`
+taught the new field, or a bundle carrying *only* `bundle_contents` is recorded
+as textless and dropped — exactly the bug M42's enchantments hit. Also,
+`getWeight` needs to know whether an element is itself a bundle or holds bees,
+which needs the nested patch's *contents*; `patched` is one bit and cannot
+answer it, so the grid and counts are drawable and the weight bar is not.
+
+**M62 — the tab list's wire inputs.** `tab_list.rs` transcribed vanilla's
+four-key comparator and three keys were inert. Now decoded: `tab_list_order`
+(action 6), `gamemode` (action 2), and `set_player_team` (new
+`rewo-net/src/teams.rs`, plus the `Scoreboard` state machine).
+
+**It found a drift M52c introduced.** Extracting a pure parser so tests could
+drive the real walk had created *two* copies of the entry walk, and they had
+already diverged: the test copy capped a profile signature at 32767 where
+`GAME_PROFILE_PROPERTIES` says **1024**, which the production copy had right —
+so the tests were validating a walk the client does not use. They are now one
+function that `apply_player_info` also runs.
+
+Facts worth keeping: `GameType.byId` is `ByIdMap.continuous(ZERO)`, so an
+**out-of-range mode is Survival, not an error** (same for visibility, collision
+rule, team colour); every field is `Option` because the packet is a **delta**
+and an unset action bit means *unchanged*, so defaulting would report a
+spectator returning to survival on every latency-only update; a team packet
+naming an **unknown team returns early and discards its roster**; and
+`shouldHavePlayerList` includes method 0, so an ADD carries parameters *and* a
+roster — mis-reading the parameters by one byte silently eats the roster.
+Team-by-name → uuid is a **lazy two-step** lookup, which is what vanilla's
+`PlayerInfo.getTeam` does and matters because the two packets have no ordering
+guarantee.
+
+**M63 — the sound packets, decode only.** Rewo has no audio at all, and the
+survey puts ~117M downloads of demand behind that one prerequisite. Decoding a
+packet needs no listening; making a noise does — that split is the task.
+**No audio crate, no device, no mixer.** `sound`, `sound_entity`, `stop_sound`,
+ids resolved by name and all `req!`. `custom_sound` does not exist in 26.2.
+
+Four details where the wrong answer is plausible, all mutation-tested:
+
+- Position is `(int)(coord * 8.0)` on the wire and the accessor is
+  `this.x / 8.0F` — an **int/float** divide, so Java rounds to `f32` *before*
+  widening to `double`. An `f64` divide agrees near spawn and drifts past
+  ~2²¹ blocks; dividing by 16 puts every sound at half its true distance,
+  audible as wrong attenuation and never as an error.
+- The sound event is `ByteBufCodecs.holder` — `id + 1`, `0` meaning an inline
+  definition follows. Reading it raw shifts every sound by one *and* then reads
+  the inline body as the next field.
+- `stop_sound` reads source **first**, then name, and only when its flag is
+  set. Name-first works for flags 1 and 2 and corrupts flags 3.
+- `sound_entity`'s id is a var-int where `sound`'s coordinates are fixed i32s.
+
+The model lives in `rewo-net`, not `rewo-world`: `ParticleEvent` is in
+`rewo-world` because `rewo-world` *simulates* particles, whereas a sound has no
+client-side state, so filing it there adds a hop through a crate that only
+forwards it.
+
+**Integration hazard, recorded because it nearly bit twice.** These agents
+branched from the same base and shared `play.rs`, `ids.rs` and `lib.rs`, so
+each was applied as a **3-way patch, not a file copy** — a copy would have
+compiled cleanly and silently deleted the previous one's work. Verify the
+earlier symbols are still present afterwards rather than trusting the build.
+
+**Mutation-testing found three decorative tests across the batch**, none of
+them findable by reading. The sharpest: a depth witness sized as
+`MAX_DEPTH + 2` is *self-calibrating* — raising the bound raises the payload,
+so it passes at 8 and at 64 alike and only ever witnesses "recursion
+terminates".
+
+### The sound registry and the server-driven display packets (M64, M65)
+
+Two more headless subsystems, same test as the batch before: no eyeball, no
+design decision. Nothing is wired to a renderer.
+
+**M64 — the `sound_event` registry table.** M63 named it as step 1 toward
+playback. Parsed at load from the datagen report, matching
+`particle_types.rs`; 1,968 entries, dense ids, both-direction lookup.
+
+**The alphabetisation trap here is the sharpest "invisible to every gate" case
+in the project so far.** `serde_json`'s default `Map` is a sorted `BTreeMap`,
+so iterating `entries` hands you the registry **alphabetically**. The real 26.2
+registry is not: ids 0–6 are the seven `entity.allay.*` events and
+`ambient.cave` is id 7, where sorted order would put
+`ambient.basalt_deltas.additions` at 0. An `enumerate()`-based table therefore
+gives **a different wrong name for every one of 1,968 sounds** — and no decode
+gate can catch it, because the ids still round-trip and the strings are still
+real sound names. It is visible only to someone *listening*. Read `protocol_id`
+off each entry; never derive an id from position.
+
+Two resolution rules: an **inline** sound event returns its own identifier
+*without* consulting the table, because it may name a resource-pack sound with
+no registry id anywhere; and an unknown registry id returns `None`, never a
+substitute — a wrong sound is harder to notice than a missing one.
+
+**M65 — scoreboard objectives/scores/display, boss bars, tab header/footer.**
+Six packets Rewo decoded none of. `Scoreboard` now **owns** M62's `Teams`
+rather than sitting beside it, because vanilla's `Scoreboard` is one object and
+the halves touch; `PlaySession.teams` became `PlaySession.scoreboard`.
+
+**Two enum-decoding conventions sit one field apart, and only the decompile
+distinguishes them.** `RenderType`, `BossBarColor`, `BossBarOverlay` and the
+boss `OperationType` are `readEnum` — an array index, so out-of-range is an
+**error**. `DisplaySlot` is `ByIdMap.continuous(…, ZERO)` — out-of-range is
+**`LIST`**. Assuming either convention globally is wrong half the time.
+
+Other findings, each witnessed: `NumberFormat`'s body length depends on its
+registry id (`blank` is **zero bytes**), and an unnameable id is not skippable —
+M41's no-length-prefix rule again — so it is a decode error; `reset_score` with
+**no** objective name means *every* objective, not none; `set_display_objective`
+naming an unknown objective **clears** the slot rather than being ignored, or a
+stale sidebar is stranded; `removeObjective` keeps an emptied holder while
+`resetSinglePlayerScore` drops one; a repeat boss-bar ADD replaces **in place**
+(`LinkedHashMap::put` keeps insertion order), so re-pushing the id would
+reorder bars on screen; and `tab_list`'s "no header" is a component whose
+*flattened text* is empty, not an absent field.
+
+**The mutation survivor was a real gap, not an equivalent mutant** — the first
+in this project's batches where that turned out to be true. Deleting
+`display.retain(...)` in `remove_objective` survived because the witness
+asserted `display_objective(Sidebar).is_none()`, which resolves *through* the
+objective map and so reports `None` for a stale entry too: **the witness was
+measuring the wrong thing.** Fixed with an accessor that sees the stored name,
+plus a behavioural test that re-creating a removed objective of the same name
+must not resurrect its old sidebar — the actual bug, since servers run
+remove/re-add cycles constantly.
+
+**Integration.** Both agents branched from the same base and both added a
+module, a `GameData` field and a load call to the same three regions of
+`crates/rewo-data/src/lib.rs`. The 3-way patch **conflicted**, which is the
+correct outcome — a file copy would have deleted the other silently. Both sides
+were purely additive, so the resolution was the union.
+
+**`crates/rewo-data/src/lib.rs` is the third file to hit the mixed-CRLF trap**
+(after `entities.rs` and `chunk.rs`), and both agents hit it independently: an
+editing tool normalised its 95 CRLF / 58 LF into a 60–123-line diff for a
+7-line change. Both recovered byte-precisely. A `.gitattributes` policy would
+retire this class of problem, but it touches line endings repo-wide and is a
+decision, not a cleanup.
+
+### The audio asset layer and the packet coverage audit (M66, M67)
+
+Same test as the batches before — no eyeball, no design decision.
+**`REWO_PACKET_COVERAGE.md` is the important artefact here**; read it before
+planning any protocol work.
+
+**The audit measured something nobody had.** Rewo's packet handling grew
+milestone by milestone, so what it decodes was a *historical accident, not a
+decision* — twice recently a whole family turned out to be simply absent
+(M63's sounds, M65's scoreboard set), each found by noticing it was not in
+`ids.rs`.
+
+**141 clientbound-play packets: 56 consumed, 0 resolved-but-ignored, 85 never
+resolved.** The zero is a real negative finding — the `cb_play_*` fields and
+the dispatch chain agree exactly, so the whole gap is *names never resolved*.
+The 85 split 31 pure-state / 20 needs-rendering / 23 needs-a-subsystem /
+11 not-applicable.
+
+**It also undermined a claim this file and REWO_PLAN both lean on.**
+`rewo play`'s **`CORRECTIONS 0` proves less than it has been cited as
+proving**: the harness walks on flat ground and is never knocked back,
+exploded at, or mounted, so `explode` (whose `playerKnockback` is
+`addDeltaMovement` on the local player), `set_entity_motion`, `move_vehicle`
+and `set_passengers` are **structurally outside what it can test**. The number
+is real and the physics port may well be right; the evidence is narrower than
+the phrasing suggests. Treat it as "no correction *on the paths the harness
+exercises*".
+
+Two more gaps worth knowing: **`set_player_inventory`** is
+`container_set_slot`'s index-addressed twin and only one of the pair was ever
+handled — M34/M35 built a *predicting* inventory whose sole correction path is
+a full state-id resync, and these exist to correct it without one. And
+**`update_tags`**: Rewo reads `ItemTags.SPEARS` (M19) and the enchantment tags
+(M42) from the **jar**, so a datapack that retags an item yields a wrong swing
+duration or a missing tooltip line **with no error anywhere** — M64's
+alphabetisation trap one layer up.
+
+**"Handled" is not "complete"** (audit §4): six consumed packets decode less
+than their body carries, and the greps the audit uses would call every one of
+them handled. Sharpest — `game_event` consumes 4 of 14 types, so
+`CHANGE_GAME_MODE`, the local player's own gamemode change, is matched and
+dropped.
+
+**M66 — the audio asset layer.** `sounds.json`'s weighted-variant index and
+`level_event`'s id→sound table. **The data is not in the client jar** — it
+arrives through the *asset index*, and so does every `.ogg`, which makes
+`validateSoundResource` real rather than assumed: a variant whose file is
+absent is dropped and the event's weights move with it. 1,968 events, 8,024
+variants, 61 of them `type: "event"` **redirects** — and a redirect contributes
+the **target's** total weight, not its own declared `weight`.
+
+`forLocalAmbience(sound, **pitch**, volume)` takes pitch *second* — reading the
+argument list left to right makes 1032's portal three times too loud at a fixed
+pitch. `globalLevelEvent` and `levelEvent` are **disjoint switches**, so a
+mismatched global flag is silence in vanilla too. Three ids are deliberately
+unresolved rather than guessed, each with its derivation recorded: 1010
+(jukebox song), 2001 (per block-state `SoundType`), 3008 (`BrushableBlock`).
+
+**Still no audio.** No crate, no device, no mixer — that is the part needing a
+human to listen.
+
+**Two process facts from this batch.**
+
+*A build passing proves the working tree is good, not the commit.* A disk-full
+error during `git add` produced a commit that declared two modules whose files
+were not staged — `cargo build` passed locally because the files were on disk.
+Only `git show --stat` showed 2 files instead of 4. After any git operation
+that errors, re-check what actually landed.
+
+*The M-number ladder is now unusable as an index.* M52, M61, M64 and M66 each
+name two unrelated pieces of work, because concurrent sessions numbered
+independently. Read `git log --oneline` subjects.
+
+### The three gaps the coverage audit ranked first (M68, M69)
+
+The first work chosen *by the audit* rather than by what was next in a plan —
+all three from `REWO_PACKET_COVERAGE.md`'s "pure state, no rendering" class,
+all headlessly verifiable.
+
+**M69 — the server's authoritative writes.** `set_player_inventory`,
+`set_cursor_item`, `update_tags`. M34/M35 built a *predicting* inventory whose
+only correction path is a full state-id resync; these are how the server fixes
+it without one.
+
+**`update_tags` exists in BOTH states — configuration 13 and play 134 — and the
+audit listed only the play one, because the audit surveyed clientbound-play
+only.** The *configuration* copy is what a vanilla server sends on join, right
+after `registry_data`; the play copy is the `/reload` case. Resolving only play
+134 would have looked like it worked until someone reloaded. That is a limit of
+the audit's scope, not of the packet, and it is the first thing a whole-protocol
+sweep would catch.
+
+**The two inventory coordinate systems are worse than a different origin.**
+`InventoryMenu`'s `SLOT_IDS` is `{HEAD, CHEST, LEGS, FEET}` at backing index
+`39 - i`, so **the armour ranges run in opposite directions**: inventory 36 is
+FEET / menu 8, inventory 39 is HEAD / menu 5. Subtracting a constant — the
+obvious reading of "36 here, 5 there" — puts boots on the head, and produces
+output of the right type, in the right range, for the right item category. No
+decode gate can see it. There is now one conversion
+(`menu_slot_of_inventory_index`) and `Inventory::hotbar` routes through it.
+
+It returns **three** outcomes, not two: `Applied`, `NoMenuSlot` (indices 41/42 —
+`SLOT_BODY_ARMOR` and `SLOT_SADDLE` are real `EntityEquipment` slots the 46-slot
+menu does not expose), and `OutOfRange`. Collapsing the middle makes "Rewo has
+nowhere to put this" look like a decode failure. Same instinct one layer up:
+`TagOverrides::contains` returns `Option<bool>` so silence is distinguishable
+from a negative — a bare `bool` reads every unsent tag as "not a member", which
+poses every spear as `ArmPose::Item` against a server that omits the item
+registry.
+
+`set_player_inventory` carries **no state id** and bypasses the container menu,
+so the write must not touch `state_id` — advancing it would make the next click
+echo a number the server never issued, which is the exact resync the packet
+exists to avoid. Its slot is a **VarInt**, not the `i16` its sibling
+`container_set_slot` uses: M34's recorded trap does not generalise.
+
+The tag override is modelled and **deliberately not wired**. M19's `SPEARS` is
+one `ItemTag::from_ids` away but needs ~8 call sites plumbed and no gate would
+grade it. M42's enchantment tags are **blocked, not unplumbed** — `rewo_data`
+stores names where the packet carries ids, and bridging needs the wire-order
+registry read at a moment the two packets have no ordering guarantee about.
+
+**M68 — the four packets that move the local player.** `explode`,
+`set_entity_motion`, `move_vehicle`, `set_passengers`.
+
+**My brief for this one was wrong, and verifying it was the most valuable thing
+the agent did.** I said velocity was fixed point, thousandths of a block per
+tick, as a short. **That encoding does not exist in 26.2.**
+`ClientboundSetEntityMotionPacket` composes `Vec3.LP_STREAM_CODEC` →
+`net/minecraft/network/LpVec3.java`: three 15-bit mantissas against **one shared
+integer scale**, a **one-byte zero sentinel**, and an optional continuation
+VarInt. No `8000.0` exists anywhere in the protocol tree. Implementing the brief
+as written reads 6 bytes of a body that can be 2.
+
+Two more, both verified: `move_vehicle` carries **no entity id** (the client
+resolves `getRootVehicle()`), and `explode`'s `blockCount` is a **fixed
+big-endian i32 between `radius` and the knockback**, so a VarInt reading
+silently reports "no knockback" from a packet carrying one. And `explode`'s
+knockback is `Vec3.STREAM_CODEC` (full doubles) where `set_entity_motion` is
+`LP_STREAM_CODEC` — **two different `Vec3` encodings in adjacent packets**.
+
+**The gate is the point, not the decode.** `rewo play --motion-check` drives a
+paced command stream (boat → `ride mount` → `ride dismount`; then resistance →
+TNT → `/damage … by <zombie>`), fail-closed on **observation** — a command the
+server ignored leaves a counter at zero and turns it red.
+
+**A live mutation found a bug in the gate itself**, and the important half is
+not the timing slip: **the correction meter structurally cannot catch a dropped
+knockback.** Vanilla's move check flags a client that moves too *much*; one
+ignoring a shove moves too *little*. The witness is now the measured change in
+the client's own velocity. So, precisely — `CORRECTIONS 0` over a flat walk is
+unchanged and still true; the knockback path is now exercised; but *correct
+handling* rests on the |Δv| witness, not the meter. **Riding accuracy is
+unprovable by any correction count** — `ServerGamePacketListenerImpl` skips move
+validation entirely for a passenger — so mount-phase corrections are reported
+and explicitly not graded.
+
+`move_vehicle` is **structurally unreachable** and the gate says so rather than
+passing quietly: both send sites are inside `handleMoveVehicle`, the server
+*rejecting* a serverbound vehicle move, which a passenger-only client never
+provokes.
+
+**The collision that the build would not have caught.** A concurrent session
+landed **M70** (entity-label visibility) between M68's base and `main`, and it
+decodes `set_passengers` too. The 3-way patch applied **cleanly** and left a
+duplicate struct field *plus a silently unreachable second dispatch arm* — the
+field fails the build, the arm does not. The two effects are disjoint (M70
+builds the riding graph that suppresses a ridden entity's floating label; M68
+applies the local player's mount state to physics), so the resolution is one
+field and one arm doing **both**, not a winner. `body` is a `&[u8]`, so the
+second read is safe and deliberate — folding either decode into the other would
+couple two milestones with no reason to share a walk. **The general lesson: a
+clean 3-way apply is not evidence of no collision.** Grep for the symbol.
+
+`motion.rs` also arrived 991/991 CRLF while every other file in its crate is LF;
+normalised rather than left to become the fourth file in the mixed-endings trap.
+
+**Gates:** rewo-net 390, rewo-world 291, rewo-app 80; `inventoryshot` 143 →
+**152**, `mobshot` 243/243, `swingshot` 97, `eventshot` 28; demo PNG
+`2cc56b4acbfb92cb` byte-identical. **27 mutations across the two milestones, 26
+caught**; both survivors were real — M69's was a `a != b || { true }` tautology
+the agent found in its own witness before the battery ran, and M68's was a test
+asserting only `is_err()` where both the intended and the mutated path error and
+only the error's *shape* distinguishes them.
+
+### M71 — the ten `game_event` types, and what "handled" was hiding
+
+The audit's §4 claim — **"handled" is not "complete"** — worked as a closed
+example. `game_event` passed every grep as handled and consumed **4 of 14**
+types: M33 took the four weather ids and the other ten were matched and thrown
+away, `CHANGE_GAME_MODE` among them.
+
+**There are two params, not one.** Vanilla computes
+`int param = Mth.floor(paramFloat + 0.5F)` at the top of `handleGameEvent`, and
+**only** `CHANGE_GAME_MODE` and `GUARDIAN_ELDER_EFFECT` use it. Every other
+branch reads the **raw float** — `DEMO_EVENT` compares exact literals
+(`101.0F`, `102.0F`…), `IMMEDIATE_RESPAWN` is `p == 0.0F`, `LIMITED_CRAFTING`
+is `p == 1.0F`. Using one where the other belongs is invisible for every
+integral param a server actually sends.
+
+**`IMMEDIATE_RESPAWN` is inverted, and the name is what inverts it:**
+`setShowDeathScreen(paramFloat == 0.0F)`, so param **0 shows** the death screen.
+Transcribe from the event name rather than the setter and you get a client that
+shows the screen exactly when it should not.
+
+**An unknown type id is a silent no-op, not an error.** `Type.TYPES.get(id)`
+returns null and every `==` against it is false. The instinct on a decode task
+is to make an unrecognised discriminant an error; here that would disconnect a
+client from a server sending a type it merely does not care about.
+
+**`ClientLevel.playSeededSound` reads backwards from the server.** Its body is
+`if (except == this.minecraft.player)` — the client plays the sound **only**
+when the "except" argument *is* the local player, which is the opposite of what
+the parameter means server-side. `handleGameEvent` passes the local player, so
+all three of its sounds are audible; any other reading is silence.
+
+Three more, each verified: the join-time values of `IMMEDIATE_RESPAWN` /
+`LIMITED_CRAFTING` ride the **login packet**, so ids 11/12 are only the
+mid-session gamerule change; `setLocalMode` guards the previous-mode write on
+the mode actually changing, so a repeat must not clobber it; and `handleRespawn`
+copies `showDeathScreen` to the new player but **not** `doLimitedCrafting` —
+that asymmetry is vanilla's, and is why nothing is cleared on a dimension
+change.
+
+**Applied 7, modelled 3, one deliberately left homeless.** Applied:
+`CHANGE_GAME_MODE` (reusing M62's `GameMode::by_id` — `ByIdMap.continuous(ZERO)`,
+so out-of-range is Survival), `IMMEDIATE_RESPAWN`, `LIMITED_CRAFTING`,
+`NO_RESPAWN_BLOCK_AVAILABLE` (queued as a **translation key** and resolved
+against `baked.lang` at the edge, which is what `Component.translatable` does),
+and the three sounds into M63's queue. Modelled only: `WIN_GAME`, `DEMO_EVENT`,
+`LEVEL_CHUNKS_LOAD_START` — screens and a load tracker Rewo has no equivalent
+of, and Demo's hints need keybind names Rewo cannot supply, so the hint is
+recorded rather than fabricated. **Homeless on purpose:**
+`GUARDIAN_ELDER_EFFECT`'s particle, because `ELDER_GUARDIAN` is not one of M37's
+six transcribed kinds and M37's own rule is that an unknown kind is dropped
+rather than rendered as something else.
+
+**Gamemode is modelled, not acted on.** `rewo-world::physics` has no flight,
+no-clip or invulnerability concept and neither `player_abilities` packet is in
+`ids.rs`; the four-step job is written into the coverage doc's new §4.1 rather
+than half-started.
+
+**Two structural findings, both from mutation testing, and both bigger than the
+milestone.** `PlaySession`'s fan-out was **entirely unwitnessed** — it owns a
+socket and there is no test module for it anywhere in the repo, so dropping the
+weather branch, the state branch or the eye-height all survived the whole suite.
+The logic moved into a tested `game_event::apply` behind a 6-line adapter, with
+a signature taking `&PlayerState` rather than loose coordinates so a transposed
+axis or an `eye_y`-for-`feet_y` swap is *unrepresentable*. And the first
+refactor left `weathershot` grading a path the client no longer took — **M45's
+`install_shapes` failure exactly**: a gate that reimplements a slice of the
+app's setup misses whatever moves out from under it. Caught by mutating the
+weather branch and watching the gate drop 35 → 32.
+
+**Gates:** rewo-net 418, rewo-world 291, rewo-app 80; `weathershot` 35/35,
+`inventoryshot` 152, `particleshot` 34; demo PNG `2cc56b4acbfb92cb`
+byte-identical.
+
+### M72 + M73 — the two halves other milestones had to stub
+
+Both landed from concurrent sessions and both close a gap an earlier milestone
+*recorded rather than faked*, which is the pattern working as intended: M70 and
+M68 each wrote down what they could not evaluate, and someone later read the
+note and evaluated it.
+
+**M72 — where a rider actually sits.** M70 decoded `set_passengers` into a
+riding graph and consumed it for `Entity.isVehicle()` alone, so a rider still
+rendered at its own stale synced position. **The seat is entity-type DATA in
+26.x, not a constant** — `getPassengerRidingPosition` reads
+`EntityDimensions.attachments()`, declared by the `EntityType` builder
+(`tools/gen_entity_attachments.py`, 158 types, 57 declaring seats, 24 a vehicle
+point). Three builder conventions invert if assumed: a bare float in
+`passengerAttachments` is a **Y offset**, `ridingOffset(r)` is **negated** into
+the VEHICLE point, and PASSENGER's fallback is **AT_HEIGHT** (the top of the
+bounding box), not AT_FEET.
+
+**There are two tables, keyed by two types.** `positionRider` subtracts the
+*rider's own* VEHICLE point, rotated by the *rider's* yaw — a player's is
+`(0, 0.6, 0)`, which is the whole reason a mounted player sits in a saddle
+rather than standing on the horse's head.
+
+**A passenger does not interpolate**, and the pre-M72 error was never a constant
+offset — **it was a lag**. `ClientLevel.tickEntities` skips passengers outright;
+a rider is reached only via `tickPassenger` → `rideTick`, which ticks it and
+*then* overwrites its position. So Rewo derives into `cur` at the end of
+`tick_lerp`, after every entity's own step has moved `prev = cur`.
+
+Overrides dispatch on the **Java class**, most-derived-first, because that is
+what `super` does. Gate: `rewo rideshot --check`, 24 witnesses. **18 mutations,
+17 bit first time**; the 18th repeated M70's `b4` in a new shape and its named
+partner was *unreachable by construction* — **a named mutation partner that
+cannot be reached is not a partner**, so the witness was rewritten to name the
+detach that is load-bearing.
+
+**M73 — the entity raycast, and the label clause M70 stubbed.** `shouldShowName`
+is `entity.shouldShowName() || (hasCustomName() && entity ==
+crosshairPickEntity)`, and Rewo's raycast was voxel-only, so M70 transcribed the
+second disjunct, graded it both ways, and fed it a hard `false` live.
+
+**It is not a second, label-only raycast.** `Minecraft.pick` assigns
+`crosshairPickEntity` from *the* hitResult — the same one that decides which
+block you are mining. In 26.2 that lives in a private static `LocalPlayer.pick`,
+not in `GameRenderer`.
+
+The inflation is `entity.getPickRadius()` — **0.0F for everything but a
+Projectile** — and **not** the `DEFAULT_ENTITY_HIT_RESULT_MARGIN = 0.3F`
+declared beside it, which belongs to the projectile overload. **`isPickable()`'s
+default is `false`**: a dropped item, an experience orb and a text_display are
+invisible to the crosshair, and so is the ender dragon, which overrides it back
+to false and delegates to unregistered `EnderDragonPart` hitboxes.
+
+**Neither range is hard-coded** — both are RangedAttributes, so creative mode's
+`+2.0` entity-range modifier applies by itself. That exposed a real gap:
+`apply_update_attributes` opens with `getEntity(id) == null` and **the local
+player is not in the EntityTable**, so every snapshot addressed to it was being
+dropped. `PlaySession` now keeps `local_attributes`.
+
+**A mutation survived and found something.** `g5` claimed a dead heat goes to
+the block via `>=`, and mutating it to `>` left the gate green — vanilla
+enforces that precedence **twice** (the sweep is truncated at the block hit
+*and* the survivor is compared against it), and because the truncation feeds
+`maxValue`, whose test is strict, the tie is already excluded by the sweep
+bound. **Neither half alone is observable.** Also: two witnesses hand-computed a
+`0.3` half-width and landed a hundred-millionth off the bound they claimed to
+sample, because **vanilla halves the width as a float** — a mob's near face sits
+at `x - 0.30000001192`.
+
+Both sessions updated `REWO_PLAN.md` and the coverage doc but **not `AGENTS.md`**
+— these entries are that catch-up. **Merged state: 1247 tests** (net 420, world
+318, gpu 205, data 175, mesh 38, proto 11, app 80); `rideshot` 24, `labelshot`
+47, `weathershot` 35, `inventoryshot` 152, `mobshot` 246/246; demo PNG
+`2cc56b4acbfb92cb` byte-identical.
+
+### M54–M86 — the fidelity arc, the coverage sweep, class B, and the bug eighty milestones of gates could not see (2026-07-28 → 07-30)
+
+Twenty milestones, caught up here on 2026-08-02 after a session found this file
+still ending at M73. **Verified from a cold start rather than read off a doc:**
+`origin/main` `0ddbc66`, tree clean, **no branch anywhere holds a commit not on
+`main`**; release build clean; **1623 tests, 0 failures** (net 565, world 489,
+gpu 249, data 179, app 85, mesh 45, proto 11); `mobshot --check` **246/246**;
+**32 serverless gate commands** green, 0 VUIDs; demo PNG still
+`2cc56b4acbfb92cb`.
+
+**`REWO_PACKET_COVERAGE.md` is at 107 consumed / 0 ignored / 34 absent, and
+classes A and B are both empty** — every clientbound-play packet Rewo *can*
+render is rendered. The 34 remaining are 23 needing a subsystem Rewo lacks
+(container/menu screens ×6, recipe book ×5, chat input ×4, advancements ×2,
+resource-pack fetch ×2, dialog ×2, map + transfer ×2) and 11 not applicable.
+**Picking work there now means choosing a subsystem, not a packet.**
+
+**M54–M60 — data and fidelity.**
+
+- **M54 the language map.** `en_us.json` **is not the language map**; it is step
+  1 of three. `loadFromJson` rewrites every unsupported format specifier
+  (`%d`/`%f` → `%s`, which is why `decomposeTemplate` only understands `s`;
+  inert on 26.2 and transcribed anyway, because its absence is invisible until
+  a pack carries a `%d` and the whole line collapses to its raw pattern), then
+  `deprecated.json`'s `applyToMap` applies **383 removals and 146 renames**
+  — remove first, then rename, and the order is load-bearing. **105 of the 146
+  rename targets do not appear in `en_us.json` at all**, and 41 that do are
+  overwritten, changing **27 item display names** (the eighteen smithing
+  templates stop reading "Smithing Template") — every change *toward* vanilla.
+- **M55 entity attributes.** `MAX_HEALTH` is not metadata, it is an
+  **attribute**, and `update_attributes` (131) was falling off the dispatch
+  chain. The holder is `holderRegistry` — **raw 0-based**, third time this has
+  bitten (M16 dimensions, M21 damage types) — and here the failure is *quiet*:
+  `max_health` is 23 and `max_absorption` 22, both real syncable attributes on
+  the same entity, so an off-by-one clamps against the wrong range rather than
+  throwing. The operation is a **VarInt, not a byte**, and an out-of-range id
+  is `ADD_VALUE`, not an error. `ADD_MULTIPLIED_BASE` reads the *post-*`ADD_VALUE`
+  base and every such modifier reads that same base — they do not compound.
+- **M56 the tooltip's image pass.** `GuiGraphicsExtractor.tooltip` walks its
+  components **twice with `localY = y` between**, and the two loops advance
+  identically — so the split is a **layering device, not a layout one**: it
+  guarantees every image draws after every text line whatever the component
+  order. Run as one cursor and the grid drops below its box by the height of
+  all the text (57 px in the fixture). `lines.size() == 1 ? -2 : 0` counts
+  **components**, not text lines. Three brief errors the decompile settled: the
+  `+N` badge is the **bottom-right** cell; thirteen stacks show **eight** items,
+  not twelve; and the badge counts hidden **items**, not stacks (thirteen full
+  stacks badge `+320`, never `+1`).
+- **M57 entity fidelity — emissive, ETF, the dye tint.** Eight mobs have
+  emissive layers in vanilla and none glowed; a warden, whose whole visual
+  identity is bioluminescence, had none. Both `RenderLayer` shapes re-render the
+  mob's **own model** with a second texture at full brightness, so the geometry
+  is the same quads re-pointed at another texture. The warden's tendril layer
+  samples the **base** warden texture, not an overlay.
+- **M58 the bundle grid's chrome.** `container/bundle/slot_highlight_back` is
+  **not** the `container/slot_highlight_back` M35 already loads for the
+  inventory hover box — both exist, both 24×24, and reusing the inventory's
+  renders something that looks approximately right. The badge cell gets **no
+  chrome at all**: `extractCount`'s entire body is one `centeredText`.
+- **M59 the health bar's render half — the first Rewo feature with no vanilla
+  oracle.** Vanilla renders no health bar over any entity, so there was nothing
+  to transcribe; the numbers were written down first as a *decision*
+  (`REWO_HEALTH_BAR_SPEC.md`) and the gate grades against that. **The gate
+  re-declares the spec's constants rather than importing the implementation's**
+  — importing them asserts only that the implementation equals itself, which is
+  M41's `t4` failure mode exactly. Two spec witnesses are unobservable from
+  outside and say so in their detail strings rather than being quietly dropped.
+- **M60 the vanilla cape.** Scoped as needing "the milestone's one structural
+  change" (`Rx·Rz·Ry`, which Rewo's `Rz·Ry·Rx` parts cannot produce) and needed
+  **none**: `rotateBy`'s leading `rotateY(-PI)` exists to **cancel the pose**,
+  so the net rotation *replaces* the `PartPose` rotation — while the pose's
+  **translation still applies**, which is the asymmetry that makes it easy to
+  get wrong in either direction.
+
+**M74–M78 — the coverage re-audit, then the class-A sweep.**
+
+- **M74 the re-audit.** Ten of 141 rows were wrong, **all in one direction**
+  (`absent` about code that was present). The mechanism is not neglect: M67
+  wrote the table by grepping a moving tree and four packets landed the same
+  day. M67 *saw* it happening and worked around it twice, both of which made it
+  worse — a predictive "After §7" column describing a moment that never
+  existed, and milestone markers written into the **status** column, putting
+  four rows outside any grammar a future check could read. **Annotating decay
+  is not fixing it.** The fix is a unit test in `ids.rs`, deliberately *not* a
+  `*shot` gate, because it must fire on the event that **causes** the drift
+  (someone editing `ids.rs`). It also found a **live flow-control divergence
+  hiding as a missing decode**: Rewo answered every `chunk_batch_finished` with
+  a hard-coded `64.0` where vanilla's seeded opening bid is **3.5**, so it
+  over-bid the server ~18× on every batch of every session and never adapted.
+- **M75 abilities and flight.** The flags byte is `1/2/4/8` then two floats —
+  nine fixed bytes; **the serverbound twin is one byte**, so writing the
+  clientbound body there desyncs the stream by eight. An unauthorised flying
+  claim is **ignored, not kicked**. **Flight does not go through
+  `travelFlying`** — that was the central misdirection, and the method is for
+  mobs and swimming. `Player.travel`'s flying arm captures `originalMovementY`,
+  delegates to the *ordinary* `travelInAir`, then **overwrites** the Y it just
+  computed with `originalMovementY * 0.6`: so flight has **no gravity term**,
+  vertical drag **0.6**, and flying into a ceiling does not zero your upward
+  velocity. `walkingSpeed` is **not** the client's walking speed (its only
+  client consumer is the FOV modifier's divisor). `SPECTATOR` sets `flying =
+  true` while `CREATIVE` only sets `mayfly`.
+- **M76 rotation and world spawn.** The brief *and* this project's own coverage
+  doc were wrong about the headline: `player_rotation` carries **no relative
+  bitfield**. It is four fields with each `BOOL` sitting **after** the float it
+  qualifies — and a reader written from the wrong description **decodes every
+  packet without erroring**, because the arity happens to work out. The
+  `Set<Relative>` is real one layer up, so the two teleport packets **share
+  their semantics and not their layout**. The clamp is on the **sum**, not the
+  step; the yaw gets neither clamp nor wrap.
+- **M77 the minecart's own interpolation.** Framed as replace-or-feed; the
+  answer is **neither** — it overrides the generic lerp at the *render* seam and
+  leaves it running, and four separate places in the decompile have to agree for
+  that to be true. Vanilla **measures one against the other**: a passenger's
+  offset is literally the schedule minus the generic lerp. Mirror image of M72,
+  where the rider's own lerp is computed and thrown away.
+- **M78 session, server metadata, chat.** `bundle_delimiter` is a **pipeline
+  instruction**, not an inert packet — its `handle` throws `AssertionError` if
+  it ever reaches a listener, so decoding it as a no-op is the one way of being
+  wrong that leaves no trace. A bundle is applied **all at once on close**;
+  **the coverage doc's "in one tick" was wrong** — nothing defers a bundle to a
+  tick boundary, the guarantee is that no *frame* renders part-way through. An
+  unterminated bundle is **withheld**, neither dropped nor applied. There is **no
+  nesting**, so a depth counter — the natural implementation — never closes.
+
+**M79–M85 — class B, everything that needed a renderer.** The recurring finding:
+**the class letter changes the gate, not the standard.** Each of these has an
+exact vanilla oracle, so decode *and* render are transcribed line by line and
+graded, with a pixel read-back half on top of the model half.
+
+- **M79 titles, XP, cooldown.** A subtitle on its own **shows nothing** (only
+  `setTitle` arms the clock). A negative animation field means *leave
+  unchanged*, and the packet **re-arms a live title at its full duration** —
+  `/title times` mid-title hands the title its whole life back. `/title clear`
+  and `/title reset` differ in what the *next* title does, not what is on
+  screen. **`set_experience`'s wire order is not its declaration order**, and
+  reading top-to-bottom swaps two var-ints, decodes without erroring, and puts
+  lifetime XP in the level display.
+- **M80 the world border — six packets, one object.** Splitting the decode from
+  the wall would have left the state machine with nothing to test against. The
+  lerp's clock is **ticks**, not wall-clock, and the `gameTime` argument is
+  **inert** — but the wall's *texture scroll* really is wall-clock milliseconds,
+  the only such quantity in the feature, so the instinct was right one layer
+  over. **`getMinX()` is the previous tick's size**: every non-rendering
+  consumer (collision, the vignette) measures against the previous tick's box
+  while the renderer alone passes a real partial.
+- **M81 the hurt tilt, block cracks, item pickup.** Packet 42 is what made
+  `no_damage_tilt` real — the Velvet batch's *"to port the disable you must
+  first build the thing being disabled"* named the condition and this was it.
+  It drives vanilla's own `damageTiltStrength` accessibility slider to its off
+  end rather than branching around the tilt, so toggling mid-animation cannot
+  strand the camera at an angle. **The server already subtracted the camera
+  yaw** before sending, so the tilt direction is **frozen at the hit** and does
+  not track subsequent turning.
+- **M82 the screen framework and the death screen.** The coverage doc called the
+  screens "a design decision rather than a transcription" — **half right**. The
+  decision was real and *smaller* than it sounded: **vanilla has one screen
+  slot, not a stack**; the nesting that looks like a stack is a replacement
+  carrying a `BooleanConsumer`. The rest was ordinary transcription with the
+  usual inversions: a hovered **disabled** button draws the plain disabled
+  sprite (the three-arg `WidgetSprites` makes `disabledFocused` *be*
+  `button_disabled`); `isHovered` and `isMouseOver` disagree **on purpose**, and
+  because `getChildAt` uses the latter an **inactive** widget is not found at all
+  and the click falls straight through; **`Esc` does nothing** on a death screen
+  and `setScreen(null)` *re-opens* it.
+- **M83 the locator bar.** `writeEither` writes **`true` for the left** (the
+  UUID). The identifier is the **colour of last resort**, and a live vanilla
+  server sends `colour=None`, so on a real connection the hash **is** the
+  colour. The self-skip is gotcha 13 in both directions at once: the observer is
+  never in `EntityTable`, so it must come from the session's own UUID — and a
+  client that dropped the check **looks perfectly correct on vanilla**, because
+  the server never sends you your own waypoint.
+- **M84 the statistics screen — the packet that closes class B.** `Stat`'s
+  two-level dispatch would normally be the `DataComponentPatch` hazard in
+  miniature (an untranscribed variant cannot be skipped), and **here it cannot
+  happen**, structurally: every `StatType`'s second level is a single VarInt, so
+  what the first level selects is *which registry resolves the id*, not a
+  different wire shape. Resolution is deferred, so an unresolvable value costs
+  one dropped row rather than a dropped packet. **`StatsScreen.isInGameUi()` is
+  false**, so it does not dim the world the way the inventory does.
+- **M85 server links.** Three of the four things the brief said about the packet
+  were corrections. The pause screen shows **one button, not a list** (it opens
+  a separate dialog screen — three screens, not one). The disconnect screen
+  shows **at most one link and only ever `BUG_REPORT`**, filled only on the
+  client's *own* error paths — so **a server that kicks you politely shows no
+  link however many it advertised, and one whose packet crashes your client
+  shows exactly one**. And the packet exists in the **configuration** state too;
+  third time (M69 `update_tags`, M78 `custom_payload`), so the rule is now
+  reliable: **if the handler is on `ClientCommonPacketListener`, look for the
+  configuration copy.**
+
+**M86 — the bug eighty milestones of gates could not see.** `LiveApp::resumed`'s
+init closure did `self.baked.take()` and **dropped the bake at its closing
+brace**, so `self.baked` was `None` for the whole windowed session and every
+`if let Some(baked) = self.baked.as_ref()` in `LiveApp::frame` was dead code.
+**Nine shipped features had never once rendered in `rewo live`** — item icons
+(M34), the inventory screen (M35), the player preview (M36), the first-person
+hand (M38), clouds and precipitation (M33), the rain-fog band (M33b), particles
+(M37), the world border (M80) and block-breaking decals (M81). Live since M3.
+All of them are honest *headlessly*, because `run_headless` owns the bake as a
+plain value — **which is exactly why eighty milestones of gates never saw it**.
+The restore is four lines.
+
+It was **not landable alone**: turning the paths on took a 10-second windowed
+run from 0 validation errors to **40,532**, every one
+`VUID-vkDestroyBuffer-buffer-00922`. **Eight** passes opened their `set_*` with
+`free_buf(gpu, self.vbuf.take())`, destroying a buffer submitted command buffers
+still reference — unobservable before only because none was ever constructed in
+the windowed client, and unobservable headlessly because a one-frame oracle
+never overlaps itself. The rule that came out of it, now in
+`crates/rewo-gpu/src/buf_ring.rs`:
+
+> **`ring >= fif + 1` for a ring written before `render`; `ring >= fif` for one
+> written inside it** — because a `set_*` runs in the app's frame loop *before*
+> `render`, so the most recent fence wait was the *previous* frame's.
+
+**The gate it left behind is the one to remember: `rewo live --render-check`.**
+It is the only check that drives the **windowed** client, and therefore the only
+one that can see a render path the windowed client never reaches. **Run it after
+any milestone that adds one.** It does not stage its own hotbar and **fails
+closed when you don't** — `REWO_PRECMD="give @s minecraft:diamond_sword 1;give
+@s minecraft:dirt 64"` against an opped username; 17/18 bare, 18/18 staged.
+
+### M87 — the container/menu screens (2026-08-02)
+
+Twelve commits (`f99ad5c..bd39954`, merged `2cd5635`). **The first bite out of
+class C**, and a worked example of what that class costs: `open_screen` and
+`container_set_data` are eleven lines of decode between them, and the other
+eleven commits are what makes those lines mean anything. Before it,
+`apply_container_set_content` opened with `if container != 0 { return false }`
+and its own comment called that *"the whole truth about what this client can
+show"* — on a real server you could not open a chest.
+
+**Findings that invert, in the order they bite:**
+
+- **`crafter_3x3` puts its result slot AFTER the player inventory** — grid
+  0..8, `addStandardInventorySlots` 9..44, result at **45**. Every other menu
+  appends the player's 36 last, so "container slots, then the player's" puts
+  the crafter's output *inside* the player's inventory and shifts nothing
+  else. **`crafting` inverts the other way**: its result is slot 0, before the
+  grid.
+- **`lectern` has one slot, no player inventory, and no container screen.**
+  `LecternMenu` never calls `addStandardInventorySlots`, and `LecternScreen
+  extends BookViewScreen` — the same fact from both sides. Any
+  `slots.len() - 36` is a panic there. So it is **24 container screens and one
+  book viewer**, not 25.
+- **`open_screen`'s menu type is `registry(...)` — raw 0-based, not `holder`'s
+  `id + 1`.** Fourth time (M16, M21, M55) and the quietest: id 2
+  (`generic_9x3`) reads as 1 (`generic_9x2`), a real menu with a real screen
+  and nine fewer slots, so a chest opens with its bottom row missing.
+- **`container_set_data` is a VarInt then two *signed* `readShort`s** in a
+  mostly-var-int protocol. Negatives are real (the anvil's cost, the beacon's
+  "no effect").
+- **Six screens override the title's x, in two different ways.** `dispenser`,
+  `crafter_3x3`, `brewing_stand` compute `(imageWidth - font.width(title)) / 2`
+  — a server-chosen name, so not storable as a constant; `anvil` (60),
+  `crafting` (29), `smithing` (44 + `titleLabelY` 15) are literals.
+- **The blit's sheet size is a per-call argument.** Twenty-one backgrounds pass
+  `256, 256`; **`MerchantScreen` passes `512, 256`**, because a 276 px panel
+  cannot come off a 256-wide texture. A global 256 gives `u1 = 1.078` and the
+  sampler repeats its left edge across the right-hand third of the trade
+  screen — which reads as a texture bug, not an arithmetic one.
+- **A chest's background stops one pixel short of its declared height**
+  (`114 + rows*18` vs blits covering `rows*18 + 113`). Vanilla's arithmetic;
+  closing the gap samples a row of `generic_54.png` vanilla never samples.
+
+**Three process results, each of which changed the work:**
+
+1. **A checker, not a generator.** Every other bulk fact in Rewo comes from a
+   `tools/gen_*.py`; here that is measurably the wrong tool. The 25 menus use
+   **four idioms** (direct `addSlot`, a nested loop, a field assigned earlier,
+   a fluent builder consumed by a base class) and five declare no slots and
+   inherit them — one extractor reaches **17 of 25**, and chasing the rest is a
+   small Java interpreter whose failure mode is a silently *short* slot list.
+   `tools/check_menu_layouts.py` re-derives independently and diffs; it earned
+   that on run one by **refusing to proceed**, seeing four slots in
+   `BrewingStandMenu` where the table has five (`IngredientsSlot` takes a
+   leading argument a four-arg pattern misses). The table was right.
+2. **One dispatcher per packet id.** First a hazard — `container_close` is
+   already owned by `route_client_state`, and the play loop is a chain of
+   `else if`s, so a second claimant either steals M74's counter or never fires,
+   with no error either way. Then a design constraint:
+   `container_set_content` is one id addressing two menus, so `route_inventory`
+   grew a `&mut Menus` rather than the container path getting its own router.
+3. **A half-landed feature is a bug, not half a feature.** M87j shipped the
+   panel setter *uncalled* on purpose: the icons and hover still keyed off the
+   player's 176x166 origin, so setting only the panel would paint a chest sheet
+   with the player's icons 28 px off — broken, not unfinished. M87k landed all
+   four consumers together, choosing the menu **once** and threading it.
+
+**The gate, and the witness that caught its own vacuity.** `rewo containershot
+--check` — serverless, validation-required, fail-closed, **13 witnesses**,
+grading against oracles the tables cannot influence (the slot geometry
+re-derived from `ChestMenu`'s constructor; the panel against `generic_54.png`
+itself). **Its first run failed on the witness written to detect exactly
+that**: `p3` asks whether `p2`'s probes can distinguish the two readings, and
+on a six-row chest they cannot — `split` is 125, the lower band maps
+`y -> y + 1`, and the two candidate source rows are *adjacent* and identical
+wherever the art is flat. The band probes now use a **one**-row chest (offset
+91) and centring the **six**-row one (28 px vs 2). One fixture cannot serve
+both claims.
+
+**Measured:** 1683 tests, 0 failures; `containershot` 13/13, `inventoryshot`
+152/152 **unchanged across all twelve commits**, `itemshot` 75/75, `handshot`
+34/34, `menucheck` 25/25, demo PNG `2cc56b4acbfb92cb` byte-identical
+throughout. `REWO_PACKET_COVERAGE.md` 107/0/34 → **109/0/32**, class C 23 → 21.
+**`live --render-check` 18/18, validation ON, 0 validation errors** — note
+validation is `cfg!(debug_assertions)`-gated for `live`, so a *release* binary
+reports `r17` false and makes `r18` vacuous.
+
+**What that check did NOT prove, and it mattered:** `--render-check` opens the
+*inventory*, not a chest, so it graded the windowed client's health with M87 in
+it and **not** that a container rendered there — the same shape of blind spot
+M86 was. **M88 closed this**; see below.
+
+### M88 + M89 — proving the container renders, then making it work (2026-08-02)
+
+**M87's merge commit said "Rewo can open a chest" and that was an over-claim.**
+It built the *render*. These two make it true. Detail in `REWO_PLAN.md` §15.
+
+**M88 (`9666045`)** closed the render-check gap with `r19` (a container screen
+was drawn — 1513 of 3551 frames) and `r20` (its panel was its own, 168, not the
+player's 166). The container is opened by injecting a raw `open_screen` body
+through the **production router**, per M17: injection is the deterministic
+proof where a live encounter depends on the server's timing and the client
+aiming at the right block.
+
+**`r20` was wrong in its first cut**, and that is the transferable part: it read
+`image_h` off the open menu's **layout**, which answers 168 for a chest whether
+or not the panel builder returned one — so it could not tell a working
+container from a silent fallback to the player's panel, the failure actually
+worth naming. It now reads the height back **out of the renderer** after the
+draw set it. *A value witness is only a value witness if it reads the value the
+draw used* — reading one that merely **implies** the draw is a proxy that looks
+more rigorous than it is. Mutation-tested: a silent `None` fallback drops `r19`
+to 0 frames and `r20` to `None`; the first cut stayed green through it.
+
+**M89 (`6123058`)** made a container *usable*. Three things were still
+player-keyed, all reachable today (open a container, press E, click):
+
+1. **Nothing opened the screen** on `open_screen` — the menu was recorded and
+   nothing shown unless the player independently pressed E. In vanilla
+   `handleOpenScreen` **is** `MenuScreens.create`; decode and screen are one
+   action.
+2. **Every click operated on the player's menu** — all sixteen sites used
+   `session.inventory`, so clicking a chest's slot 5 picked up the player's
+   crafting grid.
+3. **The click packet hard-coded container 0 and the player's `state_id`** —
+   and `stateId` is per-menu (`incrementStateId` is an instance counter; the
+   resync test is against the menu the click *names*), so the server would
+   apply a chest click to the inventory or reject it on a stale id.
+
+The fix is **one accessor** (`PlaySession::shown_menu{,_mut}`,
+`shown_container_id`) that every consumer goes through — the five click
+actions, the prediction apply, the hover, and the packet's two ids. A
+per-call-site choice is *how* they came to disagree. The hover needed **both**
+halves: `screen_to_gui` centres the panel to find the origin and `slot_at`
+scans that layout's slots, so asking the player's 176x166 while a 176x222 chest
+is up shifts the cursor 28 px **and** looks it up in the wrong slot list — the
+two errors do not cancel.
+
+**`r21` isolates the new behaviour by ordering** — the container is injected at
+0.4, *before* the gate force-opens the inventory at 0.5, so frames in that
+window can only exist if the packet opened the screen. **And that reordering
+silently broke M86's own coverage**: the forced-open branch guarded on
+`!inventory_open()`, which the injected container now satisfies, so the branch
+was skipped — including the **cursor park**, the only thing that lays out a
+tooltip and therefore the only door to `VelvetTextPass::sync_atlas`. `r16`
+stayed green while proving nothing it was written for. **The tell was a number
+that was too good** (`r21` counting all 2244 frames rather than a ~290-frame
+window) — the shape of a guard that has stopped firing. *A test can be disabled
+by a change to an unrelated part of its harness, and it reports success while
+it happens.*
+
+**Measured:** 1683 tests; `containershot` 13 → **17**, `live --render-check`
+18 → **21** validation ON 0 VUIDs, `inventoryshot` 152/152, demo PNG
+byte-identical.
+
+### M90 — shift-click routes by the menu's own quickMoveStack (2026-08-02)
+
+The last silently-wrong path in the arc, and a second one under it.
+`quickMoveStack` is a **per-menu-class override** and Rewo's routing was
+hard-coded to `InventoryMenu`'s ranges, so shift-clicking a chest's slot 0
+routed as though it were the crafting result.
+
+**Nine of the 25 menus share one shape** (the six chests, dispenser, hopper,
+shulker box): `slot < containerSize` → the player range **backwards** (the
+hotbar's right-hand end, since `addStandardInventorySlots` appends it last),
+else → the container range forwards. The furnace and crafting families have
+their own and are **not** transcribed — they answer `QuickMove::Unimplemented`
+and the caller **declines**, because moving nothing is inert where a
+shift-click under another menu's rules moves the wrong stack and the server
+applies it.
+
+**The second bug was found by a witness, not by reading.** The first cut failed
+on the container→player direction only: `move_stack_to` calls `slot_kind(i)` —
+the *player's* — which returns `None` past 45, so the `?` aborted the whole
+move. Nine call sites shared it, and the consequence is wider than shift-click:
+**plain clicks past a chest's slot 45 also silently did nothing**, and below 45
+read the wrong kind. M89 routed *which menu* a click applies to and not the
+slot-kind lookup, so it fixed only the visible half. **When a type is
+generalized, the functions it calls generalize with it — and the ones taking a
+bare index rather than `&self` are the ones that get missed, because they do
+not look like they belong to anything.** `slot_kind` is now
+`MenuLayout::slot_kind`, with `SlotKind::Plain` for a container's slots and
+`None` (decline) for an untranscribed menu.
+
+### M92 — the rest of `container_set_data`, the crafting quick-move, and the first bespoke widget (2026-08-03)
+
+Eight commits, and all three of M91's recorded open items. Detail in
+`REWO_PLAN.md` §15.
+
+**Three data consumers, each inverting against the last.** The brewing stand's
+slots are the **reverse** of the furnace's — `getBrewingTicks()` is `get(0)`
+and `getFuel()` is `get(1)`, where the furnace puts fuel at 0; both menus are
+five bytes on the wire and naming them by analogy swaps a 0..20 fuel level with
+a 0..400 tick counter. Its timer counts **down**, its arrow grows downward
+while its bubbles grow upward (one function apart), its fuel bar grows rightward
+— three directions on one screen — and its arrow **truncates where the furnace
+ceils**, so at 399 ticks vanilla shows no arrow where a ceil shows a pixel.
+`BUBBLELENGTHS` ends in **0**, so one frame in seven is blank.
+
+The enchanting table's costs are **only a third of what its rows need**: the
+lapis is the *count of the stack in menu slot 1* (a different packet) and the XP
+level and creative flag are the player's. **The lapis requirement is the row
+INDEX plus one, not the cost.** There are **three row states, not two** — an
+empty row draws its background and nothing else; an unaffordable one draws the
+same background *plus* its numeral. `col` does double duty and is reassigned
+before the cost text, so a row's name and cost are different colours and the
+cost's does not track the hover. The highlight and the tooltip use **different
+rectangles**, and neither is a slip.
+
+The beacon says "absent" with **0 and shifts real ids up by one**, where the
+enchanting table one menu earlier uses **-1** — two conventions in the same
+signed short on the same packet. And **an invisible button moves a visible
+one**: the upgrade slot is counted into the column's `totalWidth` while
+`visible = false`, so dropping it slides regeneration 12 px.
+
+**The crafting quick-move needed a structural change**: `quickMoveStack` there
+is a **fallback chain** (`if (!moveItemStackTo(grid)) { cross-move }`), which a
+single-range return cannot express — it must either always try the grid or
+never. This is the branch that makes a crafting table *fill its grid* on a
+shift-click, which `InventoryMenu` does not do. The two crafting menus put
+their result at **opposite ends** (CraftingMenu slot 0, CrafterMenu slot 45).
+
+**`container_button_click`** is two var-ints and the **whole** input surface for
+four screens; it carries **no state id**, unlike its sibling. The enchanting
+table's click gate is **not** its render gate — it additionally requires slot 0
+to hold something and tests the level against both `row + 1` and `costs[row]`.
+
+**The bug it uncovered is bigger than the milestone.** Five `mob_effect` ids
+(night vision, darkness, haste, conduit power, mining fatigue) were read from a
+`registry_data` branch **that cannot fire** — `MOB_EFFECT` is a
+`BuiltInRegistries` entry and appears **zero times** in
+`RegistryDataLoader.java`'s synchronised list. So M13's night vision/darkness
+and M19's dig-speed adjustment had **never worked live**, and no gate could see
+it because `lightmapshot` and `swingshot` are serverless and *construct* the
+effect state, supplying the very ids the live path fails to obtain. **When a
+gate supplies an input production must derive, the derivation is untested by
+construction** — worth a sweep for other instances. Fixed by the rule
+`attributes.rs` already states: a built-in registry resolves **by name from the
+report**.
+
+**Three detector errors and a harness bug**, all mine: a control frame that
+differed in its *background* rather than its subject; a probe on a glyph's
+transparent row; a probe on a button that its icon repainted independently of
+its chrome; and a mutation harness whose `mv` restore preserved the **older**
+mtime, so cargo skipped the rebuild and the next run silently graded the
+mutated binary (it presented as a green witness regressing with no code
+change). A fourth finding came out of the same battery: `enchant_row_sprites`
+had its own copy of the numeral mapping, so emptying `EnchantRow::numeral()`
+changed nothing rendered — a model accessor graded by tests the app did not
+call.
+
+**Measured:** 1712 → **1773 tests**, all seven crates confirmed reporting;
+`containershot` 17 → **27**; `live --render-check` 21 → **22/22** with
+validation ON and 0 errors (it must be run from a **debug** build — validation
+is `cfg!(debug_assertions)`-gated for `live`); demo PNG `2cc56b4acbfb92cb`
+byte-identical; 41 mutations, 40 killed and the survivor shown to be doubly
+guarded in vanilla too. `REWO_PACKET_COVERAGE.md` 109 / 0 / 32.
+
+**Open:** `container_set_data` is now consumed by every menu that sends it.
+`quickMoveStack` still declines for the brewing stand (three item predicates)
+and the enchantment table (its last branch is not a range move — it places
+exactly one item). Of the bespoke widgets the enchanting rows are done; the
+loom and crafter now only need their button lists, the beacon needs
+`set_beacon`, the anvil a text field, and the merchant and stonecutter are
+blocked on class-C packets. **M93 took the beacon's and three of the eight
+item-combiner menus' quick-moves** — see below.
+
+### M93 — the single-input quick-moves, and the derivation nobody was grading (2026-08-03)
+
+Two commits. The plan called the eight item-combiner / single-input menus "a
+few lines each"; **the decompile does not support that**, and the correction is
+worth more than the code. They are **four shapes**, and two of the plan's own
+claims invert.
+
+- **`MerchantMenu.quickMoveStack` consults nothing at all.** The merchant is
+  listed as blocked on class-C `merchant_offers` — true of the trade-list
+  *widget*, false of the quick-move, which never routes a player stack into
+  slots 0 or 1. **Vanilla will not load a trade for you.**
+- **`ItemCombinerMenu`'s player branch is a guard that CONSUMES, not a fallback
+  chain** (M92e's `CraftingMenu` shape). `canMoveIntoInputSlots` defaults to
+  `true`, so for the **anvil** the two main/hotbar arms below it are
+  structurally unreachable: an anvil does not cross-move your inventory, and a
+  full anvil moves *nothing*. Behaviour, not an omission.
+- **The beacon's count test is in the branch, not in `mayPlace`** — so the same
+  item routes two ways by count (one diamond claimed, two cross-moved). Its
+  guard failing *does* fall through, unlike the combiner's. Vanilla's fifth
+  beacon arm is **dead** and deliberately not transcribed. Its tag comes from
+  the jar via `tools/gen_beacon_payment.py` (the `gen_fuel_values.py`
+  precedent), and its slot gets `SlotKind::BeaconPayment` so a **plain** click
+  respects the tag too — `Plain` would keep the quick-move exact and let an
+  ordinary click predict a placement the server rejects.
+
+**M93b–d then took the stonecutter**, and found that
+`stonecutterRecipes().acceptsInput` is **not** a `RecipePropertySet` — that
+registry's seven keys are smithing×3, the three furnaces and campfire.
+`RecipeAccess` exposes it separately as a `SelectableRecipe.SingleInputSet`.
+The difference does not reach the accepted-input table (`Ingredient.test` is
+item identity) but *is* what the recipe **list widget** needs, so that stays
+blocked on `update_recipes`. It is also the **third guard behaviour in three
+menus**: the anvil's is always true, the beacon's falls through when it fails,
+and the stonecutter's falls through when the *guard* fails but **moves nothing
+when the MOVE fails** — two exits from one branch, only the first cross-moves.
+Its predicate is branch-only (slot 0 is a bare `Slot`), and vanilla's
+`player.drop` of an unfitting result remainder is **recorded, not modelled**.
+
+**M93e then took the grindstone**, which **inverts the arrangement of every
+other menu here**: the beacon and stonecutter ask about the *item* in the
+branch and let the slot accept anything, while the grindstone asks about the
+*slots* (`!input.isEmpty() && !additional.isEmpty()`) and puts the item
+predicate in `mayPlace`. So `SlotKind::GrindstoneInput` is load-bearing for the
+**shift-click**, not merely an ordinary click — and when it refuses, the move
+returns false and vanilla `return`s, so a stick shift-clicked into an empty
+grindstone moves **nothing**.
+
+> **⚠ A blocker recorded above was wrong.** M93a said the loom and cartography
+> table needed a prototype-component model Rewo lacks. **Rewo has one** —
+> `rewo_data::item_components_table::prototype_has_component`, generated by
+> **M56** for the tooltip's component count, covering all 1537 items. Check it
+> before calling any component question unanswerable. The reusable shape:
+> `has(X)` = *removed → false, patch-set → true, else prototype*.
+
+**M93f then took the cartography table** — the only menu here whose branch
+predicates and `mayPlace` predicates are the **same two tests, written twice**
+(the branch picks which slot to try, `mayPlace` confirms it will take it;
+neither is droppable). **`has(MAP_ID)` is tested first, and that ordering IS
+map cloning**: `filled_map` carries the component and takes slot 0, while
+`minecraft:map` is a *different item* with no component and falls through to
+the paper slot. Vanilla writes the middle arm as a triple negation, so the
+paper slot is the branch reached when the stack *is* one of the three —
+transcribed forwards with the arms swapped. No prototype carries MAP_ID, so
+this is the cleanest three-step `has()` case: one bit. The value is read and
+discarded but **must** be read, or the length-prefix-less patch desynchronises.
+
+**M93g then took the loom, closing the arc bar one.** Its banner test is
+`instanceof BannerItem` — a **class** — and the obvious data stand-in is wrong
+by exactly one item: every banner's prototype carries
+`minecraft:banner_patterns`, set by the very lambda that constructs the
+`BannerItem`, **and so does `Items.SHIELD`**. `BannerItem` has exactly one
+construction site (the 16-colour `ColorCollection`) and `#minecraft:banners`
+holds exactly those 16, which the generator asserts rather than assumes. Its
+other two predicates are genuine **conjunctions** (`is(#LOOM_DYES) &&
+has(DYE)`), each with its own removal bit — two rather than one shared, since
+an item is in at most one tag and a shared bit would falsify the wrong
+predicate.
+
+**Seven of the eight single-input quick-moves are done**; nine of the 25 menus
+route a shift-click. **Only `smithing` remains**, blocked on
+`RecipePropertySet` off `update_recipes` (class C) — and note these sets are
+*not* jar-derivable the way M91's smelting ones were, because a smithing
+recipe's three ingredient slots are per-recipe rather than one flat
+`ingredient` field.
+
+> **⚠ Do NOT use `ItemSlot::enchanted` for the grindstone.** Its doc comment
+> says `ItemStack.isEnchanted`; the assignment is `c.has_foil()`, and M43
+> proved those differ (`ENCHANTMENT_GLINT_OVERRIDE` wins both ways). It
+> compiles, reads correctly, and is wrong for exactly the cases that component
+> exists to create. `hasAnyEnchantments` is also `ENCHANTMENTS` **or**
+> `STORED_ENCHANTMENTS` — an enchanted *book* is the canonical grindstone input.
+
+**A fixture rotted, loudly this time.** M90's "an untranscribed menu declines"
+test named the **anvil**, which M93 transcribes — the rot M41 found in
+`swingshot` and M43 in two `item_stack` fixtures, where it was *silent*. It now
+asks the registry which menus are undone, proves the property on all of them,
+and fails if that set is ever empty. **Two witnesses were wrong before the code
+was:** a full anvil answers `None` (not `Some`-with-no-changes), so it is
+paired with a one-free-input anvil that must answer `Some`; and `click_pickup`
+*does* return `Some` with an empty change set, an asymmetry that is vanilla's.
+
+**M93b is the part that generalises — and it is the M92 sweep applied to my own
+code the same session.** M93a shipped with exactly the hole M92 names: all
+eight witnesses hand-build an `ItemProps`, so `beacon_payment` could have been
+wired to nothing and every one would stay green while a real beacon cross-moved
+every diamond. `containershot` now calls the production `live_cmd::item_props`
+and grades what it returns for real registry ids (`d1`), with a second witness
+(`d2`) pinning something the same call must get right in the *other* direction,
+because the negative alone would pass against a function that resolved nothing.
+**The general sweep is still open** — grep for a `*shot` gate that builds a
+struct production resolves from a table or the wire.
+
+**A generated file was lying about itself, and the extraction caught it.** The
+stonecutter needed M91's recursive tag expander, so it moved to
+`tools/recipe_ingredients.py`; an extraction is only safe if provably inert, so
+the check was to re-run `gen_smelting_inputs.py` and diff. **54 deletions.** The
+data was byte-identical — what the diff showed is that `smelting_table.rs` says
+*"Do not edit. Re-run the generator"* and carried five hand-added tests the
+generator never emitted, **including the one pinning M91's own headline
+finding**. The generator emits them now. The fifth was dropped deliberately: a
+`.len()` assertion is fine hand-written and **vacuous once generated**, so the
+guard moved to the generator's recipe-count floor, where a re-run cannot
+recalibrate it.
+
+**A surviving mutation found a hole spanning M93a**: nothing witnessed
+`backwards` for *any* of the four menus, which is the difference between a
+taken result landing in the hotbar's right-hand end and in the first free main
+slot. And a fourth witness of the session was wrong before the code was —
+**stone is both stonecuttable and smeltable** (slabs, and smooth stone), so the
+disjoint pair is andesite/beef, with cobblestone pinned as M91's log one menu
+over.
+
+**The grindstone's second disjunct is why the `enchanted` warning above
+matters.** `hasAnyEnchantments` admits an **enchanted book**, which is not
+damageable at all — and `ItemSlot::enchanted` misses it twice over: it is
+`has_foil()` (M43) *and* `isEnchanted()`, which reads `minecraft:enchantments`
+alone while a book's live in `stored_enchantments`. `c.enchantments` was
+already the union of both, so the correct bit was one line.
+
+**A mutation caught M92's finding in my own new code**: the decoder's
+damage-removal flag was untested by construction, because the only witness
+constructed an `ItemSlot` with it already set. Now asserted from **bytes**.
+
+**M93f's decode witnesses were written WITH the feature**, not after a
+surviving mutation as M93e's were — and its battery came back **13/13 clean
+first time**, which is what that bought. Their first run failed on the
+**harness**: the shape table decides *walkability* and the interpretation
+decides *meaning*, kept separate on purpose, so a fabricated test id absent
+from `install_test_shapes` reads as unwalkable however well the interpreter
+handles it. Production was never affected.
+
+**Two mutation lessons from M93g.** One **survived and was shown equivalent
+rather than fixed**: dropping a conjunction's second term changes no answer the
+jar can produce, because every item in `#loom_dyes` also carries the component
+— so `d9` pins the *coincidence* instead, and fires if a version ever breaks
+it. Two others were real and shared a shape: **a witness on one of two mirrored
+terms leaves the other free to be deleted** (the dye removal was witnessed and
+the pattern one was not; both on the quick-move path and neither on the
+plain-click path).
+
+**And a timeout kill left a mutation on disk** — the battery restores in a
+`finally`, which a killed process skips. **Grep for the mutation markers before
+anything else after an interrupted battery**, and split batteries so each stays
+inside the 10-minute tool cap.
+
+**Measured:** 1773 → **1942 tests**, 0 failures, seven crates reporting (world
+717, net 609, gpu 255, data 212, app 97, mesh 45, proto 11); `containershot`
+27 → **76**; `inventoryshot` 152, `itemshot` 75, `handshot` 34, `swingshot` 97,
+`mobshot` 246/246; `live --render-check` **22/22** validation ON, 0 errors
+(re-run at M93q, the first of the arc to touch a render path); demo PNG
+`2cc56b4acbfb92cb` byte-identical; **205 mutations across M93a–y, 199 killed,
+2 shown equivalent, 1 alive by construction (named)**.
+
+### M103 — the ghost recipe, and two vanilla quirks no Minecraft grid can show
+
+M93y decoded `place_ghost_recipe` and nothing consumed it — the last
+decoded-but-unrendered packet in this area.
+
+**The item is sandwiched between two washes of DIFFERENT colours** — `0x30FF0000`
+red *under*, `0x30FFFFFF` white *over*, both alpha 48. They land in different
+halves of the container pass (the icons are a separate pass that runs between
+them), hence a new `front_overlays` list. **And only the wash beneath widens**
+for a big result slot; widening the veil too rings the icon in white.
+`isBiggerResultSlot()` is **true by default**, false only for `InventoryScreen`.
+
+**The families place differently:** shaped crafting **centres** a small recipe in
+a big grid via `PlaceRecipeHelper`; shapeless fills the first
+`min(ingredients, slots)` in order. A furnace ghosts its **fuel only if the fuel
+slot is empty**. A stonecutter or smithing display ghosts the result alone.
+
+**Two `placeRecipe` quirks no Minecraft grid can show**, each found by a mutation
+that survived until a non-Minecraft fixture existed: the centring test is
+**strict** and `<=` is indistinguishable on 2x2/3x3 (a 4x4 shows it); and the row
+skip advances the row a **second** time, which needs `gridHeight >= 5` to matter
+(a 6-tall grid shows it). My doc had claimed the strictness mattered generally —
+corrected.
+
+A witness was wrong twice more: a 3-wide 1-tall recipe centres **vertically** in
+a 3x3, and the row skip advances **one** row rather than jumping to `startPos`.
+
+**And the mutation harness gave a false SURVIVED** — second wrong verdict today
+after M95's em-dash decode. A shapeless off-by-one reported SURVIVED in batch and
+died immediately when run alone; the rest were run directly. *A harness wrong
+twice is a detector to check, not to trust.*
+
+**2101 tests**; containershot 89, inventoryshot 152, itemshot 75, handshot 34,
+mobshot 246/246; **`live --render-check` 23/23** validation ON 0 errors (run
+because `set_state` changed); demo PNG `2cc56b4acbfb92cb` byte-identical; **12
+mutations, 12 killed**.
+
+### M104 — the which-of-these overlay, and three clamps that round three different ways
+
+M98 wrote the gap into `BookAction::Recipe`'s own doc — *"Rewo has no overlay,
+so a right-click on a multi-recipe cell is reported and does nothing."* This
+reads that note.
+
+**`OverlayRecipeComponent.init` nudges the panel back on screen in whole 25-px
+steps, three times, and the three roundings are not stylistic.** The horizontal
+clamp truncates with a C-style `(int)` cast, so a positive quotient floors — an
+overlay overhanging by 1..24 px is not moved at all, and one overhanging by 38
+moves 25 and still overhangs by 13. The bottom clamp takes `Mth.ceil` of a
+**positive** quotient and is the only one guaranteed to clear its bound. The top
+clamp takes `Mth.ceil` of a **negative** one, and since `Mth.ceil` is a true
+ceiling, `ceil(-0.6) == 0` makes it a complete no-op below one step. Same
+function, opposite effect, decided by the sign alone. Reaching for a symmetric
+"clamp into the box" diverges on the whole right-hand column.
+
+**`centerY`'s `+ 13` is inert, and no fixture can catch it.** Every cell's `y`
+is `31 + 25r`, so `y ≡ 6 (mod 25)`, and the two candidate bounds are 13 apart —
+inside one quantisation step, so both overflows land in the same `ceil` bucket
+for every cell and every count. The witness was written asserting the opposite,
+failed, and became an exhaustive proof of inertness instead. It joins
+`extractRenderState`'s unread `int border = 4;`.
+
+**It opens on a right-click and accepts only left-clicks**, so a second
+right-click closes it. **An open overlay is modal** — the overlay branch is an
+unconditional `return true`, so a click on the arrows, the search box, the tabs
+or the menu's own slots underneath all reach it and nothing else. **Selecting
+does not close it** (only the else-branch calls `setVisible(false)`), which
+reads like an oversight and is what makes the feature usable. **And it is a
+snapshot, not a view**: `init` resolves everything once and `updateCollections`
+leaves it alone, so crafting while it is open does not re-sort or re-grey it —
+which is why `Open` is stored rather than recomputed.
+
+Smaller inversions: the 4-or-5 row width keys off the **total** (16 recipes are
+four rows of four, 17 are four rows of five); the padding is asymmetric (4/5 and
+5/4); the button is 24 on a 25 pitch so there **is** a gutter a click falls
+into; `Pos` is the ingredient's **centre**, because `scale(0.375F)` sits between
+two translates; the ingredient cycle is **one** level where the cell's is two,
+on the same clock; the button class follows the **menu**, not the display; and
+shaped centres through `PlaceRecipeHelper` while shapeless is a bare
+`i % 3, i / 3` with the 3 a literal.
+
+**`blitNineSlicedSprite` became tested geometry** in `rewo_world::nine_slice`.
+`rewo_gpu::screen::nine_slice` already exists and is left alone — different
+pass, different vertex format, and **no unit tests at all** — so this is the
+arithmetic on its own, with tests, rather than a silent second copy. On
+`overlay_recipe` the tile-vs-stretch choice is **unobservable** (flat centre,
+edge bands constant along their repeat axis), recorded so a green pixel gate is
+not read as having graded it.
+
+**The witnesses were wrong nine times and the code twice**, and the shapes
+repeat: a binding shadowed 200 lines away made three gate witnesses probe the
+recipe cell's corner (and the rename then missed the one using `c0y` alone); an
+`any` over two right-hand corners could only see total failure; two fixtures
+could not express their claim (a mutant equivalent *by construction*, and two
+**symmetric** shaped fixtures blind to a transposition — a 2x1 recipe, centring
+on one axis only, is what pins it); a control depended on what happened to be
+underneath (a button's centre and the cell it covers are both 139); and one
+witness counted quads instead of placing them.
+
+**67 mutations, 65 killed, 2 proven equivalent.** A killed battery **left a
+mutation on disk** when it hit the 10-minute cap and its `finally` never ran —
+caught by grepping the markers first. And `cargo run -q` swallowed a compile
+error, so a debug print that never appeared read as "branch not reached" rather
+than "did not build" — third detector error of that shape in the log.
+
+**2139 tests** (world 860, net 613, gpu 255, data 212, app 143, mesh 45, proto
+11); `containershot` 89 → **96**; **`live --render-check` 24/24** validation ON
+0 errors, with a new r24 that required splitting `book_quads_max` in two,
+because the claim is a *difference* and one max cannot see it; demo PNG
+`2cc56b4acbfb92cb` byte-identical. **Open:** overlay and recipe tooltips,
+`tryPlaceRecipe`'s `lastPlacedRecipe` guard (unmodelled since M98), `useMaxItems`,
+and the page counter text.
+
+### M102 — the two crafting fills, and a fourth comment that described what the code did not do
+
+M96 recorded one approximation and left another unrecorded, both in the same
+eight lines. `hasCraftable`'s contents come from **two disjoint fills** —
+`Inventory.fillStackedContents` (the ITEMS) and
+`menu.fillCraftSlotsStackedContents` (the GRID).
+
+**The range:** `Inventory.items` is menu slots **5..46** — not the 2x2 grid
+(1..5, which arrives through the second fill) and not the craft **result**
+(slot 0, which arrives through neither). M96 walked all 46, which double-counts
+the grid *and* adds the result, so a recipe could read as craftable off its own
+output.
+
+**The predicate:** `accountSimpleStack` gates on `isUsableForCrafting` =
+`!isDamaged() && !isEnchanted() && !has(CUSTOM_NAME)`. M96's comment named it and
+applied nothing. **Fourth comment this session describing behaviour its code did
+not have** (M93t's `setCanLoseFocus`, M96's note, `any_enchantments`' doc, this).
+
+**`isEnchanted()` is the middle of three near-identical flags:**
+`ItemSlot::enchanted` is `has_foil()`; `ItemSlot::any_enchantments` is
+ENCHANTMENTS **or** STORED (the grindstone's `hasAnyEnchantments`);
+`SlotText::is_enchanted` is ENCHANTMENTS alone and is the right one.
+`any_enchantments`' doc claimed to be `isEnchanted()` too — corrected. An
+enchanted **book** separates them, and M93 recorded this trap one field over.
+
+**The fills differ in gating, not just range:** the crafting container is gated,
+the furnace **block entity** calls bare `accountStack` and contributes its whole
+container **including the result**. A damaged pickaxe counts in a furnace and not
+on a grid.
+
+A mutation deleting the craft-slot half **survived** — the fill sat in a
+`PlaySession` path — so it moved to `crafting_contents`, taking the max-stack
+lookup as a closure. M97's lesson, fourth application.
+
+**2077 tests**; containershot 89, inventoryshot 152, itemshot 75, handshot 34,
+mobshot 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical; **12 mutations, 12
+killed**; no render path changed.
+
+### M101 — the caret blinks, and the field it blinks in never scrolled
+
+M100 recorded the blink as a shared gap between the book's field and the anvil's.
+Fixing it in the extracted renderer fixed both — and exposed two older bugs.
+
+**`showCursor` is THREE conditions** — `isFocused() && isCursorVisible(millis -
+focusedTime) && cursorOnScreen` — where M93t had only the first. The blink is
+`/300 % 2 == 0` measured from `focusedTime`, which `setFocused(true)` resets and
+`setFocused(false)` does not, so a freshly focused field shows its caret at once.
+And `setFocused` is gated on `canLoseFocus || focused`: **the anvil sets that
+false**, so its caret blinks as long as the screen is open where the book's stops
+on losing focus.
+
+**First older bug:** M93t's comment claimed `setCanLoseFocus(false)` and the code
+did only `setInitialFocus`. Nothing pinned the focus for eight milestones,
+because those lines sat in a path needing a `PlaySession` and so were unreachable
+from a test — they are `anvil_field_new()` now.
+
+**Second older bug, surfaced by the caret's own gate: the field never scrolled.**
+Vanilla's `insertText → setCursorPosition → scrollTo` keeps the cursor visible;
+Rewo's `set_cursor_position` cannot, because `scroll_to` needs a font width the
+`EditBox` does not own. So `display_pos` never moved and a field typed past its
+width kept showing the head of the string. **Before this the caret was drawn
+anyway at a bogus x; with `cursorOnScreen` correct it vanished — which is what
+made the gap visible.** `follow_cursor` is the missing half, called from every
+input path, for both fields.
+
+The headless renderer takes a **fixed clock of 0**: a blinking caret would render
+the same scene two ways depending on when the gate ran.
+
+**2068 tests**; containershot 89, inventoryshot 152, itemshot 75, handshot 34,
+mobshot 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical; **11 mutations, 11
+killed** — two only after witnesses that could reach them were written.
+
+### M100 — the search field's text, and a nine-slice that degenerates to two blits
+
+The field typed and filtered since M99 and drew nothing.
+
+**The nine-slice is two blits, measured not assumed.** `widget/text_field` is
+200x20 border 1 — but the PNG is **1-bit paletted**, exactly two colours (border
+160-grey, white when focused; interior black). Every one of the nine regions is
+uniform, so a stretched 1x1 source is **pixel-identical** to a tiled one: one
+blit of the whole rect from a border texel, one of the interior from a centre
+texel, and the 1 px the first still shows *is* the border.
+
+**The hint goes on FOCUS, not on the first character** —
+`displayed.isEmpty() && !isFocused()` — so clicking an empty box blanks
+"Search..." before you type. It is a styled component (GRAY + ITALIC), so its
+own colour beats the field's white; the italic is not reproduced (no slant in
+the bitmap pass).
+
+**The bordered case decides all three text numbers and none is obvious:**
+`textX = getX() + 4`, `textY = getY() + (height - 8) / 2` (**3**, not `getY()`),
+`getInnerWidth() = width - 8` (**73**, not 81 — the inset comes off both ends).
+
+**Third meaning of `WidgetSprites::get` on one screen:** the field passes
+`(isActive(), isFocused())`, exactly what the names say, where a tab passes
+`selected` as *focused* and the filter passes `filtering` as *enabled*. One
+convention across this screen is wrong two times out of three.
+
+The renderer is **extracted** from the anvil's, not copied — a second copy of
+the caret-x/insert/selection arithmetic is three chances to drift by a pixel.
+
+**A staging trap:** `io.open(p,'w')` truncates when the file object is created,
+*before* its argument is evaluated — so `open(p,'w').write(sub(open(p).read()))`
+wrote an empty `server.properties`, Minecraft regenerated a default, and the run
+died with a bare "Failed to initialize server". Read first, then write.
+
+**2059 tests**; containershot 89, inventoryshot 152, itemshot 75, handshot 34,
+mobshot 246/246; **`live --render-check` 23/23** validation ON 0 errors, r23
+rising 8 → 10 quads as the field's two blits reach the windowed client; demo PNG
+`2cc56b4acbfb92cb` byte-identical; **9 mutations, 9 killed**. **Open:** the caret
+does not blink (`isCursorVisible`, 300 ms) — a shared gap with the anvil's field,
+not a new one.
+
+### M99 — the search box, and a suffix array the consumer does not need
+
+`updateCollections`' second stage (M93z's unfed `matches_search`) plus typing.
+
+**The suffix array is unnecessary here, measured rather than assumed.** Vanilla
+indexes every *suffix*, so a search is a substring match; the array exists for
+speed and for a defined result order, and **neither is used** — the result goes
+into a set read only via `contains`, and survivors keep their existing order
+(`removeIf`, not a re-sort). `contains` is exactly equivalent.
+
+**Two indexes, a colon picks between them:** no colon → **names only** (the ids
+are *not* searched, though the tree holds them); a colon →
+`namespace ∩ (path ∪ name)` with both halves **trimmed**. For Rewo a result's
+"tooltip lines" are its display name alone — exact, since a recipe's result is a
+bare id with no components. **An empty query skips the stage** rather than
+matching everything: a collection with no searchable text is kept by the skip
+and dropped by a match-everything reading.
+
+**A duplicate flag was the bug and removing it was the fix.** The first cut kept
+`search_focused` on `BookState` *and* mirrored it into the `EditBox`, whose
+`can_consume_input` gates keystrokes on its **own** flag. A test caught it
+(typing produced nothing); then a mutation deleting the mirror **survived**,
+because `book_press` needs a `PlaySession`. So the flag is gone — `focus_change`
+is a pure function of the hit and the `EditBox` is the only owner. **Shrink the
+untestable surface rather than pretend to cover it.**
+
+Two more caught by tests: the field takes the **book's** max length (50), not
+`EditBox::default`'s 32, so `ScreenState`'s `Default` is written out rather than
+derived; and a witness could not isolate the colon query's name half because
+`plank` matches both "Wooden Plank" and `oak_planks` — third time this session a
+fixture could not express its own claim.
+
+**2053 tests**; containershot 89, inventoryshot 152, itemshot 75, handshot 34,
+mobshot 246/246; demo PNG `2cc56b4acbfb92cb` byte-identical; **17 mutations, 17
+killed**. **Open:** the field's *text* is not drawn — it types and filters, and
+nothing renders the characters or caret (M93t's anvil seam, one screen over).
+
+### M98 — the book takes clicks, and one it does not want is still swallowed
+
+Tabs, pages, the filter, hover, and the two serverbound packets. The book had
+been drawable and inert since M94.
+
+**The order is a contract and it is not the draw order:** the **page** first
+(arrows, then cells), then the search box, then the filter, then the tabs — and
+the whole book before `super.mouseClicked`, so it dispatches ahead of every
+other screen widget. **And a second rule in the else-branch:** a click the book
+does *not* want is still **swallowed** when the window is too narrow and the
+book is open, because there the book covers the menu.
+
+**Four inversions.** A **selected tab's hit rect does not move with its sprite**
+— the 2 px shift is draw-time only, so its leftmost two columns are painted and
+unclickable. The **magnifier counts as the search box** and its rect *overlaps*
+the box rather than abutting it. A click anywhere but the **page** unfocuses the
+search field, because `setFocused(false)` sits unconditionally in the
+else-branch and the page path returns before reaching it. And **switching tabs
+resets the page**, while re-selecting the tab you are on does nothing
+(`selectedTab != button`).
+
+**The packets:** `recipe_book_change_settings` carries an ordinal and **both**
+flags, read out of the local settings rather than passed — so toggling the
+filter re-reports open, and vice versa, because the server persists both.
+`place_recipe` places **the recipe the cycle is showing**, not the collection's
+first. A right-click on a multi-recipe cell is consumed and does nothing (no
+overlay; placing an unchosen recipe is worse than nothing).
+
+**The hover comes from the same `book_hit` the press uses**, with the cursor
+converted to book space once in `apply_screen` — M95's note that this needed the
+renderer was wrong.
+
+**A surviving mutation was a weak fixture, not an equivalent mutant** — M93z's
+lesson again: swapping `clamp_page` for a clamp-to-last-page survived a
+**one-page** fixture, where reset-to-front and clamp-to-last are both 0.
+
+**2039 tests**; containershot 89, inventoryshot 152, itemshot 75, handshot 34,
+mobshot 246/246; **`live --render-check` 23/23**, validation ON, 0 errors (run
+because `apply_screen`'s signature changed and a new dispatch sits at the front
+of the click chain); demo PNG `2cc56b4acbfb92cb` byte-identical; **15 mutations,
+15 killed**. **Open:** the search box focuses and does nothing (needs the recipe
+search tree); no page counter, overlay, ghost slots or tooltips; `useMaxItems`
+is always false.
+
+### M97 — closing M96's own recorded gap: the book's derivation, graded
+
+M96 shipped `hasCraftable` graded at its two **ends** — the solver's tests
+below, the gate's chrome witness above — and nothing in between. The arithmetic
+turning an inventory into a per-slot flag, which is what M96 added, was
+untested: M92's shape, M93b's close.
+
+**The obstacle was structural.** `PlaySession` owns a socket and cannot be built
+in a test, so the fix is M71's lesson rather than a fixture — *logic in a place
+with no test module is untestable, so move it.* `live_recipe_book` is the
+session half (lookups) and `book_render_from` the derivation (grouping, tab
+membership, paging, cycle, craftable), taking plain values.
+
+Nine tests name rules neither end could see — notably that an entry with **no**
+requirements is never craftable while one declaring an **empty** list is (the
+distinction `canCraft`'s opening line makes, which the solver alone cannot
+express because it never sees the entry), and that asking about one collection
+does not spend another's items (a consuming solver would light the first slot
+and grey the second).
+
+**10 mutations, 10 killed** — including *"nothing is ever craftable"*, which is
+exactly M96's pre-state and would otherwise have been indistinguishable from it.
+
+**2019 tests**; containershot 89, inventoryshot 152, mobshot 246/246; demo PNG
+`2cc56b4acbfb92cb` byte-identical; no render path changed.
+
+### M96 — the craftable solver, and two of vanilla's guards that do not matter
+
+`StackedContents` ported, fed and wired — the blocker M35, M94 and M95 all
+named. Every recipe slot wore the *uncraftable* chrome because nothing could
+answer the question.
+
+**It is a bipartite matching, not a subtraction.** Walking the ingredients
+decrementing a count is wrong whenever accept-sets overlap: one `#planks` slot
+and one `oak_planks` slot, against a stack of oak and a stack of birch, is
+craftable only if `#planks` takes the birch. Vanilla finds it with augmenting
+paths (`RecipePicker`).
+
+**Two of my own witnesses were wrong before the code was** — both claimed one
+item *type* satisfies one slot only, so a stack of 64 dirt could not fill a
+nine-slot recipe. `try_pick` loops, `take`s per satisfied ingredient, and
+`hasAtLeast` re-reads the decremented amount: the matching is over **(item,
+ingredient) pairs** and what runs out is the count, not the type.
+
+**Two mutations survived and both are genuinely equivalent**, which is the
+opposite of the natural assumption. Transposing either bit-matrix index is a
+**relabelling** — each region is read and written only through its own index
+function and both formulas are bijections onto the same range (the module doc
+claimed the reverse; corrected in place). And dropping the `count > 0` filter is
+an **optimisation**: a zero-count item enters the matrix and `hasAtLeast`
+refuses it anyway. Settled by a **brute-force oracle** sharing no code, order or
+bit layout — 27,648 problems (3 item types × counts 0..=2 × 3 slots × all 8
+accept-subsets × capacities 1..=2), all agreeing — so "equivalent" is a
+measurement, not a claim.
+
+**The wire half:** M93y walked `craftingRequirements` and discarded it, so the
+ingredients are captured now — each a `HolderSet`, an inline id list **or a tag
+name**, and a tag resolves against `update_tags`, **which M69 decoded and
+nothing had consumed**. An unknown tag yields nothing, so its ingredient is
+unsatisfiable: greying a recipe you could make is a smaller lie than lighting
+one you cannot. `canCraft` opens `craftingRequirements.isEmpty() ? false`, so a
+recipe carrying none is **never** craftable — the two states stay distinct.
+
+**Recorded approximation:** vanilla fills from the inventory **and** the open
+menu's craft slots; Rewo counts the inventory alone, so a recipe whose last
+ingredient sits on the grid reads uncraftable. The craft-slot range differs per
+menu class and guessing it would be a confident wrong answer.
+
+**Process:** a hung mutant left its test binary holding the link output, so the
+*next* mutation reported BUILD-FAIL rather than the previous one's hang — and a
+botched harness left a mutation **on disk**, caught only by a grep. The harness
+reaps strays now and counts a hang as a kill.
+
+**2010 tests**; `containershot` 89, `inventoryshot` 152, `mobshot` 246/246; demo
+PNG `2cc56b4acbfb92cb` byte-identical; **13 mutations — 11 killed, 2 proven
+equivalent**. **Open:** the inventory→solver→flag derivation is graded at both
+ends but not end to end (driving it needs a `PlaySession` — the M92/M93b sweep
+shape); nothing can click the book.
+
+### M95 — the recipe book's items, and the tab structure M93z got wrong
+
+Tab icons and recipe results, on the book's origin — plus a correction to each
+of the two milestones before it.
+
+**M93z modelled the tabs wrong.** Its `Tab` enum was the four
+`SearchRecipeBookCategory` values, and those are *the search tab of each of the
+four books*, not the tabs within one. Each book has its own hand-written list —
+**crafting five, furnace four, blast furnace three, smoker two** — the first of
+each a search tab with a **compass** icon. M94 therefore drew four tabs on every
+book. And the search flag must be **explicit**: a smoker's search tab holds
+exactly one category, the same one its single category tab does, so a
+"several categories" heuristic is right for three books out of four.
+
+**M94 left the menu's icons behind** — it threaded the displacement through the
+panel and the hover and missed `menu_slot_rects`, so with the book open every
+slot icon sat 77 px left of its slot. M90's reason: *a function taking bare
+numbers does not look like it belongs to the menu.*
+
+**The items:** `getDisplayStack`'s cycle is **two levels** (`% entryCount` picks
+the recipe, `/ entryCount` picks which of *that* recipe's display items), so
+three recipes with two forms each cycle through six, not three;
+`resolveForStacks` resolves only the context-free arms (`Item`, `Stack`,
+`Composite`, and `WithRemainder`'s **input**) and yields **nothing** for the six
+that need a `ContextMap`, because an arbitrary tag member would be a confident
+wrong answer; the shadow copy is the **same stack drawn twice**.
+
+**Three gate findings.** b8 measured 26 icons against the 27 it named — the
+missing one was M93z's error surviving in the gate's own **fixture**. **Two
+mutations survived b8–b11**, one putting the book's icons on the menu's origin
+and one leaving the menu's icons centred: **counting icons cannot see a wrong
+origin**, so b12/b13 measure positions. And b13's first draft told the two
+apart **by position**, which is circular when position is what it measures.
+
+**A harness bug of M93v's family**: the mutation runner's `'PASS —' in out` used
+`text=True`, which decodes with the Windows locale codec, so the em dash became
+mojibake and **every gate verdict read KILLED whether or not anything failed** —
+which is what hid the two survivors. Uses the exit code now. Third detector bug
+of this arc, all the same shape: *cannot tell "passed" from "could not tell".*
+
+**1992 tests**; `containershot` 83 → **89**; `live --render-check` 23/23,
+validation ON, 0 errors; demo PNG `2cc56b4acbfb92cb` byte-identical; **14
+mutations, 14 killed**. **Open:** `hasCraftable` is still false everywhere (it
+needs `StackedItemContents`); nothing can click the book; no search box, page
+counter, overlay popup, ghost slots or recipe tooltips.
+
+### M94 — the recipe book renders, and two errors only the windowed client could show
+
+M93z built the model; this draws it. Panel, tabs, recipe slots, arrows, filter.
+
+**Opening the book MOVES the menu**, so this is not a pure addition:
+`updateScreenPosition` swaps `(width - imageWidth) / 2` for
+`177 + (width - imageWidth - 200) / 2` — 77 px for a 176-wide panel. Rewo
+measures slot hit-testing, slot icons and the hover box from that origin, so
+drawing the book without the shift leaves the menu centred under a book that
+overlaps it and every click lands on the wrong slot — **silently**, because the
+render still looks plausible. `topPos` does not move. The draw and the hit test
+now resolve through one `Placement`, M89's one-accessor rule applied to
+geometry.
+
+**Two design errors, both found by `live --render-check`, neither visible
+headlessly:**
+
+* The book was hung off `ContainerPanel` — which is `None` for the player's own
+  inventory (the path `inventoryshot` pins), and **the player's inventory is one
+  of exactly four screens that HAS a book**. So it was undrawable in its
+  commonest case, and `containershot` structurally cannot see that: it only ever
+  drives an open container.
+* The gate's "crafting table" fixture used menu type **13, which is
+  `enchantment`** — same 176x166 size, so every headless witness measured what
+  it expected and passed. `crafting` is 12.
+
+Both are the M86 shape. **Run `--render-check` on any milestone that adds a
+render path.**
+
+**Four chrome inversions:** a tab's sprite tracks **selection, not hover**
+(`get(true, this.selected)` hard-codes `enabled` and passes `selected` as
+*focused*), while the filter toggle inverts the same record the other way
+(`get(filtering, hovered)` — and the sprite names make reading it as the
+widget's own state easy, giving a button that never changes when clicked); a
+selected tab shifts 2 px left **and takes its icon with it**; the stacked-recipe
+look is **two items at (5, 3)**, because vanilla draws a copy at `offset + 1`
+then *decrements* offset — reading it as applying to the back copy gives (4, 4),
+which renders as one item; and the panel is sampled from **(1, 1)**.
+
+**The gate's rewrite was the instructive half. b1 passed while measuring nothing
+it claimed** — it probed the book's centre and compared open against shut,
+reading `[0,0,0]` against `[255,255,255]`, and neither was the book: the probe
+sat on a recipe slot's black border, and the *control* frame had the menu over
+that position because an open book moves the menu. **A frame diff may not let
+its control change with its subject.** Every witness now names its sprite's
+value read out of the PNG (`tab.png` 139 vs `tab_selected.png` 198,
+`slot_craftable` 139 vs `slot_uncraftable` 106) — "different from the backdrop"
+would pass with every tab drawing the same art. And a mutation deleting
+`take(view.shown)` **survived the gate** and was killed by the model's test,
+because the gate's fixture sized its slot vec to `shown` and made the guard a
+no-op.
+
+**1979 tests**; `containershot` 76 → **83**; **`live --render-check` 22 →
+23/23**, validation ON, 0 errors; demo PNG `2cc56b4acbfb92cb` byte-identical;
+**18 mutations, 18 killed**. **Open:** no items in the book (grid results, tab
+icons); `hasCraftable` is `false` for every collection so every slot wears the
+uncraftable chrome (it needs `StackedItemContents`, and guessing `true` is
+worse); nothing can click it, so tab/page are pinned to 0 and hover never
+reaches the arrows or filter; no search box, page counter, overlay popup or
+ghost slots.
+
+### M93z — the recipe book's UI model, and a filter button that toggles one stage of three
+
+M93y decoded the packets and named the book as the subsystem that had to
+follow. This is its **model** — geometry, tabs, collections, filtering,
+pagination. **The render is separate and not in it**, on M63's split.
+
+**It is positioned against the WINDOW, and nothing else Rewo draws is.** Every
+other screen is panel-relative. `getXOrigin` is `(width - 147) / 2 - xOffset`,
+centred on the *window* then pushed left 86 to flank the menu — and **`xOffset`
+collapses to 0 on a narrow window**, which is what makes the book cover the menu
+rather than hang off the edge. Deriving its origin from the open menu's panel is
+right at one window size and wrong at every other, invisibly until a resize.
+
+**`updateCollections` is three `removeIf` stages and the FIRST IS
+UNCONDITIONAL** — the filter button toggles only the third (`hasCraftable`).
+Read as gating the filter, it takes the first (`hasAnySelected`) with it, and
+"show all recipes" then lists furnace recipes in a crafting table.
+
+**The crafting tab lists `equipment` first**, not in the registry's id order
+(building_blocks, redstone, equipment, misc) — `includedCategories()` is a
+separate hand-written order, so deriving a tab's contents from ids reorders
+every crafting collection. **Three of the 13 categories belong to NO tab**
+(stonecutter, smithing, campfire — those screens have their own UI), so the
+lookup must be allowed to answer nothing. **Zero collections give ZERO pages**,
+and `clamp_page`'s `totalPages <= currentPage` resets an index *equal* to the
+count, to the **front** rather than the new last page.
+
+**Ordering is deliberately not a contract**: a group takes its first-seen
+member's position, and insertion order is preserved because a stable book beats
+an arbitrary one — **not** because vanilla guarantees it (its input is a
+`HashMap`'s `values()`). The opposite of M93s's stonecutter, where the index a
+click sends made order load-bearing.
+
+**The witness was wrong before the code, again**: it shrank to 20 collections —
+**one** page, whose last index *is* 0 — and asserted the reset was not to "the
+new last page", so `assert_ne!(0, 0)` failed and the fixture could not have
+expressed its claim either way. Now it shrinks a five-page list.
+
+**1956 tests**; `containershot` 76, `mobshot` 246/246; demo PNG
+`2cc56b4acbfb92cb` byte-identical; **10 mutations, 10 killed**. It also found
+**§0.0's own drift running in reverse** — the prose was current through M93t
+while the coverage number was four milestones stale at 109/0/32, because a
+milestone that ships a finding writes the paragraph and forgets the table.
+**Open:** the book's render (panel, tabs, 20 grid buttons, arrows, the search
+field on M93t's `EditBox`, the filter toggle), ghost placement into container
+slots, and the two serverbound packets — reachable now, still unsent.
+
+### M93y — the recipe book's decode, and a class-C claim that IS one
+
+Four packets decoded into session state, plus the `SlotDisplay` (11 variants)
+and `RecipeDisplay` (5) trees. **The class-C label here is correct** — unlike
+the four M91–M93u overturned — and saying so matters: the book is a tabbed,
+searchable, filterable list with ghost placement, none of which exists. This is
+the half that comes first, on **M63's split**: decoding needs no listening.
+
+**Dispatched rather than left resolved-but-ignored, and M74's check is why** —
+it caught the ids the moment they resolved and named the class the coverage doc
+keeps at **zero**: a packet whose id resolves and whose body is dropped reads as
+*handled* to every grep, which is worse than absent.
+
+The registries are **built-in**, so they come from the report (M92's rule) — and
+the alphabetisation trap bites harder here than in M64, because the variants
+have **different body lengths**, so a wrong table **desyncs the reader
+mid-packet** rather than mislabelling. `group` is `OPTIONAL_VAR_INT`, the `+1`
+family in optional form (**0 is absent; group 0 rides as 1**). A shaped recipe's
+**width and height precede** the ingredients they describe. **`replace` clears
+the book** — true on join, false per unlock.
+
+**Verified against a real server, not only its fixtures.** The nine decode tests
+drive bytes *I* wrote; a temporary counter against a live 26.2 server showed the
+book reaching one entry on join, through the production path. Worth doing
+because **"no warning" is also what a packet that never arrived looks like** —
+the render check was green either way, and only a *positive* assertion about
+what was decoded tells them apart.
+
+1942 tests; coverage **110/0/31 → 114/0/27**, class C 20 → **16**; `live
+--render-check` 22/22 validation ON 0 errors. **Open:** the book's UI (its
+search field now has M93t's `EditBox` to build on) and the two serverbound
+packets, unsent because nothing can yet click what would send them.
+
+### M93x — the trade button's chrome, and reading WHICH witness fires
+
+`Button.Plain`'s `extractDefaultSprite` — `widget/button` nine-sliced from a
+200×20 sheet with border 3, empty label. **Only two of `WidgetSprites`' four
+cases are reachable**: vanilla toggles the button's `visible` and never its
+`active`, so a row past the end of the list draws *nothing* rather than a greyed
+one.
+
+**The slicing is the find.** At 88×20 on a 200×20 sheet the height matches, so
+the nine-slice degenerates to horizontal-only — and vanilla's `NineSlice`
+**tiles** rather than stretches, so a narrower button draws **one partial
+tile**: the middle is a 1:1 slice of the sheet's first `w - 6` face pixels.
+"Scale the middle" would resample every pixel of the face and blur it. The
+witness that pins it: the button's **last column is `(0,0,0)`**, source x 199 —
+the sheet's black border — where a naive 1:1 blit from x 0 would give
+`(112,112,112)`.
+
+**The transferable part is which witness fired.** All three mutations died, but
+inverting the hover pair was killed by **z3, not z2** — because z2 asserted only
+that the two frames *differ*, which is symmetric. Exactly M93t's x5 flaw, and it
+surfaced *only* because the kill came from the wrong witness. **Reading which
+witness a mutation kills is worth as much as reading whether one did.**
+
+1929 tests; `containershot` 73 → **76**; `live --render-check` 22/22 validation
+ON 0 errors. The merchant is complete; the one remaining limit is not a widget
+but the component-predicate decline.
+
+### M93w — the discounted price pair, and an override that defeats a rule
+
+`extractAndDecorateCostA`. **One icon, not two** — `fakeItem` is called once,
+outside the branch, with the **modified** cost, so the discounted display is two
+*numbers* over a single item. The strikethrough at `+7` crosses the **first**
+number rather than the gap, because the labels are right-aligned into the icon's
+16 px box. And **a count of 1 normally draws nothing**, so the
+`count == 1 ? "1" : null` override exists *solely* to defeat that rule — passing
+`null` throughout drops a digit exactly when a discount has reached 1.
+
+**A witness had to be narrowed rather than fixed.** It first claimed the two
+digits as well as the strikethrough and measured **0 changed pixels** —
+correctly, because the gate's frame builds the **panel** and the count labels
+come from `screen_icons`, which it never calls. M45's shape again: a gate
+reimplementing a slice of the app's setup misses what lives outside it. The
+strikethrough is a panel overlay and is witnessed; the digits are graded at the
+model level, and the gate now says so in a comment so the next reader does not
+read it as an omission.
+
+One equivalent mutant, labelled in the code: `icon_for` ignores the count, so
+which count the cost-A icon call passes cannot matter.
+
+1927 tests; `containershot` 71 → **73**; `live --render-check` 22/22 validation
+ON 0 errors. **Open on the merchant:** only the trade button's own
+`Button.Plain` chrome, and the component-predicate decline.
+
+### M93v — the XP bar, and a blit argument I read as a size
+
+M93u recorded this as blocked on `VillagerData`'s thresholds and
+`getFutureTraderXp`. **Neither was.** The thresholds are five ints, and the
+future xp is *derived by vanilla itself* — `updateSellItem` matches the payment
+slots against the offers and takes the matched offer's xp.
+
+**`traderLevel < 5` gates the background too**, so a maxed villager shows
+nothing rather than a full bar; `getMinXpPerLevel` and `getMaxXpPerLevel` both
+return **0** outside the levelling range, so their difference is the bar's
+divisor and only the two guards keep it safe; the fill is the fraction of the
+**level**, not the career; and `getRecipeFor`'s `selectionHint > 0` is
+**strictly** greater, so selecting the *first* trade falls through to the scan.
+
+**Two mutations survived and both were real.** One was M71/M93t's shape — logic
+in `live_cmd`, which has no test module — now `satisfied_offers`. **The other
+is a lesson about reading a signature**: mutating the result segment's source
+offset changed *nothing*, because I had read
+`blitSprite(sprite, 102, 5, u, v, x, y, w, h)`'s first two arguments as the
+source **rect's** size when they are the **sheet's**. Every segment was drawing
+the whole bar squeezed into its width, so the offset could not matter. **A
+surviving mutation is a question, not just a verdict** — what it asks about is
+sometimes not what you mutated.
+
+**And an instrument failure of my own**: the shell totalling test counts used
+`grep -v "0 passed; 0 failed"`, which matches `71`**`0 passed`**`; 0 failed`, so
+it silently dropped `rewo-world` the moment its count hit a multiple of ten.
+M91's finding in the measuring tool rather than the build — the only signal was
+a total moving the wrong way.
+
+1924 tests; `containershot` 67 → **71**; `live --render-check` 22/22 validation
+ON 0 errors. **Open:** the discounted-price pair with its strikethrough, and a
+cost carrying a component predicate declines rather than guesses (M41 has a
+digest, not per-component values).
+
+### M93u — the merchant, and the fourth class-C claim to fall
+
+The coverage doc filed `merchant_offers` as class C. It needed nothing Rewo had
+not built — `ItemStack` (M34/M41) and the `TypedDataComponent` walker M52e
+wrote for `can_place_on`. **That is four this arc, and the reasons differ**,
+which is the part worth keeping: M91's furnace recipes and M93s's stonecutter
+list were **jar data**; M93's merchant quick-move **never consulted** the
+packet; and here the data really **is** server-rolled — only the decode was
+mislabelled. So "blocked on a packet we don't decode" deserves a check against
+what the packet carries *and* what decoding it would cost.
+
+**Traps:** the order is **costA, result, costB** (the sold item sits *between*
+the costs, while every constructor lists them costA/costB/result); the numerics
+are `writeInt`, **fixed big-endian** in a var-int protocol, so a var-int reading
+turns a discount into a surcharge; and `Item.STREAM_CODEC` is `holderRegistry`,
+**raw 0-based** — the fifth appearance. In the price, `demandDiff` clamps at 0
+from below while `specialPriceDiff` is added *after* and is not floored (that is
+the discount), and **only cost A is modified**.
+
+**The scroll is not the stonecutter's with new numbers**: `scrollOff` is an
+**offer index**, one notch is one offer, and the drag rounds the index rather
+than a fraction. The thumb's bottom override is load-bearing for **short**
+scrollable lists (8/9/10 offers land at 91/106/111) and redundant for long ones,
+where `min(113, …)` caps an overshoot — the opposite of what I first asserted,
+and only visible by computing both regimes.
+
+**Reading the render loop caught two offsets no witness covered**:
+`offerY = yo + 16 + 1` against the buttons' `+ 2`, so a row's items sit one
+pixel **above** its button; and `sellItem1X = xo + 5 + 5`, so cost A adds the
+button's 5 **twice**. And M93s's lesson landed twice — the arrow's x was wrong
+(`5 + 5 + 20` for `xo + 5 + 35 + 20`), and when the witness failed again I
+explained it *wrongly* rather than re-reading the sprites.
+
+A surviving mutation is **equivalent here and not in vanilla**: dropping the
+visibility guard changes nothing because this computes `row = i - scroll_off`
+directly, where vanilla's `offerY` advances only inside the drawn branch.
+
+1916 tests; `containershot` 63 → **67**; `live --render-check` 22/22 validation
+ON 0 errors; coverage **110/0/31**, class C 21 → 20. **Open:** the XP bar's fill
+(needs `VillagerData` thresholds and `getFutureTraderXp`) and the
+discounted-price pair with its strikethrough.
+
+### M93t — the EditBox, a subsystem Rewo never had, and a red band
+
+M93n shipped the anvil's semantics and recorded that **nothing could type** —
+Rewo read `PhysicalKey` and never a character. This is `EditBox`'s editing core
+plus the `KeyEvent.text` seam, wiring the anvil end to end.
+
+**The buffer is `Vec<u16>` and that is not fussiness**: every index in vanilla's
+EditBox is a Java String index, and one rule — `isHighSurrogate(charAt(max - 1))`,
+which stops a truncation splitting a pair — is only *expressible* in UTF-16.
+M93n had already counted the anvil's 50 in code units for the same reason.
+
+Findings that read backwards: `insertText`'s room is a **double negative**
+(`maxLength - length - (start - end)`, so the selection's width is added *back*);
+`setValue` truncates with **no** surrogate check where `insertText` has one; an
+**uneditable box still swallows** backspace, because `return true` sits outside
+the `if (isEditable)`; Insert and the vertical arrows share the **`default`**
+label and so are treated as unrecognised; **word motion is not symmetric**, so
+Ctrl+Left then Ctrl+Right does not return you; and the four shortcuts need
+control down **and shift up and alt up**.
+
+**`AnvilScreen.keyPressed` reaches `super` only when the box neither handled
+the key nor could have** — so with an item in slot 0 **every non-escape key is
+swallowed**: E does not close the anvil, a number key does not swap, Q does not
+drop. That reads like a bug and is exactly what typing requires.
+
+**A red band said the chrome was missing.** `anvil.png` carries a pure
+`255,0,0` band exactly where the name field goes, and `extractBackground`
+covers it with a sprite chosen by slot 0. Rewo drew the panel and not the
+sprite, so the first run of these witnesses read `[255,0,0]` for "the bare
+panel". **A placeholder in a vanilla texture is a deliberate signal.**
+
+**Three mutations survived with three different verdicts**, which is the
+transferable part: the swallow rule was a **real gap** (it lived in `live_cmd`,
+which has no test module — M71's finding — and is now `anvil::key_consumed`);
+the field-background inversion was a **real gap behind a symmetric witness**
+(x5 asserted the two frames *differ*, so swapping them passed — it now names
+the values, read out of the PNGs); and `deleteWords`' selection guard is
+**equivalent**, because `deleteCharsToPos` carries the same check and vanilla
+is doubly guarded too.
+
+1899 tests; `containershot` 58 → **63**; `live --render-check` 22/22 validation
+ON 0 errors; demo PNG byte-identical. **Open:** the clipboard is **in-process**,
+not the OS's (no crate pulls one in, `winit` exposes none); no IME pre-edit; no
+click-to-position or drag-select inside the field.
+
+### M93s — the stonecutter, and an order that is a wire contract
+
+The plan called this widget "genuinely class-C (`update_recipes`)". **It is
+not** — the third such claim this arc to not survive the decompile, after M91's
+furnace recipes and M93's merchant quick-move. The pattern is worth carrying:
+*"blocked on a packet we don't decode" deserves a check against what the packet
+actually carries*, because for vanilla content the answer is usually in the jar.
+
+**The contents were never the hard part; the ORDER is, and it is part of the
+wire contract.** A click sends an *index*, and the server resolves it against
+`selectByInput` — a **filter**, which preserves the master list's order. Get the
+order wrong and every click cuts a different block than the one drawn, **with no
+error anywhere**: M64's alphabetisation trap somewhere nastier, because there
+the ids merely came out wrong while here the server acts on it. It reproduces
+because `RecipeManager.prepare` loads into a `SortedMap<Identifier, _>` — and
+**`Identifier.compareTo` is path first, then namespace**, not the combined
+`namespace:path`. The generator sorts by the file stem explicitly rather than
+the filename: those agree only because `.` (0x2E) is below every character
+`[a-z0-9_]` uses.
+
+**One cell has three y-origins** and vanilla means all three — `+2` for the icon
+/ highlight / tooltip, `+1` for the chrome and the cursor, **`+0` for the
+click**. The first witness called the top two pixel rows "clickable but not
+highlighted"; they are not. Both boxes are 18 tall on an 18 pitch, so they
+**tile** — the offset is a *shear*, not a gap — and those rows highlight the row
+**above**. A click lands one row *below* the lit cell at every boundary, and
+away from a boundary they agree, which is why it is easy to miss. The scrollbar
+likewise has three origins (grab `+9`, drag track `+14`, draw `+15`) and the
+drag divides by 39 while the draw multiplies by 41, so **vanilla's thumb
+overshoots its own track by two pixels**.
+
+**The fourth detector error of the arc, same shape as the other three.** `w2`
+proved "cell 6 draws no chrome" by comparing against the bare panel — and
+`recipe_selected.png`'s centre is `(81, 73, 58)`, *exactly* what
+`stonecutter.png` reads at that probe, so a cell 6 wrongly drawing a **selected**
+chrome would have passed. The control is now a twelve-recipe view, differing in
+one thing only. Reading the sprite PNGs' pixels *before* writing the witnesses
+is what made the rest sound. Also: `mouse_gui` is GUI pixels and the first cut
+converted the other way, so the hover never landed.
+
+**A surviving mutation was a real gap, not an equivalent mutant** — swapping
+`selected` and `hovered` changed nothing, because the orderings differ *only* on
+a cell that is both and no witness hovered the selected cell.
+
+1879 tests; `containershot` 52 → **58**; 6 mutations, 6 killed; demo PNG
+byte-identical. **Open:** no tooltip on a recipe button, and the datapack caveat
+now has teeth — a pack that *reorders* stonecutting recipes makes a click cut
+the wrong block.
+
+### M93r — the self-calibrating-witness sweep, and what it did NOT find
+
+M93q's closing line asked for a sweep of anywhere a `*shot` witness computes an
+expectation from a `pub const` the renderer also reads. Run over ~1,400
+witnesses in 34 gates: **96 of 480 SCREAMING consts are read by both a gate and
+production**, narrowed to value-shaped ones, each checked for **value** (against
+the decompile) and for **pinning** (by mutation, the only real evidence).
+
+**Three real holes, all with correct values** — process debt, not a rendering
+bug. `GLINT_STRENGTH`: `handshot`'s `n3` asserts every glint vertex carries it
+while *reading* it; mutating `0.75 → 0.55`, a 27% change in the foil's alpha,
+left `handshot` (34), `inventoryshot` (152) and all of `rewo-gpu`'s tests green.
+`DARK_GRAY`: same shape in the advanced tooltip, and the mutation used was
+`0x555555 → 0x3F3F3F` — **the exact wrong grey M93p shipped for the loom**,
+which is the point: a plausible flat grey is what a guess produces, and no
+amount of pixel-reading catches one when the reader shares the value.
+`DYE_DIFFUSE_COLORS` is a different failure — **duplicated** across `rewo-data`
+(banners/signs) and `rewo-gpu` (fish, the sheep derivation), and neither crate
+depends on the other, so **no test *could* have compared them**; the agreement
+test has to live in `rewo-app`.
+
+**What it did not find matters as much, and both shapes look like the bug.**
+An **enum comparison** (`== PotWobble::Positive`) names which outcome is
+expected — an identity, not a transcribed value. And a constant used as a
+**search key** self-guards: `blockentityshot` finds a sign by
+`line_height == HANGING_LINE_HEIGHT` then asserts `line_y` against literals, so
+a wrong constant makes `find` return `None` and fails. Most value-shaped consts
+are also pinned already, **often inside the gate rather than a unit test**
+(`BAR_W == 182`, `scale_armor == 0.16`, `(ANCHOR_ACCEL - 0.0139…).abs() <
+1e-17`) — a first detector looking only in `#[cfg(test)]` called all of those
+unpinned, so **the mechanical search has a high false-positive rate and its
+shortlist must be read**.
+
+**The best pin in the codebase is a derivation, not a literal.**
+`SHEEP_WOOL_COLORS` is self-calibrating in `mobshot` and needs no fix, because
+`entities.rs` pins it *by rule* — `floor(diffuse * 0.75)`, white overridden to
+`0xE6E6E6` — and **12 of its 16 rows would differ under `round`**, so the test
+proves the rule rather than the numbers. Prefer that form for any derived table.
+Also: there are two different `TITLE_SCALE`s (hud 4, death screen 2), both
+right, which a name-keyed search reports as one value.
+
+**1865 tests / 0 failures**; 5 mutations, all alive before the pins and all
+killed after; demo PNG `2cc56b4acbfb92cb` byte-identical.
+
+### M93q — the overlay colour quad, and two ways a pixel gate goes blind
+
+The loom's preview is `fill` then `blit`, and the overlay path could not draw
+the first half: `overlays` is `(sprite, PanelBlit)` and every sprite index
+samples the atlas. M93q adds an untextured mode (a negative-`u` sentinel in the
+fragment shader, a per-quad `tint`, a `FILL_SPRITE` index), the 43
+banner-pattern textures, and the loom arm — closing the loom **end to end**.
+
+**The milestone is the two blind spots, not the quad.**
+
+**A gate that cannot reach a call site does not test it.** `o19`/`o20` grade the
+fill primitive from a hand-made overlay list and pass whether or not any menu
+emits one, because `container_panel_for_open_menu` hardcoded `loom: None` —
+**delete the whole loom arm and both stay green**. This is M92's finding one
+level over: M92's case was a gate *supplying* an input production derives; this
+is a gate *unable to enter* the branch. The wrapper now carries the view (the
+M93m precedent), and `o21` drives the real arm with a control frame and a
+two-sided test that catches the fill/pattern order.
+
+**And a witness can be sound on one property of the same draw and vacuous on
+another.** `o21` reads `LOOM_PREVIEW_BACKING` to compute its expectation, so a
+wrong constant moves render and expectation together — sound for the **order**,
+self-calibrating for the **value**. The value was wrong.
+`DyeColor.GRAY.getTextureDiffuseColor()` is the **third** constructor argument,
+`4673362` = `0x474F52`, faintly blue; M93p shipped `0x3F3F3F`, which is none of
+GRAY's three colours — and the trap is that both neighbouring arguments
+(`fireworkColor` `0x434343`, `textColor` `0x808080`) are **more neutral than the
+right answer**, so a plausible flat grey is exactly what a guess produces.
+Mutating it back demonstrates the asymmetry: `containershot` — 52 witnesses,
+validation on, real pixels — **survives**, and three lines of unit test stating
+the decompile's literal **kill it**. **Pin a number against its source, not
+against itself.** Worth a sweep: any `*shot` witness computing an expectation
+from a `pub const` the renderer also reads covers everything about that draw
+except the constant.
+
+**Recorded, not fixed:** `--render-check` never opens a loom, so the fill's
+windowed call site is unexercised. The blocker is not injection —
+`loom_display_patterns` is false without a banner **and** a dye in the slots, so
+an injected empty loom would witness nothing; staging it is a harness of its
+own. The loom's **scrollbar drag** is also unwired, so only the first 16
+patterns are reachable.
+
+### M93l — the beacon's press state machine and `set_beacon`
+
+M92d shipped the chrome, the geometry **and** `beacon_button_hovered`, so
+unlike M93h the call site already existed and the model is not built against a
+guessed one.
+
+**The guard that reads backwards:** choosing a new primary **discards** the
+secondary — *unless* the secondary is already the same effect. A secondary is
+only meaningful alongside the primary it was chosen with, and the exception is
+the "primary at level II" double. Inverting it keeps exactly what should be
+discarded and discards what should be kept.
+
+**The upgrade button is not a fourth kind of press** —
+`BeaconUpgradePowerButton extends BeaconPowerButton` with `isPrimary = false`,
+and `updateStatus` re-points its effect at the primary, so it presses as an
+ordinary *secondary* holding the primary's effect.
+
+**A press only happens on an active, visible button**, so the gate is
+`beacon_button_state(..)` rather than a re-derivation — `updateStatus`'s rules
+stay the single source for both what is drawn and what responds.
+
+**`MobEffect.STREAM_CODEC` is `holderRegistry` — a RAW 0-based id**, not
+`holder`'s `id + 1`. That has now bitten in M16, M21, M55 and M92d, and it is
+quiet every time: an off-by-one names a **real** effect, so the beacon grants
+the wrong one. The witness pins effect id **0**, which is where the two
+conventions disagree most visibly.
+
+**M93m wired the press — and the choice had to stop being derived.** M92's own
+comment admitted it: *"Rewo has no click path here yet, so this reads the data
+slots directly"*. Vanilla's `BeaconScreen` owns `primary`/`secondary`, seeded
+from the menu and then **moved by clicks** before the server hears anything, so
+a click-driven beacon cannot re-derive them each frame.
+
+**The seeding rule is odder than it looks**: `dataChanged` re-reads *both*
+effects on **any** slot id — including the pyramid levels — so a beacon growing
+under you discards an unconfirmed pick. Hence the watermark is a per-menu
+**data-write counter**, not the menu identity (misses it) and not the effect
+slots (also misses it, because the clobbering write is to a different slot).
+Only the two effects are screen-owned; levels and payment are re-read every
+frame, so a payment arriving mid-selection lights Confirm without disturbing
+the pick.
+
+**A dark button does not consume the click** — `AbstractWidget.mouseClicked`
+returns true only when it fires, so a disabled beacon button falls through to
+the slot logic exactly as a disabled enchanting row does.
+
+**One mutation survived, and it was the render**: every witness drove the
+menu's data slots, so reverting the render to the derived choice changed
+nothing they could see — a click would have moved a choice nothing drew, M93i's
+"correct but invisible" one screen over.
+
+**Recorded, not fixed:** the confirm closes the **client's** screen only. Rewo
+resolves no *serverbound* `container_close` — `ids.rs` has the clientbound one
+alone — so the server still believes the menu is open. That predates this and
+affects **every** screen close.
+
+### M93n — the anvil's rename
+
+Listed as "needs a text field"; it needs *two* things and only one is the field.
+
+**`validateName`'s `length() <= 50` counts UTF-16 code units, not characters.**
+An emoji is 2 there and 1 to `chars().count()`, so a char-count check accepts
+names the server rejects — silently, since `setItemName` just returns false
+while the client has drawn the text. 25 emoji are legal, 26 are not.
+
+**Typing an item's own name means *clear* the name.** No `CUSTOM_NAME` plus a
+typed string equal to the hover name sends `""` — there is nothing to set.
+Without the `!has(CUSTOM_NAME)` half, renaming a named item back to its
+displayed name *clears* it; without the equality, every rename becomes a clear.
+
+Also: `None` (too long) is **not** `Some("")` (a legal clear); a rejected name
+does **not** advance the stored name; and the empty string is meaningful on the
+wire, so a sender that suppressed it could never un-name anything. Sent on
+every accepted keystroke, not on a confirm — the anvil has none.
+
+**Recorded, not built:** `EditBox`. Rewo's key handler reads
+`PhysicalKey`/`KeyCode` and never `KeyEvent.text`, so **nothing can type** — a
+subsystem it has never had, shared with the class-C chat/command-input cluster.
+
+`containershot` `d12` pins that the container arc now needs **four distinct
+serverbound screen packets** — `container_button_click` 17,
+`container_slot_state_changed` 20, `rename_item` 48, `set_beacon` 52. Four
+screens, four packets, none a mode of another.
+
+### M93o — the loom, and two of three recorded blockers that were wrong
+
+M93h listed three. **One was real.** The occupied-pattern-slot case does *not*
+need the `PROVIDES_BANNER_PATTERNS` HolderSet value off the wire — the
+component is on the item's **prototype**, which never crosses the wire — and it
+does *not* need the `banner_pattern` registry, because the value is a **named**
+HolderSet, i.e. a tag id whose contents are jar data. The real blocker was that
+`expand_tag` hardcoded `tags/item`.
+
+**Same shape as M93e's correction**, and the lesson repeats: *a blocker
+recorded from the wire's point of view can be wrong because the answer was
+never on the wire.*
+
+The item→tag mapping is **extracted from both sides** (`Items.java` names a
+constant per item, `BannerPatternTags` maps it to a tag id) rather than
+inferred — `flower_banner_pattern → pattern_item/flower` looks like a rule and
+is a naming coincidence.
+
+Four screen details that invert: an item with **no** patterns offers
+`ImmutableList.of()`, **not** the default set (falling back would let junk
+unlock everything); the grid needs a **dye**, not just a banner; `canScroll` is
+strictly `> 16`; and the bounds test and the **range** test are separate, so a
+cell past the end is *hit* then *rejected* and must not consume the click.
+
+**One mutation shown equivalent — in Rust only.** Deleting `index >= 0` changes
+nothing because `(-1i32) as usize` wraps past any representable bound; it is
+load-bearing in Java, where `<` does not wrap. Rewritten as `try_from` so the
+intent does not lean on the wrap.
+
+**M93p landed the preview's geometry, not its render** — and says so, with a
+surviving mutation as the evidence: reverting the pass to ignore the new source
+size changes nothing observable, because no overlay uses it yet.
+
+Transcribed: a **5x10** destination at `(cell + 4, cell + 2)` sampling the
+**21x40** region of the 64x64 banner texture starting **one pixel down**. The
+ratio is **not uniform** (21/5 vs 40/10), so it cannot be a scale factor —
+hence `ProgressBlit.src` and `PanelBlit.{sw,sh}`, inert for every 1:1 blit
+before it. And the pattern is drawn **untinted over flat grey**
+(`DyeColor.GRAY.getTextureDiffuseColor()`) — not the banner's base colour, not
+the dye's; tinting it with the dye would look plausible and be wrong for every
+button.
+
+**Left, precisely:** the 43 banner textures into the **overlay atlas**
+(mechanical, but M48's lesson is that atlas growth is where addresses move),
+and a way to draw the **solid grey backing** — `overlays` is
+`(sprite, PanelBlit)` with no colour and no untextured mode, a third structural
+change.
+
+### M93h — the crafter's slot toggles, and a scoping claim that was wrong twice
+
+The first bespoke-widget work, and it opens by **correcting the plan**: the
+claim that "the loom and crafter need only their button lists" was wrong about
+both.
+
+**The crafter does not use `container_button_click`.** `CrafterMenu` has no
+`clickMenuButton` override; `CrafterScreen` sends
+`container_slot_state_changed` — **id 20** against the button click's 17. Only
+the loom, the enchanting table and the two class-C screens are button-click
+screens.
+
+**The loom needs far more than a button list** (and is not shipped):
+`getSelectablePatterns` is `BannerPatternTags.NO_ITEM_REQUIRED` when the
+pattern slot is empty — a **`banner_pattern`** tag, where `expand_tag`
+hardcodes `tags/item` — and otherwise the stack's `PROVIDES_BANNER_PATTERNS`
+**HolderSet value**, which Rewo walks and discards, resolved through the
+`minecraft:banner_pattern` registry that `parse_registry_data` does not
+capture.
+
+Four crafter facts that invert:
+
+1. **`containerData[i] == 1` is DISABLED** — `setSlotState` takes an
+   `isEnabled` and stores its inverse, so reading the value as "enabled"
+   disables exactly the slots the player left on.
+2. **`isSlotDisabled`'s `< 9` is load-bearing**: index 9 is the **power flag in
+   the same array**, and 9 is a legal index, so a powered crafter would read as
+   having a ninth disabled slot with nothing faulting.
+3. **PICKUP is asymmetric** — re-enabling is unconditional, disabling needs an
+   **empty cursor**, because clicking an empty enabled slot while holding
+   something is a placement.
+4. **The toggle is ADDITIVE** — `slotClicked` ends in an unconditional
+   `super.slotClicked(...)`.
+
+**And the packet body inverts against its sibling**: `container_button_click`
+is `(containerId, button)`, this is `(slotId, containerId, newState)` — slot
+first. The transposition yields a *well-formed* packet that toggles the wrong
+slot of the wrong menu.
+
+**M93i wired it into both click paths, and the wiring exposed a defect in
+M93h.** `crafter_toggle` took an `is_swap: bool` and so treated **every**
+non-swap input as PICKUP — but vanilla's `switch` has `case PICKUP` and
+`case SWAP` and **no default**, so a shift-click would have silently re-enabled
+a disabled slot. **No witness could see it because the function had no
+caller.** That is the argument against leaving a model unwired: the shape of
+the call site is an input to the design.
+
+One funnel (`PlaySession::crafter_slot_click`) called from both paths —
+including `finish_drag`'s one-slot-drag re-dispatch, which vanilla routes back
+through PICKUP and which would otherwise have quietly not toggled. And because
+**`PlaySession` has no test module anywhere in the repo** (M71's hazard — it
+owns a socket), everything the adapter does except the send is extracted into a
+tested function.
+
+**M93j drew it, pixel-graded.** The cover is a **third slot geometry** — the
+icon is 16x16 at the slot, M35's highlight 24x24 at `slot - 4` *bracketing* it,
+and the cover 18x18 at `slot - 1`. And it **replaces** the slot's render rather
+than layering over it (`extractSlot` never reaches `super`), the opposite
+composition from the toggle's additive one. Vanilla writes the redstone arrow
+in **screen coordinates**, alone in the class; the two forms agree only for the
+standard 176x166 panel, so the witness re-derives it at three window sizes.
+
+**Two render mutations survived first, and both taught something.** The arrow
+*swap* survived a bbox witness — same box, different sprite — and the witness
+that fixed it was itself wrong: it asserted the powered arrow is *brighter*,
+where measured it is luma 68 against 124, because lit redstone is saturated
+**red** (`0.299·255 ≈ 76`) against pale grey. **Luma is the wrong statistic for
+"lit"**; redness separates them 0.0 vs 227.5. The witness derived its
+expectation from the art, so the art corrected the premise rather than the
+premise inverting the witness. The item-suppression mutation survived because
+`containershot` never calls `init_gui_items`, so no pixel witness there reaches
+the icon pass — graded instead by calling the production `screen_icons`.
+
+**M93k added the `gui.togglable_slot` hint — and found a fourth hover that
+was never made container-aware.** `screen_tooltip` was handed
+`session.inventory` and the free `slot_at` (which *is* `PLAYER.slot_at`), so
+with a chest open it named whatever the player had at the same index, at a
+differently-centred origin. The highlight and the icons were both fixed; this
+one was missed — **M89's "a per-call-site choice is how they come to disagree",
+surviving in a fourth site.**
+
+The hint is **derived, not transcribed**: vanilla's five conditions are exactly
+the preconditions of a PICKUP that would *disable* the slot, so it asks
+`crafter_toggle(PICKUP, ..) == Disable` and cannot promise an action the click
+will not take. (It shows on an **enabled** slot — the constant is named
+`DISABLED_SLOT_TOOLTIP` and reads "Click to disable slot".)
+
+**Two mutations survived and each needed a different fixture.** Dropping the
+grid gate survived because every witness hovered a crafter's grid — so every
+empty slot in every menu would have offered to disable itself. And dropping the
+panel-size half survived because **the crafter's panel IS 176x166**, making the
+two forms identical for it; only a six-row chest (176x222, origin 28 px off
+against an 18 px pitch) can see it.
+
+**The crafter is complete end to end**: decode, model, packet, click routing,
+render, hint. Only `requestCursor(POINTING_HAND)` remains, and Rewo has **no
+cursor-shape concept at all** — winit plumbing, not a transcription.
+
+ `live --render-check` not re-run —
+M93 adds no render path.
+
+*(An earlier draft of this entry said M87–M92 were all unmerged. They were not: `main` was already at M91, and only M92 was outstanding. The claim came from trusting REWO_PLAN §0.0's stale 2026-08-02 audit line instead of reading `git log` — the exact failure that section warns about. M92 is merged now.)*
+
+### M91 — the furnace family (2026-08-03)
+
+Five commits. A furnace takes a shift-clicked stack to the right slot and
+shows its flame and progress arrow — `container_set_data`'s first consumers.
+Detail in `REWO_PLAN.md` §15.
+
+**The premise this was scoped on was wrong, and checking it before building
+saved the work.** A fuel table alone unblocks nothing: vanilla checks
+`canSmelt` **before** `isFuel`, and a log is **both** — fuel, and smeltable to
+charcoal — so without `canSmelt` the *first* branch is unevaluable for every
+item. **What unblocked it: the recipes are in the jar.** `canSmelt` reads a
+`RecipePropertySet` the client normally gets from `update_recipes` (class C),
+but for vanilla its contents are the ingredient sets of
+`data/minecraft/recipe/*.json` — already the source for `ItemTags.SPEARS`
+(M19) and the enchantment tags (M42). A class-C blocker that turned out not to
+be one. **The caveat is the same one M19/M42 carry** and is stated in the
+generated file: a datapack that adds or removes a smelting recipe makes the
+table wrong with no error anywhere.
+
+**Generators here, where M87a's layouts are a hand table**, and the difference
+is measurable rather than stylistic: `FuelValues` is one regular builder idiom
+whose only cross-file work is expanding tags (data), where the layouts were
+four idioms plus cross-class builders that defeated extraction at 17 of 25.
+280 fuels; FURNACE 156 / BLAST 62 / SMOKER 9 accepted inputs.
+
+**The generator's arithmetic was wrong first, and the near-miss is the
+lesson.** I wrote the evaluator left-to-right *and said so in a comment*; Java
+respects precedence, so `1 + baseUnit * 20` is 4001, not 4020. The *other*
+`1 + …` term gives **67 under either reading** — spot-checking that one (the
+distinctive number, the natural choice) would have confirmed a broken
+evaluator. Only `dried_kelp_block` separates them, out of 280. **Pin a set of
+known-good values, not a representative one: the space is not uniform.**
+
+**Three accepted-input sets, not one** — a smoker takes food and not ore, a
+blast furnace the reverse, and a log is smeltable in a furnace *only*, so in a
+smoker it is merely fuel.
+
+**The flame grows upward**: its source and destination `y` move together, so
+the bottom edge is fixed and the top rises. Anchoring at a fixed top makes it
+shrink downward — an animation rather than an error.
+
+**Two instrument failures, both found here:** M87f's screen survey did not
+follow `extends`, so it recorded six centred titles where there are **nine**
+(the furnaces inherit theirs); the checker now walks the chain. And **my own
+test-totalling loop could not tell "0 tests passed" from "no tests ran"** —
+`rewo-app`'s tests stopped compiling while its library built, every gate
+passed, and the total silently fell 1712 → 1620. Ninety-two tests were not
+running, and the only tell was a number moving the wrong way.
+
+**Open on the container arc:** the ~11 bespoke-widget screens (anvil text
+field, enchantment buttons, beacon, merchant trade list, loom/stonecutter
+scroll grids, crafter toggles); `container_set_data` is consumed by the
+furnace family and by **nothing else** (brewing bubbles, enchantment levels,
+the beacon); and the crafting `quickMoveStack` shape, which declines rather
+than guess.
+
 - **Verification policy (user mandate): headless-first.** `rewo --headless N
   --chart-demo --out x.png` renders offscreen (no window) to a PNG;
   `rewo --run-seconds N` soaks windowed and prints percentile stats. Every
@@ -2597,3 +5674,49 @@ validation Rewo has.
 - The user's network (Phase H's "chickenedin") is now named **Frogsy** and
   is Rewo's staging target (D1 in the plan); public servers are out of
   scope for Rewo until the user says otherwise (anti-cheat ban risk).
+
+---
+
+## Docs audit, 2026-08-07 (after M107)
+
+A pass over **every** `.md` in the repo root, not just the ones the milestone
+touched. Five documents were stale and two carried statements that were
+actively false. What it found is more useful than the diffs:
+
+- **This file has a GENERATED mirror** (the other of the two agent-instruction
+  files in the repo root — its own header says which it is and gives the
+  regeneration command), and the mirror had drifted **3,061 lines** (2,599
+  against 5,660), about thirty-five milestones. It was still calling the Rewo
+  work branch "72 commits ahead of `origin/main` and unmerged, the largest
+  non-code risk in the project", which has been false since 2026-07-27. Its
+  header already warns about exactly this, having caught a 634-line drift in
+  July. **Regenerate it whenever you edit this file**; it is not a document to
+  hand-edit. Note the generator is a blind whole-file rename, so a sentence
+  naming *both* files reads as nonsense on one side — refer to "the mirror".
+- **`AGENT_LOOP_BRIEF.md` duplicated §0.0's gate list and status**, and both
+  had rotted — 435 tests against a real 2161, `mobshot` 243/243 against
+  246/246, and a "Current state" section still describing the M10–M18 arc as
+  unpushed local work. Rather than reset the numbers, those two sections now
+  **point at §0.0**, which is the only place they belong. Its test-server
+  recipe was also wrong in a way that costs an hour: it said
+  `nohup java … &`, and the server **stops on stdin EOF**, so a backgrounded
+  shell kills it instantly.
+- **`REWO_HEALTH_BAR_SPEC.md` said `crosshairPickEntity` "needs an entity
+  raycast Rewo does not have"** and that the pick clause is fed a hard `false`.
+  **M73 built that raycast** and the clause resolves from it. Corrected in
+  place rather than rewritten, because the reasoning for suppressing was sound.
+- **The mixed-CRLF file list had drifted in BOTH directions** and is now
+  measured rather than remembered: under `crates/rewo-*` it is exactly four —
+  `mobshot_cmd.rs`, `chunk.rs`, `light.rs`, `vanilla_hier.rs`.
+  `entities.rs` and `rewo-data/src/lib.rs` were on the list and have since been
+  normalised to all-LF, and two files were never on it. Re-measure.
+- `README.md`'s "What's next" offered two items that had both shipped (merging
+  the Rewo branch; an inventory model), and its gate count said fourteen where
+  there are **33**.
+
+**The pattern, for the third documented time:** a number with a test behind it
+stays true (`REWO_PACKET_COVERAGE.md`'s table is machine-checked by a unit test
+in `ids.rs` and was exact again), and the sentence next to it does not. The
+generalisable fix is not to re-check prose more often — it is to **stop keeping
+the same number in two places**, which is what the `AGENT_LOOP_BRIEF` sections
+now do by pointing rather than restating.
