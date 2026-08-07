@@ -491,6 +491,52 @@ impl Entry {
 }
 
 impl RecipeDisplay {
+    /// The shape the which-of-these overlay lays this display's ingredients
+    /// out in (M104).
+    ///
+    /// `Other` for a stonecutter or a smithing display, which is what both of
+    /// `calculateIngredientsPositions`' switches do: neither names them, and
+    /// the `default:` arm adds nothing. Not an omission — those two have their
+    /// own screens and never reach a recipe book.
+    pub fn overlay_shape(&self) -> rewo_world::recipe_overlay::Shape {
+        use rewo_world::recipe_overlay::Shape;
+        match self {
+            RecipeDisplay::CraftingShaped { width, height, ingredients, .. } => Shape::Shaped {
+                w: (*width).max(0) as usize,
+                h: (*height).max(0) as usize,
+                ingredients: ingredients.len(),
+            },
+            RecipeDisplay::CraftingShapeless { ingredients, .. } => {
+                Shape::Shapeless { ingredients: ingredients.len() }
+            }
+            RecipeDisplay::Furnace { .. } => Shape::Furnace,
+            RecipeDisplay::Stonecutter { .. } | RecipeDisplay::Smithing { .. } => Shape::Other,
+        }
+    }
+
+    /// Each ingredient's resolvable items, in the display's own order — what
+    /// `resolveForStacks` gives the overlay's grid.
+    ///
+    /// **In the same order [`RecipeDisplay::overlay_shape`] counts**, because
+    /// the two are read together: the shape decides where ingredient `n` goes
+    /// and this decides what it shows. An empty inner list is an ingredient
+    /// that resolved to nothing, which the overlay skips rather than drawing
+    /// blank — vanilla's `if (!items.isEmpty())`.
+    ///
+    /// A furnace display contributes its **ingredient only**. Its fuel is not
+    /// in the overlay: `OverlaySmeltingRecipeButton` reads
+    /// `furnaceRecipe.ingredient()` and nothing else.
+    pub fn overlay_ingredients(&self) -> Vec<Vec<i32>> {
+        match self {
+            RecipeDisplay::CraftingShaped { ingredients, .. }
+            | RecipeDisplay::CraftingShapeless { ingredients, .. } => {
+                ingredients.iter().map(|s| s.items()).collect()
+            }
+            RecipeDisplay::Furnace { ingredient, .. } => vec![ingredient.items()],
+            RecipeDisplay::Stonecutter { .. } | RecipeDisplay::Smithing { .. } => Vec::new(),
+        }
+    }
+
     /// The display's **result** — the item a recipe button shows.
     pub fn result(&self) -> &SlotDisplay {
         match self {

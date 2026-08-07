@@ -209,12 +209,76 @@ pub fn button_origin(panel: (i32, i32), i: usize, total: usize) -> (i32, i32) {
 /// promotes the ones you can make. `canCraft` is then read off the index rather
 /// than looked up again, which is why the two lists cannot simply be
 /// concatenated in the other order.
-pub fn entries(craftable: &[i32], uncraftable: &[i32], filtering: bool) -> Vec<(i32, bool)> {
-    let mut out: Vec<(i32, bool)> = craftable.iter().map(|&id| (id, true)).collect();
+/// Vanilla builds the two halves with two filtered passes over the collection's
+/// own `entries` list, so **within** each half the collection's order survives —
+/// which is what a stable partition of one flagged list gives, and why this
+/// takes one list rather than two.
+///
+/// Generic over the payload because the caller carries more per recipe than an
+/// id (its shape and its resolved ingredients), and a second copy of this
+/// ordering in the app would be a second thing to drift.
+pub fn promote<T: Clone>(recipes: &[(T, bool)], filtering: bool) -> Vec<(T, bool)> {
+    let mut out: Vec<(T, bool)> = recipes.iter().filter(|(_, c)| *c).cloned().collect();
     if !filtering {
-        out.extend(uncraftable.iter().map(|&id| (id, false)));
+        out.extend(recipes.iter().filter(|(_, c)| !*c).cloned());
     }
     out
+}
+
+/// One button of an open overlay, resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Button {
+    /// The `RecipeDisplayId` this button places.
+    pub recipe: i32,
+    pub craftable: bool,
+    /// Its ingredient grid — a position and the items that position cycles
+    /// through. Ingredients that resolved to nothing are already dropped, so
+    /// this is what draws rather than what the recipe declares.
+    pub slots: Vec<(Pos, Vec<i32>)>,
+}
+
+/// An open overlay. **A snapshot, not a view.**
+///
+/// Vanilla resolves everything in `init` — the entry lists, each button's
+/// craftable flag, each ingredient's positions — and nothing refreshes it
+/// afterwards. `updateCollections` rebuilds the page's cells and leaves the
+/// overlay alone, and `updateStackedContents` reaches it only through that. So
+/// crafting something while the overlay is up does **not** re-sort it or
+/// re-grey a button; only closing and reopening does.
+///
+/// That is why this is stored rather than recomputed from the session each
+/// frame: a recomputed overlay would resort itself under the cursor, which
+/// looks tidier and is not what vanilla does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Open {
+    /// The panel's top-left in book pixels, after [`origin`]'s three clamps.
+    pub origin: (i32, i32),
+    /// Which family of button art — the MENU's kind, not the recipes'.
+    pub furnace: bool,
+    /// In [`promote`]'s order: craftable first.
+    pub buttons: Vec<Button>,
+}
+
+impl Open {
+    pub fn total(&self) -> usize {
+        self.buttons.len()
+    }
+
+    /// The craftable flags, in button order — what [`Open::buttons`] gives the
+    /// chrome.
+    pub fn craftable_flags(&self) -> Vec<bool> {
+        self.buttons.iter().map(|b| b.craftable).collect()
+    }
+
+    /// Which button the cursor is over, in book pixels.
+    pub fn hovered(&self, bx: i32, by: i32) -> Option<usize> {
+        hit(bx - self.origin.0, by - self.origin.1, self.total())
+    }
+
+    /// Resolve a click in book pixels.
+    pub fn click_at(&self, bx: i32, by: i32, right: bool) -> Click {
+        click(bx - self.origin.0, by - self.origin.1, self.total(), right)
+    }
 }
 
 /// One ingredient's place inside a button, and which of the recipe's
@@ -557,12 +621,15 @@ mod tests {
 
     #[test]
     fn craftable_recipes_are_promoted_ahead_of_the_rest() {
+        // The collection's own order interleaves them; the overlay does not.
+        let all = [(7, true), (3, false), (8, true)];
         assert_eq!(
-            entries(&[7, 8], &[3], false),
-            vec![(7, true), (8, true), (3, false)]
+            promote(&all, false),
+            vec![(7, true), (8, true), (3, false)],
+            "craftable first, and stable within each half"
         );
         // Filtering drops the uncraftable half entirely rather than greying it.
-        assert_eq!(entries(&[7, 8], &[3], true), vec![(7, true), (8, true)]);
+        assert_eq!(promote(&all, true), vec![(7, true), (8, true)]);
     }
 
     /// The identity that lets M103's index-returning `place_recipe` serve a

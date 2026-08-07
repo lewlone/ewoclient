@@ -1140,10 +1140,11 @@ fn overlays(
                 None,
                 None,
                 // The book is shut for every icon witness here, and there is
-                // no ghost recipe (M103).
+                // no ghost recipe (M103) and no overlay (M104).
                 None,
                 &[],
                 0,
+                None,
             )
             .0
             .len()
@@ -2243,6 +2244,10 @@ fn overlays(
             slot_items: vec![Some(dirt_id); rb::ITEMS_PER_PAGE],
             slot_shadowed: vec![false; rb::ITEMS_PER_PAGE],
             slot_recipes: vec![None; rb::ITEMS_PER_PAGE],
+            // M104 — the which-of-these overlay's source material. Empty
+            // here: this closure builds a book with no OPEN overlay, and the
+            // overlay witnesses supply their own snapshot.
+            slot_collections: vec![Vec::new(); rb::ITEMS_PER_PAGE],
         };
         // The crafting table - one of the four menus that actually has a book.
         // Menu type 12; 13 is `enchantment`, which an earlier draft of this
@@ -2250,7 +2255,15 @@ fn overlays(
         // noticed. Only `live --render-check` did, by opening it and finding
         // no book.
         let craft = rewo_world::menu_layout::layout_of(12).unwrap();
+        // M104 — the open overlay and the cursor, carried on the SAME entry
+        // point rather than a second one, for the reason M93q recorded: a gate
+        // that cannot reach a call site does not test it, and one that reaches
+        // it through its own copy of the setup misses whatever the app adds
+        // (M45). Both are `None` for every witness written before M104, so
+        // nothing already green moves.
         let mut book_frame = |b: Option<&crate::live_cmd::BookRender>,
+                              overlay: Option<&rewo_world::recipe_overlay::Open>,
+                              book_mouse: Option<(i32, i32)>,
                               gpu: &mut Gpu,
                               off: &mut Offscreen,
                               wr: &mut WorldRenderer|
@@ -2272,22 +2285,60 @@ fn overlays(
             // inventory has no `ContainerPanel` and still has a book.
             // The gate drives no search field (M100), so the book draws its
             // chrome and no field quads.
-            wr.set_recipe_book(b.and_then(|x| crate::live_cmd::recipe_book_panel(x, &[])));
+            wr.set_recipe_book(
+                b.and_then(|x| crate::live_cmd::recipe_book_panel(x, &[], overlay, book_mouse)),
+            );
             wr.set_container(true, None);
             shot(gpu, off, wr)
         };
-        let shut = book_frame(None, gpu, off, wr)?;
+        let shut = book_frame(None, None, None, gpu, off, wr)?;
         let full = book(20, 1, 0);
-        let open = book_frame(Some(&full), gpu, off, wr)?;
+        let open = book_frame(Some(&full), None, None, gpu, off, wr)?;
         // Taken here so `book_frame` can be dropped before b4, which needs
         // `shot` itself.
         let short = book(5, 3, 2);
-        let short_frame = book_frame(Some(&short), gpu, off, wr)?;
+        let short_frame = book_frame(Some(&short), None, None, gpu, off, wr)?;
         let uncraftable_slots = crate::live_cmd::BookRender {
             slots: vec![(false, false); 20],
             ..full.clone()
         };
-        let unc_frame = book_frame(Some(&uncraftable_slots), gpu, off, wr)?;
+        let unc_frame = book_frame(Some(&uncraftable_slots), None, None, gpu, off, wr)?;
+        // M104's frames, taken here for the same reason the four above are:
+        // `book_frame` borrows `shot` and must be dropped before b4 uses it.
+        use rewo_world::recipe_overlay as ro;
+        let opened = |flags: &[bool], furnace: bool| ro::Open {
+            // Anchored on the cell a right-click on slot 0 would open it from,
+            // which is inside every clamp - the clamps have their own witnesses
+            // in the model, and pinning them again here would only measure
+            // `open_overlay` twice.
+            origin: rb::grid_slot(0),
+            furnace,
+            buttons: flags
+                .iter()
+                .enumerate()
+                .map(|(i, &c)| ro::Button { recipe: i as i32, craftable: c, slots: Vec::new() })
+                .collect(),
+        };
+        let two = opened(&[true, false], false);
+        let (ox, oy) = two.origin;
+        // Button `i` of an `n`-button overlay, offset into it.
+        let btn = |i: usize, n: usize, dx: i32, dy: i32| {
+            let (bx, by) = ro::button_origin((ox, oy), i, n);
+            (bx + dx, by + dy)
+        };
+        // Named `ov0*` rather than `c0*`: this block already binds `(c0x, c0y)`
+        // to `grid_slot(0)` further down, and the first cut of these witnesses
+        // was shadowed by it - so o2, o3 and o4 all probed the recipe CELL's
+        // top-left corner and read the 204 of `slot_craftable`'s corner while
+        // the render was correct all along.
+        let (ov0x, ov0y) = btn(0, 2, 12, 12);
+        let ov = book_frame(Some(&full), Some(&two), None, gpu, off, wr)?;
+        let hov = book_frame(Some(&full), Some(&two), Some((ov0x, ov0y)), gpu, off, wr)?;
+        let fur =
+            book_frame(Some(&full), Some(&opened(&[true, false], true)), None, gpu, off, wr)?;
+        let five = opened(&[true; 5], false);
+        let wide = book_frame(Some(&full), Some(&five), None, gpu, off, wr)?;
+        let deep = book_frame(Some(&full), Some(&opened(&[true; 8], false)), None, gpu, off, wr)?;
         drop(book_frame);
 
         // b1 - the book paints its own sheet.
@@ -2352,7 +2403,7 @@ fn overlays(
         // that the constant could be anything and no pixel would notice. The
         // constant itself is pinned by a unit test; this is the half that says
         // it reaches the draw.
-        let mut zeroed = crate::live_cmd::recipe_book_panel(&full, &[]).unwrap();
+        let mut zeroed = crate::live_cmd::recipe_book_panel(&full, &[], None, None).unwrap();
         for b in &mut zeroed.blits {
             b.sx = 0.0;
             b.sy = 0.0;
@@ -2421,7 +2472,13 @@ fn overlays(
         // The count is exact and each term is named, so a change in either
         // half shows: five tabs, of which two carry a pair, is seven; plus one
         // per visible slot.
-        let icons_of = |b: Option<&crate::live_cmd::BookRender>| -> usize {
+        // M104 — the overlay is carried on the SAME closure the earlier
+        // witnesses use, not a second one, so a gate cannot exercise a path the
+        // live client does not take (M45/M93q). Every pre-M104 call passes
+        // `None`, so nothing already green moves.
+        let icons_of = |b: Option<&crate::live_cmd::BookRender>,
+                        o: Option<&rewo_world::recipe_overlay::Open>|
+         -> usize {
             let inv = rewo_world::inventory::Inventory::default();
             crate::live_cmd::screen_icons(
                 &inv,
@@ -2435,12 +2492,13 @@ fn overlays(
                 b,
                 &[],
                 0,
+                o,
             )
             .0
             .len()
         };
-        let base = icons_of(None);
-        let with_book = icons_of(Some(&full));
+        let base = icons_of(None, None);
+        let with_book = icons_of(Some(&full), None);
         c.record(
             "b8.the_book_draws_an_icon_per_tab_and_per_visible_slot",
             with_book - base == 7 + rb::ITEMS_PER_PAGE,
@@ -2457,10 +2515,10 @@ fn overlays(
         };
         c.record(
             "b9.a_shadowed_slot_draws_the_display_stack_twice",
-            icons_of(Some(&shadowed)) - with_book == rb::ITEMS_PER_PAGE,
+            icons_of(Some(&shadowed), None) - with_book == rb::ITEMS_PER_PAGE,
             format!(
                 "shadowing all 20 slots adds exactly {} icons - one per slot, the same stack drawn again",
-                icons_of(Some(&shadowed)) - with_book
+                icons_of(Some(&shadowed), None) - with_book
             ),
         );
 
@@ -2474,10 +2532,10 @@ fn overlays(
         };
         c.record(
             "b10.an_unresolvable_result_draws_nothing_rather_than_a_guess",
-            with_book - icons_of(Some(&unresolved)) == rb::ITEMS_PER_PAGE,
+            with_book - icons_of(Some(&unresolved), None) == rb::ITEMS_PER_PAGE,
             format!(
                 "dropping all 20 results removes exactly {} icons and leaves the 7 tab icons",
-                with_book - icons_of(Some(&unresolved))
+                with_book - icons_of(Some(&unresolved), None)
             ),
         );
 
@@ -2494,12 +2552,12 @@ fn overlays(
         };
         c.record(
             "b11.each_book_draws_its_OWN_tab_list",
-            icons_of(Some(&smoker)) - base == 2 + rb::ITEMS_PER_PAGE
+            icons_of(Some(&smoker), None) - base == 2 + rb::ITEMS_PER_PAGE
                 && rb::BookType::Crafting.tabs().len() == 5
                 && rb::BookType::Smoker.tabs().len() == 2,
             format!(
                 "a smoker book adds {} icons against a crafting book's {} - 2 tabs neither of which is paired, against 5 tabs of which 2 are",
-                icons_of(Some(&smoker)) - base,
+                icons_of(Some(&smoker), None) - base,
                 with_book - base
             ),
         );
@@ -2512,7 +2570,8 @@ fn overlays(
         // open book moved the panel. Both are the failure this milestone exists
         // to avoid, and both need a position, so here it is.
         let icons_at = |b: Option<&crate::live_cmd::BookRender>,
-                        inv: &rewo_world::inventory::Inventory|
+                        inv: &rewo_world::inventory::Inventory,
+                        o: Option<&rewo_world::recipe_overlay::Open>|
          -> Vec<rewo_gpu::gui_item::GuiItem> {
             crate::live_cmd::screen_icons(
                 inv,
@@ -2526,11 +2585,12 @@ fn overlays(
                 b,
                 &[],
                 0,
+                o,
             )
             .0
         };
         let empty_inv = rewo_world::inventory::Inventory::default();
-        let placed = icons_at(Some(&full), &empty_inv);
+        let placed = icons_at(Some(&full), &empty_inv, None);
         // Slot 0's icon, which `book_icons` puts at grid_slot(0) + 4.
         let (g0x, g0y) = rb::grid_slot(0);
         let want = (bl + (g0x + 4) as f32 * bsc, bt + (g0y + 4) as f32 * bsc);
@@ -2559,8 +2619,8 @@ fn overlays(
         let sword = book_items.name(sword_id).expect("named").to_string();
         let mut stocked = rewo_world::inventory::Inventory::default();
         stocked.set_slot(0, 36, Some(rewo_world::inventory::ItemSlot::plain(sword_id, 1)));
-        let shut_icons = icons_at(None, &stocked);
-        let open_icons = icons_at(Some(&full), &stocked);
+        let shut_icons = icons_at(None, &stocked, None);
+        let open_icons = icons_at(Some(&full), &stocked, None);
         let first_menu_icon = |v: &[rewo_gpu::gui_item::GuiItem]| -> Option<f32> {
             v.iter().find(|i| i.model == sword).map(|i| i.x)
         };
@@ -2592,6 +2652,137 @@ fn overlays(
                 at_book(&open, sx + 12, sy + 12),
                 at_book(&short_frame, sx + 12, sy + 12)
             ),
+        );
+
+        // --- M104, the which-of-these overlay ------------------------------
+        //
+        // Every witness here names the value it expects, read out of the
+        // sprite PNG, rather than "different from the backdrop" - M94's
+        // lesson, and it matters more here than usual because a plain overlay
+        // BUTTON and a craftable recipe CELL are the same 139 grey. Telling
+        // those apart by "not the panel" would pass with the two swapped.
+        //
+        //   overlay_recipe            interior   198
+        //   crafting_overlay          centre     139  and 55 at (8, 2)
+        //   crafting_overlay_disabled centre     147,107,107
+        //   ..._highlighted           centre     136,146,201
+        //   furnace_overlay           centre     139  and 139 at (8, 2)
+        // o1 - the panel draws, and it draws OVER the cell it opened from.
+        //
+        // Button 1 is the UNCRAFTABLE one, so its reddish centre cannot be
+        // confused with the 139 grey of either a craftable button or the
+        // recipe cell underneath - which is the confusion this fixture is
+        // arranged to avoid.
+        let (ov1x, ov1y) = btn(1, 2, 12, 12);
+        c.record(
+            "o1.the_overlay_covers_the_cell_that_opened_it",
+            at_book(&ov, ov1x, ov1y) == [147, 107, 107]
+                && at_book(&open, ov1x, ov1y) != [147, 107, 107],
+            format!(
+                "the uncraftable button reads {:?} where the book alone reads {:?} - `crafting_overlay_disabled`, over a cell",
+                at_book(&ov, ov1x, ov1y),
+                at_book(&open, ov1x, ov1y)
+            ),
+        );
+
+        // o2 - craftable and uncraftable buttons wear different art, and the
+        // craftable one is the plain sprite rather than the panel showing
+        // through.
+        c.record(
+            "o2.a_craftable_button_and_an_uncraftable_one_differ",
+            at_book(&ov, ov0x, ov0y) == [139, 139, 139]
+                && at_book(&ov, ov1x, ov1y) == [147, 107, 107],
+            format!(
+                "button 0 reads {:?} (`crafting_overlay`) and button 1 {:?} (`..._disabled`)",
+                at_book(&ov, ov0x, ov0y),
+                at_book(&ov, ov1x, ov1y)
+            ),
+        );
+
+        // o3 - the panel's own backing shows in the GUTTER between two
+        // buttons. The buttons are 24 wide on a 25 pitch, so unlike the book's
+        // own cells there is a column between them - and it is the panel, at
+        // 198, not the page underneath.
+        let (gutter_x, _) = ro::button_origin((ox, oy), 0, 2);
+        c.record(
+            "o3.the_panel_shows_through_the_gutter_between_buttons",
+            at_book(&ov, gutter_x + ro::BUTTON_SIZE, ov0y) == [198, 198, 198],
+            format!(
+                "the column at x+{} reads {:?} - `overlay_recipe`'s interior, which is what a 24-wide button on a 25 pitch leaves",
+                ro::BUTTON_SIZE,
+                at_book(&ov, gutter_x + ro::BUTTON_SIZE, ov0y)
+            ),
+        );
+
+        // o4 - hover reads the cursor, and lights exactly one button.
+        c.record(
+            "o4.hover_lights_the_button_under_the_cursor_and_no_other",
+            at_book(&hov, ov0x, ov0y) == [136, 146, 201]
+                && at_book(&hov, ov1x, ov1y) == at_book(&ov, ov1x, ov1y),
+            format!(
+                "the hovered button reads {:?} (`crafting_overlay_highlighted`) while the other is unchanged at {:?}",
+                at_book(&hov, ov0x, ov0y),
+                at_book(&hov, ov1x, ov1y)
+            ),
+        );
+
+        // o5 - the FAMILY follows the menu, and it is invisible at the centre.
+        //
+        // `crafting_overlay` and `furnace_overlay` are byte-identical at
+        // (12, 12): both 139. They differ at 96 pixels, all of them the 3x3
+        // grid dividers the crafting art draws at x = 8 and x = 15 - so this
+        // probes (8, 2), where crafting is 55 and furnace is 139. A witness on
+        // the centre would pass with the two families swapped.
+        let (dx, dy) = btn(0, 2, 8, 2);
+        c.record(
+            "o5.the_furnace_family_is_told_apart_where_the_two_sprites_differ",
+            at_book(&ov, dx, dy) == [55, 55, 55]
+                && at_book(&fur, dx, dy) == [139, 139, 139]
+                && at_book(&ov, ov0x, ov0y) == at_book(&fur, ov0x, ov0y),
+            format!(
+                "at (8, 2) the crafting button reads {:?} and the furnace one {:?}, while their CENTRES are both {:?}",
+                at_book(&ov, dx, dy),
+                at_book(&fur, dx, dy),
+                at_book(&ov, ov0x, ov0y)
+            ),
+        );
+
+        // o6 - a wider overlay is wider, and the extra buttons are real. Five
+        // buttons is the widest a row gets before `maxRow` steps to 5, and it
+        // reaches past where two buttons end.
+        let (b4x, b4y) = ro::button_origin((ox, oy), 4, 5);
+        //
+        // Probed at (8, 2) - a crafting DIVIDER, 55 - and not at the centre,
+        // because a button's centre is 139 and so is the recipe cell it covers
+        // (`slot_craftable` is 139 at the matching texel). The first cut used
+        // the centre and could not tell the button from the cell beneath it.
+        c.record(
+            "o6.a_wider_overlay_draws_the_buttons_a_narrow_one_does_not",
+            at_book(&wide, b4x + 8, b4y + 2) == [55, 55, 55]
+                && at_book(&ov, b4x + 8, b4y + 2) != [55, 55, 55],
+            format!(
+                "the fifth button's divider reads {:?} on a five-wide overlay and {:?} on a two-wide one, where that button does not exist",
+                at_book(&wide, b4x + 8, b4y + 2),
+                at_book(&ov, b4x + 8, b4y + 2)
+            ),
+        );
+
+        // o7 - and it is drawn LAST. `RecipeBookPage.extractRenderState` calls
+        // `graphics.nextStratum()` before the overlay, so it is a layer over
+        // the page's ARROWS as well as its cells. Slot 0's cell is covered by
+        // o1; this pins that the ordering is not merely "after the cells".
+        //
+        // The five-wide overlay spans x 15..140 at the top of the grid, which
+        // is where a filter toggle and the tabs are not - so the cell row
+        // BELOW is the reachable second layer here.
+        let (s5x, s5y) = rb::grid_slot(5);
+        c.record(
+            "o7.the_overlay_is_a_stratum_over_the_page_not_a_peer",
+            // Eight buttons is two rows of four, so the second row lands on
+            // the cells of page row 1.
+            at_book(&deep, s5x + 12, s5y + 12) != at_book(&open, s5x + 12, s5y + 12),
+            "an eight-button overlay is two rows deep and its second row covers the page's second row of cells"
+                .to_string(),
         );
     }
 
