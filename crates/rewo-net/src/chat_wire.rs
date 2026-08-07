@@ -494,6 +494,54 @@ pub enum ChatEvent {
     Delete(Box<Signature>),
 }
 
+/// Apply a batch of events to the chat store, returning the last overlay
+/// message if any arrived.
+///
+/// **A free function rather than a method on `PlaySession` on purpose.** The
+/// session owns a socket and has no test module anywhere in the repo (M71's
+/// finding), so a loop living there is untestable — and a mutation that made
+/// it drain nothing survived the whole suite, which is the M86 failure mode in
+/// miniature: chat would render empty forever and every test would pass. The
+/// session keeps a five-line adapter; this keeps the rule.
+///
+/// `ChatComponent.tick` runs **after** the batch, so a deletion queued by this
+/// batch is not also retried by it. Vanilla separates them for the same
+/// reason: `processMessageDeletionQueue` is called from `Gui.tick`, not from
+/// the packet handler.
+pub fn apply_chat_events(
+    chat: &mut rewo_world::chat::ChatComponent,
+    events: Vec<ChatEvent>,
+    gui_tick: i32,
+    ctx: &rewo_world::chat::WrapContext<'_>,
+) -> Option<String> {
+    let mut overlay = None;
+    for event in events {
+        match event {
+            ChatEvent::Message {
+                text,
+                signature,
+                tag,
+                source,
+            } => chat.add_message(
+                rewo_world::chat::GuiMessage {
+                    added_time: gui_tick,
+                    content: text,
+                    signature,
+                    source,
+                    tag,
+                },
+                ctx,
+            ),
+            // Last one wins: `setOverlayMessage` assigns, and two action-bar
+            // messages in one batch cannot both be on screen.
+            ChatEvent::Overlay(text) => overlay = Some(text),
+            ChatEvent::Delete(sig) => chat.delete_message(&sig, gui_tick, ctx),
+        }
+    }
+    chat.tick(gui_tick, ctx);
+    overlay
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -945,6 +993,113 @@ mod tests {
         }
         let got = SignedMessageBody::read(&mut PacketReader::new(&body)).unwrap();
         assert_eq!(got.last_seen.len(), LAST_SEEN_MAX);
+    }
+
+    // ── applying a batch ─────────────────────────────────────────────────
+
+    fn wrap_ctx() -> rewo_world::chat::WrapContext<'static> {
+        fn w6(s: &str) -> i32 {
+            s.chars().count() as i32 * 6
+        }
+        rewo_world::chat::WrapContext {
+            options: rewo_world::chat::ChatOptions::default(),
+            focused: false,
+            width_of: &w6,
+            deleted_marker_text: "deleted",
+        }
+    }
+
+    fn message(text: &str, signature: Option<Box<Signature>>) -> ChatEvent {
+        ChatEvent::Message {
+            text: text.into(),
+            signature,
+            tag: None,
+            source: rewo_world::chat::MessageSource::Player,
+        }
+    }
+
+    #[test]
+    fn a_batch_of_messages_reaches_the_store() {
+        // The witness that did not exist when a mutation made the drain a
+        // no-op: chat would have rendered empty forever with every test green.
+        let mut chat = rewo_world::chat::ChatComponent::new();
+        let overlay = apply_chat_events(
+            &mut chat,
+            vec![message("first", None), message("second", None)],
+            7,
+            &wrap_ctx(),
+        );
+        assert_eq!(overlay, None);
+        assert_eq!(chat.all_messages().len(), 2);
+        assert_eq!(chat.trimmed_messages()[0].text, "second");
+        assert_eq!(chat.trimmed_messages()[0].added_time, 7);
+    }
+
+    #[test]
+    fn an_overlay_is_returned_and_never_stored_as_chat() {
+        let mut chat = rewo_world::chat::ChatComponent::new();
+        let overlay = apply_chat_events(
+            &mut chat,
+            vec![ChatEvent::Overlay("action bar".into())],
+            0,
+            &wrap_ctx(),
+        );
+        assert_eq!(overlay.as_deref(), Some("action bar"));
+        assert!(chat.all_messages().is_empty());
+    }
+
+    #[test]
+    fn the_last_overlay_of_a_batch_wins() {
+        let mut chat = rewo_world::chat::ChatComponent::new();
+        let overlay = apply_chat_events(
+            &mut chat,
+            vec![
+                ChatEvent::Overlay("first".into()),
+                ChatEvent::Overlay("second".into()),
+            ],
+            0,
+            &wrap_ctx(),
+        );
+        assert_eq!(overlay.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn a_delete_in_the_same_batch_is_queued_not_applied_twice() {
+        // The message is 0 ticks old, so the deletion is delayed rather than
+        // applied — and `tick` running after the batch must not immediately
+        // retry it, or the 60-tick guard is defeated by its own batch.
+        let mut chat = rewo_world::chat::ChatComponent::new();
+        apply_chat_events(
+            &mut chat,
+            vec![
+                message("secret", Some(sig(4))),
+                ChatEvent::Delete(sig(4)),
+            ],
+            0,
+            &wrap_ctx(),
+        );
+        assert_eq!(chat.all_messages()[0].content, "secret");
+        assert_eq!(chat.deletion_queue_len(), 1);
+        // …and it lands once the message is old enough.
+        apply_chat_events(&mut chat, Vec::new(), 60, &wrap_ctx());
+        assert_eq!(chat.all_messages()[0].content, "deleted");
+        assert_eq!(chat.deletion_queue_len(), 0);
+    }
+
+    #[test]
+    fn an_empty_batch_still_ticks_the_deletion_queue() {
+        // `tick` is outside the loop, so a frame with no packets still
+        // advances a pending deletion. Inside the loop it would stall forever
+        // on a quiet server.
+        let mut chat = rewo_world::chat::ChatComponent::new();
+        apply_chat_events(
+            &mut chat,
+            vec![message("secret", Some(sig(4))), ChatEvent::Delete(sig(4))],
+            0,
+            &wrap_ctx(),
+        );
+        apply_chat_events(&mut chat, Vec::new(), 100, &wrap_ctx());
+        assert_eq!(chat.all_messages()[0].content, "deleted");
     }
 
     #[test]

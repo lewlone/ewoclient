@@ -793,6 +793,13 @@ pub struct PlaySession {
     /// `rewo-net` reads no wall clock of its own, so a harness driving raw
     /// packets gets a deterministic trust level.
     pub chat_clock_millis: i64,
+    /// The chat HUD's store (M108). Lives here because the events that feed
+    /// it do; it is *driven* from the app, which owns the font it wraps with
+    /// and the GUI clock it stamps with — see [`Self::apply_chat_events`].
+    pub chat: rewo_world::chat::ChatComponent,
+    /// `Gui.setOverlayMessage`'s text, from a `system_chat` with `overlay`
+    /// set. `None` until one arrives.
+    pub chat_overlay: Option<String>,
     pub health: f32,
     /// Food level 0..20 (Set Health packet), for the HUD hunger bar.
     pub food: i32,
@@ -1550,6 +1557,8 @@ impl<'a> Connection<'a> {
             chat_events: Vec::new(),
             signature_cache: crate::chat_wire::MessageSignatureCache::default(),
             chat_clock_millis: 0,
+            chat: rewo_world::chat::ChatComponent::new(),
+            chat_overlay: None,
             health: 20.0,
             food: 20,
             dead: false,
@@ -4289,6 +4298,30 @@ impl PlaySession {
     /// Draining rather than peeking, because the consumer is "open a screen" —
     /// an idempotent read would re-open it on every frame and reset its
     /// anti-misclick clock forever.
+    /// Apply this frame's chat events to the store.
+    ///
+    /// Split from the decode because the store needs two things `rewo-net`
+    /// cannot see — the font to wrap against and the GUI tick to stamp with —
+    /// and both belong to the app. `gui_tick` is `Gui.getGuiTicks()`, which
+    /// runs at the same 20 Hz as the session tick and is what
+    /// `GuiMessage.addedTime` records.
+    ///
+    /// `ChatComponent.tick` runs **after** the events, so a deletion queued
+    /// this frame is not also retried this frame — `processMessageDeletionQueue`
+    /// is a separate `tick()` in vanilla for the same reason.
+    pub fn apply_chat_events(
+        &mut self,
+        gui_tick: i32,
+        ctx: &rewo_world::chat::WrapContext<'_>,
+    ) {
+        let events = std::mem::take(&mut self.chat_events);
+        if let Some(overlay) =
+            crate::chat_wire::apply_chat_events(&mut self.chat, events, gui_tick, ctx)
+        {
+            self.chat_overlay = Some(overlay);
+        }
+    }
+
     /// Drain the chat events decoded since the last call.
     ///
     /// A drain rather than a snapshot because the consumer *applies* them —
