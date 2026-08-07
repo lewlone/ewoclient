@@ -6780,6 +6780,19 @@ impl LiveApp {
         // store needs the font and the GUI clock, which is why this cannot
         // live where the packets are decoded.
         apply_chat(session, state.world_renderer.font_advance().copied());
+        // M109 — the fills, from the same `visible_lines` the text comes from
+        // so a row's backdrop and its glyphs cannot disagree about which rows
+        // exist. Set every frame, including when it is empty: a stale backdrop
+        // under nothing is a black bar hanging over the world.
+        state
+            .world_renderer
+            .set_chat_backdrops(chat_backdrops(
+                &session.chat,
+                session.ticks as i32,
+                px,
+                extent.height as f32,
+                &rewo_world::chat::ChatOptions::default(),
+            ));
         let fps = (!self.cpu.is_empty()).then(|| 1000.0 / self.cpu.average().max(0.001));
         let (mut text, chat_count) = build_text(session, px, extent.height as f32, fps, self.debug);
         if chat_count > 0 {
@@ -7399,6 +7412,67 @@ fn chat_lines(
                 alpha: line.alpha * text_opacity,
                 shadow: true,
                 text: line.text,
+            }
+        })
+        .collect()
+}
+
+/// The chat box's backdrop fills (M109), in GUI pixels.
+///
+/// ```java
+/// int count = this.forEachLine(alphaCalculator, (line, lineIndex, alpha) -> {
+///    int entryBottom = chatBottom - lineIndex * entryHeight;
+///    int entryTop = entryBottom - entryHeight;
+///    graphics.fill(-4, entryTop, maxWidth + 4 + 4, entryBottom, ARGB.black(alpha * backgroundOpacity));
+/// });
+/// ```
+///
+/// Beside [`chat_lines`] and reading the same `visible_lines`, so a row's fill
+/// and its text cannot disagree about which rows exist or where they are.
+///
+/// Three things that are not the obvious reading:
+///
+/// * **The rect is asymmetric about the text.** The pose is translated by
+///   `MESSAGE_INDENT` (4) before the fill, so `-4` lands at absolute 0 — four
+///   pixels of padding left of the text — while `maxWidth + 4 + 4` lands at
+///   `maxWidth + 12`, eight past where a full-width line can reach. Centring it
+///   is the tidy reading and is not vanilla's.
+/// * **`maxWidth` is `Mth.ceil(getWidth() / scale)`, a CEIL**, where
+///   `addMessageToDisplayQueue`'s wrap budget is `Mth.floor` of the same
+///   expression. They differ by one whenever the division is not exact, and the
+///   difference is deliberate in the sense that vanilla wrote both: the box is
+///   never narrower than the text it was wrapped to.
+/// * **The alpha is `alpha * backgroundOpacity`, NOT `alpha * textOpacity`.**
+///   The text's multiplier has a 0.1 floor (`chatOpacity * 0.9 + 0.1`) and the
+///   background's has none, so at "Text Background: 0" the fill vanishes
+///   entirely while the text stays faintly visible.
+fn chat_backdrops(
+    chat: &rewo_world::chat::ChatComponent,
+    gui_tick: i32,
+    px: f32,
+    screen_h: f32,
+    opts: &rewo_world::chat::ChatOptions,
+) -> Vec<rewo_gpu::hud::ChatBackdrop> {
+    let chat_px = px * opts.scale as f32;
+    let chat_bottom = ((screen_h / chat_px) - rewo_world::chat::BOTTOM_MARGIN as f32).floor();
+    let entry_height = opts.entry_height() as f32;
+    // `Mth.ceil(this.getWidth() / scale)`.
+    let max_width = (opts.width() as f32 / opts.scale as f32).ceil();
+    let bg = opts.text_background_opacity as f32;
+    let focused = false;
+    chat.visible_lines(gui_tick, focused, opts)
+        .into_iter()
+        .map(|line| {
+            let entry_bottom = chat_bottom - line.index as f32 * entry_height;
+            let entry_top = entry_bottom - entry_height;
+            rewo_gpu::hud::ChatBackdrop {
+                // `fill(-4, …)` under a pose translated by +4.
+                x: (rewo_world::chat::MESSAGE_INDENT as f32 - 4.0) * chat_px,
+                y: entry_top * chat_px,
+                // right - left = (maxWidth + 4 + 4) - (-4).
+                w: (max_width + 12.0) * chat_px,
+                h: entry_height * chat_px,
+                alpha: line.alpha * bg,
             }
         })
         .collect()
@@ -9500,6 +9574,83 @@ mod tests {
         // …and the pitch is the row height, so the two readings cannot be
         // confused by the gap either.
         assert_eq!(lines[0].y, 668.0 - 18.0);
+    }
+
+    /// The backdrop's rect is asymmetric about the text: the pose is
+    /// translated by 4 before `fill(-4, …, maxWidth + 4 + 4, …)`, so the left
+    /// edge lands at absolute 0 and the right at `maxWidth + 12`.
+    #[test]
+    fn the_backdrop_is_asymmetric_about_the_text() {
+        let opts = rewo_world::chat::ChatOptions::default();
+        let b = super::chat_backdrops(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts);
+        assert_eq!(b.len(), 1);
+        // Four pixels left of the text, which sits at 4.
+        assert_eq!(b[0].x, 0.0);
+        // …and eight past where a full-width line can reach, not four.
+        assert_eq!(b[0].w, 320.0 + 12.0);
+        // Centring it — the tidy reading — would put the left edge at -6.
+        assert_ne!(b[0].x, -6.0);
+    }
+
+    /// A row's fill spans its whole `entryHeight` and sits directly under the
+    /// row's text, so the two derivations agree about where a row is.
+    #[test]
+    fn each_fill_covers_its_own_row_and_meets_the_next() {
+        let opts = rewo_world::chat::ChatOptions::default();
+        let c = chat_fixture(3, 0);
+        let b = super::chat_backdrops(&c, 0, 1.0, 720.0, &opts);
+        let l = super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3]);
+        assert_eq!(b.len(), l.len());
+        for i in 0..b.len() {
+            assert_eq!(b[i].h, 9.0);
+            // The text's top edge is inside its own fill.
+            assert!(b[i].y <= l[i].y && l[i].y < b[i].y + b[i].h, "row {i}");
+        }
+        // Rows tile with no gap: each fill's bottom is the next one's top.
+        for i in 1..b.len() {
+            assert_eq!(b[i - 1].y + b[i - 1].h, b[i].y);
+        }
+    }
+
+    /// The fill's alpha is `alpha * backgroundOpacity`, and the text's is
+    /// `alpha * (chatOpacity * 0.9 + 0.1)` — **different multipliers**. At
+    /// "Text Background: 0" the fill vanishes while the text stays visible.
+    #[test]
+    fn the_fill_and_the_text_use_different_opacity_multipliers() {
+        let mut opts = rewo_world::chat::ChatOptions::default();
+        let c = chat_fixture(1, 0);
+        // Default: background 0.5, text 1.0.
+        assert_eq!(super::chat_backdrops(&c, 0, 1.0, 720.0, &opts)[0].alpha, 0.5);
+        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3])[0].alpha, 1.0);
+        opts.text_background_opacity = 0.0;
+        assert_eq!(super::chat_backdrops(&c, 0, 1.0, 720.0, &opts)[0].alpha, 0.0);
+        // The text is untouched by it — a shared multiplier would zero both.
+        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3])[0].alpha, 1.0);
+    }
+
+    /// The fade reaches the fill too, so a message dims its own backdrop with
+    /// it rather than leaving a black bar behind.
+    #[test]
+    fn the_fade_reaches_the_backdrop() {
+        let opts = rewo_world::chat::ChatOptions::default();
+        let c = chat_fixture(1, 0);
+        // 190 ticks: half through the fade, squared -> 0.25, times bg 0.5.
+        let b = super::chat_backdrops(&c, 190, 1.0, 720.0, &opts);
+        assert!((b[0].alpha - 0.125).abs() < 1e-5);
+        // Fully faded rows are not emitted at all.
+        assert!(super::chat_backdrops(&c, 200, 1.0, 720.0, &opts).is_empty());
+    }
+
+    /// `maxWidth` is a CEIL here and a FLOOR in the wrap budget. They agree at
+    /// scale 1 and differ the moment the division is not exact.
+    #[test]
+    fn the_backdrops_max_width_is_a_ceil_not_the_wraps_floor() {
+        let mut opts = rewo_world::chat::ChatOptions::default();
+        opts.scale = 0.75;
+        // 320 / 0.75 = 426.66… -> ceil 427, floor 426.
+        let b = super::chat_backdrops(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts);
+        let chat_px = 0.75_f32;
+        assert!(((b[0].w / chat_px) - (427.0 + 12.0)).abs() < 1e-3, "{}", b[0].w / chat_px);
     }
 
     /// The GUI scale multiplies every offset, including the 40-px margin —

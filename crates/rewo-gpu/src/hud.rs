@@ -16,7 +16,7 @@ use crate::entities::create_texture;
 use crate::world::DEPTH_FORMAT;
 use crate::Gpu;
 
-const VERTEX_STRIDE: u64 = 16; // vec2 pos + vec2 uv
+const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
 const MAX_VERTS: usize = 4096;
 const RING: usize = 2;
 const ATLAS_W: u32 = 256;
@@ -63,6 +63,32 @@ pub struct HudGauges {
     pub cooldowns: [f32; 9],
 }
 
+/// One `graphics.fill` behind a chat row (M109), in **GUI pixels**.
+///
+/// `ChatComponent.extractRenderState` draws these before any text:
+///
+/// ```java
+/// int entryBottom = chatBottom - lineIndex * entryHeight;
+/// int entryTop    = entryBottom - entryHeight;
+/// graphics.fill(-4, entryTop, maxWidth + 4 + 4, entryBottom, ARGB.black(alpha * backgroundOpacity));
+/// ```
+///
+/// The rect is **asymmetric about the text**: the pose is translated by
+/// `MESSAGE_INDENT` (4) before the fill, so `-4` lands at absolute 0 — four
+/// pixels of padding to the left of the text — while `maxWidth + 4 + 4` lands
+/// at `maxWidth + 12`, eight past where a full-width line can reach. Centring
+/// it would be the tidy reading and is not vanilla's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChatBackdrop {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    /// `ARGB.black(alpha * backgroundOpacity)`'s alpha, 0..1. The colour is
+    /// black by construction — `ARGB.black` sets only the alpha byte.
+    pub alpha: f32,
+}
+
 /// A sprite's atlas placement: normalized UV rect + pixel size.
 #[derive(Clone, Copy, Default)]
 struct Rect {
@@ -79,6 +105,15 @@ struct Rect {
 struct Vertex {
     pos: [f32; 2],
     uv: [f32; 2],
+    /// Multiplied into the sampled texel (M109).
+    ///
+    /// `[1.0; 4]` for every blit that existed before the chat backdrop, which
+    /// is an exact no-op: the atlas is an SRGB image, so `texture()` already
+    /// returns linear and a multiply by one changes nothing. The channel
+    /// exists because a *varying* alpha cannot come from a baked texel — the
+    /// cooldown overlay's does, which is why that one needed no colour and the
+    /// chat's fade does.
+    color: [f32; 4],
 }
 
 pub struct HudPass {
@@ -111,6 +146,8 @@ pub struct HudPass {
     /// The HUD pipeline has no per-vertex colour, so the overlay's exact
     /// half-transparent white is baked into the atlas as texels instead.
     cooldown_fill: Rect,
+    /// An opaque white texel, for a tinted solid fill (M109).
+    white_fill: Rect,
 }
 
 impl HudPass {
@@ -166,6 +203,26 @@ impl HudPass {
                 atlas[d + 3] = ((COOLDOWN_OVERLAY_ARGB >> 24) & 0xFF) as u8;
             }
         }
+        // M109: an OPAQUE white patch, which the cooldown one is NOT — it is
+        // `Integer.MAX_VALUE`, i.e. alpha 127, so tinting through it would
+        // halve every alpha asked for. A tint needs a texel that is exactly 1
+        // in all four channels or the multiply is not the caller's colour.
+        let white_x = 8u32;
+        let white_y = 48u32;
+        for row in 0..COOLDOWN_FILL_PX {
+            for col in 0..COOLDOWN_FILL_PX {
+                let d = (((white_y + row) * ATLAS_W + white_x + col) * 4) as usize;
+                atlas[d..d + 4].copy_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+            }
+        }
+        let white_fill = Rect {
+            u0: (white_x as f32 + 1.0) / ATLAS_W as f32,
+            v0: (white_y as f32 + 1.0) / ATLAS_H as f32,
+            u1: (white_x as f32 + 3.0) / ATLAS_W as f32,
+            v1: (white_y as f32 + 3.0) / ATLAS_H as f32,
+            w: 1.0,
+            h: 1.0,
+        };
         // Sample the middle of the patch so nearest filtering cannot pick up a
         // neighbouring (transparent) texel at any scale.
         let cooldown_fill = Rect {
@@ -304,6 +361,7 @@ impl HudPass {
                 xp_background,
                 xp_progress,
                 cooldown_fill,
+                white_fill,
             })
         }
     }
@@ -319,6 +377,7 @@ impl HudPass {
         food: i32,
         slot: u8,
         gauges: HudGauges,
+        chat: &[ChatBackdrop],
     ) {
         let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
         // Auto GUI scale (vanilla: largest integer fitting a ~320×240 base).
@@ -331,25 +390,31 @@ impl HudPass {
         // sprite. `blitSprite(…, 182, 5, 0, 0, left, top, progress, 5)` is a
         // sub-rectangle blit, and the cooldown fill is a solid rect with no
         // sprite size at all, so both need this rather than `quad`.
-        let mut sub_quad = |x: f32, y: f32, qw: f32, qh: f32, r: &Rect, uw: f32| {
-            if qw <= 0.0 || qh <= 0.0 {
-                return;
-            }
-            let (px, py, pw, ph) = (x * scale, y * scale, qw * scale, qh * scale);
-            let u1 = r.u0 + (r.u1 - r.u0) * uw;
-            let corners = [
-                ([px, py], [r.u0, r.v0]),
-                ([px + pw, py], [u1, r.v0]),
-                ([px + pw, py + ph], [u1, r.v1]),
-                ([px, py], [r.u0, r.v0]),
-                ([px + pw, py + ph], [u1, r.v1]),
-                ([px, py + ph], [r.u0, r.v1]),
-            ];
-            for (pos, uv) in corners {
-                if v.len() < MAX_VERTS {
-                    v.push(Vertex { pos, uv });
+        let mut tinted_quad =
+            |x: f32, y: f32, qw: f32, qh: f32, r: &Rect, uw: f32, color: [f32; 4]| {
+                if qw <= 0.0 || qh <= 0.0 {
+                    return;
                 }
-            }
+                let (px, py, pw, ph) = (x * scale, y * scale, qw * scale, qh * scale);
+                let u1 = r.u0 + (r.u1 - r.u0) * uw;
+                let corners = [
+                    ([px, py], [r.u0, r.v0]),
+                    ([px + pw, py], [u1, r.v0]),
+                    ([px + pw, py + ph], [u1, r.v1]),
+                    ([px, py], [r.u0, r.v0]),
+                    ([px + pw, py + ph], [u1, r.v1]),
+                    ([px, py + ph], [r.u0, r.v1]),
+                ];
+                for (pos, uv) in corners {
+                    if v.len() < MAX_VERTS {
+                        v.push(Vertex { pos, uv, color });
+                    }
+                }
+            };
+        // Every blit that predates the chat backdrop is untinted, and goes
+        // through this so adding the parameter could not quietly change one.
+        let mut sub_quad = |x: f32, y: f32, qw: f32, qh: f32, r: &Rect, uw: f32| {
+            tinted_quad(x, y, qw, qh, r, uw, [1.0; 4]);
         };
         // The whole sprite at its own size: the sub-rectangle case with the
         // full UV span. One emitter, so a sprite and a sub-rectangle cannot
@@ -445,13 +510,55 @@ impl HudPass {
             }
         }
 
+        // The chat backdrops go LAST (M109), and the order is transcribed
+        // rather than chosen. `Hud.extractRenderState` calls
+        // `extractHotbarAndDecorations` at line 225 and `extractChat` at 236,
+        // and `extractChat` opens with its own `graphics.nextStratum()` — so
+        // chat is a LATER stratum than the hotbar and draws over it.
+        //
+        // **In the real layout they never overlap**, because `BOTTOM_MARGIN`
+        // is 40 and the hotbar is 22 tall, so the chat box clears it by design.
+        // The order is therefore unobservable in play and observable only to a
+        // gate that deliberately puts a band over the hotbar, which is what
+        // `inventoryshot`'s chat-backdrop witnesses do. An earlier cut emitted
+        // the fills FIRST and justified it in a comment; the comment was
+        // invented and the witness caught it.
+        //
+        // Rewo's chat TEXT is a separate pass drawn after this one, so it lands
+        // on top of these either way — that half is a property of the render
+        // graph rather than of vanilla's ordering.
+        for b in chat {
+            tinted_quad(
+                b.x,
+                b.y,
+                b.w,
+                b.h,
+                &self.white_fill,
+                1.0,
+                // `ARGB.black(a)` is `as8BitChannel(a) << 24` — a FLOOR, and
+                // the colour is black by construction; only the alpha varies.
+                [0.0, 0.0, 0.0, b.alpha],
+            );
+        }
+
+        v.rotate_right(0);
+        v.rotate_right(0);
         self.verts = v.len() as u32;
         if let Some(slice) = self.allocs[self.cursor]
             .as_mut()
             .and_then(|a| a.mapped_slice_mut())
         {
             let bytes: &[u8] =
-                unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 16) };
+                // `VERTEX_STRIDE`, not a literal. A hardcoded 16 beside a
+                // named stride is exactly what M21 found silently uploading
+                // 36 of every 52 bytes in the entity pass, and this line was
+                // that shape until the vertex grew.
+                unsafe {
+                    std::slice::from_raw_parts(
+                        v.as_ptr() as *const u8,
+                        v.len() * VERTEX_STRIDE as usize,
+                    )
+                };
             slice[..bytes.len()].copy_from_slice(bytes);
         }
         if self.verts == 0 {
@@ -550,6 +657,10 @@ fn build_pipeline(
                 .location(1)
                 .format(vk::Format::R32G32_SFLOAT)
                 .offset(8),
+            vk::VertexInputAttributeDescription::default()
+                .location(2)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .offset(16),
         ];
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
             .vertex_binding_descriptions(&bindings)

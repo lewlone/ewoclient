@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: shipped and headlessly verified through M108 (2026-08-07).** `main`
+**Status: shipped and headlessly verified through M109 (2026-08-07).** `main`
 carries all of it and no branch or worktree holds a commit off it; the
 long-standing branch risk (everything from M10 on living on one unmerged
 branch) closed on 2026-07-27 and has stayed closed. See §0.0 for the
@@ -19,7 +19,7 @@ trusting a paragraph.**
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-07 after M108)
+## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-07 after M109)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -38,7 +38,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M108 shipped, all merged to `main`
+### Where it is: M0–M109 shipped, all merged to `main`
 
 **Update (2026-08-03, the M87–M93 container arc).** Seven milestones landed
 after the cold-start audit below, **all merged to `main`**: M87 the
@@ -99,16 +99,16 @@ two bugs found on the way, the last two consumers of M94's menu displacement
 (the hover highlight and the item tooltip) and a furnace whose "crafting slots"
 include three of the player's hotbar slots.
 
-Current measurement, taken 2026-08-07 after M108: **2246 tests, 0 failures**
-(**world 917, net 648, gpu 255, data 212, app 158, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2246). **Breakdowns written before the
+Current measurement, taken 2026-08-07 after M109: **2251 tests, 0 failures**
+(**world 917, net 648, gpu 255, data 212, app 163, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2251). **Breakdowns written before the
 2026-08-06 pass were estimated, not measured**, and did not sum to the totals
 beside them; the totals were always a real sum, so only the splits were wrong.
 Read them off `cargo test`'s own per-binary lines rather than apportioning a
 total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
-152/152, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
+**157/157**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
 34/34, `mobshot` 246/246, **`live --render-check` 26/26 with validation ON and 0
 validation errors, re-run for M108** (M94 is where it earned its keep twice over
 — see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
@@ -137,12 +137,12 @@ closed at M107 and nothing has reopened it.
 The chat subsystem is half built, and its own three remaining pieces are the
 best-scoped work on the board:
 
-* **The backdrop fills and the scrollbar**, which M108d deliberately left. Both
-  need one thing: a **colour channel on `rewo_gpu::hud`'s vertex**, which today
-  is `vec2 pos + vec2 uv`. That is a vertex-format change — stride 16 to 32,
-  both `hud` shaders, and the `v.len() * 16` hardcode sitting beside
-  `VERTEX_STRIDE`, which is the exact shape M21 found silently truncating the
-  entity pass's upload, so check it first. Self-contained and pixel-gradeable.
+* ~~The backdrop fills~~ — **shipped as M109**, along with the colour channel
+  on the HUD vertex and the `v.len() * 16` hardcode beside `VERTEX_STRIDE` that
+  the vertex growing would otherwise have tripped. **The scrollbar turned out
+  not to be deferred but UNREACHABLE**: `extractRenderState` gates it on
+  `isForeground`, and only `ChatScreen` passes `FOREGROUND`. It comes free with
+  the item below and cannot come before it.
 * **A `ChatScreen`.** Nothing can type into the box, focus it, or scroll it, so
   `getHeight(focused)`, `scrollChat` and `recentChat` are built and exercised
   only by their own tests. M93t's `EditBox` is the seam and it already exists.
@@ -17727,3 +17727,98 @@ render fixture using the default line spacing, where `entryHeight - 1` and
   only by the store's own tests. That is the same missing subsystem as the four
   remaining class-C chat packets (`commands`, `command_suggestions`,
   `custom_chat_completions`) and as the recipe book's Enter-key re-place.
+
+### M109 — the chat backdrop, and a harness that could not tell KILLED from broken (2026-08-07)
+
+M108d left the fills with their cost stated rather than hidden:
+`graphics.fill(-4, entryTop, maxWidth + 4 + 4, entryBottom, ARGB.black(alpha *
+backgroundOpacity))` needs a per-quad alpha, and `rewo_gpu::hud`'s vertex was
+`vec2 pos + vec2 uv` with no colour channel. This grows it to 32 bytes.
+
+**The first thing it does is fix the `v.len() * 16` hardcode** that was sitting
+beside `VERTEX_STRIDE` — the shape M21 found silently uploading 36 of every 52
+bytes in the entity pass. It was a latent trap the moment the vertex grew, and
+a mutation restoring it is killed.
+
+The tint needs an **opaque** white texel, which the atlas did not have: the
+cooldown overlay's is `Integer.MAX_VALUE`, i.e. alpha 127, so tinting through
+it halves every alpha asked for.
+
+**A witness caught a wrong ordering that had been justified with invented
+reasoning.** The fills went in first, under everything, with a comment claiming
+that a fill emitted last "would sit over the hotbar it overlaps at small window
+sizes". That is vanilla's behaviour, not a hazard:
+`Hud.extractRenderState` calls `extractHotbarAndDecorations` at line 225 and
+`extractChat` at 236, and `extractChat` opens with its own `nextStratum()`.
+Chat is a later stratum and draws **over** the hotbar. In the real layout they
+never overlap — `BOTTOM_MARGIN` is 40 and the hotbar is 22 tall, so the box
+clears it by design — which makes the order **unobservable in play and
+observable only to a gate that deliberately puts a band there**.
+
+Three more from the transcription:
+
+* The rect is **asymmetric about the text**. The pose is translated by
+  `MESSAGE_INDENT` before the fill, so `-4` lands at absolute 0 (four pixels of
+  padding to the left of the text) while `maxWidth + 4 + 4` lands at
+  `maxWidth + 12`, eight past where a full-width line can reach. Centring it is
+  the tidy reading and is not vanilla's.
+* `maxWidth` here is `Mth.ceil(getWidth() / scale)` where
+  `addMessageToDisplayQueue`'s wrap budget is `Mth.floor` of the same
+  expression. They differ whenever the division is not exact, and vanilla wrote
+  both: the box is never narrower than the text it was wrapped to.
+* The alpha is `alpha * backgroundOpacity`, **not** the text's
+  `alpha * (chatOpacity * 0.9 + 0.1)`. The text's multiplier has a 0.1 floor
+  and the background's has none, so at "Text Background: 0" the fill vanishes
+  entirely while the text stays faintly visible.
+
+**The scrollbar is not deferred — it is unreachable.**
+`extractRenderState` gates it on `isForeground`, and `Hud.extractChat` passes
+`DisplayMode.BACKGROUND`; only `ChatScreen` passes `FOREGROUND`. There is
+nothing to defer until there is a chat screen, so M108d's "needs the same plus
+a second colour" undersold it.
+
+**Gate:** `inventoryshot` 152 → **157 witnesses**, five of them pixel
+read-backs of the pass. They probe the **hotbar** rather than the sky, because
+`CLEAR` is black and so is the fill — cb3 asserts that invisibility rather than
+leaving it implied, so the choice of probe is a recorded fact and not a
+preference a later reader might "tidy". cb1 requires **every** pixel under the
+fill to change, which is the ordering claim: emitted first, the hotbar's opaque
+body masks it and the count reads 966 against 1360, and the `> 800` threshold
+this witness carried first cannot tell the two apart. cb5 predicts the blended
+byte through the sRGB transfer function and shows the naive gamma-space
+prediction differing by 53 — the reading M50 found wrong for the glint. The
+*geometry* is graded separately by unit tests that never touch a GPU, so the
+gate cannot re-derive the rule it checks (M93q).
+
+**Two process failures, both worth more than the feature.**
+
+First: the gate's output was read by grepping for the new witness names, which
+showed `ok` on every line — and the **exit code and summary line were never
+checked**. The gate was RED the whole time: it is fail-closed on a declared
+witness count (`EXPECTED_WITNESSES`) and five had been added without bumping
+it. That is exactly the substring-detector trap §0.0 warns about, committed
+within the same session as reading the warning.
+
+Second, and the reason it was caught: **a mutation battery run against an
+already-failing command reads KILLED for every entry.** Eight mutations across
+two batteries were vacuous and looked like 8/8. A **no-op control** — a
+mutation that must SURVIVE — is what exposed it, and every battery now carries
+one. The batteries were re-run against a green gate afterwards. This is the
+same class as M95's em-dash decode and M104's swallowed compile error: *a
+detector that cannot distinguish "passed" from "could not tell".*
+
+One mutation survived and is equivalent: dropping the shader's `c.a < 0.004`
+discard changes no pixel, because straight alpha blending gives
+`src*0 + dst*1 = dst`. cb4's comment had claimed the discard was *why* a
+zero-alpha fill is byte-identical to none; it is the blend, and the discard
+saves the blend rather than the pixel. Corrected in place.
+
+**Measured:** 2246 → **2251 tests**, 0 failures (world 917, net 648, gpu 255,
+data 212, app 163, mesh 45, proto 11). All 33 serverless gates green **by exit
+code**; demo PNG `2cc56b4acbfb92cb`, byte-identical. 15 mutations after the
+redo: 13 killed, 1 proven equivalent, 1 no-op control that correctly survived.
+
+**Open:** the chat box is complete for what the HUD can show. What is left is
+`ChatScreen` — nothing can type into the box, focus it, or scroll it — which
+also unblocks the scrollbar, the three remaining class-C chat packets, and the
+recipe book's Enter-key re-place.
