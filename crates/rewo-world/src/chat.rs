@@ -612,6 +612,119 @@ impl ChatComponent {
     }
 }
 
+/// One of the scrollbar's two rects (M111), in **chat pixels**, relative to
+/// the pose translated by [`MESSAGE_INDENT`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScrollbarRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    /// 0xRRGGBB, as vanilla writes it.
+    pub rgb: u32,
+    /// `ARGB.color(alpha, rgb)`'s alpha byte.
+    pub alpha: u8,
+}
+
+/// `newMessageSinceScroll ? 13382451 : 3355562` — red once something has
+/// arrived while you were scrolled up, blue otherwise.
+pub const SCROLLBAR_NEW: u32 = 0xCC3333;
+pub const SCROLLBAR_IDLE: u32 = 0x3333AA;
+/// The 1-px highlight the second fill overdraws with (13421772).
+pub const SCROLLBAR_HIGHLIGHT: u32 = 0xCCCCCC;
+
+impl ChatComponent {
+    /// The scrollbar, or `None` when it should not be drawn.
+    ///
+    /// ```java
+    /// if (total > 0 && isForeground) {
+    ///    int chatHeight = count * entryHeight;
+    ///    int virtualHeight = total * entryHeight;
+    ///    int y = this.chatScrollbarPos * chatHeight / total - chatBottom;
+    ///    int height = chatHeight * chatHeight / virtualHeight;
+    ///    if (virtualHeight != chatHeight) {
+    ///       int alpha = y > 0 ? 170 : 96;
+    ///       int color = this.newMessageSinceScroll ? 13382451 : 3355562;
+    ///       int scrollBarStartX = maxWidth + 4;
+    ///       graphics.fill(scrollBarStartX,     -y, scrollBarStartX + 2, -y - height, ARGB.color(alpha, color));
+    ///       graphics.fill(scrollBarStartX + 2, -y, scrollBarStartX + 1, -y - height, ARGB.color(alpha, 13421772));
+    ///    }
+    /// }
+    /// ```
+    ///
+    /// **It is only drawn while the chat screen is open.** `isForeground` is
+    /// `displayMode.foreground`; `Hud.extractChat` passes `BACKGROUND` and only
+    /// `ChatScreen` passes `FOREGROUND` — which is why this could not be
+    /// written before M110 and is not a deferral that was forgotten.
+    ///
+    /// **The bar is 1 px of colour plus 1 px of light grey, not 2 px of
+    /// colour.** The first fill covers columns `start..start+2`; the second is
+    /// written with its x arguments BACKWARDS (`start + 2` to `start + 1`), and
+    /// `GuiGraphicsExtractor.fill` normalises — it swaps whenever `x0 < x1` —
+    /// so it lands on column `start + 1` alone and overdraws the right half of
+    /// what was just painted. Both fills' y arguments are inverted too,
+    /// harmlessly, for the same reason.
+    ///
+    /// **`y > 0` is very nearly unreachable.** It needs
+    /// `scroll * chatHeight / total > chatBottom`, and `chatHeight` is at most
+    /// `linesPerPage * entryHeight` (180 at the defaults) while `chatBottom` is
+    /// `(screenHeight - 40) / scale` — over 200 on any ordinary window. So the
+    /// alpha is 96 in practice and the 170 branch belongs to a very short
+    /// screen. Transcribed rather than folded to a constant, because folding it
+    /// would silently change behaviour on the window where it does fire.
+    ///
+    /// Every division is **integer**, and `count` is the number of lines that
+    /// actually drew — so a page that is not full gives a shorter thumb.
+    pub fn scrollbar(
+        &self,
+        visible_count: i32,
+        chat_bottom: i32,
+        max_width: i32,
+        options: &ChatOptions,
+    ) -> Option<[ScrollbarRect; 2]> {
+        let total = self.trimmed_messages.len() as i32;
+        if total <= 0 {
+            return None;
+        }
+        let entry_height = options.entry_height();
+        let chat_height = visible_count * entry_height;
+        let virtual_height = total * entry_height;
+        if virtual_height == chat_height {
+            return None;
+        }
+        let y = self.scroll * chat_height / total - chat_bottom;
+        let height = if virtual_height == 0 {
+            0
+        } else {
+            chat_height * chat_height / virtual_height
+        };
+        let alpha: u8 = if y > 0 { 170 } else { 96 };
+        let rgb = if self.new_message_since_scroll {
+            SCROLLBAR_NEW
+        } else {
+            SCROLLBAR_IDLE
+        };
+        let start_x = max_width + 4;
+        // Both fills span the same rows; `fill` sorts, so the rect is
+        // `min..max` whichever way round the arguments came.
+        let top = (-y - height).min(-y);
+        let h = height.abs();
+        Some([
+            ScrollbarRect { x: start_x, y: top, w: 2, h, rgb, alpha },
+            ScrollbarRect {
+                // `fill(start + 2, .., start + 1, ..)` normalises to the single
+                // column `start + 1`.
+                x: start_x + 1,
+                y: top,
+                w: 1,
+                h,
+                rgb: SCROLLBAR_HIGHLIGHT,
+                alpha,
+            },
+        ])
+    }
+}
+
 /// `createDeletedMarker` — the replacement is a **system** message with no
 /// signature, so it cannot itself be deleted, and it keeps the original's
 /// `addedTime` so it fades on the original's clock rather than restarting it.
@@ -896,6 +1009,105 @@ mod tests {
         c.add_message(msg(0, "arrival"), &ctx(false));
         assert_eq!(c.scroll(), 5);
         assert!(!c.new_message_since_scroll());
+    }
+
+    // ── the scrollbar ────────────────────────────────────────────────────
+
+    /// Everything the two rects share, from a fixture with a known geometry.
+    fn bar(scroll: i32, new_msg: bool) -> Option<[ScrollbarRect; 2]> {
+        let mut c = ChatComponent::new();
+        for i in 0..30 {
+            c.add_message(msg(0, &format!("m{i}")), &ctx(true));
+        }
+        if scroll > 0 {
+            c.scroll_chat(scroll, &ctx(true));
+        }
+        if new_msg {
+            // The flag is set by a message arriving while scrolled, which is
+            // the only way vanilla sets it.
+            c.add_message(msg(0, "arrival"), &ctx(true));
+        }
+        let opts = ChatOptions::default();
+        let visible = c.visible_lines(0, true, &opts).len() as i32;
+        c.scrollbar(visible, 680, 320, &opts)
+    }
+
+    #[test]
+    fn there_is_no_scrollbar_when_everything_fits() {
+        // `virtualHeight != chatHeight` — with 5 lines on a 20-row page the
+        // two are equal and nothing draws.
+        let mut c = ChatComponent::new();
+        for i in 0..5 {
+            c.add_message(msg(0, &format!("m{i}")), &ctx(true));
+        }
+        let opts = ChatOptions::default();
+        let visible = c.visible_lines(0, true, &opts).len() as i32;
+        assert_eq!(c.scrollbar(visible, 680, 320, &opts), None);
+        // …and none at all with an empty chat (`total > 0`).
+        let empty = ChatComponent::new();
+        assert_eq!(empty.scrollbar(0, 680, 320, &opts), None);
+    }
+
+    #[test]
+    fn the_bar_is_one_pixel_of_colour_and_one_of_light_grey() {
+        // NOT two pixels of colour: the second fill's x arguments are
+        // backwards and `fill` sorts them, so it covers column `start + 1`
+        // alone and overdraws the right half of the first.
+        let [body, highlight] = bar(0, false).unwrap();
+        assert_eq!((body.x, body.w), (324, 2));
+        assert_eq!((highlight.x, highlight.w), (325, 1));
+        assert_eq!(highlight.rgb, SCROLLBAR_HIGHLIGHT);
+        // They share their rows and their alpha.
+        assert_eq!((body.y, body.h), (highlight.y, highlight.h));
+        assert_eq!(body.alpha, highlight.alpha);
+    }
+
+    #[test]
+    fn the_bar_reddens_once_a_message_arrives_while_scrolled() {
+        assert_eq!(bar(5, false).unwrap()[0].rgb, SCROLLBAR_IDLE);
+        assert_eq!(bar(5, true).unwrap()[0].rgb, SCROLLBAR_NEW);
+        // The highlight never changes colour with it.
+        assert_eq!(bar(5, true).unwrap()[1].rgb, SCROLLBAR_HIGHLIGHT);
+    }
+
+    #[test]
+    fn the_thumb_is_the_visible_fraction_and_moves_up_with_the_scroll() {
+        // 30 lines, 20 visible: `chatHeight² / virtualHeight` is
+        // (20*9)² / (30*9) = 32400 / 270 = 120.
+        let [unscrolled, _] = bar(0, false).unwrap();
+        assert_eq!(unscrolled.h, 120);
+        // Scrolling moves it up by `scroll * chatHeight / total`, an INTEGER
+        // division: 5 * 180 / 30 = 30.
+        let [scrolled, _] = bar(5, false).unwrap();
+        assert_eq!(scrolled.y, unscrolled.y - 30);
+        assert_eq!(scrolled.h, unscrolled.h, "the thumb's height is unchanged");
+    }
+
+    #[test]
+    fn the_alpha_is_ninety_six_on_any_ordinary_window() {
+        // `y > 0` needs `scroll * chatHeight / total > chatBottom`, and
+        // chatHeight caps at 180 while chatBottom is 680 here — so the 170
+        // branch is unreachable at this geometry, which is every real one.
+        assert_eq!(bar(0, false).unwrap()[0].alpha, 96);
+        assert_eq!(bar(5, false).unwrap()[0].alpha, 96);
+        // It fires on a very short screen, which is what stops this being
+        // foldable to a constant: chatBottom 1 with a scroll of 5.
+        let mut c = ChatComponent::new();
+        for i in 0..30 {
+            c.add_message(msg(0, &format!("m{i}")), &ctx(true));
+        }
+        c.scroll_chat(5, &ctx(true));
+        let opts = ChatOptions::default();
+        let visible = c.visible_lines(0, true, &opts).len() as i32;
+        assert_eq!(c.scrollbar(visible, 1, 320, &opts).unwrap()[0].alpha, 170);
+    }
+
+    #[test]
+    fn the_bar_sits_past_the_boxs_right_edge() {
+        // `scrollBarStartX = maxWidth + 4`, in the pose translated by
+        // MESSAGE_INDENT — so absolute `maxWidth + 8`.
+        let [body, _] = bar(0, false).unwrap();
+        assert_eq!(body.x, 320 + 4);
     }
 
     // ── recent chat ──────────────────────────────────────────────────────

@@ -4151,6 +4151,20 @@ impl PlaySession {
     /// `pub(crate)`-in-spirit but public: `--render-check` drives it directly
     /// to open the book, which no server does unprompted (M94). Injection into
     /// the production apply, not a shortcut past it — M17's rule.
+    /// Inject one clientbound-play body through the production dispatcher.
+    ///
+    /// `--render-check` drives it to put enough chat on screen for a scrollbar
+    /// to exist at all (M111): the bar's guard is
+    /// `virtualHeight != chatHeight`, so it does not appear until the backlog
+    /// exceeds the focused box's twenty rows, and a run's own join messages
+    /// come to about six. Injection into the production apply, not a shortcut
+    /// past it — M17's rule, and the same door `apply_recipe_book` opens.
+    pub fn inject_packet(&mut self, id: i32, body: &[u8]) {
+        if let Err(e) = self.handle_packet(id, body) {
+            log::warn!("net: injected packet {id} failed: {e}");
+        }
+    }
+
     pub fn apply_recipe_book(&mut self, id: i32, body: &[u8]) {
         let ids = &self.ids;
         if id == ids.cb_play_recipe_book_settings {

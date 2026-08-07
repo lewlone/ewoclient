@@ -605,7 +605,7 @@ pub struct WorldRenderer {
     /// state comes from the packet stream and this comes from the chat store's
     /// own geometry — and because an empty slice is a meaningful value (no
     /// chat on screen) rather than an absent one.
-    chat_backdrops: Vec<crate::hud::ChatBackdrop>,
+    hud_fills: Vec<crate::hud::HudFill>,
     text: Option<TextPass>,
     /// The Velvet type stack (M52b) — real variable-font text, for the pieces
     /// that need per-run styling the bitmap pass cannot express (tooltips
@@ -1136,7 +1136,7 @@ impl WorldRenderer {
                 locator: None,
                 locator_state: None,
                 hud_state: None,
-                chat_backdrops: Vec::new(),
+                hud_fills: Vec::new(),
                 text: None,
                 text_lines: Vec::new(),
                 camera_eye: [0.0; 3],
@@ -2263,8 +2263,8 @@ impl WorldRenderer {
     /// **Replaces**, and an empty slice is how chat says it has nothing to
     /// draw — a stale backdrop under nothing would be a black bar hanging over
     /// the world after the last message faded.
-    pub fn set_chat_backdrops(&mut self, rects: Vec<crate::hud::ChatBackdrop>) {
-        self.chat_backdrops = rects;
+    pub fn set_hud_fills(&mut self, rects: Vec<crate::hud::HudFill>) {
+        self.hud_fills = rects;
     }
 
     /// Attach the locator bar (M83). Independent of `init_hud` because its
@@ -2899,7 +2899,7 @@ impl WorldRenderer {
         }
         if let (Some(hud), Some((health, food, slot, gauges))) = (self.hud.as_mut(), self.hud_state)
         {
-            hud.draw(gpu, cb, extent, health, food, slot, gauges, &self.chat_backdrops);
+            hud.draw(gpu, cb, extent, health, food, slot, gauges, &self.hud_fills);
             if screen.is_none() {
                 // M83 — the contextual bar's slot, which is the XP bar's slot:
                 // `Hud.nextContextualInfoState` picks one of them and the
