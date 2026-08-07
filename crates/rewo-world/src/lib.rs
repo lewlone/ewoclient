@@ -21,6 +21,7 @@ pub mod block_entities;
 pub mod border;
 pub mod cape;
 pub mod celestial;
+pub mod chat;
 pub mod chunk;
 pub mod chunk_cache;
 pub mod conduit;
