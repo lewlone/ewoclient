@@ -85,22 +85,42 @@ in had never scrolled and that the anvil's had never been pinned. **M102** close
 M96's craft-slot approximation and finds that M96 had also walked the wrong
 range and never applied the predicate its own comment named. **M103** renders the
 ghost recipe — the last decoded-but-unrendered packet in this area — and finds
-two `placeRecipe` quirks that no Minecraft grid can distinguish.
+two `placeRecipe` quirks that no Minecraft grid can distinguish. **M104** is the
+**which-of-these overlay** — the popup a right-click opens over a multi-recipe
+cell, which M98 recorded as reported-and-ignored — and finds three clamps that
+round three different ways, an inert constant no fixture can catch, and an
+overlay that is modal, does not close when you pick from it, and is a snapshot
+rather than a view.
 
-Current measurement, taken 2026-08-06 after M103: **2101 tests, 0 failures**
-(**world 828, net 613, gpu 255, data 212, app 137, mesh 45, proto 11** — read
-off the runner per crate, and they sum to 2039). **The earlier breakdowns in
-this paragraph were estimated, not measured**, and did not sum to the totals
+Current measurement, taken 2026-08-07 after M104: **2139 tests, 0 failures**
+(**world 860, net 613, gpu 255, data 212, app 143, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2139). **Breakdowns written before the
+2026-08-06 pass were estimated, not measured**, and did not sum to the totals
 beside them; the totals were always a real sum, so only the splits were wrong.
 Read them off `cargo test`'s own per-binary lines rather than apportioning a
 total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
-three occurrences of the same habit.; `containershot` **89/89**, `inventoryshot` 152/152,
-`itemshot` 75/75, `handshot` 34/34, `mobshot` 246/246, **`live --render-check`
-23/23 with validation ON and 0 validation errors, re-run for M94 and M95** —
-M94 is where it earned its keep twice over (see its §15 entry); demo PNG
-`2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at
-**114 / 0 / 27**, class C **16** (M93y's four packets; M93z–M95 add none).
+three occurrences of the same habit. `containershot` **96/96**, `inventoryshot`
+152/152, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `mobshot`
+246/246, **`live --render-check` 24/24 with validation ON and 0 validation
+errors, re-run for M104** (M94 is where it earned its keep twice over — see its
+§15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
+`REWO_PACKET_COVERAGE.md` is at **114 / 0 / 27**, class C **16** — unchanged by
+M96–M104, which consume packets M93y already decoded.
+
+**What to do next.** The recipe book is nearly closed. What is left of it, in
+descending size: the **which-of-these tooltip** and the page's own recipe
+tooltips (`RecipeBookPage.extractTooltip`, suppressed while the overlay is up);
+`tryPlaceRecipe`'s **`lastPlacedRecipe`** guard, which suppresses a second click
+on the same uncraftable recipe *and returns false from the whole component* so
+the click falls through — reachable from a cell since M98 and from the overlay
+since M104, and never modelled; **`useMaxItems`**, the shift modifier that does
+not reach the book's press; and the **page counter text**, whose model constants
+(`PAGE_LABEL_CENTRE_X`, `page_label_x`) have existed since M93z with nothing
+drawing them. Or leave the book: the 27 absent packets are 11 not-applicable
+plus 16 needing a subsystem (chat input, advancements, resource-pack fetch,
+dialog, map, transfer), and `REWO_FEATURE_SURVEY.md` is the roadmap for
+features rather than milestones.
 
 **A drift worth naming, because it is this section's own documented failure
 mode running in reverse.** At M93z this block's *prose* had been updated
@@ -2415,6 +2435,151 @@ counts, which are the measurement taken at that milestone rather than the
 current total. Both are left as written on purpose: rewriting them would
 falsify the record of what was actually measured when. §0.0 carries the current
 numbers.*
+
+### M104 — the which-of-these overlay, and three clamps that round three different ways (2026-08-07)
+
+M98 made the book clickable and wrote the gap into
+`BookAction::Recipe`'s own doc: *"Rewo has no overlay, so a right-click on a
+multi-recipe cell is reported and does nothing."* This reads that note.
+`OverlayRecipeComponent` is the popup a right-click opens over a cell holding
+more than one recipe — the largest of the four items M103 left, and the only one
+that closes a functional gap rather than adding a label.
+
+**Three clamps, one step size, three different roundings — and only one works.**
+`init` nudges the panel back on screen in whole 25-px button widths, three
+times. The horizontal clamp truncates with a C-style `(int)` cast, so a positive
+quotient floors: an overlay overhanging by 1..24 px is not moved at all, and one
+overhanging by 38 px moves 25 and still overhangs by 13. The bottom clamp takes
+`Mth.ceil` of a **positive** quotient, rounds up, and is the only one guaranteed
+to clear its bound. The top clamp takes `Mth.ceil` of a **negative** one —
+`Mth.ceil` is `(int)Math.ceil(v)`, a true ceiling, so `ceil(-0.6) == 0` and it
+is a complete no-op below one step. The same function over-corrects at the
+bottom and under-corrects at the top, decided by nothing but the sign of its
+argument. The order is load-bearing too: `topPos` is read *after* the bottom
+clamp may already have moved `y`.
+
+**`centerY`'s `+ 13` is inert, and a witness proves it exhaustively.** That
+witness was written the other way round — asserting that dropping the 13 moves
+the overlay — and failed, because its fixture could not express the claim. **No
+fixture can.** Every cell's `y` is `31 + 25r`, so `y ≡ 6 (mod 25)`; the two
+candidate bounds are 13 apart, which puts both overflows in the same `ceil`
+bucket for every cell and every recipe count. A bound moved by less than the
+quantisation step cannot change a quantised answer. It joins
+`extractRenderState`'s unread `int border = 4;` as something vanilla computes
+and never spends — transcribed anyway, because its inertness is a property of
+`step == 25` that a change would wake up.
+
+**It opens on a right-click and accepts only left-clicks.** `RecipeBookPage`
+opens it on `event.button() == 1`; `OverlayRecipeComponent.mouseClicked` returns
+`false` for any button but 0 — so a *second* right-click closes it. Doubled up:
+each `OverlayRecipeButton` is an `AbstractWidget` whose default
+`isValidClickButton` is also `button == 0`.
+
+**An open overlay is modal, and selecting does not close it.**
+`RecipeBookPage.mouseClicked`'s overlay branch is an unconditional `return
+true`, so while it is up a click on the page's arrows, the search box, the tabs
+or the **menu's own slots underneath** all reach the overlay and nothing else.
+And only the else-branch calls `setVisible(false)`, so picking a variant leaves
+the popup up and you can pick another — it reads like an oversight and is what
+makes the feature usable.
+
+**It is a snapshot, not a view.** `init` resolves the entry lists, the craftable
+flags and the ingredient positions once, and nothing refreshes them:
+`updateCollections` rebuilds the page's cells and leaves the overlay alone. So
+crafting something while it is open does not re-sort or re-grey it. Hence
+`Open` is stored rather than recomputed each frame — a recomputed overlay would
+resort itself under the cursor, which looks tidier and is not vanilla.
+
+**Smaller inversions**, each witnessed: the 4-or-5 row width is decided by the
+**total**, so 16 recipes are four rows of four and 17 are four rows of five;
+`min(total, maxRow)` widens the panel where the row count deepens it; the
+padding is asymmetric (4 left / 5 right, 5 top / 4 bottom); the button widget is
+24 on a 25 pitch, so unlike the book's own cells there **is** a gutter a click
+can fall into; `Pos` is an ingredient's **centre**, because `scale(0.375F)` sits
+between two translates and scales the trailing `-8, -8` with it; the ingredient
+cycle is **one** level where `getDisplayStack`'s is two, on the same clock, so a
+cell and the overlay it opened can show different items on one frame; the button
+class is chosen by the **menu** (`menu instanceof AbstractFurnaceMenu`) and each
+class ignores displays it does not match; and the two crafting arms disagree —
+shaped centres through `PlaceRecipeHelper`, shapeless is a bare `i % 3, i / 3`
+with the 3 written as a literal. `isOnlyOption` is `size() == 1`, not `size() >
+1` negated, so an empty collection opens an empty overlay in vanilla too.
+
+**`blitNineSlicedSprite` became tested geometry.** `overlay_recipe` is a 32x32
+nine-slice with border 4 drawn at `cols * 25 + 8` by `rows * 25 + 8` — never
+32x32, so the 1:1 fast path never fires. `rewo_gpu::screen::nine_slice` already
+exists and is deliberately left alone: it belongs to the screen pass, writes
+`Vertex` structs directly, and has **no unit tests at all**; the container pass
+speaks `PanelBlit`, so there is nothing to share at the emission end. What is
+shared is the arithmetic, so `rewo_world::nine_slice` is the arithmetic, alone,
+with tests. **On this sprite the tile-vs-stretch choice is unobservable** —
+its centre is one flat colour and each edge band is constant along the axis it
+repeats on — which is worth writing down so a green pixel gate is not read as
+having graded it. Tiled anyway, because it is what vanilla does.
+
+#### Verified
+
+* **2139 tests** (world 860, net 613, gpu 255, data 212, app 143, mesh 45, proto
+  11 — read off the runner per crate before writing this line), 2101 before.
+* `containershot --check` **96/96**, up from 89; `inventoryshot` 152, `itemshot`
+  75, `handshot` 34, `swingshot` 97, `mobshot` 246/246.
+* **`live --render-check` 24/24 with validation ON and 0 validation errors**,
+  7929 frames, from a debug build against a fresh server. r24 is new.
+* Demo PNG SHA-256 `2cc56b4acbfb92cb` — byte-identical to M15 onward.
+* **67 mutations across the milestone, 65 killed, 2 proven equivalent.**
+
+#### The witnesses were wrong nine times and the code twice
+
+Worth recording in full, because the *shapes* repeat:
+
+* **A shadowed binding, 200 lines away.** Three gate witnesses failed at once
+  because `(c0x, c0y)` is already bound in the same block to `grid_slot(0)`, so
+  they probed the recipe **cell's** top-left corner and read 204 —
+  `slot_craftable`'s corner, showing through the panel's own transparent corner
+  texels — while the render was correct all along. The rename then **missed
+  one**, because it uses `c0y` alone rather than as a pair.
+* **An `any` that could only see total failure.** `qs.iter().any(|q| q.sx ==
+  29)` was meant to pin both right-hand corners of a nine-slice; there are two,
+  so breaking one leaves the other satisfying the existential.
+* **The same hole twice more**: witnesses pinned the *left* edge band and left
+  the right free, and pinned two of four corners.
+* **Two fixtures that could not express their claim**: a mutant routing the
+  shapeless arm through `place_recipe(3, 3, 3, 3, …)` is equivalent *by
+  construction*, because a 3-wide recipe in a 3-wide grid never centres; and
+  both shaped fixtures were **symmetric** (a filled 3x3, and a centred 1x1 on
+  the diagonal), so an x/y transposition survived them. A 2x1 recipe, which
+  centres on one axis only, is what pins which way round the grid index is read.
+* **A control that depended on what happens to be underneath**, twice in one
+  witness: a button's centre and the recipe cell it covers are both 139.
+* **A witness that counted instead of placing**: "several quads, each with a
+  source rect" is true of a panel sized for one button and true of one built
+  with a zero border, and one of those even leaves the bounding box right.
+
+The two real code defects were both mine and both caught by mutation.
+
+#### Two process notes
+
+* **A killed battery leaves a mutation on disk.** The render battery hit the
+  10-minute tool cap and its `finally` never ran, leaving the draw-order
+  mutation in place — invisible to the build. Caught by grepping for the markers
+  first, exactly as §0.0 says to. Re-run in three chunks.
+* **`cargo run -q` swallowed a compile error**, so a debug print that never
+  appeared read as "the branch was not reached" rather than "it did not build" —
+  the third detector error of this shape in the project's log.
+
+#### Open
+
+* No **tooltip** on an overlay button, and none on a recipe cell either
+  (`RecipeBookPage.extractTooltip`, suppressed while the overlay is up).
+* `tryPlaceRecipe`'s `lastPlacedRecipe` guard is not modelled: clicking the
+  **same uncraftable** recipe twice in a row is suppressed client-side in
+  vanilla and returns `false` from the whole component, letting the click fall
+  through. Reachable from a cell since M98 and from the overlay now; it is one
+  small milestone of its own rather than scope here.
+* `useMaxItems` — the shift modifier still does not reach the book's press.
+* The page counter text (`gui.recipebook.page`), the last of M103's four.
+
+---
 
 ### M103 — the ghost recipe, and two vanilla quirks no Minecraft grid can show (2026-08-06)
 
