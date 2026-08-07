@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: shipped and headlessly verified through M104 (2026-08-07).** `main`
+**Status: shipped and headlessly verified through M108 (2026-08-07).** `main`
 carries all of it and no branch or worktree holds a commit off it; the
 long-standing branch risk (everything from M10 on living on one unmerged
 branch) closed on 2026-07-27 and has stayed closed. See §0.0 for the
@@ -19,7 +19,7 @@ trusting a paragraph.**
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-07 after M104)
+## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-07 after M108)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -38,7 +38,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M104 shipped, all merged to `main`
+### Where it is: M0–M108 shipped, all merged to `main`
 
 **Update (2026-08-03, the M87–M93 container arc).** Seven milestones landed
 after the cold-start audit below, **all merged to `main`**: M87 the
@@ -99,9 +99,9 @@ two bugs found on the way, the last two consumers of M94's menu displacement
 (the hover highlight and the item tooltip) and a furnace whose "crafting slots"
 include three of the player's hotbar slots.
 
-Current measurement, taken 2026-08-07 after M107: **2161 tests, 0 failures**
-(**world 874, net 613, gpu 255, data 212, app 151, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2161). **Breakdowns written before the
+Current measurement, taken 2026-08-07 after M108: **2246 tests, 0 failures**
+(**world 917, net 648, gpu 255, data 212, app 158, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2246). **Breakdowns written before the
 2026-08-06 pass were estimated, not measured**, and did not sum to the totals
 beside them; the totals were always a real sum, so only the splits were wrong.
 Read them off `cargo test`'s own per-binary lines rather than apportioning a
@@ -109,11 +109,11 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 152/152, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` 25/25 with validation ON and 0
-validation errors, re-run for M107** (M94 is where it earned its keep twice over
+34/34, `mobshot` 246/246, **`live --render-check` 26/26 with validation ON and 0
+validation errors, re-run for M108** (M94 is where it earned its keep twice over
 — see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
-`REWO_PACKET_COVERAGE.md` is at **114 / 0 / 27**, class C **16** — unchanged by
-M96–M107, which consume packets M93y already decoded.
+`REWO_PACKET_COVERAGE.md` is at **115 / 0 / 26**, class C **15** — M96–M107
+consume packets M93y already decoded, and M108 resolved `delete_chat`.
 
 **`live --render-check` now has TWO caller requirements, not one.** r14 needs
 items in the hotbar and **r25 needs a MULTI-PAGE recipe book**, so the staged
@@ -125,29 +125,59 @@ looked green because a previous run's `recipe give` had persisted into the
 world save. **A reused server directory is not a fresh one**; make a new
 directory when a witness's precondition is player state.
 
-**What to do next. The recipe book is CLOSED** — M105 the page counter, M106 the
-cell and ghost tooltips, M107 `tryPlaceRecipe`'s guard and `useMaxItems`. All
-four items the previous handoff listed are in, and so are two bugs found on the
-way (see §15's M105–M107 entry).
+**M108's r26 is deliberately NOT a third requirement** — the run sends its own
+chat line on spawn, so an otherwise unstaged invocation still exercises the
+whole `player_chat` chain. Adding a caller requirement was the easy version and
+a worse one.
 
-Three things around the book are named rather than forgotten, and none is the
-obvious next milestone:
+**What to do next. M108 shipped the chat HUD** — `ChatComponent`, the wrap
+under it, the signature cache, `delete_chat`, and the render. The recipe book
+closed at M107 and nothing has reopened it.
+
+The chat subsystem is half built, and its own three remaining pieces are the
+best-scoped work on the board:
+
+* **The backdrop fills and the scrollbar**, which M108d deliberately left. Both
+  need one thing: a **colour channel on `rewo_gpu::hud`'s vertex**, which today
+  is `vec2 pos + vec2 uv`. That is a vertex-format change — stride 16 to 32,
+  both `hud` shaders, and the `v.len() * 16` hardcode sitting beside
+  `VERTEX_STRIDE`, which is the exact shape M21 found silently truncating the
+  entity pass's upload, so check it first. Self-contained and pixel-gradeable.
+* **A `ChatScreen`.** Nothing can type into the box, focus it, or scroll it, so
+  `getHeight(focused)`, `scrollChat` and `recentChat` are built and exercised
+  only by their own tests. M93t's `EditBox` is the seam and it already exists.
+  This is the same missing subsystem as the three remaining class-C chat
+  packets (`commands`, `command_suggestions`, `custom_chat_completions`) and as
+  the recipe book's Enter-key re-place, so it unblocks more than chat.
+* **The decoration** — `boundChatType.decorate`, which turns a message into
+  `<Steve> hi` and is the most visible thing chat is still missing. M78
+  recorded the blocker: the `minecraft:chat_type` registry's contents from
+  configuration `registry_data`, plus the language table. **Both halves are now
+  reachable** (M42 parses one datapack registry, M54 loads the language map),
+  so this is a scheduling decision rather than a wall — but check that before
+  relying on it.
+
+Two items from the pre-M108 handoff are unchanged and still named rather than
+forgotten:
 
 * **`AbstractRecipeBookScreen.isHovering`'s narrow-window override**, which
-  returns false for every slot while the book covers the menu. It is ONE
-  predicate with five consumers — the slot highlight, the item tooltip, the
-  ghost tooltip, and the number/Q/F keyboard actions — so it is its own change,
-  not a rider on a tooltip.
-* **A key path into the book**, which Rewo has never had: `keyPressed`'s
-  `isSelection` branch re-places `lastRecipe` on Enter/Space/KP-Enter, and Esc
-  closes the book on a narrow window. Adjacent to the chat-input cluster, which
-  is the same missing subsystem.
+  returns false for every slot while the book covers the menu. ONE predicate
+  with five consumers — the slot highlight, the item tooltip, the ghost
+  tooltip, and the number/Q/F keyboard actions — so it is its own change, not a
+  rider on a tooltip. Small, self-contained, and currently a real divergence.
 * The **which-of-these overlay's own tooltips**.
 
-Otherwise, leave the book. The 27 absent packets are 11 not-applicable plus 16
-needing a subsystem (chat input, advancements, resource-pack fetch, dialog, map,
-transfer), so **the next unit of work there is a subsystem, not a packet**; and
-`REWO_FEATURE_SURVEY.md` is the roadmap for features rather than milestones.
+Otherwise: **AUDIO is the largest single gap** and the one with the most demand
+behind it in `REWO_FEATURE_SURVEY.md` (~117M downloads). M63/M64/M66 decoded
+the packets, built the 1,968-entry sound registry and the weighted-variant
+index from the asset index, and deliberately stopped before playback — decoding
+needs no listening and making a noise does. That split is the task: pick a
+crate, a device, a mixer, and vanilla's attenuation. It is the first Rewo
+milestone that **cannot** be headlessly verified end to end, so decide up front
+what the gate asserts and say plainly what it does not.
+
+The 26 absent packets are 11 not-applicable plus 15 needing a subsystem, so
+picking work there still means choosing a subsystem rather than a packet.
 
 **A drift worth naming, because it is this section's own documented failure
 mode running in reverse.** At M93z this block's *prose* had been updated
@@ -17546,3 +17576,154 @@ stream, and inventing one would be testing the harness.
   second of those a screen.
 * No eyeball pass. What this milestone claims is the properties the gate
   measures.
+
+### M108 — the chat HUD, and `delete_chat`'s prerequisite (2026-08-07)
+
+The chat subsystem: `ChatComponent`, the wrap under it, the signature cache
+`delete_chat` cannot be read without, and the render. Before it, chat was
+`chat_log: Vec<String>` on the play session and a HUD that drew the last eight
+entries truncated at 80 characters on a fixed 10-px pitch at full alpha
+forever; `player_chat` was a prefix parse that read a third of its body and
+threw the signature away.
+
+**The two `splitLines` overloads are different functions** (M108a). M85
+transcribed `splitLines(String, int, Style)` for the disconnect reason;
+`ComponentRenderUtils.wrapComponents` — which every chat message goes through —
+calls the `FormattedText` one. They share `LineBreakFinder`, so every break
+lands in the same place, and they disagree twice:
+
+* the flag is **`isWrapped = !isNewLine`**, assigned for the *next* line, so a
+  width wrap indents its continuation and an explicit newline does not. The
+  obvious model — "continuation = index > 0" — is wrong exactly for multi-line
+  messages, which is the case nobody tries first;
+* **a trailing newline yields TWO lines.** `getRemainder()` returns null rather
+  than empty once `splitAt` removed the last part, which reaches
+  `else if (forceNewLine) output.accept(EMPTY, false)`. A break on a trailing
+  *space* does not, because `forceNewLine` is only ever assigned `isNewLine`.
+
+The shared finder moved out verbatim and `disconnect_screen::split_lines` now
+calls it; its public path and its tests are untouched, and
+`break_positions_agree_with_the_string_overload` pins the shared half.
+
+**`forEachLine` emits top-row-first** (M108b) — the loop counts *down* and a
+row's y is `chatBottom - i * entryHeight`, so the largest index is the highest
+row. Both of my first assertions had it backwards; the code was right. The
+order is load-bearing rather than cosmetic: the tag-icon pass accumulates
+`hoveredOverCurrentMessage` across a message's lines and resets it on
+`endOfEntry`, which sits at index 0, the bottom one.
+`addMessageToDisplayQueue` `addFirst`s a message's lines in order, so a
+three-line message is stored as `[line2, line1, line0]` and the descending walk
+puts them back into reading order.
+
+`allMessages` and `trimmedMessages` are capped at 100 **independently** and
+count different things, so a chat of two-line messages hits the line cap at 50
+messages and `refreshTrimmedMessages` can drop the oldest entirely. The fade is
+a hold, not a ramp — `t = 1 - delta/200; t *= 10; clamp; t*t` holds full alpha
+for 180 ticks and falls over the last 20. `scrollChat`'s two clamps are
+ordered: the top one can drive the position negative when fewer lines than a
+page exist, and the bottom one rescues it. `entryBottomToMessageY` is
+`round(8*(s+1) - 4*s)`, two terms moving in opposite directions — and both
+`entryHeight - 1` and `8*(s+1)` agree with it at the default spacing of 0,
+which is where a fixture sits unless told otherwise. `getWidth` and `getHeight`
+each declare a `max` and a `min` local and use neither, two more inert locals
+beside M104's `int border = 4`.
+
+**`delete_chat` cannot be read without a `MessageSignatureCache`** (M108c).
+`MessageSignature.Packed.read` is `readVarInt() - 1`; wire `0` means 256 inline
+bytes and anything else is an **index into the client's own cache**, fed by
+every `player_chat` on receipt — before anything decides whether to *show* the
+message, because a later deletion may address a signature whose index that push
+assigned. The cache is a move-to-front LRU that dedupes, not a ring: each slot
+takes `queue.removeLast()` and the displaced entry goes back on the **front**
+unless it is among the arrivals, in which case it is dropped and everything
+below it moves up. `unpack` is unchecked in vanilla and throws on a hostile id;
+here it returns `None`, and the low-side half is load-bearing rather than
+defensive because `varint()` returns an i32 and a five-byte varint decodes
+negative.
+
+Four more from the same walk:
+
+* `system_chat`'s **`overlay` bool** was read and discarded, and it routes to
+  `handleOverlay` — the **action bar** — so every `/title actionbar` line was
+  landing in the chat log.
+* `showMessageToPlayer`'s two branches render **different content**: an empty
+  mask shows `decoratedContent()` (the unsigned override when there is one), a
+  non-empty one re-decorates `signedContent()`, because the mask's bit indices
+  only line up with the string that was signed.
+* `FilterMask.isEmpty()` is `PASS_THROUGH`, **not** "no bits set", so an
+  all-clear partial mask still suppresses the override.
+* The tag is judged on the message before and independently of that branch, so
+  a masked message from a server that also rewrote it renders from the signed
+  content and is still flagged `Modified` because of the rewrite the reader
+  never sees.
+
+**The drain was the thing nothing witnessed** (M108d). A mutation that made
+`apply_chat_events` iterate an empty vec survived the whole suite — chat would
+have rendered empty forever with every test green, M86 in miniature. The loop
+lived on `PlaySession`, which owns a socket and has no test module anywhere in
+the repo (M71's finding). It is now a free function over plain values with the
+session keeping a five-line adapter — M97's lesson, and the fifth application
+of it. `ChatComponent.tick` runs **outside** the batch loop: inside it, a
+deletion queued by its own batch is retried by that batch and the 60-tick guard
+is defeated, and a frame with no packets never advances a pending one.
+
+**Deliberately not drawn:** the backdrop fills and the scrollbar.
+`graphics.fill(-4, entryTop, maxWidth + 4 + 4, entryBottom, ARGB.black(alpha *
+backgroundOpacity))` needs a per-quad alpha, and `rewo_gpu::hud`'s vertex is
+`vec2 pos + vec2 uv` with **no colour channel** — the cooldown overlay takes
+its tint from a texel baked into the atlas, which cannot carry a varying fade.
+That is a vertex-format change (stride 16 to 32, both `hud` shaders, and the
+`v.len() * 16` hardcode sitting beside `VERTEX_STRIDE`, the shape M21 found
+silently truncating the entity pass's upload) and is its own step. The text
+half is complete, and the fade works today only because `OwnedTextLine::alpha`
+already existed — its doc comment reads "chat fades old lines", written before
+there was a chat that faded.
+
+**Gate:** `live --render-check` 25/25 to **26/26**, validation ON, 0 validation
+errors, run twice against a fresh server directory on a free port (stopped and
+removed after). r26 sends its own chat line rather than becoming a third caller
+requirement beside r14's hotbar and r25's recipe book, and takes its count from
+the production derivation rather than re-deriving `chat_lines` — a gate that
+recomputes the rule it grades agrees with any implementation (M93q). Its
+7377-of-7449 reading looked like the shape M89 warns about and was checked
+rather than accepted: `RENDER_CHECK_SECONDS` is 8, i.e. 160 ticks, and the fade
+starts at 180, so nothing this run receives *can* fade. **r26 is structurally
+blind to the fade**, which is now written into the witness; the fade is pinned
+by unit tests on both sides of the seam instead.
+
+**Measured:** 2161 to **2246 tests**, 0 failures (world 917, net 648, gpu 255,
+data 212, app 158, mesh 45, proto 11 — read off the runner per crate). All 33
+serverless gates green by exit code; demo PNG `2cc56b4acbfb92cb`,
+byte-identical. `REWO_PACKET_COVERAGE.md` 114/0/27 to **115/0/26**, class C 16
+to 15 — its machine check caught the drift the moment the packet resolved,
+which is what M74 built it for, and its §0 prose was stale against its own
+table again in the same pass.
+
+**36 mutations, 35 killed, 1 proven equivalent.** Four survived first, and the
+split is the useful part. One was **equivalent by construction**: the trailing
+empty line's literal `false` is redundant in vanilla too, because `forceNewLine`
+and `isWrapped` are written from the same `isNewLine` in opposite senses at the
+same point, so reaching that branch already implies the value — an exhaustive
+proof of inertness replaced the single example. **The other three were weak
+fixtures**, each sitting exactly where the two candidate readings agree: a
+bounds-check witness asking an *empty* cache (where checked and unchecked both
+answer `None`); a cap witness asserting only `is_err()` against a *truncated*
+body (which errors either way, only the error's shape differing); and every
+render fixture using the default line spacing, where `entryHeight - 1` and
+`entryBottomToMessageY` are both 8.
+
+**Open:**
+
+* The backdrop and the scrollbar, above.
+* **The decoration** — `boundChatType.decorate`, which turns a message into
+  `<Steve> hi`. M78 recorded the blocker and it is unchanged: the
+  `minecraft:chat_type` registry's contents from configuration `registry_data`,
+  which Rewo does not parse for that registry, plus the language table
+  `rewo-net` cannot see. Both halves are now *reachable* (M42 parses one
+  datapack registry, M54 loads the language map), so this is a scheduling
+  decision rather than a wall.
+* **No `ChatScreen`.** Nothing can type into the box, focus it, or scroll it —
+  `getHeight(focused)`, `scrollChat` and `recentChat` are all built and driven
+  only by the store's own tests. That is the same missing subsystem as the four
+  remaining class-C chat packets (`commands`, `command_suggestions`,
+  `custom_chat_completions`) and as the recipe book's Enter-key re-place.

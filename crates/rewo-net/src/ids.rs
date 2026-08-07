@@ -439,6 +439,12 @@ pub struct Ids {
     /// routing). Its `Bound` opens with `ByteBufCodecs.**holder**` — `id + 1`,
     /// `0` = inline — not `holderRegistry`.
     pub cb_play_disguised_chat: i32,
+    /// `ClientboundDeleteChatPacket` (M108) — a single `MessageSignature.Packed`
+    /// and nothing else. **`Packed.read` is `readVarInt() - 1`**, so wire `0`
+    /// means 256 inline bytes and anything else is an index into the client's
+    /// own `MessageSignatureCache`. That is why this packet could not be
+    /// handled before there was a cache to index: see [`crate::chat_wire`].
+    pub cb_play_delete_chat: i32,
     /// `ClientboundGameRuleValuesPacket` — a counted map of
     /// `ResourceKey<GameRule>` → string.
     pub cb_play_game_rule_values: i32,
@@ -703,6 +709,7 @@ impl Ids {
             cb_play_bundle_delimiter: req!(p, P, C, "bundle_delimiter"),
             cb_play_custom_payload: req!(p, P, C, "custom_payload"),
             cb_play_disguised_chat: req!(p, P, C, "disguised_chat"),
+            cb_play_delete_chat: req!(p, P, C, "delete_chat"),
             cb_play_game_rule_values: req!(p, P, C, "game_rule_values"),
             cb_play_player_combat_end: req!(p, P, C, "player_combat_end"),
             cb_play_player_combat_enter: req!(p, P, C, "player_combat_enter"),

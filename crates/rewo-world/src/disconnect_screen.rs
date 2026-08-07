@@ -240,37 +240,19 @@ impl DisconnectLabels {
 /// those changes *where* a break lands only for text this screen does not
 /// receive — a disconnect reason is a short plain sentence — and each is a
 /// larger subsystem than the wrap.
+///
+/// **This is the `String` overload.** M108 needed the `FormattedText` one, and
+/// they are not the same function — see [`crate::string_splitter`], which owns
+/// the shared `LineBreakFinder` both call and documents where the two diverge.
+/// The sweep below moved there verbatim; every break lands where it did.
 pub fn split_lines(text: &str, max_width: i32, width_of: &dyn Fn(&str) -> i32) -> Vec<String> {
-    let max_width = max_width.max(1);
     let bytes: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
     let mut start = 0usize;
     while start < bytes.len() {
-        let mut width = 0i32;
-        let mut had_visible = false;
-        let mut last_space: Option<usize> = None;
-        let mut split: Option<usize> = None;
-        let mut next_char = start;
-        for i in start..bytes.len() {
-            let c = bytes[i];
-            if c == '\n' {
-                split = Some(i);
-                break;
-            }
-            if c == ' ' {
-                last_space = Some(i);
-            }
-            let cw = width_of(&c.to_string());
-            width += cw;
-            if !had_visible || width <= max_width {
-                had_visible |= cw != 0;
-                next_char = i + 1;
-            } else {
-                split = Some(last_space.unwrap_or(i));
-                break;
-            }
-        }
-        let Some(line_break) = split else {
+        let Some(line_break) = crate::string_splitter::find_line_break(
+            &bytes, start, max_width, width_of,
+        ) else {
             // `endOfText` — the whole remainder is one line.
             out.push(bytes[start..].iter().collect());
             break;
@@ -283,7 +265,6 @@ pub fn split_lines(text: &str, max_width: i32, width_of: &dyn Fn(&str) -> i32) -
         };
         out.push(bytes[start..line_break].iter().collect());
         start = adjusted;
-        let _ = next_char;
     }
     if out.is_empty() {
         // A zero-length message is one empty line, which is what

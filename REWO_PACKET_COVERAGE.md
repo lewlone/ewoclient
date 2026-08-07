@@ -27,11 +27,11 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 114 of them. 27
+1. **141 clientbound-play packets. Rewo resolves and consumes 115 of them. 26
    are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
    `cb_play_*` field set and the dispatch chain agree exactly, which is a real
    (and slightly surprising) property of this codebase — see §1.
-2. **Class A and class B are both empty.** The 27 gaps split 0 / 0 / 16 / 11
+2. **Class A and class B are both empty.** The 26 gaps split 0 / 0 / 15 / 11
    across pure state, needs-rendering, needs-a-missing-subsystem and
    not-applicable — so every packet Rewo can render *is* rendered, and what is
    left needs a subsystem it has not got or is a reply to something it never
@@ -194,23 +194,23 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **114** |
+| Resolved **and** consumed | **115** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **27** |
+| Not resolved at all | **26** |
 | **Total clientbound-play** | **141** |
 
-The 27 gaps, by class:
+The 26 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
 | **B** needs rendering | **0** | 0% |
-| **C** needs a subsystem Rewo lacks | **16** | 59% |
-| **D** not applicable | **11** | 41% |
+| **C** needs a subsystem Rewo lacks | **15** | 58% |
+| **D** not applicable | **11** | 42% |
 
-**M87 was the first bite out of class C** — which has since gone 23 -> 16, the
+**M87 was the first bite out of class C** — which has since gone 23 -> 15, the
 rest of it taken by M91 (the furnace family), M93s (the stonecutter), M93u (the
-merchant) and M93y (the recipe book's decode). It is a worked example of what
+merchant), M93y (the recipe book's decode) and M108 (`delete_chat`). It is a worked example of what
 that class costs. `open_screen` and `container_set_data` are eleven lines of
 decode between them; what made them class C is that neither means anything
 without a *menu model* — the 25 slot layouts, and an `Inventory` that stops
@@ -488,7 +488,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 28 | `debug/entity_value` | absent | **D** | As above. |
 | 29 | `debug/event` | absent | **D** | As above. |
 | 30 | `debug_sample` | absent | **D** | Remote tick/ping profiler samples for vanilla's F3 chart; requires a serverbound subscription first. |
-| 31 | `delete_chat` | absent | **C** | Needs the signature-keyed chat history. Rewo renders chat lines and keeps no message store to delete from. |
+| 31 | `delete_chat` | handled | `req!` → `cb_play_delete_chat` | **M108.** One `MessageSignature.Packed`, and unreadable without a `MessageSignatureCache`: `Packed.read` is `readVarInt() - 1`, so wire `0` means 256 inline bytes and anything else is an **index into the client's own cache**, fed by every `player_chat` on receipt. Resolving to an empty slot is a no-op; an out-of-range id is too, where vanilla's unchecked `entries[id]` throws. |
 | 32 | `disconnect` | handled | `req!` → `cb_play_disconnect` | |
 | 33 | `disguised_chat` | handled | `req!` → `cb_play_disguised_chat` | **M78.** Decoded whole and appended to the chat log. Its `ChatType.Bound` opens with `ByteBufCodecs.**holder**` (`id + 1`, `0` = inline), not `holderRegistry`. §4 partial — the line is the *raw* message, not the decoration. |
 | 34 | `entity_event` | handled | `req!` → `cb_play_entity_event` | M17. |

@@ -773,7 +773,33 @@ pub struct PlaySession {
     /// `LocalPlayer`'s client-side flight controller: the double-tap toggle and
     /// its `jumpTriggerTime` window.
     pub flight: rewo_world::abilities::FlightControl,
+    /// Every chat line as plain text, cumulative — vanilla's
+    /// `LOGGER.info("[CHAT] {}")`, which `logChatMessage` writes beside the
+    /// `ChatComponent` rather than instead of it. Harnesses count it; the HUD
+    /// does not read it.
     pub chat_log: Vec<String>,
+    /// The structured feed the chat HUD consumes, drained by
+    /// [`Self::take_chat_events`]. Separate from `chat_log` for the reason
+    /// vanilla keeps both: one is an append-only log, the other is a queue
+    /// whose consumer owns the font and the GUI clock the store needs and
+    /// which `rewo-net` cannot see.
+    chat_events: Vec<crate::chat_wire::ChatEvent>,
+    /// `MessageSignatureCache` — 128 slots, fed by every `player_chat` on
+    /// receipt. **`delete_chat` is unreadable without it**: the packet's
+    /// signature is usually a cache index rather than 256 bytes.
+    signature_cache: crate::chat_wire::MessageSignatureCache,
+    /// The clock `ChatTrustLevel.evaluate` compares a message's timestamp
+    /// against, in epoch milliseconds. Set by the caller each tick;
+    /// `rewo-net` reads no wall clock of its own, so a harness driving raw
+    /// packets gets a deterministic trust level.
+    pub chat_clock_millis: i64,
+    /// The chat HUD's store (M108). Lives here because the events that feed
+    /// it do; it is *driven* from the app, which owns the font it wraps with
+    /// and the GUI clock it stamps with — see [`Self::apply_chat_events`].
+    pub chat: rewo_world::chat::ChatComponent,
+    /// `Gui.setOverlayMessage`'s text, from a `system_chat` with `overlay`
+    /// set. `None` until one arrives.
+    pub chat_overlay: Option<String>,
     pub health: f32,
     /// Food level 0..20 (Set Health packet), for the HUD hunger bar.
     pub food: i32,
@@ -1528,6 +1554,11 @@ impl<'a> Connection<'a> {
             abilities: rewo_world::abilities::Abilities::default(),
             flight: rewo_world::abilities::FlightControl::default(),
             chat_log: Vec::new(),
+            chat_events: Vec::new(),
+            signature_cache: crate::chat_wire::MessageSignatureCache::default(),
+            chat_clock_millis: 0,
+            chat: rewo_world::chat::ChatComponent::new(),
+            chat_overlay: None,
             health: 20.0,
             food: 20,
             dead: false,
@@ -2654,8 +2685,18 @@ impl PlaySession {
             // same fidelity: the *raw* message, not the decoration, because
             // decorating needs the `minecraft:chat_type` registry Rewo does not
             // parse.
-            let lines = self.session.take_chat();
-            self.chat_log.extend(lines);
+            // `handleDisguisedChatMessage` adds it with `GuiMessageTag.system()`
+            // and a null signature — it is not a signed player message, so it
+            // can never be the target of a `delete_chat`.
+            for line in self.session.take_chat() {
+                self.chat_log.push(line.clone());
+                self.chat_events.push(crate::chat_wire::ChatEvent::Message {
+                    text: line,
+                    signature: None,
+                    tag: Some(rewo_world::chat::MessageTag::SYSTEM),
+                    source: rewo_world::chat::MessageSource::Player,
+                });
+            }
         } else if crate::route_waypoint(id, body, ids, &mut self.waypoints) {
             // M83 — the locator bar. `handleWaypoint` is two lines: the thread
             // check and `packet.apply(this.waypointManager)`. There is no
@@ -2933,27 +2974,73 @@ impl PlaySession {
             }
         } else if Some(id) == ids.cb_play_system_chat {
             let mut r = PacketReader::new(body);
-            if let Ok(nbt) = r.nbt() {
-                let text = nbt.to_plain_text();
-                if !text.is_empty() {
-                    self.chat_log.push(text);
+            if let Ok(packet) = crate::chat_wire::SystemChat::read(&mut r) {
+                // `handleSystemChat` branches on `overlay`: true goes to
+                // `handleOverlay`, which is `gui.setOverlayMessage` — the
+                // ACTION BAR, not the chat log. Reading the component and
+                // dropping the bool (which is what this arm used to do) put
+                // every `/title actionbar` line into chat.
+                if packet.overlay {
+                    self.chat_events
+                        .push(crate::chat_wire::ChatEvent::Overlay(packet.content));
+                } else if !packet.content.is_empty() {
+                    self.chat_log.push(packet.content.clone());
+                    self.chat_events.push(crate::chat_wire::ChatEvent::Message {
+                        text: packet.content,
+                        signature: None,
+                        tag: Some(rewo_world::chat::MessageTag::SYSTEM_SINGLE_PLAYER),
+                        source: rewo_world::chat::MessageSource::SystemServer,
+                    });
                 }
             }
         } else if Some(id) == ids.cb_play_player_chat {
-            // Parse the useful prefix: sender uuid, index, optional
-            // signature (256 bytes), then the body's message string.
             let mut r = PacketReader::new(body);
-            let parse = (|| -> rewo_proto::Result<String> {
-                let _global_index = r.varint()?;
-                let _sender = r.uuid()?;
-                let _index = r.varint()?;
-                if r.bool()? {
-                    r.skip(256)?;
+            match crate::chat_wire::PlayerChat::read(&mut r) {
+                Ok(chat) => {
+                    // `MessageSignatureCache.push` runs on receipt and BEFORE
+                    // anything decides whether to show the message, because a
+                    // later `delete_chat` may address this signature by the
+                    // index this push assigns it. Feeding the cache only from
+                    // *displayed* messages would leave those indices pointing
+                    // at the wrong signatures.
+                    let last_seen: Vec<Box<crate::chat_wire::Signature>> = chat
+                        .body
+                        .last_seen
+                        .iter()
+                        .filter_map(|p| self.signature_cache.resolve(p))
+                        .collect();
+                    self.signature_cache
+                        .push(&last_seen, chat.signature.as_deref());
+                    let received = self.chat_clock_millis;
+                    if let crate::chat_wire::ChatOutcome::Shown { text, tag } =
+                        crate::chat_wire::show_message(&chat, received)
+                    {
+                        self.chat_log.push(text.clone());
+                        self.chat_events.push(crate::chat_wire::ChatEvent::Message {
+                            text,
+                            signature: chat.signature,
+                            tag,
+                            source: rewo_world::chat::MessageSource::Player,
+                        });
+                    }
                 }
-                r.string(256)
-            })();
-            if let Ok(msg) = parse {
-                self.chat_log.push(msg);
+                Err(e) => log::warn!("net: player_chat decode failed: {e}"),
+            }
+        } else if id == ids.cb_play_delete_chat {
+            let mut r = PacketReader::new(body);
+            match crate::chat_wire::read_delete_chat(&mut r) {
+                // An unresolvable packed id is a no-op rather than an error:
+                // vanilla's `unpack` would return null for an empty slot and
+                // `deleteMessageOrDelay` then finds no message. Rewo also
+                // reaches here for an out-of-range id, where vanilla throws —
+                // see `chat_wire`'s module docs.
+                Ok(packed) => match self.signature_cache.resolve(&packed) {
+                    Some(sig) => self
+                        .chat_events
+                        .push(crate::chat_wire::ChatEvent::Delete(sig)),
+                    None => log::debug!("net: delete_chat named an unknown signature"),
+                },
+                Err(e) => log::warn!("net: delete_chat decode failed: {e}"),
             }
         } else if id == ids.cb_play_disconnect {
             let mut r = PacketReader::new(body);
@@ -4211,6 +4298,45 @@ impl PlaySession {
     /// Draining rather than peeking, because the consumer is "open a screen" —
     /// an idempotent read would re-open it on every frame and reset its
     /// anti-misclick clock forever.
+    /// Apply this frame's chat events to the store.
+    ///
+    /// Split from the decode because the store needs two things `rewo-net`
+    /// cannot see — the font to wrap against and the GUI tick to stamp with —
+    /// and both belong to the app. `gui_tick` is `Gui.getGuiTicks()`, which
+    /// runs at the same 20 Hz as the session tick and is what
+    /// `GuiMessage.addedTime` records.
+    ///
+    /// `ChatComponent.tick` runs **after** the events, so a deletion queued
+    /// this frame is not also retried this frame — `processMessageDeletionQueue`
+    /// is a separate `tick()` in vanilla for the same reason.
+    pub fn apply_chat_events(
+        &mut self,
+        gui_tick: i32,
+        ctx: &rewo_world::chat::WrapContext<'_>,
+    ) {
+        let events = std::mem::take(&mut self.chat_events);
+        if let Some(overlay) =
+            crate::chat_wire::apply_chat_events(&mut self.chat, events, gui_tick, ctx)
+        {
+            self.chat_overlay = Some(overlay);
+        }
+    }
+
+    /// Drain the chat events decoded since the last call.
+    ///
+    /// A drain rather than a snapshot because the consumer *applies* them —
+    /// a message is added to the store, an overlay replaces the action bar,
+    /// a deletion mutates a message already in it — and replaying any of
+    /// those would duplicate or re-delete.
+    pub fn take_chat_events(&mut self) -> Vec<crate::chat_wire::ChatEvent> {
+        std::mem::take(&mut self.chat_events)
+    }
+
+    /// The signature cache, for witnesses. Fed by every `player_chat`.
+    pub fn signature_cache(&self) -> &crate::chat_wire::MessageSignatureCache {
+        &self.signature_cache
+    }
+
     pub fn take_death(&mut self) -> Option<crate::CombatKill> {
         self.death.take()
     }
