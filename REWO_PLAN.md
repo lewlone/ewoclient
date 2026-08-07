@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: shipped and headlessly verified through M110 (2026-08-07).** `main`
+**Status: shipped and headlessly verified through M111 (2026-08-07).** `main`
 carries all of it and no branch or worktree holds a commit off it; the
 long-standing branch risk (everything from M10 on living on one unmerged
 branch) closed on 2026-07-27 and has stayed closed. See §0.0 for the
@@ -19,7 +19,7 @@ trusting a paragraph.**
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-07 after M110)
+## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-07 after M111)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -38,7 +38,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M110 shipped, all merged to `main`
+### Where it is: M0–M111 shipped, all merged to `main`
 
 **Update (2026-08-03, the M87–M93 container arc).** Seven milestones landed
 after the cold-start audit below, **all merged to `main`**: M87 the
@@ -99,9 +99,9 @@ two bugs found on the way, the last two consumers of M94's menu displacement
 (the hover highlight and the item tooltip) and a furnace whose "crafting slots"
 include three of the player's hotbar slots.
 
-Current measurement, taken 2026-08-07 after M110: **2280 tests, 0 failures**
-(**world 943, net 648, gpu 255, data 212, app 166, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2280). **Read each crate's EXIT CODE, not
+Current measurement, taken 2026-08-07 after M111: **2288 tests, 0 failures**
+(**world 949, net 648, gpu 255, data 212, app 168, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2288). **Read each crate's EXIT CODE, not
 just its count**: a crate whose tests fail to compile prints no `test result`
 line at all, contributes 0, and reads as silence — M110 hit exactly that and
 the only signal was the total falling. **Breakdowns written before the
@@ -111,9 +111,9 @@ Read them off `cargo test`'s own per-binary lines rather than apportioning a
 total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
-**157/157**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` 27/27 with validation ON and 0
-validation errors, re-run for M110** (M94 is where it earned its keep twice over
+**158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
+34/34, `mobshot` 246/246, **`live --render-check` 28/28 with validation ON and 0
+validation errors, re-run for M111** (M94 is where it earned its keep twice over
 — see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
 `REWO_PACKET_COVERAGE.md` is at **115 / 0 / 26**, class C **15** — M96–M107
 consume packets M93y already decoded, and M108 resolved `delete_chat`.
@@ -133,6 +133,14 @@ chat line on spawn, so an otherwise unstaged invocation still exercises the
 whole `player_chat` chain. Adding a caller requirement was the easy version and
 a worse one.
 
+**PROBE the port you are about to use, not one you probed earlier.** M111's
+first run reported 27/28 with r25 dead, and the cause was a test server that
+had crashed on `FAILED TO BIND` — the port had been *invented* rather than
+checked. The client ran anyway and most witnesses passed, **because they are
+injected**: the container, the book and the chat all drive themselves, so only
+r25 — which needs a real server to grant recipes — could tell. A gate whose
+witnesses are mostly self-driven can look healthy against nothing.
+
 **What to do next. M108 shipped the chat HUD** — `ChatComponent`, the wrap
 under it, the signature cache, `delete_chat`, and the render. The recipe book
 closed at M107 and nothing has reopened it.
@@ -146,15 +154,15 @@ best-scoped work on the board:
   not to be deferred but UNREACHABLE**: `extractRenderState` gates it on
   `isForeground`, and only `ChatScreen` passes `FOREGROUND`. It comes free with
   the item below and cannot come before it.
-* ~~A `ChatScreen`~~ — **shipped as M110**. `T` and `/` open it, the arrows
-  walk the send history, drafts survive a close, and `focused` stops being a
-  hardcoded `false`. What it leaves: **the scrollbar**, which is now
-  REACHABLE for the first time (`isForeground` is finally true) and is the one
-  piece of `extractRenderState` still untranscribed — small, self-contained,
-  and pixel-gradeable through M109's tint. The three class-C chat packets
-  (`commands`, `command_suggestions`, `custom_chat_completions`) are now the
-  only thing between Rewo and command autocomplete, and the recipe book's
-  Enter-key re-place is unblocked.
+* ~~A `ChatScreen`~~ (M110) and ~~the scrollbar~~ (M111) — both shipped.
+  **Chat is complete for everything vanilla draws without a subsystem Rewo
+  lacks.** What remains all needs one: `CommandSuggestions` (the class-C
+  `commands` tree), clickable chat text (Rewo flattens components at the wire,
+  so there is no `Style` to find), the chat delay queue and its expand link,
+  and the restricted-chat prompt (`ChatAbilities`, a packet Rewo does not
+  decode). The three class-C chat packets are now the only thing between Rewo
+  and command autocomplete, and the recipe book's Enter-key re-place is
+  unblocked.
 * **The decoration** — `boundChatType.decorate`, which turns a message into
   `<Steve> hi` and is the most visible thing chat is still missing. M78
   recorded the blocker: the `minecraft:chat_type` registry's contents from
@@ -17915,3 +17923,80 @@ clickable chat text (Rewo flattens components at the wire, so there is no
 `Style` to find), no chat abilities or restricted prompt, and **the scrollbar
 is now reachable but still not drawn** — `isForeground` is finally true, and
 its geometry is the one piece of `extractRenderState` left untranscribed.
+
+### M111 — the chat scrollbar, and a gate that caught a dead server (2026-08-07)
+
+M110 made this reachable: `extractRenderState` gates the bar on `isForeground`,
+and only `ChatScreen` passes `FOREGROUND`. It was never a deferral that was
+forgotten — there was nothing to defer it from.
+
+**Two findings in eight lines of vanilla:**
+
+* **The bar is 1 px of colour plus 1 px of light grey, not 2 px of colour.**
+  The first fill covers columns `start..start+2`; the second is written with
+  its x arguments **backwards** (`start + 2` to `start + 1`) and
+  `GuiGraphicsExtractor.fill` normalises — it swaps whenever `x0 < x1` — so it
+  lands on column `start + 1` alone and overdraws the right half of what was
+  just painted, with `0xCCCCCC`. Both fills' y arguments are inverted too, for
+  the same reason and just as harmlessly. Reading the first fill as "a 2 px
+  bar" and the second as a separate stripe gives a 3 px bar.
+* **`alpha = y > 0 ? 170 : 96` is very nearly a constant.** It needs
+  `scroll * chatHeight / total > chatBottom`, and `chatHeight` caps at
+  `linesPerPage * entryHeight` (180 at the defaults) while `chatBottom` is
+  `(screenHeight - 40) / scale` — over 200 on any ordinary window. Transcribed
+  rather than folded, and pinned in both directions: a `chatBottom` of 1
+  reaches the 170.
+
+Every division in it is **integer**, and the thumb's height uses the count of
+lines that actually *drew* rather than `linesPerPage`, so a page that is not
+full gives a shorter thumb.
+
+**`ChatBackdrop` became `HudFill` and grew an `rgb`**, because this is the
+first fill whose colour is not black — the name had already drifted through
+three callers (chat rows, input bar, scrollbar). The colour must be handed over
+in **linear** space: the atlas is an SRGB image, so `texture()` has already
+decoded by the time the vertex tint multiplies. **Black is 0 in both spaces and
+hid this for two milestones.** `srgb_bytes_to_linear` is built on `rewo_gpu`'s
+existing per-channel `srgb_to_linear` rather than a second copy of the curve.
+
+**Gate:** `live --render-check` 27/27 → **28/28**, validation ON, 0 errors. r28
+is a strictly narrower claim than r27's — the bar needs a backlog past the
+focused box's twenty rows, and a run's own join messages come to about six, so
+the gate injects 25 `system_chat` bodies through the production dispatcher
+(`PlaySession::inject_packet`, the door `apply_recipe_book` already opened).
+Without them r28 would be a witness over a path the run cannot enter.
+`inventoryshot` 157 → **158**: cb6 asserts a **white** fill brightens the same
+band a black one darkens, because until now every fill was black and `rgb`
+could have been dropped on the floor unnoticed.
+
+**Two process failures, and the gate caught the first.**
+
+**The first `--render-check` run reported 27/28 with r25 dead at 0 frames, and
+the cause was that the test server had crashed at startup.** Port 25703 was
+already in use; a free port was probed once at the start of the session and
+then 25702 and 25703 were **invented** without re-probing. The client ran
+anyway and most witnesses passed, *because they are injected* — the container,
+the book, the chat — so only r25, which needs a real server to grant recipes,
+could tell. **A gate whose witnesses are mostly self-driven can look healthy
+against nothing.** r25 is the one that cannot, and it is why the run failed
+closed instead of certifying. Re-run on a verified-free port: 28/28, exit 0.
+The lesson for §0.0's server recipe: *probe the port you are about to use, not
+one you used earlier.*
+
+**The second was a mutation battery pointed at the wrong instrument.** The
+sRGB pass-through mutation survived `inventoryshot` — correctly, because that
+gate builds its `HudFill` by hand and never calls the conversion, which is
+M92's shape. Re-run against `cargo test -p rewo-app`, the check that claims it,
+it dies. **A mutation must be run against the check that covers it**, and a
+survivor is a question about the instrument as much as about the code.
+
+**Measured:** 2280 → **2288 tests**, 0 failures (world 949, net 648, gpu 255,
+data 212, app 168, mesh 45, proto 11). All 33 serverless gates green by exit
+code; demo PNG `2cc56b4acbfb92cb`, byte-identical. 15 mutations across four
+batteries: 12 killed, 3 no-op controls that correctly survived.
+
+**Open:** chat is complete for everything vanilla draws without a subsystem
+Rewo lacks. What is left needs one: `CommandSuggestions` (the class-C
+`commands` tree), clickable chat text (Rewo flattens components at the wire, so
+there is no `Style` to find), the chat delay queue and its expand link, and the
+restricted-chat prompt (`ChatAbilities`, a packet Rewo does not decode).
