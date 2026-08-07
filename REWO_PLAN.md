@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: shipped and headlessly verified through M111 (2026-08-07).** `main`
+**Status: shipped and headlessly verified through M112 (2026-08-07).** `main`
 carries all of it and no branch or worktree holds a commit off it; the
 long-standing branch risk (everything from M10 on living on one unmerged
 branch) closed on 2026-07-27 and has stayed closed. See §0.0 for the
@@ -19,7 +19,7 @@ trusting a paragraph.**
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-07 after M111)
+## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-07 after M112)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -38,7 +38,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M111 shipped, all merged to `main`
+### Where it is: M0–M112 shipped, all merged to `main`
 
 **Update (2026-08-03, the M87–M93 container arc).** Seven milestones landed
 after the cold-start audit below, **all merged to `main`**: M87 the
@@ -99,9 +99,9 @@ two bugs found on the way, the last two consumers of M94's menu displacement
 (the hover highlight and the item tooltip) and a furnace whose "crafting slots"
 include three of the player's hotbar slots.
 
-Current measurement, taken 2026-08-07 after M111: **2288 tests, 0 failures**
-(**world 949, net 648, gpu 255, data 212, app 168, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2288). **Read each crate's EXIT CODE, not
+Current measurement, taken 2026-08-07 after M112: **2293 tests, 0 failures**
+(**world 949, net 648, gpu 255, data 212, app 173, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2293). **Read each crate's EXIT CODE, not
 just its count**: a crate whose tests fail to compile prints no `test result`
 line at all, contributes 0, and reads as silence — M110 hit exactly that and
 the only signal was the total falling. **Breakdowns written before the
@@ -113,7 +113,7 @@ were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
 34/34, `mobshot` 246/246, **`live --render-check` 28/28 with validation ON and 0
-validation errors, re-run for M111** (M94 is where it earned its keep twice over
+validation errors, re-run for M112** (M94 is where it earned its keep twice over
 — see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
 `REWO_PACKET_COVERAGE.md` is at **115 / 0 / 26**, class C **15** — M96–M107
 consume packets M93y already decoded, and M108 resolved `delete_chat`.
@@ -174,11 +174,14 @@ best-scoped work on the board:
 Two items from the pre-M108 handoff are unchanged and still named rather than
 forgotten:
 
-* **`AbstractRecipeBookScreen.isHovering`'s narrow-window override**, which
-  returns false for every slot while the book covers the menu. ONE predicate
-  with five consumers — the slot highlight, the item tooltip, the ghost
-  tooltip, and the number/Q/F keyboard actions — so it is its own change, not a
-  rider on a tooltip. Small, self-contained, and currently a real divergence.
+* ~~`AbstractRecipeBookScreen.isHovering`'s narrow-window override~~ —
+  **shipped as M112**, along with something larger it turned up: FOUR of its
+  consumers (the click, the double-click detector, the drag and the item-hover
+  highlight) were not using the shared predicate at all, and so ignored the
+  book's 77 px displacement entirely. That is the third occurrence of M89's
+  finding and the first to reach an input path. There is now one conversion
+  (`hovered_menu_slot`) and one visibility predicate (`book_visible_for`), so a
+  consumer that wants either has to ask.
 * The **which-of-these overlay's own tooltips**.
 
 Otherwise: **AUDIO is the largest single gap** and the one with the most demand
@@ -18000,3 +18003,69 @@ Rewo lacks. What is left needs one: `CommandSuggestions` (the class-C
 `commands` tree), clickable chat text (Rewo flattens components at the wire, so
 there is no `Style` to find), the chat delay queue and its expand link, and the
 restricted-chat prompt (`ChatAbilities`, a packet Rewo does not decode).
+
+### M112 — `isHovering`'s narrow-window override, and the same bug in the click path (2026-08-07)
+
+Three consecutive handoffs named `AbstractRecipeBookScreen.isHovering` as "ONE
+predicate with five consumers — its own change, not a rider on a tooltip".
+Going to add it turned up something larger: **four of those consumers were not
+using the shared predicate at all.**
+
+`ScreenState::hovered` converted the cursor through
+`rewo_gpu::container::screen_to_gui_for`, which is `Placement::centred` — no
+book parameter and no displacement. It feeds the **click**, the double-click
+detector, the drag extension and the item-hover highlight. So with the recipe
+book open on a wide window, every one of them resolved the cursor against a
+panel **77 GUI px** from the one the render drew.
+
+M89 recorded that a per-call-site geometry choice is how consumers come to
+disagree, and fixed the click *routing*; M106b recorded it again and fixed the
+highlight and the item tooltip. **This is the third occurrence, and the first
+to reach an input path rather than a tooltip.** The fix is the same shape:
+`ScreenState::hovered` is now a call to `hovered_menu_slot` — the function
+M106b unified — and the four sites pass the book state.
+
+Then the override the handoff asked for:
+
+```java
+return (!this.widthTooNarrow || !this.recipeBookComponent.isVisible())
+       && super.isHovering(left, top, w, h, xm, ym);
+```
+
+Under **379 GUI px** the book does not sit *beside* the menu, it sits **over**
+it — `updateScreenPosition`'s 177 px shift collapses to 0, which M93z already
+records — so vanilla answers "no slot" for every slot rather than letting a
+click reach through the panel covering it. It lives in `hovered_menu_slot`, so
+all seven consumers inherit it at once: the highlight, both tooltips, the
+click, the double-click, the drag, and the number/Q/F actions. (`mouseClicked`'s
+matching swallow was already done — M98 transcribed it.)
+
+**A mutation found the last piece.** `book_visible` needs a `PlaySession`,
+which owns a socket and cannot be constructed in a test (M71's finding), so a
+mutation making a **bookless** menu answer `true` survived the whole suite —
+and that would displace a chest's panel by 77 px and blank its hover on a
+narrow window. The rule is now `book_visible_for(Option<BookType>,
+&BookSettings)` over plain values with a two-line adapter. **M97's lesson,
+applied a sixth time.**
+
+**The regression guard was written before the fix**, and left in place: it
+asserts the hover and the render agree about where slot 9 is on a window wide
+enough for the displacement to exist, with a partner asserting they *differ*
+with the book shut — so the parameter is load-bearing rather than decorative.
+The override's witnesses carry a **control** (the same cursor with the book
+shut *is* over a slot) so the `None` cannot come from a cursor that simply
+missed, and a wide-window partner so the rule is not "the book always
+suppresses the hover".
+
+**Measured:** 2288 → **2293 tests**, 0 failures (app 168 → 173). All 33
+serverless gates green by exit code; demo PNG `2cc56b4acbfb92cb`,
+byte-identical; `live --render-check` **28/28**, validation ON, 0 errors, on a
+**probed** free port (M111's lesson) with r23/r24/r25 confirming the book still
+draws and its page counter still reaches the frame. 10 mutations: 7 killed, 3
+no-op controls that correctly survived.
+
+**A note on where this leaves the recipe-book displacement.** Six call sites
+have now been corrected across three milestones (M89, M106b, M112), each found
+the same way — by someone touching an adjacent feature. The durable fix was
+made here: there is one conversion (`hovered_menu_slot`) and one visibility
+predicate (`book_visible_for`), and a consumer that wants either has to ask.
