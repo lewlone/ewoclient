@@ -189,6 +189,12 @@ pub fn button_pos(i: usize, total: usize) -> (i32, i32) {
     )
 }
 
+/// Button `i`'s top-left in the same space the panel's origin is in.
+pub fn button_origin(panel: (i32, i32), i: usize, total: usize) -> (i32, i32) {
+    let (dx, dy) = button_pos(i, total);
+    (panel.0 + dx, panel.1 + dy)
+}
+
 /// The order the buttons are built in: **every craftable recipe first, then
 /// every uncraftable one**, and the uncraftable half is empty while filtering.
 ///

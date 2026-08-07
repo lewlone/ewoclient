@@ -726,6 +726,23 @@ pub struct BookQuad {
     pub y: i32,
     pub w: i32,
     pub h: i32,
+    /// Which pixels of the sprite this quad takes, or `None` for the whole of
+    /// it stretched to `(w, h)` — which is every quad the book draws except the
+    /// which-of-these overlay's panel (M104).
+    ///
+    /// That panel is the list's one nine-slice, so it arrives as several quads
+    /// sharing a sprite and differing only here. Carried as an `Option` rather
+    /// than always spelling out `(0, 0, w, h)` so the existing quads keep
+    /// saying what they mean: they have no source rect *because* they have no
+    /// choice about it.
+    pub src: Option<(i32, i32, i32, i32)>,
+}
+
+impl BookQuad {
+    /// A quad taking the whole of its sprite — the ordinary case.
+    pub const fn whole(sprite: BookSprite, x: i32, y: i32, w: i32, h: i32) -> Self {
+        Self { sprite, x, y, w, h, src: None }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -737,6 +754,11 @@ pub enum BookSprite {
     PageForward { hovered: bool },
     PageBackward { hovered: bool },
     Filter { furnace: bool, filtering: bool, hovered: bool },
+    /// The which-of-these overlay's nine-sliced backing (M104).
+    OverlayPanel,
+    /// One of its buttons. `furnace` follows the MENU, not the recipe — see
+    /// [`crate::recipe_overlay::grid_positions`].
+    OverlayButton { furnace: bool, craftable: bool, hovered: bool },
 }
 
 /// What a page of the book needs to know to draw itself.
@@ -768,62 +790,108 @@ pub struct BookView {
 /// the final quad without disturbing anything else.
 pub fn book_chrome(view: BookView, slots: &[(bool, bool)], hover: BookHover) -> Vec<BookQuad> {
     let mut out = Vec::with_capacity(2 + view.tabs + view.shown + 2);
-    out.push(BookQuad { sprite: BookSprite::Panel, x: 0, y: 0, w: IMAGE_W, h: IMAGE_H });
+    out.push(BookQuad::whole(BookSprite::Panel, 0, 0, IMAGE_W, IMAGE_H));
 
     for i in 0..view.tabs {
         let selected = i == view.selected_tab;
         let (tx, ty) = tab_position(i as i32);
-        out.push(BookQuad {
-            sprite: BookSprite::Tab { selected },
-            x: tx + tab_x_shift(selected),
-            y: ty,
-            w: TAB_W,
-            h: TAB_H,
-        });
+        out.push(BookQuad::whole(
+            BookSprite::Tab { selected },
+            tx + tab_x_shift(selected),
+            ty,
+            TAB_W,
+            TAB_H,
+        ));
     }
 
     for (i, &(craftable, multiple)) in slots.iter().take(view.shown).enumerate() {
         let (sx, sy) = grid_slot(i);
-        out.push(BookQuad {
-            sprite: BookSprite::Slot(slot_sprite(craftable, multiple)),
-            x: sx,
-            y: sy,
-            w: SLOT_SIZE,
-            h: SLOT_SIZE,
-        });
+        out.push(BookQuad::whole(
+            BookSprite::Slot(slot_sprite(craftable, multiple)),
+            sx,
+            sy,
+            SLOT_SIZE,
+            SLOT_SIZE,
+        ));
     }
 
     let (fwd, back) = page_arrows_visible(view.page, view.total_pages);
     if fwd {
-        out.push(BookQuad {
-            sprite: BookSprite::PageForward { hovered: hover.page_forward },
-            x: PAGE_FORWARD_X,
-            y: PAGE_ARROW_Y,
-            w: PAGE_ARROW_W,
-            h: PAGE_ARROW_H,
-        });
+        out.push(BookQuad::whole(
+            BookSprite::PageForward { hovered: hover.page_forward },
+            PAGE_FORWARD_X,
+            PAGE_ARROW_Y,
+            PAGE_ARROW_W,
+            PAGE_ARROW_H,
+        ));
     }
     if back {
-        out.push(BookQuad {
-            sprite: BookSprite::PageBackward { hovered: hover.page_backward },
-            x: PAGE_BACK_X,
-            y: PAGE_ARROW_Y,
-            w: PAGE_ARROW_W,
-            h: PAGE_ARROW_H,
-        });
+        out.push(BookQuad::whole(
+            BookSprite::PageBackward { hovered: hover.page_backward },
+            PAGE_BACK_X,
+            PAGE_ARROW_Y,
+            PAGE_ARROW_W,
+            PAGE_ARROW_H,
+        ));
     }
 
-    out.push(BookQuad {
-        sprite: BookSprite::Filter {
+    out.push(BookQuad::whole(
+        BookSprite::Filter {
             furnace: view.furnace_family,
             filtering: view.filtering,
             hovered: hover.filter,
         },
-        x: FILTER_X,
-        y: FILTER_Y,
-        w: FILTER_W,
-        h: FILTER_H,
-    });
+        FILTER_X,
+        FILTER_Y,
+        FILTER_W,
+        FILTER_H,
+    ));
+    out
+}
+
+/// The which-of-these overlay's chrome, in book-relative GUI pixels (M104).
+///
+/// A separate list from [`book_chrome`] rather than a tail of it, because
+/// `RecipeBookPage.extractRenderState` calls `graphics.nextStratum()` before
+/// the overlay — it is a layer above every cell, arrow and tab, and merging the
+/// two would leave that ordering to whoever happened to append last.
+///
+/// `craftable` is one flag per button **in the overlay's own promoted order**
+/// ([`crate::recipe_overlay::entries`]), not the collection's.
+pub fn overlay_chrome(
+    origin: (i32, i32),
+    craftable: &[bool],
+    furnace: bool,
+    hovered: Option<usize>,
+) -> Vec<BookQuad> {
+    use crate::recipe_overlay as ro;
+    let total = craftable.len();
+    let (pw, ph) = ro::panel_size(total);
+    let mut out: Vec<BookQuad> = crate::nine_slice::quads(
+        (origin.0, origin.1, pw, ph),
+        (ro::PANEL_SHEET, ro::PANEL_SHEET),
+        crate::nine_slice::Border::all(ro::PANEL_BORDER),
+    )
+    .into_iter()
+    .map(|q| BookQuad {
+        sprite: BookSprite::OverlayPanel,
+        x: q.dx,
+        y: q.dy,
+        w: q.w,
+        h: q.h,
+        src: Some((q.sx, q.sy, q.sw, q.sh)),
+    })
+    .collect();
+    for (i, &c) in craftable.iter().enumerate() {
+        let (bx, by) = ro::button_origin(origin, i, total);
+        out.push(BookQuad::whole(
+            BookSprite::OverlayButton { furnace, craftable: c, hovered: hovered == Some(i) },
+            bx,
+            by,
+            ro::BUTTON_SIZE,
+            ro::BUTTON_SIZE,
+        ));
+    }
     out
 }
 
@@ -1446,13 +1514,13 @@ mod tests {
     fn hover_reaches_the_arrows_and_the_filter_and_nothing_else() {
         let hover = BookHover { page_forward: true, page_backward: false, filter: true };
         let q = book_chrome(view(20, 3, 1), &[], hover);
-        assert!(q.contains(&BookQuad {
-            sprite: BookSprite::PageForward { hovered: true },
-            x: PAGE_FORWARD_X,
-            y: PAGE_ARROW_Y,
-            w: PAGE_ARROW_W,
-            h: PAGE_ARROW_H,
-        }));
+        assert!(q.contains(&BookQuad::whole(
+            BookSprite::PageForward { hovered: true },
+            PAGE_FORWARD_X,
+            PAGE_ARROW_Y,
+            PAGE_ARROW_W,
+            PAGE_ARROW_H,
+        )));
         assert!(q
             .iter()
             .any(|b| b.sprite == BookSprite::PageBackward { hovered: false }));
@@ -1921,5 +1989,108 @@ mod tests {
     fn the_query_is_lowercased_by_the_ROOT_locale() {
         assert_eq!(search_query("IRON Ingot"), "iron ingot");
         assert_eq!(search_query(""), "");
+    }
+
+    // --- M104, the which-of-these overlay's chrome ---
+
+    /// Its panel is the list's ONE nine-slice, and it comes before the buttons.
+    ///
+    /// The panel's **geometry** is pinned against `nine_slice::quads` for the
+    /// rect and border this is meant to pass it, not merely counted. Two
+    /// mutations survived an earlier cut that only asserted "several quads,
+    /// each with a source rect": one sized the panel for a single button
+    /// regardless of the count, the other dropped the border to zero. Both
+    /// leave the quads several and sourced, and one of them even leaves the
+    /// bounding box right — so nothing short of the set itself sees them.
+    ///
+    /// Not circular: `panel_size`'s literals are pinned in `recipe_overlay`
+    /// and `nine_slice::quads`' behaviour in `nine_slice`, so this asserts only
+    /// that the two are wired to each other correctly.
+    #[test]
+    fn the_overlay_panel_is_nine_sliced_and_sits_under_its_buttons() {
+        use crate::recipe_overlay as ro;
+        let origin = (40, 60);
+        let qs = overlay_chrome(origin, &[true, false, true], false, None);
+        let panel: Vec<_> = qs.iter().filter(|q| q.sprite == BookSprite::OverlayPanel).collect();
+        assert!(panel.len() > 1, "nine-sliced, so several quads: {}", panel.len());
+        // Three buttons on one row: 3 * 25 + 8 by 1 * 25 + 8.
+        assert_eq!(ro::panel_size(3), (83, 33));
+        let expect = crate::nine_slice::quads(
+            (origin.0, origin.1, 83, 33),
+            (ro::PANEL_SHEET, ro::PANEL_SHEET),
+            crate::nine_slice::Border::all(ro::PANEL_BORDER),
+        );
+        assert_eq!(panel.len(), expect.len());
+        for (got, want) in panel.iter().zip(&expect) {
+            assert_eq!((got.x, got.y, got.w, got.h), (want.dx, want.dy, want.w, want.h));
+            assert_eq!(got.src, Some((want.sx, want.sy, want.sw, want.sh)));
+        }
+        // Every panel quad precedes every button quad — the overlay is drawn
+        // after `nextStratum()`, and inside it the backing goes down first.
+        let first_button = qs
+            .iter()
+            .position(|q| !matches!(q.sprite, BookSprite::OverlayPanel))
+            .unwrap();
+        assert!(qs[..first_button].iter().all(|q| q.sprite == BookSprite::OverlayPanel));
+        assert_eq!(qs.len() - first_button, 3, "one quad per recipe");
+        // And only the panel carries a source rect: everything else takes the
+        // whole of its own sprite.
+        assert!(qs[..first_button].iter().all(|q| q.src.is_some()));
+        assert!(qs[first_button..].iter().all(|q| q.src.is_none()));
+    }
+
+    /// Craftable and hover are independent, and the hover picks exactly one.
+    #[test]
+    fn a_button_reads_craftable_and_hover_separately() {
+        let qs = overlay_chrome((0, 0), &[true, false], false, Some(1));
+        let buttons: Vec<_> = qs
+            .iter()
+            .filter_map(|q| match q.sprite {
+                BookSprite::OverlayButton { furnace, craftable, hovered } => {
+                    Some((furnace, craftable, hovered))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(buttons, vec![(false, true, false), (false, false, true)]);
+    }
+
+    /// The family follows the MENU. A furnace book's buttons are furnace art
+    /// whatever the recipes are, which is the same rule the ingredient grid
+    /// obeys one module over.
+    #[test]
+    fn the_button_family_follows_the_menu() {
+        let qs = overlay_chrome((0, 0), &[true], true, None);
+        assert!(qs.iter().any(|q| q.sprite
+            == BookSprite::OverlayButton { furnace: true, craftable: true, hovered: false }));
+    }
+
+    /// The buttons land where [`crate::recipe_overlay::button_origin`] says,
+    /// inside the panel the same call sized.
+    #[test]
+    fn the_buttons_tile_inside_their_own_panel() {
+        use crate::recipe_overlay as ro;
+        let origin = (17, 23);
+        let flags = [true; 6];
+        let qs = overlay_chrome(origin, &flags, false, None);
+        let (pw, ph) = ro::panel_size(flags.len());
+        for (i, q) in qs
+            .iter()
+            .filter(|q| matches!(q.sprite, BookSprite::OverlayButton { .. }))
+            .enumerate()
+        {
+            assert_eq!((q.x, q.y), ro::button_origin(origin, i, flags.len()));
+            assert_eq!((q.w, q.h), (ro::BUTTON_SIZE, ro::BUTTON_SIZE));
+            assert!(
+                q.x >= origin.0 && q.y >= origin.1,
+                "button {i} starts before the panel"
+            );
+            assert!(
+                q.x + q.w <= origin.0 + pw && q.y + q.h <= origin.1 + ph,
+                "button {i} spills out of the panel"
+            );
+        }
+        // Six buttons at maxRow 4 is two rows, so the second row exists.
+        assert_eq!(ro::rows(6), 2);
     }
 }
