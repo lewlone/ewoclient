@@ -1628,6 +1628,38 @@ armour (shipped M46–M50) and a fresh session reading top-down could act on it.
 classes A and B both empty** — every packet Rewo can render is rendered, so the
 next unit of work is a **subsystem**, not a packet.*
 
+*Update (2026-08-07 session, Rewo): **M105–M107 — closing the recipe book.**
+The four items the M104 handoff listed, plus two bugs found on the way. **M105**
+the page counter (`gui.recipebook.page` is `%s/%s`, no spaces; only the FIRST
+argument is converted to 1-based; the five-argument `graphics.text` delegates
+with `dropShadow = true`; a one-page book shows no counter at all). **M106a**
+the recipe cell's tooltip, whose extra line is `"Right Click for More"` and
+carries **no count** — the handoff called it "the +N more recipes line", which
+it is not — and which **loses to the menu's own tooltip even though vanilla
+calls it afterwards**, because `setTooltipForNextFrameInternal` is
+`if (deferredTooltip == null || replaceExisting)` with `replaceExisting` false
+on every path: the FIRST tooltip of a frame wins. **M106b** the menu
+displacement in the last two consumers that never learnt about it — the hover
+highlight and the item tooltip both converted the cursor against a panel 77 GUI
+px from the one they were drawn against, M89's "a per-call-site choice is how
+they come to disagree" failing a third time in one file; the fix is one
+`book_open` binding that five consumers read, and the highlight's derivation
+turned out to have had **no witness of any kind** because every `set_container`
+call in the app passes `hovered: None`. **M106c** the ghost's tooltip, the one
+place first-wins is observable (a ghost sits ON a menu slot, so a filled slot
+asks both producers at once and the real item wins). **M107**
+`tryPlaceRecipe`'s guard — both halves load-bearing, since "not twice" breaks
+bulk crafting and "not uncraftable" breaks the click that fills the ghost —
+plus `useMaxItems`, and the finding that
+`FurnaceRecipeBookComponent.isCraftingSlot` switches on the slot's **container**
+index and never asks which container, so **three of the player's hotbar slots
+are "crafting slots" of a furnace**. Four witnesses were wrong before any code
+was; three composition roots (`apply_screen`, the winit handler) still have no
+test seam and their mutations are named rather than hidden. `live
+--render-check` gained **r25** and therefore a **second caller requirement** —
+the staged invocation now needs `recipe give @s *`, verified by meeting a fresh
+player after a reused server directory made the first attempt look green.*
+
 *Update (2026-08-07 session, Rewo): **M104 — the which-of-these overlay**, which
 finishes the recipe book bar four small items, plus a **doc-staleness pass**.
 The milestone's own entry is in the Rewo section below; the docs half is the
@@ -1655,11 +1687,13 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-07
-(M104) — **2139 tests / 0 failures** (world 860, net 613, gpu 255, data 212,
-app 143, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
-`containershot` **96/96**, `inventoryshot` 152/152, `itemshot` 75/75, `handshot`
-34/34, `swingshot` 97/97, `live --render-check` **24/24** with validation ON and
-0 validation errors, demo PNG `2cc56b4acbfb92cb`. No branch or worktree holds a
+(M107) — **2161 tests / 0 failures** (world 874, net 613, gpu 255, data 212,
+app 151, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
+`containershot` **107/107**, `inventoryshot` 152/152, `itemshot` 75/75,
+`handshot` 34/34, `swingshot` 97/97, `live --render-check` **25/25** with
+validation ON and 0 validation errors, demo PNG `2cc56b4acbfb92cb`.
+**The recipe book is closed** — M105 the page counter, M106 the cell and ghost
+tooltips, M107 `tryPlaceRecipe`'s guard and `useMaxItems`. No branch or worktree holds a
 commit off `main`. The long-unmerged-branch risk closed on 2026-07-27 and has
 stayed closed; branch new work from `main` and keep it that way.
 
