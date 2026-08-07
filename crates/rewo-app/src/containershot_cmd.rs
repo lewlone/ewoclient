@@ -2784,6 +2784,136 @@ fn overlays(
             "an eight-button overlay is two rows deep and its second row covers the page's second row of cells"
                 .to_string(),
         );
+
+        // -- the cell's tooltip (M106) --------------------------------------
+        //
+        // Graded on the LINES rather than on pixels, for the reason o14/o15
+        // grade the crafter's hint that way: what a tooltip says is the claim,
+        // and the box it is drawn in is `tooltip_layout`'s business, already
+        // pinned by the witnesses that share it.
+        //
+        // Driven through the production `book_tooltip`, not a local
+        // reassembly of its parts — M93b's rule.
+        let lang = &baked.lang;
+        let advance = &baked
+            .font
+            .as_ref()
+            .ok_or("containershot: no baked font")?
+            .advance;
+        let cell_tip = |b: &crate::live_cmd::BookRender,
+                        overlay_open: bool,
+                        cell: usize|
+         -> Vec<String> {
+            let (cx, cy) = rb::grid_slot(cell);
+            let mouse = (
+                (bl + (cx as f32 + 12.0) * bsc) as f64,
+                (bt + (cy as f32 + 12.0) * bsc) as f64,
+            );
+            crate::live_cmd::book_tooltip(
+                b,
+                overlay_open,
+                Some((cx + 12, cy + 12)),
+                &book_items,
+                &baked.item_names,
+                lang,
+                rewo_gpu::tooltip::TooltipFlag::NORMAL,
+                advance,
+                None,
+                mouse,
+                (W as f32, H as f32),
+            )
+            .map(|(_, lines, _)| lines.into_iter().map(|l| l.text).collect())
+            .unwrap_or_default()
+        };
+        let one = book(20, 1, 0);
+        let mut many = book(20, 1, 0);
+        // `hasMultipleRecipes()` — the second half of the `(craftable,
+        // multiple)` pair, and the same flag that picks the `slot_many_*`
+        // chrome and lets a right-click open the overlay.
+        many.slots = vec![(true, true); rb::ITEMS_PER_PAGE];
+        let more = lang.or_key(rb::MORE_RECIPES_KEY).to_string();
+        // `Items::name` answers the REGISTRY id, so the display-name map is
+        // keyed by `minecraft:dirt` and not `dirt`. Looked up rather than
+        // written as "Dirt": the point of the witness is that the tooltip goes
+        // through the same translation the menu's does, and a literal would
+        // pass against a build that had stopped translating at all.
+        let dirt_name = baked
+            .item_names
+            .get("minecraft:dirt")
+            .cloned()
+            .ok_or("containershot: no display name for minecraft:dirt")?;
+
+        c.record(
+            "b14.a_hovered_cell_names_the_item_it_is_showing",
+            cell_tip(&one, false, 3) == vec![dirt_name.clone()],
+            format!(
+                "hovering cell 3 gives {:?} — the display stack's own name, and nothing else on a single-recipe cell",
+                cell_tip(&one, false, 3)
+            ),
+        );
+        c.record(
+            "b15.the_more_recipes_line_is_added_only_by_a_MULTI_recipe_cell",
+            cell_tip(&many, false, 3) == vec![dirt_name.clone(), more.clone()]
+                && cell_tip(&one, false, 3) == vec![dirt_name.clone()],
+            format!(
+                "multi -> {:?}, single -> {:?}; the string is {more:?} and carries NO count, so a `+N more` line is not what vanilla shows",
+                cell_tip(&many, false, 3),
+                cell_tip(&one, false, 3)
+            ),
+        );
+        c.record(
+            "b16.an_open_overlay_suppresses_the_cells_tooltip",
+            cell_tip(&many, true, 3).is_empty() && !cell_tip(&many, false, 3).is_empty(),
+            format!(
+                "the same hover gives {:?} with the overlay up and {:?} without — the cells still hover underneath it, and vanilla drops the tooltip anyway",
+                cell_tip(&many, true, 3),
+                cell_tip(&many, false, 3)
+            ),
+        );
+        // Two ways of showing nothing, and they are different states: a cell
+        // past the end of the page is not hovered at all, and a cell whose
+        // result Rewo cannot resolve is hovered and has nothing to say.
+        let mut unresolved = book(20, 1, 0);
+        unresolved.slot_items = vec![None; rb::ITEMS_PER_PAGE];
+        let short = book(5, 1, 0);
+        c.record(
+            "b17.an_invisible_or_unresolvable_cell_says_nothing",
+            cell_tip(&short, false, 9).is_empty()
+                && cell_tip(&unresolved, false, 3).is_empty()
+                && !cell_tip(&short, false, 3).is_empty(),
+            format!(
+                "cell 9 of a five-cell page -> {:?}, an unresolvable result -> {:?}, while cell 3 of the same short page still speaks -> {:?}",
+                cell_tip(&short, false, 9),
+                cell_tip(&unresolved, false, 3),
+                cell_tip(&short, false, 3)
+            ),
+        );
+        // The gutter between the grid and the arrows: a cursor that is in the
+        // book but on no cell. Without this, "hovering nothing" is only ever
+        // witnessed by an invisible cell, and a build that answered slot 0 for
+        // every miss would pass b14-b17.
+        c.record(
+            "b18.a_cursor_in_the_book_but_on_no_cell_gets_no_tooltip",
+            crate::live_cmd::book_tooltip(
+                &one,
+                false,
+                Some((rb::PAGE_LABEL_CENTRE_X, rb::PAGE_LABEL_Y)),
+                &book_items,
+                &baked.item_names,
+                lang,
+                rewo_gpu::tooltip::TooltipFlag::NORMAL,
+                advance,
+                None,
+                (0.0, 0.0),
+                (W as f32, H as f32),
+            )
+            .is_none(),
+            format!(
+                "the page-counter row at ({}, {}) is inside the book and on no widget",
+                rb::PAGE_LABEL_CENTRE_X,
+                rb::PAGE_LABEL_Y
+            ),
+        );
     }
 
     if let Some(d) = &args.out_dir {

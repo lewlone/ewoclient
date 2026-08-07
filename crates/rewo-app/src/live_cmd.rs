@@ -10202,6 +10202,34 @@ mod tests {
         assert!(c.shadow, "the 5-arg overload passes true");
     }
 
+    /// `if (!lines.isEmpty())` in `setTooltipForNextFrameInternal` — an empty
+    /// list sets NO tooltip, which is not the same as an empty box (M106).
+    ///
+    /// **No current caller can reach this**: `screen_tooltip`'s two producers
+    /// both start with a name line, and so does `book_tooltip`. A mutation
+    /// deleting the guard therefore survived every behavioural witness, and
+    /// the choice was to drop the guard or to pin it. It is pinned, because it
+    /// is vanilla's rule for a shared entry point rather than a property of
+    /// today's two producers — the third one to arrive gets it for free. This
+    /// test names its own unreachability so the next reader does not go looking
+    /// for the path that exercises it.
+    #[test]
+    fn an_empty_line_list_sets_no_tooltip_rather_than_an_empty_box() {
+        assert!(
+            super::tooltip_layout(Vec::new(), &advances(), None, (100.0, 100.0), (1280.0, 720.0))
+                .is_none()
+        );
+        // …and one line still does, so the guard is not simply "never".
+        assert!(super::tooltip_layout(
+            vec![vec![rewo_gpu::tooltip::Span::new("x".to_string(), [1.0; 3])]],
+            &advances(),
+            None,
+            (100.0, 100.0),
+            (1280.0, 720.0),
+        )
+        .is_some());
+    }
+
     /// A missing translation renders the bare key — `getOrDefault` returns it
     /// and a template with no specifiers survives substitution unchanged.
     #[test]
@@ -12968,7 +12996,7 @@ fn apply_screen(
     // The tooltip's box and its one line. Both need the font's advances, so a
     // build with no baked font simply draws no tooltip.
     let tooltip = wr.font_advance().and_then(|advance| {
-        screen_tooltip(
+        let menu_tooltip = screen_tooltip(
             menu,
             items,
             &baked.item_names,
@@ -12988,7 +13016,27 @@ fn apply_screen(
                 .game_state
                 .game_mode()
                 .is_some_and(|m| m.is_spectator()),
-        )
+        );
+        // M106 — the book's cell tooltip, SECOND. Vanilla calls it after the
+        // container's and it still loses, because
+        // `setTooltipForNextFrameInternal` only assigns when the slot is empty:
+        // the first tooltip of a frame wins. Ordering these the way the calls
+        // read would invert it.
+        menu_tooltip.or_else(|| {
+            book_tooltip(
+                book.as_ref()?,
+                book_overlay.is_some(),
+                book_mouse,
+                items,
+                &baked.item_names,
+                &baked.lang,
+                flag,
+                &advance,
+                glyphs.as_deref_mut(),
+                mouse,
+                (w, h),
+            )
+        })
     });
     wr.set_container_tooltip(tooltip.as_ref().map(|(draw, _, _)| draw.clone()));
 
@@ -16214,7 +16262,119 @@ pub(crate) fn screen_tooltip(
         Some(l) => l,
         None => item_lines()?,
     };
+    tooltip_layout(lines, advance, glyphs, mouse, (w, h))
+}
 
+/// The tooltip of the recipe cell under the cursor (M106).
+///
+/// `RecipeBookPage.extractTooltip` — `Screen.getTooltipFromItem(displayStack)`
+/// plus a "Right Click for More" line when the collection holds more than one
+/// recipe.
+///
+/// **This loses to the menu's own tooltip, and that is not the order it is
+/// called in.** `AbstractRecipeBookScreen` runs `this.extractTooltip` (the
+/// container's) and *then* `recipeBookComponent.extractTooltip`, which reads as
+/// "the book overwrites it" — and `setTooltipForNextFrameInternal`'s body is
+/// `if (this.deferredTooltip == null || replaceExisting)`, with
+/// `replaceExisting` false on every path either of them takes. So the FIRST
+/// tooltip of a frame wins and the book's is discarded. Hence the caller's
+/// `screen_tooltip(..).or_else(..)` rather than the reverse.
+///
+/// For a page cell the two can never both fire — the book sits beside the menu
+/// on a wide window, and on a narrow one `AbstractRecipeBookScreen.isHovering`
+/// returns false for every slot, so there is no hovered slot to describe. It is
+/// the GHOST tooltip that makes first-wins observable; see [`ghost_tooltip`].
+///
+/// The stack is Rewo's `slot_items` id, which carries no components (M95): a
+/// recipe result that shipped with a custom name or lore would show its plain
+/// name here. The advanced block is still produced, because F3+H adds the
+/// registry id to a book cell in vanilla too.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn book_tooltip(
+    b: &BookRender,
+    overlay_open: bool,
+    book_mouse: Option<(i32, i32)>,
+    items: &rewo_data::items::Items,
+    names: &std::collections::HashMap<String, String>,
+    lang: &rewo_data::lang::Language,
+    flag: rewo_gpu::tooltip::TooltipFlag,
+    advance: &[u8; 256],
+    glyphs: Option<&mut rewo_gpu::velvet_glyph::GlyphCache>,
+    mouse: (f64, f64),
+    (w, h): (f32, f32),
+) -> Option<(
+    rewo_gpu::container::TooltipDraw,
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<rewo_gpu::velvet_text::OwnedRun>,
+)> {
+    use rewo_world::recipe_book_screen as rb;
+    let view = b.view?;
+    let (bx, by) = book_mouse?;
+    let slot = rb::page_tooltip_slot(rb::book_hit(bx, by, view, view.tabs), overlay_open)?;
+    // `getDisplayStack()` — the item the cycle is currently on, which is
+    // already what `slot_items` holds. A collection whose result needs a
+    // context Rewo cannot build has `None` and shows nothing, rather than a
+    // tooltip for some other member of the group.
+    let item = (*b.slot_items.get(slot)?)?;
+    let item_name = items.name(item)?;
+    let mut lines: Vec<rewo_gpu::tooltip::Line> = vec![vec![rewo_gpu::tooltip::Span::new(
+        names.get(item_name)?.to_string(),
+        rarity_color(stack_rarity(Some(item_name), None, false)),
+    )]];
+    {
+        let has = |c: &str| stack_has_component(item_name, c, None, None);
+        let durability = rewo_gpu::tooltip::DurabilityState {
+            // A recipe result is undamaged by construction: the display stack
+            // comes from the recipe, not from an inventory.
+            damage: 0,
+            max: rewo_data::item_props_table::max_damage(item_name).unwrap_or(0),
+            has_max_damage: has("minecraft:max_damage").unwrap_or(false),
+            has_damage: has("minecraft:damage").unwrap_or(false),
+            unbreakable: has("minecraft:unbreakable").unwrap_or(false),
+        };
+        let advanced = rewo_gpu::tooltip::advanced_lines(
+            flag,
+            durability,
+            true,
+            rewo_data::item_components_table::prototype_component_count(item_name),
+        );
+        lines.extend(advanced_tooltip_lines(&advanced, item_name, lang));
+    }
+    // `if (this.hasMultipleRecipes()) texts.add(MORE_RECIPES_TOOLTIP)` — LAST,
+    // after everything the item contributed, including the advanced block.
+    if b.slots.get(slot).is_some_and(|&(_, multiple)| multiple) {
+        lines.push(vec![rewo_gpu::tooltip::Span::new(
+            lang.or_key(rb::MORE_RECIPES_KEY).to_string(),
+            [1.0, 1.0, 1.0],
+        )]);
+    }
+    tooltip_layout(lines, advance, glyphs, mouse, (w, h))
+}
+
+/// Turn a resolved set of tooltip lines into its box, position and glyph runs
+/// (M106).
+///
+/// Extracted from [`screen_tooltip`] unchanged so the recipe book's own
+/// tooltips can share it. The comment it was extracted from already said why —
+/// "the measure, position and glyph-run code is the same for any tooltip, and a
+/// second copy of it is how two tooltips come to sit in different places" — and
+/// M106 is the second producer that makes it true rather than prospective.
+fn tooltip_layout(
+    lines: Vec<rewo_gpu::tooltip::Line>,
+    advance: &[u8; 256],
+    glyphs: Option<&mut rewo_gpu::velvet_glyph::GlyphCache>,
+    mouse: (f64, f64),
+    (w, h): (f32, f32),
+) -> Option<(
+    rewo_gpu::container::TooltipDraw,
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<rewo_gpu::velvet_text::OwnedRun>,
+)> {
+    // `if (!lines.isEmpty())` in `setTooltipForNextFrameInternal` — an empty
+    // list sets no tooltip at all, which is not the same as an empty box.
+    if lines.is_empty() {
+        return None;
+    }
     // Measure with the font that will DRAW. Once the tooltip renders in
     // Newsreader, sizing it with the bitmap advances measures a font it no
     // longer uses -- which shows up as text spilling out of its box, and is

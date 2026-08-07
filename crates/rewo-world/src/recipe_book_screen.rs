@@ -1079,6 +1079,45 @@ pub fn book_hit(bx: i32, by: i32, view: BookView, tab_count: usize) -> Option<Bo
     None
 }
 
+/// The line a multi-recipe cell adds under its item's tooltip (M106).
+///
+/// **It carries no count.** The string is `'Right Click for More'` — the same
+/// words whether the collection holds two recipes or twenty — so a "+N more
+/// recipes" line is not what vanilla shows. It is added on
+/// `hasMultipleRecipes()`, `selectedEntries.size() > 1`, which is the same
+/// predicate that picks the `slot_many_*` chrome and the one that decides
+/// whether a right-click opens the which-of-these overlay at all: the line is
+/// the affordance for that click, and the three agree by construction.
+pub const MORE_RECIPES_KEY: &str = "gui.recipebook.moreRecipes";
+
+/// Which recipe cell the page shows a tooltip for, if any (M106).
+///
+/// `if (screen() != null && this.hoveredButton != null && !this.overlay.isVisible())`.
+///
+/// **The overlay suppresses it.** While the which-of-these popup is up, the
+/// cells underneath still hover — `extractRenderState` runs the buttons' hover
+/// pass whatever the overlay is doing — and vanilla drops the tooltip anyway.
+/// That is the same modality M104 found on the click side, arriving through a
+/// different mechanism: the click is swallowed by an unconditional `return
+/// true`, and the tooltip by this explicit guard.
+///
+/// `hoveredButton` comes from each button's OWN rect rather than from the
+/// resolution order [`book_hit`] uses, and the two agree here only because no
+/// other widget's rect overlaps the grid: the arrows sit at y 137..154 and the
+/// grid ends at 131, the search box and filter end at 28, and the tabs hang off
+/// the left edge entirely. Reusing `book_hit` is therefore exact **and** keeps
+/// the hover reading the same number the press does, which is the coupling M98
+/// wanted; it would stop being exact if a widget ever overlapped a cell.
+pub fn page_tooltip_slot(hit: Option<BookHit>, overlay_open: bool) -> Option<usize> {
+    if overlay_open {
+        return None;
+    }
+    match hit? {
+        BookHit::Slot(i) => Some(i),
+        _ => None,
+    }
+}
+
 /// The book's own screen state — what only a click can change (M98).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BookState {
@@ -1780,6 +1819,47 @@ mod tests {
         // …and the gate still applies: a one-page book shows nothing even when
         // the key is missing.
         assert_eq!(page_label(0, 1, PAGE_LABEL_KEY), None);
+    }
+
+    /// The overlay suppresses the page's tooltip, and only a CELL has one
+    /// (M106).
+    #[test]
+    fn the_overlay_suppresses_the_pages_tooltip() {
+        assert_eq!(page_tooltip_slot(Some(BookHit::Slot(7)), false), Some(7));
+        assert_eq!(page_tooltip_slot(Some(BookHit::Slot(7)), true), None);
+        // Every other widget the book hit-tests has a tooltip in vanilla
+        // (`Tooltip.create` on both arrows, a `withTooltip` on the filter) —
+        // but through `AbstractWidget`'s own mechanism, not through
+        // `RecipeBookPage.extractTooltip`, which reads `hoveredButton` and
+        // nothing else. So none of them belongs here.
+        for hit in [
+            BookHit::PageForward,
+            BookHit::PageBackward,
+            BookHit::Search,
+            BookHit::Filter,
+            BookHit::Tab(0),
+        ] {
+            assert_eq!(page_tooltip_slot(Some(hit), false), None, "{hit:?}");
+        }
+        assert_eq!(page_tooltip_slot(None, false), None, "off the book");
+    }
+
+    /// No widget's rect overlaps the recipe grid, which is what makes reusing
+    /// `book_hit`'s CLICK order exact for the hover (M106).
+    #[test]
+    fn nothing_overlaps_the_recipe_grid() {
+        let (_, top) = grid_slot(0);
+        let (_, bottom_row) = grid_slot((GRID_COLS * (GRID_ROWS - 1)) as usize);
+        let bottom = bottom_row + SLOT_SIZE;
+        // The arrows sit BELOW the grid…
+        assert!(PAGE_ARROW_Y >= bottom, "{PAGE_ARROW_Y} vs {bottom}");
+        // …and the search box and the filter toggle ABOVE it.
+        assert!(SEARCH_Y + SEARCH_H <= top);
+        assert!(FILTER_Y + FILTER_H <= top);
+        // The tabs hang off the left edge entirely, so no x of theirs can
+        // reach a cell.
+        let (tx, _) = tab_position(0);
+        assert!(tx + TAB_W <= GRID_X, "{} vs {GRID_X}", tx + TAB_W);
     }
 
     /// `WidgetSprites`' `enabled` slot carries "is filtering", not "is the
