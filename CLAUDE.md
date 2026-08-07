@@ -1627,9 +1627,28 @@ armour (shipped M46–M50) and a fresh session reading top-down could act on it.
 **The headline state change: `REWO_PACKET_COVERAGE.md` is at 107 / 0 / 34 with
 classes A and B both empty** — every packet Rewo can render is rendered, so the
 next unit of work is a **subsystem**, not a packet.*
+
+*Update (2026-08-07 session, Rewo): **M104 — the which-of-these overlay**, which
+finishes the recipe book bar four small items, plus a **doc-staleness pass**.
+The milestone's own entry is in the Rewo section below; the docs half is the
+part worth flagging here, because it is the second time in six days that the
+prose around a machine-checked number was the thing that lied.
+`REWO_PACKET_COVERAGE.md`'s §2 table is verified by a unit test in `ids.rs` and
+was exact at **114 / 0 / 27**, while its §0 handoff prose still said 107 / 34,
+its class table's caption said "the 32 gaps" over rows summing to 27, and its
+class-C definition still listed "a recipe book" as a subsystem Rewo lacks —
+three milestones after M93y decoded it. All corrected. `REWO_PLAN.md` had two
+"What to do next" blocks in flat contradiction (the older one telling the
+reader to prefer it) and a section headed "The current numbers" containing only
+historical ones; both are now labelled by precedence rather than by date.
+CLAUDE.md's own top-level Rewo status block was three milestones behind at M93 /
+1860 tests / `containershot` 49-of-49. **The rule this keeps re-teaching: a
+number with a test behind it stays true and the sentence next to it does not.**
+Repo hygiene: the twenty stale `claude/rewo-m93*` branches and the two leftover
+agent worktrees were verified fully merged and clean, then pruned.*
 ---
 
-## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, the inventory screen, particles, the first-person hand, and the Velvet type stack)
+## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, particles, the first-person hand, the Velvet type stack, the container arc, and the recipe book)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,

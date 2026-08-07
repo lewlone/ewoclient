@@ -9,14 +9,17 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: shipped and headlessly verified through `f7901f2` (2026-07-28).**
-`origin/main` carries all of it, and the long-standing branch risk (everything
-from M10 on living on one unmerged branch) is closed. See §0.0 for the
-fresh-session handoff and §15 for the per-milestone log.
+**Status: shipped and headlessly verified through M104 (2026-08-07).** `main`
+carries all of it and no branch or worktree holds a commit off it; the
+long-standing branch risk (everything from M10 on living on one unmerged
+branch) closed on 2026-07-27 and has stayed closed. See §0.0 for the
+fresh-session handoff and §15 for the per-milestone log — **§0.0's numbers are
+maintained, its forward-looking prose is not; check `git log --oneline` before
+trusting a paragraph.**
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, 2026-07-28)
+## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-07 after M104)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -35,7 +38,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M93 shipped, all merged to `main`
+### Where it is: M0–M104 shipped, all merged to `main`
 
 **Update (2026-08-03, the M87–M93 container arc).** Seven milestones landed
 after the cold-start audit below, **all merged to `main`**: M87 the
@@ -236,11 +239,16 @@ green with Vulkan validation ON and 0 VUIDs (`itemshot` 62, `inventoryshot` 91,
 `tintshot`, `meshshot` and `dimensioncheck`); demo PNG SHA-256 `2cc56b4a…`,
 byte-identical since M15.
 
-### What to do next
+### What to do next — SUPERSEDED (2026-08-03, after M93)
 
-**Read this block, not the one after it (updated 2026-08-03 after M93).** The
-container arc M87–M92 closed everything the 2026-08-02 section below points at,
-so its "container/menu cluster is the largest" recommendation is spent.
+> **⚠ The live recommendation is the "What to do next" paragraph up in the
+> measurement block above (2026-08-07, after M104).** This section is kept
+> because the *corrections* in it are still worth reading — the quick-move
+> shapes, and why "each a few lines" was wrong — but its ranking of what to do
+> is two arcs out of date: M93y–M104 built the recipe book it does not mention.
+
+The container arc M87–M92 closed everything the 2026-08-02 section below points
+at, so its "container/menu cluster is the largest" recommendation is spent.
 
 **M93 shipped three of the eight single-input `quickMoveStack`s and measured
 the rest.** The previous version of this block said the eight were "each a few
@@ -708,10 +716,11 @@ Original M0–M6 (still the foundation):
   1%/0.1% low reporting, frames-in-flight knob. GPU render 0.198 ms avg /
   0.367 ms 0.1%-low on the 5080.
 
-### The current numbers (2026-07-27; test/gate counts re-measured at M57, 2026-07-29)
+### Historical measurements — the CURRENT ones are in the block at the top of §0.0
 
-Per-milestone figures inside §15 are the measurement taken at that milestone
-and will not match.
+Kept as a record of what was measured when, newest first. **None of these is
+current**; the live figures are in "Where it is" above, and §15's per-milestone
+figures are likewise the measurement taken at that milestone.
 
 **Re-measured at M84 (2026-07-30):** **1623 tests** — `rewo-net` 565,
 `rewo-world` 489, `rewo-gpu` 249, `rewo-data` 179, app 85, `rewo-mesh` 45,
@@ -864,8 +873,32 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   chest, shulker, spawner and pot clocks. It also re-derives the jar's model gap
   every run, and grades the block-entity classification against what the model
   resolver actually draws — in both directions, so neither half can drift.
+- `rewo containershot --check` — **the container/menu/book gate** (M87 ->
+  M104, fail-closed, **96/96**, validation required). The one to run for
+  anything touching a menu screen, the recipe book, or a panel blit. Its
+  frames all go through `book_frame` / `container_panel_for_open_menu`, i.e.
+  the **production** builders, because a gate that reimplements a slice of the
+  app's setup misses whatever the app adds to it (M45) and one that cannot
+  reach a call site does not test it (M93q). Two of its own recorded traps are
+  worth knowing before adding a witness: the block binds `(c0x, c0y)` and
+  `(g0x, g0y)` early, so a new `let` of either name will be **shadowed**
+  (M104); and a witness must name the sprite value it expects, read out of the
+  PNG, because an overlay button and a craftable recipe cell are the same
+  `139` grey (M94/M104).
+- `rewo live --host H --port P --render-check` — **the only gate that drives
+  the WINDOWED client**, and therefore the only one that can see a render path
+  the windowed client never reaches (M86: nine shipped features had never once
+  rendered live). **Run it after any milestone that adds a render path.** It
+  needs a **debug** build (validation is `cfg!(debug_assertions)`-gated here)
+  and a server: own directory, free port, copy
+  `testserver/{server.jar,eula.txt,server.properties}`, rewrite `server-port`
+  (read the file *then* write it — `open(p,'w')` truncates when the file object
+  is created), write `ops.json` with the name-based offline UUID, start
+  detached, **and stop and remove it when done**. `--host` takes a bare host;
+  `--port` is separate, so `--host H:P` builds `H:P:25599` and fails to
+  resolve. Stage the hotbar with `REWO_PRECMD` — it fails closed if you don't.
 - `rewo inventoryshot --check` — **the inventory + screen + preview gate**
-  (M34/M35/M36, fail-closed, **44/44**, validation required). Six witnesses drive synthetic
+  (M34/M35/M36, fail-closed, **152/152**, validation required). Six witnesses drive synthetic
   `container_set_content` / `container_set_slot` / `set_held_slot` bodies
   through the production `route_inventory` (the menu-slot ↔ inventory-index
   conversion, the ignore-don't-clamp guard, the i16 index, the foreign
@@ -980,6 +1013,37 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   (§11). Both are git-ignored (derived from the user's own Mojang download).
 
 ### Load-bearing gotchas (each cost real debugging time — internalize them)
+
+-1. **(M104) In a long gate block, a `let` 200 lines away will shadow yours —
+   and a pixel witness cannot tell you so.** Three `containershot` witnesses
+   failed at once because `(c0x, c0y)` is already bound in that block to
+   `grid_slot(0)`, so they probed a recipe *cell's* corner instead of an
+   overlay *button's* and read a value that was real, plausible, and from the
+   wrong sprite. The render had been correct the whole time. **When a pixel
+   witness disagrees with the decompile, dump the region before re-reading the
+   decompile** — squinting at single values got the diagnosis wrong three times
+   and a 36x62 ASCII dump settled it in one run. Two follow-ons: the rename
+   then *missed* the one site using `c0y` alone rather than as a pair, and the
+   first attempt at the dump printed nothing at all because `cargo run -q`
+   swallowed a compile error, so "did not print" was indistinguishable from
+   "did not build" (use a non-`-q` run, or capture the exit code).
+
+-1a. **(M104) A mutation battery killed by the 10-minute tool cap leaves its
+   mutation ON DISK**, because the harness's `finally` never runs. The one it
+   left was a draw-order swap — perfectly valid code, invisible to the build,
+   and it would have been committed. **Grep for the markers before anything
+   else after an interrupted battery**, and split batteries so each stays
+   inside the cap. A gate battery costs a release rebuild per mutation; three
+   or four per run is the safe size.
+
+-1b. **(M104) Prefer one flagged list to two filtered ones when transcribing a
+   two-pass vanilla ordering.** `OverlayRecipeComponent` builds its buttons
+   from two `getSelectedRecipes` calls over the same `entries`, so within each
+   half the collection's order survives — which is exactly a *stable partition*
+   of one list. Writing it as two lists forces the caller to build two, and the
+   app's payload is richer than the model's, which is how a second copy of the
+   ordering rule gets written. `recipe_overlay::promote` is generic for that
+   reason.
 
 0. **(M92) A gate that supplies an input production must derive leaves the
    derivation untested by construction.** Five `mob_effect` ids were read from a
@@ -1230,6 +1294,26 @@ a record, because what it teaches outlived it:
   **UI eyeball itself is still pending** (user).
 
 **Correctness / completeness gaps:**
+- **`tryPlaceRecipe`'s `lastPlacedRecipe` guard is not modelled** — OPEN since
+  M98, and reachable from two places since M104. Vanilla suppresses a second
+  click on the **same uncraftable** recipe (`!isCraftable(recipe) &&
+  recipe.equals(lastPlacedRecipe)`) *and returns `false` from the whole
+  component*, so that click falls through to the screen instead of being eaten.
+  Rewo places unconditionally and always consumes. Small, self-contained, and
+  the kind of thing that is invisible until someone double-clicks a recipe they
+  cannot afford.
+- **The recipe book draws no tooltips** — OPEN. Neither the page's own
+  (`RecipeBookPage.extractTooltip`, which is also suppressed while the
+  which-of-these overlay is up) nor the ghost's
+  (`GhostSlots.extractTooltip`, M103). The tooltip machinery exists (M40/M41);
+  what is missing is the wiring and the "+ N more recipes" line.
+- **`useMaxItems` never reaches the book's press** — OPEN. Shift-clicking a
+  recipe should place as many as the inventory allows; Rewo does not track the
+  modifier at that call site, so a click always places one.
+- **The page counter text is not drawn** — OPEN, and unusually cheap: the
+  model constants (`PAGE_LABEL_CENTRE_X`, `PAGE_LABEL_Y`, `page_label_x`) have
+  existed since M93z with nothing reading them. `gui.recipebook.page`, "x/y",
+  only when `total_pages > 1`.
 - **A mob can render with another mob's texture when more than one is in
   the scene** — OPEN, found 2026-07-28 during M46, **pre-existing** (a
   stashed pre-M46 build reproduces it exactly). Two zombies summoned side
@@ -2428,13 +2512,16 @@ not a corner of this one.
 
 ## 15. Status log
 
-*Append-only. Two things inside these entries are **as of the moment they were
-written** and are not maintained: the "not pushed / reviewed local" notes (all
-of M0–M33b is pushed now — see §0.0), and the per-milestone test and gate
-counts, which are the measurement taken at that milestone rather than the
-current total. Both are left as written on purpose: rewriting them would
-falsify the record of what was actually measured when. §0.0 carries the current
-numbers.*
+*Append-only. **Everything inside these entries is as of the moment it was
+written**, and three kinds of statement are deliberately not maintained: the
+"not pushed / reviewed local" notes (all of M0–M33b is pushed now — see §0.0);
+the per-milestone test and gate counts, which are the measurement taken at that
+milestone rather than the current total; and any **"Rewo does not have X" /
+"nothing can do Y" claim**, which records what was true then and is frequently
+closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z's
+"nothing can click the book" by M98. All are left as written on purpose:
+rewriting them would falsify the record. **§0.0 carries the current numbers and
+the current open list; read a §15 gap claim as history, not as status.***
 
 ### M104 — the which-of-these overlay, and three clamps that round three different ways (2026-08-07)
 
@@ -2967,7 +3054,8 @@ the second.
 
 A **right-click** on a multi-recipe cell is consumed and does nothing. Vanilla
 opens its which-of-these overlay there; Rewo has no overlay, and placing a
-recipe the player did not choose would be worse than nothing.
+recipe the player did not choose would be worse than nothing. *(Closed by
+M104, which built the overlay and reads this note.)*
 
 **The hover comes from the same `book_hit` the press uses**, so what lights up is
 what a click would take — and the cursor is converted to book space **once** in
