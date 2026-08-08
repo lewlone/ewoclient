@@ -1687,7 +1687,7 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-08
-(M122) — **2522 tests / 0 failures** (world 1006, net 806, gpu 255, data 216,
+(M123) — **2532 tests / 0 failures** (world 1006, net 816, gpu 255, data 216,
 app 183, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, `live --render-check` **35/35** with
@@ -1752,7 +1752,14 @@ unparsed tail appears where vanilla shows one. Its findings are the kind a
 plausible parser gets silently wrong: **`0b` is zero-as-a-byte and `0b1` is
 binary one** (resolved by backtracking, not lookahead), **a leading zero is an
 error rather than a value**, and **`_` is a digit separator banned only at the
-ends**. Range and finiteness are still unchecked, and a test says so.
+ends**. **M123** then closed the range gap M122 had recorded as a
+failing-on-purpose test, and it was not a bounds check bolted on: **the BASE
+decides the signedness** (binary and hex default to UNSIGNED where decimal
+defaults to SIGNED), so `0xFFFFFFFF` is a valid int where `4294967295` is not
+and `-0xF` is an error; **`s` is both the signed prefix and the SHORT width**;
+an array element may **narrow** its width but not widen it, keeping its own
+base, so **`[B;255]` is an error and `[B;0xFF]` is fine**; and a float is
+rejected for being **infinite**, not unparseable.
 
 No branch or worktree holds a commit
 off `main`. The long-unmerged-branch risk closed on 2026-07-27 and has
