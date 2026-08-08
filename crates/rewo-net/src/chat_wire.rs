@@ -448,9 +448,18 @@ pub fn show_message(chat: &PlayerChat, received_millis: i64) -> ChatOutcome {
 
 /// `ClientboundSystemChatPacket` — the component, then the **`overlay` bool**
 /// that decides whether it is chat at all.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SystemChat {
-    pub content: String,
+    /// The component, **unflattened** (M125).
+    ///
+    /// It used to be flattened here, and it cannot be any more: a system chat
+    /// line is where a server's translatable components actually arrive —
+    /// `multiplayer.player.joined`, every death message, every command's
+    /// feedback — and resolving one needs the language table, which the wire
+    /// has no access to. So the packet carries what the wire said and the
+    /// session resolves it, the same split `hud_state` already uses for the
+    /// title and action bar.
+    pub content: rewo_proto::nbt::Nbt,
     /// `true` routes to `handleOverlay` — the action bar above the hotbar —
     /// and the message never reaches the chat log.
     pub overlay: bool,
@@ -458,7 +467,7 @@ pub struct SystemChat {
 
 impl SystemChat {
     pub fn read(r: &mut PacketReader<'_>) -> Result<Self> {
-        let content = r.nbt()?.to_plain_text();
+        let content = r.nbt()?;
         let overlay = r.bool()?;
         Ok(Self { content, overlay })
     }

@@ -205,9 +205,11 @@ pub struct ChatTypeBound {
 }
 
 /// One decoded `disguised_chat` body.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DisguisedChat {
-    pub message: String,
+    /// The component, **unflattened** (M125) — resolving a `translate` in it
+    /// needs the language table, which is the session's and not the wire's.
+    pub message: rewo_proto::nbt::Nbt,
     pub bound: ChatTypeBound,
 }
 
@@ -218,7 +220,7 @@ pub struct DisguisedChat {
 /// is what configuration and play share. Rewo's equivalent seam is
 /// `Connection::into_play`, which moves this across exactly as it moves the
 /// tags M69 landed.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SessionState {
     /// `ClientCommonPacketListenerImpl.serverBrand`.
     pub server_brand: Option<String>,
@@ -242,8 +244,9 @@ pub struct SessionState {
     cookies: BTreeMap<String, Vec<u8>>,
     /// Disguised-chat lines awaiting the session's chat log. Drained by
     /// [`Self::take_chat`] rather than written directly, so this module needs
-    /// no reference to `PlaySession`.
-    chat: Vec<String>,
+    /// no reference to `PlaySession`. Components rather than strings, because
+    /// the resolution that turns one into text is `PlaySession`'s (M125).
+    chat: Vec<rewo_proto::nbt::Nbt>,
 }
 
 impl SessionState {
@@ -266,7 +269,7 @@ impl SessionState {
     }
 
     /// Take the disguised-chat lines decoded since the last call.
-    pub fn take_chat(&mut self) -> Vec<String> {
+    pub fn take_chat(&mut self) -> Vec<rewo_proto::nbt::Nbt> {
         std::mem::take(&mut self.chat)
     }
 }
@@ -360,9 +363,14 @@ pub fn apply(kind: SessionPacket, body: &[u8], state: &mut SessionState) -> bool
         },
         SessionPacket::DisguisedChat => match read_disguised_chat(body) {
             Ok(chat) => {
-                if !chat.message.is_empty() {
-                    state.chat.push(chat.message);
-                }
+                // The "is it empty" test moved to `PlaySession`, because it
+                // is a test on the *rendered text* and rendering the text now
+                // needs the language table (M125). Vanilla has no such test
+                // at all on either chat handler — `handleDisguisedChatMessage`
+                // decorates and adds unconditionally — so this is Rewo's own
+                // guard, preserved where it was rather than quietly dropped in
+                // a milestone about something else.
+                state.chat.push(chat.message);
                 true
             }
             Err(err) => {
@@ -487,7 +495,7 @@ pub fn read_custom_payload(body: &[u8]) -> Result<CustomPayload> {
 /// `ChatType.Bound`.
 pub fn read_disguised_chat(body: &[u8]) -> Result<DisguisedChat> {
     let mut r = PacketReader::new(body);
-    let message = r.nbt()?.to_plain_text();
+    let message = r.nbt()?;
     let bound = read_chat_type_bound(&mut r)?;
     Ok(DisguisedChat { message, bound })
 }
@@ -927,7 +935,10 @@ mod tests {
 
         let mut s = SessionState::default();
         assert!(apply(SessionPacket::DisguisedChat, &body, &mut s));
-        assert_eq!(s.take_chat(), vec!["psst".to_string()]);
+        assert_eq!(
+            s.take_chat(),
+            vec![rewo_proto::nbt::Nbt::String("psst".into())]
+        );
         // Drained, not duplicated.
         assert!(s.take_chat().is_empty());
     }

@@ -689,7 +689,7 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
     let screen = (W as f32, H as f32);
 
     // m1 — nothing is emitted with no title and no action bar.
-    let quiet = crate::live_cmd::title_lines(&TitleOverlay::default(), advance, px, screen, 0.0);
+    let quiet = crate::live_cmd::title_lines(&TitleOverlay::default(), advance, px, screen, 0.0, None);
     c.record(
         "m1.a_quiet_hud_emits_no_title_lines",
         quiet.is_empty(),
@@ -714,7 +714,7 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
             for _ in 0..15 {
                 t.tick();
             }
-            let lines = crate::live_cmd::title_lines(&t, advance, px, screen, 0.0);
+            let lines = crate::live_cmd::title_lines(&t, advance, px, screen, 0.0, None);
             let width = rewo_gpu::text::width(word, advance);
             let (want_x, want_y) = ref_title_pos(GUI_W, GUI_H, width);
             let naive_x = GUI_W / 2 - (width * 4) / 2;
@@ -755,12 +755,12 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
     // m3 — the subtitle draws only inside the title's block, at 2x and below.
     let mut t = TitleOverlay::default();
     t.set_subtitle(rewo_proto::nbt::Nbt::String("sub".into()));
-    let alone = crate::live_cmd::title_lines(&t, advance, px, screen, 0.0);
+    let alone = crate::live_cmd::title_lines(&t, advance, px, screen, 0.0, None);
     t.set_title(rewo_proto::nbt::Nbt::String("main".into()));
     for _ in 0..15 {
         t.tick();
     }
-    let both = crate::live_cmd::title_lines(&t, advance, px, screen, 0.0);
+    let both = crate::live_cmd::title_lines(&t, advance, px, screen, 0.0, None);
     c.record(
         "m3.the_subtitle_draws_only_under_a_showing_title",
         alone.is_empty()
@@ -787,7 +787,7 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
     for _ in 0..95 {
         t.tick();
     }
-    let fading = crate::live_cmd::title_lines(&t, advance, px, screen, 0.0);
+    let fading = crate::live_cmd::title_lines(&t, advance, px, screen, 0.0, None);
     c.record(
         "m4.the_subtitle_shares_the_titles_alpha",
         fading.len() == 2 && fading[0].alpha == fading[1].alpha && fading[0].alpha < 1.0,
@@ -804,7 +804,7 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
     for _ in 0..90 {
         t.tick();
     }
-    let lines = crate::live_cmd::title_lines(&t, advance, px, screen, 0.0);
+    let lines = crate::live_cmd::title_lines(&t, advance, px, screen, 0.0, None);
     let want_alpha = ref_title_alpha(10, 10, 70, 20, 0.0) as f32 / 255.0;
     c.record(
         "m5.a_coloured_title_takes_the_span_colour_and_still_fades",
@@ -828,7 +828,7 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
     for _ in 0..15 {
         t.tick();
     }
-    let together = crate::live_cmd::title_lines(&t, advance, px, screen, 0.0);
+    let together = crate::live_cmd::title_lines(&t, advance, px, screen, 0.0, None);
     let bar_y = ref_action_bar_pos(GUI_W, GUI_H, 0).1;
     c.record(
         "m6.a_title_and_an_action_bar_show_at_once",
@@ -846,7 +846,7 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
     t.set_times(0, 0, 1);
     t.set_title(rewo_proto::nbt::Nbt::String("x".into()));
     // titleTime = 1, fadeOut = 1: alpha = (1 - 1.0) * 255 = 0.
-    let invisible = crate::live_cmd::title_lines(&t, advance, px, screen, 1.0);
+    let invisible = crate::live_cmd::title_lines(&t, advance, px, screen, 1.0, None);
     c.record(
         "m7.a_zero_alpha_frame_emits_nothing",
         invisible.is_empty(),
@@ -1092,7 +1092,7 @@ fn check_pixels(
         t.tick();
     }
     let full_alpha = ref_title_alpha(t.title_time, t.fade_in, t.stay, t.fade_out, 0.0);
-    let lines = crate::live_cmd::title_lines(&t, &advance, px, screen, 0.0);
+    let lines = crate::live_cmd::title_lines(&t, &advance, px, screen, 0.0, None);
     let solid = shot(&mut gpu, &mut off, &mut wr, lines, HudGauges::default())?;
 
     let width = rewo_gpu::text::width("TITLE", &advance);
@@ -1145,7 +1145,7 @@ fn check_pixels(
     t.set_subtitle(
         rewo_net::hud_state::read_component(&component_colored("SUB", "#FF00FF")).unwrap(),
     );
-    let lines = crate::live_cmd::title_lines(&t, &advance, px, screen, 0.0);
+    let lines = crate::live_cmd::title_lines(&t, &advance, px, screen, 0.0, None);
     let with_sub = shot(&mut gpu, &mut off, &mut wr, lines, HudGauges::default())?;
     let title_band_before = magenta(&solid, 0, 0, W, H / 2);
     let title_band_after = magenta(&with_sub, 0, 0, W, H / 2);
@@ -1207,7 +1207,7 @@ fn check_pixels(
         faded.fade_out,
         0.0,
     );
-    let lines = crate::live_cmd::title_lines(&faded, &advance, px, screen, 0.0);
+    let lines = crate::live_cmd::title_lines(&faded, &advance, px, screen, 0.0, None);
     let dim = shot(&mut gpu, &mut off, &mut wr, lines, HudGauges::default())?;
     // Measured inside the title's OWN rect, which `p2` has just proved holds
     // every magenta pixel. The first version of this took the whole upper half
@@ -1278,7 +1278,7 @@ fn check_pixels(
         rising.fade_out,
         0.0,
     );
-    let lines = crate::live_cmd::title_lines(&rising, &advance, px, screen, 0.0);
+    let lines = crate::live_cmd::title_lines(&rising, &advance, px, screen, 0.0, None);
     let rise = shot(&mut gpu, &mut off, &mut wr, lines, HudGauges::default())?;
     let observed_rise = max_red(&rise, rx0, ry0, rx1, ry1);
     let ra = rise_alpha as f32 / 255.0;
@@ -1300,7 +1300,7 @@ fn check_pixels(
         rewo_net::hud_state::read_component(&component_colored("BAR", "#FF00FF")).unwrap(),
         false,
     );
-    let lines = crate::live_cmd::title_lines(&bar, &advance, px, screen, 0.0);
+    let lines = crate::live_cmd::title_lines(&bar, &advance, px, screen, 0.0, None);
     let bar_frame = shot(&mut gpu, &mut off, &mut wr, lines, HudGauges::default())?;
     let (bx, by) = ref_action_bar_pos(GUI_W, GUI_H, rewo_gpu::text::width("BAR", &advance));
     let band_top = (by * SCALE).max(0) as u32;

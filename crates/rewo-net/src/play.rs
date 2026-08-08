@@ -807,6 +807,20 @@ pub struct PlaySession {
     /// datagen report — it is a **built-in** registry (M92's rule), and the
     /// tree cannot be read past its first non-singleton argument without it.
     pub command_argument_types: Option<rewo_data::command_argument_types::CommandArgumentTypes>,
+    /// The language table, supplied by the caller from the client jar (M125),
+    /// for resolving the `translate` components that arrive in chat.
+    ///
+    /// **Vanilla reaches a global here** — `TranslatableContents.decompose`
+    /// calls `Language.getInstance()` — so resolving at receipt rather than at
+    /// render is equivalent for a client that cannot change language
+    /// mid-session, which Rewo cannot (one bundled `en_us`). It is a field
+    /// rather than an argument for the same reason
+    /// [`Self::command_argument_types`] is: the app owns the loaded table and
+    /// hands it over once, and a packet arm has no other way to reach it.
+    ///
+    /// `None` leaves every key unresolved, which is exactly what this session
+    /// did before M125 — see [`crate::chat_translate`].
+    pub lang: Option<std::sync::Arc<rewo_data::lang::Language>>,
     /// The chat HUD's store (M108). Lives here because the events that feed
     /// it do; it is *driven* from the app, which owns the font it wraps with
     /// and the GUI clock it stamps with — see [`Self::apply_chat_events`].
@@ -1576,6 +1590,7 @@ impl<'a> Connection<'a> {
             suggestions: crate::suggestion_wire::SuggestionProviderState::new(),
             suggestion_reply: None,
             command_argument_types: None,
+            lang: None,
             chat_overlay: None,
             health: 20.0,
             food: 20,
@@ -2706,7 +2721,15 @@ impl PlaySession {
             // `handleDisguisedChatMessage` adds it with `GuiMessageTag.system()`
             // and a null signature — it is not a signed player message, so it
             // can never be the target of a `delete_chat`.
-            for line in self.session.take_chat() {
+            for component in self.session.take_chat() {
+                // M125: `boundChatType.decorate` is still not applied (that
+                // needs the `minecraft:chat_type` registry), but the message
+                // itself now resolves — a `/say` of a translatable, or any
+                // plugin's `Component.translatable`, reads as English.
+                let line = self.chat_component_text(&component);
+                if line.is_empty() {
+                    continue;
+                }
                 self.chat_log.push(line.clone());
                 self.chat_events.push(crate::chat_wire::ChatEvent::Message {
                     text: line,
@@ -2998,13 +3021,20 @@ impl PlaySession {
                 // ACTION BAR, not the chat log. Reading the component and
                 // dropping the bool (which is what this arm used to do) put
                 // every `/title actionbar` line into chat.
+                // M125: resolved here, where the language table is, rather
+                // than at the wire. `handleSystemChat` renders the component,
+                // and a component whose contents are a `TranslatableContents`
+                // renders as its translation — so flattening before the lookup
+                // put `multiplayer.player.joined` on screen where vanilla puts
+                // "Steve joined the game".
+                let content = self.chat_component_text(&packet.content);
                 if packet.overlay {
                     self.chat_events
-                        .push(crate::chat_wire::ChatEvent::Overlay(packet.content));
-                } else if !packet.content.is_empty() {
-                    self.chat_log.push(packet.content.clone());
+                        .push(crate::chat_wire::ChatEvent::Overlay(content));
+                } else if !content.is_empty() {
+                    self.chat_log.push(content.clone());
                     self.chat_events.push(crate::chat_wire::ChatEvent::Message {
-                        text: packet.content,
+                        text: content,
                         signature: None,
                         tag: Some(rewo_world::chat::MessageTag::SYSTEM_SINGLE_PLAYER),
                         source: rewo_world::chat::MessageSource::SystemServer,
@@ -4413,6 +4443,14 @@ impl PlaySession {
     /// The signature cache, for witnesses. Fed by every `player_chat`.
     pub fn signature_cache(&self) -> &crate::chat_wire::MessageSignatureCache {
         &self.signature_cache
+    }
+
+    /// [`crate::chat_translate::chat_component_text`] against this session's
+    /// table — a one-line adapter, because the rule itself has to live
+    /// somewhere a test can reach it (M71: this type owns a socket and has no
+    /// test module anywhere in the repo).
+    fn chat_component_text(&self, tag: &rewo_proto::nbt::Nbt) -> String {
+        crate::chat_translate::chat_component_text(tag, self.lang.as_deref())
     }
 
     pub fn take_death(&mut self) -> Option<crate::CombatKill> {

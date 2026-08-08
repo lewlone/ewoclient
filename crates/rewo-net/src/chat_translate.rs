@@ -225,6 +225,33 @@ fn java_scientific(s: String) -> String {
     }
 }
 
+/// Flatten a chat component to the plain text the chat store holds, resolving
+/// `translate` against `lang`.
+///
+/// It goes through the **styled** walker and then discards the styling, rather
+/// than through [`crate::component_wire::nbt_text`], and that is deliberate:
+/// [`crate::chat_style`] is where the resolution lives, and a second copy of
+/// it in the plain walker is how M100's nine-slice arithmetic came to have two
+/// versions a pixel apart. `hud_state::plain` already flattens this way for
+/// the same reason.
+///
+/// The styling is discarded because the chat store is plain text — see
+/// `rewo_world::chat::GuiMessage::content`. That is a pre-existing limitation
+/// M125 does not lift; what changes is that the text being discarded down to
+/// is English rather than a translation key.
+///
+/// A free function rather than a method on `PlaySession` for M71's reason:
+/// the session owns a socket and has no test module anywhere in the repo, so a
+/// rule that lives there is untestable — and M97 found exactly that hiding a
+/// live gap. The session keeps a one-line adapter.
+pub fn chat_component_text(tag: &Nbt, lang: Option<&Language>) -> String {
+    crate::chat_style::plain_text(&crate::chat_style::parse_component(
+        tag,
+        crate::chat_style::ChatStyle::WHITE,
+        lang,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,6 +438,88 @@ mod tests {
                 "as an argument"
             );
         }
+    }
+
+    // -- the chain a `system_chat` actually walks -------------------------
+
+    /// A `system_chat` body, byte for byte, carrying a translatable component.
+    ///
+    /// Written out rather than built from an `Nbt` so the test drives the real
+    /// `SystemChat::read` over real bytes — M92's rule: a witness that hands
+    /// production the value production is supposed to derive is grading
+    /// itself.
+    fn system_chat_body(key: &str, arg: &str, overlay: bool) -> Vec<u8> {
+        fn string_field(out: &mut Vec<u8>, name: &str, value: &str) {
+            out.push(0x08); // TAG_String
+            out.extend_from_slice(&(name.len() as u16).to_be_bytes());
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&(value.len() as u16).to_be_bytes());
+            out.extend_from_slice(value.as_bytes());
+        }
+        let mut out = vec![0x0a]; // TAG_Compound, unnamed root
+        string_field(&mut out, "translate", key);
+        // "with": TAG_List of TAG_String, one element.
+        out.push(0x09);
+        out.extend_from_slice(&4u16.to_be_bytes());
+        out.extend_from_slice(b"with");
+        out.push(0x08); // element type
+        out.extend_from_slice(&1i32.to_be_bytes());
+        out.extend_from_slice(&(arg.len() as u16).to_be_bytes());
+        out.extend_from_slice(arg.as_bytes());
+        out.push(0x00); // end of compound
+        out.push(u8::from(overlay));
+        out
+    }
+
+    /// The whole chain: wire bytes -> `SystemChat::read` -> the flatten the
+    /// session performs. This is the join `PlaySession` makes, minus the one
+    /// field read that hands over the table.
+    #[test]
+    fn a_system_chat_bodys_translatable_resolves_through_the_flatten() {
+        let body = system_chat_body("multiplayer.player.joined", "Steve", false);
+        let packet =
+            crate::chat_wire::SystemChat::read(&mut rewo_proto::reader::PacketReader::new(&body))
+                .unwrap();
+        assert!(!packet.overlay);
+        let l = lang(&[("multiplayer.player.joined", "%s joined the game")]);
+        assert_eq!(
+            chat_component_text(&packet.content, Some(&l)),
+            "Steve joined the game"
+        );
+    }
+
+    /// The same bytes with no table: the key, which is what every Rewo session
+    /// put on screen before M125. Kept as a test so "passing `None`" stays a
+    /// defined behaviour rather than an accident.
+    #[test]
+    fn the_same_body_with_no_table_is_the_pre_m125_rendering() {
+        let body = system_chat_body("multiplayer.player.joined", "Steve", false);
+        let packet =
+            crate::chat_wire::SystemChat::read(&mut rewo_proto::reader::PacketReader::new(&body))
+                .unwrap();
+        assert_eq!(
+            chat_component_text(&packet.content, None),
+            "multiplayer.player.joined"
+        );
+    }
+
+    /// The flatten discards styling and keeps every span's text in order, so a
+    /// styled argument still contributes its characters.
+    #[test]
+    fn the_flatten_keeps_a_styled_arguments_text() {
+        let sender = compound(&[
+            ("text", Nbt::String("Steve".into())),
+            ("color", Nbt::String("green".into())),
+        ]);
+        let tag = compound(&[
+            ("translate", Nbt::String("chat.type.text".into())),
+            (
+                "with",
+                Nbt::List(vec![sender, Nbt::String("hello".into())]),
+            ),
+        ]);
+        let l = lang(&[("chat.type.text", "<%s> %s")]);
+        assert_eq!(chat_component_text(&tag, Some(&l)), "<Steve> hello");
     }
 
     /// Same, for `Float.toString`. `0.1f` is the row that proves the digits

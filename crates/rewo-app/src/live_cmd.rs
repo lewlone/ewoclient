@@ -917,6 +917,11 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // wire, and the Brigadier tree cannot be read past its first
     // non-singleton argument without it.
     session.command_argument_types = Some(data.command_argument_types.clone());
+    // M125 — the language table, so a `translate` component in chat resolves.
+    // Vanilla reaches `Language.getInstance()`, a global; this is the same
+    // handover the two lines above use, and the session is where chat is
+    // decoded.
+    session.lang = Some(std::sync::Arc::new(baked.lang.clone()));
     // Client-side relighting of our own edits — the server only sends light
     // on chunk load, never for a placed torch or a broken roof.
     session.set_light_tables(
@@ -7772,6 +7777,9 @@ impl LiveApp {
                 // frame's fraction of the way into the current tick, the same
                 // `alpha` the entity lerps use.
                 alpha,
+                // M125 — the same handover `experience_level_lines` above
+                // takes, so `/title {"translate":...}` resolves.
+                self.baked.as_ref().map(|b| &b.lang),
             ));
         }
         // The stack counts are text like any other line, drawn after the icons
@@ -9255,6 +9263,7 @@ pub(crate) fn title_lines(
     px: f32,
     (screen_w, screen_h): (f32, f32),
     partial: f32,
+    lang: Option<&rewo_data::lang::Language>,
 ) -> Vec<rewo_gpu::world::OwnedTextLine> {
     use rewo_net::chat_style::{self, ChatStyle};
     let (gw, gh) = ((screen_w / px) as i32, (screen_h / px) as i32);
@@ -9295,14 +9304,14 @@ pub(crate) fn title_lines(
         // emits nothing rather than a transparent quad.
         if alpha > 0 {
             let a = alpha as f32 / 255.0;
-            let line = chat_style::parse_component(title, ChatStyle::WHITE);
+            let line = chat_style::parse_component(title, ChatStyle::WHITE, lang);
             let width = rewo_gpu::text::width(&chat_style::plain_text(&line), advance);
             let (x, y) = rewo_gpu::hud::title_pos(gw, gh, width);
             run(&mut out, &line, x, y, rewo_gpu::hud::TITLE_SCALE, a);
             // The subtitle is drawn *inside* the title's block, at the title's
             // alpha — it has no ramp of its own.
             if let Some(subtitle) = &t.subtitle {
-                let line = chat_style::parse_component(subtitle, ChatStyle::WHITE);
+                let line = chat_style::parse_component(subtitle, ChatStyle::WHITE, lang);
                 let width = rewo_gpu::text::width(&chat_style::plain_text(&line), advance);
                 let (x, y) = rewo_gpu::hud::subtitle_pos(gw, gh, width);
                 run(&mut out, &line, x, y, rewo_gpu::hud::SUBTITLE_SCALE, a);
@@ -9319,7 +9328,7 @@ pub(crate) fn title_lines(
     {
         let alpha = rewo_gpu::hud::action_bar_alpha(t.overlay_message_time, partial);
         if alpha > 0 {
-            let line = chat_style::parse_component(message, ChatStyle::WHITE);
+            let line = chat_style::parse_component(message, ChatStyle::WHITE, lang);
             let width = rewo_gpu::text::width(&chat_style::plain_text(&line), advance);
             let (x, y) = rewo_gpu::hud::action_bar_pos(gw, gh, width);
             run(&mut out, &line, x, y, 1, alpha as f32 / 255.0);
@@ -14864,12 +14873,20 @@ impl DeathView {
             // The message is kept even when it flattens to nothing: vanilla's
             // `causeOfDeath` is `@Nullable` and a *present but empty* component
             // still takes the non-null branch and draws an empty line.
-            cause_of_death: Some(kill.message.to_plain_text()),
+            cause_of_death: Some(chat_style::plain_text(&chat_style::parse_component(
+                &kill.message,
+                ChatStyle::WHITE,
+                Some(lang),
+            ))),
             hardcore,
             score,
         };
         let labels = model.labels(lang);
-        let cause = Some(chat_style::parse_component(&kill.message, ChatStyle::WHITE));
+        let cause = Some(chat_style::parse_component(
+            &kill.message,
+            ChatStyle::WHITE,
+            Some(lang),
+        ));
         let screen = model.build(&labels, gui_w, gui_h);
         (
             Self {
