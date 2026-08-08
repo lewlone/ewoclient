@@ -4580,10 +4580,8 @@ impl ApplicationHandler for LiveApp {
                         }
                         if let Some(text) = event.text.as_ref() {
                             let chars: Vec<char> = text.chars().collect();
-                            if let Some(s) = self.chat_screen.as_mut() {
-                                for ch in chars {
-                                    s.char_typed(ch);
-                                }
+                            for ch in chars {
+                                self.chat_char(ch);
                             }
                         }
                     }
@@ -5460,6 +5458,32 @@ impl LiveApp {
             .copied()
     }
 
+    /// `getCustomTabSuggestions()` — the online players unioned with whatever
+    /// `custom_chat_completions` has set, which is what plain chat completes
+    /// from. Empty with no session, so an offline harness offers nothing
+    /// rather than panicking.
+    fn tab_words(&self) -> Vec<String> {
+        match self.session.as_ref() {
+            Some(session) => session
+                .suggestions
+                .tab_suggestions(session.world.entities.all_names()),
+            None => Vec::new(),
+        }
+    }
+
+    /// The input field's geometry, as `CommandSuggestions` measures from it.
+    fn suggestion_metrics(&self) -> rewo_world::command_suggestions::InputMetrics {
+        let (gui_w, gui_h) = self.gui_size();
+        let (x, _y, w, _h) = rewo_world::chat_screen::input_rect(gui_w, gui_h);
+        rewo_world::command_suggestions::InputMetrics {
+            x,
+            // `getInnerWidth()` is `bordered ? width - 8 : width`, and the
+            // chat field calls `setBordered(false)`.
+            inner_width: w,
+            screen_height: gui_h,
+        }
+    }
+
     fn text_width(&self, text: &str) -> i32 {
         self.advance()
             .map(|a| rewo_gpu::text::width(text, &a))
@@ -5600,16 +5624,33 @@ impl LiveApp {
             None => (Vec::new(), 20),
         };
         let mut clip = std::mem::take(&mut self.clipboard);
+        let metrics = self.suggestion_metrics();
+        let words = self.tab_words();
+        let advance_for_width = self.advance();
+        let width_of = move |s: &str| match &advance_for_width {
+            Some(a) => rewo_gpu::text::width(s, a),
+            None => 0,
+        };
+        let env = rewo_world::chat_screen::SuggestionEnv {
+            metrics,
+            width: &width_of,
+            tab_words: &words,
+            // `Options.autoSuggestions` defaults true, and Rewo has no
+            // options screen to turn it off.
+            auto_suggestions: true,
+        };
         let action = match self.chat_screen.as_mut() {
             Some(s) => s.key_pressed(
                 rewo_world::edit_box::Input { key, modifiers },
                 &mut clip,
                 &recent,
                 per_page,
+                &env,
             ),
             None => ChatAction::None,
         };
         self.clipboard = clip;
+        self.send_suggestion_request();
         let advance = self.advance();
         // Which variant it was, captured before `action` is consumed.
         let is_command = matches!(action, ChatAction::Command(_));
@@ -5664,6 +5705,59 @@ impl LiveApp {
             Some(ExitReason::Done)
         ) {
             self.close_chat_screen();
+        }
+    }
+
+    /// One printable character typed into the chat screen.
+    ///
+    /// Split out of the event loop because `onEdited` now needs the
+    /// suggestion environment, which needs `&self` while the screen needs
+    /// `&mut self`.
+    fn chat_char(&mut self, ch: char) {
+        let metrics = self.suggestion_metrics();
+        let words = self.tab_words();
+        let advance_for_width = self.advance();
+        let width_of = move |s: &str| match &advance_for_width {
+            Some(a) => rewo_gpu::text::width(s, a),
+            None => 0,
+        };
+        let env = rewo_world::chat_screen::SuggestionEnv {
+            metrics,
+            width: &width_of,
+            tab_words: &words,
+            auto_suggestions: true,
+        };
+        if let Some(s) = self.chat_screen.as_mut() {
+            s.char_typed(ch, &env);
+        }
+        self.send_suggestion_request();
+    }
+
+    /// `ClientSuggestionProvider.customSuggestion` — ask the server about a
+    /// `/`-command, because Rewo has no client-side Brigadier dispatcher.
+    ///
+    /// **This is a deliberate divergence and the reason is worth stating.**
+    /// Vanilla asks the server only for the argument nodes whose suggestion
+    /// provider is `ASK_SERVER`, and answers literals from its own dispatcher.
+    /// Rewo cannot make that distinction without the dispatcher, so it asks
+    /// about every command — which gets the *right* answer, because
+    /// `ServerGamePacketListenerImpl.handleCustomCommandSuggestions` parses
+    /// the whole input with the server's own dispatcher and returns
+    /// `getCompletionSuggestions`, literals included. The cost is a packet per
+    /// keystroke on a command line, where vanilla sends one only on an
+    /// argument.
+    fn send_suggestion_request(&mut self) {
+        let Some(command) = self
+            .chat_screen
+            .as_mut()
+            .and_then(|s| s.take_command_request())
+        else {
+            return;
+        };
+        if let Some(session) = self.session.as_mut() {
+            if let Err(e) = session.request_command_suggestions(&command) {
+                log::debug!("chat: suggestion request not sent: {e}");
+            }
         }
     }
 
@@ -7055,6 +7149,36 @@ impl LiveApp {
         // store needs the font and the GUI clock, which is why this cannot
         // live where the packets are decoded.
         apply_chat(session, state.world_renderer.font_advance().copied());
+        // A `command_suggestions` reply that matched the outstanding request
+        // (M114). Drained here rather than at decode time for the same reason
+        // the chat events are: opening the popup needs the font to measure its
+        // widest entry, which `rewo-net` does not have.
+        if let Some(reply) = session.suggestion_reply.take() {
+            let advance = state.world_renderer.font_advance().copied();
+            let width_of = move |t: &str| match &advance {
+                Some(a) => rewo_gpu::text::width(t, a),
+                None => 0,
+            };
+            let px = gui_px(extent.width, extent.height);
+            let (gui_w, gui_h) = (
+                (extent.width as f32 / px) as i32,
+                (extent.height as f32 / px) as i32,
+            );
+            let (ix, _iy, iw, _ih) = rewo_world::chat_screen::input_rect(gui_w, gui_h);
+            let env = rewo_world::chat_screen::SuggestionEnv {
+                metrics: rewo_world::command_suggestions::InputMetrics {
+                    x: ix,
+                    inner_width: iw,
+                    screen_height: gui_h,
+                },
+                width: &width_of,
+                tab_words: &[],
+                auto_suggestions: true,
+            };
+            if let Some(s) = self.chat_screen.as_mut() {
+                s.accept_suggestions(reply, &env);
+            }
+        }
         // `ChatComponent.isChatFocused()` — `gui.screen() instanceof
         // ChatScreen`. It changes the box height, suppresses the fade, and is
         // what `scrollChat` clamps against, so the two derivations below and
@@ -10393,14 +10517,34 @@ mod tests {
         .is_empty());
     }
 
+    /// A suggestion environment with no completion words, so typing into a
+    /// chat screen in these tests never opens a popup that would swallow the
+    /// next key. The popup has its own tests in `rewo_world`.
+    fn chat_env() -> rewo_world::chat_screen::SuggestionEnv<'static> {
+        fn zero(_: &str) -> i32 {
+            0
+        }
+        const NO_WORDS: &[String] = &[];
+        rewo_world::chat_screen::SuggestionEnv {
+            metrics: rewo_world::command_suggestions::InputMetrics {
+                x: 4,
+                inner_width: 316,
+                screen_height: 240,
+            },
+            width: &zero,
+            tab_words: NO_WORDS,
+            auto_suggestions: true,
+        }
+    }
+
     /// The input field's caret sits after the text before the cursor, and the
     /// bar behind it is the screen's own rather than a chat row's.
     #[test]
     fn the_input_line_carries_its_text_and_a_caret() {
         use rewo_world::chat_screen::{ChatMethod, ChatScreen};
         let mut s = ChatScreen::open(ChatMethod::Message, None, 0);
-        s.char_typed('h');
-        s.char_typed('i');
+        s.char_typed('h', &chat_env());
+        s.char_typed('i', &chat_env());
         // `focused_time_ms` is unset until `set_focused_at`, so the blink's
         // clock starts at 0 and the caret is visible at t = 0.
         let lines = super::chat_input_lines(&s, 1.0, 320, 240, 0);
@@ -10425,7 +10569,7 @@ mod tests {
         let mut s = ChatScreen::open(ChatMethod::Message, Some(&draft), 0);
         let grey = super::chat_input_lines(&s, 1.0, 320, 240, 0)[0].color;
         assert_eq!(grey, [0.667, 0.667, 0.667], "ChatFormatting.GRAY");
-        s.char_typed('!');
+        s.char_typed('!', &chat_env());
         let normal = super::chat_input_lines(&s, 1.0, 320, 240, 0)[0].color;
         assert_ne!(normal, grey);
     }

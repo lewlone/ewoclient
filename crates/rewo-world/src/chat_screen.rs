@@ -165,6 +165,26 @@ pub struct ChatScreen {
     exit_reason: ExitReason,
     /// `closeOnSubmit` — false only for the (unshipped) command-block screens.
     close_on_submit: bool,
+    /// The autocomplete popup (M114). Vanilla's `ChatScreen` owns one too.
+    pub suggestions: crate::command_suggestions::CommandSuggestions,
+    /// A `/`-command the caller should ask the server about, produced by
+    /// [`crate::command_suggestions::CommandInfo::Command`]. Drained rather
+    /// than sent, because the screen owns no socket — the same seam
+    /// [`ChatAction`] is.
+    command_request: Option<String>,
+}
+
+/// Everything [`ChatScreen`] needs to drive its popup that it cannot own: the
+/// field's screen geometry, a font measurement, the words plain chat completes
+/// from, and the `autoSuggestions` option.
+pub struct SuggestionEnv<'a> {
+    pub metrics: crate::command_suggestions::InputMetrics,
+    pub width: &'a dyn Fn(&str) -> i32,
+    /// `getCustomTabSuggestions()` — the online players unioned with whatever
+    /// `custom_chat_completions` has set.
+    pub tab_words: &'a [String],
+    /// `minecraft.options.autoSuggestions().get()`, which defaults **true**.
+    pub auto_suggestions: bool,
 }
 
 impl ChatScreen {
@@ -191,6 +211,12 @@ impl ChatScreen {
             history_pos: recent_len,
             exit_reason: ExitReason::Interrupted,
             close_on_submit: true,
+            // `ChatScreen.init` ends with `setAllowHiding(false)` and
+            // `setAllowSuggestions(false)`, so the popup cannot appear until
+            // the first edit — but Tab can still force it, because hiding is
+            // off. Both are in `CommandSuggestions::for_chat`.
+            suggestions: crate::command_suggestions::CommandSuggestions::for_chat(),
+            command_request: None,
         }
     }
 
@@ -206,9 +232,60 @@ impl ChatScreen {
         self.history_pos
     }
 
-    /// `onEdited` — any edit stops the text being a draft.
-    fn on_edited(&mut self) {
+    /// `onEdited` — the responder `ChatScreen.init` installs on the field.
+    ///
+    /// Three lines in vanilla, in this order:
+    /// `setAllowSuggestions(true); updateCommandInfo(); isDraft = false;`.
+    /// The first is why a freshly opened box shows no popup and the second
+    /// keystroke does.
+    fn on_edited(&mut self, env: &SuggestionEnv<'_>) {
+        self.suggestions.set_allow_suggestions(true);
+        self.update_command_info(env);
         self.is_draft = false;
+    }
+
+    /// `commandSuggestions.updateCommandInfo()`, plus the tail of
+    /// `updateUsageInfo` that decides whether to open the popup.
+    ///
+    /// Vanilla reaches the second through a future's continuation; here the
+    /// local path is already resolved, so the two run back to back. A
+    /// `/`-command has no local answer (see [`crate::command_suggestions`]),
+    /// and its text is parked for the caller to send.
+    pub fn update_command_info(&mut self, env: &SuggestionEnv<'_>) {
+        use crate::command_suggestions::CommandInfo;
+        let words: Vec<&str> = env.tab_words.iter().map(String::as_str).collect();
+        match self.suggestions.update_command_info(&mut self.input, words) {
+            CommandInfo::Command(text) => self.command_request = Some(text),
+            CommandInfo::Message => {
+                self.command_request = None;
+                self.suggestions
+                    .auto_show(&mut self.input, env.metrics, env.auto_suggestions, env.width);
+            }
+            CommandInfo::Blank => self.command_request = None,
+        }
+    }
+
+    /// The `/`-command text the caller should ask the server about, if any.
+    ///
+    /// Taken rather than read, so one edit produces at most one request — the
+    /// single-slot pending id on the other side would drop a duplicate
+    /// anyway, but sending one is still a packet.
+    pub fn take_command_request(&mut self) -> Option<String> {
+        self.command_request.take()
+    }
+
+    /// The server's reply, once its id matched the outstanding request.
+    ///
+    /// Vanilla completes a future here and its continuation calls
+    /// `updateUsageInfo`, whose tail is the `showSuggestions` below.
+    pub fn accept_suggestions(
+        &mut self,
+        suggestions: crate::suggestions::Suggestions,
+        env: &SuggestionEnv<'_>,
+    ) {
+        self.suggestions.set_pending(Some(suggestions));
+        self.suggestions
+            .auto_show(&mut self.input, env.metrics, env.auto_suggestions, env.width);
     }
 
     /// `ChatScreen.keyPressed`.
@@ -228,7 +305,37 @@ impl ChatScreen {
         clipboard: &mut String,
         recent: &[String],
         lines_per_page: i32,
+        env: &SuggestionEnv<'_>,
     ) -> ChatAction {
+        // `commandSuggestions.keyPressed` is the FIRST thing
+        // `ChatScreen.keyPressed` calls — ahead of the draft backspace, the
+        // edit box and the confirmation. That is what lets Up/Down walk the
+        // popup rather than the send history whenever one is open.
+        let before = self.input.value();
+        if self.suggestions.key_pressed(
+            input,
+            &mut self.input,
+            env.metrics,
+            env.width,
+        ) {
+            if self.input.value() != before {
+                // Applying a suggestion is an edit, so vanilla's responder
+                // fires — but from inside `setValue`, while `keepSuggestions`
+                // is true, so it recomputes the pending set and leaves the
+                // list alone. `refresh_pending` is that call without the
+                // teardown; running the whole of `on_edited` here would drop
+                // the popup a Tab had just filled from.
+                self.is_draft = false;
+                self.suggestions.set_allow_suggestions(true);
+                let words: Vec<&str> = env.tab_words.iter().map(String::as_str).collect();
+                if let crate::command_suggestions::CommandInfo::Command(text) =
+                    self.suggestions.refresh_pending(&mut self.input, words)
+                {
+                    self.command_request = Some(text);
+                }
+            }
+            return ChatAction::None;
+        }
         if self.is_draft && input.key == key::BACKSPACE {
             self.input.set_value("");
             self.is_draft = false;
@@ -237,7 +344,7 @@ impl ChatScreen {
         let before = self.input.value();
         if self.input.key_pressed(input, clipboard) {
             if self.input.value() != before {
-                self.on_edited();
+                self.on_edited(env);
             }
             return ChatAction::None;
         }
@@ -276,13 +383,24 @@ impl ChatScreen {
     }
 
     /// `charTyped` — a printable character.
-    pub fn char_typed(&mut self, ch: char) -> bool {
+    pub fn char_typed(&mut self, ch: char, env: &SuggestionEnv<'_>) -> bool {
         let before = self.input.value();
         let handled = self.input.char_typed(ch);
         if handled && self.input.value() != before {
-            self.on_edited();
+            self.on_edited(env);
         }
         handled
+    }
+
+    /// `ChatScreen.mouseClicked` — the popup gets first refusal, exactly as it
+    /// does for keys.
+    pub fn mouse_clicked(&mut self, x: i32, y: i32) -> bool {
+        self.suggestions.mouse_clicked(x, y, &mut self.input)
+    }
+
+    /// The hover half: moving the pointer over a row selects it.
+    pub fn mouse_moved(&mut self, mouse: (i32, i32)) {
+        self.suggestions.mouse_moved(mouse, &mut self.input);
     }
 
     /// `ChatScreen.mouseScrolled`.
@@ -291,7 +409,12 @@ impl ChatScreen {
     /// seven lines and a high-resolution trackpad reporting 4.0 still moves
     /// seven, not twenty-eight. Shift holds it to one line. Multiplying before
     /// clamping would make the speed a property of the input device.
-    pub fn mouse_scrolled(&self, scroll_y: f64, shift: bool) -> ChatAction {
+    pub fn mouse_scrolled(&mut self, scroll_y: f64, shift: bool, mouse: (i32, i32)) -> ChatAction {
+        // `commandSuggestions.mouseScrolled` first — a wheel over the popup
+        // scrolls the popup, not the chat behind it.
+        if self.suggestions.mouse_scrolled(scroll_y, mouse) {
+            return ChatAction::None;
+        }
         let mut dy = scroll_y.clamp(-1.0, 1.0);
         if !shift {
             dy *= MOUSE_SCROLL_SPEED;
@@ -433,6 +556,29 @@ mod tests {
         ChatScreen::open(ChatMethod::Message, None, recent_len)
     }
 
+    /// A width of 6 px per UTF-16 unit, no tab words, auto-suggest on. The
+    /// tests below are about the screen, not the popup; the popup has its own
+    /// module. An empty word list is what keeps them independent — with words
+    /// in it every keystroke would open a popup and swallow the next key.
+    fn w(s: &str) -> i32 {
+        s.encode_utf16().count() as i32 * 6
+    }
+
+    const NO_WORDS: &[String] = &[];
+
+    fn env() -> SuggestionEnv<'static> {
+        SuggestionEnv {
+            metrics: crate::command_suggestions::InputMetrics {
+                x: 4,
+                inner_width: 316,
+                screen_height: 240,
+            },
+            width: &w,
+            tab_words: NO_WORDS,
+            auto_suggestions: true,
+        }
+    }
+
     // ── normalizeChatMessage ─────────────────────────────────────────────
 
     #[test]
@@ -504,7 +650,7 @@ mod tests {
         let mut s = ChatScreen::open(ChatMethod::Message, Some(&draft), 0);
         assert!(s.is_draft());
         let mut clip = String::new();
-        s.key_pressed(k(key::BACKSPACE), &mut clip, &[], 10);
+        s.key_pressed(k(key::BACKSPACE), &mut clip, &[], 10, &env());
         assert_eq!(s.input.value(), "");
         assert!(!s.is_draft());
     }
@@ -516,10 +662,10 @@ mod tests {
         let draft = Draft::of("abc");
         let mut s = ChatScreen::open(ChatMethod::Message, Some(&draft), 0);
         let mut clip = String::new();
-        s.char_typed('d');
+        s.char_typed('d', &env());
         assert!(!s.is_draft());
         assert_eq!(s.input.value(), "abcd");
-        s.key_pressed(k(key::BACKSPACE), &mut clip, &[], 10);
+        s.key_pressed(k(key::BACKSPACE), &mut clip, &[], 10, &env());
         assert_eq!(s.input.value(), "abc");
     }
 
@@ -532,7 +678,7 @@ mod tests {
             let mut clip = String::new();
             s.input.set_value("hello  world");
             assert_eq!(
-                s.key_pressed(k(key), &mut clip, &[], 10),
+                s.key_pressed(k(key), &mut clip, &[], 10, &env()),
                 // Normalized on the way out.
                 ChatAction::Send("hello world".into()),
             );
@@ -548,7 +694,7 @@ mod tests {
         let mut clip = String::new();
         s.input.set_value("/time set day");
         assert_eq!(
-            s.key_pressed(k(KEY_ENTER), &mut clip, &[], 10),
+            s.key_pressed(k(KEY_ENTER), &mut clip, &[], 10, &env()),
             ChatAction::Command("time set day".into()),
         );
     }
@@ -558,7 +704,7 @@ mod tests {
         let mut s = screen(0);
         let mut clip = String::new();
         s.input.set_value("   ");
-        assert_eq!(s.key_pressed(k(KEY_ENTER), &mut clip, &[], 10), ChatAction::None);
+        assert_eq!(s.key_pressed(k(KEY_ENTER), &mut clip, &[], 10, &env()), ChatAction::None);
         // `handleChatInput`'s `if (!msg.isEmpty())` guards the send, not the
         // close — the screen goes away either way.
         assert_eq!(s.exit_reason(), ExitReason::Done);
@@ -572,12 +718,12 @@ mod tests {
         let mut s = screen(recent.len());
         let mut clip = String::new();
         assert_eq!(s.history_pos(), 2);
-        s.key_pressed(k(KEY_UP), &mut clip, &recent, 10);
+        s.key_pressed(k(KEY_UP), &mut clip, &recent, 10, &env());
         assert_eq!(s.input.value(), "second");
-        s.key_pressed(k(KEY_UP), &mut clip, &recent, 10);
+        s.key_pressed(k(KEY_UP), &mut clip, &recent, 10, &env());
         assert_eq!(s.input.value(), "first");
         // …and stops at the top rather than wrapping.
-        s.key_pressed(k(KEY_UP), &mut clip, &recent, 10);
+        s.key_pressed(k(KEY_UP), &mut clip, &recent, 10, &env());
         assert_eq!(s.input.value(), "first");
     }
 
@@ -590,9 +736,9 @@ mod tests {
         let mut s = screen(recent.len());
         let mut clip = String::new();
         s.input.set_value("half a thought");
-        s.key_pressed(k(KEY_UP), &mut clip, &recent, 10);
+        s.key_pressed(k(KEY_UP), &mut clip, &recent, 10, &env());
         assert_eq!(s.input.value(), "earlier");
-        s.key_pressed(k(KEY_DOWN), &mut clip, &recent, 10);
+        s.key_pressed(k(KEY_DOWN), &mut clip, &recent, 10, &env());
         assert_eq!(s.input.value(), "half a thought");
     }
 
@@ -603,10 +749,10 @@ mod tests {
         let mut s = screen(recent.len());
         let mut clip = String::new();
         s.input.set_value("mine");
-        s.key_pressed(k(KEY_UP), &mut clip, &recent, 10); // -> "b"
-        s.key_pressed(k(KEY_UP), &mut clip, &recent, 10); // -> "a"
-        s.key_pressed(k(KEY_DOWN), &mut clip, &recent, 10); // -> "b"
-        s.key_pressed(k(KEY_DOWN), &mut clip, &recent, 10); // -> the buffer
+        s.key_pressed(k(KEY_UP), &mut clip, &recent, 10, &env()); // -> "b"
+        s.key_pressed(k(KEY_UP), &mut clip, &recent, 10, &env()); // -> "a"
+        s.key_pressed(k(KEY_DOWN), &mut clip, &recent, 10, &env()); // -> "b"
+        s.key_pressed(k(KEY_DOWN), &mut clip, &recent, 10, &env()); // -> the buffer
         assert_eq!(s.input.value(), "mine");
     }
 
@@ -616,7 +762,7 @@ mod tests {
         let mut s = screen(recent.len());
         let mut clip = String::new();
         s.input.set_value("typing");
-        s.key_pressed(k(KEY_DOWN), &mut clip, &recent, 10);
+        s.key_pressed(k(KEY_DOWN), &mut clip, &recent, 10, &env());
         // `newPos != historyPos` guards the whole body, so the buffer is not
         // saved and the field is untouched.
         assert_eq!(s.input.value(), "typing");
@@ -628,8 +774,8 @@ mod tests {
         let mut s = screen(0);
         let mut clip = String::new();
         s.input.set_value("only this");
-        s.key_pressed(k(KEY_UP), &mut clip, &[], 10);
-        s.key_pressed(k(KEY_DOWN), &mut clip, &[], 10);
+        s.key_pressed(k(KEY_UP), &mut clip, &[], 10, &env());
+        s.key_pressed(k(KEY_DOWN), &mut clip, &[], 10, &env());
         assert_eq!(s.input.value(), "only this");
     }
 
@@ -640,11 +786,11 @@ mod tests {
         let mut s = screen(0);
         let mut clip = String::new();
         assert_eq!(
-            s.key_pressed(k(KEY_PAGE_UP), &mut clip, &[], 20),
+            s.key_pressed(k(KEY_PAGE_UP), &mut clip, &[], 20, &env()),
             ChatAction::Scroll(19),
         );
         assert_eq!(
-            s.key_pressed(k(KEY_PAGE_DOWN), &mut clip, &[], 20),
+            s.key_pressed(k(KEY_PAGE_DOWN), &mut clip, &[], 20, &env()),
             ChatAction::Scroll(-19),
         );
     }
@@ -654,12 +800,12 @@ mod tests {
         // One notch is seven lines however large the device's delta is — the
         // clamp is what makes the speed a property of the client rather than
         // of the mouse.
-        let s = screen(0);
-        assert_eq!(s.mouse_scrolled(1.0, false), ChatAction::Scroll(7));
-        assert_eq!(s.mouse_scrolled(4.0, false), ChatAction::Scroll(7));
-        assert_eq!(s.mouse_scrolled(-4.0, false), ChatAction::Scroll(-7));
+        let mut s = screen(0);
+        assert_eq!(s.mouse_scrolled(1.0, false, (0, 0)), ChatAction::Scroll(7));
+        assert_eq!(s.mouse_scrolled(4.0, false, (0, 0)), ChatAction::Scroll(7));
+        assert_eq!(s.mouse_scrolled(-4.0, false, (0, 0)), ChatAction::Scroll(-7));
         // Shift holds it to one line.
-        assert_eq!(s.mouse_scrolled(4.0, true), ChatAction::Scroll(1));
+        assert_eq!(s.mouse_scrolled(4.0, true, (0, 0)), ChatAction::Scroll(1));
     }
 
     // ── the draft on the way out ─────────────────────────────────────────
@@ -677,7 +823,7 @@ mod tests {
         let mut s = screen(0);
         let mut clip = String::new();
         s.input.set_value("sent");
-        s.key_pressed(k(KEY_ENTER), &mut clip, &[], 10);
+        s.key_pressed(k(KEY_ENTER), &mut clip, &[], 10, &env());
         assert_eq!(s.removed(true), DraftOutcome::Discard);
     }
 
@@ -715,7 +861,7 @@ mod tests {
         assert_eq!(s.removed(true), DraftOutcome::Keep);
         // …but editing it makes it a save again.
         let mut s = ChatScreen::open(ChatMethod::Message, Some(&draft), 0);
-        s.char_typed('!');
+        s.char_typed('!', &env());
         s.close();
         assert_eq!(s.removed(true), DraftOutcome::Save(Draft::of("original!")));
     }
@@ -744,6 +890,128 @@ mod tests {
         assert!((INPUT_BACKDROP_ALPHA - 128.0 / 255.0).abs() < 1e-6);
     }
 
+    // ── the popup's place in the order ───────────────────────────────────
+
+    /// A screen whose env offers three names, so the popup actually opens.
+    fn with_words<'a>(words: &'a [String]) -> SuggestionEnv<'a> {
+        SuggestionEnv {
+            tab_words: words,
+            ..env()
+        }
+    }
+
+    #[test]
+    fn up_walks_the_popup_rather_than_the_send_history_while_one_is_open() {
+        // `commandSuggestions.keyPressed` is the first line of
+        // `ChatScreen.keyPressed`, so with a popup open the arrows belong to
+        // it. Ordered the other way round the history would move underneath a
+        // visible list.
+        let words: Vec<String> = ["Steve", "Steven"].iter().map(|s| s.to_string()).collect();
+        let e = with_words(&words);
+        let recent = vec!["earlier".to_string()];
+        let mut s = ChatScreen::open(ChatMethod::Message, None, recent.len());
+        let mut clip = String::new();
+        for ch in "Ste".chars() {
+            s.char_typed(ch, &e);
+        }
+        assert!(s.suggestions.is_visible());
+        s.key_pressed(k(KEY_UP), &mut clip, &recent, 10, &e);
+        // The field still holds what was typed; the history did not move.
+        assert_eq!(s.input.value(), "Ste");
+        assert_eq!(s.history_pos(), 1);
+    }
+
+    #[test]
+    fn the_arrows_reach_the_history_again_once_the_popup_is_gone() {
+        let words: Vec<String> = vec!["Steve".to_string()];
+        let e = with_words(&words);
+        let recent = vec!["earlier".to_string()];
+        let mut s = ChatScreen::open(ChatMethod::Message, None, recent.len());
+        let mut clip = String::new();
+        s.char_typed('S', &e);
+        assert!(s.suggestions.is_visible());
+        s.key_pressed(k(crate::command_suggestions::KEY_ESCAPE), &mut clip, &recent, 10, &e);
+        assert!(!s.suggestions.is_visible());
+        s.key_pressed(k(KEY_UP), &mut clip, &recent, 10, &e);
+        assert_eq!(s.input.value(), "earlier");
+    }
+
+    #[test]
+    fn a_fresh_screen_shows_no_popup_until_the_first_edit() {
+        // `init` calls `setAllowSuggestions(false)`; only `onEdited` turns it
+        // on. So a restored draft sits there without a list.
+        let words: Vec<String> = vec!["Steve".to_string()];
+        let e = with_words(&words);
+        let draft = Draft::of("Ste");
+        let mut s = ChatScreen::open(ChatMethod::Message, Some(&draft), 0);
+        s.update_command_info(&e);
+        assert!(!s.suggestions.is_visible());
+        s.char_typed('v', &e);
+        assert!(s.suggestions.is_visible());
+    }
+
+    #[test]
+    fn applying_a_suggestion_clears_the_draft_flag() {
+        // Vanilla's responder fires from inside `setValue`, so `isDraft` goes
+        // false even though the edit came from the popup rather than the
+        // keyboard — which is what stops the next backspace wiping the line.
+        let words: Vec<String> = vec!["Steve".to_string()];
+        let e = with_words(&words);
+        let draft = Draft::of("Ste");
+        let mut s = ChatScreen::open(ChatMethod::Message, Some(&draft), 0);
+        let mut clip = String::new();
+        assert!(s.is_draft());
+        s.update_command_info(&e);
+        // The Tab that FORCES the popup open does not also fill it:
+        // `CommandSuggestions.keyPressed` falls through to
+        // `showSuggestions(true)` and returns, so the list is built and
+        // nothing is applied. This witness asserted the one-press version
+        // first and was wrong.
+        let tab = k(crate::command_suggestions::KEY_TAB);
+        s.key_pressed(tab, &mut clip, &[], 10, &e);
+        assert!(s.suggestions.is_visible());
+        assert_eq!(s.input.value(), "Ste");
+        assert!(s.is_draft(), "opening the popup is not an edit");
+        // The next one applies, and vanilla's responder — which fires from
+        // inside `setValue` — is what clears the draft flag, so the next
+        // backspace deletes one character rather than the line.
+        s.key_pressed(tab, &mut clip, &[], 10, &e);
+        assert_eq!(s.input.value(), "Steve");
+        assert!(!s.is_draft());
+    }
+
+    #[test]
+    fn a_slash_parks_a_request_for_the_caller_and_offers_nothing_locally() {
+        let words: Vec<String> = vec!["Steve".to_string()];
+        let e = with_words(&words);
+        let mut s = screen(0);
+        s.char_typed('/', &e);
+        s.char_typed('g', &e);
+        assert_eq!(s.take_command_request().as_deref(), Some("/g"));
+        // Taken, so a second look is empty and no second packet goes out.
+        assert_eq!(s.take_command_request(), None);
+        assert!(!s.suggestions.is_visible());
+    }
+
+    #[test]
+    fn a_wheel_over_the_popup_scrolls_it_rather_than_the_chat() {
+        let words: Vec<String> = (0..20).map(|i| format!("Steve{i:02}")).collect();
+        let e = with_words(&words);
+        let mut s = screen(0);
+        s.char_typed('S', &e);
+        let rect = s.suggestions.list().unwrap().rect;
+        assert_eq!(
+            s.mouse_scrolled(-1.0, false, (rect.x + 2, rect.y + 2)),
+            ChatAction::None
+        );
+        assert_eq!(s.suggestions.list().unwrap().offset(), 1);
+        // Away from it, the chat scrolls as before.
+        assert_eq!(
+            s.mouse_scrolled(-1.0, false, (0, 0)),
+            ChatAction::Scroll(-7)
+        );
+    }
+
     // ── the unhandled case ───────────────────────────────────────────────
 
     #[test]
@@ -751,6 +1019,6 @@ mod tests {
         let mut s = screen(0);
         let mut clip = String::new();
         // F5, which the caller should still get.
-        assert_eq!(s.key_pressed(k(294), &mut clip, &[], 10), ChatAction::NotHandled);
+        assert_eq!(s.key_pressed(k(294), &mut clip, &[], 10, &env()), ChatAction::NotHandled);
     }
 }

@@ -272,6 +272,24 @@ impl CommandSuggestions {
             edit.set_suggestion(None);
             self.list = None;
         }
+        self.refresh_pending(edit, tab_words)
+    }
+
+    /// `updateCommandInfo` **minus** the teardown — what vanilla runs when
+    /// `keepSuggestions` is set.
+    ///
+    /// It exists because vanilla fires the field's responder from *inside*
+    /// `EditBox.setValue`, so `useSuggestion`'s own write re-enters
+    /// `updateCommandInfo` while `keepSuggestions` is still true: the pending
+    /// set is recomputed against the new text and the list doing the writing
+    /// survives. Rewo has no responder, so the caller runs this *after*
+    /// `useSuggestion` returns instead. The call order differs; the effect
+    /// does not.
+    pub fn refresh_pending<'a>(
+        &mut self,
+        edit: &mut EditBox,
+        tab_words: impl IntoIterator<Item = &'a str>,
+    ) -> CommandInfo {
         let units = edit.value_utf16();
         let cursor = edit.cursor_position().min(units.len());
         let value = String::from_utf16_lossy(&units);

@@ -4432,6 +4432,21 @@ impl PlaySession {
     }
 
     /// Start digging (creative servers break the block on START).
+    /// `ServerboundCommandSuggestionPacket` — ask what completes `command`.
+    ///
+    /// The id and the pending slot are the provider's; see
+    /// [`crate::suggestion_wire`] for why there is only one outstanding
+    /// request and what happens to a reply that misses it.
+    pub fn request_command_suggestions(&mut self, command: &str) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_command_suggestion else {
+            return Err("command_suggestion unavailable".into());
+        };
+        let (_req, body) = self.suggestions.begin_request(command);
+        let mut p = PacketWriter::packet(id);
+        p.raw(&body);
+        self.send(p)
+    }
+
     /// Run a server command (unsigned `chat_command`, the string without the
     /// leading `/`). Used for verification (`/summon …`) when the account is
     /// op; a normal client mostly sends these too.
