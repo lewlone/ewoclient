@@ -112,9 +112,9 @@ book's 77 px displacement that were not using the shared predicate, and
 exactly). **Chat is complete for everything vanilla draws without a subsystem
 Rewo lacks.**
 
-Current measurement, taken 2026-08-07 after M113: **2313 tests, 0 failures**
-(**world 949, net 664, gpu 255, data 216, app 173, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2313). **Read each crate's EXIT CODE, not
+Current measurement, taken 2026-08-08 after M114: **2385 tests, 0 failures**
+(**world 1006, net 679, gpu 255, data 216, app 173, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2385). **Read each crate's EXIT CODE, not
 just its count**: a crate whose tests fail to compile prints no `test result`
 line at all, contributes 0, and reads as silence — M110 hit exactly that and
 the only signal was the total falling. **Breakdowns written before the
@@ -129,9 +129,9 @@ three occurrences of the same habit. `containershot` **107/107**, `inventoryshot
 validation errors, last run for M112** — M113 is a decode and adds no render
 path, which is the only reason it was not re-run (M94 is where it earned its
 keep twice over — see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
-`REWO_PACKET_COVERAGE.md` is at **116 / 0 / 25**, class C **14** — M96–M107
-consume packets M93y already decoded, M108 resolved `delete_chat` and M113 the
-Brigadier tree.
+`REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C **12** — M96–M107
+consume packets M93y already decoded, M108 resolved `delete_chat`, M113 the
+Brigadier tree and M114 the two suggestion packets.
 
 **`live --render-check` now has TWO caller requirements, not one.** r14 needs
 items in the hotbar and **r25 needs a MULTI-PAGE recipe book**, so the staged
@@ -169,14 +169,25 @@ best-scoped work on the board:
   not to be deferred but UNREACHABLE**: `extractRenderState` gates it on
   `isForeground`, and only `ChatScreen` passes `FOREGROUND`. It comes free with
   the item below and cannot come before it.
-* ~~A `ChatScreen`~~ (M110), ~~the scrollbar~~ (M111) and ~~the Brigadier
-  tree~~ (M113) — all shipped. **The best-scoped work now is
-  `CommandSuggestions`**: the tree is decoded, stored, and read by nothing.
-  What it needs is the two remaining chat packets (`command_suggestions`,
-  `custom_chat_completions` — both a plain decode) and then vanilla's own
-  `CommandSuggestions`, which is the popup, Tab-completion and the input
-  field's syntax highlighting. M110's `ChatScreen` already has the four
-  early-outs it owns marked at their call sites.
+* ~~A `ChatScreen`~~ (M110), ~~the scrollbar~~ (M111), ~~the Brigadier
+  tree~~ (M113) and ~~`CommandSuggestions`~~ (**M114**) — all shipped.
+  **What is left of M114 is its RENDER.** The popup's model, geometry, input
+  routing and both packets are in and tested, and Tab-completion visibly works
+  because it rewrites the field — but nothing draws the list, its scroll
+  indicators, or the greyed ghost suffix (`EditBox::suggestion` is stored and
+  read by nothing), so `live --render-check` has no new witness. **Run
+  `--render-check` on that milestone**: M94 is the precedent, and a gate whose
+  witnesses are injected cannot see a path the windowed client never reaches.
+
+  Beyond the render, the command path is where the remaining depth is. M114
+  ships a **deliberate divergence**: vanilla asks the server only about
+  argument nodes whose provider is `ASK_SERVER` and answers literals from its
+  own client-side Brigadier dispatcher, and Rewo — having M113's tree as data
+  and no dispatcher — asks about every command instead. That is correct but
+  chatty (a packet per keystroke on a command line), and it is what a
+  dispatcher would replace. The same dispatcher is the blocker for the usage
+  lines under the field and for the input's syntax highlighting, both of which
+  read `currentParse`.
 
   Still needing a subsystem Rewo lacks, and named rather than forgotten:
   clickable chat text (Rewo flattens components at the wire, so there is no
@@ -18201,3 +18212,96 @@ control that correctly survived.
 the chat cluster, and vanilla's `CommandSuggestions` — the popup, the
 Tab-completion and the syntax highlighting in the input field — is what
 consumes all three.
+
+### M114 — `CommandSuggestions` (2026-08-08)
+
+The work M113's handoff named. It is **two suggestion paths sharing one
+popup**, and only one of them is reachable: plain chat completes locally from
+a word set the server maintains, while a `/`-command needs a client-side
+Brigadier dispatcher Rewo does not have.
+
+**Brigadier is a library, so this is the first Rewo module whose ground truth
+is not the decompile.** `com/mojang/brigadier` is absent from the client tree
+— `com/` there holds `blaze3d`, `math` and `realmsclient` and stops. The jar
+Phase B already downloads was decompiled with the same Vineflower, into
+`%APPDATA%/EwoClient/rewo/26.2/brigadier-decompiled/`, and
+`tools/suggestion_oracle` runs the **real classes** and prints the vectors
+that `suggestions.rs` pins verbatim. A test computing its expectation from
+this module's own constants would be self-calibrating (M93q/M93r), and the
+risk is sharper than usual because the source is a jar rather than a file a
+reviewer can read in the diff. **Re-run the oracle after a version bump** —
+brigadier's version is pinned by the client jar and `Suggestions.create`'s
+sort is a user-visible order.
+
+**Findings that invert.**
+
+* `SuggestionsBuilder.suggest` opens `if (text.equals(remaining)) return
+  this;` — a suggestion equal to what you have typed is **dropped**, so the
+  list at `Steve` is shorter than the list at `Stev`.
+* `MATCH_SPLITTER` is `CharMatcher.anyOf("._/")` — **not `:`**. `bar` finds
+  `Foo_Bar`, which matters because an underscore is the one punctuation a
+  Minecraft name may carry; `stone` does **not** find `minecraft:stone`, which
+  `sortSuggestions` handles separately.
+* `ClientboundCommandSuggestionsPacket.toSuggestions` builds its list with the
+  **constructor**, not `Suggestions.create`, so a reply is displayed in the
+  server's order with its duplicates. It *looks* sorted only because the
+  server built it through `create` before sending.
+* `Rect2i.contains` is inclusive on **all four** sides while the per-row hover
+  test is strictly inside. The popup's leftmost column is clickable and never
+  highlights, and a click one pixel **below** it lands on `limit + offset` —
+  on a long list, a real entry that is not on screen.
+* `Mth.clamp(int,int,int)` is `min(max(v,min),max)` and so returns **max**
+  when `max < min`; a suggestion wider than the field pins the popup to a
+  negative x.
+* `sortSuggestions` lower-cases **only the needle** and calls `startsWith` on
+  raw text, so `Steve` — matched case-insensitively one step earlier — is
+  demoted. Lower-casing both sides reorders every mixed-case list.
+* `ChatScreen.init` calls `setAllowHiding(false)`, which is the entire reason
+  Tab can force the popup open. I first read it as untouched.
+* `lineStartOffset` is **1** because `cycle`'s downward branch is
+  `current + lineStartOffset - limit`: the window becomes `[current-9,
+  current]` and the selected row is its last line. With `0` it would be
+  invisible.
+
+**One deliberate divergence, and one recorded crash.** Vanilla asks the server
+only about argument nodes whose provider is `ASK_SERVER`; Rewo cannot make
+that distinction without a dispatcher and asks about **every** command. That
+gets the right answer — `handleCustomCommandSuggestions` parses the whole
+input with the server's own dispatcher and returns `getCompletionSuggestions`,
+literals included — at the cost of a packet per keystroke on a command line.
+Separately, `-1` is both vanilla's idle pending-id sentinel and a legal
+VarInt, so a server sending `command_suggestions` with id `-1` while nothing
+is outstanding dereferences a null future in vanilla; modelling the slot as an
+`Option` makes it unrepresentable.
+
+**Process.** 24 mutations across six batches, 24 killed, **every batch
+carrying a no-op control that survived**. One survived first — folding to
+lower only — and was a **weak fixture, not an equivalent mutant**: the two
+folds agree on all of ASCII, so the distinguishing pair had to come from the
+oracle, which answers Equal for `U+0131` against `i` where a lower-only
+comparator answers Greater. Two witnesses were wrong before any code was (the
+underscore ordering, and the assumption that one Tab both opens and fills).
+
+It also caught `cargo test -p rewo-app` printing **no result line** while
+`cargo build -p rewo-app` stayed green — the app's tests had stopped compiling
+and the crate read as silence, which is the trap §0.0 names. My first sweep
+walked into it twice, because `cmd | tail; echo $?` reports **tail's** exit
+rather than cargo's.
+
+**Measured:** 2385 tests (world 1006, net 679, gpu 255, data 216, app 173,
+mesh 45, proto 11), every crate's exit code read individually; coverage
+**118 / 0 / 23**, class C 14 → 12; demo PNG `2cc56b4acbfb92cb`,
+byte-identical; `mobshot` 246/246, `hudshot` 41, `inventoryshot` 158,
+`containershot` 107.
+
+**Open, and this is the honest boundary: the popup is not DRAWN.** The model,
+the geometry, the input routing and the wire are all in and tested, and
+Tab-completion visibly works because it rewrites the field — but the list
+itself, the scroll indicators and the greyed ghost suffix
+(`EditBox::suggestion`, which is stored and read by nothing) have no renderer,
+and `live --render-check` therefore has no new witness. That is the next
+step, and it is M94's lesson in waiting: **run `--render-check` on the
+milestone that adds the render path**, because a gate whose witnesses are
+injected cannot see a path the windowed client never reaches. Also open: the
+usage lines, the syntax highlighting, and the command path's local half, all
+three of which read `currentParse` and so need the dispatcher.
