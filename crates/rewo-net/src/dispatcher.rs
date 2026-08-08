@@ -1485,6 +1485,90 @@ mod tests {
         );
     }
 
+    #[test]
+    fn every_minecraft_argument_type_now_parses() {
+        // M121's headline, and the guard against it quietly regressing: the
+        // 57-entry registry has no `Unknown` left. `ArgKind::Unknown` still
+        // exists — it is what an unrecognised NAME resolves to, which is a
+        // version mismatch rather than a gap — but no type in this list
+        // reaches it.
+        let none = ArgumentProps::None;
+        let all = [
+            "minecraft:angle", "minecraft:block_pos", "minecraft:block_predicate",
+            "minecraft:block_state", "minecraft:column_pos", "minecraft:component",
+            "minecraft:dialog", "minecraft:dimension", "minecraft:entity",
+            "minecraft:entity_anchor", "minecraft:float_range", "minecraft:function",
+            "minecraft:game_profile", "minecraft:gamemode", "minecraft:heightmap",
+            "minecraft:hex_color", "minecraft:int_range", "minecraft:item_predicate",
+            "minecraft:item_slot", "minecraft:item_slots", "minecraft:item_stack",
+            "minecraft:loot_modifier", "minecraft:loot_predicate", "minecraft:loot_table",
+            "minecraft:message", "minecraft:nbt_compound_tag", "minecraft:nbt_path",
+            "minecraft:nbt_tag", "minecraft:objective", "minecraft:objective_criteria",
+            "minecraft:operation", "minecraft:particle", "minecraft:resource",
+            "minecraft:resource_key", "minecraft:resource_location",
+            "minecraft:resource_or_tag", "minecraft:resource_or_tag_key",
+            "minecraft:resource_selector", "minecraft:rotation", "minecraft:score_holder",
+            "minecraft:scoreboard_slot", "minecraft:style", "minecraft:swizzle",
+            "minecraft:team", "minecraft:team_color", "minecraft:template_mirror",
+            "minecraft:template_rotation", "minecraft:time", "minecraft:uuid",
+            "minecraft:vec2", "minecraft:vec3",
+        ];
+        let unknown: Vec<&str> = all
+            .into_iter()
+            .filter(|t| ArgKind::resolve(t, &none) == ArgKind::Unknown)
+            .collect();
+        assert!(unknown.is_empty(), "still Unknown: {unknown:?}");
+        // …and a name no registry can contain still is.
+        assert_eq!(
+            ArgKind::resolve("minecraft:__no_such_argument_type", &none),
+            ArgKind::Unknown
+        );
+    }
+
+    #[test]
+    fn an_nbt_argument_lets_the_parse_reach_the_words_after_it() {
+        // The whole point of M121: leaving these Unknown stopped the parse at
+        // the NBT word, which cost the highlighting AND the completion of
+        // every later word.
+        let mut t = tree();
+        t.nodes[0].children.push(9);
+        t.nodes.push(CommandNode {
+            flags: 1,
+            children: vec![10],
+            redirect: 0,
+            kind: NodeKind::Literal("data".into()),
+        });
+        t.nodes.push(CommandNode {
+            flags: 2,
+            children: vec![11],
+            redirect: 0,
+            kind: NodeKind::Argument {
+                name: "nbt".into(),
+                type_id: 0,
+                type_name: "minecraft:nbt_compound_tag".into(),
+                props: ArgumentProps::None,
+                suggestions: None,
+            },
+        });
+        t.nodes.push(CommandNode {
+            flags: 1 | 4,
+            children: vec![],
+            redirect: 0,
+            kind: NodeKind::Literal("force".into()),
+        });
+        let ctx = CommandCtx::default();
+        assert!(parse(&t, &u("/data {a:1} force"), 1, ctx).is_valid(&t));
+        // …including when a brace hides inside a string, which is where a
+        // naive counter truncates.
+        assert!(parse(&t, &u("/data {a:\"}\"} force"), 1, ctx).is_valid(&t));
+        // And the word after it completes locally.
+        let units = u("/data {a:1} fo");
+        let p = parse(&t, &units, 1, ctx);
+        let c = completion_suggestions(&t, &p, units.len(), ctx);
+        let texts: Vec<&str> = c.local.list.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["force"]);
+    }
+
     // ── the parse ────────────────────────────────────────────────────────
 
     #[test]

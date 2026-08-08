@@ -112,9 +112,9 @@ book's 77 px displacement that were not using the shared predicate, and
 exactly). **Chat is complete for everything vanilla draws without a subsystem
 Rewo lacks.**
 
-Current measurement, taken 2026-08-08 after M120: **2487 tests, 0 failures**
-(**world 1006, net 771, gpu 255, data 216, app 183, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2487). **Read each crate's EXIT CODE, not
+Current measurement, taken 2026-08-08 after M121: **2503 tests, 0 failures**
+(**world 1006, net 787, gpu 255, data 216, app 183, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2503). **Read each crate's EXIT CODE, not
 just its count**: a crate whose tests fail to compile prints no `test result`
 line at all, contributes 0, and reads as silence — M110 hit exactly that and
 the only signal was the total falling. **Breakdowns written before the
@@ -183,14 +183,19 @@ best-scoped work on the board:
   ~~`EntitySelectorParser`~~ (**M118**) — `@e[…]` parses and completes
   locally, and `live --render-check` is **33/33**.
 
-  ~~`item_stack` and `block_state`~~ (**M119**), ~~and the other 39~~
-  (**M120**). **Six `minecraft:` types remain**, all structured:
-  `component`, `style`, `nbt_compound_tag`, `nbt_tag`, `nbt_path`, `dialog`.
-  A test in `arg_types` asserts every other one is claimed, so the list cannot
-  rot. What is left beyond them is *suggestion quality* rather than parsing:
-  seven literal tables that live in classes outside the argument (`heightmap`,
-  `team_color`, `scoreboard_slot`, `item_slot`/`item_slots`, `swizzle`), and
-  the `resource*` family's registries beyond blocks and items.
+  ~~`item_stack` and `block_state`~~ (**M119**), ~~the other 39~~ (**M120**)
+  and ~~the six structured ones~~ (**M121**). **Every `minecraft:` argument
+  type now parses** — a test over the whole 57-entry registry asserts no type
+  resolves to `Unknown`.
+
+  What remains is **one piece of real work and then polish**. The real one:
+  **a faithful `SnbtGrammar`** (916 lines), which would turn M121's stated
+  over-acceptance — it measures an SNBT value's *extent* and does not validate
+  it — into real validation, and restore the red unparsed tail on a malformed
+  compound. The polish: seven literal tables that live in classes outside their
+  argument (`heightmap`, `team_color`, `scoreboard_slot`,
+  `item_slot`/`item_slots`, `swizzle`), and the `resource*` family's
+  registries beyond blocks and items.
 
   **A gate note that will save a confusing minute:** `--render-check`'s r32
   needs an argument that suggests *nothing*, so its precondition **recedes by
@@ -18693,3 +18698,68 @@ shadowed rather than rejected**.
 `minecraft:item` — the wire always names the right registry (M113 keeps it in
 the props), so what limits them is which registries Rewo holds, not which one
 to ask.
+
+### M121 — the six structured types, as extents rather than as a grammar (2026-08-08)
+
+`component`, `style`, `dialog`, `nbt_tag`, `nbt_compound_tag` and `nbt_path`
+all reduce to one question: **where does this value end?** Four are
+`TagParser` directly, `dialog` is an id *or* a `TagParser` value, and
+`nbt_path` embeds compounds inside its own grammar.
+
+**What this deliberately does not do, said first because it is the
+milestone's main decision.** 26.x's SNBT is `net/minecraft/nbt/SnbtGrammar
+.java`, a **916-line packrat grammar** — signed and unsigned type suffixes
+(`1b`, `1ub`, `1ui`), hex and binary numerals, exponents, a full escape table,
+typed arrays. Transcribing it faithfully is its own milestone, and an
+**approximate** SNBT parser would be worse than none: it would silently accept
+text the server rejects, inside the parse that drives the highlighting and the
+completion.
+
+So this answers the narrower question the **command layer** actually asks —
+the value's **extent** — with a balanced-delimiter walk that is quote- and
+escape-aware, and says nothing about whether the value is well-formed.
+
+**The consequence is stated rather than buried, and asserted by a test** so it
+cannot rot into a surprise: Rewo **over-accepts**. `{a:}` parses here and the
+server rejects it, so M117's red tail is absent where vanilla shows one. The
+trade is the better one at this layer — leaving the six `Unknown` stops the
+parse at the NBT word, costing the highlighting **and** the completion of every
+later word in `/data merge entity @s {…} …`. Over-accepting costs one missing
+error indicator; refusing costs the rest of the line.
+
+**The quote-awareness is the load-bearing part**: a naive brace counter reads
+`{a:"}"}` as ending at the quoted brace — three characters early — and the
+truncation then breaks the rest of the command in a way that looks like a
+different bug entirely.
+
+**`nbt_path`'s own grammar IS transcribed**, being small and self-contained.
+Two details that read backwards: **`isAllowedInUnquotedName` is a NEGATIVE
+set** (everything but space, `"`, `'`, `[`, `]`, `.`, `{`, `}`), so a path name
+may contain colons, dashes and capitals an identifier reader would reject; and
+a **`{` root filter is legal only as the FIRST node**, which vanilla enforces
+with a flag rather than by grammar position.
+
+**One bug of my own**, caught by two tests at once: `:` was in the bare-token
+terminators, which truncated `minecraft:server_links` at the colon. Inside a
+group the bracket walk handles the separators, so that branch is only ever
+reached at the top level — where a colon is part of a namespaced value.
+
+**Process.** 11 mutations, 11 killed, **no survivors** — the first battery of
+this arc with none. `ArgKind::Unknown` is now **unreachable for every one of
+the 57 registry entries**, and a test over the whole list says so; the variant
+remains for an unrecognised *name*, which is a version mismatch rather than a
+gap. M120's "these six are NOT claimed" test **inverted with the code** rather
+than being deleted — the shape that would otherwise rot silently.
+
+**`live --render-check` 35/35**, validation ON, 0 errors — **no new witness,
+and that is deliberate**: the reach-past-NBT claim is proven by a unit test
+through the production dispatcher, and a contrived injection would be a weaker
+witness than that rather than a stronger one.
+
+**2503 tests**; demo PNG `2cc56b4acbfb92cb`, byte-identical.
+
+**Open.** A faithful `SnbtGrammar`, which would turn the over-acceptance above
+into real validation and is the single remaining piece of the command-argument
+work. Beyond it the remainder is *suggestion quality*: seven literal tables
+that live in classes outside their argument, and the `resource*` family's
+registries beyond blocks and items.

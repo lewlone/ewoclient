@@ -50,6 +50,7 @@ pub mod server_links;
 pub mod session;
 pub mod selector;
 pub mod skins;
+pub mod snbt;
 pub mod sounds;
 pub mod suggestion_wire;
 pub mod spawn_info;
