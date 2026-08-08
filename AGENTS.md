@@ -1702,11 +1702,11 @@ agent worktrees were verified fully merged and clean, then pruned.*
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
-**Everything is shipped, gated and merged to `main`** as of 2026-08-07
-(M113) — **2313 tests / 0 failures** (world 949, net 664, gpu 255, data 216,
-app 173, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
+**Everything is shipped, gated and merged to `main`** as of 2026-08-08
+(M122) — **2522 tests / 0 failures** (world 1006, net 806, gpu 255, data 216,
+app 183, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
-`handshot` 34/34, `swingshot` 97/97, `live --render-check` **28/28** with
+`handshot` 34/34, `swingshot` 97/97, `live --render-check` **35/35** with
 validation ON and 0 validation errors, demo PNG `2cc56b4acbfb92cb`.
 **The recipe book is closed** (M105–M107) and **M108–M111 shipped chat** —
 `ChatComponent`, the wrap under it, the `MessageSignatureCache` without which
@@ -1716,8 +1716,61 @@ scrollbar. What is left of chat all needs a subsystem Rewo lacks. **M112** then
 closed `isHovering`'s narrow-window override and found the recipe book's 77 px
 displacement missing from four more consumers — the click, the double-click, the
 drag and the item-hover highlight. **M113** decoded the Brigadier command tree
-(2,017 nodes off a real server, consumed exactly), taking coverage to
-**116 / 0 / 25** with class C down to 14. No branch or worktree holds a commit
+(2,017 nodes off a real server, consumed exactly), and **M114** built
+`CommandSuggestions` on it — the two remaining chat packets, brigadier's own
+suggestion primitives (graded against the **real jar**, because brigadier is a
+library and absent from the decompile), the popup's model and geometry, and its
+place at the head of `ChatScreen`'s key order. Coverage is **118 / 0 / 23**,
+class C **12**. **M115** then drew it — the rows, the truncation bars, the
+scroll dashes and the greyed ghost suffix — and its `--render-check` witness
+r29 is built to measure the **production chain** rather than a hand-built
+`Suggestions`: the gate injects a `custom_chat_completions` packet through the
+real router and types one character, so a break anywhere from the decode to the
+render drops it to zero. Mutation-verified live, twice. **M116** then built
+the client-side **Brigadier dispatcher**, so `/g` completes to
+`gamemode`/`give` with **no packet at all** where M114 asked the server for
+every keystroke — and found that **`canUse` is always true for suggestions**:
+`getSuggestionsProvider()` returns the provider granted
+`ALLOW_RESTRICTED_COMMANDS` explicitly, so `FLAG_RESTRICTED` governs a
+send-confirmation prompt and not what the popup offers (M113's guess that
+`hasAllowedInput` reads it is wrong — that reads `ChatAbilities`). **M117**
+then built the two things that read the parse: the **syntax highlighting**
+(where `LITERAL_STYLE` is GRAY, so a parsed command *dims* and only its
+arguments stay bright) and the **usage box**, which grows **upward** from the
+bottom and is **mutually exclusive** with the suggestion popup. Its sharpest
+finding is that `getSmartUsage` **decides with one string and prints another** —
+the `LinkedHashSet` of deep usages only settles whether the alternatives
+differ, and the pipe list is then built from `getUsageText`. **M118** added the
+**entity selector parser** — `@e[…]` parses and completes locally — whose
+mechanism is a **function pointer the parse reassigns**, which is why
+suggestions survive a throw: `EntityArgument.listSuggestions` catches the
+exception with an **empty body** and calls `fillSuggestions` anyway. Two of its
+seven suggestion states are **dead in vanilla**. **M119** added
+`block_state` and `item_stack`, and found where the **namespace rule** lives:
+`suggestResource`'s `filterResources` tests the typed text against an
+identifier's namespace and path **separately** when no colon has been typed,
+which is the other half of M114a's refusal to split `matchesSubStr` on `:`.
+**M120** then claimed **39 of the remaining 45** argument types — the
+coordinate family, the fixed word lists, the ranges, the word-shaped scalars
+and the identifier family — leaving **six structured ones** (`component`,
+`style`, `nbt_*`, `dialog`) named rather than half-done, with a test asserting
+every other type IS claimed so the list cannot rot. Its finding: **a bare `~`
+is a complete coordinate** (the number after it is optional), and **`^` is
+all-or-nothing across a triple** — `^1 ~2 3` is `ERROR_MIXED_TYPE`, not a
+mixed one. **M121** closed the set: **every `minecraft:` argument type now
+parses**, with the six structured ones handled as **extents rather than as a
+grammar**. That is a stated, test-asserted approximation — 26.x's SNBT is a
+916-line packrat grammar, and an approximate one would silently accept text the
+server rejects, so Rewo measures where the value *ends* and does not validate
+it. It over-accepted `{a:}` — and **M122** closed that by transcribing the
+grammar itself, so SNBT is now validated rather than measured and M117's red
+unparsed tail appears where vanilla shows one. Its findings are the kind a
+plausible parser gets silently wrong: **`0b` is zero-as-a-byte and `0b1` is
+binary one** (resolved by backtracking, not lookahead), **a leading zero is an
+error rather than a value**, and **`_` is a digit separator banned only at the
+ends**. Range and finiteness are still unchecked, and a test says so.
+
+No branch or worktree holds a commit
 off `main`. The long-unmerged-branch risk closed on 2026-07-27 and has
 stayed closed; branch new work from `main` and keep it that way.
 

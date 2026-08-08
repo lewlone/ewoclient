@@ -112,9 +112,9 @@ book's 77 px displacement that were not using the shared predicate, and
 exactly). **Chat is complete for everything vanilla draws without a subsystem
 Rewo lacks.**
 
-Current measurement, taken 2026-08-08 after M121: **2503 tests, 0 failures**
-(**world 1006, net 787, gpu 255, data 216, app 183, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2503). **Read each crate's EXIT CODE, not
+Current measurement, taken 2026-08-08 after M122: **2522 tests, 0 failures**
+(**world 1006, net 806, gpu 255, data 216, app 183, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2522). **Read each crate's EXIT CODE, not
 just its count**: a crate whose tests fail to compile prints no `test result`
 line at all, contributes 0, and reads as silence — M110 hit exactly that and
 the only signal was the total falling. **Breakdowns written before the
@@ -188,14 +188,19 @@ best-scoped work on the board:
   type now parses** — a test over the whole 57-entry registry asserts no type
   resolves to `Unknown`.
 
-  What remains is **one piece of real work and then polish**. The real one:
-  **a faithful `SnbtGrammar`** (916 lines), which would turn M121's stated
-  over-acceptance — it measures an SNBT value's *extent* and does not validate
-  it — into real validation, and restore the red unparsed tail on a malformed
-  compound. The polish: seven literal tables that live in classes outside their
-  argument (`heightmap`, `team_color`, `scoreboard_slot`,
-  `item_slot`/`item_slots`, `swizzle`), and the `resource*` family's
-  registries beyond blocks and items.
+  ~~and a faithful `SnbtGrammar`~~ (**M122**) — SNBT is validated rather
+  than measured, so `{a:}` is an error and the red unparsed tail appears where
+  vanilla shows one.
+
+  **What remains is polish, and it is named precisely.** (1) Numeric **range**
+  and finiteness: vanilla parses each numeral and reports
+  `ERROR_NUMBER_PARSE_FAILURE` on overflow, where `999999999999b` is accepted
+  — a test in `snbt_grammar` records this so it cannot be forgotten. (2) Seven
+  literal tables that live in classes outside their argument (`heightmap`,
+  `team_color`, `scoreboard_slot`, `item_slot`/`item_slots`, `swizzle`), which
+  parse as words and suggest nothing. (3) The `resource*` family's registries
+  beyond blocks and items — the wire always names the right one, so what limits
+  it is which registries Rewo holds.
 
   **A gate note that will save a confusing minute:** `--render-check`'s r32
   needs an argument that suggests *nothing*, so its precondition **recedes by
@@ -18763,3 +18768,72 @@ into real validation and is the single remaining piece of the command-argument
 work. Beyond it the remainder is *suggestion quality*: seven literal tables
 that live in classes outside their argument, and the `resource*` family's
 registries beyond blocks and items.
+
+### M122 — the SNBT grammar (2026-08-08)
+
+M121 shipped an **extent** walk for the six structured types and said plainly
+what it was. This is the grammar it deferred: `{a:}` is now an error rather
+than a value, and M117's red unparsed tail appears where vanilla shows one.
+
+Vanilla's is a **packrat combinator** grammar; this is recursive descent over
+the same **language**. The combinators are plumbing — what has to be faithful
+is which strings are accepted.
+
+**Findings, several of the kind a plausible parser gets silently wrong:**
+
+* **`0b` is zero-as-a-byte and `0b1` is binary one.** There is **no cut** after
+  the `b`, so a failed binary numeral **backtracks** to the empty-marker
+  alternative and the `b` is then taken by the optional integer suffix. Two
+  readings of the same two characters, resolved by backtracking rather than by
+  lookahead.
+* **A leading zero is an ERROR**, not a value — `Term.fail(
+  ERROR_LEADING_ZERO_NOT_ALLOWED)`. `01` is not `1`, and is not `0` followed by
+  junk either. That is the opposite of what almost every other number parser
+  does.
+* **`_` is a digit separator banned only at the ENDS**, so `1__2` is legal —
+  a rule admitting doubled separators is unusual enough to be worth not
+  tidying.
+* **A float needs a `.`, an exponent or an `f`/`d`**, which is what stops the
+  float rule — tried **first** — from swallowing every integer.
+* **A trailing comma is legal** in both maps and lists
+  (`repeatedWithTrailingSeparator`), and so is an empty group.
+* **A backslash-s escapes to a SPACE**, not to "whitespace".
+* **An unquoted string may be CALLED** — `bool(1)` is a value, 26.x's
+  builtin-operation form. A grammar without it reads `bool` and chokes on the
+  parenthesis.
+* **Whitespace is skipped before every token**, not just between entries.
+* An **array prefix is uppercase only**, and a **map key may start with a
+  digit** where a value may not — the key rule never consults
+  `canStartNumber`.
+
+**Process.** 15 mutations, 15 killed, **1 proven equivalent**:
+`unquoted_or_builtin`'s own `canStartNumber` guard can never fire, because
+`parse_value_at` only falls through to it when the same test has already failed
+on the same character. Kept anyway, because vanilla carries it in that rule.
+
+Two survived first and both were **weak fixtures**: a hex escape's length is
+**per-width**, so one fixture covers only the width it uses; and the recursion
+guard is observable only on a **well-formed** deep value, because an
+unterminated run of brackets fails on the missing brackets either way.
+
+**Two witnesses were wrong before any code was, and both were this project's
+own findings biting**: `_1` is a valid **string** (the numeral rule rejects it
+and the value rule falls through to the unquoted alternative), and `{01:1}` is
+valid because a leading zero in a map **key** never reaches the numeral rule —
+which `snbt_grammar`'s own test records two modules away from where I got it
+wrong.
+
+**Still not checked, and stated: RANGE.** Vanilla additionally parses each
+numeral and reports `ERROR_NUMBER_PARSE_FAILURE` on overflow, and rejects a
+non-finite float. `999999999999b` is accepted here, with a test recording it so
+the day someone adds the check that test asks to be updated — the same
+mechanism M121 used, which is what made M122 land as an inversion rather than
+as a rediscovery.
+
+**`live --render-check` 35/35**, validation ON, 0 errors. **2522 tests**; demo
+PNG `2cc56b4acbfb92cb`, byte-identical.
+
+**Open.** Numeric range and finiteness, above. Everything else in the
+command-argument work is suggestion quality: seven literal tables living in
+classes outside their argument, and the `resource*` family's registries beyond
+blocks and items.

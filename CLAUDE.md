@@ -1687,7 +1687,7 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-08
-(M121) — **2503 tests / 0 failures** (world 1006, net 787, gpu 255, data 216,
+(M122) — **2522 tests / 0 failures** (world 1006, net 806, gpu 255, data 216,
 app 183, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, `live --render-check` **35/35** with
@@ -1746,8 +1746,15 @@ parses**, with the six structured ones handled as **extents rather than as a
 grammar**. That is a stated, test-asserted approximation — 26.x's SNBT is a
 916-line packrat grammar, and an approximate one would silently accept text the
 server rejects, so Rewo measures where the value *ends* and does not validate
-it. It over-accepts `{a:}`; the alternative was stopping the parse at the NBT
-word and losing every later word's completion. No branch or worktree holds a commit
+it. It over-accepted `{a:}` — and **M122** closed that by transcribing the
+grammar itself, so SNBT is now validated rather than measured and M117's red
+unparsed tail appears where vanilla shows one. Its findings are the kind a
+plausible parser gets silently wrong: **`0b` is zero-as-a-byte and `0b1` is
+binary one** (resolved by backtracking, not lookahead), **a leading zero is an
+error rather than a value**, and **`_` is a digit separator banned only at the
+ends**. Range and finiteness are still unchecked, and a test says so.
+
+No branch or worktree holds a commit
 off `main`. The long-unmerged-branch risk closed on 2026-07-27 and has
 stayed closed; branch new work from `main` and keep it that way.
 
