@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: shipped and headlessly verified through M124 (2026-08-08).** `main`
+**Status: shipped and headlessly verified through M125 (2026-08-08).** `main`
 carries all of it and no branch or worktree holds a commit off it; the
 long-standing branch risk (everything from M10 on living on one unmerged
 branch) closed on 2026-07-27 and has stayed closed. See §0.0 for the
@@ -19,7 +19,7 @@ trusting a paragraph.**
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-08 after M124)
+## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-08 after M125)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -38,7 +38,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M124 shipped, all merged to `main`
+### Where it is: M0–M125 shipped, all merged to `main`
 
 **Update (2026-08-03, the M87–M93 container arc).** Seven milestones landed
 after the cold-start audit below, **all merged to `main`**: M87 the
@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-08 after M124: **2548 tests, 0 failures**
-(**world 1006, net 832, gpu 255, data 216, app 183, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2548). Note the per-crate invocation is
+Current measurement, taken 2026-08-08 after M125: **2582 tests, 0 failures**
+(**world 1006, net 856, gpu 255, data 221, app 183, mesh 45, proto 16** — read
+off the runner per crate; they sum to 2582). Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
 other six take `--lib`, and `--lib` there is `error: no library targets`, exit
 101, and **no** `test result` line at all. Assert that a result line exists
@@ -146,8 +146,8 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` 36/36 with validation ON and 0
-validation errors, last run for M124**; demo PNG `2cc56b4acbfb92cb`,
+34/34, `mobshot` 246/246, **`live --render-check` 37/37 with validation ON and 0
+validation errors, last run for M125**; demo PNG `2cc56b4acbfb92cb`,
 byte-identical. `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C
 **12** — M96–M107 consume packets M93y already decoded, M108 resolved
 `delete_chat`, M113 the Brigadier tree and M114 the two suggestion packets.
@@ -155,7 +155,7 @@ byte-identical. `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C
 **There are 33 serverless gate commands, not the "fourteen" older paragraphs in
 this file say** — those sentences are historical records of the count *at the
 time* and are correct as such. Re-measured from a cold start on 2026-08-08 by
-running every one: all 33 green, **0 validation errors**. Enumerate them rather
+running every one, and again after M125: all 33 green, **0 validation errors**. Enumerate them rather
 than trusting a list, since the list is what rots:
 
 ```
@@ -182,6 +182,15 @@ looked green because a previous run's `recipe give` had persisted into the
 world save. **A reused server directory is not a fresh one**; make a new
 directory when a witness's precondition is player state.
 
+**M125's r37 is not a third requirement either** — it rides r14's `/give`,
+because the server's success message for it is a translatable three levels deep
+(`commands.give.success.single` -> `chat.square_brackets` ->
+`item.minecraft.diamond_sword`) whose middle argument is a bare integer. Its
+first version needed no staging, driving the join message instead, and was
+wrong: `PlayerList.placeNewPlayer` broadcasts at line 202 and runs
+`this.players.add(player)` at line 210, so **a joining player never receives
+their own join message**, and the gate correctly scored zero.
+
 **M108's r26 is deliberately NOT a third requirement** — the run sends its own
 chat line on spawn, so an otherwise unstaged invocation still exercises the
 whole `player_chat` chain. Adding a caller requirement was the easy version and
@@ -195,14 +204,33 @@ injected**: the container, the book and the chat all drive themselves, so only
 r25 — which needs a real server to grant recipes — could tell. A gate whose
 witnesses are mostly self-driven can look healthy against nothing.
 
-### What to do next (written 2026-08-08, after M124)
+### What to do next (written 2026-08-08, after M125)
 
-**The chat and command-line subsystem is finished** for everything that does
-not need a subsystem Rewo lacks. The recipe book closed at M107, the container
-arc at M93, and nothing has reopened either. So the next unit of work is a
-**choice between three**, and none of them is a packet:
+**M125 took §0.0's option 2 (the chat decoration) and found a prerequisite
+under it**, which is now the milestone: every `translate` component Rewo
+received rendered as its raw key with its arguments dropped, so a real
+server's join messages, death messages and command feedback were all
+key-shaped on screen. That is fixed; the decoration itself is not, and is
+the cheapest thing to pick up.
 
-1. **AUDIO — the largest single gap, and it needs a decision from the user.**
+1. **The chat decoration** — `boundChatType.decorate`, the thing that turns a
+   message into `<Steve> hi`. **Everything it needs now exists**, which M125
+   verified rather than assumed: `minecraft:chat_type` is in
+   `RegistryDataLoader.SYNCHRONIZED_REGISTRIES` so it arrives in the
+   configuration `registry_data` (M42's rule — contents *and* id order are the
+   server's, and the index IS the id); the inline `holder == 0` form is
+   already walked by `read_chat_type_bound` and merely discarded; the `Bound`'s
+   name and target components are decoded; and the styled translatable
+   resolution landed in M125. Five of the seven vanilla chat types carry
+   `Style.EMPTY`, so a plain-text decoration is byte-exact for them — the two
+   `/msg` ones are GRAY + italic and want the item below.
+2. **The styled chat pipeline.** `rewo_world::chat::GuiMessage::content` is a
+   `String` and `wrap_components` splits `&str`, so the chat store still
+   flattens whatever it is handed. M125 changed what it flattens *from*, not
+   that it does. This is what a `/msg`'s grey italic, a team-coloured sender
+   and clickable text all wait on, and it is a real piece of work: the
+   splitter, the wrap and the render all take `&str` today.
+3. **AUDIO — the largest single gap, and it needs a decision from the user.**
    M63/M64/M66 decoded the packets, built the 1,968-entry sound registry and
    the weighted-variant index from the asset index, and deliberately stopped
    before playback. `REWO_FEATURE_SURVEY.md` puts ~117M downloads of demand
@@ -211,18 +239,24 @@ arc at M93, and nothing has reopened either. So the next unit of work is a
    asserts and what it plainly does not — a mixer's output buffer can be
    asserted; "it sounds right" cannot. Pick a crate (cpal / rodio / kira), a
    device model, and vanilla's attenuation curve.
-2. **The chat decoration** — `boundChatType.decorate`, which turns a message
-   into `<Steve> hi` and is the most visible thing chat still lacks. M78
-   recorded the blocker as the `minecraft:chat_type` registry plus the language
-   table; **both halves are now reachable** (M42 parses a datapack registry,
-   M54 loads the language map), so this is scheduling rather than a wall —
-   verify that before relying on it.
-3. **`REWO_FEATURE_SURVEY.md`** — the feature roadmap, for picking the next
+4. **`REWO_FEATURE_SURVEY.md`** — the feature roadmap, for picking the next
    *feature* rather than the next milestone. Audit its items against the crates
    first: five of its entries are already at vanilla parity.
 
 Smaller, named rather than forgotten:
 
+* **The rest of the components that still flatten at the wire.** M125 carried
+  the component forward on the *chat* path only. Every other
+  `to_plain_text` / `nbt_text` call site is decode-time with no table — item
+  names and lore, the MOTD, disconnect reasons, entity nametags, suggestion
+  tooltips, server links — so a translatable in any of them still shows its
+  key. Each needs its component carried to a place that holds
+  `BakedAssets::lang`, the way `SystemChat` and `DisguisedChat` now are.
+* **`PlayerChat::unsigned_content`** is still flattened at the wire. It is the
+  server's rewrite of a player's message and is essentially never a
+  translatable, so it was left; carrying it as `Nbt` would also make
+  `ChatTrustLevel`'s `containsModifiedStyle` half reachable, which the M19
+  comment records as unreachable *because* of the flattening.
 * **Suggestion quality only** (not correctness — a command Rewo accepts is one
   the server accepts): the three word types whose vanilla suggester reads
   **live state** rather than a list — `objective` and `team` from the
@@ -235,16 +269,18 @@ Smaller, named rather than forgotten:
   shows *nothing* where vanilla shows a message, rather than approximating.
 * The which-of-these overlay's own tooltips.
 * Still needing a subsystem Rewo lacks: **clickable chat text** (Rewo flattens
-  components at the wire, so there is no `Style` to find), the chat delay queue
-  and its expand link, and the restricted-chat prompt (`ChatAbilities`, a
-  packet Rewo does not decode).
+  components at the wire, so there is no `Style` to find — item 2 above is its
+  prerequisite), the chat delay queue and its expand link, and the
+  restricted-chat prompt (`ChatAbilities`, a packet Rewo does not decode).
 
-**A gate note that will save a confusing minute:** `--render-check`'s r32 needs
-an argument that suggests *nothing*, so its precondition **recedes by one word
-for every argument type transcribed**. It failed on M118 and again on M119,
-correctly both times, and the fix each time was to type one more word in the
-gate's injection. With M124 done, every type in the vanilla tree either parses
-or suggests, so the next transcription to move it will be a datapack's.
+**Two gate notes that will save a confusing minute.** `--render-check`'s r32
+needs an argument that suggests *nothing*, so its precondition **recedes by one
+word for every argument type transcribed**; with M124 done, the next
+transcription to move it will be a datapack's. And **r37 rides the `/give` r14
+already stages** rather than adding a caller requirement — its first version
+drove the join message on the premise that a server announces a joining player
+to that player, which `PlayerList.placeNewPlayer` disproves (it broadcasts at
+line 202 and adds the player to `this.players` at line 210).
 
 <details>
 <summary>The M108–M124 ladder, kept for the record</summary>
@@ -1226,6 +1262,40 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    app's payload is richer than the model's, which is how a second copy of the
    ordering rule gets written. `recipe_overlay::promote` is generic for that
    reason.
+
+-2. **(M125) An NBT list is HOMOGENEOUS, so a mixed one is written wrapped —
+   and a reader that skips the unwrap produces a plausible wrong tree rather
+   than an error.** The payload is one element-type byte and then that many
+   bodies, so `ListTag` cannot hold mixed types.
+   `identifyRawElementType` returns the shared type if there is one and
+   otherwise **10** (`TAG_Compound`), at which point `wrapIfNeeded` boxes every
+   element that is not already a plain compound as `{"": value}`;
+   `ListTag.load` calls `addAndUnwrap` on the way back in. Rewo's reader never
+   did, from M1 to M125, and nothing noticed because the list is still a list
+   and the elements are still tags — a consumer just sees a one-entry compound
+   where a value should be. The first thing to look at a heterogeneous list's
+   non-compound element was a translatable's `with`, and it rendered `/give`
+   feedback as "Gave  [Diamond Sword]" with the count silently gone. **Both
+   halves of `isWrapper` (`size() == 1 && contains("")`) are load-bearing**: a
+   compound with an empty key AND another key is a real component, and a
+   one-entry compound with a *named* key is not a box. A genuine `{"": x}`
+   element is written **double**-wrapped, so unwrapping exactly once
+   round-trips it. The unwrap is per list ELEMENT, not a general compound rule.
+
+-1c. **(M125) `shell=True` on Windows is cmd.exe, and a mutation harness that
+   forgets it scores every mutation KILLED against a command that never ran.**
+   `VAR=value cmd` is not cmd syntax (it looks for a program called
+   `REWO_PRECMD="give`), and cmd cannot run `./target/...` at all — "'.' is not
+   recognized". Writing the path by hand then puts a CARRIAGE RETURN in it,
+   because a Windows path's backslash-r is an escape in most languages' string
+   literals — and that is this paragraph's own bug, since the first two drafts
+   of this sentence were mangled exactly that way by the script writing them,
+   which is why it no longer contains the path. Set the variable through
+   `env=`, build the path with `os.path.join`, and **put a baseline check at
+   the top of every
+   battery**: this was caught twice by that guard rather than by a wrong
+   verdict. The companion rule is the same one M109 learned — read the check's
+   EXIT CODE, never a substring of its output.
 
 0. **(M92) A gate that supplies an input production must derive leaves the
    derivation untested by construction.** Five `mob_effect` ids were read from a
@@ -2741,6 +2811,260 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M125 — translatable components resolve, and an NBT list rule nobody had read (2026-08-08)
+
+§0.0 offered the **chat decoration** (`boundChatType.decorate`, the thing that
+turns a message into `<Steve> hi`) and told the reader to verify its recorded
+blocker before relying on it. Both halves were indeed reachable — `chat_type`
+really is in `RegistryDataLoader.SYNCHRONIZED_REGISTRIES`, and M54's language
+map really is loaded. But the survey found something the decoration sits on
+top of, and much more visible than it:
+
+**Every `translate` component Rewo received rendered as its raw key, with its
+arguments dropped.** Both walkers said so in their own doc comments — the
+`translate` arm of `chat_style::walk` is one line, `push_legacy(key, …)`, and
+`component_wire::nbt_text` pushes the key and never looks at `with` at all. On
+a real server that means `multiplayer.player.joined` on screen instead of
+"Steve joined the game", every death message as `death.attack.player`, and
+every command's feedback as `commands.give.success.single`. The decoration is
+one *consumer* of the machinery that was missing. So M125 is the machinery, and
+the decoration is next.
+
+Five commits plus the gate; each is a logical step and the merge is `--no-ff`.
+
+**The split is the point of M125a.** `lang::format` had `decomposeTemplate`
+transcribed exactly and threw the split away — it concatenated as it went, so
+the only thing a caller could get back was a finished `String`. Enough for a
+tooltip, not for chat, where each argument is a component with its own style
+and a substituted string paints the whole line one colour. The decomposition
+emits `Part::Literal` / `Part::Arg` now and `format` concatenates them; the
+alternative was a second walk of `FORMAT_PATTERN`, which is how M100's
+nine-slice arithmetic came to have two copies a pixel apart.
+
+Three things the split makes visible that concatenation hid: there is **no
+empty leading or trailing literal** (`if (start > current)` guards the prefix);
+**`%%` is ONE part holding one character**, `TEXT_PERCENT`, not an escape the
+substitution unfolds; and **`args_len` has to be an input**, because
+`getArgument`'s throw is inside the loop vanilla wraps, so an index past the
+end collapses the whole line rather than blanking one argument. Also pinned
+because it is invisible in every template 26.2 ships: a **positional specifier
+does not advance the sequential counter** (`replacementIndex++` is in the
+`else`), so `%2$s %s` is argument 1 then argument 0.
+
+**Two of M125b's three facts are in the decompile and one is not.** Which
+template: `fallback != null ? getOrDefault(key, fallback) : getOrDefault(key)`,
+and the order inverts against the field's name — a key that IS in the table
+beats the fallback. The single-argument arity defaults to the key itself, which
+is the useful accident: passing no table selects exactly the string the
+pre-M125 walkers emitted, so a call site without one is unchanged rather than
+blank. Which arguments are primitive: `ARG_CODEC` is `Codec.either(primitive,
+component)` and `either` takes the first success, so a **string argument is a
+primitive, not a literal component** — unobservable in the output and
+load-bearing in the dispatch, so `primitive_arg_text` returns the test and the
+text together and they cannot drift.
+
+What a number looks like is the one that needed an artefact. `getArgument` ends
+in `arg.toString()`, so the answer is whichever Java type the tag boxed to —
+decided by `NbtOps.convertTo`, which dispatches per tag into `JavaOps`. That is
+a **datafixerupper** class and absent from the decompile, so it was read out of
+the shipped `datafixerupper-10.0.21.jar` (the version 26.2's own manifest
+names): its `createByte`/`createInt`/… return the boxed value unchanged, so the
+**width survives** and an `IntTag(3)` renders `3`. The plausible alternative is
+not harmless — everything through `createNumeric`, which `NbtOps` implements as
+`DoubleTag.valueOf`, would put a `.0` on every count in every command's
+feedback.
+
+`Double.toString` is in neither the decompile nor any jar this repo holds, so
+it is graded against a real JDK 25 by `tools/java_tostring_oracle/` — the M114
+precedent, where brigadier being a library meant grading against the artefact.
+Two findings a guess gets half right: the plain-versus-scientific band is
+**inclusive at 1e-3 and exclusive at 1e7** (`1.0E-3` prints `0.001`, `1.0E7`
+prints `1.0E7`), and the mandatory fractional digit applies to the mantissa
+too, so it is `1.0E20` and never `1E20`. The float rows format the `f32` rather
+than a widened `f64`, because `0.1f32 as f64` would print sixteen digits of
+which fifteen are noise.
+
+**The composition is what M125c pins, not the substitution.**
+`Component.visit` opens with `this.getStyle().applyTo(parentStyle)`, so a
+template's literal runs take the translatable's resolved style verbatim while a
+component argument applies its own **on top** — which is what keeps a
+team-coloured sender green inside a grey `/msg` line. An implementation that
+resolved to a plain string first would paint the whole line one colour and read
+perfectly correctly, so the test asserts three spans in two colours rather than
+the text.
+
+**M125c's bound is new behaviour and deliberate.** `extra` recursion is
+self-limiting: every level costs bytes, so an *n*-byte packet is O(*n*) nodes. A
+`translate` argument is not, because a template may name the same argument
+twice — `%1$s%1$s` **duplicates** its subtree, so output is exponential in
+nesting depth. A depth cap does not fix it, because the fan-out is
+server-controlled: `fallback` is a string the server sends, so it can hold as
+many `%1$s`s as its packet budget allows, and eight levels of hundred-way
+fan-out is 10^16 nodes. Nor does a text budget — a tree whose leaves emit
+*nothing* costs no text and still costs exponential time. So
+`MAX_COMPONENT_STEPS` counts **steps**. Vanilla has the same shape and no
+bound. Its test asserts the budget was *spent*, not that the call returned; a
+test that only checked for a return would pass against an implementation that
+took an hour.
+
+**M125d is the wiring, and it moved a flatten one layer later.** Three packets
+carried a component that was flattened AT THE WIRE, which is one layer too
+early — a `translate` needs the table and the table is the app's. Each carries
+its `Nbt` to `PlaySession` now, which holds the table and resolves: the same
+split `hud_state` has always used for the title and action bar, and its doc
+comment's reason ("kept as raw `Nbt` so the styling survives to the app") turns
+out to cover the language table too. Vanilla reaches a **global** here —
+`TranslatableContents.decompose` calls `Language.getInstance()` — so resolving
+at receipt rather than at render is equivalent for a client that cannot change
+language mid-session, which Rewo cannot. `session.lang` is the same one-line
+handover `command_argument_types` uses.
+
+The **death screen** came with it, and had had the table in scope the whole
+time: `DeathView::open` takes `lang: &Language`, calls `model.labels(lang)`,
+and two lines above was calling `to_plain_text` on the raw cause-of-death
+component. It showed `death.attack.player`.
+
+`chat_component_text` is a free function rather than a session method, for
+M71's reason (the session owns a socket and has no test module anywhere in the
+repo) and M97's (a rule that lives there is untested by construction). It
+flattens **through the styled walker** and discards the styling rather than
+through `component_wire::nbt_text`, so the resolution has one implementation —
+`hud_state::plain` already flattens that way for the same reason. The chat
+store is still plain text; what changed is that the text being discarded down
+to is English.
+
+**Found while moving a guard and left alone deliberately: vanilla has no
+emptiness test on either chat handler.** `handleDisguisedChatMessage`
+decorates and adds unconditionally, and `handleSystemMessage` gates only on the
+ignore list and the receiver's abilities. Rewo drops an empty line where
+vanilla draws a blank row. Pre-existing, not what this milestone is about, and
+silently correcting it while moving the guard past the flatten would have
+buried it.
+
+#### M125e — the finding, and it is not about chat
+
+A **live trace** (M46's lesson: a trace beat four screenshots) showed the
+resolution working against a real server and, in the same line, a bug:
+
+```
+"Gave  [Diamond Sword] to RewoLive"
+```
+
+The count was gone, and the raw argument was `Compound([("", Int(1))])`.
+
+**NBT lists are homogeneous** — the payload is one element-type byte and then
+that many bodies — so a list *cannot* hold mixed types. Vanilla's answer is
+`ListTag.identifyRawElementType`, which returns the shared type if there is one
+and otherwise **10** (`TAG_Compound`), at which point `wrapIfNeeded` boxes every
+element that is not already a plain compound as `{"": value}`; `ListTag.load`
+calls `addAndUnwrap` on the way back in. **Rewo's reader has never unwrapped**,
+so every heterogeneous list on the wire has been read as a plausible wrong tree
+since M1.
+
+Nothing caught it because skipping the unwrap does not fail: the list is still
+a list and the elements are still tags, and a consumer just sees a one-entry
+compound where a value should be. The first thing in a hundred and twenty-four
+milestones to look at a heterogeneous list's non-compound element was a
+translatable's `with`, where a server sends `[<count>, <item component>,
+<player component>]`.
+
+Both halves of `isWrapper` (`size() == 1 && contains("")`) are load-bearing and
+fail differently: a compound carrying an empty key **and** another key is a
+real component that unwrapping would gut, and a one-entry compound with a
+*named* key is not a box at all. And a genuine `{"": x}` element is written
+**double**-wrapped on the way out — `wrapIfNeeded` boxes a compound that is
+already a wrapper — so unwrapping exactly once round-trips it. The unwrap is
+per list *element*, not a general compound rule.
+
+#### M125f — r37, and a witness the gate disproved
+
+`live --render-check` gains the witness that a chat line was a *resolved*
+translatable — the only check that drives the windowed client, and so the only
+one that can see whether the wiring reaches a frame (M86).
+
+**Its first version was wrong and the gate said so**, scoring zero. It drove
+the join message, on the stated premise that a vanilla server announces a
+joining player to that player. **It does not**:
+`PlayerList.placeNewPlayer` broadcasts at line 202 and runs
+`this.players.add(player)` at line **210**, and `broadcastSystemMessage`
+iterates `this.players`. The server log said "RewoLive joined the game" and the
+client correctly never received it. Suspect the witness first.
+
+The replacement is stronger *and* needs no new caller requirement, because it
+rides the `/give` r14 already stages. That message is a translatable three
+levels deep whose middle argument is a bare integer —
+`commands.give.success.single` → `chat.square_brackets` →
+`item.minecraft.diamond_sword` — so `Gave 1 [Diamond Sword]` cannot appear
+unless the lookup, the substitution, the recursion into a component argument
+and the heterogeneous-list unwrap all work, and **none of those five words
+appears anywhere in the raw component**. The counter-witness names all three
+keys rather than detecting keys generally (a "looks like a key" test fires on
+the F3 block's coordinates and on any player whose name has a dot in it) and
+must be 0, which is what makes a break at an *inner* level visible.
+
+#### M125g — the battery, and the harness being wrong twice
+
+Five batteries, **22 mutations, every one as expected** after one fix: 16
+killed, 6 no-op controls survived.
+
+**The survivor was a weak fixture, not an equivalent mutant.** Replacing the
+argument's parent style with WHITE survived
+`a_component_argument_keeps_its_own_style_inside_the_template`, because that
+fixture's argument sets `color` **explicitly** and `applyTo` is a patch — the
+one field the test observes is the one field the child overrides, so the parent
+is unobservable through it whatever it is. An argument that sets only `bold`
+inherits the colour. Not academic: the `/msg` decoration is GRAY + italic and
+every argument in it inherits that.
+
+Two mutations can only be caught **live**, because what they break is wiring
+rather than a rule: `session.lang = None` and removing the NBT unwrap both
+leave every unit test green and turn r37 red.
+
+**The harness itself was wrong twice, and both times the baseline guard
+reported it rather than a wrong verdict** — which is what that guard is for.
+`shell=True` on Windows is cmd.exe: `VAR=value cmd` is not syntax there (cmd
+looks for a program called `REWO_PRECMD="give`), and cmd cannot run
+`./target/...` at all ("'.' is not recognized"). A hand-written
+`target\debug\rewo.exe` then put a carriage return in the path. A harness that
+had scored those runs as KILLED would have "confirmed" three mutations against
+a command that never executed.
+
+#### Measured
+
+**2582 tests, 0 failures** (world 1006, net 856, gpu 255, data 221, app 183,
+mesh 45, proto 16 — read off the runner per crate, each exit 0 with a `test
+result` line). All **33** serverless gates green with **0 validation errors**:
+`mobshot` 246/246, `containershot` 107/107, `inventoryshot` 158/158, `itemshot`
+75/75, `handshot` 34/34, `swingshot` 97/97. **`live --render-check` 37/37,
+validation ON, 0 validation errors**, against a freshly-created server on a
+probed port. Demo PNG `2cc56b4acbfb92cb`, byte-identical to M15 onward.
+
+#### Open
+
+* **The decoration itself** — `boundChatType.decorate`. Everything it needs now
+  exists: the `minecraft:chat_type` registry is a synchronised datapack
+  registry (M42's rule — contents *and* id order are the server's), the inline
+  form is already walked by `read_chat_type_bound` and merely discarded, the
+  `Bound`'s name and target are decoded, and the styled resolution is here.
+  Five of the seven vanilla chat types carry `Style.EMPTY`, so a plain-text
+  decoration is exact for them; the two `/msg` ones are GRAY + italic and want
+  the styled chat pipeline below.
+* **The styled chat pipeline.** `GuiMessage::content` is a `String` and
+  `wrap_components` splits `&str`, so the chat store still flattens. M125
+  changed what it flattens *from*, not that it does.
+* **`PlayerChat::unsigned_content`** is still flattened at the wire. It is a
+  server's rewrite of a player's message and is essentially never a
+  translatable; carrying it as `Nbt` also makes `containsModifiedStyle`
+  reachable, which is its own milestone.
+* **Every other `to_plain_text` / `nbt_text` call site** is decode-time with no
+  table — item names and lore, the MOTD, disconnect reasons, nametags,
+  suggestion tooltips, server links. Each would need its component carried
+  forward the way chat's now is.
+* `tab_list_text::renders_empty` counts a translatable as its key, so a key
+  whose translation is the empty string reads non-empty where vanilla's
+  `getString()` (which reaches the `Language.getInstance()` global) reads
+  empty. No vanilla template is empty.
 
 ### M105–M107 — closing the recipe book: the counter, the tooltips, the guard (2026-08-07)
 

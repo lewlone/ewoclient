@@ -1703,10 +1703,10 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-08
-(M124) — **2548 tests / 0 failures** (world 1006, net 832, gpu 255, data 216,
-app 183, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
+(M125) — **2582 tests / 0 failures** (world 1006, net 856, gpu 255, data 221,
+app 183, mesh 45, proto 16, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
-`handshot` 34/34, `swingshot` 97/97, `live --render-check` **36/36** with
+`handshot` 34/34, `swingshot` 97/97, `live --render-check` **37/37** with
 validation ON and 0 validation errors, demo PNG `2cc56b4acbfb92cb`.
 **The recipe book is closed** (M105–M107) and **M108–M111 shipped chat** —
 `ChatComponent`, the wrap under it, the `MessageSignatureCache` without which
@@ -1783,6 +1783,37 @@ deliberately **no suggester at all**, the two slot types read **to the next
 space** so `container.*` survives and differ from each other **in the parse**,
 and `time`'s suggester **re-anchors past the number** so its unit completes as
 a suffix.
+
+**M125** then took the chat decoration §0.0 offered and found a prerequisite
+under it, much more visible than the decoration: **every `translate` component
+Rewo received rendered as its raw key with its arguments dropped**, so a real
+server's join messages read `multiplayer.player.joined`, every death message
+`death.attack.player`, and every command's feedback
+`commands.give.success.single`. Both walkers said so in their own doc comments.
+It ships `decomposeTemplate` as **parts** (so one `FORMAT_PATTERN` serves the
+plain and the styled paths — M100's lesson), the resolution itself, and the
+wiring, and its composition rule is the thing worth pinning: `Component.visit`
+opens with `getStyle().applyTo(parentStyle)`, so a template's literals take the
+translatable's style while a component argument applies its own **on top** — a
+resolution that substituted plain strings would paint the whole line one colour
+and read perfectly correctly. `getArgument`'s `arg.toString()` needed two
+artefacts rather than the decompile: `JavaOps` (read out of the shipped
+`datafixerupper-10.0.21.jar`) proves the numeric **width survives**, so an
+`IntTag(3)` renders `3` and not `3.0`, and `Double.toString` is graded against
+a real JDK 25 by `tools/java_tostring_oracle/` — the M114 precedent — where the
+plain-versus-scientific band turns out **inclusive at 1e-3 and exclusive at
+1e7**. **Its real finding is not about chat at all**: a live trace showed
+`/give` rendering as "Gave  [Diamond Sword]" with the count gone, because **NBT
+lists are homogeneous**, so a mixed one is written as a list of compounds with
+every non-compound element boxed as `{"": value}` (`ListTag.wrapIfNeeded`) and
+unwrapped on read (`addAndUnwrap`) — and **Rewo's reader had never unwrapped,
+from M1 to M125**. Nothing caught it because skipping the unwrap does not fail;
+it yields a plausible wrong tree, and the first thing in 124 milestones to look
+at such an element was a translatable's `with`. Its gate witness r37 was also
+**wrong before the code was**, the fifth documented instance: it drove the join
+message on the premise that a server announces a joining player to that player,
+which `PlayerList.placeNewPlayer` disproves (broadcast at line 202,
+`players.add` at line **210**).
 
 No branch or worktree holds a commit
 off `main`. The long-unmerged-branch risk closed on 2026-07-27 and has
