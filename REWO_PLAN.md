@@ -1227,39 +1227,52 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    restated rather than in the registry it guarded. Grade a claim against the
    code that would falsify it — `a4` now derives the rendered set from the
    model resolver — and grade it in both directions.
-9. **Line endings: the tree is now UNIFORMLY CRLF, and the old "mixed files"
-   list is gone.** Measured 2026-08-07 after M113, over every `.rs` under
-   `crates/rewo-*`: **zero mixed files**, and every one is all-CRLF —
-   including the four this gotcha used to name
-   (`mobshot_cmd.rs`, `chunk.rs`, `light.rs`, `vanilla_hier.rs`). `core.autocrlf`
-   is **false** and there is **no `.gitattributes`**, so the working tree is
-   exactly what is stored; this is not a checkout artefact.
+9. **Line endings: the tree is overwhelmingly LF, and the previous claim here
+   — "uniformly CRLF" — was produced by a broken detector.** Re-measured
+   2026-08-08 by reading every `.rs` under `crates/` as **bytes**: **343 pure
+   LF, 1 pure CRLF (`rewo-gpu/src/cem.rs`), 4 mixed** — and the four mixed ones
+   are the same four this gotcha has always named (`mobshot_cmd.rs`,
+   `vanilla_hier.rs`, `chunk.rs`, `light.rs`). They never left the list; the
+   instrument stopped being able to see them. `core.autocrlf` is **false** and
+   there is **no `.gitattributes`**, so the working tree is exactly what is
+   stored, and `git show HEAD:crates/rewo-world/src/lib.rs` is LF.
 
-   **The hazard has therefore inverted, and it is now much milder.** The
-   failure this gotcha was written for — a scripted edit exploding a 30-line
-   change into a 3,400-line diff — needed a *mixed* file to normalise. With
-   the tree uniform, the remaining risk is the opposite one: a tool that writes
-   **LF** into a CRLF file, which trips nothing on the changed lines but leaves
-   the file half-converted and re-creates the mixed state this took several
-   sessions to clear.
+   **The broken detector is the finding, and it is not specific to line
+   endings.** `grep -c $'\r$' <file>` — the obvious check, and the one the
+   2026-08-07 measurement used — reports "every line ends in CR" for **any**
+   file, including a pure-LF one. The cause is the harness, not grep: a raw CR
+   inside `$'…'` acts as a line terminator in the command text, so the pattern
+   arrives truncated and degrades to the bare `$` anchor, which matches every
+   line. Demonstrated directly: on a two-line pure-LF file, `grep -c $'\r'`
+   answers **2**. In a command substitution the same CR splits the line and
+   bash reports a syntax error, which is the only time it fails loudly.
 
-   What still applies:
+   That is the same shape as three other detector errors in this log — an
+   instrument that cannot tell "yes" from "could not tell" — and it is worth
+   remembering beyond this gotcha: **do not put a raw control character in a
+   Bash-tool command.** Use Python for anything that inspects bytes.
 
-   * **Re-measure rather than trust this paragraph.** Read the file as bytes
-     and compare its CRLF count against its total newline count; both non-zero
-     and unequal means mixed. The list drifted in both directions twice before
-     it emptied.
+   So the hazard is the original one, unchanged: a scripted edit that
+   normalises one of the four mixed files explodes a small change into a
+   whole-file diff. And there is now a second one, from the opposite
+   direction — see the Write/Edit bullet below.
+
+   What applies:
+
+   * **Re-measure rather than trust this paragraph, and do it in Python.**
+     Read the file as bytes and compare `d.count(b'\r\n')` against
+     `d.count(b'\n')`; equal and non-zero is CRLF, zero is LF, anything
+     between is mixed.
    * **Check `git diff --stat` after any scripted edit** against what you meant
      to change, and `git diff --check` for added-CR whitespace.
    * **Python multi-line `str.replace` anchors silently no-op against CRLF
      text** — a replacement that reports success and changes nothing is this,
-     not a missing string. Read with `newline=''` so the `\r` survives into the
-     anchor, or anchor on single lines.
-   * The repo's editing tools (Write/Edit) emit CRLF on this machine, which is
-     why the tree converged. A raw `open(p, "w")` in Python does too, via
-     universal newlines — but only if you do **not** pass `newline=''`. Passing
-     `newline=''` preserves whatever the string holds, which is what these
-     sessions use and why it works.
+     not a missing string. Read as bytes, or anchor on single lines.
+   * **The Write/Edit tools emit CRLF on this machine, and the tree is LF**, so
+     a *new* file created with them arrives CRLF and needs converting before it
+     is committed. That is not a hypothetical: M114's `suggestions.rs` was
+     written CRLF into an all-LF crate and had to be converted. Convert with
+     `open(p,'rb')` → `replace(b'\r\n', b'\n')` → `open(p,'wb')`.
 
    **A `.gitattributes` would retire the class outright**, and is still a
    decision rather than a cleanup: it touches line endings repo-wide, including
