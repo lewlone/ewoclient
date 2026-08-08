@@ -2726,13 +2726,14 @@ impl PlaySession {
                 // needs the `minecraft:chat_type` registry), but the message
                 // itself now resolves — a `/say` of a translatable, or any
                 // plugin's `Component.translatable`, reads as English.
-                let line = self.chat_component_text(&component);
+                let spans = self.chat_component_spans(&component);
+                let line = rewo_world::chat_style::plain_text(&spans);
                 if line.is_empty() {
                     continue;
                 }
-                self.chat_log.push(line.clone());
+                self.chat_log.push(line);
                 self.chat_events.push(crate::chat_wire::ChatEvent::Message {
-                    text: line,
+                    text: spans,
                     signature: None,
                     tag: Some(rewo_world::chat::MessageTag::SYSTEM),
                     source: rewo_world::chat::MessageSource::Player,
@@ -3027,14 +3028,17 @@ impl PlaySession {
                 // renders as its translation — so flattening before the lookup
                 // put `multiplayer.player.joined` on screen where vanilla puts
                 // "Steve joined the game".
-                let content = self.chat_component_text(&packet.content);
+                let spans = self.chat_component_spans(&packet.content);
+                let content = rewo_world::chat_style::plain_text(&spans);
                 if packet.overlay {
+                    // The action bar draws one flat string, so the spans stop
+                    // here rather than being threaded through a second render.
                     self.chat_events
                         .push(crate::chat_wire::ChatEvent::Overlay(content));
                 } else if !content.is_empty() {
-                    self.chat_log.push(content.clone());
+                    self.chat_log.push(content);
                     self.chat_events.push(crate::chat_wire::ChatEvent::Message {
-                        text: content,
+                        text: spans,
                         signature: None,
                         tag: Some(rewo_world::chat::MessageTag::SYSTEM_SINGLE_PLAYER),
                         source: rewo_world::chat::MessageSource::SystemServer,
@@ -3064,6 +3068,14 @@ impl PlaySession {
                         crate::chat_wire::show_message(&chat, received)
                     {
                         self.chat_log.push(text.clone());
+                        // Signed chat is a plain `String` on the wire, not a
+                        // component — but vanilla still renders it through
+                        // `StringDecomposer.iterateFormatted`, so a server's
+                        // `§e` is a colour and not two glyphs of garbage.
+                        let text = rewo_world::chat_style::parse_legacy(
+                            &text,
+                            rewo_world::chat_style::ChatStyle::WHITE,
+                        );
                         self.chat_events.push(crate::chat_wire::ChatEvent::Message {
                             text,
                             signature: chat.signature,
@@ -4451,6 +4463,22 @@ impl PlaySession {
     /// test module anywhere in the repo).
     fn chat_component_text(&self, tag: &rewo_proto::nbt::Nbt) -> String {
         crate::chat_translate::chat_component_text(tag, self.lang.as_deref())
+    }
+
+    /// The same walk, keeping the spans (M126b).
+    ///
+    /// `chat_component_text` is this followed by `plain_text`, and the two are
+    /// deliberately both here: the chat HUD wants the spans, while the log line
+    /// and `--render-check`'s counters want the characters.
+    fn chat_component_spans(
+        &self,
+        tag: &rewo_proto::nbt::Nbt,
+    ) -> rewo_world::chat_style::ChatLine {
+        rewo_world::chat_style::parse_component(
+            tag,
+            rewo_world::chat_style::ChatStyle::WHITE,
+            self.lang.as_deref(),
+        )
     }
 
     pub fn take_death(&mut self) -> Option<crate::CombatKill> {

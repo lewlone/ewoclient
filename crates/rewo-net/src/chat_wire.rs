@@ -484,11 +484,17 @@ pub fn read_delete_chat(r: &mut PacketReader<'_>) -> Result<PackedSignature> {
 /// wrap with and the GUI tick to stamp, and both live in the app. So the three
 /// verbs are queued here and applied there — the same shape `SessionState`
 /// already uses for `disguised_chat`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ChatEvent {
     /// `ChatComponent.addPlayerMessage` / `addServerSystemMessage`.
     Message {
-        text: String,
+        /// The message's spans. A `String` until M126b — see
+        /// [`rewo_world::chat::GuiMessage::content`]. Player chat arrives as a
+        /// plain string on the wire and becomes spans through
+        /// [`rewo_world::chat_style::parse_legacy`], which is what resolves the
+        /// `§` codes servers put in it; system and disguised chat arrive as
+        /// components and go through `parse_component`.
+        text: rewo_world::chat_style::ChatLine,
         /// Present only for a signed player message — the key a later
         /// [`Self::Delete`] matches on.
         signature: Option<Box<Signature>>,
@@ -1007,8 +1013,8 @@ mod tests {
     // ── applying a batch ─────────────────────────────────────────────────
 
     fn wrap_ctx() -> rewo_world::chat::WrapContext<'static> {
-        fn w6(s: &str) -> i32 {
-            s.chars().count() as i32 * 6
+        fn w6(s: &str, style: rewo_world::chat_style::ChatStyle) -> i32 {
+            s.chars().count() as i32 * (6 + i32::from(style.bold))
         }
         rewo_world::chat::WrapContext {
             options: rewo_world::chat::ChatOptions::default(),
@@ -1020,7 +1026,7 @@ mod tests {
 
     fn message(text: &str, signature: Option<Box<Signature>>) -> ChatEvent {
         ChatEvent::Message {
-            text: text.into(),
+            text: vec![rewo_world::chat_style::ChatStyle::WHITE.span(text)],
             signature,
             tag: None,
             source: rewo_world::chat::MessageSource::Player,
@@ -1040,7 +1046,10 @@ mod tests {
         );
         assert_eq!(overlay, None);
         assert_eq!(chat.all_messages().len(), 2);
-        assert_eq!(chat.trimmed_messages()[0].text, "second");
+        assert_eq!(
+            rewo_world::chat_style::plain_text(&chat.trimmed_messages()[0].text),
+            "second"
+        );
         assert_eq!(chat.trimmed_messages()[0].added_time, 7);
     }
 
@@ -1087,11 +1096,17 @@ mod tests {
             0,
             &wrap_ctx(),
         );
-        assert_eq!(chat.all_messages()[0].content, "secret");
+        assert_eq!(
+            rewo_world::chat_style::plain_text(&chat.all_messages()[0].content),
+            "secret"
+        );
         assert_eq!(chat.deletion_queue_len(), 1);
         // …and it lands once the message is old enough.
         apply_chat_events(&mut chat, Vec::new(), 60, &wrap_ctx());
-        assert_eq!(chat.all_messages()[0].content, "deleted");
+        assert_eq!(
+            rewo_world::chat_style::plain_text(&chat.all_messages()[0].content),
+            "deleted"
+        );
         assert_eq!(chat.deletion_queue_len(), 0);
     }
 
@@ -1108,7 +1123,10 @@ mod tests {
             &wrap_ctx(),
         );
         apply_chat_events(&mut chat, Vec::new(), 100, &wrap_ctx());
-        assert_eq!(chat.all_messages()[0].content, "deleted");
+        assert_eq!(
+            rewo_world::chat_style::plain_text(&chat.all_messages()[0].content),
+            "deleted"
+        );
     }
 
     #[test]
@@ -1120,5 +1138,82 @@ mod tests {
             PackedSignature::Cached(2),
         );
         assert_eq!(r.remaining(), 0);
+    }
+    // -- M126a: moved here from `chat_translate`'s test module ------------
+    //
+    // These two drive `SystemChat::read` over real bytes, so they belong on
+    // the wire side; `chat_translate` moved down to `rewo-world` and cannot
+    // name a packet. Nothing about what they assert changed.
+
+    fn lang(pairs: &[(&str, &str)]) -> rewo_data::lang::Language {
+        rewo_data::lang::Language::from_map(
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        )
+    }
+
+    // -- the chain a `system_chat` actually walks -------------------------
+
+    /// A `system_chat` body, byte for byte, carrying a translatable component.
+    ///
+    /// Written out rather than built from an `Nbt` so the test drives the real
+    /// `SystemChat::read` over real bytes — M92's rule: a witness that hands
+    /// production the value production is supposed to derive is grading
+    /// itself.
+    fn system_chat_body(key: &str, arg: &str, overlay: bool) -> Vec<u8> {
+        fn string_field(out: &mut Vec<u8>, name: &str, value: &str) {
+            out.push(0x08); // TAG_String
+            out.extend_from_slice(&(name.len() as u16).to_be_bytes());
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&(value.len() as u16).to_be_bytes());
+            out.extend_from_slice(value.as_bytes());
+        }
+        let mut out = vec![0x0a]; // TAG_Compound, unnamed root
+        string_field(&mut out, "translate", key);
+        // "with": TAG_List of TAG_String, one element.
+        out.push(0x09);
+        out.extend_from_slice(&4u16.to_be_bytes());
+        out.extend_from_slice(b"with");
+        out.push(0x08); // element type
+        out.extend_from_slice(&1i32.to_be_bytes());
+        out.extend_from_slice(&(arg.len() as u16).to_be_bytes());
+        out.extend_from_slice(arg.as_bytes());
+        out.push(0x00); // end of compound
+        out.push(u8::from(overlay));
+        out
+    }
+
+    /// The whole chain: wire bytes -> `SystemChat::read` -> the flatten the
+    /// session performs. This is the join `PlaySession` makes, minus the one
+    /// field read that hands over the table.
+    #[test]
+    fn a_system_chat_bodys_translatable_resolves_through_the_flatten() {
+        let body = system_chat_body("multiplayer.player.joined", "Steve", false);
+        let packet =
+            SystemChat::read(&mut rewo_proto::reader::PacketReader::new(&body))
+                .unwrap();
+        assert!(!packet.overlay);
+        let l = lang(&[("multiplayer.player.joined", "%s joined the game")]);
+        assert_eq!(
+            rewo_world::chat_translate::chat_component_text(&packet.content, Some(&l)),
+            "Steve joined the game"
+        );
+    }
+
+    /// The same bytes with no table: the key, which is what every Rewo session
+    /// put on screen before M125. Kept as a test so "passing `None`" stays a
+    /// defined behaviour rather than an accident.
+    #[test]
+    fn the_same_body_with_no_table_is_the_pre_m125_rendering() {
+        let body = system_chat_body("multiplayer.player.joined", "Steve", false);
+        let packet =
+            SystemChat::read(&mut rewo_proto::reader::PacketReader::new(&body))
+                .unwrap();
+        assert_eq!(
+            rewo_world::chat_translate::chat_component_text(&packet.content, None),
+            "multiplayer.player.joined"
+        );
     }
 }

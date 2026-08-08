@@ -7,7 +7,8 @@
 //! `ComponentSerialization.CODEC`'s shape. `Nbt` lives in `rewo-proto`, which
 //! `rewo-gpu` does not depend on and should not — the GPU crate has no
 //! business knowing the wire format. So the *parse* belongs here, beside
-//! [`component_wire::nbt_text`], which is the plain-text answer this module
+//! `rewo_net::component_wire::nbt_text`, which is the plain-text answer this
+//! module
 //! is the styled replacement for.
 //!
 //! The *output* is deliberately renderer-agnostic. [`ChatSpan`] names colours
@@ -73,7 +74,6 @@
 //!   See that constant for why a `translate` argument makes the difference
 //!   between a linear tree and an exponential one.
 //!
-//! [`component_wire::nbt_text`]: crate::component_wire::nbt_text
 
 use rewo_data::lang::{Language, Part};
 use rewo_proto::nbt::Nbt;

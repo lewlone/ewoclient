@@ -23,6 +23,8 @@ pub mod cape;
 pub mod celestial;
 pub mod chat;
 pub mod chat_screen;
+pub mod chat_style;
+pub mod chat_translate;
 pub mod command_suggestions;
 pub mod chunk;
 pub mod chunk_cache;

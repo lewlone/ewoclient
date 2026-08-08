@@ -1678,6 +1678,36 @@ CLAUDE.md's own top-level Rewo status block was three milestones behind at M93 /
 number with a test behind it stays true and the sentence next to it does not.**
 Repo hygiene: the twenty stale `claude/rewo-m93*` branches and the two leftover
 agent worktrees were verified fully merged and clean, then pruned.*
+*Update (2026-08-08 session, Rewo): **M126 — the styled chat pipeline**, which
+§0.0 recommended taking before the chat decoration precisely so the decoration
+could ship complete. `GuiMessage::content` was a `String`, so the chat store
+flattened whatever it was handed; it is a span list now, `StringSplitter` walks
+the **part list** vanilla always had (`FlatComponents` / `splitAt` /
+`ComponentCollector`, all of which degenerated to a substring while there was
+only ever one part), and `TextPass` draws all five `Style` flags. The types had
+to move down a crate first — `rewo_world::chat` must name `ChatSpan` and the
+dependency runs net → world — which is proved pure by a **conservation** rather
+than a reading: world +58, net −58, app unchanged. Findings: **the width
+provider takes a style**, because `getBoldOffset()` is 1.0 charged PER
+CHARACTER, so a style-blind measure wraps a bold line late rather than merely
+drawing it differently; **`position` restarts at 0 for every part**
+(`fromList` chains `accept` without renumbering), so an underline's one-pixel
+lead-in belongs to each span and a multi-colour underlined line overlaps by a
+pixel; and the **deleted marker is GRAY + ITALIC**, drawn plain white until now
+because the store could not hold a style. Obfuscation transcribes the
+same-width bucket, the unstyled advance and the never-a-space rule, and
+diverges deliberately on the source — vanilla's is nanotime-seeded and
+reproduces nothing, so Rewo uses a frame-seeded SplitMix64 whose `run_seed`
+reads the **unoffset** origin, or the drop shadow would shadow different
+characters. **The mutation battery caught a witness lying** (r38 counted
+colours across the whole chat box, which a flattening client satisfies; it
+counts within one row now) and left one survivor that is neither equivalent nor
+a weak fixture: `splitAt`'s `position > contentsSize` read as `>=` genuinely
+diverges, and is invisible only because production always pairs it with
+`getSplitStyle()` — the test proves agreement under that pairing and divergence
+under any other. 2615 tests, 33 gates, `--render-check` 39/39, demo PNG
+byte-identical.*
+
 *Update (2026-08-08 session, Rewo): **M125 — translatable components resolve**,
 plus a full docs pass. §0.0 offered the chat decoration and said to verify its
 blocker first; both halves were reachable, and the survey found what the
@@ -1704,18 +1734,19 @@ note.*
 
 ---
 
-## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, particles, the first-person hand, the Velvet type stack, the container arc, the recipe book, chat, and translated text)
+## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, particles, the first-person hand, the Velvet type stack, the container arc, the recipe book, chat, translated text, and styled spans)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-08
-(M125) — **2582 tests / 0 failures** (world 1006, net 856, gpu 255, data 221,
+(M126) — **2615 tests / 0 failures** (world 1078, net 798, gpu 274, data 221,
 app 183, mesh 45, proto 16, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
-`handshot` 34/34, `swingshot` 97/97, `live --render-check` **37/37** with
-validation ON and 0 validation errors, demo PNG `2cc56b4acbfb92cb`.
+`handshot` 34/34, `swingshot` 97/97, all **33** serverless gates green with 0
+validation errors, `live --render-check` **39/39** with validation ON and 0
+validation errors, demo PNG `2cc56b4acbfb92cb`.
 **The recipe book is closed** (M105–M107) and **M108–M111 shipped chat** —
 `ChatComponent`, the wrap under it, the `MessageSignatureCache` without which
 `delete_chat` cannot be read, the text, the backdrop fills (which took a colour

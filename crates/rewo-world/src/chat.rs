@@ -34,6 +34,7 @@
 //! `endOfEntry` is set on the **last** wrapped line (`i == lines.size() - 1`),
 //! which is the one at index 0 — the *bottom* line of the message.
 
+use crate::chat_style::{ChatLine, ChatSpan, ChatStyle};
 use crate::string_splitter::split_lines_wrapped;
 
 /// `ChatComponent.MAX_CHAT_HISTORY` — applied separately to the message list
@@ -132,10 +133,13 @@ pub struct GuiMessage {
     /// `addedTime` — the GUI tick the message arrived on. The fade and the
     /// deletion delay both measure against it.
     pub added_time: i32,
-    /// `content`, already flattened to plain text (Rewo has no styled chat
-    /// pipeline into the HUD yet — see the module docs of
-    /// [`crate::string_splitter`]).
-    pub content: String,
+    /// `content` — the message's spans, as
+    /// [`crate::chat_style::parse_component`] resolved them.
+    ///
+    /// A `String` until M126b. It is what a `/msg`'s grey italic, a
+    /// team-coloured sender and every `§` code a server sends all needed, and
+    /// widening it is the whole reason the splitter below grew a part list.
+    pub content: ChatLine,
     /// `signature` — `None` for system messages and for unsigned player chat.
     /// This is what [`ChatComponent::delete_message`] keys on.
     pub signature: Option<Box<Signature>>,
@@ -146,7 +150,7 @@ pub struct GuiMessage {
 /// `GuiMessage.Line` — one wrapped line of a message.
 #[derive(Clone, Debug)]
 pub struct GuiMessageLine {
-    pub text: String,
+    pub text: ChatLine,
     /// `parent.addedTime()`.
     pub added_time: i32,
     /// `endOfEntry` — set on the message's **last** wrapped line, which is the
@@ -166,31 +170,51 @@ pub struct GuiMessageLine {
 ///    wider than the box it was wrapped to. A line that follows an explicit
 ///    `\n` gets none — see [`crate::string_splitter`] for why that is not the
 ///    same as "every line after the first".
+///
+///    **`INDENT` carries `Style.EMPTY`, not the line's style**, and it is a
+///    part in its own right (`composite` chains two sequences rather than
+///    concatenating them). Only two things about it are observable: its
+///    advance, which is the plain space's because `Style.EMPTY` is not bold;
+///    and that it is not underlined, so an underlined continuation's bar
+///    starts after the indent rather than under it.
 /// 2. **An empty result becomes one empty line** —
 ///    `result.isEmpty() ? [FormattedCharSequence.EMPTY] : result`. An empty
 ///    message still occupies a row.
 /// 3. `stripColor` drops formatting when `options.chatColors` is off. Rewo has
 ///    no options file and the vanilla default is on, so this is the identity
 ///    and is not modelled; it is named here rather than silently omitted.
-pub fn wrap_components(text: &str, max_width: i32, width_of: &dyn Fn(&str) -> i32) -> Vec<String> {
-    let mut out: Vec<String> = split_lines_wrapped(text, max_width, width_of)
+pub fn wrap_components(
+    spans: &[ChatSpan],
+    max_width: i32,
+    width_of: &dyn Fn(&str, ChatStyle) -> i32,
+) -> Vec<ChatLine> {
+    let mut out: Vec<ChatLine> = split_lines_wrapped(spans, max_width, width_of)
         .into_iter()
         .map(|l| {
             if l.wrapped {
-                let mut s = String::with_capacity(l.text.len() + 1);
-                s.push(' ');
-                s.push_str(&l.text);
-                s
+                let mut line = Vec::with_capacity(l.spans.len() + 1);
+                line.push(INDENT.span(" "));
+                line.extend(l.spans);
+                line
             } else {
-                l.text
+                l.spans
             }
         })
         .collect();
     if out.is_empty() {
-        out.push(String::new());
+        out.push(Vec::new());
     }
     out
 }
+
+/// `ComponentRenderUtils.INDENT`'s style — `FormattedCharSequence.codepoint(32,
+/// Style.EMPTY)`.
+///
+/// `Style.EMPTY` has no colour, which vanilla resolves at the draw against
+/// whatever the call site defaults to; Rewo's chat default is white, and the
+/// character is a space either way, so the only field that can be read is
+/// `bold` — and `Style.EMPTY` is not.
+const INDENT: ChatStyle = ChatStyle::WHITE;
 
 /// `ChatComponent.getWidth(double)` — the box's width in GUI pixels.
 ///
@@ -332,7 +356,7 @@ pub fn alpha_time_based(current_tick: i32, added_time: i32) -> f32 {
 /// One line the renderer should draw, with everything it needs already resolved.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VisibleLine {
-    pub text: String,
+    pub text: ChatLine,
     /// The line's index from the bottom of the box, 0 being the bottom row.
     pub index: i32,
     /// `alpha` from the calculator, **before** the text-opacity multiplier.
@@ -731,12 +755,36 @@ impl ChatComponent {
 fn deleted_marker(message: &GuiMessage, ctx: &WrapContext<'_>) -> GuiMessage {
     GuiMessage {
         added_time: message.added_time,
-        content: ctx.deleted_marker_text.to_string(),
+        content: vec![DELETED_MARKER_STYLE.span(ctx.deleted_marker_text)],
         signature: None,
         source: MessageSource::SystemServer,
         tag: Some(MessageTag::SYSTEM),
     }
 }
+
+/// `DELETED_CHAT_MESSAGE`'s style —
+/// `Component.translatable("chat.deleted_marker").withStyle(ChatFormatting
+/// .GRAY, ChatFormatting.ITALIC)`.
+///
+/// Rewo drew this plain white until M126b, because the store could not hold a
+/// style. It is the one styled string the chat component owns itself, and the
+/// same pair the two `/msg` chat-type decorations carry.
+///
+/// `GRAY` is `NAMED_COLORS[7]`, `0xAAAAAA` — vanilla's own decimal literal
+/// 11184810, not an eyeballed mid-grey, and distinct from `DARK_GRAY`'s
+/// `0x555555` one row down.
+const DELETED_MARKER_STYLE: ChatStyle = ChatStyle {
+    color: [
+        0xAA as f32 / 255.0,
+        0xAA as f32 / 255.0,
+        0xAA as f32 / 255.0,
+    ],
+    bold: false,
+    italic: true,
+    underlined: false,
+    strikethrough: false,
+    obfuscated: false,
+};
 
 /// Everything the store needs from outside itself to wrap a message: the font,
 /// the options, whether the chat screen is open, and the one translated string
@@ -746,8 +794,15 @@ pub struct WrapContext<'a> {
     /// `ChatComponent.isChatFocused()` — whether a `ChatScreen` is up. It
     /// changes the box height *and* whether an arriving message scrolls.
     pub focused: bool,
-    pub width_of: &'a dyn Fn(&str) -> i32,
+    /// `StringSplitter.WidthProvider` — `getWidth(codepoint, style)`.
+    ///
+    /// The style argument is not decoration: `Font`'s provider is
+    /// `getAdvance(style.isBold())` and the bold offset is one pixel, so a
+    /// style-blind width wraps a bold run three characters too late.
+    pub width_of: &'a dyn Fn(&str, ChatStyle) -> i32,
     /// `chat.deleted_marker`, resolved by the caller from the language map.
+    /// Its *style* is [`DELETED_MARKER_STYLE`] and belongs here rather than to
+    /// the caller, because vanilla's is a constant on `ChatComponent`.
     pub deleted_marker_text: &'a str,
 }
 
@@ -759,11 +814,29 @@ mod tests {
         s.chars().count() as i32 * 6
     }
 
+    /// The width provider in its real shape — `getWidth(codepoint, style)`,
+    /// with vanilla's one-pixel bold offset.
+    fn w6s(s: &str, style: ChatStyle) -> i32 {
+        s.chars().count() as i32 * (6 + i32::from(style.bold))
+    }
+
+    /// A one-span line, which is what every message in this module's tests is
+    /// unless it is testing the spans themselves.
+    fn one(text: &str) -> ChatLine {
+        vec![ChatStyle::WHITE.span(text)]
+    }
+
+    /// A line's characters, for the assertions that are about wrapping rather
+    /// than about style.
+    fn t(line: &ChatLine) -> String {
+        crate::chat_style::plain_text(line)
+    }
+
     fn ctx(focused: bool) -> WrapContext<'static> {
         WrapContext {
             options: ChatOptions::default(),
             focused,
-            width_of: &w6,
+            width_of: &w6s,
             deleted_marker_text: "This chat message has been deleted by the server.",
         }
     }
@@ -771,7 +844,7 @@ mod tests {
     fn msg(added_time: i32, content: &str) -> GuiMessage {
         GuiMessage {
             added_time,
-            content: content.into(),
+            content: one(content),
             signature: None,
             source: MessageSource::SystemServer,
             tag: None,
@@ -790,26 +863,58 @@ mod tests {
 
     #[test]
     fn a_width_wrapped_continuation_gains_a_leading_space() {
-        assert_eq!(wrap_components("abc def", 18, &w6), vec!["abc", " def"]);
+        let got: Vec<String> = wrap_components(&one("abc def"), 18, &w6s)
+            .iter()
+            .map(t)
+            .collect();
+        assert_eq!(got, vec!["abc", " def"]);
     }
 
     #[test]
     fn a_line_after_an_explicit_newline_does_not() {
         // The distinction the `isWrapped = !isNewLine` rule exists to make.
-        assert_eq!(wrap_components("abc\ndef", 600, &w6), vec!["abc", "def"]);
+        let got: Vec<String> = wrap_components(&one("abc\ndef"), 600, &w6s)
+            .iter()
+            .map(t)
+            .collect();
+        assert_eq!(got, vec!["abc", "def"]);
     }
 
     #[test]
     fn the_indent_is_not_charged_against_max_width() {
         // Applied after wrapping, so a continuation is one space wider than the
         // box. `" def"` is 24 px against a max of 18.
-        let lines = wrap_components("abc def", 18, &w6);
-        assert_eq!(w6(&lines[1]), 24);
+        let lines = wrap_components(&one("abc def"), 18, &w6s);
+        assert_eq!(w6(&t(&lines[1])), 24);
     }
 
     #[test]
     fn an_empty_message_is_one_empty_line() {
-        assert_eq!(wrap_components("", 600, &w6), vec![String::new()]);
+        assert_eq!(wrap_components(&one(""), 600, &w6s), vec![ChatLine::new()]);
+    }
+
+    #[test]
+    fn the_deleted_marker_is_grey_and_italic() {
+        // `DELETED_CHAT_MESSAGE = Component.translatable("chat.deleted_marker")
+        // .withStyle(ChatFormatting.GRAY, ChatFormatting.ITALIC)` — the one
+        // styled string `ChatComponent` owns itself, and the same pair the two
+        // `/msg` chat-type decorations carry. Rewo drew it plain white until
+        // M126b because the store could not hold a style.
+        //
+        // GRAY is `NAMED_COLORS[7]`, 0xAAAAAA. Pinned against that table rather
+        // than against the constant the renderer reads, so this is a witness
+        // and not a mirror (M93q) — and DARK_GRAY's 0x555555 is one row down,
+        // which is the value a plausible guess produces.
+        let mut c = ChatComponent::new();
+        c.add_message(signed(0, "secret", 4), &ctx(false));
+        c.delete_message(&[4u8; 256], TIME_BEFORE_MESSAGE_DELETION, &ctx(false));
+        let marker = &c.all_messages()[0].content;
+        assert_eq!(marker.len(), 1);
+        let gray = crate::chat_style::rgb_f32(crate::chat_style::NAMED_COLORS[7].1);
+        assert_eq!(crate::chat_style::NAMED_COLORS[7].0, "gray");
+        assert_eq!(marker[0].color, gray);
+        assert!(marker[0].italic);
+        assert!(!marker[0].bold);
     }
 
     // ── geometry ─────────────────────────────────────────────────────────
@@ -895,9 +1000,9 @@ mod tests {
         let lines = c.trimmed_messages();
         assert_eq!(lines.len(), 2);
         // Index 0 is the bottom row and is the message's *second* line.
-        assert_eq!(lines[0].text, " bbb");
+        assert_eq!(t(&lines[0].text), " bbb");
         assert!(lines[0].end_of_entry);
-        assert_eq!(lines[1].text, "a".repeat(53));
+        assert_eq!(t(&lines[1].text), "a".repeat(53));
         assert!(!lines[1].end_of_entry);
     }
 
@@ -923,8 +1028,8 @@ mod tests {
         c.add_message(msg(0, "oldest"), &ctx(false));
         c.add_message(msg(0, "newest"), &ctx(false));
         let v = c.visible_lines(0, false, &ChatOptions::default());
-        assert_eq!((v[0].text.as_str(), v[0].index), ("oldest", 1));
-        assert_eq!((v[1].text.as_str(), v[1].index), ("newest", 0));
+        assert_eq!((t(&v[0].text).as_str(), v[0].index), ("oldest", 1));
+        assert_eq!((t(&v[1].text).as_str(), v[1].index), ("newest", 0));
     }
 
     #[test]
@@ -935,7 +1040,7 @@ mod tests {
         // At tick 300 the first message is 300 ticks old and fully faded.
         let v = c.visible_lines(300, false, &ChatOptions::default());
         assert_eq!(v.len(), 1);
-        assert_eq!(v[0].text, "new");
+        assert_eq!(t(&v[0].text), "new");
         // Focused chat ignores the clock entirely.
         assert_eq!(c.visible_lines(300, true, &ChatOptions::default()).len(), 2);
     }
@@ -966,8 +1071,8 @@ mod tests {
         // 5 (bottom). Asserting both ends pins the window's position *and* its
         // direction; the top alone would survive an off-by-`perPage`.
         let v = c.visible_lines(0, false, &ChatOptions::default());
-        assert_eq!(v.first().unwrap().text, "m15");
-        assert_eq!(v.last().unwrap().text, "m24");
+        assert_eq!(t(&v.first().unwrap().text), "m15");
+        assert_eq!(t(&v.last().unwrap().text), "m24");
     }
 
     #[test]
@@ -1143,9 +1248,9 @@ mod tests {
         c.add_message(signed(0, "secret", 7), &ctx(false));
         c.delete_message(&[7u8; 256], 100, &ctx(false));
         assert_eq!(c.deletion_queue_len(), 0);
-        assert!(c.all_messages()[0].content.contains("deleted"));
+        assert!(t(&c.all_messages()[0].content).contains("deleted"));
         assert!(c.all_messages()[0].signature.is_none());
-        assert_eq!(c.trimmed_messages()[0].text, ctx(false).deleted_marker_text);
+        assert_eq!(t(&c.trimmed_messages()[0].text), ctx(false).deleted_marker_text);
     }
 
     #[test]
@@ -1155,15 +1260,15 @@ mod tests {
         // 59 ticks old: below the 60-tick threshold.
         c.delete_message(&[7u8; 256], 59, &ctx(false));
         assert_eq!(c.deletion_queue_len(), 1);
-        assert_eq!(c.all_messages()[0].content, "secret");
+        assert_eq!(t(&c.all_messages()[0].content), "secret");
         // Not yet due.
         c.tick(59, &ctx(false));
         assert_eq!(c.deletion_queue_len(), 1);
-        assert_eq!(c.all_messages()[0].content, "secret");
+        assert_eq!(t(&c.all_messages()[0].content), "secret");
         // Due exactly at addedTime + 60.
         c.tick(60, &ctx(false));
         assert_eq!(c.deletion_queue_len(), 0);
-        assert!(c.all_messages()[0].content.contains("deleted"));
+        assert!(t(&c.all_messages()[0].content).contains("deleted"));
     }
 
     #[test]
@@ -1182,7 +1287,7 @@ mod tests {
         c.add_message(signed(0, "kept", 7), &ctx(false));
         c.delete_message(&[9u8; 256], 0, &ctx(false));
         assert_eq!(c.deletion_queue_len(), 0);
-        assert_eq!(c.all_messages()[0].content, "kept");
+        assert_eq!(t(&c.all_messages()[0].content), "kept");
     }
 
     #[test]
@@ -1192,7 +1297,7 @@ mod tests {
         // not match it.
         c.add_message(msg(0, "system"), &ctx(false));
         c.delete_message(&[0u8; 256], 100, &ctx(false));
-        assert_eq!(c.all_messages()[0].content, "system");
+        assert_eq!(t(&c.all_messages()[0].content), "system");
     }
 
     #[test]
@@ -1204,8 +1309,8 @@ mod tests {
         c.add_message(signed(0, "two", 7), &ctx(false));
         c.delete_message(&[7u8; 256], 100, &ctx(false));
         // Newest first, so index 0 is "two".
-        assert!(c.all_messages()[0].content.contains("deleted"));
-        assert_eq!(c.all_messages()[1].content, "one");
+        assert!(t(&c.all_messages()[0].content).contains("deleted"));
+        assert_eq!(t(&c.all_messages()[1].content), "one");
     }
 
     #[test]
@@ -1214,8 +1319,8 @@ mod tests {
         c.add_message(msg(0, "first"), &ctx(false));
         c.add_message(msg(0, "second"), &ctx(false));
         c.refresh_trimmed_messages(&ctx(false));
-        assert_eq!(c.trimmed_messages()[0].text, "second");
-        assert_eq!(c.trimmed_messages()[1].text, "first");
+        assert_eq!(t(&c.trimmed_messages()[0].text), "second");
+        assert_eq!(t(&c.trimmed_messages()[1].text), "first");
     }
 
     #[test]
