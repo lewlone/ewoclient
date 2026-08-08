@@ -1687,10 +1687,10 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-08
-(M119) — **2469 tests / 0 failures** (world 1006, net 753, gpu 255, data 216,
+(M120) — **2487 tests / 0 failures** (world 1006, net 771, gpu 255, data 216,
 app 183, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
-`handshot` 34/34, `swingshot` 97/97, `live --render-check` **34/34** with
+`handshot` 34/34, `swingshot` 97/97, `live --render-check` **35/35** with
 validation ON and 0 validation errors, demo PNG `2cc56b4acbfb92cb`.
 **The recipe book is closed** (M105–M107) and **M108–M111 shipped chat** —
 `ChatComponent`, the wrap under it, the `MessageSignatureCache` without which
@@ -1733,7 +1733,15 @@ seven suggestion states are **dead in vanilla**. **M119** added
 `block_state` and `item_stack`, and found where the **namespace rule** lives:
 `suggestResource`'s `filterResources` tests the typed text against an
 identifier's namespace and path **separately** when no colon has been typed,
-which is the other half of M114a's refusal to split `matchesSubStr` on `:`. No branch or worktree holds a commit
+which is the other half of M114a's refusal to split `matchesSubStr` on `:`.
+**M120** then claimed **39 of the remaining 45** argument types — the
+coordinate family, the fixed word lists, the ranges, the word-shaped scalars
+and the identifier family — leaving **six structured ones** (`component`,
+`style`, `nbt_*`, `dialog`) named rather than half-done, with a test asserting
+every other type IS claimed so the list cannot rot. Its finding: **a bare `~`
+is a complete coordinate** (the number after it is optional), and **`^` is
+all-or-nothing across a triple** — `^1 ~2 3` is `ERROR_MIXED_TYPE`, not a
+mixed one. No branch or worktree holds a commit
 off `main`. The long-unmerged-branch risk closed on 2026-07-27 and has
 stayed closed; branch new work from `main` and keep it that way.
 

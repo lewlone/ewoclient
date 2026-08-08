@@ -351,6 +351,9 @@ pub enum ArgKind {
     BlockState,
     /// `minecraft:item_stack` and `minecraft:item_predicate` (M119).
     ItemStack,
+    /// The coordinate family and the value-shaped types (M120), which share
+    /// one resolver — see [`crate::arg_types`].
+    Value(crate::arg_types::Value),
     /// Every other `minecraft:` type. Refuses to parse — see the module docs.
     Unknown,
 }
@@ -392,6 +395,13 @@ impl ArgKind {
             // read.
             ("minecraft:block_state" | "minecraft:block_predicate", _) => Self::BlockState,
             ("minecraft:item_stack" | "minecraft:item_predicate", _) => Self::ItemStack,
+            // M120's family. Tried LAST of the `minecraft:` arms so a type
+            // with its own module above wins — `block_predicate` is an id to
+            // `arg_types`' eyes and a block state to `block_item`'s, and the
+            // richer one must not be shadowed by the ordering.
+            (name, _) if crate::arg_types::resolve(name).is_some() => {
+                Self::Value(crate::arg_types::resolve(name).expect("just checked"))
+            }
             _ => Self::Unknown,
         }
     }
@@ -480,6 +490,7 @@ impl ArgKind {
                 reader.set_cursor(probe.cursor());
                 Ok(())
             }
+            Self::Value(v) => v.parse(reader),
             Self::Unknown => Err(ReaderError::UnknownArgumentType),
         }
     }
@@ -488,7 +499,12 @@ impl ArgKind {
     ///
     /// `BoolArgumentType` has one, and so does `EntityArgument` — whose is a
     /// whole parser, so it takes the online names the caller must supply.
-    fn suggest_with(&self, builder: &mut SuggestionsBuilder, ctx: CommandCtx<'_>) {
+    fn suggest_with(
+        &self,
+        builder: &mut SuggestionsBuilder,
+        ctx: CommandCtx<'_>,
+        registry: Option<&str>,
+    ) {
         if let Self::Entity = self {
             // `EntityArgument.listSuggestions` re-reads from the builder's own
             // start rather than continuing an earlier parse, and swallows the
@@ -523,6 +539,12 @@ impl ArgKind {
             for s in sub.build().list {
                 builder.suggest(&s.text);
             }
+            return;
+        }
+        if let Self::Value(v) = self {
+            // The registry the wire named, where there was one — M113 keeps it
+            // in the props and this is its first consumer.
+            v.suggest(builder, registry, ctx.blocks, ctx.items);
             return;
         }
         if *self != Self::Bool {
@@ -970,7 +992,11 @@ pub fn completion_suggestions(
                     // `getProvider` defaults to ASK_SERVER.
                     ask_server = true;
                 } else {
-                    kind_of(tree, child, props).suggest_with(&mut builder, cmd);
+                    let registry = match props {
+                        ArgumentProps::Registry(r) => Some(r.as_str()),
+                        _ => None,
+                    };
+                    kind_of(tree, child, props).suggest_with(&mut builder, cmd, registry);
                 }
             }
             NodeKind::Root => {}
@@ -1348,6 +1374,115 @@ mod tests {
         // …and with an empty context it does not, which is what keeps a
         // registry-less caller behaving as it did before M119.
         assert!(!parse(&t, &u("/setblock stone"), 1, CommandCtx::default()).is_valid(&t));
+    }
+
+    #[test]
+    fn the_coordinate_family_parses_and_completes_through_the_dispatcher() {
+        // M120, and the M92/M93b guard again: `arg_types`' own tests never
+        // touch the wiring that turns a registry NAME into that resolver.
+        assert_eq!(
+            ArgKind::resolve("minecraft:block_pos", &ArgumentProps::None),
+            ArgKind::Value(crate::arg_types::Value::Coords(
+                crate::arg_types::Coords::BlockPos
+            ))
+        );
+        let mut t = tree();
+        t.nodes[0].children.push(9);
+        t.nodes.push(CommandNode {
+            flags: 1,
+            children: vec![10],
+            redirect: 0,
+            // NOT `tp` — the fixture already has one, whose child is the
+            // impossible type M118 put there, and `getRelevantNodes` returns
+            // the first literal that matches exactly. A duplicate name in a
+            // test tree is silently shadowed rather than rejected.
+            kind: NodeKind::Literal("teleport".into()),
+        });
+        t.nodes.push(CommandNode {
+            flags: 2 | 4,
+            children: vec![],
+            redirect: 0,
+            kind: NodeKind::Argument {
+                name: "location".into(),
+                type_id: 0,
+                type_name: "minecraft:vec3".into(),
+                props: ArgumentProps::None,
+                suggestions: None,
+            },
+        });
+        let ctx = CommandCtx::default();
+        // It parses, so the command is valid — three components and the two
+        // separators between them.
+        assert!(parse(&t, &u("/teleport ~ ~ ~"), 1, ctx).is_valid(&t));
+        assert!(parse(&t, &u("/teleport 1 2 3"), 1, ctx).is_valid(&t));
+        assert!(!parse(&t, &u("/teleport 1 2"), 1, ctx).is_valid(&t));
+        // …and it completes with the defaults, progressively.
+        let units = u("/teleport ");
+        let p = parse(&t, &units, 1, ctx);
+        let c = completion_suggestions(&t, &p, units.len(), ctx);
+        assert!(!c.ask_server);
+        let texts: Vec<&str> = c.local.list.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["~", "~ ~", "~ ~ ~"]);
+    }
+
+    #[test]
+    fn a_resource_argument_suggests_from_the_registry_the_WIRE_named() {
+        // M113 keeps the registry id in the props and this is its first
+        // consumer, so the path from that field to the suggester was untested
+        // until now — the mutation blanking it survived everything else.
+        let items = rewo_data::items::Items::for_tests(&["minecraft:stone", "minecraft:stick"]);
+        let mut t = tree();
+        t.nodes[0].children.push(9);
+        t.nodes.push(CommandNode {
+            flags: 1,
+            children: vec![10],
+            redirect: 0,
+            kind: NodeKind::Literal("clear".into()),
+        });
+        t.nodes.push(CommandNode {
+            flags: 2 | 4,
+            children: vec![],
+            redirect: 0,
+            kind: NodeKind::Argument {
+                name: "item".into(),
+                type_id: 0,
+                type_name: "minecraft:resource".into(),
+                props: ArgumentProps::Registry("minecraft:item".into()),
+                suggestions: None,
+            },
+        });
+        let ctx = CommandCtx {
+            items: Some(&items),
+            ..Default::default()
+        };
+        let units = u("/clear sti");
+        let p = parse(&t, &units, 1, ctx);
+        let c = completion_suggestions(&t, &p, units.len(), ctx);
+        let texts: Vec<&str> = c.local.list.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["minecraft:stick"]);
+        // Name the WRONG registry and the same argument offers nothing, which
+        // is what shows the field is read rather than a fixed registry used.
+        let mut t2 = t.clone();
+        if let NodeKind::Argument { props, .. } = &mut t2.nodes[10].kind {
+            *props = ArgumentProps::Registry("minecraft:block".into());
+        }
+        let p2 = parse(&t2, &units, 1, ctx);
+        assert!(completion_suggestions(&t2, &p2, units.len(), ctx).local.is_empty());
+    }
+
+    #[test]
+    fn a_type_with_its_own_module_is_not_shadowed_by_the_value_family() {
+        // `block_predicate` is an id to `arg_types` and a block state to
+        // `block_item`; the arm order is what keeps the richer one. Putting
+        // the value family first silently downgrades both predicates.
+        assert_eq!(
+            ArgKind::resolve("minecraft:block_predicate", &ArgumentProps::None),
+            ArgKind::BlockState
+        );
+        assert_eq!(
+            ArgKind::resolve("minecraft:item_predicate", &ArgumentProps::None),
+            ArgKind::ItemStack
+        );
     }
 
     // ── the parse ────────────────────────────────────────────────────────
