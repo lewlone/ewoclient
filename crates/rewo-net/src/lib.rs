@@ -19,6 +19,7 @@ pub mod bundle;
 pub mod chat_sign;
 pub mod chat_style;
 pub mod chat_wire;
+pub mod command_format;
 pub mod commands;
 pub mod dispatcher;
 pub mod chunk_batch;
