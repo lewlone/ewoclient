@@ -112,9 +112,9 @@ book's 77 px displacement that were not using the shared predicate, and
 exactly). **Chat is complete for everything vanilla draws without a subsystem
 Rewo lacks.**
 
-Current measurement, taken 2026-08-08 after M123: **2532 tests, 0 failures**
-(**world 1006, net 816, gpu 255, data 216, app 183, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2532). Note the per-crate invocation is
+Current measurement, taken 2026-08-08 after M124: **2548 tests, 0 failures**
+(**world 1006, net 832, gpu 255, data 216, app 183, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2548). Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
 other six take `--lib`, and `--lib` there is `error: no library targets`, exit
 101, and **no** `test result` line at all. Assert that a result line exists
@@ -200,13 +200,18 @@ best-scoped work on the board:
   error, `[B;255]` is an error where `[B;0xFF]` is not, and `1e400` is
   rejected for being infinite rather than unparseable.
 
-  **What remains is suggestion quality, and it is named precisely.** (1) Seven
-  literal tables that live in classes outside their argument (`heightmap`,
-  `team_color`, `scoreboard_slot`, `item_slot`/`item_slots`, `swizzle`), which
-  parse as words and suggest nothing. (2) The `resource*` family's registries
-  beyond blocks and items — the wire always names the right one, so what limits
-  it is which registries Rewo holds. Neither is a correctness gap: a command
-  Rewo accepts is one the server accepts.
+  ~~and the literal tables~~ (**M124**) — **eight** of them, not the seven
+  this paragraph used to claim, and **not** merely a suggestion gap: three of
+  the eight were accepting text the server rejects. See §15.
+
+  **What remains is suggestion quality alone.** (1) The three word types that
+  DO have a vanilla suggester but read **live state** rather than a list:
+  `objective` and `team` come from the scoreboard (which M62 and M65 already
+  decode) and `objective_criteria` from the stat registries (M84). (2) The
+  `resource*` family's registries beyond blocks and items — the wire always
+  names the right one, so what limits it is which registries Rewo holds.
+  Neither is a correctness gap: a command Rewo accepts is one the server
+  accepts.
 
   **A gate note that will save a confusing minute:** `--render-check`'s r32
   needs an argument that suggests *nothing*, so its precondition **recedes by
@@ -18899,3 +18904,66 @@ result.** `cargo test -p rewo-app --lib` is `error: no library targets found` �
 failure exactly (exit 101, **zero** `test result` lines, a total that quietly
 drops 183). It was caught in one run because the runner asserts a result line
 *exists* rather than summing whatever it finds. Keep that assertion.
+
+### M124 — the literal tables, three of which were wrong in the parse too (2026-08-08)
+
+§0.0 called these *"seven literal tables … which parse as words and suggest
+nothing"*, and **both halves of that sentence were wrong**. There are **eight**
+argument types, not seven — the list had missed `time` and `hex_color` — and
+for four of them the bare-word reading was not merely missing suggestions, it
+**accepted text the server rejects**.
+
+* **`heightmap` is `Heightmap.Types` FILTERED BY `keepAfterWorldgen`**, which
+  drops the two `Usage.WORLDGEN` members. A transcription of "the enum" has six
+  names where vanilla offers four, and two of them are rejected on use.
+* **`swizzle` has a real parse** — each of `x`/`y`/`z` at most once — and,
+  uniquely in this set, **no `listSuggestions` at all**: it inherits
+  brigadier's empty default, so offering its axes would be inventing a feature.
+  Its loop may also run **zero** times, so an *empty* swizzle is a legal empty
+  set.
+* **`item_slot` and `item_slots` read with `ParserUtils.readWhile(c != ' ')`**,
+  not `readUnquotedString`. `*` is not allowed in an unquoted string, so the
+  obvious reading truncates `container.*` to `container.` and then fails the
+  lookup — which presents as a missing table entry rather than as a reader bug.
+* **The two differ in the PARSE, not only the suggestions.** `SlotArgument`
+  additionally rejects `size() != 1`, so `container.*` is
+  `slot.only_single_allowed` there and a perfectly good value one type over —
+  and that is the same split as `singleSlotNames()` vs `allNames()`, so the
+  parser and the suggester agree by construction rather than by two lists being
+  kept in step.
+* **`time` is a float then a unit from a FOUR-entry map whose fourth key is the
+  EMPTY string**, so a bare number is a duration in ticks and the error test is
+  `factor == 0` rather than "was there a unit". Its suggester calls
+  `builder.createOffset(start + cursor)`, re-anchoring **past the number** so
+  the unit completes as a suffix; suggesting from the argument's own start
+  offers `d` as a *replacement* for `10d`.
+* **`hex_color` suggests its own two `EXAMPLES`** — not a palette — and parses
+  exactly three or six hex digits.
+
+**`SlotRanges` is written as the CONSTRUCTION**, not as the 165 names it
+produces: six `addSlotRange` calls and thirteen singles are shorter than their
+output and cannot be got wrong one entry at a time (M93r's finding that a
+derivation pins a table better than its output does). Only the name and the
+size are kept, because the ids are what the *server* acts on.
+
+**Two witnesses were wrong before any code was.** `sidebar` offers **sixteen**
+slots, not seventeen, because `SuggestionsBuilder.suggest` drops a candidate
+equal to the text already typed — M114a's rule biting somewhere new. And the
+swizzle axis test had **no witness at all**: `xw` and `XYZ` both die on the
+*duplicate* rule even when every unknown character silently maps to `x`, so
+only a **single** non-axis character can see it. The battery found that one; it
+also reported `ANCHOR x2` on an ambiguous control, which is the instrument
+working rather than a failure.
+
+**r36 is new and mutation-verified live**: reverting `scoreboard_slot` to a bare
+word takes it from 1 to 0 and the gate to 35/36 red.
+
+21 mutations, 21 killed, five no-op controls all survived. **2548 tests**;
+`live --render-check` **36/36** validation ON, 0 errors; demo PNG
+`2cc56b4acbfb92cb`, byte-identical.
+
+**What is still a bare word is what has no literal table** — and three of those
+(`objective`, `team`, `objective_criteria`) *do* have a vanilla suggester, each
+reading **live state** (the scoreboard M62/M65 decode, the stat registries M84
+decoded) rather than a list. That is a different job, and it is the one
+remaining item in this area alongside the `resource*` registries.
