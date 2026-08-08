@@ -184,6 +184,18 @@ struct RenderCheck {
     /// `custom_chat_completions` packet, then a real keystroke — so a break
     /// anywhere from the decode to the render drops this to zero.
     suggestion_popup_frames: u64,
+    /// M117 — frames on which the chat field was drawn as COLOURED RUNS
+    /// rather than one flat line.
+    ///
+    /// Narrower than r27 and than r30: it needs a `/`-command in the field
+    /// *and* a parse of it, and it is the only witness that can see the
+    /// highlighting reach the windowed client at all.
+    highlighted_command_frames: u64,
+    /// M117 — frames on which the USAGE BOX was drawn.
+    ///
+    /// Mutually exclusive with r29 by construction, so it cannot be satisfied
+    /// by the same moment: the popup and the box never coexist.
+    usage_box_frames: u64,
     /// M116 — how many times a `/`-command's completion was answered by the
     /// CLIENT rather than the server.
     ///
@@ -561,6 +573,25 @@ impl RenderCheck {
             format!(
                 "{} of {} frames drew the popup's row fills (needs a                  custom_chat_completions word and a keystroke, both of which the run                  drives through the production path)",
                 self.suggestion_popup_frames, self.frames
+            ),
+        );
+        // M117 — the syntax highlighting reached the frame at all.
+        row(
+            "r31 the command line was drawn as coloured runs",
+            self.highlighted_command_frames > 0,
+            format!(
+                "{} of {} frames drew the field from a parse rather than as one                  flat line",
+                self.highlighted_command_frames, self.frames
+            ),
+        );
+        // M117 — the usage box, which `extractRenderState` draws only when
+        // the popup is absent, so this and r29 name disjoint moments.
+        row(
+            "r32 the usage box was drawn under the field",
+            self.usage_box_frames > 0,
+            format!(
+                "{} of {} frames drew a usage line (needs an ARGUMENT expected                  at the cursor and no popup over it)",
+                self.usage_box_frames, self.frames
             ),
         );
         // M116 — the dispatcher answered a command locally, i.e. WITHOUT a
@@ -4392,6 +4423,15 @@ struct LiveApp {
     chat_injected: bool,
     /// Whether it has typed a `/`-command yet (M116).
     command_injected: bool,
+    /// `CommandSuggestions.currentParse` (M117) — the parse the syntax
+    /// highlighting reads, cached against the text it was made from.
+    ///
+    /// Vanilla invalidates on
+    /// `!currentParse.getReader().getString().equals(command)`, which is the
+    /// same rule as "recompute when the text changed" — so the cache is an
+    /// optimisation and not a behaviour, and keying it on the string keeps it
+    /// that way.
+    chat_parse: Option<(String, rewo_net::dispatcher::ParseResults)>,
     /// Whether `--render-check` has force-opened the inventory yet (M89).
     /// Frames before this are the ones that prove `open_screen` opens the
     /// screen on its own.
@@ -5771,6 +5811,78 @@ impl LiveApp {
         self.resolve_command_suggestions();
     }
 
+    /// The coloured runs for the chat field, or `None` when there is nothing
+    /// to colour (M117).
+    ///
+    /// `formatChat` returns null while `currentParse` is null, and
+    /// `updateCommandInfo` only ever builds one for a `/`-command — so an
+    /// ordinary chat message is drawn in the field's own colour, which is a
+    /// state vanilla passes through too.
+    /// The usage box's fills and text for this frame (M117), or two empty
+    /// lists when there is nothing to show.
+    ///
+    /// Built from the cached parse rather than a fresh one, so it and the
+    /// syntax highlighting cannot disagree about what the field says.
+    ///
+    /// A free-standing associated function rather than a method, for the same
+    /// reason `chat_runs` is: the frame already holds the session borrowed.
+    fn usage_box_parts(
+        cs: Option<&rewo_world::chat_screen::ChatScreen>,
+        session: &PlaySession,
+        cache: &Option<(String, rewo_net::dispatcher::ParseResults)>,
+        advance: Option<[u8; 256]>,
+        gui: (i32, i32),
+        px: f32,
+    ) -> (Vec<rewo_gpu::hud::HudFill>, Vec<rewo_gpu::world::OwnedTextLine>) {
+        let empty = (Vec::new(), Vec::new());
+        let Some(cs) = cs else {
+            return empty;
+        };
+        let Some((text, parsed)) = cache.as_ref() else {
+            return empty;
+        };
+        if text != &cs.input.value() {
+            return empty;
+        }
+        let cursor = cs.input.cursor_position();
+        let lines = rewo_net::command_format::usage_lines(
+            &session.commands,
+            parsed,
+            cursor,
+            cs.suggestions.pending().is_none_or(|s| s.is_empty()),
+        );
+        if lines.is_empty() {
+            return empty;
+        }
+        let width_of = move |s: &str| match &advance {
+            Some(a) => rewo_gpu::text::width(s, a),
+            None => 0,
+        };
+        let (gui_w, gui_h) = gui;
+        let _ = gui_w;
+        let (fx, _fy, fw, _fh) = rewo_world::chat_screen::input_rect(gui_w, gui_h);
+        // `getScreenX(startPos)` — the field's x plus the width of everything
+        // before the word being completed.
+        let start = rewo_net::command_format::usage_lines_start(parsed, cursor);
+        let value: Vec<u16> = cs.input.value().encode_utf16().collect();
+        let prefix = String::from_utf16_lossy(&value[..start.min(value.len())]);
+        let box_width = lines.iter().map(|l| width_of(l)).max().unwrap_or(0);
+        let position = rewo_net::command_format::usage_position(
+            fx + width_of(&prefix),
+            fx,
+            fw,
+            box_width,
+        );
+        usage_box(
+            &lines,
+            position,
+            gui_h,
+            px,
+            cs.suggestions.config().fill_color,
+            &width_of,
+        )
+    }
+
     /// Answer a `/`-command's completion locally where the dispatcher can, and
     /// ask the server only where vanilla would (M116).
     ///
@@ -6458,6 +6570,14 @@ impl LiveApp {
                     self.close_chat_screen();
                     self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Command);
                     self.chat_char('g');
+                    // …and then on to `/give `, which is where an ARGUMENT is
+                    // expected: the integer child suggests nothing, so no
+                    // popup opens and the USAGE box takes its place. r30 has
+                    // already counted the literal completion `/g` produced;
+                    // this reaches r31 and r32.
+                    for ch in "ive ".chars() {
+                        self.chat_char(ch);
+                    }
                     self.command_injected = true;
                 }
             }
@@ -7267,6 +7387,23 @@ impl LiveApp {
         // store needs the font and the GUI clock, which is why this cannot
         // live where the packets are decoded.
         apply_chat(session, state.world_renderer.font_advance().copied());
+        // M117 — both command-line overlays, resolved once before the fills
+        // stage so the box and the highlighting read the same cached parse.
+        let chat_runs = chat_runs(&mut self.chat_parse, self.chat_screen.as_ref(), session);
+        let (usage_fills, usage_text) = Self::usage_box_parts(
+            self.chat_screen.as_ref(),
+            session,
+            &self.chat_parse,
+            state.world_renderer.font_advance().copied(),
+            {
+                let s = gui_px(extent.width, extent.height);
+                (
+                    (extent.width as f32 / s) as i32,
+                    (extent.height as f32 / s) as i32,
+                )
+            },
+            px,
+        );
         // A `command_suggestions` reply that matched the outstanding request
         // (M114). Drained here rather than at decode time for the same reason
         // the chat events are: opening the popup needs the font to measure its
@@ -7348,6 +7485,17 @@ impl LiveApp {
                         }
                     }
                     backdrops.extend(fills);
+                } else {
+                    // M117 — `extractRenderState` is
+                    // `if (!extractSuggestions(..)) extractUsage(..)`, so the
+                    // box exists only when the popup does not. Drawing both
+                    // stacks two panels over one field.
+                    if !usage_fills.is_empty() {
+                        if let Some(c) = self.check.as_mut() {
+                            c.usage_box_frames += 1;
+                        }
+                    }
+                    backdrops.extend(usage_fills.clone());
                 }
             }
             if let Some(c) = self.check.as_mut() {
@@ -7365,16 +7513,35 @@ impl LiveApp {
             build_text(session, px, extent.height as f32, fps, self.debug, chat_focused);
         if let Some(cs) = self.chat_screen.as_ref() {
             let (gw, gh) = ((extent.width as f32 / px) as i32, (extent.height as f32 / px) as i32);
+            let advance = state.world_renderer.font_advance().copied();
+            let width_of = move |s: &str| match &advance {
+                Some(a) => rewo_gpu::text::width(s, a),
+                None => 0,
+            };
+            if chat_runs.is_some() {
+                if let Some(c) = self.check.as_mut() {
+                    c.highlighted_command_frames += 1;
+                }
+            }
             text.extend(chat_input_lines(
                 cs,
                 px,
                 gw,
                 gh,
                 self.started.elapsed().as_millis() as u64,
+                chat_runs.as_deref(),
+                &width_of,
             ));
             if let Some(list) = cs.suggestions.list() {
                 text.extend(suggestion_popup_text(list, cs.suggestions.config(), px));
             }
+        }
+        if self
+            .chat_screen
+            .as_ref()
+            .is_some_and(|cs| cs.suggestions.list().is_none())
+        {
+            text.extend(usage_text);
         }
         if chat_count > 0 {
             if let Some(c) = self.check.as_mut() {
@@ -7653,6 +7820,7 @@ fn run_windowed(
         chat_draft: None,
         chat_injected: false,
         command_injected: false,
+        chat_parse: None,
         drag: DragState::default(),
         last_click: None,
         last_click_at: std::time::Instant::now(),
@@ -7948,6 +8116,8 @@ fn chat_input_lines(
     gui_w: i32,
     gui_h: i32,
     now_ms: u64,
+    runs: Option<&[rewo_net::command_format::Run]>,
+    width_of: &dyn Fn(&str) -> i32,
 ) -> Vec<rewo_gpu::world::OwnedTextLine> {
     use rewo_gpu::world::OwnedTextLine;
     let (x, y, _w, h) = rewo_world::chat_screen::input_rect(gui_w, gui_h);
@@ -7962,17 +8132,42 @@ fn chat_input_lines(
         [0.93, 0.93, 0.93]
     };
     let value = screen.input.value();
-    let mut out = vec![OwnedTextLine {
-        x: text_x,
-        y: text_y,
-        px,
-        color,
-        alpha: 1.0,
-        shadow: true,
-        text: value.clone(),
-    }];
+    // M117 — one line per coloured run, laid out with the FONT's advances
+    // rather than a fixed six pixels, because the runs must butt up against
+    // each other exactly: a wrong width is a visible gap or an overlap, where
+    // for the caret it was only ever a pixel or two of drift.
+    let mut out: Vec<OwnedTextLine> = Vec::new();
+    match runs {
+        Some(runs) if !runs.is_empty() => {
+            let mut x = text_x;
+            for run in runs {
+                out.push(OwnedTextLine {
+                    x,
+                    y: text_y,
+                    px,
+                    color: srgb_bytes_to_linear(run.color),
+                    alpha: 1.0,
+                    shadow: true,
+                    text: run.text.clone(),
+                });
+                x += width_of(&run.text) as f32 * px;
+            }
+        }
+        _ => out.push(OwnedTextLine {
+            x: text_x,
+            y: text_y,
+            px,
+            color,
+            alpha: 1.0,
+            shadow: true,
+            text: value.clone(),
+        }),
+    }
     let before: String = value.chars().take(screen.input.cursor_position()).collect();
-    let caret_x = text_x + before.chars().count() as f32 * 6.0 * px;
+    // Measured, not counted: the six-pixel approximation put the caret adrift
+    // on any line with a narrow glyph in it (`i` is 2 wide, `l` 3), and the
+    // ghost hangs off the caret so it drifted too.
+    let caret_x = text_x + width_of(&before) as f32 * px;
     // The greyed ghost after the caret (M115), gated on `!insert` —
     // `cursorPos < value.length() || value.length() >= maxLength`. So it shows
     // only with the caret at the END of an under-length field: a ghost drawn
@@ -8101,6 +8296,91 @@ fn suggestion_popup_text(
             })
         })
         .collect()
+}
+
+/// The coloured runs for the chat field, or `None` when there is nothing to
+/// colour (M117).
+///
+/// `formatChat` returns null while `currentParse` is null, and
+/// `updateCommandInfo` only ever builds one for a `/`-command — so an ordinary
+/// chat message is drawn in the field's own colour, which is a state vanilla
+/// passes through too.
+///
+/// A free function over the three pieces it needs rather than a method,
+/// because the frame already holds the session borrowed and `&mut self` here
+/// would take the whole app with it.
+fn chat_runs(
+    cache: &mut Option<(String, rewo_net::dispatcher::ParseResults)>,
+    screen: Option<&rewo_world::chat_screen::ChatScreen>,
+    session: &PlaySession,
+) -> Option<Vec<rewo_net::command_format::Run>> {
+    let value = screen?.input.value();
+    if !value.starts_with('/') {
+        *cache = None;
+        return None;
+    }
+    if cache.as_ref().map(|(t, _)| t.as_str()) != Some(value.as_str()) {
+        let units: Vec<u16> = value.encode_utf16().collect();
+        let parsed = rewo_net::dispatcher::parse(&session.commands, &units, 1);
+        *cache = Some((value.clone(), parsed));
+    }
+    let (_, parsed) = cache.as_ref()?;
+    let units: Vec<u16> = value.encode_utf16().collect();
+    // `offset` is `displayPos` in vanilla, because `EditBox` renders only the
+    // visible substring. Rewo's chat field draws the whole value, so the
+    // visible text starts at 0 — this must become `display_pos()` the day the
+    // render honours the horizontal scroll, or every colour lands one scroll
+    // to the left.
+    Some(rewo_net::command_format::format_text(parsed, &units, 0))
+}
+
+/// The usage box under the chat field (M117), in screen pixels.
+///
+/// `CommandSuggestions.extractUsage`. Two things read backwards:
+///
+/// * The list grows **upward**. `lineY = height - 27 - 12 * y`, so entry 0 is
+///   the LOWEST line and each later one sits twelve pixels higher. Laying it
+///   out downward from a top puts a two-line box over the field it belongs to.
+/// * The fill is one pixel wider than the text **on each side**
+///   (`position - 1` to `position + width + 1`), so the box has a hairline of
+///   padding the text does not.
+///
+/// The box and the suggestion popup are **mutually exclusive**:
+/// `extractRenderState` is `if (!extractSuggestions(..)) extractUsage(..)`.
+fn usage_box(
+    lines: &[String],
+    position: i32,
+    gui_h: i32,
+    px: f32,
+    fill_color: u32,
+    width_of: &dyn Fn(&str) -> i32,
+) -> (Vec<rewo_gpu::hud::HudFill>, Vec<rewo_gpu::world::OwnedTextLine>) {
+    let box_width = lines.iter().map(|l| width_of(l)).max().unwrap_or(0);
+    let mut fills = Vec::new();
+    let mut text = Vec::new();
+    for (y, line) in lines.iter().enumerate() {
+        let line_y = gui_h - rewo_world::command_suggestions::USAGE_OFFSET_FROM_BOTTOM
+            - rewo_world::command_suggestions::LINE_HEIGHT * y as i32;
+        fills.push(rewo_gpu::hud::HudFill {
+            x: (position - 1) as f32 * px,
+            y: line_y as f32 * px,
+            w: (box_width + 2) as f32 * px,
+            h: rewo_world::command_suggestions::LINE_HEIGHT as f32 * px,
+            alpha: ((fill_color >> 24) & 0xFF) as f32 / 255.0,
+            rgb: srgb_bytes_to_linear(fill_color & 0x00FF_FFFF),
+        });
+        text.push(rewo_gpu::world::OwnedTextLine {
+            x: position as f32 * px,
+            y: (line_y + 2) as f32 * px,
+            px,
+            // `-1` — white.
+            color: [1.0, 1.0, 1.0],
+            alpha: 1.0,
+            shadow: true,
+            text: line.clone(),
+        });
+    }
+    (fills, text)
 }
 
 /// The chat scrollbar's two rects (M111), in screen pixels.
@@ -10911,6 +11191,85 @@ mod tests {
         assert_ne!(first, scrolled, "the top row moved with the offset");
     }
 
+    #[test]
+    fn the_coloured_runs_butt_up_against_each_other_at_measured_widths() {
+        // The runs must abut exactly: a wrong width is a visible gap or an
+        // overlap, where for the caret a fixed six pixels was only ever a
+        // pixel or two of drift. The width function here is deliberately NOT
+        // six-per-character, so a run laid out on the constant lands
+        // somewhere else.
+        use rewo_net::command_format::{Run, ARGUMENT_COLORS, GRAY};
+        use rewo_world::chat_screen::{ChatMethod, ChatScreen};
+        let mut s = ChatScreen::open(ChatMethod::Command, None, 0);
+        s.input.set_value("/give 5");
+        let runs = vec![
+            Run { text: "/give ".into(), color: GRAY },
+            Run { text: "5".into(), color: ARGUMENT_COLORS[0] },
+        ];
+        let width_of = |t: &str| t.chars().count() as i32 * 4;
+        let lines = super::chat_input_lines(&s, 1.0, 320, 240, 0, Some(&runs), &width_of);
+        assert_eq!(lines[0].text, "/give ");
+        assert_eq!(lines[1].text, "5");
+        assert_eq!(lines[1].x - lines[0].x, 6.0 * 4.0);
+        // The two runs carry different colours, which is the whole point.
+        assert_ne!(lines[0].color, lines[1].color);
+        // And the caret sits after the WHOLE value, measured the same way.
+        let caret = lines.iter().find(|l| l.text == "_").expect("a caret");
+        assert_eq!(caret.x - lines[0].x, 7.0 * 4.0);
+    }
+
+    #[test]
+    fn with_no_runs_the_field_is_one_flat_line() {
+        // `formatChat` returns null before there is a parse, and an ordinary
+        // chat message never gets one.
+        use rewo_world::chat_screen::{ChatMethod, ChatScreen};
+        let mut s = ChatScreen::open(ChatMethod::Message, None, 0);
+        s.input.set_value("hello there");
+        let lines = super::chat_input_lines(&s, 1.0, 320, 240, 0, None, &|t: &str| {
+            t.chars().count() as i32 * 6
+        });
+        assert_eq!(lines[0].text, "hello there");
+    }
+
+    #[test]
+    fn the_usage_box_grows_upward_from_the_bottom() {
+        // `lineY = height - 27 - 12 * y`, so entry 0 is the LOWEST. Laying it
+        // out downward from a top puts a two-line box over the field.
+        let lines = vec!["<count>".to_string(), "<flag>".to_string()];
+        let (fills, text) = super::usage_box(&lines, 40, 240, 1.0, 0xD000_0000, &|t| {
+            t.chars().count() as i32 * 6
+        });
+        assert_eq!(fills.len(), 2);
+        assert_eq!(fills[0].y, (240 - 27) as f32);
+        assert_eq!(fills[1].y, (240 - 27 - 12) as f32);
+        assert!(fills[1].y < fills[0].y, "later lines sit HIGHER");
+        // The text sits two pixels down inside its fill.
+        assert_eq!(text[0].y, fills[0].y + 2.0);
+        assert_eq!(text[0].x, 40.0);
+    }
+
+    #[test]
+    fn the_usage_fill_is_one_pixel_wider_than_its_text_on_each_side() {
+        // `position - 1` to `position + width + 1`.
+        let lines = vec!["<count>".to_string()];
+        let (fills, text) = super::usage_box(&lines, 40, 240, 1.0, 0xD000_0000, &|t| {
+            t.chars().count() as i32 * 6
+        });
+        assert_eq!(fills[0].x, 39.0);
+        assert_eq!(fills[0].w, (7 * 6 + 2) as f32);
+        assert_eq!(text[0].x - fills[0].x, 1.0);
+    }
+
+    #[test]
+    fn the_usage_box_is_as_wide_as_its_widest_line() {
+        let lines = vec!["<a>".to_string(), "<a much longer one>".to_string()];
+        let (fills, _) = super::usage_box(&lines, 0, 240, 1.0, 0xD000_0000, &|t| {
+            t.chars().count() as i32 * 6
+        });
+        let widest = "<a much longer one>".chars().count() as i32 * 6 + 2;
+        assert!(fills.iter().all(|f| f.w == widest as f32));
+    }
+
     /// The input field's caret sits after the text before the cursor, and the
     /// bar behind it is the screen's own rather than a chat row's.
     #[test]
@@ -10921,7 +11280,7 @@ mod tests {
         s.char_typed('i', &chat_env());
         // `focused_time_ms` is unset until `set_focused_at`, so the blink's
         // clock starts at 0 and the caret is visible at t = 0.
-        let lines = super::chat_input_lines(&s, 1.0, 320, 240, 0);
+        let lines = super::chat_input_lines(&s, 1.0, 320, 240, 0, None, &|t: &str| t.chars().count() as i32 * 6);
         assert_eq!(lines[0].text, "hi");
         // `EditBox(font, 4, height - 12, …)` with `(height - 8) / 2` centring.
         assert_eq!((lines[0].x, lines[0].y), (4.0, 230.0));
@@ -10941,10 +11300,10 @@ mod tests {
         use rewo_world::chat_screen::{ChatMethod, ChatScreen, Draft};
         let draft = Draft::of("remembered");
         let mut s = ChatScreen::open(ChatMethod::Message, Some(&draft), 0);
-        let grey = super::chat_input_lines(&s, 1.0, 320, 240, 0)[0].color;
+        let grey = super::chat_input_lines(&s, 1.0, 320, 240, 0, None, &|t: &str| t.chars().count() as i32 * 6)[0].color;
         assert_eq!(grey, [0.667, 0.667, 0.667], "ChatFormatting.GRAY");
         s.char_typed('!', &chat_env());
-        let normal = super::chat_input_lines(&s, 1.0, 320, 240, 0)[0].color;
+        let normal = super::chat_input_lines(&s, 1.0, 320, 240, 0, None, &|t: &str| t.chars().count() as i32 * 6)[0].color;
         assert_ne!(normal, grey);
     }
 

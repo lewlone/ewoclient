@@ -468,6 +468,15 @@ pub struct ContextBuilder {
     pub root: i32,
     pub range: StringRange,
     pub nodes: Vec<ParsedNode>,
+    /// `getArguments()` — the parsed ARGUMENTS, which is not the same list as
+    /// `nodes`: literals are absent from it, and it is what
+    /// `CommandSuggestions.formatText` colours.
+    ///
+    /// A `LinkedHashMap<String, ParsedArgument>` in vanilla, so a repeated
+    /// name **replaces the value and keeps the first key's position**. Two
+    /// arguments can share a name across a redirect, and a plain `Vec` would
+    /// then colour both where vanilla colours one.
+    pub arguments: Vec<(String, StringRange)>,
     pub child: Option<Box<ContextBuilder>>,
 }
 
@@ -477,6 +486,7 @@ impl ContextBuilder {
             root,
             range: StringRange::at(start),
             nodes: Vec::new(),
+            arguments: Vec::new(),
             child: None,
         }
     }
@@ -484,6 +494,15 @@ impl ContextBuilder {
     fn with_node(&mut self, node: i32, range: StringRange) {
         self.range = StringRange::between(self.range.start.min(range.start), range.end);
         self.nodes.push(ParsedNode { node, range });
+    }
+
+    /// `withArgument` — `LinkedHashMap.put`, so a repeat overwrites in place.
+    fn with_argument(&mut self, name: &str, range: StringRange) {
+        if let Some(slot) = self.arguments.iter_mut().find(|(n, _)| n == name) {
+            slot.1 = range;
+            return;
+        }
+        self.arguments.push((name.to_string(), range));
     }
 
     /// `getLastChild` — the deepest context, which is where `getCommand()`
@@ -689,12 +708,18 @@ fn parse_nodes(
                 NodeKind::Argument {
                     type_id: _,
                     props,
-                    name: _,
+                    name,
                     ..
                 } => {
                     let kind = kind_of(tree, child, props);
                     kind.parse(&mut reader)?;
-                    context.with_node(child_index, StringRange::between(start, reader.cursor()));
+                    let range = StringRange::between(start, reader.cursor());
+                    // `withArgument` BEFORE `withNode`, as
+                    // `ArgumentCommandNode.parse` does — both take the same
+                    // range, so the order is not observable here, and it is
+                    // kept so the transcription reads against the source.
+                    context.with_argument(name, range);
+                    context.with_node(child_index, range);
                 }
                 NodeKind::Root => return Err(ReaderError::LiteralIncorrect),
             }
