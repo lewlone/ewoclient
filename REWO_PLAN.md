@@ -112,9 +112,9 @@ book's 77 px displacement that were not using the shared predicate, and
 exactly). **Chat is complete for everything vanilla draws without a subsystem
 Rewo lacks.**
 
-Current measurement, taken 2026-08-08 after M117: **2437 tests, 0 failures**
-(**world 1006, net 721, gpu 255, data 216, app 183, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2437). **Read each crate's EXIT CODE, not
+Current measurement, taken 2026-08-08 after M118: **2454 tests, 0 failures**
+(**world 1006, net 738, gpu 255, data 216, app 183, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2454). **Read each crate's EXIT CODE, not
 just its count**: a crate whose tests fail to compile prints no `test result`
 line at all, contributes 0, and reads as silence — M110 hit exactly that and
 the only signal was the total falling. **Breakdowns written before the
@@ -125,8 +125,8 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` 32/32 with validation ON and 0
-validation errors, last run for M117** — M113 is a decode and adds no render
+34/34, `mobshot` 246/246, **`live --render-check` 33/33 with validation ON and 0
+validation errors, last run for M118** — M113 is a decode and adds no render
 path, which is the only reason it was not re-run (M94 is where it earned its
 keep twice over — see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
 `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C **12** — M96–M107
@@ -180,15 +180,17 @@ best-scoped work on the board:
   ~~the usage lines and the syntax highlighting~~ (**M117**) — both shipped,
   and `live --render-check` is **32/32**.
 
-  **What is left of the command path** is one thing, and it is the same thing
-  in three places: every `minecraft:` argument type is still `Unknown`. That
-  stops the parse at a command's second word, which in turn stops the
-  highlighting colouring anything past the first argument and hands every
-  argument completion to the server. `EntitySelectorParser` is the biggest
-  single one and would unlock `@`. The other named gap is the **exception
-  messages** under the field — `BuiltInExceptions`' literals plus
-  `command.context.parse_error` — which M117 models as a gate (it shows
-  *nothing* where vanilla shows a message) rather than approximating.
+  ~~`EntitySelectorParser`~~ (**M118**) — `@e[…]` parses and completes
+  locally, and `live --render-check` is **33/33**.
+
+  **What is left is a list rather than a blocker.** The remaining `minecraft:`
+  argument types are each self-contained and none is as widely used as the
+  selector: `item_stack`, `block_state`, `resource`, `time`, `component`, the
+  coordinate family. Each one transcribed lets the parse — and therefore the
+  highlighting — reach one word further. The other named gap is the
+  **exception messages** under the field (`BuiltInExceptions`' literals plus
+  `command.context.parse_error`), which M117 models as a gate: it shows
+  *nothing* where vanilla shows a message, rather than approximating.
 
   **Historical, and now closed:** is where the remaining depth is. M114
   ships a **deliberate divergence**: vanilla asks the server only about
@@ -18480,3 +18482,75 @@ still `Unknown`, so a command's second word onward is the server's to complete.
 `EntitySelectorParser` is the biggest single one and would unlock `@`
 completion — and would also make the highlighting reach past the first
 argument, since an argument that does not parse contributes no coloured span.
+
+### M118 — the entity selector parser (2026-08-08)
+
+M116 made every `minecraft:` argument type `Unknown`, which stopped the parse
+at a command's second word. This is the first one transcribed, and the right
+one to do first: `minecraft:entity` is the second word of `/tp`, `/kill`,
+`/give` and `/effect`.
+
+**The mechanism is the finding.** `this.suggestions` is a **function pointer
+the parse reassigns** as it advances — `suggestNameOrSelector`, then
+`suggestSelector`, then `suggestOpenOptions`, then `suggestOptionsKey` — and
+`fillSuggestions` calls whatever it last held. That is why suggestions keep
+working when the parse throws: `EntityArgument.listSuggestions` wraps
+`parser.parse()` in a `try` whose **`catch` body is empty**, then calls
+`fillSuggestions` anyway. A half-typed selector is always a selector that
+failed to parse.
+
+It also means an option handler can install a suggester and *then* fail.
+`sort` does exactly that — `setSuggestions` is called **before**
+`readUnquotedString`'s result is matched — so `@e[sort=` offers the four orders
+before anything valid is typed.
+
+**And the rollback is what makes that useful.** `rollbackAndThrow` does
+`getReader().setCursor(start)` *before* returning the exception, so the builder
+offsets to the **start of the value** rather than past it. Without it
+`@e[sort=n` offers all four and choosing one appends: `@e[sort=nnearest`.
+
+**Two of the seven suggestion states are dead in vanilla.** `suggestEquals` is
+defined and never assigned; `suggestOptionsKeyOrClose` is assigned by
+`parseSelector` and then overwritten by `parseOptions`' **first statement**.
+Both transcribed and both labelled — the same shape as `SuggestionsList`'s
+`unselectedColor` and the recipe book's `int border = 4`.
+
+Two more: **`@s` hides options rather than rejecting them** (`limit` and `sort`
+carry `!isCurrentEntity()`, and `suggestNames` filters on the same predicate,
+so `@s[` offers a shorter list); and `suggestNames` offers **`key + "="`**, not
+the bare key, so choosing one leaves the caret ready for a value.
+
+**Scoped.** The shape is complete — six selector types, 21 options in
+registration order, `canUse`, every state. Values are transcribed where they
+are self-contained and left unparsed for the four needing a structured parser
+(`nbt`, `scores`, `advancements`, `predicate`). An unparsed value throws, which
+is what the empty `catch` is for: the option list still completes and only the
+text after that option is left uncoloured.
+
+**Process.** 18 mutations, 18 killed, every batch with a no-op control. One
+survived first and was a **weak fixture** — `/kill @e` parses either way, and
+the case needing the explicit failure check is a selector that fails **at the
+end of the input**, where no argument-separator error can mask it.
+
+**Four witnesses were wrong before any code was**, the most of any milestone
+here, and two were corrections rather than slips: `@e[` does **not** offer `]`
+(that is the dead state above), and `@e[gamemode=!` offers `!survival` rather
+than `survival` (a `!` clears `addNormal`, which is the branch's whole point).
+
+**Two M116 fixtures had rotted**: both used `minecraft:entity` as their example
+of an `Unknown` type and silently stopped testing their claim the moment it was
+transcribed. Now an **impossible** type name, per M41's and M43's precedent.
+
+**`live --render-check` 32 → 33/33**, validation ON, 0 errors. **r32 briefly
+failed and the failure was correct**: `/give `'s first argument is
+`minecraft:entity`, so a selector popup now opens there and the usage box is
+suppressed by the mutual exclusion — which is what vanilla does. The gate types
+two arguments deep now. r33 mutation-verified live: reverting `entity` to
+`Unknown` drops it to 0.
+
+**2454 tests**; demo PNG `2cc56b4acbfb92cb`, byte-identical.
+
+**Open.** The other `minecraft:` types — `item_stack`, `block_state`,
+`resource`, `time`, `component`, the coordinate family — each self-contained,
+none as widely used as this one. And the four selector option values that need
+a structured parser.
