@@ -290,6 +290,26 @@ impl SuggestionsBuilder {
         self.input.clone()
     }
 
+    /// `SuggestionsBuilder.createOffset` — a builder over the SAME input,
+    /// anchored later, so what it offers replaces the text from there rather
+    /// than from the argument's start.
+    ///
+    /// Vanilla returns a fresh builder and the caller builds *that* one;
+    /// re-anchoring in place is the same thing at every call site, because
+    /// `createOffset` is only ever used before anything has been suggested.
+    /// `TimeArgument` is the one that needs it: the unit completes after the
+    /// number, so a builder anchored at the argument's start would offer `d`
+    /// as a replacement for `0d` rather than as a suffix.
+    pub fn rebase(&mut self, start: usize) {
+        debug_assert!(
+            self.result.is_empty(),
+            "rebase drops suggestions; vanilla's createOffset is called first"
+        );
+        self.start = start.min(self.input.len());
+        self.remaining = String::from_utf16_lossy(&self.input[self.start..]);
+        self.result.clear();
+    }
+
     /// `SuggestionsBuilder.suggest(String)` — including the early return that
     /// **drops** a suggestion equal to `remaining`. See the module docs.
     pub fn suggest(&mut self, text: &str) -> &mut Self {
