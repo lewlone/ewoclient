@@ -1687,10 +1687,10 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-08
-(M115) — **2390 tests / 0 failures** (world 1006, net 679, gpu 255, data 216,
+(M116) — **2416 tests / 0 failures** (world 1006, net 705, gpu 255, data 216,
 app 178, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
-`handshot` 34/34, `swingshot` 97/97, `live --render-check` **29/29** with
+`handshot` 34/34, `swingshot` 97/97, `live --render-check` **30/30** with
 validation ON and 0 validation errors, demo PNG `2cc56b4acbfb92cb`.
 **The recipe book is closed** (M105–M107) and **M108–M111 shipped chat** —
 `ChatComponent`, the wrap under it, the `MessageSignatureCache` without which
@@ -1710,7 +1710,14 @@ scroll dashes and the greyed ghost suffix — and its `--render-check` witness
 r29 is built to measure the **production chain** rather than a hand-built
 `Suggestions`: the gate injects a `custom_chat_completions` packet through the
 real router and types one character, so a break anywhere from the decode to the
-render drops it to zero. Mutation-verified live, twice. No branch or worktree holds a commit
+render drops it to zero. Mutation-verified live, twice. **M116** then built
+the client-side **Brigadier dispatcher**, so `/g` completes to
+`gamemode`/`give` with **no packet at all** where M114 asked the server for
+every keystroke — and found that **`canUse` is always true for suggestions**:
+`getSuggestionsProvider()` returns the provider granted
+`ALLOW_RESTRICTED_COMMANDS` explicitly, so `FLAG_RESTRICTED` governs a
+send-confirmation prompt and not what the popup offers (M113's guess that
+`hasAllowedInput` reads it is wrong — that reads `ChatAbilities`). No branch or worktree holds a commit
 off `main`. The long-unmerged-branch risk closed on 2026-07-27 and has
 stayed closed; branch new work from `main` and keep it that way.
 

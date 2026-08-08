@@ -112,9 +112,9 @@ book's 77 px displacement that were not using the shared predicate, and
 exactly). **Chat is complete for everything vanilla draws without a subsystem
 Rewo lacks.**
 
-Current measurement, taken 2026-08-08 after M115: **2390 tests, 0 failures**
-(**world 1006, net 679, gpu 255, data 216, app 178, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2390). **Read each crate's EXIT CODE, not
+Current measurement, taken 2026-08-08 after M116: **2416 tests, 0 failures**
+(**world 1006, net 705, gpu 255, data 216, app 178, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2416). **Read each crate's EXIT CODE, not
 just its count**: a crate whose tests fail to compile prints no `test result`
 line at all, contributes 0, and reads as silence — M110 hit exactly that and
 the only signal was the total falling. **Breakdowns written before the
@@ -125,8 +125,8 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` 29/29 with validation ON and 0
-validation errors, last run for M115** — M113 is a decode and adds no render
+34/34, `mobshot` 246/246, **`live --render-check` 30/30 with validation ON and 0
+validation errors, last run for M116** — M113 is a decode and adds no render
 path, which is the only reason it was not re-run (M94 is where it earned its
 keep twice over — see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
 `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C **12** — M96–M107
@@ -174,7 +174,18 @@ best-scoped work on the board:
   ~~and its render~~ (**M115**) — the popup draws, and `live --render-check` is
   **29/29** with r29 driving the whole chain from the wire to the pixels.
 
-  **The command path is where the remaining depth is.** is where the remaining depth is. M114
+  ~~and the command path's dispatcher~~ (**M116**) — `/g` now completes
+  locally with no packet, and `live --render-check` is **30/30**.
+
+  **What is left of the command path** is the two things that read the parse
+  and are now merely unbuilt rather than blocked: the **usage lines** under the
+  field (`getSmartUsage`) and the input's **syntax highlighting** (`formatText`
+  colours the argument ranges `ParseResults` already carries). Beyond those,
+  every `minecraft:` argument type is still `Unknown`, so a command's second
+  word onward is the server's to complete — `EntitySelectorParser` is the
+  biggest single one and would unlock `@` completion.
+
+  **Historical, and now closed:** is where the remaining depth is. M114
   ships a **deliberate divergence**: vanilla asks the server only about
   argument nodes whose provider is `ASK_SERVER` and answers literals from its
   own client-side Brigadier dispatcher, and Rewo — having M113's tree as data
@@ -18322,3 +18333,75 @@ types one character, so the witness runs decode → `SuggestionProviderState` �
 6337 → 0 frames, and removing the keystroke does too *while r27 stays green*,
 which is what shows r29 is strictly narrower than "the chat screen is open"
 rather than a second reading of it. 2390 tests; demo PNG `2cc56b4acbfb92cb`.
+
+### M116 — the client-side Brigadier dispatcher (2026-08-08)
+
+M113 decoded the tree, M114 built a popup that could not read it. This is the
+parser — `StringReader`, `parseNodes`, `findSuggestionContext`,
+`getCompletionSuggestions` — from the same jar M114 made ground truth. **`/g`
+completes to `gamemode`/`give` with no packet at all**, where M114 asked the
+server for every keystroke on a command line.
+
+**The finding that inverts, and it inverts toward silently hiding commands.**
+`canUse` is **always true** for suggestions, and `FLAG_RESTRICTED` is not it.
+`ClientPacketListener` builds **two** providers, and `getSuggestionsProvider()`
+— the one `CommandSuggestions` uses — returns the one granted
+`ALLOW_RESTRICTED_COMMANDS` **explicitly**. The restricted one exists solely so
+`checkCommand` can parse twice and open a send-confirmation window when a
+command parses *with* permissions and fails *without*. So the flag governs a
+prompt before sending, not what the popup offers. **M113's note that
+`hasAllowedInput` would consult it is wrong** — that reads `ChatAbilities`.
+
+Three more:
+
+* **`getRelevantNodes` is a fast path that changes the ANSWER**, not the speed:
+  when the next word matches a literal exactly, **only that literal is tried**
+  and the sibling arguments are not. The sharp case is `/give 99`, where the
+  literal path finishes *with* a range error — a dispatcher that also offered a
+  catch-all argument would find an error-free parse, which the comparator
+  prefers, and would report an invalid command as valid.
+* **`ArgKind` dispatches on the type NAME, not the props shape.**
+  `brigadier:integer` and `brigadier:long` share `RangeI64`, `float` and
+  `double` share `RangeF64`, and each pair differs in exactly the case that
+  matters — a value outside `i32`.
+* **A word matching no literal reaches no node and reports an EMPTY error
+  list**, because `getRelevantNodes` hands back only the arguments and a
+  literal-only node has none. That also makes the second half of
+  `LiteralCommandNode.parse` unreachable, which is the one mutation here
+  **proven equivalent** rather than fixed.
+
+**An unparseable argument is where the parse stops, not a failure.** Every
+`minecraft:` type is `Unknown` and refuses — the same shape `parseNodes`
+already handles for a malformed input — so the parse reaches as far as the
+literals and the six brigadier primitives allow, which is exactly the six whose
+properties M113 already decodes.
+
+**Where it still asks is now narrow.** `getProvider` defaults to `ASK_SERVER`
+for an unrecognised id; three are registered; Rewo routes all three to the
+server, whose reply **replaces** the local set because
+`handleCustomCommandSuggestions` runs the server's own dispatcher over the
+whole input and returns literals too.
+
+**Process.** 18 mutations, 17 killed, 1 proven equivalent, every batch carrying
+a no-op control. **Three survived first and all three were weak fixtures** —
+no `long` node in the tree, no cursor anywhere but the end of the line, and a
+catch-all test blind to the comparator. Three witnesses were wrong before any
+code was, including one expecting a complete literal to suggest itself, which
+is M114a's own "`suggest` drops a suggestion equal to what you typed" biting
+the milestone that documented it. A fourth broke on its own control anchor
+(`pub fn parse(` matches twice), and that batch's three SURVIVED verdicts could
+not be trusted until it ran.
+
+**`live --render-check` 29 → 30/30**, validation ON, 0 errors. **r30 is a
+negative claim** — a completion that did *not* leave the machine — so it counts
+only **non-empty** local answers, or an empty command tree would satisfy it
+while proving nothing. Mutation-verified live: forcing `ask_server` true, i.e.
+M114's behaviour, drops it to 0. **2416 tests**; demo PNG `2cc56b4acbfb92cb`.
+
+**Open.** The usage lines under the field and the input's syntax highlighting
+both read the parse and are now *reachable* — `ParseResults` carries the node
+ranges `formatText` colours and `getSmartUsage` walks — but neither is built.
+And every `minecraft:` argument type is still `Unknown`, so a command's second
+word onward is the server's to complete; the selector parser
+(`EntitySelectorParser`) is the biggest single one and would unlock `@`
+completion.

@@ -116,6 +116,15 @@ pub enum NodeKind {
         /// The `command_argument_type` registry id, kept raw so a caller can
         /// name it against the report.
         type_id: i32,
+        /// The same id already resolved to its **namespaced** registry name
+        /// (M116). The decoder has to look this up anyway — `read_props`
+        /// dispatches on it and errors without it — so keeping it costs
+        /// nothing and spares every later consumer the registry.
+        ///
+        /// The dispatcher keys on the NAME rather than the props shape,
+        /// because `brigadier:integer` and `brigadier:long` share `RangeI64`
+        /// and differ in exactly the case that matters: a value outside `i32`.
+        type_name: String,
         props: ArgumentProps,
         /// `readIdentifier` when `FLAG_CUSTOM_SUGGESTIONS` is set — and read
         /// **after** the properties, not beside its flag.
@@ -216,6 +225,7 @@ fn read_node<'a>(
             NodeKind::Argument {
                 name,
                 type_id,
+                type_name: known(type_id).unwrap_or_default().to_string(),
                 props,
                 suggestions,
             }
@@ -438,6 +448,7 @@ mod tests {
             NodeKind::Argument {
                 name: "target".into(),
                 type_id: 6,
+                type_name: "minecraft:entity".into(),
                 props: ArgumentProps::Entity {
                     single: true,
                     players_only: true
