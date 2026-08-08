@@ -1,8 +1,15 @@
 # Rewo wavy capes — the specification
 
-**Status: approved design, not yet implemented.** Second Rewo feature with no
-vanilla behaviour to transcribe, after `REWO_HEALTH_BAR_SPEC.md`. Read that
-file's preamble first; the reasoning is the same and is not repeated here.
+**Status: SHIPPED as M61 (the vanilla cape it hangs on is M60), and this file
+is the oracle it is graded against.** `rewo capeshot --check` — 69 witnesses —
+covers both. The cloth simulation is **off by default**: vanilla's rigid cape is
+what renders unless `live --wavy-cape` or `REWO_WAVY_CAPE=1` asks for it, which
+is deliberate, since this is a deviation from vanilla rather than a
+transcription of it.
+
+Second Rewo feature with no vanilla behaviour to transcribe, after
+`REWO_HEALTH_BAR_SPEC.md`. Read that file's preamble first; the reasoning is the
+same and is not repeated here.
 
 ---
 

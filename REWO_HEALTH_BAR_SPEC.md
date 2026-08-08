@@ -1,9 +1,15 @@
 # Rewo health bars — the specification
 
-**Status: approved design, not yet implemented.** This file exists because the
-health bar is the first Rewo feature with **no vanilla behaviour to
-transcribe**, and the project's entire verification method assumes there is
-one.
+**Status: SHIPPED as M59 (2026-07-29), and this file is now the oracle it is
+graded against.** `rewo healthbarshot --check` — 33 witnesses — asserts the
+render against the numbers written below, and **re-declares them rather than
+importing the implementation's constants**, because importing them would assert
+only that the implementation equals itself.
+
+This file exists because the health bar is the first Rewo feature with **no
+vanilla behaviour to transcribe**, and the project's entire verification method
+assumes there is one. That is why the design was written down *first*, as a
+decision, and is kept here unchanged: it is the specification the gate reads.
 
 ---
 

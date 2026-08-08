@@ -1,7 +1,7 @@
 # Rewo clientbound-play packet coverage — what the server sends that Rewo ignores
 
 Audit date **2026-07-29** (M67), **re-derived 2026-07-29** (M74), counts
-re-checked **2026-08-07** (M104), against **26.2 / protocol 776**. Ground truth is the bundled datagen report
+re-checked **2026-08-08** (M124), against **26.2 / protocol 776**. Ground truth is the bundled datagen report
 (`%APPDATA%/EwoClient/rewo/26.2/datagen/generated/reports/packets.json`) — the
 same file `crates/rewo-net/src/ids.rs` resolves against — plus the Vineflower
 decompile beside it. Nothing here is inferred from a wiki.
@@ -27,11 +27,15 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 116 of them. 25
+1. **141 clientbound-play packets. Rewo resolves and consumes 118 of them. 23
    are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
    `cb_play_*` field set and the dispatch chain agree exactly, which is a real
    (and slightly surprising) property of this codebase — see §1.
-2. **Class A and class B are both empty.** The 25 gaps split 0 / 0 / 14 / 11
+   **These two numbers live in §2, which is machine-checked; this paragraph is
+   not.** It has now been stale twice (M104 and M124 both had to correct it),
+   which is the same asymmetry CLAUDE.md records — trust §2, and fix §0 when
+   you notice it disagreeing.
+2. **Class A and class B are both empty.** The 23 gaps split 0 / 0 / 12 / 11
    across pure state, needs-rendering, needs-a-missing-subsystem and
    not-applicable — so every packet Rewo can render *is* rendered, and what is
    left needs a subsystem it has not got or is a reply to something it never
@@ -166,7 +170,7 @@ take**, not about how much anyone wants it:
 |---|---|
 | **A** — pure state | Decoding it changes a value Rewo could act or gate on **without drawing anything new**. A witness can prove the decode; no human has to look at it. This is the class the M52–M74 batches drew from. |
 | **B** — needs rendering | The decode is possible today, but the packet's purpose is a visual Rewo does not have (a title overlay, an XP bar, the damage camera tilt). Landing the *feature* needs an eyeball; landing the *decode* does not. |
-| **C** — needs a subsystem Rewo lacks | A chat-input path, a resource-pack fetcher, a map image pipeline, a reconnect flow, an advancement tree, a dialog framework. The decode is not the hard part and shipping it alone buys nothing. (The screen/menu framework and the recipe book were both on this list; M82/M87 and M93y–M107 built them.) |
+| **C** — needs a subsystem Rewo lacks | The **12** remaining are, exactly: a horse/mount screen (41), a map image pipeline (51), a book viewer (58), a sign editor (60), a resource-pack fetcher (80, 81), an advancement tree (85, 129 is its neighbour, 130), a server-transfer/reconnect flow (129), the recipe *manager* (133 — the list vanilla's stonecutter and smithing menus filter, which M93s showed is jar-derivable for vanilla content and is not for a datapack), and a dialog framework (139, 140). The decode is not the hard part and shipping it alone buys nothing. **Three subsystems have come OFF this list**: the screen/menu framework (M82/M87), the recipe book (M93y–M107) and the chat-input path (M110 + M114–M124). |
 | **D** — not applicable | Debug/dev tooling, integrated-server-only warnings, or a reply to a serverbound request Rewo never sends. Each row states which. |
 
 The A/B line is drawn at *what the decode itself unlocks*, so a packet whose

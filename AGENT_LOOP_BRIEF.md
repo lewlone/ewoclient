@@ -69,7 +69,10 @@ change:
 * `cargo test --workspace` also pulls in the unrelated `ewo-*` crates — run the
   `rewo-*` ones individually. **`cargo test -p A -p B` drops a result line in
   the combined stream**, so run each crate and sum, or you will write a wrong
-  total in a doc.
+  total in a doc. **And the per-crate flag is not uniform**: `rewo-app` is a
+  binary crate, so it takes `--bins` where the other six take `--lib`; `--lib`
+  there is `error: no library targets`, exit 101, and no `test result` line —
+  which reads exactly like a crate whose tests failed to compile.
 * Every gate is serverless and fail-closed, and most require Vulkan validation
   (they fail rather than silently skip when it is unavailable). A gate that
   cannot reach a call site does not test it; a gate that supplies an input
@@ -226,11 +229,13 @@ listed because they are invisible in the output.
   region.** `crates/rewo-gpu/src/entities.rs` is mixed in HEAD and
   `crates/rewo-data/src/lib.rs` is uniformly CRLF; ordinary edits inflated the
   former's diff from 341/28 to 529/216, all invisible churn. Fix:
-  `git diff -- <file> | tr -d '' > p; git checkout HEAD -- <file>;
+  `git diff -- <file> | tr -d '
+' > p; git checkout HEAD -- <file>;
   git apply --ignore-whitespace p`, then confirm `git diff --numstat` agrees with
   `git diff --ignore-all-space --numstat`. Note `git diff --check` **cannot** be
   green for a uniformly-CRLF file whose added lines are CRLF — git flags the
-  `` unless `core.whitespace` includes `cr-at-eol`, which is unset. The
+  `
+` unless `core.whitespace` includes `cr-at-eol`, which is unset. The
   LF-insertion is what makes it green, and it is the project convention.
 - **A metadata slot can be polymorphic by entity kind.** `DATA_DANCING` (Allay)
   and `DATA_BABY_ID` (`AgeableMob`/`Zombie`) both sit at SynchedEntityData index

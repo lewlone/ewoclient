@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: shipped and headlessly verified through M113 (2026-08-07).** `main`
+**Status: shipped and headlessly verified through M124 (2026-08-08).** `main`
 carries all of it and no branch or worktree holds a commit off it; the
 long-standing branch risk (everything from M10 on living on one unmerged
 branch) closed on 2026-07-27 and has stayed closed. See §0.0 for the
@@ -19,7 +19,7 @@ trusting a paragraph.**
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-07 after M113)
+## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-08 after M124)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -38,7 +38,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M113 shipped, all merged to `main`
+### Where it is: M0–M124 shipped, all merged to `main`
 
 **Update (2026-08-03, the M87–M93 container arc).** Seven milestones landed
 after the cold-start audit below, **all merged to `main`**: M87 the
@@ -112,6 +112,23 @@ book's 77 px displacement that were not using the shared predicate, and
 exactly). **Chat is complete for everything vanilla draws without a subsystem
 Rewo lacks.**
 
+**Update (2026-08-08, the command-line arc — M114–M124, all merged).** Eleven
+milestones took the command line from "the tree is decoded and read by nothing"
+to a complete local parser. **M114** built `CommandSuggestions` on M113's tree —
+the two remaining chat packets, and brigadier's own suggestion primitives,
+graded against the **real jar** (brigadier is a library, so it is absent from
+the decompile; `tools/suggestion_oracle/` runs it and pins the vectors).
+**M115** drew the popup. **M116** built the client-side **Brigadier dispatcher**,
+so `/g` completes with no packet where M114 asked the server per keystroke.
+**M117** added the syntax highlighting and the usage box. **M118–M121** taught
+it every argument type — the entity selector, `block_state`/`item_stack`, the
+coordinate family and the word lists, then the six structured ones as extents.
+**M122** replaced that last approximation with the real **SNBT grammar**,
+**M123** added the numerals' **types and ranges** (where the *base* decides the
+signedness), and **M124** the **literal tables** — eight of them, three of which
+had been accepting text the server rejects. **Every `minecraft:` argument type
+now parses and, where vanilla has a literal list, suggests.**
+
 Current measurement, taken 2026-08-08 after M124: **2548 tests, 0 failures**
 (**world 1006, net 832, gpu 255, data 216, app 183, mesh 45, proto 11** — read
 off the runner per crate; they sum to 2548). Note the per-crate invocation is
@@ -129,13 +146,31 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` 35/35 with validation ON and 0
-validation errors, last run for M120** — M113 is a decode and adds no render
-path, which is the only reason it was not re-run (M94 is where it earned its
-keep twice over — see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
-`REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C **12** — M96–M107
-consume packets M93y already decoded, M108 resolved `delete_chat`, M113 the
-Brigadier tree and M114 the two suggestion packets.
+34/34, `mobshot` 246/246, **`live --render-check` 36/36 with validation ON and 0
+validation errors, last run for M124**; demo PNG `2cc56b4acbfb92cb`,
+byte-identical. `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C
+**12** — M96–M107 consume packets M93y already decoded, M108 resolved
+`delete_chat`, M113 the Brigadier tree and M114 the two suggestion packets.
+
+**There are 33 serverless gate commands, not the "fourteen" older paragraphs in
+this file say** — those sentences are historical records of the count *at the
+time* and are correct as such. Re-measured from a cold start on 2026-08-08 by
+running every one: all 33 green, **0 validation errors**. Enumerate them rather
+than trusting a list, since the list is what rots:
+
+```
+rewo.exe --help | grep -E '^  [a-z]+shot|^  [a-z]+check'
+```
+
+Their witness counts as of M124: `mobshot` 246, `blockentityshot` 172,
+`inventoryshot` 158, `containershot` 107, `swingshot` 97, `itemshot` 75,
+`capeshot` 69, `hurtshot` 56, `titleshot` 55, `locatorshot` 49, `labelshot` 47,
+`statshot` 47, `rideshot` 45, `attributeshot` 43, `hudshot` 41, `deathshot` 40,
+`serverlinkshot` 37, `weathershot` 35, `handshot` 34, `particleshot` 34,
+`healthbarshot` 33, `bordershot` 31, `eventshot` 28, `danceshot` 24,
+`breakshot` 22, `captureshot` 17, `portalshot` 12, plus `abilityshot` 96/96 and
+the six that print a prose summary rather than a count (`skyshot`,
+`lightmapshot`, `tintshot`, `meshshot`, `dimensioncheck`).
 
 **`live --render-check` now has TWO caller requirements, not one.** r14 needs
 items in the hotbar and **r25 needs a MULTI-PAGE recipe book**, so the staged
@@ -160,12 +195,59 @@ injected**: the container, the book and the chat all drive themselves, so only
 r25 — which needs a real server to grant recipes — could tell. A gate whose
 witnesses are mostly self-driven can look healthy against nothing.
 
-**What to do next. M108 shipped the chat HUD** — `ChatComponent`, the wrap
-under it, the signature cache, `delete_chat`, and the render. The recipe book
-closed at M107 and nothing has reopened it.
+### What to do next (written 2026-08-08, after M124)
 
-The chat subsystem is half built, and its own three remaining pieces are the
-best-scoped work on the board:
+**The chat and command-line subsystem is finished** for everything that does
+not need a subsystem Rewo lacks. The recipe book closed at M107, the container
+arc at M93, and nothing has reopened either. So the next unit of work is a
+**choice between three**, and none of them is a packet:
+
+1. **AUDIO — the largest single gap, and it needs a decision from the user.**
+   M63/M64/M66 decoded the packets, built the 1,968-entry sound registry and
+   the weighted-variant index from the asset index, and deliberately stopped
+   before playback. `REWO_FEATURE_SURVEY.md` puts ~117M downloads of demand
+   behind it. It is the **first Rewo milestone that cannot be headlessly
+   verified end to end**, so the thing to settle up front is what the gate
+   asserts and what it plainly does not — a mixer's output buffer can be
+   asserted; "it sounds right" cannot. Pick a crate (cpal / rodio / kira), a
+   device model, and vanilla's attenuation curve.
+2. **The chat decoration** — `boundChatType.decorate`, which turns a message
+   into `<Steve> hi` and is the most visible thing chat still lacks. M78
+   recorded the blocker as the `minecraft:chat_type` registry plus the language
+   table; **both halves are now reachable** (M42 parses a datapack registry,
+   M54 loads the language map), so this is scheduling rather than a wall —
+   verify that before relying on it.
+3. **`REWO_FEATURE_SURVEY.md`** — the feature roadmap, for picking the next
+   *feature* rather than the next milestone. Audit its items against the crates
+   first: five of its entries are already at vanilla parity.
+
+Smaller, named rather than forgotten:
+
+* **Suggestion quality only** (not correctness — a command Rewo accepts is one
+  the server accepts): the three word types whose vanilla suggester reads
+  **live state** rather than a list — `objective` and `team` from the
+  scoreboard (M62/M65 decode it) and `objective_criteria` from the stat
+  registries (M84) — and the `resource*` family's registries beyond blocks and
+  items, where the wire always names the right registry and the limit is which
+  ones Rewo holds.
+* The **exception messages** under the command field (`BuiltInExceptions`'
+  literals plus `command.context.parse_error`). M117 models this as a gate: it
+  shows *nothing* where vanilla shows a message, rather than approximating.
+* The which-of-these overlay's own tooltips.
+* Still needing a subsystem Rewo lacks: **clickable chat text** (Rewo flattens
+  components at the wire, so there is no `Style` to find), the chat delay queue
+  and its expand link, and the restricted-chat prompt (`ChatAbilities`, a
+  packet Rewo does not decode).
+
+**A gate note that will save a confusing minute:** `--render-check`'s r32 needs
+an argument that suggests *nothing*, so its precondition **recedes by one word
+for every argument type transcribed**. It failed on M118 and again on M119,
+correctly both times, and the fix each time was to type one more word in the
+gate's injection. With M124 done, every type in the vanilla tree either parses
+or suggests, so the next transcription to move it will be a datapack's.
+
+<details>
+<summary>The M108–M124 ladder, kept for the record</summary>
 
 * ~~The backdrop fills~~ — **shipped as M109**, along with the colour channel
   on the HUD vertex and the `v.len() * 16` hardcode beside `VERTEX_STRIDE` that
@@ -204,48 +286,13 @@ best-scoped work on the board:
   this paragraph used to claim, and **not** merely a suggestion gap: three of
   the eight were accepting text the server rejects. See §15.
 
-  **What remains is suggestion quality alone.** (1) The three word types that
-  DO have a vanilla suggester but read **live state** rather than a list:
-  `objective` and `team` come from the scoreboard (which M62 and M65 already
-  decode) and `objective_criteria` from the stat registries (M84). (2) The
-  `resource*` family's registries beyond blocks and items — the wire always
-  names the right one, so what limits it is which registries Rewo holds.
-  Neither is a correctness gap: a command Rewo accepts is one the server
-  accepts.
+  **M114's deliberate divergence — asking the server about every command
+  rather than only `ASK_SERVER` nodes — closed at M116**, which built the
+  client-side dispatcher it was waiting for.
 
-  **A gate note that will save a confusing minute:** `--render-check`'s r32
-  needs an argument that suggests *nothing*, so its precondition **recedes by
-  one word for every argument type transcribed**. It failed on M118 and again
-  on M119, correctly both times, and the fix each time was to type one more
-  word in the gate's injection. The other named gap is the
-  **exception messages** under the field (`BuiltInExceptions`' literals plus
-  `command.context.parse_error`), which M117 models as a gate: it shows
-  *nothing* where vanilla shows a message, rather than approximating.
+</details>
 
-  **Historical, and now closed:** is where the remaining depth is. M114
-  ships a **deliberate divergence**: vanilla asks the server only about
-  argument nodes whose provider is `ASK_SERVER` and answers literals from its
-  own client-side Brigadier dispatcher, and Rewo — having M113's tree as data
-  and no dispatcher — asks about every command instead. That is correct but
-  chatty (a packet per keystroke on a command line), and it is what a
-  dispatcher would replace. The same dispatcher is the blocker for the usage
-  lines under the field and for the input's syntax highlighting, both of which
-  read `currentParse`.
-
-  Still needing a subsystem Rewo lacks, and named rather than forgotten:
-  clickable chat text (Rewo flattens components at the wire, so there is no
-  `Style` to find), the chat delay queue and its expand link, and the
-  restricted-chat prompt (`ChatAbilities`, a packet Rewo does not decode).
-* **The decoration** — `boundChatType.decorate`, which turns a message into
-  `<Steve> hi` and is the most visible thing chat is still missing. M78
-  recorded the blocker: the `minecraft:chat_type` registry's contents from
-  configuration `registry_data`, plus the language table. **Both halves are now
-  reachable** (M42 parses one datapack registry, M54 loads the language map),
-  so this is a scheduling decision rather than a wall — but check that before
-  relying on it.
-
-Two items from the pre-M108 handoff are unchanged and still named rather than
-forgotten:
+Two items from the pre-M108 handoff, for the record:
 
 * ~~`AbstractRecipeBookScreen.isHovering`'s narrow-window override~~ —
   **shipped as M112**, along with something larger it turned up: FOUR of its
@@ -257,16 +304,7 @@ forgotten:
   consumer that wants either has to ask.
 * The **which-of-these overlay's own tooltips**.
 
-Otherwise: **AUDIO is the largest single gap** and the one with the most demand
-behind it in `REWO_FEATURE_SURVEY.md` (~117M downloads). M63/M64/M66 decoded
-the packets, built the 1,968-entry sound registry and the weighted-variant
-index from the asset index, and deliberately stopped before playback — decoding
-needs no listening and making a noise does. That split is the task: pick a
-crate, a device, a mixer, and vanilla's attenuation. It is the first Rewo
-milestone that **cannot** be headlessly verified end to end, so decide up front
-what the gate asserts and say plainly what it does not.
-
-The 26 absent packets are 11 not-applicable plus 15 needing a subsystem, so
+The **23** absent packets are 11 not-applicable plus 12 needing a subsystem, so
 picking work there still means choosing a subsystem rather than a packet.
 
 **A drift worth naming, because it is this section's own documented failure

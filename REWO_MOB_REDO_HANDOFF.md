@@ -6,11 +6,15 @@ kept as a record. The living documentation is:
 - **The port itself**: [`crates/rewo-gpu/src/mobs.rs`](crates/rewo-gpu/src/mobs.rs)
   — a verbatim port of vanilla `ModelPart.Cube`/`Polygon` (its module doc
   carries the coordinate contract + the ground-truth face/UV table this
-  handoff's §3 used to hold), plus all 21 mob meshes transcribed from the
-  26.2 decompile.
+  handoff's §3 used to hold), plus the mob meshes transcribed from the
+  26.2 decompile. **The counts below are the ones true on 2026-07-22, the day
+  this brief closed** — the roster kept growing afterwards. As of 2026-08-08 it
+  is **every living vanilla mob (88 models)** and `mobshot --check` is
+  **246/246**; run it rather than citing a number from here.
 - **The verification gate**: `rewo mobshot --check` — the face-labeled
   debug-texture pass §6 demanded, fully automated (facelabel textures +
-  perspective ray-cast prediction, occlusion-exact; 63/63 mob-views green).
+  perspective ray-cast prediction, occlusion-exact; 63/63 mob-views green at
+  the time, **246/246** now).
   `rewo mobshot --out sheet.png` renders the real-texture contact sheet.
 - **The record**: `REWO_PLAN.md` §15, entry
   *"2026-07-22 — the mob redo shipped"* — what was built, the 21-mob roster,
