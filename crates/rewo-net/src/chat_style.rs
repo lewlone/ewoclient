@@ -921,6 +921,34 @@ mod tests {
         );
     }
 
+    /// The other half, and the test above cannot see it: `applyTo` is a patch,
+    /// so an argument that sets `color` **overrides** whatever parent it is
+    /// handed and looks identical whether the template's style reached it or
+    /// not. An argument that sets only `bold` inherits the colour, and that is
+    /// what makes the composition observable.
+    ///
+    /// MUTATION: pass `ChatStyle::WHITE` instead of the translatable's style
+    /// to a component argument. It survives the test above and dies here. It
+    /// is not academic — a `/msg` decoration is GRAY + italic and every
+    /// argument in it inherits that.
+    #[test]
+    fn a_component_argument_inherits_the_templates_style_for_what_it_leaves_unset() {
+        let sender = compound(&[
+            ("text", Nbt::String("Steve".into())),
+            ("bold", Nbt::Byte(1)),
+        ]);
+        let tag = compound(&[
+            ("translate", Nbt::String("k".into())),
+            ("color", Nbt::String("red".into())),
+            ("with", Nbt::List(vec![sender])),
+        ]);
+        let l = lang(&[("k", "<%s>")]);
+        assert_eq!(
+            shape(&parse_component(&tag, ChatStyle::WHITE, Some(&l))),
+            vec![("<", RED, NONE), ("Steve", RED, BOLD), (">", RED, NONE)]
+        );
+    }
+
     /// A **primitive** argument has no style of its own, so it takes the
     /// template's — `FormattedText.of(String)` forwards the style it is given.
     /// The literal runs on either side must come out identical to it.
