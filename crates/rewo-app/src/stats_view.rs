@@ -407,6 +407,7 @@ pub fn lines(
             color,
             alpha: 1.0,
             shadow: true,
+            style: rewo_gpu::text::TextStyle::PLAIN,
             text: text.to_string(),
         });
     };

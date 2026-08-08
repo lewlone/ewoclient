@@ -44,6 +44,8 @@ pub struct OwnedTextLine {
     /// adding a caller is a decision rather than an omission. Everything but
     /// M79's XP level number passes `true`.
     pub shadow: bool,
+    /// [`crate::text::TextLine::style`] — the five `Style` flags (M126c).
+    pub style: crate::text::TextStyle,
     pub text: String,
 }
 
@@ -2960,6 +2962,7 @@ impl WorldRenderer {
                         color: l.color,
                         alpha: l.alpha,
                         shadow: l.shadow,
+                        style: l.style,
                         text: &l.text,
                     })
                     .collect();

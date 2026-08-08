@@ -8387,6 +8387,7 @@ fn build_text(
                 color: white,
                 alpha: 1.0,
                 shadow: true,
+                style: rewo_gpu::text::TextStyle::PLAIN,
                 text,
             });
         }
@@ -8454,6 +8455,7 @@ fn chat_input_lines(
                     color: srgb_bytes_to_linear(run.color),
                     alpha: 1.0,
                     shadow: true,
+                    style: rewo_gpu::text::TextStyle::PLAIN,
                     text: run.text.clone(),
                 });
                 x += width_of(&run.text) as f32 * px;
@@ -8466,6 +8468,7 @@ fn chat_input_lines(
             color,
             alpha: 1.0,
             shadow: true,
+            style: rewo_gpu::text::TextStyle::PLAIN,
             text: value.clone(),
         }),
     }
@@ -8491,6 +8494,7 @@ fn chat_input_lines(
                 color: [0.216, 0.216, 0.216],
                 alpha: 1.0,
                 shadow: true,
+                style: rewo_gpu::text::TextStyle::PLAIN,
                 text: ghost.to_string(),
             });
         }
@@ -8505,6 +8509,7 @@ fn chat_input_lines(
             color: [0.93, 0.93, 0.93],
             alpha: 1.0,
             shadow: true,
+            style: rewo_gpu::text::TextStyle::PLAIN,
             text: "_".to_string(),
         });
     }
@@ -8598,6 +8603,7 @@ fn suggestion_popup_text(
                 color: srgb_bytes_to_linear(argb & 0x00FF_FFFF),
                 alpha: ((argb >> 24) & 0xFF) as f32 / 255.0,
                 shadow: true,
+                style: rewo_gpu::text::TextStyle::PLAIN,
                 text: entry.text.clone(),
             })
         })
@@ -8684,6 +8690,7 @@ fn usage_box(
             color: [1.0, 1.0, 1.0],
             alpha: 1.0,
             shadow: true,
+            style: rewo_gpu::text::TextStyle::PLAIN,
             text: line.clone(),
         });
     }
@@ -8824,6 +8831,13 @@ fn chat_lines(
                     // `chatOpacity * 0.9 + 0.1` and so never reaches 0.
                     alpha: line.alpha * text_opacity,
                     shadow: true,
+                    style: rewo_gpu::text::TextStyle {
+                        bold: span.bold,
+                        italic: span.italic,
+                        underlined: span.underlined,
+                        strikethrough: span.strikethrough,
+                        obfuscated: span.obfuscated,
+                    },
                     text: span.text.clone(),
                 });
             }
@@ -9029,6 +9043,7 @@ fn selected_item_name_line(
         color,
         alpha: alpha as f32 / 255.0,
         shadow: true,
+        style: rewo_gpu::text::TextStyle::PLAIN,
         text: name.to_string(),
     })
 }
@@ -9359,6 +9374,7 @@ pub(crate) fn experience_level_lines(
             color: rewo_net::chat_style::rgb_f32(color & 0x00FF_FFFF),
             alpha: 1.0,
             shadow: false,
+            style: rewo_gpu::text::TextStyle::PLAIN,
             text: text.clone(),
         });
     };
@@ -9423,6 +9439,7 @@ pub(crate) fn title_lines(
                         color: span.color,
                         alpha,
                         shadow: true,
+                        style: rewo_gpu::text::TextStyle::PLAIN,
                         text: span.text.clone(),
                     });
                 }
@@ -15124,6 +15141,7 @@ pub(crate) fn screen_text_lines(
             color,
             alpha: 1.0,
             shadow: true,
+            style: rewo_gpu::text::TextStyle::PLAIN,
             text: text.to_string(),
         });
     };
@@ -15205,6 +15223,7 @@ pub(crate) fn death_screen_lines(
                     color: span.color,
                     alpha: 1.0,
                     shadow: true,
+                    style: rewo_gpu::text::TextStyle::PLAIN,
                     text: span.text.clone(),
                 });
             }
@@ -18356,6 +18375,7 @@ fn book_page_label(
         color: [1.0, 1.0, 1.0],
         alpha: 1.0,
         shadow: true,
+        style: rewo_gpu::text::TextStyle::PLAIN,
         text,
     })
 }
@@ -19382,6 +19402,7 @@ fn tooltip_layout(
                 color,
                 alpha: 1.0,
                 shadow: true,
+                style: rewo_gpu::text::TextStyle::PLAIN,
                 text: rewo_gpu::tooltip::line_text(&spans),
             };
             y += rewo_gpu::container::TOOLTIP_LINE_HEIGHT + if i == 0 { 2 } else { 0 };
@@ -19768,6 +19789,7 @@ fn count_label_of(
         color: [1.0, 1.0, 1.0],
         alpha: 1.0,
         shadow: true,
+        style: rewo_gpu::text::TextStyle::PLAIN,
         text,
     })
 }
@@ -19810,6 +19832,7 @@ fn enchant_cost_labels(
             ],
             alpha: 1.0,
             shadow: true,
+            style: rewo_gpu::text::TextStyle::PLAIN,
             text,
         });
     }
@@ -19897,6 +19920,7 @@ fn edit_box_render(
             color: [1.0, 1.0, 1.0],
             alpha: 1.0,
             shadow: true,
+            style: rewo_gpu::text::TextStyle::PLAIN,
             text,
         });
     }
@@ -19917,6 +19941,7 @@ fn edit_box_render(
                 color,
                 alpha: 1.0,
                 shadow: true,
+                style: rewo_gpu::text::TextStyle::PLAIN,
                 text: text.to_string(),
             });
         }
@@ -19993,6 +20018,7 @@ fn edit_box_render(
                 color: [1.0, 1.0, 1.0],
                 alpha: 1.0,
                 shadow: true,
+                style: rewo_gpu::text::TextStyle::PLAIN,
                 text: "_".into(),
             });
         }
