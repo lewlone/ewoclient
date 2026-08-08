@@ -1687,10 +1687,10 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-08
-(M114) — **2385 tests / 0 failures** (world 1006, net 679, gpu 255, data 216,
-app 173, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
+(M115) — **2390 tests / 0 failures** (world 1006, net 679, gpu 255, data 216,
+app 178, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
-`handshot` 34/34, `swingshot` 97/97, `live --render-check` **28/28** with
+`handshot` 34/34, `swingshot` 97/97, `live --render-check` **29/29** with
 validation ON and 0 validation errors, demo PNG `2cc56b4acbfb92cb`.
 **The recipe book is closed** (M105–M107) and **M108–M111 shipped chat** —
 `ChatComponent`, the wrap under it, the `MessageSignatureCache` without which
@@ -1705,10 +1705,12 @@ drag and the item-hover highlight. **M113** decoded the Brigadier command tree
 suggestion primitives (graded against the **real jar**, because brigadier is a
 library and absent from the decompile), the popup's model and geometry, and its
 place at the head of `ChatScreen`'s key order. Coverage is **118 / 0 / 23**,
-class C **12**. **M114's popup is not yet DRAWN**: the model, input routing and
-wire are in and Tab-completion visibly rewrites the field, but the list and the
-greyed ghost suffix have no renderer, so `--render-check` has no new witness —
-run it on the milestone that adds one. No branch or worktree holds a commit
+class C **12**. **M115** then drew it — the rows, the truncation bars, the
+scroll dashes and the greyed ghost suffix — and its `--render-check` witness
+r29 is built to measure the **production chain** rather than a hand-built
+`Suggestions`: the gate injects a `custom_chat_completions` packet through the
+real router and types one character, so a break anywhere from the decode to the
+render drops it to zero. Mutation-verified live, twice. No branch or worktree holds a commit
 off `main`. The long-unmerged-branch risk closed on 2026-07-27 and has
 stayed closed; branch new work from `main` and keep it that way.
 
