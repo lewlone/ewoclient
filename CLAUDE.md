@@ -1678,9 +1678,33 @@ CLAUDE.md's own top-level Rewo status block was three milestones behind at M93 /
 number with a test behind it stays true and the sentence next to it does not.**
 Repo hygiene: the twenty stale `claude/rewo-m93*` branches and the two leftover
 agent worktrees were verified fully merged and clean, then pruned.*
+*Update (2026-08-08 session, Rewo): **M125 — translatable components resolve**,
+plus a full docs pass. §0.0 offered the chat decoration and said to verify its
+blocker first; both halves were reachable, and the survey found what the
+decoration sits on and what is far more visible than it — **every `translate`
+component Rewo received rendered as its raw KEY with its arguments dropped**, so
+a real server's join messages read `multiplayer.player.joined`, every death
+message `death.attack.player`, and every command's feedback
+`commands.give.success.single`. Both walkers said so in their own doc comments;
+nobody had read them. Its finding is not about chat at all: a live trace showed
+`/give` rendering as "Gave  [Diamond Sword]" with the count gone, because **NBT
+lists are homogeneous**, so a mixed one is written as compounds with every
+non-compound element boxed as `{"": value}` and unwrapped on read — and
+**Rewo's reader had never unwrapped, from M1 to M125**. It does not fail; it
+yields a plausible wrong tree, which is why 124 milestones missed it. Two
+witnesses were also wrong before any code was, which is the fifth and sixth
+documented instance: r37's premise (that a server announces a joining player to
+that player) is disproved by `PlayerList.placeNewPlayer`, and a surviving
+mutation turned out to be a weak fixture whose argument overrode the one field
+the test observed. The docs pass fixed a rotting file count in §0.0's gotcha 9
+(replaced with the stable claim — **five** files under `crates/` are not pure
+LF, named), a broken sentence and a stale end-of-line list in
+`AGENT_LOOP_BRIEF.md`, and the M-range in `REWO_FEATURE_SURVEY.md`'s staleness
+note.*
+
 ---
 
-## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, particles, the first-person hand, the Velvet type stack, the container arc, the recipe book, and chat)
+## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, particles, the first-person hand, the Velvet type stack, the container arc, the recipe book, chat, and translated text)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,

@@ -6,20 +6,26 @@ committed). Every number below is that tool's output — if you change the
 facets, the `MODERN` version set or the classifiers, the numbers move and this
 document is stale.
 
-> **Not re-run since M86 (2026-08-02).** M87–M113 shipped the container/menu
-> screens, the recipe book and the whole chat stack (the HUD box, the screen you
-> type into, the scrollbar, and the Brigadier command tree) after this snapshot
-> was taken. Those are *vanilla* features and the 75 here are *mod* features, so
+> **Not re-run since M86 (2026-08-02).** M87–M125 shipped the container/menu
+> screens, the recipe book, the whole chat stack (the HUD box, the screen you
+> type into, the scrollbar, the Brigadier command tree and a complete local
+> command line) and translatable-component resolution, after this snapshot was
+> taken. Those are *vanilla* features and the 75 here are *mod* features, so
 > nothing is known to have moved into the `parity` bucket — but that is a
 > reasoned expectation, not a measurement, and §0's own rule applies to it:
 > **audit any feature against the crates before scheduling it.** This table was
 > already wrong about five.
 >
-> **One entry is now materially closer than the table implies**: anything whose
-> prerequisite was "the client can read the command tree" or "the client has a
-> text input" is unblocked, because M110 built an `EditBox`-backed screen and
-> M113 decoded the tree. Chat-adjacent QoL rows should be re-read with that in
-> mind before being costed.
+> **Two entries are now materially closer than the table implies.** Anything
+> whose prerequisite was "the client can read the command tree" or "the client
+> has a text input" is unblocked, because M110 built an `EditBox`-backed screen
+> and M113 decoded the tree. And anything needing *translated* text is
+> unblocked by M125, which resolves `translate` components against the language
+> table — a prerequisite for any feature that renders a vanilla string it did
+> not itself author. Chat-adjacent QoL rows should be re-read with both in mind
+> before being costed. What is still missing under them is the **styled** chat
+> pipeline: the chat store holds plain text, so per-run colour and clickable
+> text are not reachable yet.
 
 **Scope decision (locked):** read as a **Rewo-native roadmap**, not as a
 shopping list for the EwoLoader bundle. Every entry is a feature to

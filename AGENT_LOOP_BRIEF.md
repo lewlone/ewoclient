@@ -84,7 +84,17 @@ change:
   whole mutation batteries to exactly that: a battery run against an
   already-failing command reads KILLED for every entry. **Put a no-op control
   in every battery** — a mutation that must SURVIVE — or you cannot tell a kill
-  from a broken instrument.
+  from a broken instrument. **And put a baseline run at the top of the battery
+  itself**: M125's harness was wrong twice (see below) and both times that
+  guard reported it, where a wrong verdict would have "confirmed" three
+  mutations against a command that never executed.
+* **A mutation harness shells through cmd.exe on this machine**, if it uses
+  Python's `shell=True`. `VAR=value cmd` is not cmd syntax — it looks for a
+  program literally named `REWO_PRECMD="give` — and cmd cannot run
+  `./target/...` at all ("'.' is not recognized"). Set the variable through
+  `env=` and build the path with `os.path.join`; writing a Windows path as a
+  string literal puts a carriage return in it, because backslash-r is an escape
+  in most languages. `tools/m125_mutate.py` is a working example.
 * **The same rule one level up:** `cargo build` passing says nothing about
   whether the *tests* compile. Read each crate's exit code from `cargo test`;
   a crate whose test module fails to build prints no `test result` line at all,
@@ -279,18 +289,23 @@ not yet pushed". Everything is merged and pushed; there is no work branch.
   on an unrecognised form rather than silently defaulting.
 - **Never run `cargo fmt`.** The Rewo code is hand-formatted; `cargo fmt`
   rewrites the whole workspace (~21k lines, incl. the generated `anim_defs.rs`).
-  Keep the semantic diff narrow with targeted edits. **Four** Rewo source files
-  are **mixed CRLF/LF in HEAD** — measured 2026-08-07, and the list had drifted
-  in both directions, so measure rather than trust it:
-  `rewo-app/src/mobshot_cmd.rs`, `rewo-world/src/chunk.rs`,
-  `rewo-world/src/light.rs`, `rewo-gpu/src/vanilla_hier.rs`.
-  (`rewo-gpu/src/entities.rs` and `rewo-data/src/lib.rs` were on this list and
-  have since been normalised to all-LF.) the editor may normalise a whole file to CRLF, which trips
-  plain `git diff --check` on your added lines. The clean fix that keeps
-  `git diff --check` green *and* preserves every unchanged byte is to insert
-  LF-only lines: `git diff | tr -d '\r' > p; git checkout HEAD <file>; git apply
-  --ignore-whitespace p`. Verify with plain `git diff --check` (not
-  `-c core.whitespace=cr-at-eol`).
+  Keep the semantic diff narrow with targeted edits.
+- **Line endings.** The tree is overwhelmingly LF and **exactly five files
+  under `crates/` are not** — one pure CRLF (`rewo-gpu/src/cem.rs`) and four
+  mixed (`rewo-app/src/mobshot_cmd.rs`, `rewo-gpu/src/vanilla_hier.rs`,
+  `rewo-world/src/chunk.rs`, `rewo-world/src/light.rs`). Measured as **bytes**,
+  most recently 2026-08-08 after M125; `REWO_PLAN.md` §0.0 gotcha 9 carries the
+  full version, including why the obvious `grep -c $'\r$'` detector answers
+  "every line" for *any* file and must not be used. Two hazards, in opposite
+  directions: an editor may normalise one of those five to CRLF, which trips
+  plain `git diff --check` on your added lines — the fix that keeps it green
+  *and* preserves every unchanged byte is to insert LF-only lines
+  (`git diff | tr -d '\r' > p; git checkout HEAD <file>;
+  git apply --ignore-whitespace p`) — and the Write/Edit tools may emit CRLF
+  into a *new* file in an all-LF crate, so **check a new file's bytes before
+  committing it**. M114's `suggestions.rs` arrived CRLF and had to be
+  converted; M125's `chat_translate.rs` arrived LF, which is why it was
+  checked rather than assumed.
 - **Leave the tree clean and the server stopped** at the end of a work block.
 - **Report failures as failures.** If a gate regresses, say so with the
   numbers. An honest red result is worth more than a green one that was

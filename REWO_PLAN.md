@@ -1390,14 +1390,22 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    code that would falsify it — `a4` now derives the rendered set from the
    model resolver — and grade it in both directions.
 9. **Line endings: the tree is overwhelmingly LF, and the previous claim here
-   — "uniformly CRLF" — was produced by a broken detector.** Re-measured
-   2026-08-08 by reading every `.rs` under `crates/` as **bytes**: **343 pure
-   LF, 1 pure CRLF (`rewo-gpu/src/cem.rs`), 4 mixed** — and the four mixed ones
-   are the same four this gotcha has always named (`mobshot_cmd.rs`,
-   `vanilla_hier.rs`, `chunk.rs`, `light.rs`). They never left the list; the
-   instrument stopped being able to see them. `core.autocrlf` is **false** and
-   there is **no `.gitattributes`**, so the working tree is exactly what is
-   stored, and `git show HEAD:crates/rewo-world/src/lib.rs` is LF.
+   — "uniformly CRLF" — was produced by a broken detector.** Re-measured by
+   reading every `.rs` under `crates/` as **bytes**, most recently 2026-08-08
+   after M125. **Exactly FIVE files are not pure LF**, and the list is the
+   stable statement here — a count of the LF ones is not, because it grows
+   with every file added (it read 343 at M124 and 355 at M125, which is a
+   number rotting on schedule rather than a change):
+
+   * pure CRLF: `rewo-gpu/src/cem.rs`
+   * mixed: `rewo-app/src/mobshot_cmd.rs`, `rewo-gpu/src/vanilla_hier.rs`,
+     `rewo-world/src/chunk.rs`, `rewo-world/src/light.rs`
+
+   The four mixed ones are the same four this gotcha has always named. They
+   never left the list; the instrument stopped being able to see them.
+   `core.autocrlf` is **false** and there is **no `.gitattributes`**, so the
+   working tree is exactly what is stored, and
+   `git show HEAD:crates/rewo-world/src/lib.rs` is LF.
 
    **The broken detector is the finding, and it is not specific to line
    endings.** `grep -c $'\r$' <file>` — the obvious check, and the one the
