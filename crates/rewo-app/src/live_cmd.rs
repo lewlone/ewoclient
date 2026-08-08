@@ -196,6 +196,12 @@ struct RenderCheck {
     /// Mutually exclusive with r29 by construction, so it cannot be satisfied
     /// by the same moment: the popup and the box never coexist.
     usage_box_frames: u64,
+    /// M118 — how many times an `@`-selector was offered by the client's own
+    /// `EntitySelectorParser`.
+    ///
+    /// Narrower than r30: a literal completion needs only the tree, where this
+    /// needs `minecraft:entity` to have stopped being `Unknown`.
+    local_selector_completions: u64,
     /// M116 — how many times a `/`-command's completion was answered by the
     /// CLIENT rather than the server.
     ///
@@ -592,6 +598,16 @@ impl RenderCheck {
             format!(
                 "{} of {} frames drew a usage line (needs an ARGUMENT expected                  at the cursor and no popup over it)",
                 self.usage_box_frames, self.frames
+            ),
+        );
+        // M118 — and a SELECTOR among them, which needs the entity argument
+        // type rather than just the tree.
+        row(
+            "r33 an entity selector was offered locally",
+            self.local_selector_completions > 0,
+            format!(
+                "{} completions containing an @-selector (needs                  minecraft:entity to parse, which it did not before M118)",
+                self.local_selector_completions
             ),
         );
         // M116 — the dispatcher answered a command locally, i.e. WITHOUT a
@@ -5910,9 +5926,17 @@ impl LiveApp {
         // The text is the field up to the cursor, INCLUDING the slash, so the
         // cursor is its length and the parse starts at 1 — every range is then
         // an index into the field itself.
+        // M118 — the selector parser needs the online names, exactly as
+        // `EntityArgument.listSuggestions` takes them from the source.
+        let words = self.tab_words();
         let completion = self.session.as_ref().map(|session| {
             let parsed = rewo_net::dispatcher::parse(&session.commands, &units, 1);
-            rewo_net::dispatcher::completion_suggestions(&session.commands, &parsed, units.len())
+            rewo_net::dispatcher::completion_suggestions(
+                &session.commands,
+                &parsed,
+                units.len(),
+                &words,
+            )
         });
         let Some(completion) = completion else {
             return;
@@ -5930,8 +5954,19 @@ impl LiveApp {
         // completion for every keystroke while proving nothing — the witness
         // has to name the suggestions, not the code path.
         if !completion.local.is_empty() {
+            // M118 — a selector answered locally is a strictly narrower claim
+            // than "a completion was", because it needs the entity argument's
+            // own parser rather than a literal match.
+            let selector = completion
+                .local
+                .list
+                .iter()
+                .any(|s| s.text.starts_with('@'));
             if let Some(c) = self.check.as_mut() {
                 c.local_command_completions += 1;
+                if selector {
+                    c.local_selector_completions += 1;
+                }
             }
         }
         let metrics = self.suggestion_metrics();
@@ -6575,7 +6610,14 @@ impl LiveApp {
                     // popup opens and the USAGE box takes its place. r30 has
                     // already counted the literal completion `/g` produced;
                     // this reaches r31 and r32.
-                    for ch in "ive ".chars() {
+                    // …then on to `/give @s `, which is two arguments deep.
+                    // M118 changed what `/give ` alone shows: its first
+                    // argument is `minecraft:entity`, so a SELECTOR POPUP
+                    // opens there and the usage box is suppressed by the
+                    // mutual exclusion — which is what vanilla does too. The
+                    // box needs an argument that suggests nothing, and the
+                    // item after the targets is one.
+                    for ch in "ive @s ".chars() {
                         self.chat_char(ch);
                     }
                     self.command_injected = true;

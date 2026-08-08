@@ -46,6 +46,7 @@ pub mod record;
 pub mod scoreboard;
 pub mod server_links;
 pub mod session;
+pub mod selector;
 pub mod skins;
 pub mod sounds;
 pub mod suggestion_wire;

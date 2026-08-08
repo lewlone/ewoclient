@@ -1687,10 +1687,10 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-08
-(M117) — **2437 tests / 0 failures** (world 1006, net 721, gpu 255, data 216,
+(M118) — **2454 tests / 0 failures** (world 1006, net 738, gpu 255, data 216,
 app 183, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
-`handshot` 34/34, `swingshot` 97/97, `live --render-check` **32/32** with
+`handshot` 34/34, `swingshot` 97/97, `live --render-check` **33/33** with
 validation ON and 0 validation errors, demo PNG `2cc56b4acbfb92cb`.
 **The recipe book is closed** (M105–M107) and **M108–M111 shipped chat** —
 `ChatComponent`, the wrap under it, the `MessageSignatureCache` without which
@@ -1724,7 +1724,12 @@ arguments stay bright) and the **usage box**, which grows **upward** from the
 bottom and is **mutually exclusive** with the suggestion popup. Its sharpest
 finding is that `getSmartUsage` **decides with one string and prints another** —
 the `LinkedHashSet` of deep usages only settles whether the alternatives
-differ, and the pipe list is then built from `getUsageText`. No branch or worktree holds a commit
+differ, and the pipe list is then built from `getUsageText`. **M118** added the
+**entity selector parser** — `@e[…]` parses and completes locally — whose
+mechanism is a **function pointer the parse reassigns**, which is why
+suggestions survive a throw: `EntityArgument.listSuggestions` catches the
+exception with an **empty body** and calls `fillSuggestions` anyway. Two of its
+seven suggestion states are **dead in vanilla**. No branch or worktree holds a commit
 off `main`. The long-unmerged-branch risk closed on 2026-07-27 and has
 stayed closed; branch new work from `main` and keep it that way.
 

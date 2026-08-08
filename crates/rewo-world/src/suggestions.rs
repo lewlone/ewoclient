@@ -285,6 +285,11 @@ impl SuggestionsBuilder {
         self.start
     }
 
+    /// The builder's whole input, in the unit its indices mean.
+    pub fn input_units(&self) -> Vec<u16> {
+        self.input.clone()
+    }
+
     /// `SuggestionsBuilder.suggest(String)` — including the early return that
     /// **drops** a suggestion equal to `remaining`. See the module docs.
     pub fn suggest(&mut self, text: &str) -> &mut Self {
