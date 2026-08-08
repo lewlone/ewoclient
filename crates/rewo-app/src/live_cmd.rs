@@ -184,6 +184,14 @@ struct RenderCheck {
     /// `custom_chat_completions` packet, then a real keystroke — so a break
     /// anywhere from the decode to the render drops this to zero.
     suggestion_popup_frames: u64,
+    /// M116 — how many times a `/`-command's completion was answered by the
+    /// CLIENT rather than the server.
+    ///
+    /// The claim r30 makes is the milestone's whole point, and it is a
+    /// negative one: M114 sent a packet for every keystroke on a command line
+    /// and this counts the ones that no longer leave. A witness on "the popup
+    /// opened" cannot see it, because both paths open a popup.
+    local_command_completions: u64,
     /// M108 — frames on which the chat box put at least one line into the
     /// windowed frame's label list.
     ///
@@ -553,6 +561,16 @@ impl RenderCheck {
             format!(
                 "{} of {} frames drew the popup's row fills (needs a                  custom_chat_completions word and a keystroke, both of which the run                  drives through the production path)",
                 self.suggestion_popup_frames, self.frames
+            ),
+        );
+        // M116 — the dispatcher answered a command locally, i.e. WITHOUT a
+        // round trip. Both paths open a popup, so r29 cannot see this.
+        row(
+            "r30 a command completion was answered locally",
+            self.local_command_completions > 0,
+            format!(
+                "{} completions answered by the client's own dispatcher (the run                  types `/` then a letter, which reaches only literals)",
+                self.local_command_completions
             ),
         );
         row(
@@ -4372,6 +4390,8 @@ struct LiveApp {
     container_injected: bool,
     /// Whether `--render-check` has force-opened the chat screen yet (M110).
     chat_injected: bool,
+    /// Whether it has typed a `/`-command yet (M116).
+    command_injected: bool,
     /// Whether `--render-check` has force-opened the inventory yet (M89).
     /// Frames before this are the ones that prove `open_screen` opens the
     /// screen on its own.
@@ -5668,7 +5688,7 @@ impl LiveApp {
             None => ChatAction::None,
         };
         self.clipboard = clip;
-        self.send_suggestion_request();
+        self.resolve_command_suggestions();
         let advance = self.advance();
         // Which variant it was, captured before `action` is consumed.
         let is_command = matches!(action, ChatAction::Command(_));
@@ -5748,23 +5768,25 @@ impl LiveApp {
         if let Some(s) = self.chat_screen.as_mut() {
             s.char_typed(ch, &env);
         }
-        self.send_suggestion_request();
+        self.resolve_command_suggestions();
     }
 
-    /// `ClientSuggestionProvider.customSuggestion` — ask the server about a
-    /// `/`-command, because Rewo has no client-side Brigadier dispatcher.
+    /// Answer a `/`-command's completion locally where the dispatcher can, and
+    /// ask the server only where vanilla would (M116).
     ///
-    /// **This is a deliberate divergence and the reason is worth stating.**
-    /// Vanilla asks the server only for the argument nodes whose suggestion
-    /// provider is `ASK_SERVER`, and answers literals from its own dispatcher.
-    /// Rewo cannot make that distinction without the dispatcher, so it asks
-    /// about every command — which gets the *right* answer, because
-    /// `ServerGamePacketListenerImpl.handleCustomCommandSuggestions` parses
-    /// the whole input with the server's own dispatcher and returns
-    /// `getCompletionSuggestions`, literals included. The cost is a packet per
-    /// keystroke on a command line, where vanilla sends one only on an
-    /// argument.
-    fn send_suggestion_request(&mut self) {
+    /// M114 asked about **every** command, because with no dispatcher the
+    /// client could not tell a literal from an argument. Now it can:
+    /// `dispatcher::parse` walks the tree M113 decodes, and
+    /// `completion_suggestions` returns both what the client answered and
+    /// whether any candidate child's provider is one Rewo routes to the
+    /// server. `/g` therefore completes with **no packet at all**.
+    ///
+    /// When it does ask, the server's reply REPLACES the local set rather than
+    /// merging with it — see `dispatcher`'s module docs — because
+    /// `handleCustomCommandSuggestions` runs the server's own dispatcher over
+    /// the whole input and returns literals too, so its answer is a superset
+    /// at that position.
+    fn resolve_command_suggestions(&mut self) {
         let Some(command) = self
             .chat_screen
             .as_mut()
@@ -5772,10 +5794,48 @@ impl LiveApp {
         else {
             return;
         };
-        if let Some(session) = self.session.as_mut() {
-            if let Err(e) = session.request_command_suggestions(&command) {
-                log::debug!("chat: suggestion request not sent: {e}");
+        let units: Vec<u16> = command.encode_utf16().collect();
+        // The text is the field up to the cursor, INCLUDING the slash, so the
+        // cursor is its length and the parse starts at 1 — every range is then
+        // an index into the field itself.
+        let completion = self.session.as_ref().map(|session| {
+            let parsed = rewo_net::dispatcher::parse(&session.commands, &units, 1);
+            rewo_net::dispatcher::completion_suggestions(&session.commands, &parsed, units.len())
+        });
+        let Some(completion) = completion else {
+            return;
+        };
+        if completion.ask_server {
+            if let Some(session) = self.session.as_mut() {
+                if let Err(e) = session.request_command_suggestions(&command) {
+                    log::debug!("chat: suggestion request not sent: {e}");
+                }
             }
+            return;
+        }
+        // Counted only when the client actually ANSWERED. An empty command
+        // tree parses to no children and would otherwise report a local
+        // completion for every keystroke while proving nothing — the witness
+        // has to name the suggestions, not the code path.
+        if !completion.local.is_empty() {
+            if let Some(c) = self.check.as_mut() {
+                c.local_command_completions += 1;
+            }
+        }
+        let metrics = self.suggestion_metrics();
+        let advance_for_width = self.advance();
+        let width_of = move |s: &str| match &advance_for_width {
+            Some(a) => rewo_gpu::text::width(s, a),
+            None => 0,
+        };
+        let env = rewo_world::chat_screen::SuggestionEnv {
+            metrics,
+            width: &width_of,
+            tab_words: &[],
+            auto_suggestions: true,
+        };
+        if let Some(s) = self.chat_screen.as_mut() {
+            s.accept_suggestions(completion.local, &env);
         }
     }
 
@@ -6386,6 +6446,19 @@ impl LiveApp {
                     // them; nothing else in a windowed run types.
                     self.chat_char('r');
                     self.chat_injected = true;
+                }
+            }
+            // M116 — later, and as its own screen, so r29's frames stay
+            // unambiguously the message popup's. Reopening with `Command`
+            // seeds the field with `/`; one letter then reaches the top-level
+            // literals, which the dispatcher answers without a packet.
+            if self.chat_injected && !self.command_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.55 {
+                    self.close_chat_screen();
+                    self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Command);
+                    self.chat_char('g');
+                    self.command_injected = true;
                 }
             }
             if !self.container_injected {
@@ -7579,6 +7652,7 @@ fn run_windowed(
         chat_screen: None,
         chat_draft: None,
         chat_injected: false,
+        command_injected: false,
         drag: DragState::default(),
         last_click: None,
         last_click_at: std::time::Instant::now(),
