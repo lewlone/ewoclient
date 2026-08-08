@@ -1703,10 +1703,10 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-08
-(M123) — **2532 tests / 0 failures** (world 1006, net 816, gpu 255, data 216,
+(M124) — **2548 tests / 0 failures** (world 1006, net 832, gpu 255, data 216,
 app 183, mesh 45, proto 11, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
-`handshot` 34/34, `swingshot` 97/97, `live --render-check` **35/35** with
+`handshot` 34/34, `swingshot` 97/97, `live --render-check` **36/36** with
 validation ON and 0 validation errors, demo PNG `2cc56b4acbfb92cb`.
 **The recipe book is closed** (M105–M107) and **M108–M111 shipped chat** —
 `ChatComponent`, the wrap under it, the `MessageSignatureCache` without which
@@ -1775,7 +1775,14 @@ defaults to SIGNED), so `0xFFFFFFFF` is a valid int where `4294967295` is not
 and `-0xF` is an error; **`s` is both the signed prefix and the SHORT width**;
 an array element may **narrow** its width but not widen it, keeping its own
 base, so **`[B;255]` is an error and `[B;0xFF]` is fine**; and a float is
-rejected for being **infinite**, not unparseable.
+rejected for being **infinite**, not unparseable. **M124** then closed the
+literal tables — **eight** argument types, not the seven the plan claimed, and
+**not** merely a suggestion gap: `heightmap` is the enum **filtered by
+`keepAfterWorldgen`** (four names, not six), `swizzle` has a real parse and
+deliberately **no suggester at all**, the two slot types read **to the next
+space** so `container.*` survives and differ from each other **in the parse**,
+and `time`'s suggester **re-anchors past the number** so its unit completes as
+a suffix.
 
 No branch or worktree holds a commit
 off `main`. The long-unmerged-branch risk closed on 2026-07-27 and has

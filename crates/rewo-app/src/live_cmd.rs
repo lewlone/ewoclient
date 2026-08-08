@@ -213,6 +213,10 @@ struct RenderCheck {
     /// client's own parser. Disjoint from r33 and r34: `~` appears in no
     /// literal, selector or registry id.
     local_coordinate_completions: u64,
+    /// M124 — how many local answers offered a name from one of the seven
+    /// literal tables. `sidebar.team.` prefixes only `scoreboard_slot`'s, so
+    /// this is disjoint from r33/r34/r35 by construction.
+    local_literal_table_completions: u64,
     /// M116 — how many times a `/`-command's completion was answered by the
     /// CLIENT rather than the server.
     ///
@@ -638,6 +642,16 @@ impl RenderCheck {
             format!(
                 "{} completions containing a `~` (needs the coordinate family to                  parse, which it did not before M120)",
                 self.local_coordinate_completions
+            ),
+        );
+        // M124 — and a name from one of the seven tables that live outside
+        // their own argument class.
+        row(
+            "r36 a literal table was offered locally",
+            self.local_literal_table_completions > 0,
+            format!(
+                "{} completions offering a `sidebar.team.*` slot (needs                  scoreboard_slot's table, which read as a bare word before M124)",
+                self.local_literal_table_completions
             ),
         );
         // M116 — the dispatcher answered a command locally, i.e. WITHOUT a
@@ -4478,6 +4492,8 @@ struct LiveApp {
     command_injected: bool,
     /// Whether it has typed a coordinate command yet (M120).
     coords_injected: bool,
+    /// M124 — whether the `scoreboard objectives setdisplay ` typing has run.
+    literal_table_injected: bool,
     /// `CommandSuggestions.currentParse` (M117) — the parse the syntax
     /// highlighting reads, cached against the text it was made from.
     ///
@@ -6017,6 +6033,15 @@ impl LiveApp {
                 .list
                 .iter()
                 .any(|s| s.text.starts_with('~'));
+            // M124 — a name from one of the seven literal tables. `DisplaySlot`
+            // is the only source of a `sidebar.team.` prefix anywhere in the
+            // protocol, so this cannot be satisfied by a literal, a selector, a
+            // registry id or a coordinate.
+            let literal_table = completion
+                .local
+                .list
+                .iter()
+                .any(|s| s.text.starts_with("sidebar.team."));
             if let Some(c) = self.check.as_mut() {
                 c.local_command_completions += 1;
                 if selector {
@@ -6027,6 +6052,9 @@ impl LiveApp {
                 }
                 if coordinate {
                     c.local_coordinate_completions += 1;
+                }
+                if literal_table {
+                    c.local_literal_table_completions += 1;
                 }
             }
         }
@@ -6713,6 +6741,22 @@ impl LiveApp {
                         self.chat_char(ch);
                     }
                     self.coords_injected = true;
+                }
+            }
+            // M124 — a literal table, injected LAST at 0.9 for the reason
+            // every one of these has been: whichever popup is open last
+            // suppresses the usage box, and r32 banks its frames earlier.
+            if self.coords_injected && !self.literal_table_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.9 {
+                    self.close_chat_screen();
+                    // The draft drop M120 needed, for M110's reason.
+                    self.chat_draft = None;
+                    self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Command);
+                    for ch in "scoreboard objectives setdisplay ".chars() {
+                        self.chat_char(ch);
+                    }
+                    self.literal_table_injected = true;
                 }
             }
             if !self.container_injected {
@@ -7972,6 +8016,7 @@ fn run_windowed(
         chat_injected: false,
         command_injected: false,
         coords_injected: false,
+        literal_table_injected: false,
         chat_parse: None,
         drag: DragState::default(),
         last_click: None,
