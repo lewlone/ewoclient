@@ -239,6 +239,12 @@ impl CommandSuggestions {
         self.list.as_ref()
     }
 
+    /// The ten constructor arguments, for a renderer that needs the row limit
+    /// and the fill colour.
+    pub fn config(&self) -> SuggestionsConfig {
+        self.cfg
+    }
+
     /// `hide`.
     pub fn hide(&mut self) {
         self.list = None;

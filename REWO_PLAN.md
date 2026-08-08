@@ -112,9 +112,9 @@ book's 77 px displacement that were not using the shared predicate, and
 exactly). **Chat is complete for everything vanilla draws without a subsystem
 Rewo lacks.**
 
-Current measurement, taken 2026-08-08 after M114: **2385 tests, 0 failures**
-(**world 1006, net 679, gpu 255, data 216, app 173, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2385). **Read each crate's EXIT CODE, not
+Current measurement, taken 2026-08-08 after M115: **2390 tests, 0 failures**
+(**world 1006, net 679, gpu 255, data 216, app 178, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2390). **Read each crate's EXIT CODE, not
 just its count**: a crate whose tests fail to compile prints no `test result`
 line at all, contributes 0, and reads as silence — M110 hit exactly that and
 the only signal was the total falling. **Breakdowns written before the
@@ -125,8 +125,8 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` 28/28 with validation ON and 0
-validation errors, last run for M112** — M113 is a decode and adds no render
+34/34, `mobshot` 246/246, **`live --render-check` 29/29 with validation ON and 0
+validation errors, last run for M115** — M113 is a decode and adds no render
 path, which is the only reason it was not re-run (M94 is where it earned its
 keep twice over — see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
 `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C **12** — M96–M107
@@ -171,15 +171,10 @@ best-scoped work on the board:
   the item below and cannot come before it.
 * ~~A `ChatScreen`~~ (M110), ~~the scrollbar~~ (M111), ~~the Brigadier
   tree~~ (M113) and ~~`CommandSuggestions`~~ (**M114**) — all shipped.
-  **What is left of M114 is its RENDER.** The popup's model, geometry, input
-  routing and both packets are in and tested, and Tab-completion visibly works
-  because it rewrites the field — but nothing draws the list, its scroll
-  indicators, or the greyed ghost suffix (`EditBox::suggestion` is stored and
-  read by nothing), so `live --render-check` has no new witness. **Run
-  `--render-check` on that milestone**: M94 is the precedent, and a gate whose
-  witnesses are injected cannot see a path the windowed client never reaches.
+  ~~and its render~~ (**M115**) — the popup draws, and `live --render-check` is
+  **29/29** with r29 driving the whole chain from the wire to the pixels.
 
-  Beyond the render, the command path is where the remaining depth is. M114
+  **The command path is where the remaining depth is.** is where the remaining depth is. M114
   ships a **deliberate divergence**: vanilla asks the server only about
   argument nodes whose provider is `ASK_SERVER` and answers literals from its
   own client-side Brigadier dispatcher, and Rewo — having M113's tree as data
@@ -18294,14 +18289,36 @@ mesh 45, proto 11), every crate's exit code read individually; coverage
 byte-identical; `mobshot` 246/246, `hudshot` 41, `inventoryshot` 158,
 `containershot` 107.
 
-**Open, and this is the honest boundary: the popup is not DRAWN.** The model,
-the geometry, the input routing and the wire are all in and tested, and
-Tab-completion visibly works because it rewrites the field — but the list
-itself, the scroll indicators and the greyed ghost suffix
-(`EditBox::suggestion`, which is stored and read by nothing) have no renderer,
-and `live --render-check` therefore has no new witness. That is the next
-step, and it is M94's lesson in waiting: **run `--render-check` on the
-milestone that adds the render path**, because a gate whose witnesses are
-injected cannot see a path the windowed client never reaches. Also open: the
-usage lines, the syntax highlighting, and the command path's local half, all
-three of which read `currentParse` and so need the dispatcher.
+**Open at M114, closed by M115 below:** the popup had no renderer.
+
+**Still open after both:** the usage lines under the field, the input's syntax
+highlighting, and the command path's local half — all three read
+`currentParse` and so need a client-side Brigadier dispatcher.
+
+### M115 — drawing it (2026-08-08)
+
+The row fills, the truncation bars, the scroll dashes, the two text colours,
+and the greyed ghost suffix. Three details worth not smoothing over:
+
+* `limited` is `hasPrevious || hasNext` and gates **both** bars, so a list
+  scrolled to its top still gets one above it — while the **dashes** are
+  per-end, and only the end with more entries has any.
+* The dashes are per-pixel `fill` calls every two pixels. Merging them into
+  one rect draws a solid line, which is a different thing.
+* `unselectedColor` is assigned to a local that is then never read, the
+  literal being used instead — dead like the recipe book's `int border = 4`.
+
+The ghost is gated on `!insert`
+(`cursorPos < value.length() || value.length() >= maxLength`), so it shows only
+with the caret at the **end** of an under-length field; drawn mid-string it
+would sit on top of the text after the cursor. It goes at `cursorX - 1`.
+
+**`live --render-check` 28 → 29/29**, validation ON, 0 validation errors.
+**r29 measures the production chain, not a hand-built `Suggestions`**: the gate
+injects a `custom_chat_completions` packet through the real router and then
+types one character, so the witness runs decode → `SuggestionProviderState` →
+`tab_words` → `on_edited` → `matchesSubStr` → `auto_show` → render.
+**Mutation-verified live, twice** — emptying the fill builder drops it
+6337 → 0 frames, and removing the keystroke does too *while r27 stays green*,
+which is what shows r29 is strictly narrower than "the chat screen is open"
+rather than a second reading of it. 2390 tests; demo PNG `2cc56b4acbfb92cb`.

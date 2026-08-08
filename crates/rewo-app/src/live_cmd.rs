@@ -176,6 +176,14 @@ struct RenderCheck {
     /// force-opens the screen a fifth of the way in, the same way it injects a
     /// container for r19 — a windowed run has no keyboard.
     chat_screen_frames: u64,
+    /// M115 — frames on which the SUGGESTION POPUP put fills in the list.
+    ///
+    /// A strictly narrower claim than r27's: the screen can be open with no
+    /// popup at all, which is its state until something is typed. The gate
+    /// reaches it through the production chain rather than a fake — a
+    /// `custom_chat_completions` packet, then a real keystroke — so a break
+    /// anywhere from the decode to the render drops this to zero.
+    suggestion_popup_frames: u64,
     /// M108 — frames on which the chat box put at least one line into the
     /// windowed frame's label list.
     ///
@@ -535,6 +543,16 @@ impl RenderCheck {
             format!(
                 "{} of {} frames drew the bar's two rects (needs a backlog past                  the focused box's 20 rows, which the run injects)",
                 self.chat_scrollbar_frames, self.frames
+            ),
+        );
+        // M115 — and the popup within it, which needs a completion word AND a
+        // keystroke, so it is narrower again than r28's.
+        row(
+            "r29 the suggestion popup was drawn",
+            self.suggestion_popup_frames > 0,
+            format!(
+                "{} of {} frames drew the popup's row fills (needs a                  custom_chat_completions word and a keystroke, both of which the run                  drives through the production path)",
+                self.suggestion_popup_frames, self.frames
             ),
         );
         row(
@@ -6339,7 +6357,34 @@ impl LiveApp {
                             }
                         }
                     }
+                    // M115 — a completion word, then a keystroke, so r29
+                    // measures the whole production chain rather than a
+                    // hand-built `Suggestions`: the packet reaches
+                    // `SuggestionProviderState`, `tab_words()` unions it with
+                    // the online players, `on_edited` matches the typed prefix
+                    // against it, and `auto_show` opens the list. A break
+                    // anywhere in that drops the count to zero.
+                    //
+                    // The word is deliberately nothing a server would send, so
+                    // it cannot be confused with a real player's name, and it
+                    // begins with the character typed below.
+                    if let Some(session) = self.session.as_mut() {
+                        if let Some(pid) = Some(session.ids.cb_play_custom_chat_completions) {
+                            let words = ["rewopopupwitness", "rewopopupsecond"];
+                            let mut body: Vec<u8> = Vec::new();
+                            body.push(2); // Action.SET
+                            body.push(words.len() as u8);
+                            for w in words {
+                                body.push(w.len() as u8);
+                                body.extend_from_slice(w.as_bytes());
+                            }
+                            session.inject_packet(pid, &body);
+                        }
+                    }
                     self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Message);
+                    // `onEdited` is what turns suggestions on and asks for
+                    // them; nothing else in a windowed run types.
+                    self.chat_char('r');
                     self.chat_injected = true;
                 }
             }
@@ -7218,6 +7263,20 @@ impl LiveApp {
                 }
             }
             backdrops.extend(bar);
+            // M115 — the suggestion popup, last on the list so it sits over
+            // the input bar and the rows, which is where
+            // `ChatScreen.extractRenderState` hands off to it.
+            if let Some(cs) = self.chat_screen.as_ref() {
+                if let Some(list) = cs.suggestions.list() {
+                    let fills = suggestion_popup_fills(list, cs.suggestions.config(), px);
+                    if !fills.is_empty() {
+                        if let Some(c) = self.check.as_mut() {
+                            c.suggestion_popup_frames += 1;
+                        }
+                    }
+                    backdrops.extend(fills);
+                }
+            }
             if let Some(c) = self.check.as_mut() {
                 c.chat_screen_frames += 1;
             }
@@ -7240,6 +7299,9 @@ impl LiveApp {
                 gh,
                 self.started.elapsed().as_millis() as u64,
             ));
+            if let Some(list) = cs.suggestions.list() {
+                text.extend(suggestion_popup_text(list, cs.suggestions.config(), px));
+            }
         }
         if chat_count > 0 {
             if let Some(c) = self.check.as_mut() {
@@ -7835,12 +7897,34 @@ fn chat_input_lines(
         shadow: true,
         text: value.clone(),
     }];
+    let before: String = value.chars().take(screen.input.cursor_position()).collect();
+    let caret_x = text_x + before.chars().count() as f32 * 6.0 * px;
+    // The greyed ghost after the caret (M115), gated on `!insert` —
+    // `cursorPos < value.length() || value.length() >= maxLength`. So it shows
+    // only with the caret at the END of an under-length field: a ghost drawn
+    // mid-string would sit on top of the text after the cursor. Vanilla puts
+    // it at `cursorX - 1`, one pixel left of where the caret glyph goes.
+    let insert = screen.input.cursor_position() < screen.input.len()
+        || screen.input.len() >= screen.input.max_length();
+    if !insert {
+        if let Some(ghost) = screen.input.suggestion() {
+            out.push(OwnedTextLine {
+                x: caret_x - px,
+                y: text_y,
+                px,
+                // `-8355712` — 0x808080.
+                color: [0.216, 0.216, 0.216],
+                alpha: 1.0,
+                shadow: true,
+                text: ghost.to_string(),
+            });
+        }
+    }
     // The caret, as the anvil's field draws it: a `_` at the cursor when the
     // blink says so. `setCanLoseFocus(false)` means it never stops.
     if screen.input.cursor_visible(now_ms) {
-        let before: String = value.chars().take(screen.input.cursor_position()).collect();
         out.push(OwnedTextLine {
-            x: text_x + before.chars().count() as f32 * 6.0 * px,
+            x: caret_x,
             y: text_y,
             px,
             color: [0.93, 0.93, 0.93],
@@ -7850,6 +7934,99 @@ fn chat_input_lines(
         });
     }
     out
+}
+
+/// The suggestion popup's fills (M115), in screen pixels.
+///
+/// `SuggestionsList.extractRenderState`, fill half. Three kinds of rect and
+/// the order is the order on screen:
+///
+/// 1. When the list is longer than its window, a **1 px bar above and below**
+///    in the popup's own fill colour. Both are drawn whenever *either* end is
+///    truncated — `limited` is `hasPrevious || hasNext` and gates the pair —
+///    so a list scrolled to its top still gets a bar above it.
+/// 2. The **dashes**, white, one pixel wide every two, on whichever end has
+///    more entries. These are per-pixel `fill` calls in vanilla and stay
+///    per-pixel here; merging them into one rect would draw a solid line.
+/// 3. One **row fill** per visible line.
+fn suggestion_popup_fills(
+    list: &rewo_world::command_suggestions::SuggestionsList,
+    cfg: rewo_world::command_suggestions::SuggestionsConfig,
+    px: f32,
+) -> Vec<rewo_gpu::hud::HudFill> {
+    use rewo_world::command_suggestions::{INDICATOR_COLOR, LINE_HEIGHT};
+    let rect = list.rect;
+    let limit = list.shown(cfg) as i32;
+    let fill = |x: i32, y: i32, w: i32, h: i32, argb: u32| rewo_gpu::hud::HudFill {
+        x: x as f32 * px,
+        y: y as f32 * px,
+        w: w as f32 * px,
+        h: h as f32 * px,
+        alpha: ((argb >> 24) & 0xFF) as f32 / 255.0,
+        rgb: srgb_bytes_to_linear(argb & 0x00FF_FFFF),
+    };
+    let mut out = Vec::new();
+    let has_previous = list.offset() > 0;
+    let has_next = list.entries().len() > list.offset() + limit as usize;
+    if has_previous || has_next {
+        out.push(fill(rect.x, rect.y - 1, rect.w, 1, cfg.fill_color));
+        out.push(fill(rect.x, rect.y + rect.h, rect.w, 1, cfg.fill_color));
+        for (edge, present) in [(rect.y - 1, has_previous), (rect.y + rect.h, has_next)] {
+            if !present {
+                continue;
+            }
+            let mut x = 0;
+            while x < rect.w {
+                out.push(fill(rect.x + x, edge, 1, 1, INDICATOR_COLOR));
+                x += 2;
+            }
+        }
+    }
+    for i in 0..limit {
+        out.push(fill(
+            rect.x,
+            rect.y + LINE_HEIGHT * i,
+            rect.w,
+            LINE_HEIGHT,
+            cfg.fill_color,
+        ));
+    }
+    out
+}
+
+/// The suggestion popup's text (M115), in screen pixels.
+///
+/// One line per visible row at `rect.x + 1`, `rect.y + 2 + 12 * i`, yellow for
+/// the selected entry and grey for the rest. `graphics.text`'s five-argument
+/// form drops a shadow (M105), so these do too.
+fn suggestion_popup_text(
+    list: &rewo_world::command_suggestions::SuggestionsList,
+    cfg: rewo_world::command_suggestions::SuggestionsConfig,
+    px: f32,
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
+    use rewo_world::command_suggestions::{LINE_HEIGHT, SELECTED_COLOR, UNSELECTED_COLOR};
+    let rect = list.rect;
+    let limit = list.shown(cfg);
+    (0..limit)
+        .filter_map(|i| {
+            let index = i + list.offset();
+            let entry = list.entries().get(index)?;
+            let argb = if index == list.current() {
+                SELECTED_COLOR
+            } else {
+                UNSELECTED_COLOR
+            };
+            Some(rewo_gpu::world::OwnedTextLine {
+                x: (rect.x + 1) as f32 * px,
+                y: (rect.y + 2 + LINE_HEIGHT * i as i32) as f32 * px,
+                px,
+                color: srgb_bytes_to_linear(argb & 0x00FF_FFFF),
+                alpha: ((argb >> 24) & 0xFF) as f32 / 255.0,
+                shadow: true,
+                text: entry.text.clone(),
+            })
+        })
+        .collect()
 }
 
 /// The chat scrollbar's two rects (M111), in screen pixels.
@@ -10535,6 +10712,129 @@ mod tests {
             tab_words: NO_WORDS,
             auto_suggestions: true,
         }
+    }
+
+    /// A popup over `n` entries, opened through the production path.
+    fn popup(n: usize) -> (rewo_world::chat_screen::ChatScreen, Vec<String>) {
+        use rewo_world::chat_screen::{ChatMethod, ChatScreen};
+        let words: Vec<String> = (0..n).map(|i| format!("rewo{i:02}")).collect();
+        let mut s = ChatScreen::open(ChatMethod::Message, None, 0);
+        fn six(t: &str) -> i32 {
+            t.encode_utf16().count() as i32 * 6
+        }
+        let env = rewo_world::chat_screen::SuggestionEnv {
+            metrics: rewo_world::command_suggestions::InputMetrics {
+                x: 4,
+                inner_width: 316,
+                screen_height: 240,
+            },
+            width: &six,
+            tab_words: &words,
+            auto_suggestions: true,
+        };
+        s.char_typed('r', &env);
+        (s, words)
+    }
+
+    #[test]
+    fn the_popup_fills_one_rect_per_visible_row() {
+        let (s, _) = popup(3);
+        let cs = &s.suggestions;
+        let list = cs.list().expect("the popup opened");
+        let fills = super::suggestion_popup_fills(list, cs.config(), 1.0);
+        // Three rows, no truncation bars.
+        assert_eq!(fills.len(), 3);
+        for (i, f) in fills.iter().enumerate() {
+            assert_eq!(f.x, list.rect.x as f32);
+            assert_eq!(f.y, (list.rect.y + 12 * i as i32) as f32);
+            assert_eq!((f.w, f.h), (list.rect.w as f32, 12.0));
+            // `-805306368` — alpha 208 over black.
+            assert!((f.alpha - 208.0 / 255.0).abs() < 1e-6);
+            assert_eq!(f.rgb, [0.0, 0.0, 0.0]);
+        }
+    }
+
+    #[test]
+    fn a_list_longer_than_its_window_gains_two_bars_and_one_row_of_dashes() {
+        // `limited` is `hasPrevious || hasNext` and gates BOTH bars, so a list
+        // scrolled to its top still gets one above it — while the dashes are
+        // per-end and only the bottom has any here.
+        let (s, _) = popup(25);
+        let cs = &s.suggestions;
+        let list = cs.list().expect("the popup opened");
+        assert_eq!(list.offset(), 0, "fixture precondition: at the top");
+        let fills = super::suggestion_popup_fills(list, cs.config(), 1.0);
+        let rows = 10;
+        let dashes = (list.rect.w as usize).div_ceil(2);
+        assert_eq!(fills.len(), 2 + dashes + rows);
+        // The two bars are one pixel tall and hug the rect.
+        assert_eq!((fills[0].y, fills[0].h), ((list.rect.y - 1) as f32, 1.0));
+        assert_eq!(
+            (fills[1].y, fills[1].h),
+            ((list.rect.y + list.rect.h) as f32, 1.0)
+        );
+        // Every dash is white, one pixel wide, two apart.
+        for (k, f) in fills[2..2 + dashes].iter().enumerate() {
+            assert_eq!(f.x, (list.rect.x + 2 * k as i32) as f32);
+            assert_eq!((f.w, f.h), (1.0, 1.0));
+            assert_eq!(f.rgb, [1.0, 1.0, 1.0]);
+            assert_eq!(f.y, (list.rect.y + list.rect.h) as f32);
+        }
+    }
+
+    #[test]
+    fn a_short_list_gets_no_bars_at_all() {
+        let (s, _) = popup(4);
+        let cs = &s.suggestions;
+        let list = cs.list().unwrap();
+        let fills = super::suggestion_popup_fills(list, cs.config(), 1.0);
+        assert!(fills.iter().all(|f| f.h == 12.0), "rows only");
+    }
+
+    #[test]
+    fn the_selected_row_is_yellow_and_the_rest_are_grey() {
+        let (s, _) = popup(3);
+        let cs = &s.suggestions;
+        let list = cs.list().unwrap();
+        let text = super::suggestion_popup_text(list, cs.config(), 1.0);
+        assert_eq!(text.len(), 3);
+        for (i, t) in text.iter().enumerate() {
+            assert_eq!(t.x, (list.rect.x + 1) as f32);
+            assert_eq!(t.y, (list.rect.y + 2 + 12 * i as i32) as f32);
+            assert!(t.shadow, "the five-argument graphics.text drops one");
+        }
+        // `-256` is 0xFFFF00: red and green at full, blue at nothing.
+        assert_eq!(text[0].color[0], 1.0);
+        assert_eq!(text[0].color[1], 1.0);
+        assert_eq!(text[0].color[2], 0.0);
+        // `-5592406` is 0xAAAAAA: neutral, and not full.
+        assert_eq!(text[1].color[0], text[1].color[1]);
+        assert_eq!(text[1].color[1], text[1].color[2]);
+        assert!(text[1].color[0] > 0.0 && text[1].color[0] < 1.0);
+    }
+
+    #[test]
+    fn the_rows_follow_the_scroll_offset() {
+        let (mut s, _) = popup(25);
+        let first = super::suggestion_popup_text(
+            s.suggestions.list().unwrap(),
+            s.suggestions.config(),
+            1.0,
+        )[0]
+        .text
+        .clone();
+        s.suggestions.mouse_scrolled(-1.0, {
+            let r = s.suggestions.list().unwrap().rect;
+            (r.x + 2, r.y + 2)
+        });
+        let scrolled = super::suggestion_popup_text(
+            s.suggestions.list().unwrap(),
+            s.suggestions.config(),
+            1.0,
+        )[0]
+        .text
+        .clone();
+        assert_ne!(first, scrolled, "the top row moved with the offset");
     }
 
     /// The input field's caret sits after the text before the cursor, and the
