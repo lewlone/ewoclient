@@ -112,9 +112,9 @@ book's 77 px displacement that were not using the shared predicate, and
 exactly). **Chat is complete for everything vanilla draws without a subsystem
 Rewo lacks.**
 
-Current measurement, taken 2026-08-08 after M116: **2416 tests, 0 failures**
-(**world 1006, net 705, gpu 255, data 216, app 178, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2416). **Read each crate's EXIT CODE, not
+Current measurement, taken 2026-08-08 after M117: **2437 tests, 0 failures**
+(**world 1006, net 721, gpu 255, data 216, app 183, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2437). **Read each crate's EXIT CODE, not
 just its count**: a crate whose tests fail to compile prints no `test result`
 line at all, contributes 0, and reads as silence — M110 hit exactly that and
 the only signal was the total falling. **Breakdowns written before the
@@ -125,8 +125,8 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` 30/30 with validation ON and 0
-validation errors, last run for M116** — M113 is a decode and adds no render
+34/34, `mobshot` 246/246, **`live --render-check` 32/32 with validation ON and 0
+validation errors, last run for M117** — M113 is a decode and adds no render
 path, which is the only reason it was not re-run (M94 is where it earned its
 keep twice over — see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
 `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C **12** — M96–M107
@@ -177,13 +177,18 @@ best-scoped work on the board:
   ~~and the command path's dispatcher~~ (**M116**) — `/g` now completes
   locally with no packet, and `live --render-check` is **30/30**.
 
-  **What is left of the command path** is the two things that read the parse
-  and are now merely unbuilt rather than blocked: the **usage lines** under the
-  field (`getSmartUsage`) and the input's **syntax highlighting** (`formatText`
-  colours the argument ranges `ParseResults` already carries). Beyond those,
-  every `minecraft:` argument type is still `Unknown`, so a command's second
-  word onward is the server's to complete — `EntitySelectorParser` is the
-  biggest single one and would unlock `@` completion.
+  ~~the usage lines and the syntax highlighting~~ (**M117**) — both shipped,
+  and `live --render-check` is **32/32**.
+
+  **What is left of the command path** is one thing, and it is the same thing
+  in three places: every `minecraft:` argument type is still `Unknown`. That
+  stops the parse at a command's second word, which in turn stops the
+  highlighting colouring anything past the first argument and hands every
+  argument completion to the server. `EntitySelectorParser` is the biggest
+  single one and would unlock `@`. The other named gap is the **exception
+  messages** under the field — `BuiltInExceptions`' literals plus
+  `command.context.parse_error` — which M117 models as a gate (it shows
+  *nothing* where vanilla shows a message) rather than approximating.
 
   **Historical, and now closed:** is where the remaining depth is. M114
   ships a **deliberate divergence**: vanilla asks the server only about
@@ -18405,3 +18410,73 @@ And every `minecraft:` argument type is still `Unknown`, so a command's second
 word onward is the server's to complete; the selector parser
 (`EntitySelectorParser`) is the biggest single one and would unlock `@`
 completion.
+
+### M117 — syntax highlighting and the usage box (2026-08-08)
+
+The two things M116 left as "reachable but unbuilt". They are unrelated
+features sharing one input: `formatText` colours what you are typing,
+`getSmartUsage` lists what may come next underneath it.
+
+**Findings that invert.**
+
+* **`LITERAL_STYLE` is GRAY** and covers every span between the coloured ones,
+  so the moment a parse exists the whole command **dims** and only its
+  arguments stay bright. Leaving the gaps at the field's own colour gives a
+  line that never visibly changes — the opposite of the effect.
+* **`nextColor` starts at `-1` and PRE-increments**, so the first argument is
+  aqua. Starting at 0 and post-incrementing gives yellow, which is wrong for
+  every single-argument command there is.
+* **The red tail is measured from the READER**, not from the last argument's
+  end — the reader is where the parse gave up, which is earlier whenever a
+  later branch was tried and rewound.
+* **`getSmartUsage` decides with one string and prints another.** The
+  multi-child branch builds a `LinkedHashSet` of each child's **deep** usage
+  and then, if it holds more than one entry, iterates `children` *again* and
+  appends `getUsageText()` — the shallow form. Reusing the set's strings prints
+  `(give <count>|gamemode <flag>)` where vanilla prints `(give|gamemode)`.
+* **`deep` skips the whole expansion**, so a usage line never grows past two
+  levels — and a fixture whose children are leaves cannot see it, because
+  expanding a leaf changes nothing.
+* **Only non-literal children get a usage line**, which is why `/g` shows no
+  box at all. That one test is what stops it being a permanent menu of every
+  subcommand.
+* **`extractUsage` grows UPWARD** (`height - 27 - 12 * y`, so entry 0 is the
+  lowest), its fill is one pixel wider than its text **on each side**, and the
+  box and the popup are **mutually exclusive**:
+  `if (!extractSuggestions(..)) extractUsage(..)`.
+
+**Scoped honestly: the error branch is a GATE, not a message.** When vanilla
+has an exception to show it shows that *instead of* the usage entries, so this
+returns nothing there. Rendering the text needs `BuiltInExceptions`' literals
+plus `command.context.parse_error`'s cursor and excerpt — transcribable, and
+simply not transcribed.
+
+**Fixed in passing:** the caret was placed on a fixed six pixels per character
+and now measures the font, because the coloured runs must abut exactly and the
+caret has to agree with them (`i` is 2 wide, `l` is 3).
+
+**Process.** 14 mutations, 14 killed, every batch with a no-op control. Two
+survived first and both were **weak fixtures** — no test drove
+`chat_input_lines` with runs at all, and the collapse fixture's children were
+leaves. **`live --render-check` 30 → 32/32**, validation ON, 0 errors; r29
+drops 6357 → 3660 frames, which is the mutual exclusion showing up in the
+numbers. Both new witnesses mutation-verified live, and the pair is
+independent in **only one direction**: emptying `node_usage` kills r32 alone,
+while killing the parse kills both, because r32 reads the same cached parse.
+
+**Two instrument errors, both caught before they were believed.** A mutation
+whose **build failed** left the previous binary in place and its run read as a
+result; and `cargo test -p rewo-app` rebuilds the **test harness**, not the
+bin, so a restored source still ran the mutated exe. Both are the same shape as
+§0.0's "read the exit code" rule, one layer down: *check that the thing you are
+about to measure was actually rebuilt.* A third near-miss: `git checkout <path>`
+to undo a mutation reverted the milestone's own uncommitted work in that file,
+which a pre-mutation backup recovered.
+
+**2437 tests**; demo PNG `2cc56b4acbfb92cb`, byte-identical.
+
+**Open.** The exception messages above; and every `minecraft:` argument type is
+still `Unknown`, so a command's second word onward is the server's to complete.
+`EntitySelectorParser` is the biggest single one and would unlock `@`
+completion — and would also make the highlighting reach past the first
+argument, since an argument that does not parse contributes no coloured span.
