@@ -2409,6 +2409,13 @@ impl EntityTable {
     pub fn name_of(&self, uuid: u128) -> Option<&str> {
         self.names.get(&uuid).map(|s| s.as_str())
     }
+
+    /// `getOnlinePlayerNames()` (M114) — every name `player_info_update` has
+    /// reported and `player_info_remove` has not taken back. Unordered, like
+    /// vanilla's; `Suggestions.create` sorts whatever reaches it.
+    pub fn all_names(&self) -> impl Iterator<Item = &str> {
+        self.names.values().map(String::as_str)
+    }
 }
 
 #[cfg(test)]

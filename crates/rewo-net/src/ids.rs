@@ -250,6 +250,10 @@ pub struct Ids {
     pub sb_play_client_tick_end: Option<i32>,
     pub sb_play_chat: Option<i32>,
     pub sb_play_chat_command: Option<i32>,
+    /// `ServerboundCommandSuggestionPacket` (M114) — a VarInt request id then
+    /// the command being typed, capped at **32500** UTF-16 units (neither
+    /// `readUtf`'s default nor the chat field's 256).
+    pub sb_play_command_suggestion: Option<i32>,
     pub sb_play_chat_session_update: Option<i32>,
     pub sb_play_set_creative_slot: Option<i32>,
     pub sb_play_set_carried_item: Option<i32>,
@@ -453,6 +457,18 @@ pub struct Ids {
     /// the packet unreadable — vanilla's own reader bails there too. See
     /// [`crate::commands`].
     pub cb_play_commands: i32,
+    /// `ClientboundCommandSuggestionsPacket` (M114) — the autocomplete reply
+    /// to a request the client made.
+    ///
+    /// `toSuggestions` builds its list with the **constructor**, not
+    /// `Suggestions.create`, so the server's order is displayed verbatim and
+    /// duplicates are not removed. See [`crate::suggestion_wire`].
+    pub cb_play_command_suggestions: i32,
+    /// `ClientboundCustomChatCompletionsPacket` (M114) — the server's own
+    /// completion words, merged with the online-player names into the same
+    /// popup. `SET` clears before it adds; an out-of-range action ordinal is
+    /// a decode error, because `readEnum` indexes an array.
+    pub cb_play_custom_chat_completions: i32,
     /// `ClientboundGameRuleValuesPacket` — a counted map of
     /// `ResourceKey<GameRule>` → string.
     pub cb_play_game_rule_values: i32,
@@ -660,6 +676,7 @@ impl Ids {
             sb_play_client_tick_end: opt!(p, P, S, "client_tick_end"),
             sb_play_chat: opt!(p, P, S, "chat"),
             sb_play_chat_command: opt!(p, P, S, "chat_command"),
+            sb_play_command_suggestion: opt!(p, P, S, "command_suggestion"),
             sb_play_chat_session_update: opt!(p, P, S, "chat_session_update"),
             sb_play_set_creative_slot: opt!(p, P, S, "set_creative_mode_slot"),
             sb_play_set_carried_item: opt!(p, P, S, "set_carried_item"),
@@ -719,6 +736,8 @@ impl Ids {
             cb_play_disguised_chat: req!(p, P, C, "disguised_chat"),
             cb_play_delete_chat: req!(p, P, C, "delete_chat"),
             cb_play_commands: req!(p, P, C, "commands"),
+            cb_play_command_suggestions: req!(p, P, C, "command_suggestions"),
+            cb_play_custom_chat_completions: req!(p, P, C, "custom_chat_completions"),
             cb_play_game_rule_values: req!(p, P, C, "game_rule_values"),
             cb_play_player_combat_end: req!(p, P, C, "player_combat_end"),
             cb_play_player_combat_enter: req!(p, P, C, "player_combat_enter"),

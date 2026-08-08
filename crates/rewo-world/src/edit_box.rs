@@ -139,6 +139,11 @@ pub struct EditBox {
     /// `None` here so a field that has never been focused has no phase at all,
     /// which is the same thing without needing a clock at construction.
     focused_time_ms: Option<u64>,
+    /// `suggestion` (M114) — the greyed ghost drawn after the caret by
+    /// `CommandSuggestions`, and `null` in vanilla whenever the selected entry
+    /// cannot complete what is typed. Purely a render input; nothing in the
+    /// editing core reads it.
+    suggestion: Option<String>,
     /// Whether `onValueChange` has fired since the caller last looked.
     ///
     /// Vanilla's `setResponder` takes a `Consumer<String>` called from exactly
@@ -172,12 +177,29 @@ impl EditBox {
             active: true,
             can_lose_focus: true,
             focused_time_ms: None,
+            suggestion: None,
             value_changed: false,
         }
     }
 
     pub fn value(&self) -> String {
         String::from_utf16_lossy(&self.value)
+    }
+
+    /// The value in the unit every index in this module means — UTF-16 code
+    /// units. `CommandSuggestions` needs it because a `StringRange` is a pair
+    /// of Java string indices.
+    pub fn value_utf16(&self) -> Vec<u16> {
+        self.value.clone()
+    }
+
+    /// `EditBox.setSuggestion` / the field behind it (M114).
+    pub fn set_suggestion(&mut self, suggestion: Option<String>) {
+        self.suggestion = suggestion;
+    }
+
+    pub fn suggestion(&self) -> Option<&str> {
+        self.suggestion.as_deref()
     }
 
     /// The value's length in the unit every index here uses.

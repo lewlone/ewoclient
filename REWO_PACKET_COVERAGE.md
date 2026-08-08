@@ -194,24 +194,24 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **116** |
+| Resolved **and** consumed | **118** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **25** |
+| Not resolved at all | **23** |
 | **Total clientbound-play** | **141** |
 
-The 25 gaps, by class:
+The 23 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
 | **B** needs rendering | **0** | 0% |
-| **C** needs a subsystem Rewo lacks | **14** | 56% |
-| **D** not applicable | **11** | 44% |
+| **C** needs a subsystem Rewo lacks | **12** | 52% |
+| **D** not applicable | **11** | 48% |
 
-**M87 was the first bite out of class C** — which has since gone 23 -> 14, the
+**M87 was the first bite out of class C** — which has since gone 23 -> 12, the
 rest of it taken by M91 (the furnace family), M93s (the stonecutter), M93u (the
-merchant), M93y (the recipe book's decode), M108 (`delete_chat`) and M113 (the
-Brigadier tree). It is a worked example of what
+merchant), M93y (the recipe book's decode), M108 (`delete_chat`), M113 (the
+Brigadier tree) and M114 (the two suggestion packets). It is a worked example of what
 that class costs. `open_screen` and `container_set_data` are eleven lines of
 decode between them; what made them class C is that neither means anything
 without a *menu model* — the 25 slot layouts, and an `Inventory` that stops
@@ -473,7 +473,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 12 | `chunk_batch_start` | handled | `req!` → `cb_play_chunk_batch_start` | **M74.** Empty body. Stamps the clock the batch-size calculator measures against; without it the reply is a constant, not an estimate. |
 | 13 | `chunks_biomes` | handled | `opt!` → `cb_play_chunks_biomes` | |
 | 14 | `clear_titles` | handled | `req!` → `cb_play_clear_titles` | **M79.** One boolean, and it does something the clear itself does not: `clearTitles()` drops the text and zeroes the countdown, and only `resetTimes` puts the three **durations** back to 10 / 70 / 20. So `/title clear` and `/title reset` differ in what the *next* title does, not in what is on screen. |
-| 15 | `command_suggestions` | absent | **C** | The autocomplete reply. M113 landed the tree it is parsed against and M110 the screen it would draw over, so what is missing is now `CommandSuggestions` itself — the popup, Tab-completion and the input field's syntax highlighting — rather than a subsystem. |
+| 15 | `command_suggestions` | handled | `req!` → `cb_play_command_suggestions` | **M114.** The autocomplete reply: a request id, a `start`/`length` span, and a list of `(text, optional component tooltip)`. `toSuggestions` builds its list with the **constructor**, not `Suggestions.create`, so the server's order is shown verbatim and duplicates are not removed — routing it through `create`, which is what the rest of the subsystem does, would silently re-order every server's autocomplete. Matched against a **single** outstanding request id, so a reply to a superseded one is dropped; vanilla's idle sentinel for that id is `-1`, which is also a legal VarInt, so a server sending `-1` while nothing is pending dereferences a null future in vanilla and is inert here. |
 | 16 | `commands` | handled | `req!` → `cb_play_commands` | **M113.** A counted list of nodes then the root index. **An argument node's properties have no length prefix and only its own type knows their size**, so an unknown `command_argument_type` id makes the rest of the packet unreadable — vanilla's reader returns `null` *without consuming them* and then reads the next node from the wrong offset, so Rewo makes it a decode error. 44 of the 57 types are `SingletonArgumentInfo` and read nothing; the other 13 are transcribed. The suggestion id is read **after** the properties, not beside its flag. |
 | 17 | `container_close` | handled | `req!` → `cb_play_container_close` | **M74.** One VarInt container id, which vanilla reads and then **ignores** — `handleContainerClose` closes whatever is open without comparing ids. |
 | 18 | `container_set_content` | handled | `req!` → `cb_play_container_set_content` | §4 partial — container id 0 only. |
@@ -481,7 +481,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 20 | `container_set_slot` | handled | `req!` → `cb_play_container_set_slot` | §4 partial — container id 0 only. |
 | 21 | `cookie_request` | handled | `opt!` → `cb_play_cookie_request` | Answered from the jar `store_cookie` (120) fills, since **M78**. Before it, "handled" was true only of the M1-era `Connection::run_play` harness — `PlaySession` had no arm at all, so the real client left a play-state request unanswered. §4, §9. |
 | 22 | `cooldown` | handled | `req!` → `cb_play_cooldown` | **M79.** An `Identifier` **cooldown group** + a VarInt duration — no start tick, no end tick; `addCooldown` supplies the start from `ItemCooldowns.tickCount`. `duration == 0` routes to `removeCooldown`, so it **cancels** rather than starting a zero-length cooldown whose percent would be `0/0`. |
-| 23 | `custom_chat_completions` | absent | **C** | The server's own completion list (player names, plugin words), merged into the suggestion popup. Same blocker as 15. |
+| 23 | `custom_chat_completions` | handled | `req!` → `cb_play_custom_chat_completions` | **M114.** An `Action` ordinal then a counted string list. `readEnum` indexes an array, so an out-of-range ordinal is a **decode error**, not a defaulted `ADD` — M65's strict convention. `SET` **clears before it adds**, so it is not `ADD` on an empty set. The result is unioned with the online-player names by `getCustomTabSuggestions`, deduped, and is what makes plain-chat Tab completion work without any parser. |
 | 24 | `custom_payload` | handled | `req!` → `cb_play_custom_payload` | **M78.** An unknown identifier is **discarded, not rejected**, and the fallback consumes the remainder. The copy a vanilla server actually sends is **configuration 1** — see §9. |
 | 25 | `damage_event` | handled | `req!` → `cb_play_damage_event` | |
 | 26 | `debug/block_value` | absent | **D** | Debug subscription — sent only to a client that subscribed via `debug_subscription`, which Rewo never will. |
