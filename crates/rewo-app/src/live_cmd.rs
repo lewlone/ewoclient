@@ -235,6 +235,42 @@ struct RenderCheck {
     /// own chat line, so an unstaged run still exercises the whole path from
     /// `player_chat` through the signature cache to the wrapped line.
     chat_line_frames: u64,
+    /// M125 — frames on which a drawn chat line was a RESOLVED translatable.
+    ///
+    /// The scene is the `/give` this gate ALREADY stages for r14, so this adds
+    /// no caller requirement — and it is a much stronger claim than the one it
+    /// replaces, because the server's success message is a translatable THREE
+    /// LEVELS DEEP whose middle argument is a bare integer:
+    ///
+    /// ```text
+    /// commands.give.success.single   "Gave %s %s to %s"
+    ///   with[0] = 1                             (a raw IntTag)
+    ///   with[1] = chat.square_brackets "[%s]"
+    ///               with[0] = item.minecraft.diamond_sword
+    ///   with[2] = <the player's display-name component>
+    /// ```
+    ///
+    /// So `Gave 1 [Diamond Sword]` cannot be produced unless the lookup, the
+    /// substitution, the recursion into a component argument, and the
+    /// heterogeneous-list unwrap all work. **None of those five words appears
+    /// anywhere in the raw component**, so the string cannot leak through from
+    /// a flattener that resolved nothing.
+    ///
+    /// The first version of this witness drove the JOIN message instead, on
+    /// the stated premise that a server announces a joining player to that
+    /// player. **It does not**, and the gate said so by scoring zero:
+    /// `PlayerList.placeNewPlayer` broadcasts at line 202 and does
+    /// `this.players.add(player)` at line 210, and `broadcastSystemMessage`
+    /// iterates `this.players` — so the joiner is not yet in the list it is
+    /// announced to. Suspect the witness first.
+    translated_chat_frames: u64,
+    /// Frames on which a drawn chat line still carried a raw translation key.
+    ///
+    /// Not redundant with the row above: that one would stay green if the
+    /// outer template resolved and an inner one did not, and this names all
+    /// three keys of the same scene, so a break at ANY level turns it red.
+    /// It must stay at zero.
+    unresolved_key_frames: u64,
     /// M105 — frames on which the book drew its `x/y` page counter.
     ///
     /// A LABEL, not a quad, so `book_quads_max` cannot see it: the counter goes
@@ -563,6 +599,17 @@ impl RenderCheck {
             format!(
                 "{} of {} frames carried at least one wrapped chat line                  (near-total is CORRECT: the run is 8 s = 160 ticks and the                  fade starts at 180, so nothing can fade inside it)",
                 self.chat_line_frames, self.frames
+            ),
+        );
+        // M125 — and that a line was a RESOLVED translatable, which r26 cannot
+        // see: before M125 the chat box drew `multiplayer.player.joined` and
+        // scored a full r26.
+        row(
+            "r37 a chat line resolved a nested translatable component",
+            self.translated_chat_frames > 0 && self.unresolved_key_frames == 0,
+            format!(
+                "{} of {} frames drew \"Gave 1 [Diamond Sword]\"; {} drew a raw key                  (must be 0). Three nesting levels and a bare-integer argument,                  off the `/give` r14 already stages — a count of 0 with the                  sword staged means the resolution is dead.",
+                self.translated_chat_frames, self.frames, self.unresolved_key_frames
             ),
         );
         // M110 — the chat SCREEN, as distinct from r26's read-only box. A zero
@@ -7744,6 +7791,31 @@ impl LiveApp {
         if chat_count > 0 {
             if let Some(c) = self.check.as_mut() {
                 c.chat_line_frames += 1;
+            }
+        }
+        // M125 — read off the DRAWN lines rather than the chat store, so a
+        // resolution that happened and then failed to reach the frame is not
+        // counted. `text` holds the wrapped chat rows at this point; the two
+        // scans are over the same list so they cannot disagree about which
+        // frame they are describing.
+        if let Some(c) = self.check.as_mut() {
+            if text.iter().any(|l| l.text.contains("Gave 1 [Diamond Sword]")) {
+                c.translated_chat_frames += 1;
+            }
+            // The three keys of that one message, one per nesting level. Named
+            // exactly rather than detected generally: a "looks like a key"
+            // test would fire on the F3 block's coordinates and on any player
+            // whose name has a dot in it.
+            const RAW_KEYS: [&str; 3] = [
+                "commands.give.success",
+                "chat.square_brackets",
+                "item.minecraft.diamond_sword",
+            ];
+            if text
+                .iter()
+                .any(|l| RAW_KEYS.iter().any(|k| l.text.contains(k)))
+            {
+                c.unresolved_key_frames += 1;
             }
         }
         // M66: the held-item name over the hotbar. Needs the font's advances
