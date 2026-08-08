@@ -85,6 +85,11 @@ fn at(r: &StringReader, c: u8) -> bool {
     r.can_read() && r.peek() == c as u16
 }
 
+/// Consume one character, with `TerminalCharacters`' whitespace rule.
+fn eat_char(r: &mut StringReader, c: u8) -> bool {
+    eat_either(r, c, c)
+}
+
 /// Consume `c` after whitespace, or fail without moving.
 fn expect(r: &mut StringReader, c: u8) -> Result<(), ReaderError> {
     skip_whitespace(r);
@@ -96,12 +101,29 @@ fn expect(r: &mut StringReader, c: u8) -> Result<(), ReaderError> {
     }
 }
 
-/// Consume either case of `c` after whitespace.
+/// The next non-whitespace unit, without moving.
+fn peek_nonspace(r: &StringReader) -> Option<u16> {
+    let mut i = r.cursor();
+    let s = r.string();
+    while i < s.len() && matches!(s[i], 0x20 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D) {
+        i += 1;
+    }
+    s.get(i).copied()
+}
+
+/// `StringReaderTerms.TerminalCharacters` — which opens with
+/// `input.skipWhitespace()` and, when it does not match, is unwound by whatever
+/// `Term.optional` / `Term.alternative` wraps it. So the whitespace is consumed
+/// on a match and given back on a miss: `1 u b` is an unsigned byte, and
+/// `{a:1 }` still closes.
 fn eat_either(r: &mut StringReader, lower: u8, upper: u8) -> bool {
+    let mark = r.cursor();
+    skip_whitespace(r);
     if r.can_read() && (r.peek() == lower as u16 || r.peek() == upper as u16) {
         r.skip();
         true
     } else {
+        r.set_cursor(mark);
         false
     }
 }
@@ -115,7 +137,9 @@ fn can_start_number(c: u16) -> bool {
 ///
 /// The underscore rule is the interesting half: `_` is accepted **inside** the
 /// run and the run is rejected only when its first or last character is one.
-fn number_run(r: &mut StringReader, accept: fn(u16) -> bool) -> Result<(), ReaderError> {
+/// Returns the run with its separators removed — `cleanAndAppend`'s half of the
+/// job, done here so the range check downstream has digits it can convert.
+fn number_run(r: &mut StringReader, accept: fn(u16) -> bool) -> Result<String, ReaderError> {
     skip_whitespace(r);
     let start = r.cursor();
     while r.can_read() && accept(r.peek()) {
@@ -129,7 +153,11 @@ fn number_run(r: &mut StringReader, accept: fn(u16) -> bool) -> Result<(), Reade
     if first == b'_' as u16 || last == b'_' as u16 {
         return Err(err());
     }
-    Ok(())
+    Ok(r.string()[start..r.cursor()]
+        .iter()
+        .filter(|&&c| c != b'_' as u16)
+        .map(|&c| c as u8 as char)
+        .collect())
 }
 
 fn is_decimal(c: u16) -> bool {
@@ -144,115 +172,302 @@ fn is_binary(c: u16) -> bool {
     c == 0x30 || c == 0x31 || c == b'_' as u16
 }
 
-fn decimal(r: &mut StringReader) -> Result<(), ReaderError> {
+fn decimal(r: &mut StringReader) -> Result<String, ReaderError> {
     number_run(r, is_decimal)
 }
 
-/// `sign?`
-fn sign(r: &mut StringReader) {
+/// `sign?` — returns whether it was MINUS. `Sign.PLUS.append` writes nothing,
+/// so a leading `+` reaches the conversion as no sign at all.
+fn sign(r: &mut StringReader) -> bool {
     skip_whitespace(r);
-    if at(r, b'+') || at(r, b'-') {
+    if at(r, b'+') {
         r.skip();
+        false
+    } else if at(r, b'-') {
+        r.skip();
+        true
+    } else {
+        false
     }
 }
 
-/// `integerSuffix?` — `[uU]` then one of `bBsSiIlL`, or a bare one of those.
-fn integer_suffix(r: &mut StringReader) {
-    let mark = r.cursor();
-    if eat_either(r, b'u', b'U') {
-        // The unsigned prefix REQUIRES a width; on its own it is not a suffix,
-        // and the whole thing is optional, so the cursor goes back.
-        if !(eat_either(r, b'b', b'B')
-            || eat_either(r, b's', b'S')
-            || eat_either(r, b'i', b'I')
-            || eat_either(r, b'l', b'L'))
-        {
+/// `SnbtGrammar.Base`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Base {
+    Binary,
+    Decimal,
+    Hex,
+}
+
+/// `SnbtGrammar.TypeSuffix`, restricted to the four the integer rule can name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Width {
+    Byte,
+    Short,
+    Int,
+    Long,
+}
+
+/// `SnbtGrammar.SignedPrefix`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Signedness {
+    Signed,
+    Unsigned,
+}
+
+/// `SnbtGrammar.IntegerLiteral` — kept whole, because none of its four fields
+/// alone decides the range.
+#[derive(Clone, Debug)]
+struct IntegerLiteral {
+    negative: bool,
+    base: Base,
+    /// Separators already removed.
+    digits: String,
+    declared: Option<Signedness>,
+    width: Option<Width>,
+}
+
+impl IntegerLiteral {
+    /// `signedOrDefault` — and this is the rule that makes `0xFF` a legal byte
+    /// while `255b` is not: an explicit `u`/`s` wins, and otherwise **binary
+    /// and hex default to UNSIGNED where decimal defaults to SIGNED**.
+    fn signedness(&self) -> Signedness {
+        self.declared.unwrap_or(match self.base {
+            Base::Binary | Base::Hex => Signedness::Unsigned,
+            Base::Decimal => Signedness::Signed,
+        })
+    }
+
+    /// `IntegerLiteral.create` — the range check, against a width the caller
+    /// supplies (an array prefix overrides the literal's own).
+    fn check(&self, width: Width) -> Result<(), ReaderError> {
+        let signed = self.signedness() == Signedness::Signed;
+        if !signed && self.negative {
+            // `ERROR_EXPECTED_NON_NEGATIVE_NUMBER`. `-0xF` is an error, because
+            // hex is unsigned by default — the sign and the base disagree and
+            // the base wins.
+            return Err(err());
+        }
+        let radix = match self.base {
+            Base::Binary => 2,
+            Base::Decimal => 10,
+            Base::Hex => 16,
+        };
+        let mut magnitude: u128 = 0;
+        for c in self.digits.chars() {
+            let d = c.to_digit(radix).ok_or_else(err)? as u128;
+            // A numeral long enough to overflow a u128 is far outside every
+            // width, so saturating here cannot turn a reject into an accept.
+            magnitude = magnitude.saturating_mul(radix as u128).saturating_add(d);
+            if magnitude > u64::MAX as u128 {
+                magnitude = u64::MAX as u128 + 1;
+            }
+        }
+        let ok = if signed {
+            let (min, max) = match width {
+                Width::Byte => (i8::MIN as i128, i8::MAX as i128),
+                Width::Short => (i16::MIN as i128, i16::MAX as i128),
+                Width::Int => (i32::MIN as i128, i32::MAX as i128),
+                Width::Long => (i64::MIN as i128, i64::MAX as i128),
+            };
+            let value = if self.negative {
+                -(magnitude as i128)
+            } else {
+                magnitude as i128
+            };
+            value >= min && value <= max
+        } else {
+            let max = match width {
+                Width::Byte => u8::MAX as u128,
+                Width::Short => u16::MAX as u128,
+                Width::Int => u32::MAX as u128,
+                Width::Long => u64::MAX as u128,
+            };
+            magnitude <= max
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(err())
+        }
+    }
+}
+
+/// `integerSuffix?`.
+///
+/// **`s` is both the SIGNED prefix and the SHORT width**, and the prefix
+/// alternative is tried first — so `1s` is a short (the prefix branch needs a
+/// width after it, finds none, and backtracks) while `1sb` is a *signed byte*.
+fn integer_suffix(r: &mut StringReader) -> (Option<Signedness>, Option<Width>) {
+    for (letter, upper, signedness) in [
+        (b'u', b'U', Signedness::Unsigned),
+        (b's', b'S', Signedness::Signed),
+    ] {
+        let mark = r.cursor();
+        if eat_either(r, letter, upper) {
+            if let Some(w) = eat_width(r) {
+                return (Some(signedness), Some(w));
+            }
+            // A prefix on its own is not a suffix, and the whole thing is
+            // optional, so the cursor goes back and the bare alternatives run.
             r.set_cursor(mark);
         }
-        return;
     }
-    let _ = eat_either(r, b'b', b'B')
-        || eat_either(r, b's', b'S')
-        || eat_either(r, b'i', b'I')
-        || eat_either(r, b'l', b'L');
+    (None, eat_width(r))
+}
+
+fn eat_width(r: &mut StringReader) -> Option<Width> {
+    if eat_either(r, b'b', b'B') {
+        Some(Width::Byte)
+    } else if eat_either(r, b's', b'S') {
+        Some(Width::Short)
+    } else if eat_either(r, b'i', b'I') {
+        Some(Width::Int)
+    } else if eat_either(r, b'l', b'L') {
+        Some(Width::Long)
+    } else {
+        None
+    }
 }
 
 /// `integerLiteral`.
-fn integer(r: &mut StringReader) -> Result<(), ReaderError> {
-    sign(r);
+fn integer_literal(r: &mut StringReader) -> Result<IntegerLiteral, ReaderError> {
+    let negative = sign(r);
     skip_whitespace(r);
-    if at(r, b'0') {
+    let (base, digits) = if at(r, b'0') {
         r.skip();
+        let after_zero = r.cursor();
         if eat_either(r, b'x', b'X') {
             // Cut: after `0x` a hex numeral is required.
-            number_run(r, is_hex)?;
-        } else if at(r, b'b') || at(r, b'B') {
-            // NO cut here, which is what makes `0b` fall back to zero-as-a-
-            // byte while `0b1` is binary one.
-            let mark = r.cursor();
-            r.skip();
-            if number_run(r, is_binary).is_err() {
-                r.set_cursor(mark);
+            (Base::Hex, number_run(r, is_hex)?)
+        } else {
+            // NO cut after the `b`, which is what makes `0b` fall back to
+            // zero-as-a-byte while `0b1` is binary one.
+            let mut binary = None;
+            if eat_either(r, b'b', b'B') {
+                match number_run(r, is_binary) {
+                    Ok(d) => binary = Some(d),
+                    Err(_) => r.set_cursor(after_zero),
+                }
             }
-        } else if r.can_read() && is_decimal(r.peek()) && r.peek() != b'_' as u16 {
-            // `ERROR_LEADING_ZERO_NOT_ALLOWED` — an outright rejection, not a
-            // re-read.
-            return Err(err());
+            match binary {
+                Some(d) => (Base::Binary, d),
+                None if peek_nonspace(r).is_some_and(|c| is_decimal(c) && c != b'_' as u16) => {
+                    // `ERROR_LEADING_ZERO_NOT_ALLOWED` — an outright
+                    // rejection, not a re-read.
+                    return Err(err());
+                }
+                None => (Base::Decimal, "0".to_string()),
+            }
         }
     } else {
-        decimal(r)?;
-    }
-    integer_suffix(r);
-    Ok(())
+        (Base::Decimal, decimal(r)?)
+    };
+    let (declared, width) = integer_suffix(r);
+    Ok(IntegerLiteral {
+        negative,
+        base,
+        digits,
+        declared,
+        width,
+    })
 }
 
-/// `floatExponentPart`.
-fn exponent(r: &mut StringReader) -> Result<(), ReaderError> {
+/// A standalone integer value. The default width is INT
+/// (`requireNonNullElse(suffix.type, TypeSuffix.INT)`).
+fn integer(r: &mut StringReader) -> Result<(), ReaderError> {
+    let literal = integer_literal(r)?;
+    let width = literal.width.unwrap_or(Width::Int);
+    literal.check(width)
+}
+
+/// `floatExponentPart`, appended to `out` in the form `createFloat` builds.
+fn exponent(r: &mut StringReader, out: &mut String) -> Result<(), ReaderError> {
     if !eat_either(r, b'e', b'E') {
         return Err(err());
     }
-    sign(r);
-    decimal(r)
+    let negative = sign(r);
+    let digits = decimal(r)?;
+    out.push('e');
+    if negative {
+        out.push('-');
+    }
+    out.push_str(&digits);
+    Ok(())
 }
 
-fn float_suffix(r: &mut StringReader) -> bool {
-    eat_either(r, b'f', b'F') || eat_either(r, b'd', b'D')
+/// `floatTypeSuffix?` — `f` is FLOAT, `d` is DOUBLE, absent is DOUBLE.
+fn float_suffix(r: &mut StringReader) -> Option<bool> {
+    if eat_either(r, b'f', b'F') {
+        Some(true)
+    } else if eat_either(r, b'd', b'D') {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// `convertFloat` / `convertDouble` — the whole of which is a finiteness test.
+/// `1e400` is not a parse failure in Java either; it is `Infinity`, and it is
+/// `ERROR_INFINITY_NOT_ALLOWED` that rejects it.
+fn finite(text: &str, single: bool) -> Result<(), ReaderError> {
+    let ok = if single {
+        text.parse::<f32>().map(|v| v.is_finite())
+    } else {
+        text.parse::<f64>().map(|v| v.is_finite())
+    };
+    match ok {
+        Ok(true) => Ok(()),
+        _ => Err(err()),
+    }
 }
 
 /// `floatLiteral` — and it needs a `.`, an exponent, or an `f`/`d`, which is
 /// what stops it swallowing every integer.
 fn float(r: &mut StringReader) -> Result<(), ReaderError> {
     let start = r.cursor();
-    sign(r);
+    let mut text = String::new();
+    if sign(r) {
+        text.push('-');
+    }
     skip_whitespace(r);
-    if at(r, b'.') {
-        r.skip();
-        decimal(r)?;
-        let _ = exponent(r);
-        float_suffix(r);
-        return Ok(());
+    let mut finish = |r: &mut StringReader, text: &mut String| -> Result<(), ReaderError> {
+        let single = float_suffix(r).unwrap_or(false);
+        finite(text, single)
+    };
+    if eat_char(r, b'.') {
+        text.push('.');
+        text.push_str(&decimal(r)?);
+        let _ = exponent(r, &mut text);
+        return finish(r, &mut text);
     }
-    if decimal(r).is_err() {
-        r.set_cursor(start);
-        return Err(err());
-    }
-    if at(r, b'.') {
-        r.skip();
+    let whole = match decimal(r) {
+        Ok(d) => d,
+        Err(_) => {
+            r.set_cursor(start);
+            return Err(err());
+        }
+    };
+    text.push_str(&whole);
+    if eat_char(r, b'.') {
         // The fraction is optional: `1.` is a float.
-        let _ = decimal(r);
-        let _ = exponent(r);
-        float_suffix(r);
-        return Ok(());
+        if let Ok(f) = decimal(r) {
+            text.push('.');
+            text.push_str(&f);
+        }
+        let _ = exponent(r, &mut text);
+        return finish(r, &mut text);
     }
-    if exponent(r).is_ok() {
-        float_suffix(r);
-        return Ok(());
+    if exponent(r, &mut text).is_ok() {
+        return finish(r, &mut text);
     }
-    if float_suffix(r) {
-        return Ok(());
+    match float_suffix(r) {
+        Some(single) => finite(&text, single),
+        None => {
+            r.set_cursor(start);
+            Err(err())
+        }
     }
-    r.set_cursor(start);
-    Err(err())
 }
 
 /// `\N{…}`'s name pattern, `[-a-zA-Z0-9 ]+`.
@@ -359,7 +574,7 @@ fn unquoted_or_builtin(r: &mut StringReader, depth: usize) -> Result<(), ReaderE
     skip_whitespace(r);
     if at(r, b'(') {
         r.skip();
-        separated(r, depth, b')', parse_value_at)?;
+        separated(r, depth, b')', &mut parse_value_at)?;
         expect(r, b')')?;
     }
     Ok(())
@@ -371,7 +586,7 @@ fn separated(
     r: &mut StringReader,
     depth: usize,
     close: u8,
-    item: fn(&mut StringReader, usize) -> Result<(), ReaderError>,
+    item: &mut dyn FnMut(&mut StringReader, usize) -> Result<(), ReaderError>,
 ) -> Result<(), ReaderError> {
     loop {
         skip_whitespace(r);
@@ -400,8 +615,32 @@ fn map_entry(r: &mut StringReader, depth: usize) -> Result<(), ReaderError> {
     parse_value_at(r, depth)
 }
 
-fn integer_item(r: &mut StringReader, _depth: usize) -> Result<(), ReaderError> {
-    integer(r)
+/// `ArrayPrefix.buildNumber` — the element's width, checked against the
+/// array's.
+///
+/// `isAllowed` is a **narrowing** rule, not a widening one: `[B; …]` admits
+/// only BYTE, `[I; …]` admits INT/BYTE/SHORT, and `[L; …]` admits
+/// LONG/BYTE/SHORT/INT. So `[I; 1b]` is fine and `[B; 1i]` is
+/// `ERROR_INVALID_ARRAY_ELEMENT_TYPE`. An element that declares no width takes
+/// the array's own.
+fn array_item(r: &mut StringReader, prefix: Width) -> Result<(), ReaderError> {
+    let literal = integer_literal(r)?;
+    let width = match literal.width {
+        None => prefix,
+        Some(w) if array_allows(prefix, w) => w,
+        Some(_) => return Err(err()),
+    };
+    literal.check(width)
+}
+
+fn array_allows(prefix: Width, width: Width) -> bool {
+    match prefix {
+        Width::Byte => width == Width::Byte,
+        Width::Int => matches!(width, Width::Int | Width::Byte | Width::Short),
+        Width::Long => matches!(width, Width::Long | Width::Byte | Width::Short | Width::Int),
+        // There is no short-array prefix.
+        Width::Short => false,
+    }
 }
 
 /// The recursion guard. Vanilla's packrat state has its own depth limit; this
@@ -436,7 +675,7 @@ fn parse_value_at(r: &mut StringReader, depth: usize) -> Result<(), ReaderError>
     }
     if c == b'{' as u16 {
         r.skip();
-        separated(r, depth + 1, b'}', map_entry)?;
+        separated(r, depth + 1, b'}', &mut map_entry)?;
         return expect(r, b'}');
     }
     if c == b'[' as u16 {
@@ -444,17 +683,23 @@ fn parse_value_at(r: &mut StringReader, depth: usize) -> Result<(), ReaderError>
         // `arrayPrefix` is UPPERCASE only — `[b;1]` is not a byte array.
         let mark = r.cursor();
         skip_whitespace(r);
-        let prefixed = matches!(r.peek() as u8, b'B' | b'L' | b'I') && {
+        let prefix = match r.peek() as u8 {
+            b'B' => Some(Width::Byte),
+            b'I' => Some(Width::Int),
+            b'L' => Some(Width::Long),
+            _ => None,
+        }
+        .filter(|_| {
             let after = r.cursor() + 1;
             r.string().get(after).copied() == Some(b';' as u16)
-        };
-        if prefixed {
+        });
+        if let Some(prefix) = prefix {
             r.skip();
             r.skip();
-            separated(r, depth + 1, b']', integer_item)?;
+            separated(r, depth + 1, b']', &mut |r, _| array_item(r, prefix))?;
         } else {
             r.set_cursor(mark);
-            separated(r, depth + 1, b']', parse_value_at)?;
+            separated(r, depth + 1, b']', &mut parse_value_at)?;
         }
         return expect(r, b']');
     }
@@ -692,10 +937,152 @@ mod tests {
     }
 
     #[test]
-    fn range_is_still_not_checked_and_that_is_stated() {
-        // Vanilla additionally parses each numeral and reports
-        // ERROR_NUMBER_PARSE_FAILURE on overflow. Recorded as a test so the
-        // day someone adds it, this fails and asks to be updated.
-        assert!(ok("999999999999b"));
+    fn range_is_checked_now_which_is_what_m122_asked_for() {
+        // M122 recorded this acceptance as a test so that the day someone
+        // added the check, it would fail and ask to be updated. This is that
+        // update: the same literal is now ERROR_NUMBER_PARSE_FAILURE.
+        assert!(!ok("999999999999b"));
+    }
+
+    #[test]
+    fn the_base_decides_the_signedness_and_therefore_the_range() {
+        // `signedOrDefault`: an explicit u/s wins, and otherwise BINARY and HEX
+        // default to UNSIGNED where DECIMAL defaults to SIGNED. The default
+        // width is INT either way, so the same value is in range in one base
+        // and out of it in another.
+        assert!(ok("0xFFFFFFFF"));
+        assert!(ok("0b11111111111111111111111111111111"));
+        assert!(!ok("4294967295"));
+        assert!(ok("2147483647"));
+        assert!(!ok("2147483648"));
+        assert!(ok("2147483648L"));
+    }
+
+    #[test]
+    fn an_unsigned_literal_may_not_be_negative() {
+        // ERROR_EXPECTED_NON_NEGATIVE_NUMBER. The sign and the base disagree
+        // and the base wins, so `-0xF` is an error while `-15` is fine.
+        assert!(!ok("-0xF"));
+        assert!(!ok("-0b1"));
+        assert!(ok("-15"));
+        // An explicit `s` rescues the hex one.
+        assert!(ok("-0xFsi"));
+    }
+
+    #[test]
+    fn s_is_both_the_signed_prefix_and_the_short_width() {
+        // The prefix alternative is tried first, needs a width after it, and
+        // backtracks when there is none — so a bare `s` reaches the SHORT
+        // alternative while `sb` is a signed byte.
+        assert!(ok("1s"));
+        assert!(ok("1sb"));
+        assert!(ok("1ss"));
+        assert!(!ok("200sb"));
+        assert!(ok("200ub"));
+        assert!(!ok("256ub"));
+        // A prefix with no width is not a suffix at all, so the `u` is left
+        // over and the value does not consume its input.
+        assert!(!ok("1u"));
+    }
+
+    #[test]
+    fn every_width_gets_its_own_two_sided_range() {
+        assert!(ok("127b") && !ok("128b"));
+        assert!(ok("-128b") && !ok("-129b"));
+        assert!(ok("255ub") && !ok("256ub"));
+        assert!(ok("32767s") && !ok("32768s"));
+        assert!(ok("-32768s") && !ok("-32769s"));
+        assert!(ok("65535us") && !ok("65536us"));
+        assert!(ok("9223372036854775807L"));
+        assert!(!ok("9223372036854775808L"));
+        assert!(ok("-9223372036854775808L"));
+        assert!(ok("18446744073709551615uL"));
+        assert!(!ok("18446744073709551616uL"));
+        // A numeral far past every width must still be a clean reject rather
+        // than an overflow in the checker.
+        assert!(!ok(&"9".repeat(400)));
+    }
+
+    #[test]
+    fn the_separators_come_out_before_the_conversion() {
+        // `cleanupDigits` removes `_` and only then parses, so a separator
+        // cannot push a value out of range.
+        assert!(ok("1_2_7b"));
+        assert!(!ok("1_2_8b"));
+    }
+
+    #[test]
+    fn a_float_is_rejected_for_being_infinite_rather_than_unparseable() {
+        // ERROR_INFINITY_NOT_ALLOWED. Java's parseDouble("1e400") does not
+        // throw; it returns Infinity, and it is the finiteness test that
+        // rejects it.
+        assert!(!ok("1e400"));
+        assert!(!ok("1e400f"));
+        // The same digits are finite as a double and infinite as a float,
+        // which is the only thing the f/d suffix decides here.
+        assert!(ok("1e40"));
+        assert!(ok("1e40d"));
+        assert!(!ok("1e40f"));
+        assert!(ok("3.4e38f"));
+        assert!(!ok("3.5e38f"));
+        assert!(ok("-1.5e-3f"));
+    }
+
+    #[test]
+    fn an_array_element_may_narrow_its_width_but_not_widen_it() {
+        // `ArrayPrefix.isAllowed`: B admits only BYTE, I admits INT/BYTE/SHORT,
+        // L admits those plus LONG.
+        assert!(ok("[I;1b]"));
+        assert!(ok("[I;1s]"));
+        assert!(!ok("[I;1L]"));
+        assert!(ok("[L;1i]"));
+        assert!(!ok("[B;1i]"));
+        assert!(ok("[B;1b]"));
+    }
+
+    #[test]
+    fn an_undeclared_array_element_takes_the_arrays_width_and_its_own_base() {
+        // The sharpest pair in the rule: same number, different base. `255` is
+        // decimal and therefore signed, so it does not fit a byte; `0xFF` is
+        // hex and therefore unsigned, so it does.
+        assert!(ok("[B;1]"));
+        assert!(!ok("[B;255]"));
+        assert!(ok("[B;0xFF]"));
+        assert!(!ok("[B;0x1FF]"));
+        assert!(ok("[I;2147483647]"));
+        assert!(!ok("[I;2147483648]"));
+    }
+
+    #[test]
+    fn a_terminal_skips_whitespace_before_it_and_gives_it_back_on_a_miss() {
+        // `StringReaderTerms.TerminalCharacters` opens with skipWhitespace, so
+        // the pieces of a numeral may be spaced apart — absurd, and what the
+        // terminals do.
+        assert!(ok("{a:1 u b}"));
+        assert!(ok("{a:0 x FF}"));
+        assert!(ok("{a:1 e 5}"));
+        // …and a miss must not eat the whitespace. This is observable at the
+        // top level, and it matters: the dispatcher splits the rest of the
+        // command on the space after an argument, so a value that swallowed
+        // its own trailing space would take the next word's separator with it.
+        let stop = |s: &str| {
+            let units: Vec<u16> = s.encode_utf16().collect();
+            let mut r = StringReader::new(&units);
+            parse_value(&mut r).map(|()| r.cursor())
+        };
+        assert_eq!(stop("1 "), Ok(1));
+        assert_eq!(stop("1 b"), Ok(3));
+        assert!(ok("{a:1 }"));
+        assert!(ok("[1 , 2 ]"));
+        // The leading-zero rule looks past whitespace too.
+        assert!(!ok("{a:0 5}"));
+    }
+
+    #[test]
+    fn a_plus_sign_is_not_a_minus_sign() {
+        // `Sign.PLUS.append` writes nothing, so `+` reaches the conversion as
+        // no sign at all — and cannot rescue an out-of-range magnitude.
+        assert!(ok("+5b"));
+        assert!(!ok("+300b"));
     }
 }

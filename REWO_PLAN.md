@@ -112,9 +112,13 @@ book's 77 px displacement that were not using the shared predicate, and
 exactly). **Chat is complete for everything vanilla draws without a subsystem
 Rewo lacks.**
 
-Current measurement, taken 2026-08-08 after M122: **2522 tests, 0 failures**
-(**world 1006, net 806, gpu 255, data 216, app 183, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2522). **Read each crate's EXIT CODE, not
+Current measurement, taken 2026-08-08 after M123: **2532 tests, 0 failures**
+(**world 1006, net 816, gpu 255, data 216, app 183, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2532). Note the per-crate invocation is
+not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
+other six take `--lib`, and `--lib` there is `error: no library targets`, exit
+101, and **no** `test result` line at all. Assert that a result line exists
+rather than summing whatever appears. **Read each crate's EXIT CODE, not
 just its count**: a crate whose tests fail to compile prints no `test result`
 line at all, contributes 0, and reads as silence — M110 hit exactly that and
 the only signal was the total falling. **Breakdowns written before the
@@ -192,15 +196,17 @@ best-scoped work on the board:
   than measured, so `{a:}` is an error and the red unparsed tail appears where
   vanilla shows one.
 
-  **What remains is polish, and it is named precisely.** (1) Numeric **range**
-  and finiteness: vanilla parses each numeral and reports
-  `ERROR_NUMBER_PARSE_FAILURE` on overflow, where `999999999999b` is accepted
-  — a test in `snbt_grammar` records this so it cannot be forgotten. (2) Seven
+  ~~and numeric range and finiteness~~ (**M123**) — `999999999999b` is an
+  error, `[B;255]` is an error where `[B;0xFF]` is not, and `1e400` is
+  rejected for being infinite rather than unparseable.
+
+  **What remains is suggestion quality, and it is named precisely.** (1) Seven
   literal tables that live in classes outside their argument (`heightmap`,
   `team_color`, `scoreboard_slot`, `item_slot`/`item_slots`, `swizzle`), which
-  parse as words and suggest nothing. (3) The `resource*` family's registries
+  parse as words and suggest nothing. (2) The `resource*` family's registries
   beyond blocks and items — the wire always names the right one, so what limits
-  it is which registries Rewo holds.
+  it is which registries Rewo holds. Neither is a correctness gap: a command
+  Rewo accepts is one the server accepts.
 
   **A gate note that will save a confusing minute:** `--render-check`'s r32
   needs an argument that suggests *nothing*, so its precondition **recedes by
@@ -18837,3 +18843,59 @@ PNG `2cc56b4acbfb92cb`, byte-identical.
 command-argument work is suggestion quality: seven literal tables living in
 classes outside their argument, and the `resource*` family's registries beyond
 blocks and items.
+
+### M123 — the numerals' types and ranges (2026-08-08)
+
+M122 recorded the one thing it did not do as a **failing-on-purpose test**:
+`999999999999b` parsed. This is that check — and it was not a bounds test
+bolted onto a finished parser, because the range depends on three things the
+parser was not tracking, one of which it had outright wrong.
+
+* **The BASE decides the signedness.** `signedOrDefault` takes an explicit
+  `u`/`s` when there is one, and otherwise **binary and hex default to
+  UNSIGNED where decimal defaults to SIGNED**. So `0xFFFFFFFF` is a valid int
+  and `4294967295` is not — the same value, in range in one base and out of it
+  in another — and `-0xF` is `ERROR_EXPECTED_NON_NEGATIVE_NUMBER`, because the
+  sign and the base disagree and the base wins.
+* **`s` is both the SIGNED prefix and the SHORT width**, and the prefix
+  alternative is tried first. `1s` is a short *only* because the prefix branch
+  requires a width after it, finds none, and backtracks; `1sb` is a signed
+  byte. M122 had no `s` prefix at all, so `1sb` left a `b` behind.
+* **An array element may NARROW its width but not widen it.** `isAllowed`
+  reads like a widening rule and is the opposite: `[B; …]` admits only BYTE,
+  `[I; …]` admits INT/BYTE/SHORT, `[L; …]` those plus LONG. An element that
+  declares no width takes the array's — but keeps its **own base**, which
+  gives the sharpest pair here: **`[B;255]` is an error and `[B;0xFF]` is
+  fine.**
+* **A float is rejected for being INFINITE, not for being unparseable.**
+  `Double.parseDouble("1e400")` does not throw in Java either; it returns
+  `Infinity`, and `ERROR_INFINITY_NOT_ALLOWED` is what rejects it. `1e40` is a
+  legal double and an illegal float, which is the only thing the `f`/`d`
+  suffix decides.
+
+**A correction to M122's own comment**, found in the terminals:
+`StringReaderTerms.TerminalCharacters` opens with `skipWhitespace()`, so `1 u b`
+is an unsigned byte and `0 x FF` is hex. It also **gives the whitespace back on
+a miss**, and that is not cosmetic — `parse_value("1 ")` must stop at cursor 1,
+because the dispatcher splits the rest of the command on the space after an
+argument and a value that swallowed its own would take the next word's
+separator with it. That witness is what killed the one mutation I had expected
+to have to argue was equivalent.
+
+**Recorded rather than implemented, because it is unreachable:** the two
+`default ->` arms (`ERROR_EXPECTED_INTEGER_TYPE`, `ERROR_EXPECTED_FLOAT_TYPE`)
+cannot fire through the grammar, since the integer suffix rule only ever yields
+`b`/`s`/`i`/`l` and the float one only `f`/`d`. They exist for the array path,
+where the width is supplied from outside — and that path *is* transcribed.
+
+**17 mutations, 17 killed**, four no-op controls all survived, no equivalent
+mutant. **2532 tests**; `live --render-check` **35/35** with validation ON and
+0 errors (run because the parse feeds M117's highlighting); demo PNG
+`2cc56b4acbfb92cb`, byte-identical.
+
+**A measuring-tool bug worth knowing, and the reason it did not fake a
+result.** `cargo test -p rewo-app --lib` is `error: no library targets found` —
+`rewo-app` is a binary crate and needs `--bins`. That is M91's silent-crate
+failure exactly (exit 101, **zero** `test result` lines, a total that quietly
+drops 183). It was caught in one run because the runner asserts a result line
+*exists* rather than summing whatever it finds. Keep that assertion.
