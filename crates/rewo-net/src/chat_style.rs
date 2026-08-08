@@ -61,14 +61,21 @@
 //!   emits U+FFFD for the orphaned low one. Reproducing that would mean
 //!   carrying UTF-16 semantics through a Rust `str` for a case no server
 //!   produces on purpose.
-//! - **Translatable / score / selector / NBT contents are not resolved** —
-//!   there is no language table in this crate. A `translate` component falls
-//!   back to its key, carrying the resolved style, which is
-//!   [`component_wire::nbt_text`]'s existing convention: visibly wrong beats
-//!   invisibly wrong.
+//! - **Score / selector / NBT contents are not resolved.** All three need
+//!   world state a component walker has no business reaching for — a
+//!   scoreboard, an entity selector's matches, a block entity's NBT. Each
+//!   falls back to emitting nothing, carrying the resolved style.
+//!   **`translate` used to be on this list and no longer is**: it is resolved
+//!   against the language table since M125 (see [`crate::chat_translate`]),
+//!   and passing no table reproduces the old key-as-text behaviour exactly,
+//!   because that is what `getOrDefault(key)` already does for a missing key.
+//! - **The walk is bounded** by [`MAX_COMPONENT_STEPS`], which vanilla is not.
+//!   See that constant for why a `translate` argument makes the difference
+//!   between a linear tree and an exponential one.
 //!
 //! [`component_wire::nbt_text`]: crate::component_wire::nbt_text
 
+use rewo_data::lang::{Language, Part};
 use rewo_proto::nbt::Nbt;
 
 /// `ChatFormatting.PREFIX_CODE`.
@@ -291,17 +298,53 @@ fn flush(buf: &mut String, style: ChatStyle, out: &mut ChatLine) {
     }
 }
 
+/// How many component nodes one line may visit before the walk gives up.
+///
+/// **This is a bound on work, not on nesting, and the difference is the whole
+/// point.** `extra` recursion is self-limiting: every level costs bytes, so a
+/// packet of size *n* yields O(*n*) nodes. A `translate` argument is not, and
+/// the reason is that a template may name the same argument more than once —
+/// `%1$s%1$s` *duplicates* its subtree, so output is exponential in nesting
+/// depth. A depth cap alone does not fix it either, because the fan-out is
+/// server-controlled: the `fallback` field is a string the server chooses, so
+/// it can hold as many `%1$s`s as its packet budget allows, and eight levels
+/// of a hundred-way fan-out is 10^16 nodes.
+///
+/// Vanilla has the same shape (`TranslatableContents.visit` recurses into a
+/// component argument with no budget) and Rewo deliberately does not inherit
+/// it. A step counter bounds the work absolutely, where a text-length budget
+/// would not: a tree whose leaves emit *nothing* costs no text and still costs
+/// exponential time. Sixty-five thousand nodes is far past any legitimate
+/// message and far short of anything that stalls a frame.
+pub const MAX_COMPONENT_STEPS: u32 = 65_536;
+
 /// Parse a network text component into styled spans.
 ///
 /// `base` is the enclosing style — the `parentStyle` argument of
 /// `Component.visit`, and the colour an unstyled component ends up with.
-pub fn parse_component(tag: &Nbt, base: ChatStyle) -> ChatLine {
+///
+/// `lang` resolves `translate` components (M125). It is `Option` because Rewo
+/// parses components in two places and only one of them has a table: `None`
+/// selects `getOrDefault(key)`'s key-as-default, which is exactly what this
+/// function emitted before there was any resolution at all.
+pub fn parse_component(tag: &Nbt, base: ChatStyle, lang: Option<&Language>) -> ChatLine {
     let mut out = Vec::new();
-    walk(tag, base, &mut out);
+    let mut steps = MAX_COMPONENT_STEPS;
+    walk(tag, base, lang, &mut steps, &mut out);
     out
 }
 
-fn walk(tag: &Nbt, parent: ChatStyle, out: &mut ChatLine) {
+fn walk(
+    tag: &Nbt,
+    parent: ChatStyle,
+    lang: Option<&Language>,
+    steps: &mut u32,
+    out: &mut ChatLine,
+) {
+    if *steps == 0 {
+        return;
+    }
+    *steps -= 1;
     match tag {
         // `Codec.STRING` -> `Component.literal`, whose style is EMPTY, so it
         // resolves to the parent's. Legacy codes inside it still parse.
@@ -312,10 +355,10 @@ fn walk(tag: &Nbt, parent: ChatStyle, out: &mut ChatLine) {
         // not the caller's (module rule 6).
         Nbt::List(items) => {
             let Some((first, rest)) = items.split_first() else { return };
-            walk(first, parent, out);
+            walk(first, parent, lang, steps, out);
             let root = resolved_style(first, parent);
             for item in rest {
-                walk(item, root, out);
+                walk(item, root, lang, steps, out);
             }
         }
 
@@ -326,17 +369,52 @@ fn walk(tag: &Nbt, parent: ChatStyle, out: &mut ChatLine) {
                 // `resetStyle` is this run's own resolved style, so a `§r`
                 // here returns to the component's colour, not to white.
                 push_legacy(s, style, style, out);
-            } else if let Some(Nbt::String(key)) = tag.get("translate") {
-                push_legacy(key, style, style, out);
+            } else if let Some(t) = crate::chat_translate::translatable(tag, lang) {
+                walk_translatable(&t, style, lang, steps, out);
             }
             if let Some(Nbt::List(children)) = tag.get("extra") {
                 for child in children {
-                    walk(child, style, out);
+                    walk(child, style, lang, steps, out);
                 }
             }
         }
 
         _ => {}
+    }
+}
+
+/// `TranslatableContents.visit(output, currentStyle)` — the decomposed parts,
+/// each visited with the translatable's own resolved style.
+///
+/// `style` is that resolved style, so a literal run of the template takes it
+/// verbatim (`FormattedText.of(prefix).visit` forwards the style it is given)
+/// while a component argument applies its own **on top** of it, because
+/// `Component.visit` opens with `this.getStyle().applyTo(parentStyle)`. That
+/// is the same composition an `extra` child gets, and it is what makes a
+/// team-coloured sender name keep its colour inside a grey `/msg` line.
+fn walk_translatable(
+    t: &crate::chat_translate::Translatable<'_>,
+    style: ChatStyle,
+    lang: Option<&Language>,
+    steps: &mut u32,
+    out: &mut ChatLine,
+) {
+    let Some(parts) = t.parts() else {
+        // `TranslatableFormatException` -> `[FormattedText.of(format)]`: the
+        // looked-up template, unsubstituted, as one part. Not the key.
+        push_legacy(t.template, style, style, out);
+        return;
+    };
+    for part in parts {
+        match part {
+            Part::Literal(s) => push_legacy(s, style, style, out),
+            Part::Arg(i) => match crate::chat_translate::primitive_arg_text(&t.args[i]) {
+                // `FormattedText.of(arg.toString())` — the caller's style,
+                // with no style of its own to apply.
+                Some(text) => push_legacy(&text, style, style, out),
+                None => walk(&t.args[i], style, lang, steps, out),
+            },
+        }
     }
 }
 
@@ -629,7 +707,7 @@ mod tests {
 
     #[test]
     fn a_bare_string_component_is_one_span_of_the_base_style() {
-        let line = parse_component(&Nbt::String("hi".into()), ChatStyle::plain(rgb_f32(GREEN)));
+        let line = parse_component(&Nbt::String("hi".into()), ChatStyle::plain(rgb_f32(GREEN)), None);
         assert_eq!(shape(&line), vec![("hi", GREEN, NONE)]);
     }
 
@@ -640,7 +718,7 @@ mod tests {
             ("color", Nbt::String("red".into())),
             ("bold", Nbt::Byte(1)),
         ]);
-        assert_eq!(shape(&parse_component(&tag, ChatStyle::WHITE)), vec![("x", RED, BOLD)]);
+        assert_eq!(shape(&parse_component(&tag, ChatStyle::WHITE, None)), vec![("x", RED, BOLD)]);
     }
 
     #[test]
@@ -652,7 +730,7 @@ mod tests {
             ("extra", Nbt::List(vec![text("b")])),
         ]);
         assert_eq!(
-            shape(&parse_component(&tag, ChatStyle::WHITE)),
+            shape(&parse_component(&tag, ChatStyle::WHITE, None)),
             vec![("a", RED, ITALIC), ("b", RED, ITALIC)]
         );
     }
@@ -670,7 +748,7 @@ mod tests {
             ("extra", Nbt::List(vec![child])),
         ]);
         assert_eq!(
-            shape(&parse_component(&tag, ChatStyle::WHITE)),
+            shape(&parse_component(&tag, ChatStyle::WHITE, None)),
             vec![("a", RED, BOLD), ("b", GREEN, BOLD)]
         );
     }
@@ -687,7 +765,7 @@ mod tests {
             ("extra", Nbt::List(vec![child])),
         ]);
         assert_eq!(
-            shape(&parse_component(&tag, ChatStyle::WHITE)),
+            shape(&parse_component(&tag, ChatStyle::WHITE, None)),
             vec![("a", WHITE, BOLD), ("b", WHITE, NONE)]
         );
     }
@@ -698,7 +776,7 @@ mod tests {
             ("text", Nbt::String("head".into())),
             ("extra", Nbt::List(vec![text("tail")])),
         ]);
-        assert_eq!(plain_text(&parse_component(&tag, ChatStyle::WHITE)), "headtail");
+        assert_eq!(plain_text(&parse_component(&tag, ChatStyle::WHITE, None)), "headtail");
     }
 
     #[test]
@@ -715,7 +793,7 @@ mod tests {
             ("extra", Nbt::List(vec![child])),
         ]);
         assert_eq!(
-            shape(&parse_component(&tag, ChatStyle::WHITE)),
+            shape(&parse_component(&tag, ChatStyle::WHITE, None)),
             vec![("a", WHITE, BOLD), ("b", GREEN, BOLD), ("c", GREEN, BOLD)]
         );
     }
@@ -732,7 +810,7 @@ mod tests {
             ("extra", Nbt::List(vec![red, text("b")])),
         ]);
         assert_eq!(
-            shape(&parse_component(&tag, ChatStyle::WHITE)),
+            shape(&parse_component(&tag, ChatStyle::WHITE, None)),
             vec![("a", RED, NONE), ("b", WHITE, NONE)]
         );
     }
@@ -748,7 +826,7 @@ mod tests {
         ]);
         let list = Nbt::List(vec![first, text("b")]);
         assert_eq!(
-            shape(&parse_component(&list, ChatStyle::WHITE)),
+            shape(&parse_component(&list, ChatStyle::WHITE, None)),
             vec![("a", RED, NONE), ("b", RED, NONE)]
         );
     }
@@ -763,7 +841,7 @@ mod tests {
             ("color", Nbt::String("red".into())),
         ]);
         assert_eq!(
-            shape(&parse_component(&tag, ChatStyle::WHITE)),
+            shape(&parse_component(&tag, ChatStyle::WHITE, None)),
             vec![("a", RED, NONE), ("b", RED, BOLD)]
         );
     }
@@ -778,7 +856,7 @@ mod tests {
             ("color", Nbt::String("green".into())),
         ]);
         assert_eq!(
-            shape(&parse_component(&tag, ChatStyle::WHITE)),
+            shape(&parse_component(&tag, ChatStyle::WHITE, None)),
             vec![("a", GREEN, NONE), ("b", RED, NONE), ("c", GREEN, NONE)]
         );
     }
@@ -790,9 +868,175 @@ mod tests {
             ("color", Nbt::String("red".into())),
         ]);
         assert_eq!(
-            shape(&parse_component(&tag, ChatStyle::WHITE)),
+            shape(&parse_component(&tag, ChatStyle::WHITE, None)),
             vec![("chat.type.text", RED, NONE)]
         );
+    }
+
+    // ── translatable resolution (M125) ────────────────────────────────────
+
+    fn lang(pairs: &[(&str, &str)]) -> Language {
+        Language::from_map(
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn a_translate_component_resolves_its_key_and_substitutes_its_arguments() {
+        let tag = compound(&[
+            ("translate", Nbt::String("multiplayer.player.joined".into())),
+            ("with", Nbt::List(vec![Nbt::String("Steve".into())])),
+        ]);
+        let l = lang(&[("multiplayer.player.joined", "%s joined the game")]);
+        assert_eq!(
+            plain_text(&parse_component(&tag, ChatStyle::WHITE, Some(&l))),
+            "Steve joined the game"
+        );
+    }
+
+    /// The reason the styled path exists at all: a component argument applies
+    /// its **own** style on top of the translatable's, because
+    /// `Component.visit` opens with `getStyle().applyTo(parentStyle)`. A
+    /// resolution that substituted plain strings would paint the whole line
+    /// one colour, and the line would still read correctly — which is what
+    /// makes this the rule to pin rather than the substitution.
+    #[test]
+    fn a_component_argument_keeps_its_own_style_inside_the_template() {
+        let sender = compound(&[
+            ("text", Nbt::String("Steve".into())),
+            ("color", Nbt::String("green".into())),
+        ]);
+        let tag = compound(&[
+            ("translate", Nbt::String("k".into())),
+            ("color", Nbt::String("red".into())),
+            ("with", Nbt::List(vec![sender])),
+        ]);
+        let l = lang(&[("k", "<%s> hi")]);
+        assert_eq!(
+            shape(&parse_component(&tag, ChatStyle::WHITE, Some(&l))),
+            vec![("<", RED, NONE), ("Steve", GREEN, NONE), ("> hi", RED, NONE)]
+        );
+    }
+
+    /// A **primitive** argument has no style of its own, so it takes the
+    /// template's — `FormattedText.of(String)` forwards the style it is given.
+    /// The literal runs on either side must come out identical to it.
+    #[test]
+    fn a_primitive_argument_takes_the_templates_style() {
+        let tag = compound(&[
+            ("translate", Nbt::String("k".into())),
+            ("color", Nbt::String("red".into())),
+            ("with", Nbt::List(vec![Nbt::String("Steve".into())])),
+        ]);
+        let l = lang(&[("k", "<%s>")]);
+        assert_eq!(
+            shape(&parse_component(&tag, ChatStyle::WHITE, Some(&l))),
+            vec![("<", RED, NONE), ("Steve", RED, NONE), (">", RED, NONE)]
+        );
+    }
+
+    /// An integral argument is an integer, not a double — the `JavaOps` width
+    /// rule, seen from the renderer rather than from `primitive_arg_text`.
+    #[test]
+    fn an_integer_argument_renders_without_a_decimal_point() {
+        let tag = compound(&[
+            ("translate", Nbt::String("k".into())),
+            (
+                "with",
+                Nbt::List(vec![Nbt::String("Dirt".into()), Nbt::Int(64)]),
+            ),
+        ]);
+        let l = lang(&[("k", "Gave %s x%s")]);
+        assert_eq!(
+            plain_text(&parse_component(&tag, ChatStyle::WHITE, Some(&l))),
+            "Gave Dirt x64"
+        );
+    }
+
+    /// A format error renders the resolved **template**, not the key, and the
+    /// two are different strings whenever the key resolved. Vanilla's
+    /// `decompose` catch replaces the whole part list with one
+    /// `FormattedText.of(format)`, so no prefix leaks out before it.
+    #[test]
+    fn a_format_error_renders_the_template_and_no_partial_prefix() {
+        let tag = compound(&[
+            ("translate", Nbt::String("k".into())),
+            ("with", Nbt::List(vec![Nbt::String("one".into())])),
+        ]);
+        let l = lang(&[("k", "first %s then %s")]);
+        assert_eq!(
+            plain_text(&parse_component(&tag, ChatStyle::WHITE, Some(&l))),
+            "first %s then %s"
+        );
+    }
+
+    /// A translatable argument of a translatable resolves too, and the styles
+    /// compose through both levels.
+    #[test]
+    fn a_nested_translatable_argument_resolves() {
+        let inner = compound(&[
+            ("translate", Nbt::String("inner".into())),
+            ("color", Nbt::String("green".into())),
+        ]);
+        let tag = compound(&[
+            ("translate", Nbt::String("outer".into())),
+            ("with", Nbt::List(vec![inner])),
+        ]);
+        let l = lang(&[("outer", "[%s]"), ("inner", "deep")]);
+        assert_eq!(
+            shape(&parse_component(&tag, ChatStyle::WHITE, Some(&l))),
+            vec![("[", WHITE, NONE), ("deep", GREEN, NONE), ("]", WHITE, NONE)]
+        );
+    }
+
+    /// The `extra` children of a translatable still run, and still run
+    /// **after** its contents — `Component.visit` does the contents first.
+    #[test]
+    fn a_translatables_extra_children_follow_its_resolved_text() {
+        let tag = compound(&[
+            ("translate", Nbt::String("k".into())),
+            ("with", Nbt::List(vec![Nbt::String("X".into())])),
+            ("extra", Nbt::List(vec![text("!")])),
+        ]);
+        let l = lang(&[("k", "<%s>")]);
+        assert_eq!(
+            plain_text(&parse_component(&tag, ChatStyle::WHITE, Some(&l))),
+            "<X>!"
+        );
+    }
+
+    /// The work bound. A template that names the same argument twice doubles
+    /// its subtree, so twenty levels of it is a million nodes and forty is a
+    /// trillion — and the fan-out is server-chosen, because `fallback` is a
+    /// string the server sends. Vanilla has no bound here; this one returns a
+    /// truncated line in bounded time instead of hanging the frame.
+    ///
+    /// The assertion is on the **step budget being spent**, not on the text:
+    /// a test that only checked "it returned" would pass just as well against
+    /// an implementation that took an hour to do it.
+    #[test]
+    fn a_self_duplicating_translatable_is_bounded() {
+        // Forty nested levels of `%1$s%1$s`. Unbounded, this is 2^40 spans.
+        let mut node = text("x");
+        for _ in 0..40 {
+            node = compound(&[
+                ("translate", Nbt::String("dup".into())),
+                ("with", Nbt::List(vec![node])),
+            ]);
+        }
+        let l = lang(&[("dup", "%1$s%1$s")]);
+        let line = parse_component(&node, ChatStyle::WHITE, Some(&l));
+        assert!(
+            line.len() < MAX_COMPONENT_STEPS as usize,
+            "bounded by the step budget, got {} spans",
+            line.len()
+        );
+        // And it really did hit the wall rather than terminating early for
+        // some other reason — an unbounded walk would owe 2^40 leaves.
+        assert!(line.len() > 1000, "the walk did do the work it could afford");
     }
 
     #[test]
@@ -804,7 +1048,7 @@ mod tests {
             ("text", Nbt::String("literal".into())),
             ("translate", Nbt::String("key".into())),
         ]);
-        assert_eq!(plain_text(&parse_component(&tag, ChatStyle::WHITE)), "literal");
+        assert_eq!(plain_text(&parse_component(&tag, ChatStyle::WHITE, None)), "literal");
     }
 
     #[test]
@@ -814,11 +1058,11 @@ mod tests {
         // `byteValue() != 0` would have made it `false`.
         for tag in [Nbt::Byte(1), Nbt::Short(1), Nbt::Int(256), Nbt::Float(0.5)] {
             let c = compound(&[("text", Nbt::String("x".into())), ("bold", tag.clone())]);
-            assert_eq!(shape(&parse_component(&c, ChatStyle::WHITE)), vec![("x", WHITE, BOLD)]);
+            assert_eq!(shape(&parse_component(&c, ChatStyle::WHITE, None)), vec![("x", WHITE, BOLD)]);
         }
         for tag in [Nbt::Byte(0), Nbt::Int(0), Nbt::Double(0.0)] {
             let c = compound(&[("text", Nbt::String("x".into())), ("bold", tag.clone())]);
-            assert_eq!(shape(&parse_component(&c, ChatStyle::WHITE)), vec![("x", WHITE, NONE)]);
+            assert_eq!(shape(&parse_component(&c, ChatStyle::WHITE, None)), vec![("x", WHITE, NONE)]);
         }
     }
 
@@ -834,7 +1078,7 @@ mod tests {
             ("extra", Nbt::List(vec![child])),
         ]);
         assert_eq!(
-            shape(&parse_component(&tag, ChatStyle::WHITE)),
+            shape(&parse_component(&tag, ChatStyle::WHITE, None)),
             vec![("a", RED, NONE), ("b", RED, NONE)]
         );
     }
@@ -842,7 +1086,7 @@ mod tests {
     #[test]
     fn a_component_with_no_contents_yields_only_its_children() {
         let tag = compound(&[("extra", Nbt::List(vec![text("only")]))]);
-        assert_eq!(plain_text(&parse_component(&tag, ChatStyle::WHITE)), "only");
+        assert_eq!(plain_text(&parse_component(&tag, ChatStyle::WHITE, None)), "only");
     }
 
     #[test]
@@ -850,9 +1094,9 @@ mod tests {
         // `score` / `selector` / `nbt` contents need a resolver this crate
         // does not have. An empty line is recoverable; an invented one is not.
         let tag = compound(&[("selector", Nbt::String("@p".into()))]);
-        assert!(parse_component(&tag, ChatStyle::WHITE).is_empty());
-        assert!(parse_component(&Nbt::Int(7), ChatStyle::WHITE).is_empty());
-        assert!(parse_component(&Nbt::List(vec![]), ChatStyle::WHITE).is_empty());
+        assert!(parse_component(&tag, ChatStyle::WHITE, None).is_empty());
+        assert!(parse_component(&Nbt::Int(7), ChatStyle::WHITE, None).is_empty());
+        assert!(parse_component(&Nbt::List(vec![]), ChatStyle::WHITE, None).is_empty());
     }
 
     #[test]

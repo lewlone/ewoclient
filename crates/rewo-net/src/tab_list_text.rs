@@ -63,9 +63,16 @@ pub fn parse_tab_list(body: &[u8]) -> Result<TabListPacket> {
 /// The base style decides colours and nothing else, and this reads only the
 /// characters, so any base does — white is passed because it is the surface
 /// default a caller rendering the header would use.
+///
+/// **No language table** (M125): this runs at decode time, where there is
+/// none, so a `translate` component counts as its key and is therefore never
+/// empty. Vanilla's `getString()` resolves through the `Language.getInstance()`
+/// global and so would answer `true` for a key whose translation is the empty
+/// string. Named rather than hidden; no vanilla template is empty, so the two
+/// readings differ only for a server that ships one deliberately.
 pub fn renders_empty(component: &Nbt) -> bool {
     let base = ChatStyle::plain([1.0, 1.0, 1.0]);
-    chat_style::plain_text(&chat_style::parse_component(component, base)).is_empty()
+    chat_style::plain_text(&chat_style::parse_component(component, base, None)).is_empty()
 }
 
 /// The tab list's header and footer as the client holds them

@@ -171,10 +171,18 @@ pub const DEFAULT_FADE_OUT: i32 = 20;
 pub const OVERLAY_MESSAGE_TICKS: i32 = 60;
 
 /// Flatten a component to plain text, the way the tab list and chat already
-/// do — [`chat_style::parse_component`] resolves `text` / `extra` and emits a
-/// `translate` key verbatim.
+/// do — [`chat_style::parse_component`] resolves `text` / `extra`.
+///
+/// **No language table**, because this runs at packet-decode time inside
+/// `PlaySession` and the table is the app's (`BakedAssets::lang`). A
+/// `translate` component therefore flattens to its key here. That is not a
+/// regression — it is what this function has always done — and it does not
+/// reach the screen for the components that matter: the title, subtitle and
+/// action bar are kept as raw [`Nbt`] precisely so the app can resolve and
+/// style them at render time. This is for the callers that want a string now,
+/// mostly logging and witnesses.
 pub fn plain(component: &Nbt) -> String {
-    chat_style::plain_text(&chat_style::parse_component(component, ChatStyle::WHITE))
+    chat_style::plain_text(&chat_style::parse_component(component, ChatStyle::WHITE, None))
 }
 
 // ---------------------------------------------------------------------------
