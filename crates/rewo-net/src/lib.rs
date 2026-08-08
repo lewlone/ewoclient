@@ -20,6 +20,7 @@ pub mod arg_types;
 pub mod block_item;
 pub mod chat_sign;
 pub mod chat_style;
+pub mod chat_translate;
 pub mod chat_wire;
 pub mod command_format;
 pub mod commands;

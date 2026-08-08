@@ -92,6 +92,46 @@ fn read_string(r: &mut PacketReader) -> Result<String> {
     Ok(String::from_utf8_lossy(bytes).into_owned())
 }
 
+/// `ListTag.addAndUnwrap` — undo the wrapper a **heterogeneous** list is
+/// written with.
+///
+/// An NBT list is homogeneous by construction: the payload is one element-type
+/// byte and then that many bodies. A `ListTag` holding mixed types therefore
+/// cannot be written as itself, and vanilla's answer is
+/// `identifyRawElementType`, which returns the shared type if there is one and
+/// otherwise **10** (`TAG_Compound`) — at which point `wrapIfNeeded` boxes
+/// every element that is not already a plain compound as `{"": value}`.
+/// `ListTag.load` unwraps each element back on the way in, which is what makes
+/// the round trip exact.
+///
+/// **A reader that skips this does not fail; it produces a plausible wrong
+/// tree.** The list is still a list and the elements are still tags, so
+/// nothing errors — a consumer just sees a one-entry compound where the value
+/// should be. That is how it survived from M1 to M125 unnoticed: the first
+/// thing to read a heterogeneous list's non-compound element was a
+/// translatable component's `with`, where a server sends
+/// `[<count>, <item component>, <player component>]` and the count is the odd
+/// one out. It rendered as "Gave  [Diamond Sword] to RewoLive", with the
+/// number silently gone.
+///
+/// The `size() == 1` test is exact and load-bearing in both directions:
+/// `isWrapper` is `size() == 1 && contains("")`, so a compound with an empty
+/// key AND another key is a real component and is left alone, and a genuine
+/// `{"": x}` element is written double-wrapped on the way out so that this
+/// unwraps it back to `{"": x}` rather than to `x`.
+fn unwrap_list_element(tag: Nbt) -> Nbt {
+    match &tag {
+        Nbt::Compound(entries) if entries.len() == 1 && entries[0].0.is_empty() => {
+            match tag {
+                Nbt::Compound(mut entries) => entries.remove(0).1,
+                // Unreachable: the guard above already matched a compound.
+                other => other,
+            }
+        }
+        _ => tag,
+    }
+}
+
 fn read_payload(r: &mut PacketReader, tag: u8, depth: u32) -> Result<Nbt> {
     if depth > MAX_DEPTH {
         return Err(ProtoError::Nbt("depth limit exceeded".into()));
@@ -116,7 +156,7 @@ fn read_payload(r: &mut PacketReader, tag: u8, depth: u32) -> Result<Nbt> {
             let len = checked_len(r, raw_len, 1)?;
             let mut items = Vec::with_capacity(len.min(4096));
             for _ in 0..len {
-                items.push(read_payload(r, elem_tag, depth + 1)?);
+                items.push(unwrap_list_element(read_payload(r, elem_tag, depth + 1)?));
             }
             Nbt::List(items)
         }
@@ -191,6 +231,140 @@ mod tests {
         assert_eq!(nbt.get("text").and_then(Nbt::as_str), Some("hi"));
         assert_eq!(nbt.get("n").and_then(Nbt::as_i64), Some(7));
         assert_eq!(nbt.to_plain_text(), "hi");
+    }
+
+    // -- `ListTag.addAndUnwrap` -------------------------------------------
+
+    /// A `TAG_List` of `elem_tag`, with each element's payload already encoded.
+    fn wire_list(elem_tag: u8, payloads: &[Vec<u8>]) -> Vec<u8> {
+        let mut buf = vec![9u8, elem_tag];
+        buf.extend_from_slice(&(payloads.len() as i32).to_be_bytes());
+        for p in payloads {
+            buf.extend_from_slice(p);
+        }
+        buf
+    }
+
+    /// A `TAG_Compound` payload from already-encoded `(tag, name, payload)`.
+    fn wire_compound(entries: &[(u8, &str, Vec<u8>)]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for (tag, name, payload) in entries {
+            buf.push(*tag);
+            buf.extend_from_slice(&(name.len() as u16).to_be_bytes());
+            buf.extend_from_slice(name.as_bytes());
+            buf.extend_from_slice(payload);
+        }
+        buf.push(0);
+        buf
+    }
+
+    fn int_payload(v: i32) -> Vec<u8> {
+        v.to_be_bytes().to_vec()
+    }
+
+    /// A homogeneous list is untouched — the unwrap must not fire on the
+    /// common case.
+    #[test]
+    fn a_homogeneous_list_is_read_unchanged() {
+        let buf = wire_list(3, &[int_payload(1), int_payload(2)]);
+        let mut r = PacketReader::new(&buf);
+        assert_eq!(
+            Nbt::read_network(&mut r).unwrap(),
+            Nbt::List(vec![Nbt::Int(1), Nbt::Int(2)])
+        );
+    }
+
+    /// The heterogeneous case, which is the one that was silently wrong from
+    /// M1 to M125. NBT lists are homogeneous, so a mixed list is written as a
+    /// list of compounds with every non-compound element boxed as `{"": v}` —
+    /// `ListTag.wrapIfNeeded` — and `load` unwraps each one back.
+    ///
+    /// Without the unwrap this decodes without error into a plausible wrong
+    /// tree: element 0 reads as a one-entry compound instead of an integer,
+    /// which is why nothing caught it until a translatable's `with` list held
+    /// a count beside two components.
+    #[test]
+    fn a_wrapped_element_of_a_mixed_list_is_unwrapped() {
+        let wrapped = wire_compound(&[(3, "", int_payload(1))]);
+        let real = wire_compound(&[(8, "text", {
+            let mut v = (2u16).to_be_bytes().to_vec();
+            v.extend_from_slice(b"hi");
+            v
+        })]);
+        let buf = wire_list(10, &[wrapped, real]);
+        let mut r = PacketReader::new(&buf);
+        assert_eq!(
+            Nbt::read_network(&mut r).unwrap(),
+            Nbt::List(vec![
+                Nbt::Int(1),
+                Nbt::Compound(vec![("text".into(), Nbt::String("hi".into()))]),
+            ])
+        );
+    }
+
+    /// `isWrapper` is `size() == 1 && contains("")`, so BOTH halves are
+    /// load-bearing and each has its own way of being wrong.
+    #[test]
+    fn a_compound_that_is_not_a_wrapper_survives() {
+        // Two entries, one of them empty-named: a real compound, not a box.
+        // Unwrapping on the empty key alone would delete the other field.
+        let two = wire_compound(&[(3, "", int_payload(1)), (3, "n", int_payload(2))]);
+        let buf = wire_list(10, &[two]);
+        let mut r = PacketReader::new(&buf);
+        assert_eq!(
+            Nbt::read_network(&mut r).unwrap(),
+            Nbt::List(vec![Nbt::Compound(vec![
+                ("".into(), Nbt::Int(1)),
+                ("n".into(), Nbt::Int(2)),
+            ])])
+        );
+        // One entry, but named: unwrapping on the count alone would strip it.
+        let named = wire_compound(&[(3, "n", int_payload(1))]);
+        let buf = wire_list(10, &[named]);
+        let mut r = PacketReader::new(&buf);
+        assert_eq!(
+            Nbt::read_network(&mut r).unwrap(),
+            Nbt::List(vec![Nbt::Compound(vec![("n".into(), Nbt::Int(1))])])
+        );
+    }
+
+    /// A genuine `{"": x}` element is written DOUBLE-wrapped, because
+    /// `wrapIfNeeded`'s test is `instanceof CompoundTag && !isWrapper(it)` —
+    /// so it boxes a compound that is already a wrapper. Unwrapping exactly
+    /// once is what returns the original.
+    #[test]
+    fn a_genuine_empty_keyed_compound_survives_one_unwrap() {
+        let inner = wire_compound(&[(3, "", int_payload(5))]);
+        let outer = wire_compound(&[(10, "", inner)]);
+        let buf = wire_list(10, &[outer]);
+        let mut r = PacketReader::new(&buf);
+        assert_eq!(
+            Nbt::read_network(&mut r).unwrap(),
+            Nbt::List(vec![Nbt::Compound(vec![("".into(), Nbt::Int(5))])])
+        );
+    }
+
+    /// The unwrap is per ELEMENT of a list, not a general compound rule: a
+    /// `{"": v}` sitting as a field of a compound is not in a list and stays.
+    #[test]
+    fn the_unwrap_does_not_apply_outside_a_list() {
+        let buf = {
+            let mut b = vec![10u8];
+            b.extend_from_slice(&wire_compound(&[(
+                10,
+                "f",
+                wire_compound(&[(3, "", int_payload(1))]),
+            )]));
+            b
+        };
+        let mut r = PacketReader::new(&buf);
+        assert_eq!(
+            Nbt::read_network(&mut r).unwrap(),
+            Nbt::Compound(vec![(
+                "f".into(),
+                Nbt::Compound(vec![("".into(), Nbt::Int(1))])
+            )])
+        );
     }
 
     #[test]

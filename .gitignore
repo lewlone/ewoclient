@@ -31,3 +31,6 @@ settings.toml
 instances.toml
 /dist/
 __pycache__/
+
+# Java oracle build output (tools/*_oracle/) — the .java is the artefact.
+tools/**/*.class

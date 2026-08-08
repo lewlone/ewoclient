@@ -235,6 +235,42 @@ struct RenderCheck {
     /// own chat line, so an unstaged run still exercises the whole path from
     /// `player_chat` through the signature cache to the wrapped line.
     chat_line_frames: u64,
+    /// M125 — frames on which a drawn chat line was a RESOLVED translatable.
+    ///
+    /// The scene is the `/give` this gate ALREADY stages for r14, so this adds
+    /// no caller requirement — and it is a much stronger claim than the one it
+    /// replaces, because the server's success message is a translatable THREE
+    /// LEVELS DEEP whose middle argument is a bare integer:
+    ///
+    /// ```text
+    /// commands.give.success.single   "Gave %s %s to %s"
+    ///   with[0] = 1                             (a raw IntTag)
+    ///   with[1] = chat.square_brackets "[%s]"
+    ///               with[0] = item.minecraft.diamond_sword
+    ///   with[2] = <the player's display-name component>
+    /// ```
+    ///
+    /// So `Gave 1 [Diamond Sword]` cannot be produced unless the lookup, the
+    /// substitution, the recursion into a component argument, and the
+    /// heterogeneous-list unwrap all work. **None of those five words appears
+    /// anywhere in the raw component**, so the string cannot leak through from
+    /// a flattener that resolved nothing.
+    ///
+    /// The first version of this witness drove the JOIN message instead, on
+    /// the stated premise that a server announces a joining player to that
+    /// player. **It does not**, and the gate said so by scoring zero:
+    /// `PlayerList.placeNewPlayer` broadcasts at line 202 and does
+    /// `this.players.add(player)` at line 210, and `broadcastSystemMessage`
+    /// iterates `this.players` — so the joiner is not yet in the list it is
+    /// announced to. Suspect the witness first.
+    translated_chat_frames: u64,
+    /// Frames on which a drawn chat line still carried a raw translation key.
+    ///
+    /// Not redundant with the row above: that one would stay green if the
+    /// outer template resolved and an inner one did not, and this names all
+    /// three keys of the same scene, so a break at ANY level turns it red.
+    /// It must stay at zero.
+    unresolved_key_frames: u64,
     /// M105 — frames on which the book drew its `x/y` page counter.
     ///
     /// A LABEL, not a quad, so `book_quads_max` cannot see it: the counter goes
@@ -563,6 +599,17 @@ impl RenderCheck {
             format!(
                 "{} of {} frames carried at least one wrapped chat line                  (near-total is CORRECT: the run is 8 s = 160 ticks and the                  fade starts at 180, so nothing can fade inside it)",
                 self.chat_line_frames, self.frames
+            ),
+        );
+        // M125 — and that a line was a RESOLVED translatable, which r26 cannot
+        // see: before M125 the chat box drew `multiplayer.player.joined` and
+        // scored a full r26.
+        row(
+            "r37 a chat line resolved a nested translatable component",
+            self.translated_chat_frames > 0 && self.unresolved_key_frames == 0,
+            format!(
+                "{} of {} frames drew \"Gave 1 [Diamond Sword]\"; {} drew a raw key                  (must be 0). Three nesting levels and a bare-integer argument,                  off the `/give` r14 already stages — a count of 0 with the                  sword staged means the resolution is dead.",
+                self.translated_chat_frames, self.frames, self.unresolved_key_frames
             ),
         );
         // M110 — the chat SCREEN, as distinct from r26's read-only box. A zero
@@ -917,6 +964,11 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // wire, and the Brigadier tree cannot be read past its first
     // non-singleton argument without it.
     session.command_argument_types = Some(data.command_argument_types.clone());
+    // M125 — the language table, so a `translate` component in chat resolves.
+    // Vanilla reaches `Language.getInstance()`, a global; this is the same
+    // handover the two lines above use, and the session is where chat is
+    // decoded.
+    session.lang = Some(std::sync::Arc::new(baked.lang.clone()));
     // Client-side relighting of our own edits — the server only sends light
     // on chunk load, never for a placed torch or a broken roof.
     session.set_light_tables(
@@ -7741,6 +7793,31 @@ impl LiveApp {
                 c.chat_line_frames += 1;
             }
         }
+        // M125 — read off the DRAWN lines rather than the chat store, so a
+        // resolution that happened and then failed to reach the frame is not
+        // counted. `text` holds the wrapped chat rows at this point; the two
+        // scans are over the same list so they cannot disagree about which
+        // frame they are describing.
+        if let Some(c) = self.check.as_mut() {
+            if text.iter().any(|l| l.text.contains("Gave 1 [Diamond Sword]")) {
+                c.translated_chat_frames += 1;
+            }
+            // The three keys of that one message, one per nesting level. Named
+            // exactly rather than detected generally: a "looks like a key"
+            // test would fire on the F3 block's coordinates and on any player
+            // whose name has a dot in it.
+            const RAW_KEYS: [&str; 3] = [
+                "commands.give.success",
+                "chat.square_brackets",
+                "item.minecraft.diamond_sword",
+            ];
+            if text
+                .iter()
+                .any(|l| RAW_KEYS.iter().any(|k| l.text.contains(k)))
+            {
+                c.unresolved_key_frames += 1;
+            }
+        }
         // M66: the held-item name over the hotbar. Needs the font's advances
         // to centre itself, so it is built here rather than in `build_text`.
         if let Some(advance) = state.world_renderer.font_advance() {
@@ -7772,6 +7849,9 @@ impl LiveApp {
                 // frame's fraction of the way into the current tick, the same
                 // `alpha` the entity lerps use.
                 alpha,
+                // M125 — the same handover `experience_level_lines` above
+                // takes, so `/title {"translate":...}` resolves.
+                self.baked.as_ref().map(|b| &b.lang),
             ));
         }
         // The stack counts are text like any other line, drawn after the icons
@@ -9255,6 +9335,7 @@ pub(crate) fn title_lines(
     px: f32,
     (screen_w, screen_h): (f32, f32),
     partial: f32,
+    lang: Option<&rewo_data::lang::Language>,
 ) -> Vec<rewo_gpu::world::OwnedTextLine> {
     use rewo_net::chat_style::{self, ChatStyle};
     let (gw, gh) = ((screen_w / px) as i32, (screen_h / px) as i32);
@@ -9295,14 +9376,14 @@ pub(crate) fn title_lines(
         // emits nothing rather than a transparent quad.
         if alpha > 0 {
             let a = alpha as f32 / 255.0;
-            let line = chat_style::parse_component(title, ChatStyle::WHITE);
+            let line = chat_style::parse_component(title, ChatStyle::WHITE, lang);
             let width = rewo_gpu::text::width(&chat_style::plain_text(&line), advance);
             let (x, y) = rewo_gpu::hud::title_pos(gw, gh, width);
             run(&mut out, &line, x, y, rewo_gpu::hud::TITLE_SCALE, a);
             // The subtitle is drawn *inside* the title's block, at the title's
             // alpha — it has no ramp of its own.
             if let Some(subtitle) = &t.subtitle {
-                let line = chat_style::parse_component(subtitle, ChatStyle::WHITE);
+                let line = chat_style::parse_component(subtitle, ChatStyle::WHITE, lang);
                 let width = rewo_gpu::text::width(&chat_style::plain_text(&line), advance);
                 let (x, y) = rewo_gpu::hud::subtitle_pos(gw, gh, width);
                 run(&mut out, &line, x, y, rewo_gpu::hud::SUBTITLE_SCALE, a);
@@ -9319,7 +9400,7 @@ pub(crate) fn title_lines(
     {
         let alpha = rewo_gpu::hud::action_bar_alpha(t.overlay_message_time, partial);
         if alpha > 0 {
-            let line = chat_style::parse_component(message, ChatStyle::WHITE);
+            let line = chat_style::parse_component(message, ChatStyle::WHITE, lang);
             let width = rewo_gpu::text::width(&chat_style::plain_text(&line), advance);
             let (x, y) = rewo_gpu::hud::action_bar_pos(gw, gh, width);
             run(&mut out, &line, x, y, 1, alpha as f32 / 255.0);
@@ -14864,12 +14945,20 @@ impl DeathView {
             // The message is kept even when it flattens to nothing: vanilla's
             // `causeOfDeath` is `@Nullable` and a *present but empty* component
             // still takes the non-null branch and draws an empty line.
-            cause_of_death: Some(kill.message.to_plain_text()),
+            cause_of_death: Some(chat_style::plain_text(&chat_style::parse_component(
+                &kill.message,
+                ChatStyle::WHITE,
+                Some(lang),
+            ))),
             hardcore,
             score,
         };
         let labels = model.labels(lang);
-        let cause = Some(chat_style::parse_component(&kill.message, ChatStyle::WHITE));
+        let cause = Some(chat_style::parse_component(
+            &kill.message,
+            ChatStyle::WHITE,
+            Some(lang),
+        ));
         let screen = model.build(&labels, gui_w, gui_h);
         (
             Self {
