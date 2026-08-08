@@ -334,12 +334,50 @@ fn match_unsupported(b: &[u8], i: usize) -> Option<(usize, (usize, usize))> {
 /// of the list) renders the raw string rather than dropping the line or
 /// panicking, and that is why this returns a `String` and not a `Result`.
 pub fn format(template: &str, args: &[&str]) -> String {
-    decompose(template, args).unwrap_or_else(|| template.to_string())
+    match decompose_template(template, args.len()) {
+        Some(parts) => parts
+            .iter()
+            .map(|p| match *p {
+                Part::Literal(s) => s,
+                // Infallible: `decompose_template` already rejected every
+                // index `getArgument` would have thrown on.
+                Part::Arg(i) => args[i],
+            })
+            .collect(),
+        None => template.to_string(),
+    }
 }
 
-/// The body, where `None` is vanilla's `TranslatableFormatException`.
-fn decompose(template: &str, args: &[&str]) -> Option<String> {
-    let mut out = String::with_capacity(template.len());
+/// One piece of a decomposed template.
+///
+/// `decomposeTemplate` hands `FormattedText`s to a consumer; the two kinds it
+/// can hand over are a literal run and an argument, so this is that consumer's
+/// argument reified. Splitting the *decomposition* from the *substitution* is
+/// what lets the plain path ([`format`]) and the styled one
+/// (`rewo_net::chat_style`) share one implementation of `FORMAT_PATTERN` —
+/// M100's lesson, where a second copy of a layout rule drifted by a pixel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part<'a> {
+    /// A run of template text, or the single `%` a `%%` produces.
+    Literal(&'a str),
+    /// `%s` or `%N$s`, already resolved to a **zero-based** index.
+    Arg(usize),
+}
+
+/// `TranslatableContents.decomposeTemplate`, as parts.
+///
+/// `None` is vanilla's `TranslatableFormatException`, which `decompose` catches
+/// and answers with `[FormattedText.of(format)]` — **the unsubstituted
+/// template**. Every caller therefore has the same fallback, and it is the
+/// looked-up format string rather than the key: the two coincide only when the
+/// key is missing, because `getOrDefault(key)` defaults to the key itself.
+///
+/// `args_len` is a parameter rather than an afterthought because
+/// `getArgument`'s out-of-range throw is *inside* the loop vanilla wraps: an
+/// index past the end does not blank one argument, it collapses the whole
+/// line. A decomposition that did not know the count could not report that.
+pub fn decompose_template(template: &str, args_len: usize) -> Option<Vec<Part<'_>>> {
+    let mut out: Vec<Part<'_>> = Vec::new();
     let mut replacement_index = 0usize;
     let mut current = 0usize;
     while let Some(m) = find_format(template, current) {
@@ -350,13 +388,14 @@ fn decompose(template: &str, args: &[&str]) -> Option<String> {
             if prefix.contains('%') {
                 return None;
             }
-            out.push_str(prefix);
+            out.push(Part::Literal(prefix));
         }
         let format_string = &template[m.start..m.end];
         if m.ty == Some(b'%') && format_string == "%%" {
             // Note the second half of the guard: `%1$%` also has `%` for a
             // format type, and it is an error rather than a literal percent.
-            out.push('%');
+            // Borrowed from the template so a `Part` never owns anything.
+            out.push(Part::Literal(&template[m.start..m.start + 1]));
         } else {
             if m.ty != Some(b's') {
                 return None;
@@ -372,7 +411,10 @@ fn decompose(template: &str, args: &[&str]) -> Option<String> {
                     i
                 }
             };
-            out.push_str(args.get(index)?);
+            if index >= args_len {
+                return None;
+            }
+            out.push(Part::Arg(index));
         }
         current = m.end;
     }
@@ -381,7 +423,7 @@ fn decompose(template: &str, args: &[&str]) -> Option<String> {
         if tail.contains('%') {
             return None;
         }
-        out.push_str(tail);
+        out.push(Part::Literal(tail));
     }
     Some(out)
 }
@@ -542,6 +584,89 @@ mod tests {
         assert_eq!(format("%1$%", &["x"]), "%1$%");
         // A one-based index of zero is out of range.
         assert_eq!(format("%0$s", &["x"]), "%0$s");
+    }
+
+    /// The **split** is the thing `format` cannot observe, because
+    /// concatenating the parts hides where the boundaries were. It is what the
+    /// styled path depends on: an argument is a part of its own precisely so
+    /// it can carry its own component's style, where a single substituted
+    /// string would give the whole line the template's.
+    #[test]
+    fn a_template_decomposes_into_alternating_literals_and_args() {
+        assert_eq!(
+            decompose_template("<%s> %s", 2),
+            Some(vec![
+                Part::Literal("<"),
+                Part::Arg(0),
+                Part::Literal("> "),
+                Part::Arg(1),
+            ])
+        );
+        // No leading or trailing literal when the template starts or ends on a
+        // specifier — an empty `Literal("")` would render the same and is not
+        // what `decomposeTemplate` emits (`if (start > current)`).
+        assert_eq!(
+            decompose_template("%s joined the game", 1),
+            Some(vec![Part::Arg(0), Part::Literal(" joined the game")])
+        );
+        assert_eq!(decompose_template("%s", 1), Some(vec![Part::Arg(0)]));
+    }
+
+    /// `%%` is `TEXT_PERCENT` — a literal part holding one `%`, not an
+    /// argument and not two characters.
+    #[test]
+    fn a_literal_percent_is_a_one_character_part() {
+        assert_eq!(
+            decompose_template("100%% sure", 0),
+            Some(vec![Part::Literal("100"), Part::Literal("%"), Part::Literal(" sure")])
+        );
+    }
+
+    /// A positional specifier does **not** advance the sequential counter:
+    /// `replacementIndex++` lives in the `else` of the `possiblePositionIndex
+    /// != null` test. So the second specifier here is argument 0, not 1.
+    ///
+    /// This is invisible to any template that uses one style throughout, which
+    /// is every template in 26.2's own `en_us.json` — the mixed form has to be
+    /// constructed to be seen at all.
+    #[test]
+    fn a_positional_specifier_does_not_advance_the_sequential_counter() {
+        assert_eq!(
+            decompose_template("%2$s %s", 2),
+            Some(vec![Part::Arg(1), Part::Literal(" "), Part::Arg(0)])
+        );
+        assert_eq!(format("%2$s %s", &["a", "b"]), "b a");
+    }
+
+    /// The count is load-bearing at decomposition time, not substitution time:
+    /// `getArgument` throws from inside the loop, so one index past the end
+    /// collapses the **whole** line rather than blanking one argument.
+    #[test]
+    fn an_index_past_the_arguments_fails_the_whole_decomposition() {
+        assert_eq!(decompose_template("%s %s", 2).map(|p| p.len()), Some(3));
+        assert_eq!(decompose_template("%s %s", 1), None);
+        // The surviving prefix is discarded with it — not emitted and then cut.
+        assert_eq!(format("first %s then %s", &["a"]), "first %s then %s");
+    }
+
+    /// `death.attack.player` and `chat.type.text` as they actually ship, so
+    /// the split is pinned against real templates rather than invented ones.
+    #[test]
+    fn the_real_chat_and_death_templates_decompose() {
+        assert_eq!(
+            decompose_template("%1$s was slain by %2$s", 2),
+            Some(vec![
+                Part::Arg(0),
+                Part::Literal(" was slain by "),
+                Part::Arg(1),
+            ])
+        );
+        assert_eq!(format("<%s> %s", &["Steve", "hi"]), "<Steve> hi");
+        assert_eq!(format("* %s %s", &["Steve", "waves"]), "* Steve waves");
+        assert_eq!(
+            format("%s whispers to you: %s", &["Steve", "hi"]),
+            "Steve whispers to you: hi"
+        );
     }
 
     /// The pattern rewrite that runs at load, before any of the above.
