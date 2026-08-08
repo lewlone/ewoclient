@@ -356,6 +356,41 @@ pub fn suggest_matching<'a>(
     }
 }
 
+/// `SharedSuggestionProvider.suggestResource` / `filterResources`.
+///
+/// **This is where namespace handling lives**, and it is the other half of
+/// [`matches_sub_str`]'s deliberate refusal to split on `:`. The rule is one
+/// line — `boolean hasNamespace = contents.indexOf(58) > -1` — and it changes
+/// what the pattern is matched against:
+///
+/// * **no colon typed**: the pattern is tested against the identifier's
+///   **namespace** and its **path** *separately*, so `stone` finds
+///   `minecraft:stone` without `matchesSubStr` ever needing to know about the
+///   colon;
+/// * **a colon typed**: against the whole `namespace:path` string.
+///
+/// Matching the whole string in both cases is the obvious simplification and
+/// makes every bare name fail, because no id begins with `stone`.
+pub fn suggest_resource<'a>(
+    values: impl IntoIterator<Item = &'a str>,
+    builder: &mut SuggestionsBuilder,
+) {
+    let contents = builder.remaining().to_lowercase();
+    let has_namespace = contents.contains(':');
+    for id in values {
+        let lower = id.to_lowercase();
+        let matched = if has_namespace {
+            matches_sub_str(&contents, &lower)
+        } else {
+            let (namespace, path) = lower.split_once(':').unwrap_or(("minecraft", &lower));
+            matches_sub_str(&contents, namespace) || matches_sub_str(&contents, path)
+        };
+        if matched {
+            builder.suggest(id);
+        }
+    }
+}
+
 /// `String.compareToIgnoreCase`, transcribed rather than approximated.
 ///
 /// Java compares **UTF-16 code units**, folding each through

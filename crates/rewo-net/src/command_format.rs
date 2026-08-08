@@ -318,7 +318,7 @@ pub fn usage_position(screen_x_of_start: i32, screen_x_of_zero: i32, inner_width
 mod tests {
     use super::*;
     use crate::commands::{ArgumentProps, StringType};
-    use crate::dispatcher::parse;
+    use crate::dispatcher::{parse, CommandCtx};
 
     fn u(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()
@@ -374,7 +374,7 @@ mod tests {
     fn runs(input: &str) -> Vec<Run> {
         let t = tree();
         let units = u(input);
-        let p = parse(&t, &units, 1);
+        let p = parse(&t, &units, 1, CommandCtx::default());
         format_text(&p, &units, 0)
     }
 
@@ -440,7 +440,7 @@ mod tests {
         // wrong characters.
         let t = tree();
         let units = u("/give 5 true");
-        let p = parse(&t, &units, 1);
+        let p = parse(&t, &units, 1, CommandCtx::default());
         // The field scrolled six characters: the visible text is "5 true".
         let visible = u("5 true");
         let r = format_text(&p, &visible, 6);
@@ -544,11 +544,11 @@ mod tests {
     fn the_usage_box_appears_where_an_argument_is_expected_and_not_before() {
         let t = tree();
         let give = u("/give ");
-        let p = parse(&t, &give, 1);
+        let p = parse(&t, &give, 1, CommandCtx::default());
         assert_eq!(usage_lines(&t, &p, give.len(), true), ["<count> <flag>"]);
         // …and nothing at the top level, where every child is a literal.
         let slash = u("/");
-        let p = parse(&t, &slash, 1);
+        let p = parse(&t, &slash, 1, CommandCtx::default());
         assert!(usage_lines(&t, &p, slash.len(), true).is_empty());
     }
 
@@ -559,7 +559,7 @@ mod tests {
         // is already wrong is the one thing vanilla deliberately does not.
         let t = tree();
         let bad = u("/give 5x");
-        let p = parse(&t, &bad, 1);
+        let p = parse(&t, &bad, 1, CommandCtx::default());
         assert!(!p.errors.is_empty(), "fixture precondition");
         assert!(usage_lines(&t, &p, bad.len(), true).is_empty());
         // The gate needs ALL THREE of its terms: with a suggestion to show,

@@ -41,6 +41,17 @@ impl Items {
     /// an id outside the registry is not a vanilla item, so its default
     /// components — including `minecraft:swing_animation` — are unknowable, and
     /// nothing may substitute the bare default for it.
+    /// Every item name, sorted (M119).
+    ///
+    /// Built on demand rather than stored: the only caller is the command
+    /// suggester, which runs on a keystroke and not per frame, and 1,537
+    /// strings is not worth a second copy of the registry.
+    pub fn names(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = self.by_name.keys().map(String::as_str).collect();
+        out.sort_unstable();
+        out
+    }
+
     pub fn has_id(&self, id: i32) -> bool {
         self.ids.contains(&id)
     }

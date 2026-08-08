@@ -347,6 +347,10 @@ pub enum ArgKind {
     /// syntax. `playersOnly` differs between them and affects only which
     /// names are offered, which is the caller's list here.
     Entity,
+    /// `minecraft:block_state` and `minecraft:block_predicate` (M119).
+    BlockState,
+    /// `minecraft:item_stack` and `minecraft:item_predicate` (M119).
+    ItemStack,
     /// Every other `minecraft:` type. Refuses to parse — see the module docs.
     Unknown,
 }
@@ -382,6 +386,12 @@ impl ArgKind {
             // The props carry `single`/`playersOnly`; neither changes how the
             // text parses, only which names are worth offering.
             ("minecraft:entity" | "minecraft:game_profile", _) => Self::Entity,
+            // The `_predicate` pair take a `#tag` where their plain siblings
+            // do not; both readers accept one, so the difference is a
+            // validation Rewo does not perform rather than a syntax it cannot
+            // read.
+            ("minecraft:block_state" | "minecraft:block_predicate", _) => Self::BlockState,
+            ("minecraft:item_stack" | "minecraft:item_predicate", _) => Self::ItemStack,
             _ => Self::Unknown,
         }
     }
@@ -391,7 +401,7 @@ impl ArgKind {
     /// Every numeric type re-winds the cursor **before** raising its range
     /// error, which is what makes `parseNodes`' `reader.setCursor(cursor)`
     /// retry land in the right place.
-    pub fn parse(&self, reader: &mut StringReader) -> Result<(), ReaderError> {
+    pub fn parse(&self, reader: &mut StringReader, ctx: CommandCtx<'_>) -> Result<(), ReaderError> {
         match self {
             Self::Bool => reader.read_bool().map(|_| ()),
             Self::Integer { min, max } => {
@@ -454,6 +464,22 @@ impl ArgKind {
                 reader.set_cursor(probe.cursor());
                 Ok(())
             }
+            Self::BlockState | Self::ItemStack => {
+                let mut probe = reader.clone();
+                let reg = ctx.registry();
+                // With an empty context nothing resolves, so the parse fails
+                // and the argument behaves exactly as it did before M119.
+                let p = if matches!(self, Self::BlockState) {
+                    crate::block_item::ParsedRef::parse_block(&mut probe, reg)
+                } else {
+                    crate::block_item::ParsedRef::parse_item(&mut probe, reg)
+                };
+                if p.failed {
+                    return Err(ReaderError::UnknownArgumentType);
+                }
+                reader.set_cursor(probe.cursor());
+                Ok(())
+            }
             Self::Unknown => Err(ReaderError::UnknownArgumentType),
         }
     }
@@ -462,7 +488,7 @@ impl ArgKind {
     ///
     /// `BoolArgumentType` has one, and so does `EntityArgument` — whose is a
     /// whole parser, so it takes the online names the caller must supply.
-    fn suggest_with_names(&self, builder: &mut SuggestionsBuilder, names: &[String]) {
+    fn suggest_with(&self, builder: &mut SuggestionsBuilder, ctx: CommandCtx<'_>) {
         if let Self::Entity = self {
             // `EntityArgument.listSuggestions` re-reads from the builder's own
             // start rather than continuing an earlier parse, and swallows the
@@ -472,7 +498,28 @@ impl ArgKind {
             reader.set_cursor(builder.start());
             let p = crate::selector::SelectorParser::parse(&mut reader, true);
             let mut sub = SuggestionsBuilder::new(&input, p.cursor);
-            p.fill_suggestions(&mut sub, names);
+            p.fill_suggestions(&mut sub, ctx.names);
+            for s in sub.build().list {
+                builder.suggest(&s.text);
+            }
+            return;
+        }
+        if let Self::BlockState | Self::ItemStack = self {
+            // Same shape as the selector's: re-read from the builder's own
+            // start, swallow the exception, and apply whatever state the
+            // parse reached.
+            let input: Vec<u16> = builder.input_units();
+            let mut reader = StringReader::new(&input);
+            reader.set_cursor(builder.start());
+            let reg = ctx.registry();
+            let block = matches!(self, Self::BlockState);
+            let p = if block {
+                crate::block_item::ParsedRef::parse_block(&mut reader, reg)
+            } else {
+                crate::block_item::ParsedRef::parse_item(&mut reader, reg)
+            };
+            let mut sub = SuggestionsBuilder::new(&input, p.cursor);
+            p.fill_suggestions(&mut sub, reg, block);
             for s in sub.build().list {
                 builder.suggest(&s.text);
             }
@@ -488,6 +535,29 @@ impl ArgKind {
             if word.starts_with(&remaining) {
                 builder.suggest(word);
             }
+        }
+    }
+}
+
+/// Everything the argument types need that the tree does not carry: the
+/// online names, and the block and item registries (M119).
+///
+/// Vanilla passes a `CommandSourceStack` for the same reason. Both parsing and
+/// suggesting take it, because an argument that cannot resolve its id cannot
+/// parse either — with an empty context every `minecraft:` type behaves as it
+/// did before M118, which is what keeps a registry-less caller working.
+#[derive(Clone, Copy, Default)]
+pub struct CommandCtx<'a> {
+    pub names: &'a [String],
+    pub blocks: Option<&'a rewo_data::blocks::Blocks>,
+    pub items: Option<&'a rewo_data::items::Items>,
+}
+
+impl<'a> CommandCtx<'a> {
+    fn registry(&self) -> crate::block_item::Registry<'a> {
+        crate::block_item::Registry {
+            blocks: self.blocks,
+            items: self.items,
         }
     }
 }
@@ -647,11 +717,11 @@ pub struct Completion {
 /// `updateCommandInfo` skips it on the reader before calling, so the cursor
 /// starts at 1 and every range is an index into the whole field. Passing the
 /// slashless string instead shifts every suggestion by one.
-pub fn parse(tree: &CommandTree, command: &[u16], start: usize) -> ParseResults {
+pub fn parse(tree: &CommandTree, command: &[u16], start: usize, ctx: CommandCtx<'_>) -> ParseResults {
     let mut reader = StringReader::new(command);
     reader.set_cursor(start);
     let context = ContextBuilder::new(tree.root, start);
-    parse_nodes(tree, tree.root, &reader, context)
+    parse_nodes(tree, tree.root, &reader, context, ctx)
 }
 
 /// `canUse` — see the module docs. Constant `true`, deliberately.
@@ -712,6 +782,7 @@ fn parse_nodes(
     node_index: i32,
     original: &StringReader,
     context_so_far: ContextBuilder,
+    ctx: CommandCtx<'_>,
 ) -> ParseResults {
     let Some(node) = tree.node(node_index) else {
         return ParseResults {
@@ -749,7 +820,7 @@ fn parse_nodes(
                     ..
                 } => {
                     let kind = kind_of(tree, child, props);
-                    kind.parse(&mut reader)?;
+                    kind.parse(&mut reader, ctx)?;
                     let range = StringRange::between(start, reader.cursor());
                     // `withArgument` BEFORE `withNode`, as
                     // `ArgumentCommandNode.parse` does — both take the same
@@ -780,7 +851,7 @@ fn parse_nodes(
             reader.skip();
             if child.has_redirect() {
                 let child_context = ContextBuilder::new(child.redirect, reader.cursor());
-                let parse = parse_nodes(tree, child.redirect, &reader, child_context);
+                let parse = parse_nodes(tree, child.redirect, &reader, child_context, ctx);
                 context.child = Some(Box::new(parse.context));
                 potentials.push(ParseResults {
                     context,
@@ -788,7 +859,7 @@ fn parse_nodes(
                     errors: parse.errors,
                 });
             } else {
-                potentials.push(parse_nodes(tree, child_index, &reader, context));
+                potentials.push(parse_nodes(tree, child_index, &reader, context, ctx));
             }
         } else {
             potentials.push(ParseResults {
@@ -857,7 +928,7 @@ pub fn completion_suggestions(
     tree: &CommandTree,
     parse_results: &ParseResults,
     cursor: usize,
-    names: &[String],
+    cmd: CommandCtx<'_>,
 ) -> Completion {
     let Some(ctx) = parse_results.context.find_suggestion_context(cursor) else {
         return Completion {
@@ -899,7 +970,7 @@ pub fn completion_suggestions(
                     // `getProvider` defaults to ASK_SERVER.
                     ask_server = true;
                 } else {
-                    kind_of(tree, child, props).suggest_with_names(&mut builder, names);
+                    kind_of(tree, child, props).suggest_with(&mut builder, cmd);
                 }
             }
             NodeKind::Root => {}
@@ -992,8 +1063,8 @@ mod tests {
     fn complete(input: &str) -> Completion {
         let t = tree();
         let units = u(input);
-        let p = parse(&t, &units, 1);
-        completion_suggestions(&t, &p, units.len(), &[])
+        let p = parse(&t, &units, 1, CommandCtx::default());
+        completion_suggestions(&t, &p, units.len(), CommandCtx::default())
     }
 
     fn texts(c: &Completion) -> Vec<&str> {
@@ -1069,8 +1140,8 @@ mod tests {
         let long = ArgKind::resolve("brigadier:long", &unbounded);
         assert_ne!(int, long);
         let big = "3000000000";
-        assert!(int.parse(&mut StringReader::from_str(big)).is_err());
-        assert!(long.parse(&mut StringReader::from_str(big)).is_ok());
+        assert!(int.parse(&mut StringReader::from_str(big), CommandCtx::default()).is_err());
+        assert!(long.parse(&mut StringReader::from_str(big), CommandCtx::default()).is_ok());
         // Float and double are the same pair one shape over.
         let f = ArgumentProps::RangeF64 {
             min: None,
@@ -1139,8 +1210,8 @@ mod tests {
         // nothing.
         let t = tree();
         let units = u("/g extra");
-        let p = parse(&t, &units, 1);
-        let c = completion_suggestions(&t, &p, 2, &[]);
+        let p = parse(&t, &units, 1, CommandCtx::default());
+        let c = completion_suggestions(&t, &p, 2, CommandCtx::default());
         assert_eq!(texts(&c), ["gamemode", "give"]);
         // …and the span they replace stops at the cursor, so `extra` survives
         // being completed over.
@@ -1188,7 +1259,7 @@ mod tests {
             },
         });
         // It parses, so the command is valid and nothing is left over.
-        let p = parse(&t, &u("/kill @e"), 1);
+        let p = parse(&t, &u("/kill @e"), 1, CommandCtx::default());
         assert!(p.errors.is_empty());
         assert!(p.is_valid(&t));
         // A selector that fails AT THE END OF THE INPUT is the case that
@@ -1197,20 +1268,86 @@ mod tests {
         // and an unclosed `@e[` leave it at the end, where nothing downstream
         // can notice. Without the check both would read as valid commands.
         for bad in ["/kill @", "/kill @e["] {
-            let p = parse(&t, &u(bad), 1);
+            let p = parse(&t, &u(bad), 1, CommandCtx::default());
             assert!(!p.is_valid(&t), "{bad} must not be a valid command");
         }
         // And it completes locally: the six selectors plus the names the
         // caller supplied — with NO ask_server, because the node carries no
         // suggestion provider of its own.
         let units = u("/kill @");
-        let p = parse(&t, &units, 1);
+        let p = parse(&t, &units, 1, CommandCtx::default());
         let names = vec!["Steve".to_string()];
-        let c = completion_suggestions(&t, &p, units.len(), &names);
+        let c = completion_suggestions(&t, &p, units.len(), CommandCtx { names: &names, ..Default::default() });
         assert!(!c.ask_server);
         let texts: Vec<&str> = c.local.list.iter().map(|s| s.text.as_str()).collect();
         assert!(texts.contains(&"@e"));
         assert_eq!(texts.iter().filter(|s| s.starts_with('@')).count(), 6);
+    }
+
+    #[test]
+    fn the_block_and_item_types_resolve_and_complete_through_the_dispatcher() {
+        // M119, and the M92/M93b shape: `block_item`'s own tests drive
+        // `ParsedRef` directly, so the wiring that turns a registry NAME into
+        // that parser was untested until this existed — both mutations
+        // reverting it to `Unknown` survived.
+        let none = ArgumentProps::None;
+        assert_eq!(
+            ArgKind::resolve("minecraft:block_state", &none),
+            ArgKind::BlockState
+        );
+        assert_eq!(
+            ArgKind::resolve("minecraft:item_stack", &none),
+            ArgKind::ItemStack
+        );
+        assert_eq!(
+            ArgKind::resolve("minecraft:block_predicate", &none),
+            ArgKind::BlockState
+        );
+
+        // …and it completes end to end, through the production suggester.
+        let blocks = rewo_data::blocks::Blocks::for_tests(
+            vec!["minecraft:air".into()],
+            vec![
+                ("minecraft:air".to_string(), vec![]),
+                ("minecraft:stone".to_string(), vec![]),
+            ],
+        );
+        let mut t = tree();
+        t.nodes[0].children.push(9);
+        t.nodes.push(CommandNode {
+            flags: 1,
+            children: vec![10],
+            redirect: 0,
+            kind: NodeKind::Literal("setblock".into()),
+        });
+        t.nodes.push(CommandNode {
+            flags: 2 | 4,
+            children: vec![],
+            redirect: 0,
+            kind: NodeKind::Argument {
+                name: "block".into(),
+                type_id: 0,
+                type_name: "minecraft:block_state".into(),
+                props: ArgumentProps::None,
+                suggestions: None,
+            },
+        });
+        let cmd = CommandCtx {
+            blocks: Some(&blocks),
+            ..Default::default()
+        };
+        let units = u("/setblock sto");
+        let p = parse(&t, &units, 1, cmd);
+        let c = completion_suggestions(&t, &p, units.len(), cmd);
+        assert!(!c.ask_server);
+        let texts: Vec<&str> = c.local.list.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["minecraft:stone"]);
+        // With a registry the argument also PARSES, so the command is valid.
+        let done = parse(&t, &u("/setblock stone"), 1, cmd);
+        assert!(done.is_valid(&t));
+        // …and with an empty context it does not, which is what keeps a
+        // registry-less caller behaving as it did before M119.
+        assert!(!parse(&t, &u("/setblock stone"), 1, CommandCtx::default()).is_valid(&t));
     }
 
     // ── the parse ────────────────────────────────────────────────────────
@@ -1218,7 +1355,7 @@ mod tests {
     #[test]
     fn a_valid_command_parses_to_the_end_with_no_errors() {
         let t = tree();
-        let p = parse(&t, &u("/give 5"), 1);
+        let p = parse(&t, &u("/give 5"), 1, CommandCtx::default());
         assert!(p.errors.is_empty());
         assert!(!p.reader.can_read());
         assert!(p.is_valid(&t));
@@ -1229,13 +1366,13 @@ mod tests {
         // The third term of `isValidCommand`: the node exists and carries no
         // command.
         let t = tree();
-        assert!(!parse(&t, &u("/give"), 1).is_valid(&t));
+        assert!(!parse(&t, &u("/give"), 1, CommandCtx::default()).is_valid(&t));
     }
 
     #[test]
     fn an_argument_outside_its_range_is_an_error_and_leaves_the_reader_put() {
         let t = tree();
-        let p = parse(&t, &u("/give 99"), 1);
+        let p = parse(&t, &u("/give 99"), 1, CommandCtx::default());
         assert!(!p.errors.is_empty());
         assert!(!p.is_valid(&t));
     }
@@ -1246,7 +1383,7 @@ mod tests {
         // and stops. That is the same shape as a malformed input, which is
         // what makes it safe: `parseNodes` already had to handle it.
         let t = tree();
-        let p = parse(&t, &u("/tp Steve"), 1);
+        let p = parse(&t, &u("/tp Steve"), 1, CommandCtx::default());
         assert_eq!(p.errors.len(), 1);
         assert_eq!(p.errors[0].1, ReaderError::UnknownArgumentType);
         // …and the literal it did consume is still in the context, which is
@@ -1257,7 +1394,7 @@ mod tests {
     #[test]
     fn a_greedy_string_swallows_the_remainder() {
         let t = tree();
-        let p = parse(&t, &u("/say hello there world"), 1);
+        let p = parse(&t, &u("/say hello there world"), 1, CommandCtx::default());
         assert!(p.errors.is_empty());
         assert!(!p.reader.can_read());
         assert_eq!(p.context.nodes.len(), 2);
@@ -1283,7 +1420,7 @@ mod tests {
                 suggestions: None,
             },
         });
-        let p = parse(&t, &u("/give 5"), 1);
+        let p = parse(&t, &u("/give 5"), 1, CommandCtx::default());
         // Two nodes — the literal and its integer — not one greedy catch-all.
         assert_eq!(p.context.nodes.len(), 2);
     }
@@ -1304,7 +1441,7 @@ mod tests {
                 suggestions: None,
             },
         });
-        let p = parse(&t, &u("/notacommand"), 1);
+        let p = parse(&t, &u("/notacommand"), 1, CommandCtx::default());
         assert!(p.errors.is_empty());
         assert_eq!(p.context.nodes.len(), 1);
     }
@@ -1338,7 +1475,7 @@ mod tests {
         // valid. Asserting only "two nodes were consumed" misses this,
         // because on a well-formed input the literal wins the tie anyway.
         let t = tree_with_catch_all();
-        let p = parse(&t, &u("/give 99"), 1);
+        let p = parse(&t, &u("/give 99"), 1, CommandCtx::default());
         assert!(!p.errors.is_empty(), "the range error survives");
         assert!(!p.is_valid(&t), "and the command is not valid");
     }
@@ -1358,7 +1495,7 @@ mod tests {
         // hands it text that already satisfies it. That is why the mutation
         // deleting it survives, and it survives in vanilla's shape too.
         let t = tree();
-        let p = parse(&t, &u("/gamemodex"), 1);
+        let p = parse(&t, &u("/gamemodex"), 1, CommandCtx::default());
         assert!(p.errors.is_empty());
         assert!(p.context.nodes.is_empty());
         assert!(!p.is_valid(&t));
@@ -1368,15 +1505,15 @@ mod tests {
         // which is the direction error `LiteralCommandNode.listSuggestions`
         // exists to avoid: the LITERAL must start with the typed text, and
         // `gamemode` does not start with `gamemodex`.
-        assert!(completion_suggestions(&t, &p, 10, &[]).local.is_empty());
+        assert!(completion_suggestions(&t, &p, 10, CommandCtx::default()).local.is_empty());
         // A PREFIX of it does — but not the whole word, because
         // `SuggestionsBuilder.suggest` drops a suggestion equal to what is
         // typed (M114a). This assertion used the complete literal first and
         // measured an empty list for that reason, which is the two findings
         // meeting: the literal matches, and then the builder discards it.
-        let shorter = parse(&t, &u("/gamemod"), 1);
+        let shorter = parse(&t, &u("/gamemod"), 1, CommandCtx::default());
         assert_eq!(
-            completion_suggestions(&t, &shorter, 8, &[])
+            completion_suggestions(&t, &shorter, 8, CommandCtx::default())
                 .local
                 .list
                 .iter()
@@ -1393,7 +1530,7 @@ mod tests {
         // string — invalid either way, but with no error to report and the
         // reader parked somewhere the usage line would point at wrongly.
         let t = tree();
-        let p = parse(&t, &u("/give 5x"), 1);
+        let p = parse(&t, &u("/give 5x"), 1, CommandCtx::default());
         assert_eq!(
             p.errors.iter().map(|(_, e)| e.clone()).collect::<Vec<_>>(),
             [ReaderError::ExpectedArgumentSeparator]
@@ -1407,7 +1544,7 @@ mod tests {
     fn the_cursor_inside_a_word_completes_that_word_from_its_start() {
         let t = tree();
         let units = u("/give 5");
-        let p = parse(&t, &units, 1);
+        let p = parse(&t, &units, 1, CommandCtx::default());
         // Cursor at 3, inside "give".
         let ctx = p.context.find_suggestion_context(3).unwrap();
         assert_eq!(ctx.parent, t.root);
@@ -1418,7 +1555,7 @@ mod tests {
     fn the_cursor_past_the_last_word_starts_the_next_one_after_the_separator() {
         let t = tree();
         let units = u("/give ");
-        let p = parse(&t, &units, 1);
+        let p = parse(&t, &units, 1, CommandCtx::default());
         let ctx = p.context.find_suggestion_context(6).unwrap();
         // The `give` node, and a start one past its end — the `+ 1` is the
         // space.

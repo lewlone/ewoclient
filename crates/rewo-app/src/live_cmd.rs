@@ -202,6 +202,13 @@ struct RenderCheck {
     /// Narrower than r30: a literal completion needs only the tree, where this
     /// needs `minecraft:entity` to have stopped being `Unknown`.
     local_selector_completions: u64,
+    /// M119 — how many times a registry id (a block or an item) was offered
+    /// by the client's own parser.
+    ///
+    /// Narrower than r30 and disjoint from r33: it needs `block_state` or
+    /// `item_stack` to have stopped being `Unknown`, and it counts a colon,
+    /// which no literal or selector-option name carries.
+    local_resource_completions: u64,
     /// M116 — how many times a `/`-command's completion was answered by the
     /// CLIENT rather than the server.
     ///
@@ -610,6 +617,16 @@ impl RenderCheck {
                 self.local_selector_completions
             ),
         );
+        // M119 — and a registry id among them, which needs the block/item
+        // argument types rather than the tree or the selector.
+        row(
+            "r34 a registry id was offered locally",
+            self.local_resource_completions > 0,
+            format!(
+                "{} completions containing a namespaced id (needs block_state or                  item_stack to parse, which they did not before M119)",
+                self.local_resource_completions
+            ),
+        );
         // M116 — the dispatcher answered a command locally, i.e. WITHOUT a
         // round trip. Both paths open a popup, so r29 cannot see this.
         row(
@@ -711,6 +728,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     let beacon_effects = BeaconEffectIds::resolve(&data.mob_effects);
     // Shared with the entity collector for held-item id → name (M22).
     let items = std::sync::Arc::new(data.items.clone());
+    let blocks = std::sync::Arc::new(data.blocks.clone());
     let _ = CROSSBOW_ITEM.set(data.items.id("minecraft:crossbow"));
     // M73: the crosshair entity pick's two version tables. Both fail loud
     // here rather than at the first frame — a drifted table would otherwise
@@ -928,6 +946,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
             sign_states,
             bow_item,
             items,
+            blocks,
             beacon_effects,
             args,
             want_validation,
@@ -4308,6 +4327,11 @@ struct LiveApp {
     beacon_effects: BeaconEffectIds,
     /// Item registry, for id → name when resolving held models (M22).
     items: std::sync::Arc<rewo_data::items::Items>,
+    /// Block registry, for the command suggester's ids and property table
+    /// (M119). Held here rather than reached through the bake because the
+    /// bake is *taken* when the window opens — the same reason `equipment` is
+    /// cloned out.
+    blocks: std::sync::Arc<rewo_data::blocks::Blocks>,
     /// Armour layer definitions (M46). Cloned out of the bake because
     /// `self.baked` is *taken* when the window opens, and the entity draws
     /// need this every frame after that.
@@ -5929,14 +5953,14 @@ impl LiveApp {
         // M118 — the selector parser needs the online names, exactly as
         // `EntityArgument.listSuggestions` takes them from the source.
         let words = self.tab_words();
+        let cmd = rewo_net::dispatcher::CommandCtx {
+            names: &words,
+            blocks: Some(&self.blocks),
+            items: Some(&self.items),
+        };
         let completion = self.session.as_ref().map(|session| {
-            let parsed = rewo_net::dispatcher::parse(&session.commands, &units, 1);
-            rewo_net::dispatcher::completion_suggestions(
-                &session.commands,
-                &parsed,
-                units.len(),
-                &words,
-            )
+            let parsed = rewo_net::dispatcher::parse(&session.commands, &units, 1, cmd);
+            rewo_net::dispatcher::completion_suggestions(&session.commands, &parsed, units.len(), cmd)
         });
         let Some(completion) = completion else {
             return;
@@ -5962,10 +5986,21 @@ impl LiveApp {
                 .list
                 .iter()
                 .any(|s| s.text.starts_with('@'));
+            // M119 — a namespaced id. Distinctive by construction: a selector
+            // starts with `@`, and neither a literal nor a selector-option
+            // name contains a colon.
+            let resource = completion
+                .local
+                .list
+                .iter()
+                .any(|s| s.text.contains(':'));
             if let Some(c) = self.check.as_mut() {
                 c.local_command_completions += 1;
                 if selector {
                     c.local_selector_completions += 1;
+                }
+                if resource {
+                    c.local_resource_completions += 1;
                 }
             }
         }
@@ -6617,7 +6652,14 @@ impl LiveApp {
                     // mutual exclusion — which is what vanilla does too. The
                     // box needs an argument that suggests nothing, and the
                     // item after the targets is one.
-                    for ch in "ive @s ".chars() {
+                    // …then on to `/give @s dirt `, which is three arguments
+                    // deep. **r32's precondition recedes by one word for every
+                    // argument type transcribed**: M118 made `/give ` open a
+                    // selector popup and M119 made `/give @s ` open an item
+                    // one, each time suppressing the usage box by the mutual
+                    // exclusion. The count after the item is a plain integer
+                    // and suggests nothing, which is what the box needs.
+                    for ch in "ive @s dirt ".chars() {
                         self.chat_char(ch);
                     }
                     self.command_injected = true;
@@ -7431,7 +7473,22 @@ impl LiveApp {
         apply_chat(session, state.world_renderer.font_advance().copied());
         // M117 — both command-line overlays, resolved once before the fills
         // stage so the box and the highlighting read the same cached parse.
-        let chat_runs = chat_runs(&mut self.chat_parse, self.chat_screen.as_ref(), session);
+        // The names come from the session that is already borrowed here, so
+        // they are read directly rather than through `tab_words`, which would
+        // need `&self` while the session holds `&mut self`.
+        let chat_words = session
+            .suggestions
+            .tab_suggestions(session.world.entities.all_names());
+        let chat_runs = chat_runs(
+            &mut self.chat_parse,
+            self.chat_screen.as_ref(),
+            session,
+            rewo_net::dispatcher::CommandCtx {
+                names: &chat_words,
+                blocks: Some(&self.blocks),
+                items: Some(&self.items),
+            },
+        );
         let (usage_fills, usage_text) = Self::usage_box_parts(
             self.chat_screen.as_ref(),
             session,
@@ -7805,6 +7862,7 @@ fn run_windowed(
     sign_states: rewo_data::sign_states::SignStates,
     bow_item: Option<i32>,
     items: std::sync::Arc<rewo_data::items::Items>,
+    blocks: std::sync::Arc<rewo_data::blocks::Blocks>,
     beacon_effects: BeaconEffectIds,
     args: LiveArgs,
     want_validation: bool,
@@ -7831,6 +7889,7 @@ fn run_windowed(
         models: baked.models.clone(),
     })?;
     let mut app = LiveApp {
+        blocks,
         capture_pending: false,
         particles: None,
         session: Some(session),
@@ -8355,6 +8414,7 @@ fn chat_runs(
     cache: &mut Option<(String, rewo_net::dispatcher::ParseResults)>,
     screen: Option<&rewo_world::chat_screen::ChatScreen>,
     session: &PlaySession,
+    cmd: rewo_net::dispatcher::CommandCtx<'_>,
 ) -> Option<Vec<rewo_net::command_format::Run>> {
     let value = screen?.input.value();
     if !value.starts_with('/') {
@@ -8363,7 +8423,7 @@ fn chat_runs(
     }
     if cache.as_ref().map(|(t, _)| t.as_str()) != Some(value.as_str()) {
         let units: Vec<u16> = value.encode_utf16().collect();
-        let parsed = rewo_net::dispatcher::parse(&session.commands, &units, 1);
+        let parsed = rewo_net::dispatcher::parse(&session.commands, &units, 1, cmd);
         *cache = Some((value.clone(), parsed));
     }
     let (_, parsed) = cache.as_ref()?;
