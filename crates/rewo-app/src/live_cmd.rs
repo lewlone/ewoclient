@@ -209,6 +209,10 @@ struct RenderCheck {
     /// `item_stack` to have stopped being `Unknown`, and it counts a colon,
     /// which no literal or selector-option name carries.
     local_resource_completions: u64,
+    /// M120 — how many times a COORDINATE default was offered by the
+    /// client's own parser. Disjoint from r33 and r34: `~` appears in no
+    /// literal, selector or registry id.
+    local_coordinate_completions: u64,
     /// M116 — how many times a `/`-command's completion was answered by the
     /// CLIENT rather than the server.
     ///
@@ -625,6 +629,15 @@ impl RenderCheck {
             format!(
                 "{} completions containing a namespaced id (needs block_state or                  item_stack to parse, which they did not before M119)",
                 self.local_resource_completions
+            ),
+        );
+        // M120 — and a coordinate among them.
+        row(
+            "r35 a coordinate default was offered locally",
+            self.local_coordinate_completions > 0,
+            format!(
+                "{} completions containing a `~` (needs the coordinate family to                  parse, which it did not before M120)",
+                self.local_coordinate_completions
             ),
         );
         // M116 — the dispatcher answered a command locally, i.e. WITHOUT a
@@ -4463,6 +4476,8 @@ struct LiveApp {
     chat_injected: bool,
     /// Whether it has typed a `/`-command yet (M116).
     command_injected: bool,
+    /// Whether it has typed a coordinate command yet (M120).
+    coords_injected: bool,
     /// `CommandSuggestions.currentParse` (M117) — the parse the syntax
     /// highlighting reads, cached against the text it was made from.
     ///
@@ -5994,6 +6009,14 @@ impl LiveApp {
                 .list
                 .iter()
                 .any(|s| s.text.contains(':'));
+            // M120 — a coordinate default. `~` appears in no literal, no
+            // selector and no registry id, so the test is disjoint from r33's
+            // and r34's by construction.
+            let coordinate = completion
+                .local
+                .list
+                .iter()
+                .any(|s| s.text.starts_with('~'));
             if let Some(c) = self.check.as_mut() {
                 c.local_command_completions += 1;
                 if selector {
@@ -6001,6 +6024,9 @@ impl LiveApp {
                 }
                 if resource {
                     c.local_resource_completions += 1;
+                }
+                if coordinate {
+                    c.local_coordinate_completions += 1;
                 }
             }
         }
@@ -6663,6 +6689,30 @@ impl LiveApp {
                         self.chat_char(ch);
                     }
                     self.command_injected = true;
+                }
+            }
+            // M120 — and a coordinate. Injected LAST, at 0.8, so r32 has
+            // already banked its frames against `/give @s dirt `: a
+            // coordinate popup suppresses the box, which is the receding
+            // precondition M118 and M119 both hit.
+            if self.command_injected && !self.coords_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.8 {
+                    self.close_chat_screen();
+                    // **Drop the draft first.** `close_chat_screen` saves one,
+                    // and `ChatMethod::Command` restores a COMMAND draft — so
+                    // reopening handed the field back `/give @s dirt ` and the
+                    // typing below appended to it. That is M110's
+                    // `isDraftRestorable` working exactly as documented, and
+                    // the gate read as "the coordinate family offers nothing"
+                    // when what it had actually typed was
+                    // `/give @s dirt setblock `.
+                    self.chat_draft = None;
+                    self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Command);
+                    for ch in "setblock ".chars() {
+                        self.chat_char(ch);
+                    }
+                    self.coords_injected = true;
                 }
             }
             if !self.container_injected {
@@ -7921,6 +7971,7 @@ fn run_windowed(
         chat_draft: None,
         chat_injected: false,
         command_injected: false,
+        coords_injected: false,
         chat_parse: None,
         drag: DragState::default(),
         last_click: None,

@@ -41,6 +41,20 @@ impl Items {
     /// an id outside the registry is not a vanilla item, so its default
     /// components — including `minecraft:swing_animation` — are unknowable, and
     /// nothing may substitute the bare default for it.
+    /// A fixture constructor for tests in other crates (M120) — the same
+    /// role `Blocks::for_tests` plays, and for the same reason.
+    pub fn for_tests(names: &[&str]) -> Self {
+        Self {
+            by_name: names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.to_string(), i as i32))
+                .collect(),
+            ids: (0..names.len() as i32).collect(),
+            by_id: std::sync::OnceLock::new(),
+        }
+    }
+
     /// Every item name, sorted (M119).
     ///
     /// Built on demand rather than stored: the only caller is the command

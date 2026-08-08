@@ -511,7 +511,7 @@ fn skip_whitespace(reader: &mut StringReader) {
 ///
 /// The bare `..` is legal and means "unbounded both ways", which is why the
 /// emptiness test is on **both** halves rather than on the first.
-fn read_range(reader: &mut StringReader) -> Result<(), ReaderError> {
+pub fn read_range(reader: &mut StringReader) -> Result<(), ReaderError> {
     let number = |r: &mut StringReader| {
         let start = r.cursor();
         while r.can_read() && StringReader::is_allowed_number(r.peek()) {
