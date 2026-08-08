@@ -112,9 +112,9 @@ book's 77 px displacement that were not using the shared predicate, and
 exactly). **Chat is complete for everything vanilla draws without a subsystem
 Rewo lacks.**
 
-Current measurement, taken 2026-08-08 after M118: **2454 tests, 0 failures**
-(**world 1006, net 738, gpu 255, data 216, app 183, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2454). **Read each crate's EXIT CODE, not
+Current measurement, taken 2026-08-08 after M119: **2469 tests, 0 failures**
+(**world 1006, net 753, gpu 255, data 216, app 183, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2469). **Read each crate's EXIT CODE, not
 just its count**: a crate whose tests fail to compile prints no `test result`
 line at all, contributes 0, and reads as silence — M110 hit exactly that and
 the only signal was the total falling. **Breakdowns written before the
@@ -125,8 +125,8 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` 33/33 with validation ON and 0
-validation errors, last run for M118** — M113 is a decode and adds no render
+34/34, `mobshot` 246/246, **`live --render-check` 34/34 with validation ON and 0
+validation errors, last run for M119** — M113 is a decode and adds no render
 path, which is the only reason it was not re-run (M94 is where it earned its
 keep twice over — see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
 `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C **12** — M96–M107
@@ -183,11 +183,16 @@ best-scoped work on the board:
   ~~`EntitySelectorParser`~~ (**M118**) — `@e[…]` parses and completes
   locally, and `live --render-check` is **33/33**.
 
-  **What is left is a list rather than a blocker.** The remaining `minecraft:`
-  argument types are each self-contained and none is as widely used as the
-  selector: `item_stack`, `block_state`, `resource`, `time`, `component`, the
-  coordinate family. Each one transcribed lets the parse — and therefore the
-  highlighting — reach one word further. The other named gap is the
+  ~~`item_stack` and `block_state`~~ (**M119**). **What is left is a list
+  rather than a blocker**, and a shortening one: `resource`, `time`,
+  `component`, the coordinate family, `nbt_compound_tag`. Each one transcribed
+  lets the parse — and therefore the highlighting — reach one word further.
+
+  **A gate note that will save a confusing minute:** `--render-check`'s r32
+  needs an argument that suggests *nothing*, so its precondition **recedes by
+  one word for every argument type transcribed**. It failed on M118 and again
+  on M119, correctly both times, and the fix each time was to type one more
+  word in the gate's injection. The other named gap is the
   **exception messages** under the field (`BuiltInExceptions`' literals plus
   `command.context.parse_error`), which M117 models as a gate: it shows
   *nothing* where vanilla shows a message, rather than approximating.
@@ -18554,3 +18559,66 @@ two arguments deep now. r33 mutation-verified live: reverting `entity` to
 `resource`, `time`, `component`, the coordinate family — each self-contained,
 none as widely used as this one. And the four selector option values that need
 a structured parser.
+
+### M119 — the block-state and item argument types (2026-08-08)
+
+The two after the selector a player meets most: the second word of
+`/setblock`, `/fill` and `/give`. Both are M118's shape — a **function pointer
+the parse reassigns** — so the work is in what each state offers.
+
+**The finding closes a loop.** **The namespace rule lives in
+`suggestResource`, not in the matcher.** `filterResources` opens
+`boolean hasNamespace = contents.indexOf(58) > -1` and, with no colon typed,
+tests the pattern against the identifier's **namespace** and its **path**
+*separately*. That is the only reason `sto` reaches `minecraft:stone` — and it
+is the other half of **M114a**'s recorded refusal to split `matchesSubStr` on
+`:`. Matching the whole string in both cases is the obvious simplification and
+makes every bare name fail.
+
+**`suggestEquals` is dead in `EntitySelectorParser` and live here.** Same
+method name, two classes, and only `BlockStateParser` assigns it — so
+`oak_door[facing` offers `=` where `@e[limit` offers nothing. M118 recorded the
+dead one; this is the live one, and the pair is worth knowing before assuming
+either way.
+
+**Every bracket suggestion is gated on `builder.getRemaining().isEmpty()`** —
+**suppressed** once anything is typed rather than filtered by prefix, which
+would leave a `]` in the list that no keystroke can select. And
+`suggestNextPropertyOrEnd` carries a second condition on the comma
+(`properties.size() < state.getProperties().size()`), so a block with every
+property set offers `]` and **not** `,`.
+
+**Scoped.** Ids and block properties are complete; the item's **components**
+and the block's **NBT** are not — both leave the state at `SUGGEST_NOTHING`,
+which is what vanilla shows *before* those parsers install their own, so an
+item's `[` offers nothing here where vanilla lists component names.
+
+`ArgKind` gained a **`CommandCtx`** carrying the registries, taken by
+**parsing as well as suggesting**: an argument that cannot resolve its id
+cannot parse either, and an empty context makes every `minecraft:` type behave
+exactly as it did before M118 — which is what keeps a registry-less caller
+working.
+
+**Process.** 13 mutations, 13 killed. **Four survived first and every one was a
+weak fixture**, the highest rate of this arc. Two needed the builder's
+remaining text to be **non-empty**, which only happens after a rewind or a
+value that fails to **read** rather than to validate (an unclosed quote, not an
+illegal word). The other two were the **M92/M93b shape**: `block_item`'s own
+tests drive `ParsedRef` directly, so the wiring from a registry *name* to that
+parser was untested until a dispatcher test existed — both mutations reverting
+it to `Unknown` survived.
+
+**`live --render-check` 33 → 34/34**, validation ON, 0 errors. **r32 failed on
+the way and again correctly**: `/give @s `'s argument is now `item_stack`, so a
+popup opens there and the usage box is suppressed by the mutual exclusion.
+**r32's precondition recedes by one word for every argument type transcribed**
+— M118 pushed it past the targets, M119 past the item — which is worth knowing
+before reading its next failure as a regression. r34 mutation-verified live.
+
+**2469 tests**; demo PNG `2cc56b4acbfb92cb`, byte-identical.
+
+**Open.** The remaining `minecraft:` types (`resource`, `time`, `component`,
+the coordinate family, `nbt_compound_tag`), the item's component syntax and the
+block's SNBT, and `suggestOpenNbt`'s `hasBlockEntity()` gate — which Rewo can
+answer from M25's registry but through a crate `block_item` does not take, so
+`{` is never offered rather than offered wrongly.
