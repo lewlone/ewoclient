@@ -1121,4 +1121,81 @@ mod tests {
         );
         assert_eq!(r.remaining(), 0);
     }
+    // -- M126a: moved here from `chat_translate`'s test module ------------
+    //
+    // These two drive `SystemChat::read` over real bytes, so they belong on
+    // the wire side; `chat_translate` moved down to `rewo-world` and cannot
+    // name a packet. Nothing about what they assert changed.
+
+    fn lang(pairs: &[(&str, &str)]) -> rewo_data::lang::Language {
+        rewo_data::lang::Language::from_map(
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        )
+    }
+
+    // -- the chain a `system_chat` actually walks -------------------------
+
+    /// A `system_chat` body, byte for byte, carrying a translatable component.
+    ///
+    /// Written out rather than built from an `Nbt` so the test drives the real
+    /// `SystemChat::read` over real bytes — M92's rule: a witness that hands
+    /// production the value production is supposed to derive is grading
+    /// itself.
+    fn system_chat_body(key: &str, arg: &str, overlay: bool) -> Vec<u8> {
+        fn string_field(out: &mut Vec<u8>, name: &str, value: &str) {
+            out.push(0x08); // TAG_String
+            out.extend_from_slice(&(name.len() as u16).to_be_bytes());
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&(value.len() as u16).to_be_bytes());
+            out.extend_from_slice(value.as_bytes());
+        }
+        let mut out = vec![0x0a]; // TAG_Compound, unnamed root
+        string_field(&mut out, "translate", key);
+        // "with": TAG_List of TAG_String, one element.
+        out.push(0x09);
+        out.extend_from_slice(&4u16.to_be_bytes());
+        out.extend_from_slice(b"with");
+        out.push(0x08); // element type
+        out.extend_from_slice(&1i32.to_be_bytes());
+        out.extend_from_slice(&(arg.len() as u16).to_be_bytes());
+        out.extend_from_slice(arg.as_bytes());
+        out.push(0x00); // end of compound
+        out.push(u8::from(overlay));
+        out
+    }
+
+    /// The whole chain: wire bytes -> `SystemChat::read` -> the flatten the
+    /// session performs. This is the join `PlaySession` makes, minus the one
+    /// field read that hands over the table.
+    #[test]
+    fn a_system_chat_bodys_translatable_resolves_through_the_flatten() {
+        let body = system_chat_body("multiplayer.player.joined", "Steve", false);
+        let packet =
+            SystemChat::read(&mut rewo_proto::reader::PacketReader::new(&body))
+                .unwrap();
+        assert!(!packet.overlay);
+        let l = lang(&[("multiplayer.player.joined", "%s joined the game")]);
+        assert_eq!(
+            rewo_world::chat_translate::chat_component_text(&packet.content, Some(&l)),
+            "Steve joined the game"
+        );
+    }
+
+    /// The same bytes with no table: the key, which is what every Rewo session
+    /// put on screen before M125. Kept as a test so "passing `None`" stays a
+    /// defined behaviour rather than an accident.
+    #[test]
+    fn the_same_body_with_no_table_is_the_pre_m125_rendering() {
+        let body = system_chat_body("multiplayer.player.joined", "Steve", false);
+        let packet =
+            SystemChat::read(&mut rewo_proto::reader::PacketReader::new(&body))
+                .unwrap();
+        assert_eq!(
+            rewo_world::chat_translate::chat_component_text(&packet.content, None),
+            "multiplayer.player.joined"
+        );
+    }
 }
