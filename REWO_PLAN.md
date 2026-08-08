@@ -112,9 +112,9 @@ book's 77 px displacement that were not using the shared predicate, and
 exactly). **Chat is complete for everything vanilla draws without a subsystem
 Rewo lacks.**
 
-Current measurement, taken 2026-08-08 after M119: **2469 tests, 0 failures**
-(**world 1006, net 753, gpu 255, data 216, app 183, mesh 45, proto 11** — read
-off the runner per crate; they sum to 2469). **Read each crate's EXIT CODE, not
+Current measurement, taken 2026-08-08 after M120: **2487 tests, 0 failures**
+(**world 1006, net 771, gpu 255, data 216, app 183, mesh 45, proto 11** — read
+off the runner per crate; they sum to 2487). **Read each crate's EXIT CODE, not
 just its count**: a crate whose tests fail to compile prints no `test result`
 line at all, contributes 0, and reads as silence — M110 hit exactly that and
 the only signal was the total falling. **Breakdowns written before the
@@ -125,8 +125,8 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` 34/34 with validation ON and 0
-validation errors, last run for M119** — M113 is a decode and adds no render
+34/34, `mobshot` 246/246, **`live --render-check` 35/35 with validation ON and 0
+validation errors, last run for M120** — M113 is a decode and adds no render
 path, which is the only reason it was not re-run (M94 is where it earned its
 keep twice over — see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
 `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C **12** — M96–M107
@@ -183,10 +183,14 @@ best-scoped work on the board:
   ~~`EntitySelectorParser`~~ (**M118**) — `@e[…]` parses and completes
   locally, and `live --render-check` is **33/33**.
 
-  ~~`item_stack` and `block_state`~~ (**M119**). **What is left is a list
-  rather than a blocker**, and a shortening one: `resource`, `time`,
-  `component`, the coordinate family, `nbt_compound_tag`. Each one transcribed
-  lets the parse — and therefore the highlighting — reach one word further.
+  ~~`item_stack` and `block_state`~~ (**M119**), ~~and the other 39~~
+  (**M120**). **Six `minecraft:` types remain**, all structured:
+  `component`, `style`, `nbt_compound_tag`, `nbt_tag`, `nbt_path`, `dialog`.
+  A test in `arg_types` asserts every other one is claimed, so the list cannot
+  rot. What is left beyond them is *suggestion quality* rather than parsing:
+  seven literal tables that live in classes outside the argument (`heightmap`,
+  `team_color`, `scoreboard_slot`, `item_slot`/`item_slots`, `swizzle`), and
+  the `resource*` family's registries beyond blocks and items.
 
   **A gate note that will save a confusing minute:** `--render-check`'s r32
   needs an argument that suggests *nothing*, so its precondition **recedes by
@@ -18622,3 +18626,70 @@ the coordinate family, `nbt_compound_tag`), the item's component syntax and the
 block's SNBT, and `suggestOpenNbt`'s `hasBlockEntity()` gate — which Rewo can
 answer from M25's registry but through a crate `block_item` does not take, so
 `{` is never offered rather than offered wrongly.
+
+### M120 — the coordinate family and the value-shaped types (2026-08-08)
+
+M119 left 45 `minecraft:` types `Unknown`. This claims **39** of them: the
+coordinate family, the fixed word lists whose tables sit in the argument class
+itself, the ranges, the word-shaped scalars, and the identifier family. **Six
+structured types** — `component`, `style`, `nbt_compound_tag`, `nbt_tag`,
+`nbt_path`, `dialog` — each need a parser of their own and are named rather
+than half-done. A test asserts every *other* `minecraft:` type **is** claimed,
+so that list cannot rot.
+
+**A coordinate is not a number with a `~` in front.** Four rules, and only the
+first is obvious:
+
+* **A bare `~` is legal** — the number after it is optional, guarded by
+  `peek() != ' '` rather than by "is there a digit", which is the whole reason
+  `/tp ~ ~ ~` parses.
+* **`^` is all-or-nothing across the triple.** `Vec3Argument` peeks once and
+  commits, so `^1 ~2 3` is `ERROR_MIXED_TYPE`; a parser deciding per component
+  accepts it.
+* `parseInt` reads a **double** when relative and an **int** when not, so
+  `~0.5` is a legal block position and `0.5` is not.
+* **The centring `+ 0.5` is suppressed by a decimal point**, not by the value:
+  `5` becomes `5.5` and `5.0` stays `5.0` — which is why `/tp 5 64 5` lands in
+  the middle of a block.
+
+**An operation is punctuation**, so `readUnquotedString` reads *nothing* for
+all nine of `= += -= *= /= %= < > ><`; reading one as a word makes every
+operation fail to parse. And `Rotation`'s serialized names include **`180`**,
+not `clockwise_180`.
+
+**Scoped and stated.** The coordinate suggesters read the **crosshair**
+(`getRelevantCoordinates` / `getAbsoluteCoordinates`) through a validator that
+re-parses each candidate. Rewo has the raycast (M73) and not the validator, so
+it offers the **defaults** those collections fall back to — `~ ~ ~` and
+`^ ^ ^` — built **progressively** (`x`, `x y`, `x y z`) so Tab can fill one
+axis. Seven types whose literal tables live in another class (`heightmap`,
+`team_color`, `scoreboard_slot`, `item_slot`/`item_slots`, `swizzle`) parse as
+words and suggest nothing: wrong in the suggestions, never in the parse.
+
+**Process.** 13 mutations, 13 killed, **1 proven equivalent** — deleting the
+world reader's `^` guard survives every witness, because `isAllowedNumber`
+excludes `^` and the number reader raises `ExpectedDouble` on exactly those
+inputs. The guard changes *which error* vanilla reports, and Rewo renders none
+of them. Two survived first and both were **weak fixtures**: the separator
+check is only *observable* where the next component would parse without it
+(`1~2`, not `1,2`), and no witness exercised a suggestion after a **failed**
+choice, which is where M118's rollback rule lives.
+
+**`live --render-check` 34 → 35/35**, validation ON, 0 errors, r35
+mutation-verified live. **It failed first, and the cause is worth keeping**:
+the gate's second injection was **appending**. `close_chat_screen` saves a
+draft and `ChatMethod::Command` restores a *command* draft, so reopening handed
+the field back `/give @s dirt ` — M110's `isDraftRestorable` working exactly as
+documented, and the gate read as "the coordinate family offers nothing" when
+what it had typed was `/give @s dirt setblock `. A test-tree collision cost a
+similar minute: the fixture already had a `tp` literal, and `getRelevantNodes`
+returns the first exact match, so **a duplicate name in a test tree is silently
+shadowed rather than rejected**.
+
+**2487 tests**; demo PNG `2cc56b4acbfb92cb`, byte-identical.
+
+**Open.** The six structured types; the seven literal tables above; and the
+`resource*` family's suggestions beyond `minecraft:block` and
+`minecraft:item` — the wire always names the right registry (M113 keeps it in
+the props), so what limits them is which registries Rewo holds, not which one
+to ask.
