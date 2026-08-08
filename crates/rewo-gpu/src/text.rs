@@ -55,7 +55,26 @@ struct Vertex {
 /// The same sum [`push_line`](TextPass::push_line) pens out, in whole pixels
 /// rather than scaled ones, so a caller can place text it has not drawn yet.
 pub fn width(text: &str, advance: &[u8; 256]) -> i32 {
-    text.bytes().map(|b| advance[b as usize] as i32).sum()
+    width_styled(text, advance, false)
+}
+
+/// `StringSplitter`'s width provider —
+/// `getGlyph(cp).info().getAdvance(style.isBold())`.
+///
+/// **`GlyphInfo.getBoldOffset()` is `1.0F`, and it is charged per character**,
+/// not once per run: a five-character bold word is five pixels wider, not one.
+/// That is what makes the style argument load-bearing rather than cosmetic — a
+/// style-blind measure wraps a bold chat line late and lets it overhang the
+/// box (M126b).
+///
+/// The byte-wise sum is the pre-existing approximation this inherits: the
+/// atlas is indexed by byte, so a multi-byte UTF-8 character is measured as
+/// two glyphs. Bold doubles that error rather than creating it.
+pub fn width_styled(text: &str, advance: &[u8; 256], bold: bool) -> i32 {
+    let extra = i32::from(bold);
+    text.bytes()
+        .map(|b| advance[b as usize] as i32 + extra)
+        .sum()
 }
 
 /// `GuiGraphicsExtractor.centeredText` — `text(font, str, x - font.width(str)

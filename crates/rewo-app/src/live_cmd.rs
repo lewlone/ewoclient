@@ -4305,8 +4305,15 @@ fn run_headless(
     // text is built, or a headless `--out` render shows an empty chat box for
     // messages the session has already decoded.
     apply_chat(&mut session, world_renderer.font_advance().copied());
-    let (mut headless_text, _) =
-        build_text(&session, gui_px(1280, 720), 720.0, None, true, false);
+    let (mut headless_text, _) = build_text(
+        &session,
+        gui_px(1280, 720),
+        720.0,
+        None,
+        true,
+        false,
+        world_renderer.font_advance().copied(),
+    );
     headless_text.extend(headless_screen_labels);
     world_renderer.set_text(headless_text);
     world_renderer.anim_tick(&mut gpu, session.ticks)?;
@@ -5879,10 +5886,11 @@ impl LiveApp {
             }
             ChatAction::Scroll(n) => {
                 if let Some(session) = self.session.as_mut() {
-                    let width_of = move |s: &str| match &advance {
-                        Some(a) => rewo_gpu::text::width(s, a),
-                        None => 0,
-                    };
+                    let width_of =
+                        move |s: &str, st: rewo_world::chat_style::ChatStyle| match &advance {
+                            Some(a) => rewo_gpu::text::width_styled(s, a, st.bold),
+                            None => 0,
+                        };
                     let ctx = rewo_world::chat::WrapContext {
                         options: rewo_world::chat::ChatOptions::default(),
                         // The box is TALLER while the screen is open, and
@@ -7754,8 +7762,15 @@ impl LiveApp {
         // the order on screen.
 
         let fps = (!self.cpu.is_empty()).then(|| 1000.0 / self.cpu.average().max(0.001));
-        let (mut text, chat_count) =
-            build_text(session, px, extent.height as f32, fps, self.debug, chat_focused);
+        let (mut text, chat_rows) = build_text(
+            session,
+            px,
+            extent.height as f32,
+            fps,
+            self.debug,
+            chat_focused,
+            state.world_renderer.font_advance().copied(),
+        );
         if let Some(cs) = self.chat_screen.as_ref() {
             let (gw, gh) = ((extent.width as f32 / px) as i32, (extent.height as f32 / px) as i32);
             let advance = state.world_renderer.font_advance().copied();
@@ -7788,18 +7803,32 @@ impl LiveApp {
         {
             text.extend(usage_text);
         }
-        if chat_count > 0 {
+        if !chat_rows.is_empty() {
             if let Some(c) = self.check.as_mut() {
                 c.chat_line_frames += 1;
             }
         }
         // M125 — read off the DRAWN lines rather than the chat store, so a
         // resolution that happened and then failed to reach the frame is not
-        // counted. `text` holds the wrapped chat rows at this point; the two
-        // scans are over the same list so they cannot disagree about which
-        // frame they are describing.
+        // counted.
+        //
+        // **M126b split the two scans, and the reason is asymmetric.** A chat
+        // row is now one text line per SPAN, and a resolved template is
+        // several spans ("Gave ", "1", " ", "[", "Diamond Sword", "]", …) — so
+        // scanning `text` for the whole sentence finds nothing and the witness
+        // would read zero with the feature working. `chat_rows` is that same
+        // drawn row re-concatenated by `chat_lines`, from the same spans it
+        // emitted, so it keeps M125's "off the drawn lines" property.
+        //
+        // The raw-key scan does NOT need it: an unresolved translatable falls
+        // back to its key as a SINGLE span, by construction, so it still lands
+        // in one `text` line — and scanning the wider list keeps the check that
+        // no key leaked into some other surface.
         if let Some(c) = self.check.as_mut() {
-            if text.iter().any(|l| l.text.contains("Gave 1 [Diamond Sword]")) {
+            if chat_rows
+                .iter()
+                .any(|r| r.contains("Gave 1 [Diamond Sword]"))
+            {
                 c.translated_chat_frames += 1;
             }
             // The three keys of that one message, one per nesting level. Named
@@ -8265,8 +8294,8 @@ fn client_jar_path(version: &str) -> Option<PathBuf> {
 /// permanently and queueing them would grow without bound, so keeping them
 /// unwrapped is what a caller with no font can honestly render.
 fn apply_chat(session: &mut PlaySession, advance: Option<[u8; 256]>) {
-    let width_of = move |t: &str| match &advance {
-        Some(a) => rewo_gpu::text::width(t, a),
+    let width_of = move |t: &str, st: rewo_world::chat_style::ChatStyle| match &advance {
+        Some(a) => rewo_gpu::text::width_styled(t, a, st.bold),
         None => 0,
     };
     let ctx = rewo_world::chat::WrapContext {
@@ -8300,7 +8329,8 @@ fn build_text(
     fps: Option<f32>,
     debug: bool,
     chat_focused: bool,
-) -> (Vec<rewo_gpu::world::OwnedTextLine>, usize) {
+    advance: Option<[u8; 256]>,
+) -> (Vec<rewo_gpu::world::OwnedTextLine>, Vec<String>) {
     use rewo_gpu::world::OwnedTextLine;
     let white = [0.93, 0.93, 0.93];
     let mut lines = Vec::new();
@@ -8361,18 +8391,17 @@ fn build_text(
             });
         }
     }
-    let chat = chat_lines(
+    let (chat, chat_rows) = chat_lines(
         &session.chat,
         session.ticks as i32,
         px,
         screen_h,
         &rewo_world::chat::ChatOptions::default(),
-        white,
+        advance.as_ref(),
         chat_focused,
     );
-    let chat_count = chat.len();
     lines.extend(chat);
-    (lines, chat_count)
+    (lines, chat_rows)
 }
 
 /// The chat screen's input line and caret (M110), in screen pixels.
@@ -8753,9 +8782,9 @@ fn chat_lines(
     px: f32,
     screen_h: f32,
     opts: &rewo_world::chat::ChatOptions,
-    color: [f32; 3],
+    advance: Option<&[u8; 256]>,
     focused: bool,
-) -> Vec<rewo_gpu::world::OwnedTextLine> {
+) -> (Vec<rewo_gpu::world::OwnedTextLine>, Vec<String>) {
     use rewo_gpu::world::OwnedTextLine;
     // `getScale()` is a second multiplier on top of the GUI scale, so a chat
     // pixel is `px * scale` screen pixels and every offset below is in chat
@@ -8768,24 +8797,56 @@ fn chat_lines(
     // Focused chat is a taller box with no fade. Supplied by the caller
     // (M110) rather than hardcoded: it is a fact about whether a `ChatScreen`
     // is open, which is exactly what `ChatComponent.isChatFocused` asks.
-    chat.visible_lines(gui_tick, focused, opts)
-        .into_iter()
-        .map(|line| {
-            let entry_bottom = chat_bottom - line.index as f32 * entry_height;
-            OwnedTextLine {
-                // `pose.translate(4.0F, 0.0F)` — `MESSAGE_INDENT`.
-                x: rewo_world::chat::MESSAGE_INDENT as f32 * chat_px,
-                y: (entry_bottom - to_message_y) * chat_px,
-                px: chat_px,
-                color,
-                // `alpha * textOpacity`, where `textOpacity` is
-                // `chatOpacity * 0.9 + 0.1` and so never reaches 0.
-                alpha: line.alpha * text_opacity,
-                shadow: true,
-                text: line.text,
+    let mut out: Vec<OwnedTextLine> = Vec::new();
+    let mut rows: Vec<String> = Vec::new();
+    for line in chat.visible_lines(gui_tick, focused, opts) {
+        let entry_bottom = chat_bottom - line.index as f32 * entry_height;
+        let y = (entry_bottom - to_message_y) * chat_px;
+        // `pose.translate(4.0F, 0.0F)` — `MESSAGE_INDENT`.
+        let mut pen = rewo_world::chat::MESSAGE_INDENT as f32 * chat_px;
+        let mut row = String::new();
+        for span in line.text {
+            let w = advance
+                .map(|a| rewo_gpu::text::width_styled(&span.text, a, span.bold))
+                .unwrap_or(0);
+            if !span.text.is_empty() {
+                out.push(OwnedTextLine {
+                    x: pen,
+                    y,
+                    px: chat_px,
+                    // The span's own colour, in the LINEAR space the pass
+                    // writes into an sRGB attachment. M117's coloured command
+                    // runs are the precedent; the death screen and the XP
+                    // level still hand over `/255` bytes and are a hair bright
+                    // (named in the plan, not fixed here).
+                    color: srgb_bytes_to_linear_f(span.color),
+                    // `alpha * textOpacity`, where `textOpacity` is
+                    // `chatOpacity * 0.9 + 0.1` and so never reaches 0.
+                    alpha: line.alpha * text_opacity,
+                    shadow: true,
+                    text: span.text.clone(),
+                });
             }
-        })
-        .collect()
+            row.push_str(&span.text);
+            pen += w as f32 * chat_px;
+        }
+        rows.push(row);
+    }
+    (out, rows)
+}
+
+/// A span's already-unpacked `[f32; 3]` (sRGB, `chat_style::rgb_f32`'s plain
+/// `/255`) into linear.
+///
+/// Beside [`srgb_bytes_to_linear`] rather than folded into it because the
+/// input is a triple that has already been divided, not a packed `u32` — and
+/// both go through `rewo_gpu`'s one transfer function for M111's reason.
+fn srgb_bytes_to_linear_f(rgb: [f32; 3]) -> [f32; 3] {
+    [
+        srgb_to_linear(rgb[0]),
+        srgb_to_linear(rgb[1]),
+        srgb_to_linear(rgb[2]),
+    ]
 }
 
 /// An 0xRRGGBB byte triple into the LINEAR space the HUD's vertex tint
@@ -10890,7 +10951,9 @@ mod tests {
     /// Six lines of chat and the geometry they land on. Shared by the
     /// witnesses below so each asserts one property against one fixture.
     fn chat_fixture(count: usize, added_time: i32) -> rewo_world::chat::ChatComponent {
-        let w6 = |s: &str| s.chars().count() as i32 * 6;
+        let w6 = |s: &str, st: rewo_world::chat_style::ChatStyle| {
+            s.chars().count() as i32 * (6 + i32::from(st.bold))
+        };
         let ctx = rewo_world::chat::WrapContext {
             options: rewo_world::chat::ChatOptions::default(),
             focused: false,
@@ -10902,7 +10965,9 @@ mod tests {
             c.add_message(
                 rewo_world::chat::GuiMessage {
                     added_time,
-                    content: format!("m{i}"),
+                    content: vec![
+                        rewo_world::chat_style::ChatStyle::WHITE.span(format!("m{i}")),
+                    ],
                     signature: None,
                     source: rewo_world::chat::MessageSource::SystemServer,
                     tag: None,
@@ -10922,7 +10987,7 @@ mod tests {
     #[test]
     fn the_bottom_chat_row_sits_forty_pixels_off_the_bottom_less_the_baseline() {
         let opts = rewo_world::chat::ChatOptions::default();
-        let lines = super::chat_lines(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts, [1.0; 3], false);
+        let lines = super::chat_lines(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts, None, false).0;
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].y, 672.0);
         // `pose.translate(4, 0)` — not 0, and not the F3 block's 3.
@@ -10935,7 +11000,7 @@ mod tests {
     #[test]
     fn chat_rows_stack_upward_one_entry_height_apart() {
         let opts = rewo_world::chat::ChatOptions::default();
-        let lines = super::chat_lines(&chat_fixture(3, 0), 0, 1.0, 720.0, &opts, [1.0; 3], false);
+        let lines = super::chat_lines(&chat_fixture(3, 0), 0, 1.0, 720.0, &opts, None, false).0;
         assert_eq!(lines.len(), 3);
         // `visible_lines` emits top-first, so index 0 here is the oldest and
         // highest.
@@ -10958,7 +11023,7 @@ mod tests {
         let mut opts = rewo_world::chat::ChatOptions::default();
         opts.line_spacing = 1.0;
         assert_eq!(opts.entry_height(), 18);
-        let lines = super::chat_lines(&chat_fixture(2, 0), 0, 1.0, 720.0, &opts, [1.0; 3], false);
+        let lines = super::chat_lines(&chat_fixture(2, 0), 0, 1.0, 720.0, &opts, None, false).0;
         // chatBottom 680, minus 12.
         assert_eq!(lines[1].y, 668.0);
         // …and the pitch is the row height, so the two readings cannot be
@@ -10989,7 +11054,7 @@ mod tests {
         let opts = rewo_world::chat::ChatOptions::default();
         let c = chat_fixture(3, 0);
         let b = super::hud_fills(&c, 0, 1.0, 720.0, &opts, false);
-        let l = super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3], false);
+        let l = super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, false).0;
         assert_eq!(b.len(), l.len());
         for i in 0..b.len() {
             assert_eq!(b[i].h, 9.0);
@@ -11011,11 +11076,11 @@ mod tests {
         let c = chat_fixture(1, 0);
         // Default: background 0.5, text 1.0.
         assert_eq!(super::hud_fills(&c, 0, 1.0, 720.0, &opts, false)[0].alpha, 0.5);
-        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3], false)[0].alpha, 1.0);
+        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, false).0[0].alpha, 1.0);
         opts.text_background_opacity = 0.0;
         assert_eq!(super::hud_fills(&c, 0, 1.0, 720.0, &opts, false)[0].alpha, 0.0);
         // The text is untouched by it — a shared multiplier would zero both.
-        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3], false)[0].alpha, 1.0);
+        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, false).0[0].alpha, 1.0);
     }
 
     /// The fade reaches the fill too, so a message dims its own backdrop with
@@ -11050,7 +11115,7 @@ mod tests {
     #[test]
     fn the_gui_scale_multiplies_the_whole_box() {
         let opts = rewo_world::chat::ChatOptions::default();
-        let lines = super::chat_lines(&chat_fixture(1, 0), 0, 2.0, 720.0, &opts, [1.0; 3], false);
+        let lines = super::chat_lines(&chat_fixture(1, 0), 0, 2.0, 720.0, &opts, None, false).0;
         assert_eq!(lines[0].px, 2.0);
         assert_eq!(lines[0].x, 8.0);
         // floor(720/2 - 40) = 320 chat px, minus 8, times 2.
@@ -11064,16 +11129,16 @@ mod tests {
     fn the_fade_and_the_text_opacity_both_reach_the_line() {
         let opts = rewo_world::chat::ChatOptions::default();
         let c = chat_fixture(1, 0);
-        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3], false)[0].alpha, 1.0);
+        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, false).0[0].alpha, 1.0);
         // 190 ticks: half way through the 20-tick fade, squared -> 0.25.
-        let faded = super::chat_lines(&c, 190, 1.0, 720.0, &opts, [1.0; 3], false);
+        let faded = super::chat_lines(&c, 190, 1.0, 720.0, &opts, None, false).0;
         assert!((faded[0].alpha - 0.25).abs() < 1e-5);
         // Past 200 the line is not emitted at all, rather than emitted at 0.
-        assert!(super::chat_lines(&c, 200, 1.0, 720.0, &opts, [1.0; 3], false).is_empty());
+        assert!(super::chat_lines(&c, 200, 1.0, 720.0, &opts, None, false).0.is_empty());
 
         let mut dim = rewo_world::chat::ChatOptions::default();
         dim.opacity = 0.0;
-        let lines = super::chat_lines(&c, 0, 1.0, 720.0, &dim, [1.0; 3], false);
+        let lines = super::chat_lines(&c, 0, 1.0, 720.0, &dim, None, false).0;
         assert!((lines[0].alpha - 0.1).abs() < 1e-6, "the floor is 0.1, not 0");
     }
 
@@ -11082,7 +11147,7 @@ mod tests {
     #[test]
     fn the_unfocused_box_holds_ten_rows() {
         let opts = rewo_world::chat::ChatOptions::default();
-        let lines = super::chat_lines(&chat_fixture(30, 0), 0, 1.0, 720.0, &opts, [1.0; 3], false);
+        let lines = super::chat_lines(&chat_fixture(30, 0), 0, 1.0, 720.0, &opts, None, false).0;
         assert_eq!(lines.len(), 10);
         assert_eq!(lines.last().unwrap().text, "m29");
         assert_eq!(lines.first().unwrap().text, "m20");
@@ -11098,8 +11163,8 @@ mod tests {
     fn the_focused_box_is_taller_and_does_not_fade() {
         let opts = rewo_world::chat::ChatOptions::default();
         let c = chat_fixture(30, 0);
-        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3], false).len(), 10);
-        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, [1.0; 3], true).len(), 20);
+        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, false).0.len(), 10);
+        assert_eq!(super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, true).0.len(), 20);
         // …and the fills follow the text, so a taller box does not draw ten
         // rows of glyphs over twenty rows of backdrop.
         assert_eq!(super::hud_fills(&c, 0, 1.0, 720.0, &opts, false).len(), 10);
@@ -11108,8 +11173,8 @@ mod tests {
         // At 300 ticks every message is long faded, and the focused view shows
         // them anyway — `AlphaCalculator.FULLY_VISIBLE` rather than
         // `timeBased`.
-        assert!(super::chat_lines(&c, 300, 1.0, 720.0, &opts, [1.0; 3], false).is_empty());
-        let focused = super::chat_lines(&c, 300, 1.0, 720.0, &opts, [1.0; 3], true);
+        assert!(super::chat_lines(&c, 300, 1.0, 720.0, &opts, None, false).0.is_empty());
+        let focused = super::chat_lines(&c, 300, 1.0, 720.0, &opts, None, true).0;
         assert_eq!(focused.len(), 20);
         assert!(focused.iter().all(|l| l.alpha == 1.0));
     }
@@ -11596,9 +11661,10 @@ mod tests {
             1.0,
             720.0,
             &opts,
-            [1.0; 3],
+            None,
             false,
         )
+        .0
         .is_empty());
     }
 

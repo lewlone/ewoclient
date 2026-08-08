@@ -484,11 +484,17 @@ pub fn read_delete_chat(r: &mut PacketReader<'_>) -> Result<PackedSignature> {
 /// wrap with and the GUI tick to stamp, and both live in the app. So the three
 /// verbs are queued here and applied there — the same shape `SessionState`
 /// already uses for `disguised_chat`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ChatEvent {
     /// `ChatComponent.addPlayerMessage` / `addServerSystemMessage`.
     Message {
-        text: String,
+        /// The message's spans. A `String` until M126b — see
+        /// [`rewo_world::chat::GuiMessage::content`]. Player chat arrives as a
+        /// plain string on the wire and becomes spans through
+        /// [`rewo_world::chat_style::parse_legacy`], which is what resolves the
+        /// `§` codes servers put in it; system and disguised chat arrive as
+        /// components and go through `parse_component`.
+        text: rewo_world::chat_style::ChatLine,
         /// Present only for a signed player message — the key a later
         /// [`Self::Delete`] matches on.
         signature: Option<Box<Signature>>,
@@ -1007,8 +1013,8 @@ mod tests {
     // ── applying a batch ─────────────────────────────────────────────────
 
     fn wrap_ctx() -> rewo_world::chat::WrapContext<'static> {
-        fn w6(s: &str) -> i32 {
-            s.chars().count() as i32 * 6
+        fn w6(s: &str, style: rewo_world::chat_style::ChatStyle) -> i32 {
+            s.chars().count() as i32 * (6 + i32::from(style.bold))
         }
         rewo_world::chat::WrapContext {
             options: rewo_world::chat::ChatOptions::default(),
@@ -1020,7 +1026,7 @@ mod tests {
 
     fn message(text: &str, signature: Option<Box<Signature>>) -> ChatEvent {
         ChatEvent::Message {
-            text: text.into(),
+            text: vec![rewo_world::chat_style::ChatStyle::WHITE.span(text)],
             signature,
             tag: None,
             source: rewo_world::chat::MessageSource::Player,
@@ -1040,7 +1046,10 @@ mod tests {
         );
         assert_eq!(overlay, None);
         assert_eq!(chat.all_messages().len(), 2);
-        assert_eq!(chat.trimmed_messages()[0].text, "second");
+        assert_eq!(
+            rewo_world::chat_style::plain_text(&chat.trimmed_messages()[0].text),
+            "second"
+        );
         assert_eq!(chat.trimmed_messages()[0].added_time, 7);
     }
 
@@ -1087,11 +1096,17 @@ mod tests {
             0,
             &wrap_ctx(),
         );
-        assert_eq!(chat.all_messages()[0].content, "secret");
+        assert_eq!(
+            rewo_world::chat_style::plain_text(&chat.all_messages()[0].content),
+            "secret"
+        );
         assert_eq!(chat.deletion_queue_len(), 1);
         // …and it lands once the message is old enough.
         apply_chat_events(&mut chat, Vec::new(), 60, &wrap_ctx());
-        assert_eq!(chat.all_messages()[0].content, "deleted");
+        assert_eq!(
+            rewo_world::chat_style::plain_text(&chat.all_messages()[0].content),
+            "deleted"
+        );
         assert_eq!(chat.deletion_queue_len(), 0);
     }
 
@@ -1108,7 +1123,10 @@ mod tests {
             &wrap_ctx(),
         );
         apply_chat_events(&mut chat, Vec::new(), 100, &wrap_ctx());
-        assert_eq!(chat.all_messages()[0].content, "deleted");
+        assert_eq!(
+            rewo_world::chat_style::plain_text(&chat.all_messages()[0].content),
+            "deleted"
+        );
     }
 
     #[test]
