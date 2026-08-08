@@ -16,6 +16,7 @@ pub mod biome_parse;
 pub mod border;
 pub mod boss_bar;
 pub mod bundle;
+pub mod block_item;
 pub mod chat_sign;
 pub mod chat_style;
 pub mod chat_wire;

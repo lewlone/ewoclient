@@ -16,11 +16,24 @@ use std::path::Path;
 
 use crate::read_json_file;
 
+#[derive(Clone)]
 pub struct Blocks {
     /// state id → block resource name (e.g. "minecraft:grass_block").
     state_to_block: Vec<String>,
     /// block name → its default state id.
     default_state: HashMap<String, u32>,
+    /// Every block name, sorted (M119). A `Vec` rather than the map's keys so
+    /// a caller iterating for suggestions gets a stable order — vanilla's own
+    /// is a registry order that `Suggestions.create` sorts away anyway.
+    names: Vec<String>,
+    /// block name → its properties, each with its legal values.
+    ///
+    /// From `blocks.json`'s per-block `properties` object. **serde_json's
+    /// default `Map` is a sorted `BTreeMap`, so declaration order is already
+    /// lost here** — M64's alphabetisation trap. It costs nothing this time
+    /// because the only consumer is a suggestion list that gets sorted, but
+    /// it would matter to anything that numbered them.
+    properties: HashMap<String, Vec<(String, Vec<String>)>>,
     /// Bits needed to index any state in the global palette:
     /// `ceil(log2(state_count))`. Used by the chunk decoder's direct path.
     pub global_palette_bits: u32,
@@ -35,7 +48,32 @@ impl Blocks {
 
         let mut max_id: i64 = -1;
         let mut entries: Vec<(u32, String, bool)> = Vec::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut properties: HashMap<String, Vec<(String, Vec<String>)>> = HashMap::new();
         for (block_name, def) in obj {
+            names.push(block_name.clone());
+            // A block with no properties has no `properties` key at all, so
+            // its absence is the empty list rather than an error.
+            let props: Vec<(String, Vec<String>)> = def
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .map(|p| {
+                    p.iter()
+                        .map(|(k, v)| {
+                            let values = v
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|x| x.as_str().map(str::to_string))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            (k.clone(), values)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            properties.insert(block_name.clone(), props);
             let states = def
                 .get("states")
                 .and_then(|s| s.as_array())
@@ -80,11 +118,51 @@ impl Blocks {
             count,
             global_palette_bits
         );
+        names.sort_unstable();
         Ok(Self {
             state_to_block,
             default_state,
+            names,
+            properties,
             global_palette_bits,
         })
+    }
+
+    /// A fixture constructor for tests in **other** crates (M119).
+    ///
+    /// `#[cfg(test)]` would not reach `rewo-net`, whose command-suggestion
+    /// tests need a two-block registry rather than the 32,366-state real one.
+    /// Not `#[doc(hidden)]`, because a hidden constructor that panics on
+    /// misuse is worse than a documented one that says what it is for.
+    pub fn for_tests(
+        state_to_block: Vec<String>,
+        properties: Vec<(String, Vec<(String, Vec<String>)>)>,
+    ) -> Self {
+        let mut names: Vec<String> = properties.iter().map(|(n, _)| n.clone()).collect();
+        names.sort_unstable();
+        let mut default_state = HashMap::new();
+        for (id, name) in state_to_block.iter().enumerate() {
+            default_state.entry(name.clone()).or_insert(id as u32);
+        }
+        Self {
+            global_palette_bits: ceil_log2(state_to_block.len().max(1) as u32),
+            state_to_block,
+            default_state,
+            names,
+            properties: properties.into_iter().collect(),
+        }
+    }
+
+    /// Every block name, sorted (M119).
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    /// A block's properties and their legal values (M119). Empty for a block
+    /// with none; `None` for a name that is not a block at all — the two are
+    /// different answers and a suggester needs both.
+    pub fn properties(&self, block_name: &str) -> Option<&[(String, Vec<String>)]> {
+        self.properties.get(block_name).map(|v| v.as_slice())
     }
 
     pub fn state_count(&self) -> usize {
