@@ -55,6 +55,7 @@ pub mod screen;
 pub mod stats;
 pub mod stats_screen;
 pub mod string_splitter;
+pub mod suggestions;
 pub mod server_links_screen;
 pub mod wavy_cape;
 pub mod weather;
