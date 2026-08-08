@@ -339,8 +339,10 @@ impl Value {
                 reader.set_cursor(reader.total_length());
                 Ok(())
             }
-            Self::Snbt => crate::snbt::read_value_extent(reader),
-            Self::SnbtCompound => crate::snbt::read_compound_extent(reader),
+            // M122 — the grammar, where M121 measured an extent. `{a:}` is
+            // now an error rather than a value.
+            Self::Snbt => crate::snbt_grammar::parse_value(reader),
+            Self::SnbtCompound => crate::snbt_grammar::parse_compound(reader),
             Self::NbtPath => crate::snbt::read_nbt_path(reader),
             Self::IdOrSnbt => crate::snbt::read_id_or_value(reader),
             Self::Id { tag } => {

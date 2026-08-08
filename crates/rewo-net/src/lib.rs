@@ -51,6 +51,7 @@ pub mod session;
 pub mod selector;
 pub mod skins;
 pub mod snbt;
+pub mod snbt_grammar;
 pub mod sounds;
 pub mod suggestion_wire;
 pub mod spawn_info;
