@@ -795,6 +795,14 @@ pub struct PlaySession {
     pub chat_clock_millis: i64,
     /// The Brigadier command tree (M113), empty until `commands` arrives.
     pub commands: crate::commands::CommandTree,
+    /// `ClientSuggestionProvider`'s completion set and its single pending
+    /// request (M114). The set is server-driven; the pending slot is what
+    /// makes a stale reply inert. See [`crate::suggestion_wire`].
+    pub suggestions: crate::suggestion_wire::SuggestionProviderState,
+    /// The most recent accepted `command_suggestions` reply, for the UI to
+    /// drain. `None` once taken — a reply that arrives for a superseded
+    /// request never reaches here at all.
+    pub suggestion_reply: Option<rewo_world::suggestions::Suggestions>,
     /// The `command_argument_type` registry, supplied by the caller from the
     /// datagen report — it is a **built-in** registry (M92's rule), and the
     /// tree cannot be read past its first non-singleton argument without it.
@@ -1565,6 +1573,8 @@ impl<'a> Connection<'a> {
             chat_clock_millis: 0,
             chat: rewo_world::chat::ChatComponent::new(),
             commands: crate::commands::CommandTree::default(),
+            suggestions: crate::suggestion_wire::SuggestionProviderState::new(),
+            suggestion_reply: None,
             command_argument_types: None,
             chat_overlay: None,
             health: 20.0,
@@ -3055,6 +3065,30 @@ impl PlaySession {
                     }
                 }
                 None => log::debug!("net: commands arrived before the argument-type table"),
+            }
+        } else if id == ids.cb_play_command_suggestions {
+            // `handleCommandSuggestions` is one line:
+            // `suggestionsProvider.completeCustomSuggestions(id, toSuggestions())`.
+            // The id test is the whole of it — a reply to a superseded request
+            // is dropped rather than repainting the popup with the answer to a
+            // prefix already typed past.
+            match crate::suggestion_wire::CommandSuggestionsReply::read(body) {
+                Ok(reply) => {
+                    if let Some(s) = self.suggestions.complete(&reply) {
+                        self.suggestion_reply = Some(s);
+                    } else {
+                        log::debug!(
+                            "net: command_suggestions id {} is not the outstanding request",
+                            reply.id
+                        );
+                    }
+                }
+                Err(e) => log::warn!("net: command_suggestions decode failed: {e}"),
+            }
+        } else if id == ids.cb_play_custom_chat_completions {
+            match crate::suggestion_wire::read_custom_chat_completions(body) {
+                Ok((action, entries)) => self.suggestions.apply_completions(action, &entries),
+                Err(e) => log::warn!("net: custom_chat_completions decode failed: {e}"),
             }
         } else if id == ids.cb_play_delete_chat {
             let mut r = PacketReader::new(body);

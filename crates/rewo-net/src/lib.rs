@@ -46,6 +46,7 @@ pub mod server_links;
 pub mod session;
 pub mod skins;
 pub mod sounds;
+pub mod suggestion_wire;
 pub mod spawn_info;
 pub mod tab_list_text;
 pub mod tags;
