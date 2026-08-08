@@ -129,8 +129,8 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-08 after M125: **2582 tests, 0 failures**
-(**world 1006, net 856, gpu 255, data 221, app 183, mesh 45, proto 16** — read
+Current measurement, taken 2026-08-08 after M126: **2615 tests, 0 failures**
+(**world 1078, net 798, gpu 274, data 221, app 183, mesh 45, proto 16** — read
 off the runner per crate; they sum to 2582). Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
 other six take `--lib`, and `--lib` there is `error: no library targets`, exit
@@ -146,8 +146,8 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` 37/37 with validation ON and 0
-validation errors, last run for M125**; demo PNG `2cc56b4acbfb92cb`,
+34/34, `mobshot` 246/246, **`live --render-check` 39/39 with validation ON and 0
+validation errors, last run for M126**; demo PNG `2cc56b4acbfb92cb`,
 byte-identical. `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C
 **12** — M96–M107 consume packets M93y already decoded, M108 resolved
 `delete_chat`, M113 the Brigadier tree and M114 the two suggestion packets.
@@ -182,6 +182,10 @@ looked green because a previous run's `recipe give` had persisted into the
 world save. **A reused server directory is not a fresh one**; make a new
 directory when a witness's precondition is player state.
 
+**M126's r38/r39 are not a third requirement either** — they inject their own
+section-sign-coded `system_chat` body through the production router, so an
+unstaged run still exercises the whole span pipeline.
+
 **M125's r37 is not a third requirement either** — it rides r14's `/give`,
 because the server's success message for it is a translatable three levels deep
 (`commands.give.success.single` -> `chat.square_brackets` ->
@@ -204,14 +208,14 @@ injected**: the container, the book and the chat all drive themselves, so only
 r25 — which needs a real server to grant recipes — could tell. A gate whose
 witnesses are mostly self-driven can look healthy against nothing.
 
-### What to do next (written 2026-08-08, after M125)
+### What to do next (written 2026-08-08, after M126)
 
-**M125 took §0.0's option 2 (the chat decoration) and found a prerequisite
-under it**, which is now the milestone: every `translate` component Rewo
-received rendered as its raw key with its arguments dropped, so a real
-server's join messages, death messages and command feedback were all
-key-shaped on screen. That is fixed; the decoration itself is not, and is
-the cheapest thing to pick up.
+**M126 shipped the styled chat pipeline, which was the previous list's item 2
+and the stated prerequisite for its item 1.** `GuiMessage::content` is a span
+list, `StringSplitter` carries the parts through the wrap, and the text pass
+draws all five `Style` flags. **The chat decoration is now unblocked and is the
+cheapest thing to pick up** — it was item 1 before and it still is, with its
+last obstacle gone.
 
 1. **The chat decoration** — `boundChatType.decorate`, the thing that turns a
    message into `<Steve> hi`. **Everything it needs now exists**, which M125
@@ -222,14 +226,21 @@ the cheapest thing to pick up.
    already walked by `read_chat_type_bound` and merely discarded; the `Bound`'s
    name and target components are decoded; and the styled translatable
    resolution landed in M125. Five of the seven vanilla chat types carry
-   `Style.EMPTY`, so a plain-text decoration is byte-exact for them — the two
-   `/msg` ones are GRAY + italic and want the item below.
-2. **The styled chat pipeline.** `rewo_world::chat::GuiMessage::content` is a
-   `String` and `wrap_components` splits `&str`, so the chat store still
-   flattens whatever it is handed. M125 changed what it flattens *from*, not
-   that it does. This is what a `/msg`'s grey italic, a team-coloured sender
-   and clickable text all wait on, and it is a real piece of work: the
-   splitter, the wrap and the render all take `&str` today.
+   `Style.EMPTY`, so a plain-text decoration is byte-exact for them — and the
+   two `/msg` ones are GRAY + italic, which **M126 shipped the machinery for**,
+   so the decoration can now be complete rather than land with a stated
+   deviation. That was the whole argument for doing the pipeline first.
+2. ~~**The styled chat pipeline.**~~ **Shipped as M126.** `GuiMessage::content`
+   is a `ChatLine`, `wrap_components` and `split_lines_wrapped` take and return
+   spans, and `TextPass` draws bold / italic / underline / strikethrough /
+   obfuscated. What it leaves open is named in the M126 entry: the title path
+   and the death screen carry spans and still ignore the flags, and both hand
+   their colours to the text pass in the wrong space.
+
+   **It also unblocks clickable chat text**, which this section lists at the
+   bottom as needing "a `Style` to find" — there is one now, on every span,
+   though the *click targets* (`ClickEvent`/`HoverEvent`) are still dropped at
+   the wire and are the next piece of that.
 3. **AUDIO — the largest single gap, and it needs a decision from the user.**
    M63/M64/M66 decoded the packets, built the 1,968-entry sound registry and
    the weighted-variant index from the asset index, and deliberately stopped
@@ -268,10 +279,12 @@ Smaller, named rather than forgotten:
   literals plus `command.context.parse_error`). M117 models this as a gate: it
   shows *nothing* where vanilla shows a message, rather than approximating.
 * The which-of-these overlay's own tooltips.
-* Still needing a subsystem Rewo lacks: **clickable chat text** (Rewo flattens
-  components at the wire, so there is no `Style` to find — item 2 above is its
-  prerequisite), the chat delay queue and its expand link, and the
-  restricted-chat prompt (`ChatAbilities`, a packet Rewo does not decode).
+* Still needing a subsystem Rewo lacks: **clickable chat text** — item 2's
+  prerequisite is met (a chat line is styled spans since M126), but
+  `ChatStyle` carries no `ClickEvent`/`HoverEvent`, because `parse_component`
+  reads colour and the five flags and drops the rest. That is the next piece.
+  Also the chat delay queue and its expand link, and the restricted-chat
+  prompt (`ChatAbilities`, a packet Rewo does not decode).
 
 **Two gate notes that will save a confusing minute.** `--render-check`'s r32
 needs an argument that suggests *nothing*, so its precondition **recedes by one
@@ -19337,3 +19350,137 @@ word takes it from 1 to 0 and the gate to 35/36 red.
 reading **live state** (the scoreboard M62/M65 decode, the stat registries M84
 decoded) rather than a list. That is a different job, and it is the one
 remaining item in this area alongside the `resource*` registries.
+
+---
+
+### M126 — the styled chat pipeline (2026-08-08)
+
+`GuiMessage::content` was a `String`, so the chat store flattened whatever it
+was handed. M125 changed what it flattened *from*; this changes that it does.
+Four commits, and the finding is not the plumbing — it is what carrying spans
+through `StringSplitter` turned out to require.
+
+**M126a — the types move down a crate.** `rewo_world::chat` has to name
+`ChatSpan` and cannot: `rewo-net` depends on `rewo-world`, never the reverse.
+So `chat_style` moves rather than the dependency, and `chat_translate` comes
+with it — the two are mutually referential (`parse_component` calls
+`translatable` for a `translate` node and `chat_component_text` calls
+`parse_component` back), which is M125's design rather than an accident.
+Neither needs a new dependency down there; `rewo-world` already has
+`rewo-proto` for `Nbt` and `rewo-data` for `Language`, and already owns
+`chat.rs`, `chat_screen.rs`, `death_screen.rs` and `edit_box.rs`, so it is the
+client-model crate rather than purely world state. `rewo-net` keeps
+`pub use rewo_world::{chat_style, chat_translate};`, so no call site moved.
+
+Two of `chat_translate`'s tests could not come down — they drive
+`SystemChat::read` over hand-written wire bytes and `rewo-world` cannot name a
+packet — and landed in `chat_wire.rs`, where the wire half belonged anyway.
+**The move is proved pure by a conservation rather than a reading**: world
+1006 → 1064 (+58), net 856 → 798 (−58), app 183 unchanged. A total that merely
+failed to fall is also what an orphaned `#[cfg(test)]` module looks like
+(M110), so the halves are read separately and they balance.
+
+**M126b — the splitter grows a part list.** `splitLines(FormattedText, …)`
+walks a LIST of styled parts, splits it with `FlatComponents.splitAt`, and
+reassembles each line through a `ComponentCollector`. Rewo flattened long
+before it got there, so `partList` had one element and all of that degenerated
+to a substring — the module doc said so.
+
+* **The width provider takes a style, and that is not cosmetic.** `Font`'s is
+  `getGlyph(cp).info().getAdvance(style.isBold())` and `GlyphInfo
+  .getBoldOffset()` is `1.0F`, charged **per character** — a five-character
+  bold word is five pixels wider, not one. A style-blind measure wraps a bold
+  line three characters late and lets it overhang the box.
+* **The finder is created OUTSIDE the part loop.** `width`, `lastSpace` and
+  `hadNonZeroWidthChar` accumulate across parts and `addToOffset` turns each
+  part-local position into an index into the concatenation. A finder rebuilt
+  per part would reset the running width at every colour change and never wrap
+  a multi-span line at all.
+* **`splitAt`'s `ListIterator` never advances past an element it does not
+  remove**, so the cursor is the head of the list throughout — a consequence of
+  the function consuming everything before the split, not an accident.
+* **`DELETED_CHAT_MESSAGE` is `translatable("chat.deleted_marker")
+  .withStyle(GRAY, ITALIC)`** — the one styled string `ChatComponent` owns
+  itself, drawn plain white until now because the store could not hold a style,
+  and the same pair the two `/msg` chat-type decorations carry.
+
+Two smaller ones. Signed chat is a plain `String` on the wire, not a component,
+but vanilla still renders it through `StringDecomposer.iterateFormatted`, so
+`parse_legacy` at the session boundary is what turns a server's `§e` into a
+colour rather than two glyphs of garbage. And the chat's default colour is
+`ARGB.white(parameters.opacity())` — `ActiveTextCollector.Parameters` carries
+no colour at all — so the base is white where Rewo used a hand-picked 0.93.
+
+**M126c — the five flags draw.** Italic is `shearTop = 1.0 − 0.25·up` and
+`shearBottom = 1.0 − 0.25·down`, both added to **x**, and for the vanilla sheet
+`up` is 0 and `down` is 8 (`getTop()` is `7.0 − getBearingTop()` and
+`ascii.png` declares `ascent: 7`), so they evaluate to +1 and −1. Transcribed
+as the formula, so a taller cell leans further. Bold is a second quad at
+`x + boldOffset`, not a thicker one, plus `extraThickness` 0.1 outward on all
+four sides. The two effect bars are `y + 3.5 .. y + 4.5` and `y + 8 .. y + 9`.
+
+**Their x is the find.** `effectX0 = position == 0 ? this.x − 1.0F : this.x`,
+and **`position` restarts at 0 for every part**, because
+`FormattedCharSequence.fromList` chains `accept` without renumbering and
+`Language.getVisualOrder` decomposes each part separately. One `TextLine` is
+one part, so the lead-in belongs to its first character — and a multi-colour
+underlined line has each span's bar overlapping the previous by a pixel.
+Vanilla emits one rect per CHARACTER and they abut exactly, so one quad per run
+is the same covered area rather than an approximation.
+
+**Obfuscation transcribes three rules and diverges on one thing.** Same-width
+bucket (`Mth.ceil(getAdvance(false))`), the **unstyled** advance so a bold
+obfuscated character still picks from the plain bucket, and **a space is never
+obfuscated**. The source is the divergence: `Font.random` is nanotime-seeded,
+so vanilla's own output differs between two runs of one frame and a
+byte-comparing gate could not assert a glyph anyway. Rewo uses a frame-seeded
+SplitMix64 stepped by the character's position. **`run_seed` reads the
+UNOFFSET origin**, which is load-bearing — `draw` calls `push_line` twice for a
+shadowed line, and a seed that moved with `ox`/`oy` would draw a shadow of
+different characters.
+
+`glyph_width_buckets` is `FontSet.reload`'s fill for a byte-indexed sheet, with
+`glyph.info() != SpecialGlyphs.MISSING` becoming "the cell has ink" — and the
+space excluded explicitly, because the bake patches an opaque white texel into
+its cell for these very effect quads, so an ink test alone would offer the
+space and a scrambled run would look like the text had vanished.
+
+**M126d — and the battery caught a witness lying.** r38's first version counted
+distinct colours across the whole chat box, and a mutation truncating every row
+to its first span left it green: the section-sign message's first span is red
+while the filler rows are white, so there were still two colours in the box —
+which is exactly what a client with no span pipeline draws. It counts **within
+one row** now.
+
+**A mutation survived the unit battery, and it is neither equivalent nor a weak
+fixture — it is a third thing.** `splitAt`'s `position > contentsSize` read as
+`>=` genuinely diverges: where `>` takes the else-branch on the part the break
+ends, `>=` appends that part whole and walks into the NEXT one, where `it.set`
+stamps `splitStyle` on its tail, a line `>` never reaches. It is invisible only
+because two arguments are **coupled** — production always passes
+`getSplitStyle()`, the style at the break character, and in the diverging case
+that character is the first of the very part `>=` restyles. The test proves
+both halves: agreement under the production pairing, and divergence under any
+other split style, so it cannot go vacuous if the coupling changes. **The first
+attempt at that proof asserted the wrong claim and failed**, which is what
+caught the hand-trace being wrong — the fourth time this log records a witness
+being wrong before the code was.
+
+**Measured.** 2582 → **2615 tests** (world 1078, net 798, gpu 274, data 221,
+app 183, mesh 45, proto 16), 0 failures, per-crate exit codes read separately.
+All **33** serverless gates green, 0 validation errors. `live --render-check`
+37/37 → **39/39** with validation ON and 0 errors, against a FRESH server
+directory. Demo PNG `2cc56b4acbfb92cb`, byte-identical — a default-`PLAIN`
+style has to leave the plain path alone, and that is the check that says so.
+17 mutations across two batteries, each with a baseline and a no-op control
+that survived.
+
+**Open, and named rather than forgotten.** The title path and the death screen
+already carry `ChatSpan`s and still ignore the five flags, and both hand their
+colours to the text pass as `/255` bytes where the pass wants linear (M117's
+command runs are the correct precedent) — a hair bright, and each would need
+its own witness. `chat_screen`'s draft colour is `[0.667; 3]` two lines from a
+site that converts. And the chat decoration itself — `boundChatType.decorate`,
+which turns a message into `<Steve> hi` — is now unblocked: five of the seven
+vanilla chat types carry `Style.EMPTY`, and the two `/msg` ones are GRAY +
+italic, which this pipeline can finally carry.
