@@ -717,6 +717,15 @@ mod tests {
             ("_", "a", -1),
             ("_", "A", -1),
             ("Alpha", "beta", -1),
+            // The three pairs that separate Java's upper-THEN-lower fold from
+            // a plain lower-only one, which agree on all of ASCII and so were
+            // missing from the fixture until a surviving mutation asked for
+            // them. `lower(upper('\u{131}'))` is `i` and `lower('\u{131}')` is
+            // itself, so a lower-only comparator answers Greater here where
+            // Java answers Equal.
+            ("\u{131}", "i", 0),
+            ("\u{131}", "I", 0),
+            ("\u{df}", "\u{1e9e}", 0),
         ] {
             let got = match compare_ignore_case(a, b) {
                 std::cmp::Ordering::Less => -1,

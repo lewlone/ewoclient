@@ -93,7 +93,12 @@ public final class Oracle {
          new String[] {"A_b", "AZb"},
          new String[] {"_", "a"},
          new String[] {"_", "A"},
-         new String[] {"Alpha", "beta"}
+         new String[] {"Alpha", "beta"},
+         // The pairs that separate Java's upper-THEN-lower fold from a plain
+         // lower-only one: `lower(upper(x)) != lower(x)`.
+         new String[] {"ı", "i"},
+         new String[] {"ı", "I"},
+         new String[] {"ß", "ẞ"}
       )) {
          compareCase(pair[0], pair[1]);
       }
