@@ -421,21 +421,17 @@ impl TextPass {
                     let (cx, cy) =
                         ((b as u32 % 16 * self.cell) as f32, (b as u32 / 16 * self.cell) as f32);
                     let x = pen + c as f32 * bold_offset * px;
-                    let (x0, y0) = (x - thick * px, line.y + oy - thick * px);
-                    let (x1, y1) = (x + (cell + thick) * px, line.y + oy + (cell + thick) * px);
                     let (u0, u1) = (cx / atlas, (cx + cell) / atlas);
                     let (t0, t1) = (cy / atlas, (cy + cell) / atlas);
-                    // The shear is applied per EDGE, not per vertex: both top
-                    // corners take `shearTop` and both bottom ones
-                    // `shearBottom`.
-                    let (st_x, sb_x) = (shear_top * px, shear_bottom * px);
+                    let pos6 =
+                        glyph_quad(x, line.y + oy, cell, px, thick, (shear_top, shear_bottom));
                     let corners = [
-                        ([x0 + st_x, y0], [u0, t0]),
-                        ([x1 + st_x, y0], [u1, t0]),
-                        ([x1 + sb_x, y1], [u1, t1]),
-                        ([x0 + st_x, y0], [u0, t0]),
-                        ([x1 + sb_x, y1], [u1, t1]),
-                        ([x0 + sb_x, y1], [u0, t1]),
+                        (pos6[0], [u0, t0]),
+                        (pos6[1], [u1, t0]),
+                        (pos6[2], [u1, t1]),
+                        (pos6[3], [u0, t0]),
+                        (pos6[4], [u1, t1]),
+                        (pos6[5], [u0, t1]),
                     ];
                     for (pos, uv) in corners {
                         v.push(Vertex { pos, uv, color: color4 });
@@ -519,6 +515,46 @@ impl TextPass {
             let _ = gpu.allocator.free(a);
         }
     }
+}
+
+/// One glyph quad's six vertex positions — `BakedSheetGlyph.render`'s four
+/// `addVertex` calls, triangulated.
+///
+/// ```java
+/// builder.addVertex(x0 + shearY0 - extraThickness, y0 - extraThickness, z);
+/// builder.addVertex(x0 + shearY1 - extraThickness, y1 + extraThickness, z);
+/// builder.addVertex(x1 + shearY1 + extraThickness, y1 + extraThickness, z);
+/// builder.addVertex(x1 + shearY0 + extraThickness, y0 - extraThickness, z);
+/// ```
+///
+/// Two things a plausible implementation gets wrong. **The shear is per EDGE,
+/// not per vertex** — both top corners take `shearTop` and both bottom ones
+/// `shearBottom`, which is what makes it a parallelogram rather than a twist.
+/// And **`extraThickness` is applied outward on all four sides** (`- t` on the
+/// low edges, `+ t` on the high ones), so it grows the quad rather than
+/// shifting it.
+///
+/// Free of the pass so a test can reach it — `TextPass::new` needs a Vulkan
+/// device, and the geometry is the half worth grading (M97).
+fn glyph_quad(
+    x: f32,
+    top: f32,
+    cell: f32,
+    px: f32,
+    thick: f32,
+    shear: (f32, f32),
+) -> [[f32; 2]; 6] {
+    let (x0, y0) = (x - thick * px, top - thick * px);
+    let (x1, y1) = (x + (cell + thick) * px, top + (cell + thick) * px);
+    let (st_x, sb_x) = (shear.0 * px, shear.1 * px);
+    [
+        [x0 + st_x, y0],
+        [x1 + st_x, y0],
+        [x1 + sb_x, y1],
+        [x0 + st_x, y0],
+        [x1 + sb_x, y1],
+        [x0 + sb_x, y1],
+    ]
 }
 
 /// `BakedSheetGlyph.shearTop()` / `shearBottom()`, free of the pass so a test
@@ -993,6 +1029,72 @@ mod tests {
             })
             .collect();
         assert!(deltas.len() > 10, "only {} distinct deltas", deltas.len());
+    }
+
+
+    // -- the glyph quad ----------------------------------------------------
+
+    /// Corner order is `[tl, tr, br, tl, br, bl]`.
+    const TL: usize = 0;
+    const TR: usize = 1;
+    const BR: usize = 2;
+    const BL: usize = 5;
+
+    #[test]
+    fn a_plain_quad_is_the_cell_at_the_pen() {
+        let q = glyph_quad(10.0, 20.0, 8.0, 1.0, 0.0, (0.0, 0.0));
+        assert_eq!(q[TL], [10.0, 20.0]);
+        assert_eq!(q[BR], [18.0, 28.0]);
+    }
+
+    #[test]
+    fn italic_leans_the_top_right_and_the_bottom_left() {
+        // `shearTop` is +1 and `shearBottom` is -1 for the 8-px cell, both
+        // added to x — so the top edge slides right and the bottom edge left,
+        // and the quad stays the same height. A shear applied to only one edge
+        // would slant it AND move it.
+        let (st, sb) = shear_for_cell(8.0, true);
+        let q = glyph_quad(10.0, 20.0, 8.0, 1.0, 0.0, (st, sb));
+        assert_eq!(q[TL], [11.0, 20.0]);
+        assert_eq!(q[TR], [19.0, 20.0]);
+        assert_eq!(q[BL], [9.0, 28.0]);
+        assert_eq!(q[BR], [17.0, 28.0]);
+        // Same width top and bottom: a parallelogram, not a trapezium.
+        assert_eq!(q[TR][0] - q[TL][0], q[BR][0] - q[BL][0]);
+    }
+
+    #[test]
+    fn the_shear_scales_with_the_gui_pixel() {
+        // The shear is in FONT pixels, so at scale 2 the lean is two screen
+        // pixels. Writing it in screen pixels would make italic text lean less
+        // at higher GUI scales, which is the kind of wrong that only shows on
+        // someone else's monitor.
+        let (st, sb) = shear_for_cell(8.0, true);
+        let q = glyph_quad(10.0, 20.0, 8.0, 2.0, 0.0, (st, sb));
+        assert_eq!(q[TL][0] - 10.0, 2.0);
+        assert_eq!(q[BL][0] - 10.0, -2.0);
+    }
+
+    #[test]
+    fn bold_thickness_grows_the_quad_outward_on_all_four_sides() {
+        // `- extraThickness` on the low edges and `+` on the high ones. A
+        // uniform `+` would shift the glyph down-right by a tenth of a pixel
+        // instead of fattening it, which at GUI scale 3 is a visible drift.
+        let plain = glyph_quad(10.0, 20.0, 8.0, 1.0, 0.0, (0.0, 0.0));
+        let bold = glyph_quad(10.0, 20.0, 8.0, 1.0, 0.1, (0.0, 0.0));
+        assert_eq!(bold[TL], [plain[TL][0] - 0.1, plain[TL][1] - 0.1]);
+        assert_eq!(bold[BR], [plain[BR][0] + 0.1, plain[BR][1] + 0.1]);
+    }
+
+    #[test]
+    fn the_bold_second_copy_is_one_font_pixel_right() {
+        // `renderChar` calls `render` twice, the second at
+        // `x + glyphInstance.boldOffset()`. Modelled here as the caller's
+        // offset, so this pins the arithmetic the caller does.
+        let first = glyph_quad(10.0, 20.0, 8.0, 2.0, 0.1, (0.0, 0.0));
+        let second = glyph_quad(10.0 + 1.0 * 2.0, 20.0, 8.0, 2.0, 0.1, (0.0, 0.0));
+        assert_eq!(second[TL][0] - first[TL][0], 2.0);
+        assert_eq!(second[TL][1], first[TL][1], "the second copy does not move down");
     }
 
     // -- the italic shear ---------------------------------------------------

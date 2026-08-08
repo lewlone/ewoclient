@@ -722,6 +722,153 @@ mod tests {
         }
     }
 
+
+    /// `FlatComponents::split_at` with vanilla's `position > contentsSize` read
+    /// as `>=` — the mutation that survived M126's battery, kept so the claim
+    /// of equivalence is measured rather than argued.
+    fn split_at_ge(parts: &mut Vec<ChatSpan>, skip_position: usize, skip_size: usize, split_style: ChatStyle) -> ChatLine {
+        let mut result: ChatLine = Vec::new();
+        let mut position = skip_position;
+        let mut in_skip = false;
+        while !parts.is_empty() {
+            let contents: Vec<char> = parts[0].text.chars().collect();
+            let size = contents.len();
+            if !in_skip {
+                // The mutation.
+                if position >= size {
+                    result.push(parts.remove(0));
+                    position -= size;
+                    continue;
+                }
+                let before: String = contents[..position].iter().collect();
+                if !before.is_empty() {
+                    result.push(ChatSpan { text: before, ..parts[0].clone() });
+                }
+                position += skip_size;
+                in_skip = true;
+            }
+            if position <= size {
+                let after: String = contents[position..].iter().collect();
+                if after.is_empty() {
+                    parts.remove(0);
+                } else {
+                    parts[0] = split_style.span(after);
+                }
+                break;
+            }
+            parts.remove(0);
+            position -= size;
+        }
+        result
+    }
+
+    /// The style at a flat position — what `getSplitStyle()` reports, and
+    /// therefore what production always passes as `split_style`.
+    fn style_at(parts: &[ChatSpan], pos: usize) -> ChatStyle {
+        let mut rest = pos;
+        for p in parts {
+            let n = p.text.chars().count();
+            if rest < n {
+                return p.style();
+            }
+            rest -= n;
+        }
+        ChatStyle::WHITE
+    }
+
+    #[test]
+    fn the_strictly_greater_test_is_inert_only_because_of_a_coupling() {
+        // The mutation `position > size` -> `>=` survives the entire suite,
+        // and this says exactly why — and how narrowly.
+        //
+        // The two readings DIVERGE: where `>` takes the else-branch on the
+        // part the break ends, `>=` appends that part whole and walks into the
+        // NEXT one, where `it.set` stamps `split_style` on its tail. `>` never
+        // reaches that `set`. So the guard is doing real work.
+        //
+        // It is invisible today because of a coupling between two arguments:
+        // production always passes `getSplitStyle()`, the style at the break
+        // CHARACTER, and in the diverging case that character is the first of
+        // the very part `>=` restyles — so it is restyled to what it already
+        // was. Decouple them and `>` is load-bearing immediately, which is the
+        // second half of this test.
+        let shapes: [&[&str]; 8] = [
+            &["abcdef"],
+            &["abc", "def"],
+            &["ab", "cdef"],
+            &["a", "b", "c", "d"],
+            &["ab ", "cdef"],
+            &["abc", " def"],
+            &["a b", "c d"],
+            &["abc", "d", "ef", "gh"],
+        ];
+        let styles = [red(), blue()];
+        let (mut agreed, mut disagreed) = (0usize, 0usize);
+        for shape in shapes {
+            let input: Vec<ChatSpan> = shape
+                .iter()
+                .enumerate()
+                .map(|(i, t)| styles[i % 2].span(*t))
+                .collect();
+            let total: usize = shape.iter().map(|t| t.chars().count()).sum();
+            for skip_position in 0..total {
+                for skip_size in [0usize, 1] {
+                    if skip_position + skip_size > total {
+                        continue;
+                    }
+                    // (a) the production pairing — always agrees.
+                    let prod = style_at(&input, skip_position);
+                    let mut a = FlatComponents::new(&input);
+                    let line_a = a.split_at(skip_position, skip_size, prod);
+                    let mut b: Vec<ChatSpan> =
+                        input.iter().filter(|p| !p.text.is_empty()).cloned().collect();
+                    let line_b = split_at_ge(&mut b, skip_position, skip_size, prod);
+                    assert_eq!(line_a, line_b, "line at {skip_position}/{skip_size} of {shape:?}");
+                    assert_eq!(a.parts, b, "parts at {skip_position}/{skip_size} of {shape:?}");
+                    agreed += 1;
+
+                    // (b) an unrelated split style — where they come apart.
+                    let odd = ChatStyle::plain([0.0, 1.0, 0.0]);
+                    let mut c = FlatComponents::new(&input);
+                    let lc = c.split_at(skip_position, skip_size, odd);
+                    let mut d: Vec<ChatSpan> =
+                        input.iter().filter(|p| !p.text.is_empty()).cloned().collect();
+                    let ld = split_at_ge(&mut d, skip_position, skip_size, odd);
+                    if lc != ld || c.parts != d {
+                        disagreed += 1;
+                    }
+                }
+            }
+        }
+        // A floor whose only job is "the loop ran" — deliberately well below
+        // the actual 100, because a threshold set AT the count recalibrates
+        // itself whenever the corpus changes (M104's self-calibrating witness).
+        assert!(agreed > 50, "only {agreed} comparisons");
+        // If this ever reached zero the mutation really would be equivalent,
+        // and the `>` could go. It does not: a break landing exactly on a part
+        // boundary is the shape that separates them.
+        assert!(disagreed > 0, "the two readings never diverged — recheck the claim");
+    }
+
+    #[test]
+    fn a_split_position_is_always_a_real_character() {
+        // The precondition the proof above rests on, asserted rather than
+        // assumed: every break the finder reports indexes a character, so
+        // `split_at` never sees `skip_position == total`.
+        for text in ["abcdef", "abc def", "a\nb", "  a", "a  b"] {
+            for width in [1, 6, 12, 18, 600] {
+                let parts = [plain(text)];
+                if let Some((pos, _)) = find_styled_line_break(&parts, width, &w6s) {
+                    assert!(
+                        pos < text.chars().count(),
+                        "{text:?} at {width} broke at {pos} of {}",
+                        text.chars().count(),
+                    );
+                }
+            }
+        }
+    }
+
     /// The same function with the trailing line's flag read from `is_wrapped`
     /// instead of vanilla's literal `false` — the surviving mutation, kept here
     /// so the claim of equivalence is measured rather than argued.

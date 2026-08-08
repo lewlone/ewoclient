@@ -893,6 +893,30 @@ mod tests {
         assert_eq!(wrap_components(&one(""), 600, &w6s), vec![ChatLine::new()]);
     }
 
+    #[test]
+    fn the_deleted_marker_is_grey_and_italic() {
+        // `DELETED_CHAT_MESSAGE = Component.translatable("chat.deleted_marker")
+        // .withStyle(ChatFormatting.GRAY, ChatFormatting.ITALIC)` — the one
+        // styled string `ChatComponent` owns itself, and the same pair the two
+        // `/msg` chat-type decorations carry. Rewo drew it plain white until
+        // M126b because the store could not hold a style.
+        //
+        // GRAY is `NAMED_COLORS[7]`, 0xAAAAAA. Pinned against that table rather
+        // than against the constant the renderer reads, so this is a witness
+        // and not a mirror (M93q) — and DARK_GRAY's 0x555555 is one row down,
+        // which is the value a plausible guess produces.
+        let mut c = ChatComponent::new();
+        c.add_message(signed(0, "secret", 4), &ctx(false));
+        c.delete_message(&[4u8; 256], TIME_BEFORE_MESSAGE_DELETION, &ctx(false));
+        let marker = &c.all_messages()[0].content;
+        assert_eq!(marker.len(), 1);
+        let gray = crate::chat_style::rgb_f32(crate::chat_style::NAMED_COLORS[7].1);
+        assert_eq!(crate::chat_style::NAMED_COLORS[7].0, "gray");
+        assert_eq!(marker[0].color, gray);
+        assert!(marker[0].italic);
+        assert!(!marker[0].bold);
+    }
+
     // ── geometry ─────────────────────────────────────────────────────────
 
     #[test]

@@ -264,6 +264,28 @@ struct RenderCheck {
     /// iterates `this.players` — so the joiner is not yet in the list it is
     /// announced to. Suspect the witness first.
     translated_chat_frames: u64,
+    /// M126d — frames on which the drawn chat carried MORE THAN ONE colour.
+    ///
+    /// The claim r26 and r37 cannot make. Both are satisfied by a chat box
+    /// that flattens every message to one white string: r26 counts rows and
+    /// r37 reads their characters, and neither can see whether the spans
+    /// survived the wrap and reached the renderer as separately-coloured
+    /// lines. A zero here with the scene injected means the pipeline is
+    /// carrying spans and then throwing them away at the last step, which is
+    /// exactly the failure the milestone exists to prevent.
+    ///
+    /// Counted over the DRAWN lines in `build_text`'s chat range, not over the
+    /// chat store — M125's rule, one surface further on.
+    styled_chat_frames: u64,
+    /// M126d — frames on which a drawn chat line carried a non-plain
+    /// `TextStyle`.
+    ///
+    /// Separate from the row above because the two halves travel by different
+    /// routes: the colour rides `OwnedTextLine::color`, which existed before
+    /// this milestone, while the five flags ride the `style` field it added.
+    /// A wiring that dropped `style` on the floor would leave the colour
+    /// witness green.
+    flagged_chat_frames: u64,
     /// Frames on which a drawn chat line still carried a raw translation key.
     ///
     /// Not redundant with the row above: that one would stay green if the
@@ -610,6 +632,25 @@ impl RenderCheck {
             format!(
                 "{} of {} frames drew \"Gave 1 [Diamond Sword]\"; {} drew a raw key                  (must be 0). Three nesting levels and a bare-integer argument,                  off the `/give` r14 already stages — a count of 0 with the                  sword staged means the resolution is dead.",
                 self.translated_chat_frames, self.frames, self.unresolved_key_frames
+            ),
+        );
+        // M126d — that the spans survived to the renderer. r26 and r37 are
+        // both satisfied by a chat box that flattens everything to one white
+        // string, so neither can see this.
+        row(
+            "r38 a drawn chat line carried more than one colour",
+            self.styled_chat_frames > 0,
+            format!(
+                "{} of {} frames drew ONE ROW in 2+ distinct colours (from one                  injected section-sign-coded system message: the codes must                  survive `parse_component`, the wrap's part list, and                  `chat_lines`' per-span emit. Across the whole box would be a                  weaker claim a flattening client also satisfies)",
+                self.styled_chat_frames, self.frames
+            ),
+        );
+        row(
+            "r39 a drawn chat line carried a non-plain style flag",
+            self.flagged_chat_frames > 0,
+            format!(
+                "{} of {} frames drew italic/underline/strikethrough (the flags                  ride `TextStyle`, a different field from the colour, so a                  wiring that dropped them would leave r38 green)",
+                self.flagged_chat_frames, self.frames
             ),
         );
         // M110 — the chat SCREEN, as distinct from r26's read-only box. A zero
@@ -4305,7 +4346,7 @@ fn run_headless(
     // text is built, or a headless `--out` render shows an empty chat box for
     // messages the session has already decoded.
     apply_chat(&mut session, world_renderer.font_advance().copied());
-    let (mut headless_text, _) = build_text(
+    let (mut headless_text, _, _) = build_text(
         &session,
         gui_px(1280, 720),
         720.0,
@@ -6713,6 +6754,33 @@ impl LiveApp {
                             }
                         }
                     }
+                    // M126d — one message carrying legacy codes, so the
+                    // drawn chat has more than one colour and at least one
+                    // non-plain flag. Injected as a raw `system_chat` body
+                    // through the production router (M17's rule) rather than
+                    // sent as chat, because a server owns what it echoes back
+                    // and `§` in a player message is not something the gate
+                    // can rely on surviving the round trip.
+                    //
+                    // Every stage has to work for this to score: the NBT
+                    // string reaches `parse_component`, `push_legacy` resolves
+                    // the codes into five spans, `FlatComponents` carries them
+                    // through the wrap as separate parts, and `chat_lines`
+                    // emits one text line each. A flatten anywhere in that
+                    // chain drops both counters to zero.
+                    if let Some(session) = self.session.as_mut() {
+                        if let Some(pid) = session.ids.cb_play_system_chat {
+                            let text = concat!(
+                                "\u{00a7}crewored \u{00a7}9blue ",
+                                "\u{00a7}oital \u{00a7}nunder \u{00a7}mstrike"
+                            );
+                            let mut body: Vec<u8> = vec![8];
+                            body.extend_from_slice(&(text.len() as u16).to_be_bytes());
+                            body.extend_from_slice(text.as_bytes());
+                            body.push(0); // overlay = false
+                            session.inject_packet(pid, &body);
+                        }
+                    }
                     // M115 — a completion word, then a keystroke, so r29
                     // measures the whole production chain rather than a
                     // hand-built `Suggestions`: the packet reaches
@@ -7762,7 +7830,7 @@ impl LiveApp {
         // the order on screen.
 
         let fps = (!self.cpu.is_empty()).then(|| 1000.0 / self.cpu.average().max(0.001));
-        let (mut text, chat_rows) = build_text(
+        let (mut text, chat_rows, chat_range) = build_text(
             session,
             px,
             extent.height as f32,
@@ -7825,9 +7893,43 @@ impl LiveApp {
         // in one `text` line — and scanning the wider list keeps the check that
         // no key leaked into some other surface.
         if let Some(c) = self.check.as_mut() {
+            // M126d — over the chat lines this frame actually drew, and
+            // **within one row**. Across the whole box is a much weaker claim
+            // that a client with no span pipeline satisfies for free: the
+            // section-sign message's first span is red while the filler rows
+            // are white, so a truncate-to-one-span mutation left the
+            // across-the-box version green. The battery caught that; this is
+            // the corrected witness.
+            //
+            // `color` is an `[f32; 3]`, so distinctness is by bits — two spans
+            // that resolved to the same colour ARE the same colour, and a
+            // tolerance would only blur the claim.
+            let drawn = &text[chat_range.clone()];
+            let mut at = 0usize;
+            let mut multi = false;
+            for (_, n) in &chat_rows {
+                let row = &drawn[at.min(drawn.len())..(at + n).min(drawn.len())];
+                let mut colors: Vec<[u32; 3]> = row
+                    .iter()
+                    .map(|l| [l.color[0].to_bits(), l.color[1].to_bits(), l.color[2].to_bits()])
+                    .collect();
+                colors.sort_unstable();
+                colors.dedup();
+                multi |= colors.len() > 1;
+                at += n;
+            }
+            if multi {
+                c.styled_chat_frames += 1;
+            }
+            if drawn
+                .iter()
+                .any(|l| l.style != rewo_gpu::text::TextStyle::PLAIN)
+            {
+                c.flagged_chat_frames += 1;
+            }
             if chat_rows
                 .iter()
-                .any(|r| r.contains("Gave 1 [Diamond Sword]"))
+                .any(|(r, _)| r.contains("Gave 1 [Diamond Sword]"))
             {
                 c.translated_chat_frames += 1;
             }
@@ -8330,7 +8432,11 @@ fn build_text(
     debug: bool,
     chat_focused: bool,
     advance: Option<[u8; 256]>,
-) -> (Vec<rewo_gpu::world::OwnedTextLine>, Vec<String>) {
+) -> (
+    Vec<rewo_gpu::world::OwnedTextLine>,
+    Vec<(String, usize)>,
+    std::ops::Range<usize>,
+) {
     use rewo_gpu::world::OwnedTextLine;
     let white = [0.93, 0.93, 0.93];
     let mut lines = Vec::new();
@@ -8401,8 +8507,13 @@ fn build_text(
         advance.as_ref(),
         chat_focused,
     );
+    // The range the chat occupies, so a witness can read the lines that were
+    // DRAWN rather than re-deriving `chat_lines` (M93q). Chat is appended last
+    // here; the caller extends further afterwards, which is why this is a
+    // range and not "the tail".
+    let chat_range = lines.len()..lines.len() + chat.len();
     lines.extend(chat);
-    (lines, chat_rows)
+    (lines, chat_rows, chat_range)
 }
 
 /// The chat screen's input line and caret (M110), in screen pixels.
@@ -8791,7 +8902,7 @@ fn chat_lines(
     opts: &rewo_world::chat::ChatOptions,
     advance: Option<&[u8; 256]>,
     focused: bool,
-) -> (Vec<rewo_gpu::world::OwnedTextLine>, Vec<String>) {
+) -> (Vec<rewo_gpu::world::OwnedTextLine>, Vec<(String, usize)>) {
     use rewo_gpu::world::OwnedTextLine;
     // `getScale()` is a second multiplier on top of the GUI scale, so a chat
     // pixel is `px * scale` screen pixels and every offset below is in chat
@@ -8805,13 +8916,17 @@ fn chat_lines(
     // (M110) rather than hardcoded: it is a fact about whether a `ChatScreen`
     // is open, which is exactly what `ChatComponent.isChatFocused` asks.
     let mut out: Vec<OwnedTextLine> = Vec::new();
-    let mut rows: Vec<String> = Vec::new();
+    // Per row: its characters, and how many text lines it emitted — the
+    // second is what lets a witness ask about ONE row rather than about the
+    // whole box, which is a different and much weaker claim.
+    let mut rows: Vec<(String, usize)> = Vec::new();
     for line in chat.visible_lines(gui_tick, focused, opts) {
         let entry_bottom = chat_bottom - line.index as f32 * entry_height;
         let y = (entry_bottom - to_message_y) * chat_px;
         // `pose.translate(4.0F, 0.0F)` — `MESSAGE_INDENT`.
         let mut pen = rewo_world::chat::MESSAGE_INDENT as f32 * chat_px;
         let mut row = String::new();
+        let row_start = out.len();
         for span in line.text {
             let w = advance
                 .map(|a| rewo_gpu::text::width_styled(&span.text, a, span.bold))
@@ -8844,7 +8959,7 @@ fn chat_lines(
             row.push_str(&span.text);
             pen += w as f32 * chat_px;
         }
-        rows.push(row);
+        rows.push((row, out.len() - row_start));
     }
     (out, rows)
 }
