@@ -6,12 +6,20 @@ committed). Every number below is that tool's output — if you change the
 facets, the `MODERN` version set or the classifiers, the numbers move and this
 document is stale.
 
-> **Not re-run since M86 (2026-08-02).** M87–M107 shipped the container/menu
-> screens and the recipe book after this snapshot was taken. Those are *vanilla*
-> features and the 75 here are *mod* features, so nothing is known to have moved
-> into the `parity` bucket — but that is a reasoned expectation, not a
-> measurement, and §0's own rule applies to it: **audit any feature against the
-> crates before scheduling it.** This table was already wrong about five.
+> **Not re-run since M86 (2026-08-02).** M87–M113 shipped the container/menu
+> screens, the recipe book and the whole chat stack (the HUD box, the screen you
+> type into, the scrollbar, and the Brigadier command tree) after this snapshot
+> was taken. Those are *vanilla* features and the 75 here are *mod* features, so
+> nothing is known to have moved into the `parity` bucket — but that is a
+> reasoned expectation, not a measurement, and §0's own rule applies to it:
+> **audit any feature against the crates before scheduling it.** This table was
+> already wrong about five.
+>
+> **One entry is now materially closer than the table implies**: anything whose
+> prerequisite was "the client can read the command tree" or "the client has a
+> text input" is unblocked, because M110 built an `EditBox`-backed screen and
+> M113 decoded the tree. Chat-adjacent QoL rows should be re-read with that in
+> mind before being costed.
 
 **Scope decision (locked):** read as a **Rewo-native roadmap**, not as a
 shopping list for the EwoLoader bundle. Every entry is a feature to

@@ -5697,11 +5697,14 @@ actively false. What it found is more useful than the diffs:
   raycast Rewo does not have"** and that the pick clause is fed a hard `false`.
   **M73 built that raycast** and the clause resolves from it. Corrected in
   place rather than rewritten, because the reasoning for suppressing was sound.
-- **The mixed-CRLF file list had drifted in BOTH directions** and is now
-  measured rather than remembered: under `crates/rewo-*` it is exactly four —
-  `mobshot_cmd.rs`, `chunk.rs`, `light.rs`, `vanilla_hier.rs`.
-  `entities.rs` and `rewo-data/src/lib.rs` were on the list and have since been
-  normalised to all-LF, and two files were never on it. Re-measure.
+- **The mixed-CRLF file list had drifted in BOTH directions**, was measured to
+  exactly four on 2026-08-07 — and **is now empty**. A second measurement the
+  same day, after M113, found **zero mixed files** under `crates/rewo-*`: every
+  `.rs` is all-CRLF, `core.autocrlf` is false and there is no `.gitattributes`,
+  so the working tree is exactly what is stored. The hazard has inverted — the
+  documented failure needed a *mixed* file to normalise, and the remaining risk
+  is a tool that writes LF into a CRLF file. `REWO_PLAN.md` §0.0 gotcha 9
+  carries the current form. **Re-measure rather than trust any of this.**
 - `README.md`'s "What's next" offered two items that had both shipped (merging
   the Rewo branch; an inventory model), and its gate count said fourteen where
   there are **33**.
@@ -5712,3 +5715,86 @@ in `ids.rs` and was exact again), and the sentence next to it does not. The
 generalisable fix is not to re-check prose more often — it is to **stop keeping
 the same number in two places**, which is what the `AGENT_LOOP_BRIEF` sections
 now do by pointing rather than restating.
+
+---
+
+## The chat arc — M108–M113 (2026-08-07)
+
+Six milestones in one session, each merged `--no-ff`. Chat went from
+`chat_log: Vec<String>` and eight truncated lines to a complete subsystem, and
+the packet coverage went **114 / 0 / 27 → 116 / 0 / 25** with class C at 14.
+`REWO_PLAN.md` §15 has the per-milestone detail; this is what a future session
+should carry.
+
+**M108 — the chat HUD.** `ChatComponent`, the wrap under it, the signature
+cache, `delete_chat`, and the text render. **`ComponentRenderUtils.wrapComponents`
+calls a DIFFERENT `splitLines` overload** from the one M85 transcribed: same
+breaks, but a per-line `isWrapped` flag that is `!isNewLine` (a width wrap
+indents its continuation, an explicit `\n` does not), and `"a\n"` yields TWO
+lines. `forEachLine` emits **top-row-first**, and that order is load-bearing for
+the tag-icon accumulator. **`delete_chat` is unreadable without a
+`MessageSignatureCache`** — `Packed.read` is `readVarInt() - 1`, so the
+signature is usually a cache index, and the cache is a move-to-front LRU that
+dedupes rather than a ring. `system_chat`'s `overlay` bool was being read and
+discarded; it routes to the **action bar**.
+
+**M109 — the backdrop.** A colour channel on the HUD vertex, which first
+exposed the `v.len() * 16` hardcode beside `VERTEX_STRIDE` — M21's shape,
+latent until the vertex grew. **A witness caught a wrong draw order I had
+justified with invented reasoning**: chat is a later stratum than the hotbar and
+draws over it.
+
+**M110 — `ChatScreen`.** `normalizeChatMessage` collapses *internal* whitespace;
+`historyPos` starts one past the list and that slot is a **buffer, not an
+entry**; `isDraftRestorable` is asymmetric; `shouldDiscardDraft` **keeps** the
+draft on Esc; the wheel is clamped **before** it is multiplied.
+
+**M111 — the scrollbar.** 1 px of colour plus 1 px of light grey, because the
+second fill's x arguments are backwards and `fill` normalises. `HudFill` grew an
+`rgb`, and it must be handed over in **linear** space — black is 0 in both and
+hid that for two milestones.
+
+**M112 — `isHovering`, and the bug under it.** Three handoffs had named the
+narrow-window override as "one predicate with five consumers". **Four of those
+consumers were not using the predicate at all**: `ScreenState::hovered`
+converted through `Placement::centred`, so the click, the double-click, the drag
+and the item-hover highlight all ignored the recipe book's 77 px displacement.
+Third occurrence of M89's finding, first to reach an input path. There is now
+one conversion and one visibility predicate, and a consumer has to ask.
+
+**M113 — the Brigadier tree.** 2,017 nodes off a real server, **consumed
+exactly**. An argument node's properties have no length prefix and only its own
+type knows their size; 44 of 57 types are singletons and the other 13 are
+transcribed. `time` has **no flags byte**; the numeric ranges are fixed
+big-endian; the suggestion id is read **after** the properties. The registry
+names are **namespaced**, and matching the bare name compiles and reads zero
+bytes.
+
+### Process, which generalises past this arc
+
+* **Read a gate's EXIT CODE, never a substring.** M109 grepped for witness names,
+  saw `ok` on every line, and missed that the gate was red on a declared-count
+  assert. Then the consequence: **a mutation battery run against an
+  already-failing command reads KILLED for every entry** — eight mutations across
+  two batteries were vacuous and looked like 8/8. **Every battery now carries a
+  no-op control** that must SURVIVE.
+* **`cargo build` passing says nothing about whether the tests compile.** M110's
+  signature change broke `rewo-app`'s test module while the build stayed green;
+  the totalling loop counts `test result` lines, so that crate contributed 0 and
+  read as silence. Read each crate's exit code.
+* **Probe the port you are about to use.** M111's first run reported 27/28
+  against a server that had crashed on `FAILED TO BIND`. **Most witnesses passed
+  because they are injected** — only r25, which needs a real server, could tell.
+  A gate whose witnesses are mostly self-driven can look healthy against nothing.
+* **A mutation must be run against the check that covers it.** M111's sRGB
+  mutation survived the pixel gate (which builds its input by hand) and died
+  against the unit tests. A survivor is a question about the instrument as much
+  as about the code.
+* **Witnesses were wrong more often than the code.** Across the arc: roughly a
+  dozen witness errors against three code errors, and the recurring shapes were
+  a fixture sitting exactly where two candidate readings agree (an empty cache,
+  a truncated body, the default line spacing) and a control that changes with
+  its subject.
+* **M97's lesson applied twice more** (`apply_chat_events`, `book_visible_for`),
+  both found by a mutation surviving because the rule lived somewhere no test
+  could reach.

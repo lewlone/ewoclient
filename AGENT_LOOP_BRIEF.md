@@ -74,6 +74,19 @@ change:
   (they fail rather than silently skip when it is unavailable). A gate that
   cannot reach a call site does not test it; a gate that supplies an input
   production derives is testing itself.
+* **Read a gate's EXIT CODE, never a substring of its output.** Different gates
+  print different summary lines, and several are fail-closed on a *declared*
+  witness count — so adding a witness without bumping the count turns the gate
+  red while every individual line still says `ok`. 2026-08-07's M109 lost two
+  whole mutation batteries to exactly that: a battery run against an
+  already-failing command reads KILLED for every entry. **Put a no-op control
+  in every battery** — a mutation that must SURVIVE — or you cannot tell a kill
+  from a broken instrument.
+* **The same rule one level up:** `cargo build` passing says nothing about
+  whether the *tests* compile. Read each crate's exit code from `cargo test`;
+  a crate whose test module fails to build prints no `test result` line at all,
+  contributes 0, and reads as silence. M110 hit that and the only signal was
+  the total falling.
 * **`live --render-check` is the only check that drives the *windowed* client**
   and therefore the only one that can see a render path the windowed client
   never reaches. Run it after any milestone that adds one. It needs a debug
@@ -98,15 +111,28 @@ write ops.json with the offline UUID (name-based MD5 of "OfflinePlayer:<name>",
       version/variant nibbles set)
 ```
 
+**PROBE the port you are about to use — do not invent one.** 2026-08-07's M111
+lost a run to this: a port picked by incrementing an earlier probe was already
+held by an unrelated app, the server died on `FAILED TO BIND`, and the client
+ran anyway. **27 of 28 render-check witnesses still passed**, because most of
+them are injected — the container, the recipe book, the chat all drive
+themselves — and only r25, which needs a real server to grant recipes, could
+tell. A gate whose witnesses are mostly self-driven can look healthy against
+nothing. Probe with a `TcpListener` bind, and grep the server log for
+`FAILED TO BIND` before trusting a run.
+
 **Start it detached, not backgrounded.** The server stops on stdin EOF, so a
 `nohup java … &` from a shell dies immediately; use
 `Start-Process -WindowStyle Hidden -PassThru` and keep the PID. Stop by that
 PID — `Stop-Process -like '*testserver*'` will not match, because the java
 command line is just `java -jar server.jar` with no cwd in it.
 
-**The op account is `RewoOp`.** Not `RewoBot`, not `RewoLive` — only `RewoOp`
-goes in `ops.json`, and a non-op's setup commands are silently rejected, which
-looks exactly like a code bug.
+**The op name in `ops.json` must be the name you connect with**, and its UUID
+must be that name's offline one. The *shared* `testserver` ops only `RewoOp`, so
+connecting to it as `RewoBot` or `RewoLive` silently has every setup command
+rejected — which looks exactly like a code bug. In your own directory, op
+whatever name you pass to `--username`; 2026-08-07's M108–M113 runs all used
+`RewoBot` and worked because `ops.json` named it.
 
 `REWO_PRECMD` runs `/`-commands as that player on join and `REWO_SETTLE=<n>`
 holds the session before the shot; together they make a scene reproducible in

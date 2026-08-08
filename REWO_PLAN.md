@@ -99,6 +99,19 @@ two bugs found on the way, the last two consumers of M94's menu displacement
 (the hover highlight and the item tooltip) and a furnace whose "crafting slots"
 include three of the player's hotbar slots.
 
+**Update (2026-08-07, the chat arc).** Six more milestones, all merged:
+**M108** the chat HUD (`ChatComponent`, the wrap, the `MessageSignatureCache`
+without which `delete_chat` cannot be read, and the text), **M109** the backdrop
+fills (which took a colour channel on the HUD vertex and exposed the
+`v.len() * 16` hardcode beside `VERTEX_STRIDE`), **M110** the `ChatScreen` you
+type into, **M111** the scrollbar — which M110 made *reachable* rather than
+un-deferred, since only `ChatScreen` passes `FOREGROUND` — **M112**
+`isHovering`'s narrow-window override plus the four consumers of the recipe
+book's 77 px displacement that were not using the shared predicate, and
+**M113** the Brigadier command tree (2,017 nodes off a real server, consumed
+exactly). **Chat is complete for everything vanilla draws without a subsystem
+Rewo lacks.**
+
 Current measurement, taken 2026-08-07 after M113: **2313 tests, 0 failures**
 (**world 949, net 664, gpu 255, data 216, app 173, mesh 45, proto 11** — read
 off the runner per crate; they sum to 2313). **Read each crate's EXIT CODE, not
@@ -113,8 +126,9 @@ were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
 34/34, `mobshot` 246/246, **`live --render-check` 28/28 with validation ON and 0
-validation errors, re-run for M112** (M94 is where it earned its keep twice over
-— see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
+validation errors, last run for M112** — M113 is a decode and adds no render
+path, which is the only reason it was not re-run (M94 is where it earned its
+keep twice over — see its §15 entry); demo PNG `2cc56b4acbfb92cb`, byte-identical.
 `REWO_PACKET_COVERAGE.md` is at **116 / 0 / 25**, class C **14** — M96–M107
 consume packets M93y already decoded, M108 resolved `delete_chat` and M113 the
 Brigadier tree.
@@ -1213,28 +1227,44 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    restated rather than in the registry it guarded. Grade a claim against the
    code that would falsify it — `a4` now derives the rendered set from the
    model resolver — and grade it in both directions.
-9. **Some source files are stored with mixed CRLF/LF terminators.** Measured
-   2026-08-07, the whole list under `crates/rewo-*` is **four** files:
-   `rewo-app/src/mobshot_cmd.rs`, `rewo-world/src/chunk.rs`,
-   `rewo-world/src/light.rs`, `rewo-gpu/src/vanilla_hier.rs`. It had drifted in
-   **both** directions from the version this gotcha used to name —
-   `rewo-data/src/lib.rs` and `rewo-gpu/src/entities.rs` have since been
-   normalised to all-LF, and `light.rs`/`vanilla_hier.rs` were never listed —
-   so **re-measure rather than trust the list** — read the file as bytes and
-   compare its CRLF count against its total newline count; both non-zero and
-   unequal means mixed.
-   An editor that normalises them turns a 30-line change into a
-   3,400-line diff and trips `git diff --check`, since git reads the added CR
-   as trailing whitespace. Check `git diff --stat` against what you meant to
-   change.
-   **New lines in such a file must go in as LF**, whatever the file's dominant
-   ending — an *added* CRLF line trips `diff --check` every time, which is why
-   these files are mixed at all: the CRLF is original, and every LF line is a
-   previous session's addition. To repair a normalised file, realign it against
-   `git show HEAD:<path>` and re-emit HEAD's exact bytes for equal lines,
-   `content + b"\n"` for new ones. Python multi-line `str.replace` anchors
-   silently no-op against CRLF text — a replacement that reports success and
-   changes nothing is this, not a missing string.
+9. **Line endings: the tree is now UNIFORMLY CRLF, and the old "mixed files"
+   list is gone.** Measured 2026-08-07 after M113, over every `.rs` under
+   `crates/rewo-*`: **zero mixed files**, and every one is all-CRLF —
+   including the four this gotcha used to name
+   (`mobshot_cmd.rs`, `chunk.rs`, `light.rs`, `vanilla_hier.rs`). `core.autocrlf`
+   is **false** and there is **no `.gitattributes`**, so the working tree is
+   exactly what is stored; this is not a checkout artefact.
+
+   **The hazard has therefore inverted, and it is now much milder.** The
+   failure this gotcha was written for — a scripted edit exploding a 30-line
+   change into a 3,400-line diff — needed a *mixed* file to normalise. With
+   the tree uniform, the remaining risk is the opposite one: a tool that writes
+   **LF** into a CRLF file, which trips nothing on the changed lines but leaves
+   the file half-converted and re-creates the mixed state this took several
+   sessions to clear.
+
+   What still applies:
+
+   * **Re-measure rather than trust this paragraph.** Read the file as bytes
+     and compare its CRLF count against its total newline count; both non-zero
+     and unequal means mixed. The list drifted in both directions twice before
+     it emptied.
+   * **Check `git diff --stat` after any scripted edit** against what you meant
+     to change, and `git diff --check` for added-CR whitespace.
+   * **Python multi-line `str.replace` anchors silently no-op against CRLF
+     text** — a replacement that reports success and changes nothing is this,
+     not a missing string. Read with `newline=''` so the `\r` survives into the
+     anchor, or anchor on single lines.
+   * The repo's editing tools (Write/Edit) emit CRLF on this machine, which is
+     why the tree converged. A raw `open(p, "w")` in Python does too, via
+     universal newlines — but only if you do **not** pass `newline=''`. Passing
+     `newline=''` preserves whatever the string holds, which is what these
+     sessions use and why it works.
+
+   **A `.gitattributes` would retire the class outright**, and is still a
+   decision rather than a cleanup: it touches line endings repo-wide, including
+   `ewo-*` and the Java sources. Named here so the next session can take it
+   deliberately rather than discover it.
 10. **Never write these sources from a script without `encoding='utf-8'`.**
    Python's default on Windows is cp1252, which silently re-encodes a whole
    file and leaves it invalid UTF-8 — and the obvious repair then
