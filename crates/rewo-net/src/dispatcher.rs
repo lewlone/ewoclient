@@ -142,7 +142,7 @@ impl StringReader {
         self.cursor += 1;
     }
 
-    fn read(&mut self) -> u16 {
+    pub fn read(&mut self) -> u16 {
         let c = self.peek();
         self.cursor += 1;
         c
@@ -343,7 +343,11 @@ pub enum ArgKind {
     Float { min: f64, max: f64 },
     Double { min: f64, max: f64 },
     Str(StringType),
-    /// Every `minecraft:` type. Refuses to parse — see the module docs.
+    /// `minecraft:entity` and `minecraft:game_profile` (M118) — the `@e[…]`
+    /// syntax. `playersOnly` differs between them and affects only which
+    /// names are offered, which is the caller's list here.
+    Entity,
+    /// Every other `minecraft:` type. Refuses to parse — see the module docs.
     Unknown,
 }
 
@@ -375,6 +379,9 @@ impl ArgKind {
                 max: max.unwrap_or(f64::MAX),
             },
             ("brigadier:string", ArgumentProps::String(t)) => Self::Str(*t),
+            // The props carry `single`/`playersOnly`; neither changes how the
+            // text parses, only which names are worth offering.
+            ("minecraft:entity" | "minecraft:game_profile", _) => Self::Entity,
             _ => Self::Unknown,
         }
     }
@@ -435,12 +442,42 @@ impl ArgKind {
                 Ok(())
             }
             Self::Str(StringType::QuotablePhrase) => reader.read_string().map(|_| ()),
+            // `EntityArgument.parse` builds a parser and runs it; a failure
+            // is a failure, and the reader is left wherever the selector's own
+            // rollback put it.
+            Self::Entity => {
+                let mut probe = reader.clone();
+                let p = crate::selector::SelectorParser::parse(&mut probe, true);
+                if p.failed {
+                    return Err(ReaderError::UnknownArgumentType);
+                }
+                reader.set_cursor(probe.cursor());
+                Ok(())
+            }
             Self::Unknown => Err(ReaderError::UnknownArgumentType),
         }
     }
 
-    /// `ArgumentType.listSuggestions`. Only `BoolArgumentType` has one.
-    fn suggest(&self, builder: &mut SuggestionsBuilder) {
+    /// `ArgumentType.listSuggestions`.
+    ///
+    /// `BoolArgumentType` has one, and so does `EntityArgument` — whose is a
+    /// whole parser, so it takes the online names the caller must supply.
+    fn suggest_with_names(&self, builder: &mut SuggestionsBuilder, names: &[String]) {
+        if let Self::Entity = self {
+            // `EntityArgument.listSuggestions` re-reads from the builder's own
+            // start rather than continuing an earlier parse, and swallows the
+            // exception — see `crate::selector`.
+            let input: Vec<u16> = builder.input_units();
+            let mut reader = StringReader::new(&input);
+            reader.set_cursor(builder.start());
+            let p = crate::selector::SelectorParser::parse(&mut reader, true);
+            let mut sub = SuggestionsBuilder::new(&input, p.cursor);
+            p.fill_suggestions(&mut sub, names);
+            for s in sub.build().list {
+                builder.suggest(&s.text);
+            }
+            return;
+        }
         if *self != Self::Bool {
             return;
         }
@@ -820,6 +857,7 @@ pub fn completion_suggestions(
     tree: &CommandTree,
     parse_results: &ParseResults,
     cursor: usize,
+    names: &[String],
 ) -> Completion {
     let Some(ctx) = parse_results.context.find_suggestion_context(cursor) else {
         return Completion {
@@ -861,7 +899,7 @@ pub fn completion_suggestions(
                     // `getProvider` defaults to ASK_SERVER.
                     ask_server = true;
                 } else {
-                    kind_of(tree, child, props).suggest(&mut builder);
+                    kind_of(tree, child, props).suggest_with_names(&mut builder, names);
                 }
             }
             NodeKind::Root => {}
@@ -934,7 +972,18 @@ mod tests {
                 n(
                     2 | 4,
                     vec![],
-                    arg("target", "minecraft:entity", ArgumentProps::None, Some("minecraft:ask_server")),
+                    // An IMPOSSIBLE type name, not merely an unimplemented
+                    // one. `minecraft:entity` stood here until M118
+                    // transcribed it, and both tests below silently stopped
+                    // testing their claim — the rot M41 found in `swingshot`
+                    // and M43 in two `item_stack` fixtures, for the third
+                    // time. A name no registry can contain cannot rot again.
+                    arg(
+                        "target",
+                        "minecraft:__no_such_argument_type",
+                        ArgumentProps::None,
+                        Some("minecraft:ask_server"),
+                    ),
                 ),
             ],
         }
@@ -944,7 +993,7 @@ mod tests {
         let t = tree();
         let units = u(input);
         let p = parse(&t, &units, 1);
-        completion_suggestions(&t, &p, units.len())
+        completion_suggestions(&t, &p, units.len(), &[])
     }
 
     fn texts(c: &Completion) -> Vec<&str> {
@@ -1033,9 +1082,13 @@ mod tests {
         );
         // And every Minecraft type is Unknown whatever its props look like.
         assert_eq!(
-            ArgKind::resolve("minecraft:entity", &unbounded),
+            ArgKind::resolve("minecraft:__no_such_argument_type", &unbounded),
             ArgKind::Unknown
         );
+        // …and the one type that IS transcribed resolves to itself whatever
+        // its props say, because `single`/`playersOnly` do not change how the
+        // text parses.
+        assert_eq!(ArgKind::resolve("minecraft:entity", &unbounded), ArgKind::Entity);
     }
 
     // ── literal completion, which is the point ───────────────────────────
@@ -1087,7 +1140,7 @@ mod tests {
         let t = tree();
         let units = u("/g extra");
         let p = parse(&t, &units, 1);
-        let c = completion_suggestions(&t, &p, 2);
+        let c = completion_suggestions(&t, &p, 2, &[]);
         assert_eq!(texts(&c), ["gamemode", "give"]);
         // …and the span they replace stops at the cursor, so `extra` survives
         // being completed over.
@@ -1108,6 +1161,56 @@ mod tests {
         // The candidates at the top level are all literals, so `tp`'s
         // ask-server child is not among them.
         assert!(!complete("/t").ask_server);
+    }
+
+    #[test]
+    fn an_entity_argument_parses_and_completes_without_the_server() {
+        // M118 — the first `minecraft:` type transcribed, and the reason the
+        // parse can now reach a command's THIRD word.
+        let mut t = tree();
+        t.nodes[0].children.push(9);
+        t.nodes.push(CommandNode {
+            flags: 1,
+            children: vec![10],
+            redirect: 0,
+            kind: NodeKind::Literal("kill".into()),
+        });
+        t.nodes.push(CommandNode {
+            flags: 2 | 4,
+            children: vec![],
+            redirect: 0,
+            kind: NodeKind::Argument {
+                name: "targets".into(),
+                type_id: 0,
+                type_name: "minecraft:entity".into(),
+                props: ArgumentProps::None,
+                suggestions: None,
+            },
+        });
+        // It parses, so the command is valid and nothing is left over.
+        let p = parse(&t, &u("/kill @e"), 1);
+        assert!(p.errors.is_empty());
+        assert!(p.is_valid(&t));
+        // A selector that fails AT THE END OF THE INPUT is the case that
+        // needs the explicit failure check: `@z` leaves the cursor on the `z`
+        // and the argument-separator test catches it anyway, but a bare `@`
+        // and an unclosed `@e[` leave it at the end, where nothing downstream
+        // can notice. Without the check both would read as valid commands.
+        for bad in ["/kill @", "/kill @e["] {
+            let p = parse(&t, &u(bad), 1);
+            assert!(!p.is_valid(&t), "{bad} must not be a valid command");
+        }
+        // And it completes locally: the six selectors plus the names the
+        // caller supplied — with NO ask_server, because the node carries no
+        // suggestion provider of its own.
+        let units = u("/kill @");
+        let p = parse(&t, &units, 1);
+        let names = vec!["Steve".to_string()];
+        let c = completion_suggestions(&t, &p, units.len(), &names);
+        assert!(!c.ask_server);
+        let texts: Vec<&str> = c.local.list.iter().map(|s| s.text.as_str()).collect();
+        assert!(texts.contains(&"@e"));
+        assert_eq!(texts.iter().filter(|s| s.starts_with('@')).count(), 6);
     }
 
     // ── the parse ────────────────────────────────────────────────────────
@@ -1265,7 +1368,7 @@ mod tests {
         // which is the direction error `LiteralCommandNode.listSuggestions`
         // exists to avoid: the LITERAL must start with the typed text, and
         // `gamemode` does not start with `gamemodex`.
-        assert!(completion_suggestions(&t, &p, 10).local.is_empty());
+        assert!(completion_suggestions(&t, &p, 10, &[]).local.is_empty());
         // A PREFIX of it does — but not the whole word, because
         // `SuggestionsBuilder.suggest` drops a suggestion equal to what is
         // typed (M114a). This assertion used the complete literal first and
@@ -1273,7 +1376,7 @@ mod tests {
         // meeting: the literal matches, and then the builder discards it.
         let shorter = parse(&t, &u("/gamemod"), 1);
         assert_eq!(
-            completion_suggestions(&t, &shorter, 8)
+            completion_suggestions(&t, &shorter, 8, &[])
                 .local
                 .list
                 .iter()
