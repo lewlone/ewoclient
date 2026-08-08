@@ -214,7 +214,7 @@ fn read_nbt_path_node(reader: &mut StringReader, first: bool) -> Result<(), Read
         }
         let next = reader.peek();
         if next == b'{' as u16 {
-            read_compound_extent(reader)?;
+            crate::snbt_grammar::parse_compound(reader)?;
         } else if next == b']' as u16 {
             reader.skip();
             return Ok(());
@@ -233,7 +233,7 @@ fn read_nbt_path_node(reader: &mut StringReader, first: bool) -> Result<(), Read
         if !first {
             return Err(ReaderError::UnknownArgumentType);
         }
-        return read_compound_extent(reader);
+        return crate::snbt_grammar::parse_compound(reader);
     }
     let start = reader.cursor();
     while reader.can_read() && is_allowed_in_unquoted_name(reader.peek()) {
@@ -253,7 +253,7 @@ fn read_nbt_path_node(reader: &mut StringReader, first: bool) -> Result<(), Read
 /// else is read as an identifier.
 pub fn read_id_or_value(reader: &mut StringReader) -> Result<(), ReaderError> {
     if reader.can_read() && reader.peek() == b'{' as u16 {
-        return read_compound_extent(reader);
+        return crate::snbt_grammar::parse_compound(reader);
     }
     let start = reader.cursor();
     while reader.can_read() && !is_bare_terminator(reader.peek()) {
@@ -340,12 +340,16 @@ mod tests {
     }
 
     #[test]
-    fn malformed_snbt_is_ACCEPTED_and_that_is_the_stated_deviation() {
-        // Recorded as a test rather than only as prose, so the day someone
-        // transcribes `SnbtGrammar` this fails and asks to be updated. Vanilla
-        // rejects both of these; Rewo reads their extent and moves on.
+    fn the_extent_walk_still_only_measures_and_is_no_longer_what_validates() {
+        // M121 recorded its over-acceptance as a test so that transcribing
+        // `SnbtGrammar` would fail it and force an update. M122 did, and this
+        // is that update: the walk still measures — that is all it ever
+        // claimed — but nothing routes an argument through it any more. Every
+        // caller now goes to `crate::snbt_grammar`, which rejects both of
+        // these.
         assert_eq!(extent("{a:}"), Some(4));
-        assert_eq!(extent("{:1}"), Some(4));
+        let units: Vec<u16> = "{a:}".encode_utf16().collect();
+        assert!(crate::snbt_grammar::parse_value(&mut StringReader::new(&units)).is_err());
     }
 
     // ── nbt_path ─────────────────────────────────────────────────────────

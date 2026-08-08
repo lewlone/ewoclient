@@ -1561,6 +1561,16 @@ mod tests {
         // …including when a brace hides inside a string, which is where a
         // naive counter truncates.
         assert!(parse(&t, &u("/data {a:\"}\"} force"), 1, ctx).is_valid(&t));
+        // M122 — and a MALFORMED compound is now invalid, where M121's extent
+        // walk measured it and let the rest of the command parse. This is the
+        // milestone's whole claim at the dispatcher level.
+        assert!(!parse(&t, &u("/data {a:} force"), 1, ctx).is_valid(&t));
+        // The leading zero has to be in the VALUE position: `{01:1}` is
+        // valid, because a map KEY is a string and never goes through the
+        // numeral rule. This witness used the key first — the same
+        // distinction `snbt_grammar`'s own tests record, two modules apart.
+        assert!(!parse(&t, &u("/data {a:01} force"), 1, ctx).is_valid(&t));
+        assert!(parse(&t, &u("/data {01:1} force"), 1, ctx).is_valid(&t));
         // And the word after it completes locally.
         let units = u("/data {a:1} fo");
         let p = parse(&t, &units, 1, ctx);
