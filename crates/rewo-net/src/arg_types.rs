@@ -239,6 +239,15 @@ pub enum Value {
     /// An identifier, optionally `#`-prefixed for the tag-accepting variants.
     /// The `Option` is the registry the wire named, where there was one.
     Id { tag: bool },
+    /// An SNBT value's EXTENT (M121) — `nbt_tag`, and `component` / `style`,
+    /// which are a `TagParser` value fed to a codec.
+    Snbt,
+    /// The same, restricted to a compound: `nbt_compound_tag`.
+    SnbtCompound,
+    /// `nbt_path`, whose own grammar is transcribed.
+    NbtPath,
+    /// `dialog` — a `ResourceOrIdArgument`: an id, or an inline value.
+    IdOrSnbt,
 }
 
 /// Resolve a `minecraft:` type name to its value shape, or `None` when this
@@ -291,6 +300,16 @@ pub fn resolve(type_name: &str) -> Option<Value> {
         // The `_or_tag` pair accept a leading `#`.
         "minecraft:resource_or_tag" | "minecraft:resource_or_tag_key" => Value::Id { tag: true },
 
+        // M121 — the six structured ones. `component` and `style` are a
+        // `TagParser` value handed to a codec, so the TEXT they parse is SNBT
+        // and the codec only decides whether the decoded value is valid;
+        // `crate::snbt` reads the extent and states plainly that it does not
+        // validate.
+        "minecraft:nbt_tag" | "minecraft:component" | "minecraft:style" => Value::Snbt,
+        "minecraft:nbt_compound_tag" => Value::SnbtCompound,
+        "minecraft:nbt_path" => Value::NbtPath,
+        "minecraft:dialog" => Value::IdOrSnbt,
+
         _ => return None,
     })
 }
@@ -320,6 +339,10 @@ impl Value {
                 reader.set_cursor(reader.total_length());
                 Ok(())
             }
+            Self::Snbt => crate::snbt::read_value_extent(reader),
+            Self::SnbtCompound => crate::snbt::read_compound_extent(reader),
+            Self::NbtPath => crate::snbt::read_nbt_path(reader),
+            Self::IdOrSnbt => crate::snbt::read_id_or_value(reader),
             Self::Id { tag } => {
                 if *tag && reader.can_read() && reader.peek() == b'#' as u16 {
                     reader.skip();
@@ -363,7 +386,16 @@ impl Value {
                     _ => {}
                 }
             }
-            Self::Range | Self::Word | Self::Greedy => {}
+            // None of the six suggests: vanilla's come from a codec's own
+            // completion machinery, which needs the value decoded rather than
+            // measured.
+            Self::Range
+            | Self::Word
+            | Self::Greedy
+            | Self::Snbt
+            | Self::SnbtCompound
+            | Self::NbtPath
+            | Self::IdOrSnbt => {}
         }
     }
 }
@@ -559,17 +591,19 @@ mod tests {
     }
 
     #[test]
-    fn the_structured_types_are_not_claimed() {
-        // Named rather than silently absent: each needs a parser of its own.
-        for t in [
-            "minecraft:component",
-            "minecraft:style",
-            "minecraft:nbt_compound_tag",
-            "minecraft:nbt_tag",
-            "minecraft:nbt_path",
-            "minecraft:dialog",
+    fn the_structured_types_are_claimed_as_extents() {
+        // M120 asserted these were NOT claimed; M121 claims them, and this
+        // test inverted with the code rather than being deleted — the shape
+        // that would otherwise rot silently.
+        for (t, want) in [
+            ("minecraft:component", Value::Snbt),
+            ("minecraft:style", Value::Snbt),
+            ("minecraft:nbt_tag", Value::Snbt),
+            ("minecraft:nbt_compound_tag", Value::SnbtCompound),
+            ("minecraft:nbt_path", Value::NbtPath),
+            ("minecraft:dialog", Value::IdOrSnbt),
         ] {
-            assert!(resolve(t).is_none(), "{t}");
+            assert_eq!(resolve(t), Some(want), "{t}");
         }
     }
 
@@ -586,14 +620,9 @@ mod tests {
             "minecraft:item_stack",
             "minecraft:item_predicate",
         ];
-        let structured = [
-            "minecraft:component",
-            "minecraft:style",
-            "minecraft:nbt_compound_tag",
-            "minecraft:nbt_tag",
-            "minecraft:nbt_path",
-            "minecraft:dialog",
-        ];
+        // M121 emptied this: every `minecraft:` type is now claimed either
+        // here or by its own module.
+        let structured: [&str; 0] = [];
         let all = [
             "minecraft:angle", "minecraft:block_pos", "minecraft:block_predicate",
             "minecraft:block_state", "minecraft:column_pos", "minecraft:component",
