@@ -396,6 +396,23 @@ impl BookType {
         }
     }
 
+    /// `getRecipeFilterName()` — the key the filter tooltip shows while
+    /// filtering is ON (M133).
+    ///
+    /// **It is abstract on the COMPONENT and a constructor argument from the
+    /// SCREEN.** `CraftingRecipeBookComponent` returns its own constant, while
+    /// all three furnaces share `FurnaceRecipeBookComponent` and differ only by
+    /// the `recipeFilterName` their screen passes in — the same shape
+    /// [`Self::furnace_family`] records for the art, read from the other side.
+    pub fn filter_name_key(self) -> &'static str {
+        match self {
+            BookType::Crafting => "gui.recipebook.toggleRecipes.craftable",
+            BookType::Furnace => "gui.recipebook.toggleRecipes.smeltable",
+            BookType::BlastFurnace => "gui.recipebook.toggleRecipes.blastable",
+            BookType::Smoker => "gui.recipebook.toggleRecipes.smokable",
+        }
+    }
+
     /// Whether this book's filter toggle uses the furnace art.
     ///
     /// `CraftingRecipeBookComponent` and `FurnaceRecipeBookComponent` are the
@@ -1089,6 +1106,73 @@ pub fn book_hit(bx: i32, by: i32, view: BookView, tab_count: usize) -> Option<Bo
 /// whether a right-click opens the which-of-these overlay at all: the line is
 /// the affordance for that click, and the three agree by construction.
 pub const MORE_RECIPES_KEY: &str = "gui.recipebook.moreRecipes";
+/// `gui.recipebook.toggleRecipes.all` — the filter tooltip when NOT filtering.
+pub const ALL_RECIPES_TOOLTIP_KEY: &str = "gui.recipebook.toggleRecipes.all";
+
+/// The three book widgets that carry an `AbstractWidget` tooltip, and the key
+/// each shows (M133).
+///
+/// **The overlay has none.** `OverlayRecipeComponent` contains the string
+/// "tooltip" zero times, so the "which-of-these overlay's own tooltips" the
+/// handoff listed as an open item does not exist. What was missing is these
+/// three — and M106's own test comment already said so, because they reach the
+/// screen through `AbstractWidget`'s holder rather than through
+/// `RecipeBookPage.extractTooltip`, which is why [`page_tooltip_slot`] rightly
+/// answers `None` for all of them.
+///
+/// **They also come FIRST in the frame**, ahead of the container's item
+/// tooltip and the book's cell tooltip. `AbstractRecipeBookScreen` runs
+/// `recipeBookComponent.extractRenderState` — inside which every widget calls
+/// `refreshTooltipForNextRenderPass` → `setTooltipForNextFrame` — *before*
+/// `this.extractTooltip` and `recipeBookComponent.extractTooltip`. With
+/// `setTooltipForNextFrameInternal`'s `deferredTooltip == null || replaceExisting`
+/// and `replaceExisting` false on every path (M106a), the first claim of a
+/// frame wins. That is the third consequence of one rule.
+///
+/// **The filter's tooltip names the CURRENT state, not what the click will
+/// do** — "Showing All" while the filter is *off*. A tooltip usually promises
+/// an action, so the plausible reading is exactly inverted.
+///
+/// `total_pages` and `page` are here because an arrow with nothing to go to is
+/// **not drawn** (`updateArrowButtons` sets `visible`), and an invisible widget
+/// is never hovered — so a one-page book offers no arrow tooltip rather than a
+/// greyed one.
+///
+/// Two vanilla behaviours are deliberately not modelled, both unreachable:
+/// `shouldDisplay` is `isHovered || isFocused && lastInputType.isKeyboard()`,
+/// and Rewo has no keyboard focus traversal for these widgets; and the display
+/// is gated on `Util.getMillis() - displayStartTime > delay.toMillis()`, a
+/// **strict** comparison against a delay none of the three sets, so vanilla
+/// skips the first millisecond of every hover. Rewo has no per-widget hover
+/// clock, and reproducing a one-millisecond gap would be a fiction rather than
+/// a transcription.
+pub fn widget_tooltip_key(
+    hit: BookHit,
+    book: BookType,
+    filtering: bool,
+    page: usize,
+    total_pages: usize,
+) -> Option<&'static str> {
+    match hit {
+        // `visible = totalPages > 1 && currentPage < totalPages - 1`.
+        BookHit::PageForward => {
+            (total_pages > 1 && page + 1 < total_pages).then_some("gui.recipebook.next_page")
+        }
+        // `visible = totalPages > 1 && currentPage > 0`.
+        BookHit::PageBackward => {
+            (total_pages > 1 && page > 0).then_some("gui.recipebook.previous_page")
+        }
+        BookHit::Filter => Some(if filtering {
+            book.filter_name_key()
+        } else {
+            ALL_RECIPES_TOOLTIP_KEY
+        }),
+        // A tab is a `RecipeBookTabButton` and sets no tooltip; the search box
+        // has a HINT (M100), which is a different mechanism and already drawn.
+        BookHit::Tab(_) | BookHit::Search | BookHit::Slot(_) => None,
+    }
+}
+
 
 /// Which recipe cell the page shows a tooltip for, if any (M106).
 ///
@@ -2089,6 +2173,180 @@ mod tests {
         // decide it is beside the menu for one purpose and over it for another.
         assert_eq!(place_closes_book(width_too_narrow(320)), true);
         assert_eq!(place_closes_book(width_too_narrow(640)), false);
+    }
+
+    /// The arrows are the only two whose tooltip depends on state, and it is
+    /// **visibility**, not enablement: `updateArrowButtons` sets `visible`, and
+    /// an invisible widget is never hovered. A one-page book offers neither.
+    #[test]
+    fn an_arrow_with_nowhere_to_go_offers_no_tooltip() {
+        let f = |page, total| {
+            (
+                widget_tooltip_key(BookHit::PageForward, BookType::Crafting, false, page, total),
+                widget_tooltip_key(BookHit::PageBackward, BookType::Crafting, false, page, total),
+            )
+        };
+        // One page: `totalPages > 1` fails for both.
+        assert_eq!(f(0, 1), (None, None));
+        // First of three: forward only.
+        assert_eq!(f(0, 3), (Some("gui.recipebook.next_page"), None));
+        // Middle: both.
+        assert_eq!(
+            f(1, 3),
+            (
+                Some("gui.recipebook.next_page"),
+                Some("gui.recipebook.previous_page")
+            )
+        );
+        // Last: back only — `currentPage < totalPages - 1` is strict.
+        assert_eq!(f(2, 3), (None, Some("gui.recipebook.previous_page")));
+        // And a zero-page book, which `clamp_page` can produce.
+        assert_eq!(f(0, 0), (None, None));
+    }
+
+    /// Both arrows' `totalPages > 1` is REDUNDANT, and the two are redundant
+    /// for different reasons — which is why the code keeps vanilla's wording
+    /// verbatim and this pins the coincidence instead (M93g's shape).
+    ///
+    /// Forward is redundant by algebra alone: `page + 1 < total` already
+    /// forces `total >= 2`. Backward needs the invariant `page < total`, which
+    /// [`clamp_page`] establishes — it returns `current` only when
+    /// `total_pages(collections) > current` and otherwise 0 — so `page > 0`
+    /// implies `total > page >= 1`.
+    ///
+    /// A mutation dropping the backward conjunct SURVIVED the battery, and
+    /// this is the proof that it is an equivalent mutant rather than a weak
+    /// fixture: it cannot differ on any state `clamp_page` can produce. If the
+    /// invariant ever breaks, the second half of this test fires.
+    #[test]
+    fn the_arrows_page_count_guard_is_redundant_but_only_one_of_them_unconditionally() {
+        for total in 0..8usize {
+            for page in 0..8usize {
+                // Forward: unconditional algebra, so it holds for EVERY pair,
+                // clamped or not.
+                assert_eq!(
+                    total > 1 && page + 1 < total,
+                    page + 1 < total,
+                    "forward at page {page} of {total}"
+                );
+            }
+            // Backward: only for pages `clamp_page` can leave standing.
+            for collections in 0..(total * ITEMS_PER_PAGE + 1) {
+                for raw in 0..8usize {
+                    let page = clamp_page(raw, collections, false);
+                    let t = total_pages(collections);
+                    assert_eq!(
+                        t > 1 && page > 0,
+                        page > 0,
+                        "backward at clamped page {page} of {t}"
+                    );
+                }
+            }
+        }
+        // And the state that WOULD separate them is exactly the one the
+        // invariant forbids — stated so the equivalence is not mistaken for
+        // the two expressions being identical.
+        assert_ne!(1 > 1 && 1 > 0, 1 > 0);
+    }
+
+    /// **The filter's tooltip names the CURRENT state, not the action.**
+    /// `withTooltip(filtering -> filtering ? getRecipeFilterName() : ALL_RECIPES_TOOLTIP)`
+    /// and `gui.recipebook.toggleRecipes.all` is "Showing All" — so with the
+    /// filter OFF it says it is showing everything, where a tooltip that
+    /// promised what the click would do says the opposite.
+    #[test]
+    fn the_filter_tooltip_names_the_state_it_is_in_not_the_one_a_click_reaches() {
+        assert_eq!(
+            widget_tooltip_key(BookHit::Filter, BookType::Crafting, false, 0, 1),
+            Some("gui.recipebook.toggleRecipes.all"),
+        );
+        assert_eq!(
+            widget_tooltip_key(BookHit::Filter, BookType::Crafting, true, 0, 1),
+            Some("gui.recipebook.toggleRecipes.craftable"),
+        );
+    }
+
+    /// Each of the four books names its own filter, and the three furnaces
+    /// differ from each other — `FurnaceRecipeBookComponent` is one class taking
+    /// the name from its screen, so a "furnaces share a key" reading is wrong
+    /// for two of the three.
+    #[test]
+    fn every_book_names_its_own_filter() {
+        let keys: Vec<&str> = [
+            BookType::Crafting,
+            BookType::Furnace,
+            BookType::BlastFurnace,
+            BookType::Smoker,
+        ]
+        .iter()
+        .map(|b| b.filter_name_key())
+        .collect();
+        assert_eq!(
+            keys,
+            vec![
+                "gui.recipebook.toggleRecipes.craftable",
+                "gui.recipebook.toggleRecipes.smeltable",
+                "gui.recipebook.toggleRecipes.blastable",
+                "gui.recipebook.toggleRecipes.smokable",
+            ]
+        );
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 4, "all four are distinct");
+        // And the filter tooltip actually routes through it, per book.
+        for b in [BookType::Furnace, BookType::BlastFurnace, BookType::Smoker] {
+            assert_eq!(
+                widget_tooltip_key(BookHit::Filter, b, true, 0, 1),
+                Some(b.filter_name_key()),
+            );
+        }
+    }
+
+    /// The tabs and the search box carry none — a `RecipeBookTabButton` sets no
+    /// tooltip at all, and the search box has a *hint*, which is a different
+    /// mechanism (M100 draws it).
+    ///
+    /// A recipe CELL is `None` here too, and that is the split this function
+    /// exists for: its tooltip comes from `RecipeBookPage.extractTooltip`,
+    /// which is [`page_tooltip_slot`]'s business and runs LATER in the frame.
+    #[test]
+    fn the_widgets_with_no_tooltip_have_none_here() {
+        for hit in [
+            BookHit::Tab(0),
+            BookHit::Tab(3),
+            BookHit::Search,
+            BookHit::Slot(0),
+            BookHit::Slot(19),
+        ] {
+            assert_eq!(
+                widget_tooltip_key(hit, BookType::Crafting, false, 1, 3),
+                None,
+                "{hit:?}"
+            );
+        }
+    }
+
+    /// The two producers partition the book: no hit yields both, and every hit
+    /// that yields one yields exactly one. Written as a property rather than a
+    /// list because the two functions are edited independently and the failure
+    /// — a cell that offers a widget tooltip, or an arrow that offers a cell's
+    /// — would be silent.
+    #[test]
+    fn the_widget_and_page_tooltips_partition_the_book() {
+        let hits = [
+            BookHit::PageForward,
+            BookHit::PageBackward,
+            BookHit::Filter,
+            BookHit::Search,
+            BookHit::Tab(0),
+            BookHit::Slot(0),
+        ];
+        for hit in hits {
+            let widget = widget_tooltip_key(hit, BookType::Crafting, false, 1, 3).is_some();
+            let page = page_tooltip_slot(Some(hit), false).is_some();
+            assert!(!(widget && page), "{hit:?} claims both");
+        }
     }
 
     /// The overlay suppresses the page's tooltip, and only a CELL has one

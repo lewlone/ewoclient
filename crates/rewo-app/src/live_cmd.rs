@@ -12940,12 +12940,25 @@ mod tests {
             b: Option<&'static str>,
             g: Option<&'static str>,
         ) -> Option<&'static str> {
-            super::frame_tooltip(&mut (), |_| m, |_| b, |_| g)
+            super::frame_tooltip(&mut (), |_| None, |_| m, |_| b, |_| g)
         }
         assert_eq!(pick(Some("menu"), Some("book"), Some("ghost")), Some("menu"));
         assert_eq!(pick(None, Some("book"), Some("ghost")), Some("book"));
         assert_eq!(pick(None, None, Some("ghost")), Some("ghost"));
         assert_eq!(pick(None, None, None), None);
+        // M133 — and the book's WIDGET tooltips are ahead of all three, which
+        // is the same rule read one call earlier: the widgets set theirs inside
+        // `extractRenderState`, which runs before `this.extractTooltip`.
+        assert_eq!(
+            super::frame_tooltip(
+                &mut (),
+                |_| Some("widget"),
+                |_| Some("menu"),
+                |_| Some("book"),
+                |_| Some("ghost"),
+            ),
+            Some("widget"),
+        );
         // The menu's beats the ghost's with no page tooltip in play, which is
         // the pair that is actually reachable together: a ghost sits ON a menu
         // slot, while a page cell and a menu slot can never both be hovered.
@@ -12956,6 +12969,7 @@ mod tests {
         assert_eq!(
             super::frame_tooltip(
                 &mut ran,
+                |_| None,
                 |_| Some("menu"),
                 |n| {
                     *n += 1;
@@ -15853,6 +15867,30 @@ fn apply_screen(
         // rather than chained with `or_else` here: see `frame_tooltip`.
         frame_tooltip(
         &mut glyphs,
+        // M133 — the three widgets that carry an `AbstractWidget` tooltip.
+        |glyphs| {
+            let b = book.as_ref()?;
+            let view = b.view?;
+            let (bx, by) = book_mouse?;
+            let hit = rewo_world::recipe_book_screen::book_hit(bx, by, view, view.tabs)?;
+            let key = rewo_world::recipe_book_screen::widget_tooltip_key(
+                hit,
+                book_type_of(layout)?,
+                view.filtering,
+                view.page,
+                view.total_pages,
+            )?;
+            tooltip_layout(
+                vec![vec![rewo_gpu::tooltip::Span::new(
+                    baked.lang.or_key(key).to_string(),
+                    [1.0, 1.0, 1.0],
+                )]],
+                &advance,
+                glyphs.as_deref_mut(),
+                mouse,
+                (w, h),
+            )
+        },
         |glyphs| screen_tooltip(
             menu,
             items,
@@ -18493,10 +18531,20 @@ pub(crate) fn hovered_menu_slot_for_gate(
 /// reborrow per call is what makes the laziness expressible at all.
 fn frame_tooltip<T, C>(
     ctx: &mut C,
+    book_widget: impl FnOnce(&mut C) -> Option<T>,
     menu: impl FnOnce(&mut C) -> Option<T>,
     book_page: impl FnOnce(&mut C) -> Option<T>,
     ghost: impl FnOnce(&mut C) -> Option<T>,
 ) -> Option<T> {
+    // M133 — the book's WIDGET tooltips come first, and the order is read off
+    // `AbstractRecipeBookScreen`: `recipeBookComponent.extractRenderState`
+    // runs before `this.extractTooltip`, and every widget rendered inside it
+    // calls `refreshTooltipForNextRenderPass` -> `setTooltipForNextFrame`. So
+    // by the same first-wins rule M106a found, an arrow or the filter beats
+    // both the container's item tooltip and the book's cell tooltip.
+    if let Some(t) = book_widget(ctx) {
+        return Some(t);
+    }
     if let Some(t) = menu(ctx) {
         return Some(t);
     }
