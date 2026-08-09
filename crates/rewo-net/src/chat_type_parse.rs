@@ -776,18 +776,40 @@ mod tests {
             underlined: true,
             strikethrough: true,
             obfuscated: true,
+            // M128 added the click/hover payload; a decoration's style never
+            // carries one, and this fixture is about the six VISUAL fields
+            // `STYLE_FIELDS` names.
+            events: None,
         };
+        // A value of the right SHAPE per key. M128 extended `STYLE_FIELDS`
+        // from six to nine, and the first cut of this test assumed every
+        // field was a boolean — so `click_event: 0` produced no event, the
+        // style came back unchanged, and the test failed against code that
+        // was right. A weak fixture of exactly the kind this project keeps
+        // finding, and mine.
         for key in STYLE_FIELDS {
-            let value = if key == "color" {
-                s("red")
-            } else {
-                Nbt::Byte(0)
+            let value = match key {
+                "color" => s("red"),
+                "insertion" => s("Steve"),
+                "click_event" => Nbt::Compound(vec![
+                    ("action".to_string(), s("run_command")),
+                    ("command".to_string(), s("/kill")),
+                ]),
+                "hover_event" => Nbt::Compound(vec![
+                    ("action".to_string(), s("show_text")),
+                    ("value".to_string(), s("hi")),
+                ]),
+                // The five format flags, flipped OFF against an all-true
+                // parent so an absent-versus-false confusion is as visible as
+                // a dropped field.
+                _ => Nbt::Byte(0),
             };
             let tag = Nbt::Compound(vec![
                 ("text".to_string(), s("x")),
                 (key.to_string(), value),
             ]);
-            let spans = rewo_world::chat_style::parse_component(&tag, parent, None);
+            let spans =
+                rewo_world::chat_style::parse_component(&tag, parent.clone(), None);
             assert_eq!(spans.len(), 1, "{key}");
             assert_ne!(
                 spans[0].style(),
@@ -798,7 +820,11 @@ mod tests {
         // And the other direction: a key the resolver does NOT read must not
         // be in the list, or `decorate` would copy a field that changes
         // nothing and the list would stop describing the resolver.
-        for absent in ["shadow_color", "font", "insertion", "click_event", "hover_event"] {
+        //
+        // `insertion`, `click_event` and `hover_event` were on this list until
+        // M128, which gave `ChatStyle` somewhere to put them — so the list
+        // shrank as the model grew, which is the correspondence working.
+        for absent in ["shadow_color", "font"] {
             assert!(
                 !STYLE_FIELDS.contains(&absent),
                 "{absent:?} is in STYLE_FIELDS but ChatStyle cannot hold it"

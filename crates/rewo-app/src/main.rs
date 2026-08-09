@@ -45,6 +45,7 @@ mod inventoryshot_cmd;
 mod particleshot_cmd;
 mod portalshot_cmd;
 mod skin_fetch;
+mod uri_open;
 mod skyshot_cmd;
 mod stats;
 mod stats_view;
