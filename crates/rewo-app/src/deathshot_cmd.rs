@@ -65,7 +65,7 @@ use rewo_world::screen::{ButtonSprite, KeyResult, MouseResult, Screen, ScreenKin
 
 /// Total named properties this gate asserts. Locked so a skipped property
 /// fails the run even when nothing mismatched.
-const EXPECTED_WITNESSES: usize = 40;
+const EXPECTED_WITNESSES: usize = 42;
 
 const W: u32 = 640;
 const H: u32 = 480;
@@ -645,6 +645,117 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
         "eight-bit greyscale with no alpha channel, so a button covers its \
          whole rect — and the nine-slice `.mcmeta` (border 3) degenerates to a \
          1:1 blit at exactly `Button.BIG_WIDTH`",
+    );
+
+    // m20 — the death message keeps its server-sent `Style` flags (M130).
+    //
+    // `DeathScreen.visitText` calls `output.accept(CENTER, middleLine, 85,
+    // this.causeOfDeath)`, and `ActiveTextCollector.accept` builds its
+    // `GuiTextRenderState` from `text.getVisualOrderText()` with
+    // `ARGB.white(opacity)` as the BASE colour. So the component's own `Style`
+    // decides both the colour and all five flags, per character. The cause is
+    // the one line here a server controls, which is what makes dropping its
+    // styling a wire-visible deviation rather than a cosmetic one.
+    let styled_cause = vec![
+        rewo_net::chat_style::ChatSpan {
+            text: "Steve was ".into(),
+            color: [1.0, 1.0, 1.0],
+            bold: false,
+            italic: false,
+            underlined: false,
+            strikethrough: false,
+            obfuscated: false,
+        },
+        rewo_net::chat_style::ChatSpan {
+            text: "obliterated".into(),
+            color: [1.0, 1.0, 1.0],
+            bold: true,
+            italic: true,
+            underlined: true,
+            strikethrough: true,
+            obfuscated: true,
+        },
+    ];
+    let (smodel, slabels, styled_screen) = built(false);
+    let styled_view = crate::live_cmd::DeathView {
+        model: smodel,
+        labels: slabels,
+        cause: Some(styled_cause.clone()),
+        respawn_epoch: 0,
+    };
+    let advance = baked.font.as_ref().map(|f| f.advance).unwrap_or([6u8; 256]);
+    let styled_lines = crate::live_cmd::death_screen_lines(
+        &styled_view,
+        &styled_screen,
+        &advance,
+        SCALE as f32,
+        (W as f32, H as f32),
+    );
+    let flagged: Vec<_> = styled_lines
+        .iter()
+        .filter(|l| l.text == "obliterated")
+        .collect();
+    let plain: Vec<_> = styled_lines
+        .iter()
+        .filter(|l| l.text == "Steve was ")
+        .collect();
+    c.record(
+        "m20.the_death_message_keeps_its_five_style_flags_span_by_span",
+        flagged.len() == 1
+            && plain.len() == 1
+            && flagged[0].style
+                == rewo_gpu::text::TextStyle {
+                    bold: true,
+                    italic: true,
+                    underlined: true,
+                    strikethrough: true,
+                    obfuscated: true,
+                }
+            && plain[0].style == rewo_gpu::text::TextStyle::PLAIN,
+        format!(
+            "styled span {:?} beside a plain one {:?} — the PAIR is the claim, \
+             because a builder that hard-coded every flag would satisfy the \
+             first half alone (MUTATION: `TextStyle::PLAIN` for both)",
+            flagged.first().map(|l| l.style),
+            plain.first().map(|l| l.style)
+        ),
+    );
+
+    // m21 — and the bold span is MEASURED with bold, so the centring moves.
+    //
+    // `getBoldOffset()` is 1.0 per character (M126b) and `cause_pos` centres by
+    // halving the width, so measuring the flattened string puts the whole line
+    // five and a half pixels right of centre for an eleven-character bold run.
+    let bold_free = {
+        let mut c = styled_cause.clone();
+        c[1].bold = false;
+        c
+    };
+    let unbold_view = crate::live_cmd::DeathView {
+        cause: Some(bold_free),
+        ..styled_view
+    };
+    let unbold_lines = crate::live_cmd::death_screen_lines(
+        &unbold_view,
+        &styled_screen,
+        &advance,
+        SCALE as f32,
+        (W as f32, H as f32),
+    );
+    let x_of = |v: &[rewo_gpu::world::OwnedTextLine], t: &str| {
+        v.iter().find(|l| l.text == t).map(|l| l.x)
+    };
+    c.record(
+        "m21.a_bold_cause_is_measured_with_bold_so_the_line_recentres",
+        x_of(&styled_lines, "Steve was ") != x_of(&unbold_lines, "Steve was "),
+        format!(
+            "bold run starts the line at {:?} where the same text unbolded \
+             starts it at {:?} — eleven bold characters are eleven pixels \
+             wider, so the centre moves five (MUTATION: `width` rather than \
+             `width_styled` makes these equal)",
+            x_of(&styled_lines, "Steve was "),
+            x_of(&unbold_lines, "Steve was ")
+        ),
     );
 }
 

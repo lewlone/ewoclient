@@ -8586,10 +8586,16 @@ fn chat_input_lines(
     // with `color` itself. So on a draft the text greys and the caret stays
     // off-white. Two bindings, not one, for exactly that reason.
     let field_color = srgb_bytes_to_linear(EDIT_BOX_TEXT_COLOR);
-    let color = if screen.is_draft() {
-        srgb_bytes_to_linear(0xAA_AAAA)
+    let (color, style) = if screen.is_draft() {
+        (
+            srgb_bytes_to_linear(0xAA_AAAA),
+            rewo_gpu::text::TextStyle {
+                italic: true,
+                ..rewo_gpu::text::TextStyle::PLAIN
+            },
+        )
     } else {
-        field_color
+        (field_color, rewo_gpu::text::TextStyle::PLAIN)
     };
     let value = screen.input.value();
     // M117 — one line per coloured run, laid out with the FONT's advances
@@ -8621,7 +8627,7 @@ fn chat_input_lines(
             color_linear: color,
             alpha: 1.0,
             shadow: true,
-            style: rewo_gpu::text::TextStyle::PLAIN,
+            style,
             text: value.clone(),
         }),
     }
@@ -9553,6 +9559,42 @@ pub(crate) fn experience_level_lines(
     out
 }
 
+/// A parsed span's five renderable `Style` flags, for the bitmap text pass.
+///
+/// `Font.PreparedTextBuilder.accept` reads all five off the `Style` the
+/// `FormattedCharSequence` carries per character — there is no surface at
+/// which vanilla honours a component's colour and drops its bold. Rewo had
+/// exactly that asymmetry on the title and the death screen until M130,
+/// because both were written before `TextPass` could draw a flag (M126c) and
+/// neither was revisited when it could.
+pub(crate) fn text_style_of(span: &rewo_world::chat_style::ChatSpan) -> rewo_gpu::text::TextStyle {
+    rewo_gpu::text::TextStyle {
+        bold: span.bold,
+        italic: span.italic,
+        underlined: span.underlined,
+        strikethrough: span.strikethrough,
+        obfuscated: span.obfuscated,
+    }
+}
+
+/// `Font.width(FormattedText)` over a parsed line — the per-span widths summed
+/// with each span's OWN bold flag.
+///
+/// **Not `width(plain_text(line))`.** `getBoldOffset()` is 1.0 charged per
+/// character (M126b), so flattening a line to measure it undercounts a bold
+/// run by its length — and every consumer here divides the result by two to
+/// centre, so the error lands as a visible half-width offset rather than as a
+/// pixel. Vanilla's `font.width(this.title)` is style-aware for the same
+/// reason: its splitter's width provider takes the style.
+pub(crate) fn styled_line_width(
+    line: &rewo_world::chat_style::ChatLine,
+    advance: &[u8; 256],
+) -> i32 {
+    line.iter()
+        .map(|s| rewo_gpu::text::width_styled(&s.text, advance, s.bold))
+        .sum()
+}
+
 /// The title, the subtitle and the action bar — `Hud.extractTitle` and
 /// `Hud.extractOverlayMessage` (M79).
 ///
@@ -9595,7 +9637,7 @@ pub(crate) fn title_lines(
                alpha: f32| {
         let mut pen = x;
         for span in line {
-            let w = rewo_gpu::text::width(&span.text, advance);
+            let w = rewo_gpu::text::width_styled(&span.text, advance, span.bold);
             if !span.text.is_empty() {
                 out.push(rewo_gpu::world::OwnedTextLine {
                     x: pen as f32 * px,
@@ -9607,7 +9649,7 @@ pub(crate) fn title_lines(
                     color_linear: srgb_bytes_to_linear_f(span.color),
                     alpha,
                     shadow: true,
-                    style: rewo_gpu::text::TextStyle::PLAIN,
+                    style: text_style_of(span),
                     text: span.text.clone(),
                 });
             }
@@ -9624,14 +9666,14 @@ pub(crate) fn title_lines(
         if alpha > 0 {
             let a = alpha as f32 / 255.0;
             let line = chat_style::parse_component(title, ChatStyle::WHITE, lang);
-            let width = rewo_gpu::text::width(&chat_style::plain_text(&line), advance);
+            let width = styled_line_width(&line, advance);
             let (x, y) = rewo_gpu::hud::title_pos(gw, gh, width);
             run(&mut out, &line, x, y, rewo_gpu::hud::TITLE_SCALE, a);
             // The subtitle is drawn *inside* the title's block, at the title's
             // alpha — it has no ramp of its own.
             if let Some(subtitle) = &t.subtitle {
                 let line = chat_style::parse_component(subtitle, ChatStyle::WHITE, lang);
-                let width = rewo_gpu::text::width(&chat_style::plain_text(&line), advance);
+                let width = styled_line_width(&line, advance);
                 let (x, y) = rewo_gpu::hud::subtitle_pos(gw, gh, width);
                 run(&mut out, &line, x, y, rewo_gpu::hud::SUBTITLE_SCALE, a);
             }
@@ -9648,7 +9690,7 @@ pub(crate) fn title_lines(
         let alpha = rewo_gpu::hud::action_bar_alpha(t.overlay_message_time, partial);
         if alpha > 0 {
             let line = chat_style::parse_component(message, ChatStyle::WHITE, lang);
-            let width = rewo_gpu::text::width(&chat_style::plain_text(&line), advance);
+            let width = styled_line_width(&line, advance);
             let (x, y) = rewo_gpu::hud::action_bar_pos(gw, gh, width);
             run(&mut out, &line, x, y, 1, alpha as f32 / 255.0);
         }
@@ -11855,6 +11897,62 @@ mod tests {
         })[0]
             .color_linear;
         assert_ne!(normal, grey);
+    }
+
+    /// A restored draft is grey **and italic**, and its caret is neither.
+    ///
+    /// `ChatScreen.formatChat` returns
+    /// `Style.EMPTY.withColor(GRAY).withItalic(true)`, and the draft field on
+    /// `rewo_world::chat_screen` has said "drives the grey **italic**
+    /// rendering" in its own doc since M110 while the renderer drew
+    /// `TextStyle::PLAIN` — the fifth comment in this project to describe
+    /// behaviour its code did not have.
+    ///
+    /// The caret half is the part a plausible implementation gets wrong.
+    /// `graphics.text(font, applyFormat(half, …), …, color, …)` lets the
+    /// formatter's `Style` override `color` per character, but
+    /// `TextCursorUtils.extractAppendCursor` draws a bare `"_"` **String** with
+    /// `color` itself — so the draft's grey and italic reach the text and stop
+    /// at the caret.
+    #[test]
+    fn a_draft_is_italic_and_its_caret_is_not() {
+        use rewo_world::chat_screen::{ChatMethod, ChatScreen, Draft};
+        let draft = Draft::of("remembered");
+        // t=0 is inside `isCursorVisible`'s first 300 ms window, so the caret
+        // is emitted; without it this test would silently assert over one line.
+        let lines = super::chat_input_lines(
+            &ChatScreen::open(ChatMethod::Message, Some(&draft), 0),
+            1.0,
+            320,
+            240,
+            0,
+            None,
+            &|t: &str| t.chars().count() as i32 * 6,
+        );
+        let text = lines
+            .iter()
+            .find(|l| l.text == "remembered")
+            .expect("the draft text");
+        let caret = lines.iter().find(|l| l.text == "_").expect("the caret");
+        assert!(text.style.italic, "withItalic(true)");
+        assert_eq!(
+            text.style,
+            rewo_gpu::text::TextStyle {
+                italic: true,
+                ..rewo_gpu::text::TextStyle::PLAIN
+            },
+            "italic and ONLY italic — the style is a patch, not a preset"
+        );
+        assert_eq!(
+            caret.style,
+            rewo_gpu::text::TextStyle::PLAIN,
+            "a bare String never meets the formatter"
+        );
+        assert_ne!(
+            caret.color_linear, text.color_linear,
+            "and it keeps the field's textColor rather than the draft's grey"
+        );
+        assert_eq!(caret.color_linear, srgb_bytes_to_linear(EDIT_BOX_TEXT_COLOR));
     }
 
     /// An empty chat produces no lines at all — not one blank row.
@@ -15401,7 +15499,7 @@ pub(crate) fn death_screen_lines(
     px: f32,
     (screen_w, _screen_h): (f32, f32),
 ) -> Vec<rewo_gpu::world::OwnedTextLine> {
-    use rewo_net::chat_style::{self, ChatSpan};
+    use rewo_net::chat_style::ChatSpan;
     use rewo_world::death_screen as ds;
     let gui_w = (screen_w / px) as i32;
     let mut out = Vec::new();
@@ -15416,7 +15514,7 @@ pub(crate) fn death_screen_lines(
                scale: i32| {
         let mut pen = x;
         for span in spans {
-            let w = rewo_gpu::text::width(&span.text, advance);
+            let w = rewo_gpu::text::width_styled(&span.text, advance, span.bold);
             if !span.text.is_empty() {
                 out.push(rewo_gpu::world::OwnedTextLine {
                     x: pen as f32 * px,
@@ -15430,7 +15528,7 @@ pub(crate) fn death_screen_lines(
                     color_linear: srgb_bytes_to_linear_f(span.color),
                     alpha: 1.0,
                     shadow: true,
-                    style: rewo_gpu::text::TextStyle::PLAIN,
+                    style: text_style_of(span),
                     text: span.text.clone(),
                 });
             }
@@ -15451,7 +15549,7 @@ pub(crate) fn death_screen_lines(
 
     // The death message, in the server's own styling.
     if let Some(cause) = &view.cause {
-        let w = rewo_gpu::text::width(&chat_style::plain_text(cause), advance);
+        let w = styled_line_width(cause, advance);
         let (x, y) = ds::cause_pos(gui_w, w);
         run(&mut out, cause, x, y, 1);
     }
@@ -15461,7 +15559,7 @@ pub(crate) fn death_screen_lines(
     // literal inside an unstyled template, so the number is yellow and the
     // word is not.
     let score = score_spans(&view.labels.score_template, view.model.score);
-    let w = rewo_gpu::text::width(&chat_style::plain_text(&score), advance);
+    let w = styled_line_width(&score, advance);
     let (x, y) = ds::score_pos(gui_w, w);
     run(&mut out, &score, x, y, 1);
 

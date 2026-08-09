@@ -64,7 +64,7 @@ use rewo_net::ids::Ids;
 
 /// Total named properties this gate asserts. Locked so a skipped property
 /// fails the run even when nothing mismatched.
-const EXPECTED_WITNESSES: usize = 55;
+const EXPECTED_WITNESSES: usize = 57;
 
 const W: u32 = 640;
 const H: u32 = 480;
@@ -304,6 +304,28 @@ fn component_string(s: &str) -> Vec<u8> {
 
 /// `{"text": …, "color": …}` as a network-NBT compound, so the styled path is
 /// exercised rather than the bare-string one.
+/// A component carrying all five renderable `Style` flags, as NBT.
+///
+/// All five at once on purpose: the five are five separate booleans on the
+/// wire and five separate fields on `TextStyle`, so a wiring that carried one
+/// and dropped four would satisfy any single-flag witness.
+fn component_styled(text: &str) -> Vec<u8> {
+    let mut out = vec![10u8]; // TAG_Compound
+    out.push(8); // TAG_String
+    out.extend_from_slice(&4u16.to_be_bytes());
+    out.extend_from_slice(b"text");
+    out.extend_from_slice(&(text.len() as u16).to_be_bytes());
+    out.extend_from_slice(text.as_bytes());
+    for k in ["bold", "italic", "underlined", "strikethrough", "obfuscated"] {
+        out.push(1); // TAG_Byte
+        out.extend_from_slice(&(k.len() as u16).to_be_bytes());
+        out.extend_from_slice(k.as_bytes());
+        out.push(1);
+    }
+    out.push(0); // TAG_End
+    out
+}
+
 fn component_colored(text: &str, color: &str) -> Vec<u8> {
     let mut out = vec![10u8]; // TAG_Compound
     for (k, v) in [("text", text), ("color", color)] {
@@ -907,6 +929,72 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
         none_at_zero.is_empty() && none_in_creative.is_empty(),
         "`hasExperience() && experienceLevel > 0` — two separate gates, and \
          level 0 draws no number even in survival",
+    );
+
+    // m9b — a styled title carries all five `Style` flags, and is MEASURED
+    // with bold rather than merely drawn with it (M130).
+    //
+    // `Hud.extractTitle` passes `this.title` — a `Component` — to
+    // `textWithBackdrop`, which calls `graphics.text(font, str, …)`, which
+    // takes `getVisualOrderText()`. There is no surface at which vanilla
+    // honours a component's colour and drops its bold: `Font.PreparedTextBuilder
+    // .accept` reads all five off the same `Style` it reads the colour off.
+    //
+    // The width half is the load-bearing one. `getBoldOffset()` is 1.0 charged
+    // PER CHARACTER, so a five-character bold title is five pixels wider — and
+    // `title_pos` centres by halving the width, so a style-blind measure is not
+    // a subtle difference in the glyph, it is the whole line sitting two and a
+    // half pixels off centre at 1x and ten at the title's 4x.
+    let mut styled = TitleOverlay::default();
+    styled.set_title(rewo_net::hud_state::read_component(&component_styled("BOLD")).unwrap());
+    for _ in 0..15 {
+        styled.tick();
+    }
+    let slines = crate::live_cmd::title_lines(&styled, advance, px, screen, 0.0, None);
+    let plain_w = rewo_gpu::text::width("BOLD", advance);
+    let (bold_x, _) = ref_title_pos(GUI_W, GUI_H, plain_w + 4);
+    c.record(
+        "m9b.a_styled_title_carries_the_five_flags_and_is_measured_with_bold",
+        slines.len() == 1
+            && slines[0].style
+                == rewo_gpu::text::TextStyle {
+                    bold: true,
+                    italic: true,
+                    underlined: true,
+                    strikethrough: true,
+                    obfuscated: true,
+                }
+            && (slines[0].x - bold_x as f32 * px).abs() < 1e-6,
+        format!(
+            "{:?} at x={} (bold width {} = plain {plain_w} + one px per \
+             character; MUTATION: `TextStyle::PLAIN` drops all five, and \
+             `width` instead of `width_styled` moves x by {} px)",
+            slines[0].style,
+            slines[0].x,
+            plain_w + 4,
+            (ref_title_pos(GUI_W, GUI_H, plain_w).0 - bold_x) * SCALE
+        ),
+    );
+
+    // m9c — and a title with no styling still says so. The pair is what makes
+    // m9b a claim about the WIRE rather than about a constant: a builder that
+    // hard-coded every flag true would pass m9b alone.
+    let mut bare = TitleOverlay::default();
+    bare.set_title(rewo_proto::nbt::Nbt::String("BOLD".into()));
+    for _ in 0..15 {
+        bare.tick();
+    }
+    let blines = crate::live_cmd::title_lines(&bare, advance, px, screen, 0.0, None);
+    c.record(
+        "m9c.an_unstyled_title_is_plain_and_measured_without_bold",
+        blines.len() == 1
+            && blines[0].style == rewo_gpu::text::TextStyle::PLAIN
+            && (blines[0].x - ref_title_pos(GUI_W, GUI_H, plain_w).0 as f32 * px).abs() < 1e-6,
+        format!(
+            "{:?} at x={} — the same string, four pixels wider and four flags \
+             richer once the component carries them",
+            blines[0].style, blines[0].x
+        ),
     );
 
     // m10 — the gauges resolver.
