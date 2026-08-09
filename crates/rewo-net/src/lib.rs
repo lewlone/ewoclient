@@ -53,6 +53,7 @@ pub mod scoreboard;
 pub mod server_links;
 pub mod session;
 pub mod selector;
+pub mod sidebar;
 pub mod skins;
 pub mod slot_ranges;
 pub mod snbt;
