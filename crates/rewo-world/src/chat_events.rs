@@ -399,6 +399,55 @@ fn nbt_i32(tag: &Nbt) -> Option<i32> {
     })
 }
 
+/// `GuiGraphicsExtractor.componentHoverEffect`'s `show_text` arm, resolved and
+/// wrapped — the lines a tooltip would draw.
+///
+/// ```java
+/// case HoverEvent.ShowText(Component text):
+///    this.setTooltipForNextFrame(font, font.split(text, Math.max(this.guiWidth() / 2, 200)), xMouse, yMouse);
+/// ```
+///
+/// `Font.split` is `splitter.splitLines(input, maxWidth, Style.EMPTY)` — the
+/// same overload the chat wrap uses, **without** `wrapComponents`' indent, so
+/// a continuation here is not prefixed with a space.
+///
+/// The width is [`hover_text_width`], and `Style.EMPTY` is why the base style
+/// is white-with-no-flags rather than whatever the hovered run carried: the
+/// tooltip's text is the hover event's own component, resolved from scratch.
+///
+/// **Only `show_text` resolves.** `show_item` needs an item tooltip and
+/// `show_entity` needs an entity registry *and* is suppressed unless
+/// `advancedItemTooltips` is on; both answer `None` here rather than a
+/// plausible wrong line.
+pub fn show_text_lines(
+    style: &crate::chat_style::ChatStyle,
+    lang: Option<&rewo_data::lang::Language>,
+    gui_width: i32,
+    width_of: &dyn Fn(&str, crate::chat_style::ChatStyle) -> i32,
+) -> Option<Vec<crate::chat_style::ChatLine>> {
+    let HoverEvent::ShowText(value) = style.hover()? else {
+        return None;
+    };
+    let spans = crate::chat_style::parse_component(
+        value,
+        crate::chat_style::ChatStyle::WHITE,
+        lang,
+    );
+    Some(
+        crate::string_splitter::split_lines_wrapped(&spans, hover_text_width(gui_width), width_of)
+            .into_iter()
+            .map(|l| l.spans)
+            .collect(),
+    )
+}
+
+/// `Math.max(this.guiWidth() / 2, 200)` — an **integer** halving, and a floor
+/// of 200 rather than a clamp, so a narrow window still gets a readable
+/// tooltip and a wide one gets half of it.
+pub fn hover_text_width(gui_width: i32) -> i32 {
+    (gui_width / 2).max(200)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,5 +701,66 @@ mod tests {
         let empty = ChatEvents::default();
         let merged = ChatEvents::apply_to(Some(&empty), Some(&parent)).unwrap();
         assert!(Arc::ptr_eq(&merged, &parent));
+    }
+
+    // ---- the hover's show_text lines -------------------------------------
+
+    use crate::chat_style::{ChatLine, ChatStyle};
+
+    fn w6s(s: &str, style: ChatStyle) -> i32 {
+        s.chars().count() as i32 * (6 + i32::from(style.bold))
+    }
+
+    fn hovered(action: &str, fields: &[(&str, Nbt)]) -> ChatStyle {
+        let mut all = vec![("action", Nbt::String(action.into()))];
+        all.extend_from_slice(fields);
+        ChatStyle {
+            events: Some(Arc::new(ChatEvents {
+                hover: parse_hover_event(&compound(&all)),
+                ..Default::default()
+            })),
+            ..ChatStyle::WHITE
+        }
+    }
+
+    fn plain_lines(lines: &[ChatLine]) -> Vec<String> {
+        lines.iter().map(crate::chat_style::plain_text).collect()
+    }
+
+    /// `Math.max(guiWidth / 2, 200)` — integer halving, floored at 200.
+    #[test]
+    fn the_hover_width_is_half_the_window_or_two_hundred() {
+        assert_eq!(hover_text_width(854), 427);
+        assert_eq!(hover_text_width(855), 427);
+        assert_eq!(hover_text_width(320), 200);
+        assert_eq!(hover_text_width(0), 200);
+    }
+
+    /// A `show_text` resolves through the ordinary component walk, so a
+    /// coloured child keeps its colour and a `translate` would resolve.
+    #[test]
+    fn show_text_resolves_and_wraps() {
+        let style = hovered("show_text", &[("value", s("aaa bbb"))]);
+        let lines = show_text_lines(&style, None, 854, &w6s).unwrap();
+        assert_eq!(plain_lines(&lines), ["aaa bbb"]);
+        // 200 px at six pixels a character is 33; a longer line breaks, and
+        // **without** `wrapComponents`' leading space.
+        let long = "x".repeat(40);
+        let style = hovered("show_text", &[("value", s(&long))]);
+        let lines = show_text_lines(&style, None, 320, &w6s).unwrap();
+        assert_eq!(lines.len(), 2);
+        assert!(!crate::chat_style::plain_text(&lines[1]).starts_with(' '));
+    }
+
+    /// The two Rewo does not resolve answer `None` rather than a plausible
+    /// wrong line — and so does a style with no hover at all.
+    #[test]
+    fn the_other_two_hover_actions_resolve_to_nothing() {
+        for action in ["show_item", "show_entity"] {
+            let style = hovered(action, &[("id", s("minecraft:stone"))]);
+            assert!(style.hover().is_some(), "{action} should still decode");
+            assert!(show_text_lines(&style, None, 854, &w6s).is_none());
+        }
+        assert!(show_text_lines(&ChatStyle::WHITE, None, 854, &w6s).is_none());
     }
 }
