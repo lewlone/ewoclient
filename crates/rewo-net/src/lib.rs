@@ -25,6 +25,7 @@ pub mod chat_sign;
 pub use rewo_world::{chat_style, chat_translate};
 pub mod chat_type_parse;
 pub mod chat_wire;
+pub mod command_errors;
 pub mod command_format;
 pub mod commands;
 pub mod dispatcher;
