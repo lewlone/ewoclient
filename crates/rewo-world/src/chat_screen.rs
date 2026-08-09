@@ -534,12 +534,20 @@ impl ChatScreen {
         let Some(event) = clicked.click() else {
             return ChatClick::NotHandled;
         };
-        let outcome = self.dispatch_click_event(&event.clone());
-        // `this.initial = this.input.getValue()` — a consumed click
-        // re-baselines the draft, so a `suggest_command` that filled the field
-        // is not then discarded as an untouched draft on close.
-        self.is_draft = false;
-        outcome
+        // **`this.initial = this.input.getValue()` on the consuming path is
+        // inert**, and is not reproduced. `initial` has exactly two readers,
+        // both in `removed()`, and `removed()` reassigns it from the same
+        // expression on the line above them — so the assignment in
+        // `mouseClicked` can never be observed. Same class as `int border = 4`
+        // and `centerY`'s `+ 13` (M104).
+        //
+        // What DOES clear `isDraft` is the field's own responder:
+        // `EditBox.setValue` and `EditBox.insertText` both end in
+        // `onValueChange`, which `ChatScreen.init` wires to `onEdited`. So it
+        // is cleared exactly when the click changed the field — the insertion
+        // above and `suggest_command` below — and not for a `run_command`, an
+        // `open_url` or a declined action.
+        self.dispatch_click_event(event)
     }
 
     /// `Screen.defaultHandleGameClickEvent` followed by
@@ -575,6 +583,11 @@ impl ChatScreen {
                 // `activeScreen.insertText(command, true)` — REPLACE, where the
                 // insertion path passes `false` and inserts.
                 self.input.set_value(command);
+                // `onValueChange` -> `onEdited`. Its other two lines
+                // (`setAllowSuggestions(true)`, `updateCommandInfo()`) need
+                // the `SuggestionEnv` this method does not take; the caller
+                // refreshes the popup after a consumed click instead.
+                self.is_draft = false;
                 ChatClick::Handled
             }
             ClickEvent::CopyToClipboard(_) => {
@@ -1330,6 +1343,37 @@ mod tests {
         let style = styled(ChatEvents { insertion: Some("Steve".into()), ..Default::default() });
         assert_eq!(s.handle_component_clicked(&style, true), ChatClick::NotHandled);
         assert_eq!(s.input.value(), "hi Steve");
+    }
+
+    /// **`isDraft` is cleared by the field's responder, not by the click.**
+    /// `EditBox.setValue` and `insertText` both end in `onValueChange`, which
+    /// `init` wires to `onEdited`; so a click that changed the field clears
+    /// it and a click that only ran a command does not. (And
+    /// `mouseClicked`'s own `this.initial = this.input.getValue()` is inert:
+    /// `initial`'s only two readers are in `removed()`, which reassigns it
+    /// from the same expression one line above them.)
+    #[test]
+    fn only_a_click_that_changed_the_field_clears_the_draft_flag() {
+        let restored = crate::chat_screen::Draft::of("held");
+        let fresh = || ChatScreen::open(ChatMethod::Message, Some(&restored), 0);
+
+        let mut s = fresh();
+        assert!(s.is_draft());
+        s.handle_component_clicked(&with_click(ClickEvent::RunCommand("/kill".into())), false);
+        assert!(s.is_draft(), "a run_command does not touch the field");
+
+        let mut s = fresh();
+        s.handle_component_clicked(&with_click(ClickEvent::CopyToClipboard("x".into())), false);
+        assert!(s.is_draft(), "a declined action does not touch the field");
+
+        let mut s = fresh();
+        s.handle_component_clicked(&with_click(ClickEvent::SuggestCommand("/tp".into())), false);
+        assert!(!s.is_draft(), "suggest_command replaced the field");
+
+        let mut s = fresh();
+        let ins = styled(ChatEvents { insertion: Some("Steve".into()), ..Default::default() });
+        s.handle_component_clicked(&ins, true);
+        assert!(!s.is_draft(), "the shift insertion changed the field");
     }
 
     /// A style with nothing on it is not consumed either way.

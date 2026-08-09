@@ -5871,6 +5871,14 @@ impl LiveApp {
                 log::info!("chat: click declined ({why})");
             }
         }
+        // `onEdited`'s other two lines, for the one outcome that changed the
+        // field: `suggest_command` calls `setValue`, whose `onValueChange`
+        // reaches `setAllowSuggestions(true)` and `updateCommandInfo()` in
+        // vanilla. `ChatScreen` cannot run them itself — they need the
+        // `SuggestionEnv`, which lives out here.
+        if matches!(outcome, ChatClick::Handled) {
+            self.resolve_command_suggestions();
+        }
         outcome
     }
 
