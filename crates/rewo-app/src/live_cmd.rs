@@ -37,6 +37,7 @@ use rewo_gpu::world::{SkyMode, WorldLightmapState, WorldRenderer};
 use rewo_gpu::Gpu;
 use rewo_mesh::pool::{MeshPool, MeshTables};
 use rewo_net::play::PlaySession;
+use rewo_net::sound_engine::LiveSounds;
 use rewo_net::Connection;
 use rewo_world::dimension::{DimensionTypeDef, Skybox};
 use rewo_world::lightmap::{
@@ -1222,24 +1223,31 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 args.pack.clone(),
                 args.gamma,
                 args.darkness_effect_scale,
+                build_sounds(&args.version, &data.sound_events),
             )
         }
-        _ => run_windowed(
-            session,
-            baked,
-            etypes,
-            stat_registries,
-            spears,
-            chest_states,
-            sign_states,
-            bow_item,
-            items,
-            blocks,
-            beacon_effects,
-            args,
-            want_validation,
-            dirt_item,
-        ),
+        _ => {
+            // Built before `args` moves into the call — `build_sounds` borrows
+            // `args.version`, and arguments are evaluated left to right.
+            let sounds = build_sounds(&args.version, &data.sound_events);
+            run_windowed(
+                session,
+                baked,
+                etypes,
+                stat_registries,
+                spears,
+                chest_states,
+                sign_states,
+                bow_item,
+                items,
+                blocks,
+                beacon_effects,
+                args,
+                want_validation,
+                dirt_item,
+                sounds,
+            )
+        }
     }
 }
 
@@ -3758,6 +3766,29 @@ fn col_dist((cx, cz): (i32, i32), px: f32, pz: f32) -> f32 {
 
 // -- headless ---------------------------------------------------------------
 
+/// M131 — the sound model, built from the asset store when it is unpacked.
+///
+/// **No device is opened and nothing is heard.** `LiveSounds` carries a
+/// `SilentDevice`; what runs is vanilla's resolution, gain/pitch/attenuation
+/// arithmetic, channel budget and reclaim clock, so the pipeline M63/M64/M66
+/// built is exercised on the live path instead of only in tests. Before this,
+/// `PlaySession::take_sound_events` had **no caller anywhere** and the decoded
+/// queue filled to its cap and rotated forever.
+///
+/// A missing asset store is not an error: an empty index makes every event
+/// resolve to `UnknownEvent`, which is silence — the same thing the client
+/// does today, only counted.
+fn build_sounds(version: &str, registry: &rewo_data::sound_events::SoundEvents) -> LiveSounds {
+    let sounds = match rewo_data::sounds_json::load_for_version(version) {
+        Ok(idx) => idx,
+        Err(e) => {
+            log::info!("live: no sounds.json ({e}); the sound model will resolve nothing");
+            rewo_data::sounds_json::SoundsIndex::new()
+        }
+    };
+    LiveSounds::new(sounds, registry.clone())
+}
+
 fn run_headless(
     mut session: PlaySession,
     baked: assets::BakedAssets,
@@ -3776,6 +3807,8 @@ fn run_headless(
     pack: Option<PathBuf>,
     gamma: f32,
     darkness_option: f32,
+    // M131 — the sound model. Silent by construction; see `build_sounds`.
+    mut sounds: LiveSounds,
 ) -> Result<(), String> {
     let _ = dirt_item;
     let mut gpu = Gpu::new(None, want_validation)?;
@@ -3827,6 +3860,12 @@ fn run_headless(
         let deadline = start + Duration::from_millis(50) * (tick as u32 + 1);
         session.tick(&idle)?;
         flicker.tick();
+        // M131 — one drain per client tick, beside the flicker, because
+        // `SoundEngine.tick` is a *tick* clock (`MIN_SOURCE_LIFETIME` is 20 of
+        // them) and driving it per frame would tie a channel's grace period to
+        // the frame rate.
+        let queued = session.take_sound_events();
+        sounds.drive(&queued, &session.world.entities);
         if let Some(reason) = &session.disconnect {
             return Err(format!("disconnected: {reason}"));
         }
@@ -4711,6 +4750,11 @@ struct LiveApp {
     started: Instant,
     last_frame: Option<Instant>,
     tick_accum: f32,
+    /// M131 — vanilla's sound model, driven once per client tick. It opens no
+    /// device and makes no noise; what it does is resolve every sound the
+    /// server asks for, through the real registry, the real `sounds.json`
+    /// index and the real channel budget. `LiveSounds::stats` is the readout.
+    sounds: LiveSounds,
     logged_spawn: bool,
     uploaded_total: usize,
     flood_logged: bool,
@@ -7521,6 +7565,11 @@ impl LiveApp {
             }
             // Advance the block-light flicker exactly once per successful tick.
             self.flicker.tick();
+            // M131 — and drain the tick's sounds. Per *tick*, not per frame:
+            // `MIN_SOURCE_LIFETIME` is 20 ticks, so a per-frame drive would tie
+            // a channel's grace period to the frame rate.
+            let queued = session.take_sound_events();
+            self.sounds.drive(&queued, &session.world.entities);
             // M71 — a client-generated system message (currently only
             // `NO_RESPAWN_BLOCK_AVAILABLE`) is queued as a *translation key*,
             // because vanilla builds a `Component.translatable` and resolves
@@ -8606,6 +8655,8 @@ fn run_windowed(
     args: LiveArgs,
     want_validation: bool,
     dirt_item: Option<i32>,
+    // M131 — the sound model. Silent by construction; see `build_sounds`.
+    sounds: LiveSounds,
 ) -> Result<(), String> {
     // M86's gate runs in the rain, unless the caller asked for something else.
     //
@@ -8687,6 +8738,7 @@ fn run_windowed(
         started: Instant::now(),
         last_frame: None,
         tick_accum: 0.0,
+        sounds,
         logged_spawn: false,
         uploaded_total: 0,
         flood_logged: false,
@@ -21295,5 +21347,74 @@ mod m93m_beacon {
             let id = e.id_of(eff).expect("resolvable");
             assert_eq!(e.of(id), Some(eff), "{eff:?}");
         }
+    }
+}
+
+/// M131 — the sound model's live constructor.
+#[cfg(test)]
+mod m131_sounds {
+    use super::build_sounds;
+
+    /// The one thing about the live wiring a unit test can reach.
+    ///
+    /// What it does NOT reach is that `run_headless` and `LiveApp::frame`
+    /// actually *call* `LiveSounds::drive`: those are composition roots in a
+    /// binary crate with no seam, and only `live --render-check` could see
+    /// them. Deleting either call site survives the whole suite — measured
+    /// with the mutation battery, not assumed.
+    #[test]
+    fn build_sounds_produces_a_system_that_can_resolve_a_real_event() {
+        let Some(paths) = rewo_data::DataPaths::for_version("26.2") else {
+            eprintln!("SKIP: no config dir");
+            return;
+        };
+        if !paths.registries_json().exists() {
+            eprintln!("SKIP: no datagen report");
+            return;
+        }
+        let registry =
+            rewo_data::sound_events::SoundEvents::load(&paths.registries_json()).expect("registry");
+        let live = build_sounds("26.2", &registry);
+        // The registry half: the id table came across intact, and id 0 is the
+        // one that separates a `protocol_id` table from an alphabetised one.
+        assert_eq!(
+            live.registry.name(0),
+            Some("minecraft:entity.allay.ambient_with_item")
+        );
+        // The SKIP must be decided by the **store on disk**, not by what
+        // `build_sounds` handed back. Guarding on `sounds.is_empty()` reads
+        // "this machine has no assets" and "the loader is broken" identically,
+        // and the mutation battery proved it: replacing the whole loader with
+        // an empty index left this test green (it merely SKIPped).
+        let store_present = rewo_data::sounds_json::asset_index_id("26.2")
+            .and_then(|id| rewo_data::sounds_json::shared_assets_dir().map(|r| (r, id)))
+            .map(|(root, id)| root.join("indexes").join(format!("{id}.json")).exists())
+            .unwrap_or(false);
+        if !store_present {
+            eprintln!("SKIP: no unpacked asset store, so no sounds.json");
+            return;
+        }
+        assert!(
+            !live.system.sounds.is_empty(),
+            "the asset store is present but build_sounds resolved no events"
+        );
+        // The index half. **An event name and its file path are unrelated
+        // strings** — `block.stone.break` resolves to `dig/stone1..4`, a
+        // pre-1.13 path the sound file never got renamed out of. This witness
+        // asserted `block/stone/…` on its first run and was wrong; the
+        // mismatch is exactly what M66 means by "the event names four files
+        // and none of them is the event".
+        let got = live
+            .system
+            .sounds
+            .get_sound_seeded("minecraft:block.stone.break", 0)
+            .expect("a variant");
+        assert!(got.name.starts_with("minecraft:dig/stone"), "{}", got.name);
+        assert_ne!(got.name, "minecraft:block.stone.break");
+        assert_eq!(
+            got.asset_path(),
+            format!("minecraft/sounds/dig/stone{}.ogg", &got.name["minecraft:dig/stone".len()..])
+        );
+        assert_eq!(got.attenuation_distance, 16);
     }
 }

@@ -72,6 +72,26 @@ impl SoundEvents {
         Ok(Self { by_id, by_name })
     }
 
+    /// Build a registry from explicit `(protocol_id, name)` pairs.
+    ///
+    /// For tests and for a caller synthesising a registry it already knows.
+    /// **Never build one by enumerating names**: the real registry's ids are
+    /// not alphabetical (ids 0–6 are the seven `entity.allay.*` events and
+    /// `ambient.cave` is 7, where sorted order would put
+    /// `ambient.basalt_deltas.additions` at 0), and `serde_json`'s default map
+    /// hands entries over sorted — the M64 trap, whose failure mode is a
+    /// different wrong sound for each of 1,968 ids and no decode error
+    /// anywhere. `load` reads `protocol_id`; so must any other producer.
+    pub fn from_pairs(pairs: impl IntoIterator<Item = (i32, String)>) -> Self {
+        let mut by_id = HashMap::new();
+        let mut by_name = HashMap::new();
+        for (id, name) in pairs {
+            by_id.insert(id, name.clone());
+            by_name.insert(name, id);
+        }
+        Self { by_id, by_name }
+    }
+
     /// Registry name for a protocol id, e.g. `1596` →
     /// `"minecraft:block.stone.break"`.
     ///
@@ -157,6 +177,22 @@ mod tests {
             "alphabetical id assignment agreed with the registry everywhere — \
              the table is no longer keyed by protocol_id"
         );
+    }
+
+    #[test]
+    fn from_pairs_builds_both_directions_and_keeps_the_ids_it_is_given() {
+        // The synthesis seam. It must keep the ids handed to it rather than
+        // renumbering, or it becomes another way to reintroduce M64's trap.
+        let t = SoundEvents::from_pairs(vec![
+            (7, "minecraft:ambient.cave".to_string()),
+            (0, "minecraft:entity.allay.ambient_with_item".to_string()),
+        ]);
+        assert_eq!(t.name(7), Some("minecraft:ambient.cave"));
+        assert_eq!(t.name(0), Some("minecraft:entity.allay.ambient_with_item"));
+        assert_eq!(t.id_of("minecraft:ambient.cave"), Some(7));
+        // The gap between them is not filled in.
+        assert_eq!(t.name(1), None);
+        assert_eq!(t.len(), 2);
     }
 
     #[test]
