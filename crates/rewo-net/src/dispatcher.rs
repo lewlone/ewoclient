@@ -356,10 +356,14 @@ pub enum ReaderError {
     /// structural rather than empirical: `getRelevantNodes` hands
     /// `parseNodes` a `LiteralCommandNode` only when the next word equals its
     /// name exactly, and `LiteralCommandNode.parse` on that word always
-    /// succeeds. Rewo raises it in one place vanilla has no equivalent for —
-    /// a `Root` node found as somebody's child, which a well-formed tree does
-    /// not contain. See [`crate::command_errors`] for what that makes dead in
-    /// `updateUsageInfo`.
+    /// succeeds.
+    ///
+    /// Rewo's other raise site — a `Root` node found as somebody's child,
+    /// which vanilla has no counterpart for — is unreachable one layer
+    /// earlier still: `relevant_nodes` collects only literal and argument
+    /// children, so a Root child never reaches the parse at all. The arm
+    /// exists because the match must be total. See [`crate::command_errors`]
+    /// for what all of that makes dead in `updateUsageInfo`.
     LiteralIncorrect,
     /// `dispatcherExpectedArgumentSeparator`.
     ExpectedArgumentSeparator,
@@ -1740,6 +1744,72 @@ mod tests {
         let p = parse(&t, &u("/give 99"), 1, CommandCtx::default());
         assert!(!p.errors.is_empty());
         assert!(!p.is_valid(&t));
+    }
+
+    #[test]
+    fn an_impossible_range_reports_its_LOW_bound_for_every_value() {
+        // `if (result < minimum) ... else if (result > maximum) ...` — an
+        // `else if`, so with min above max the low arm answers everything and
+        // the high arm is never reached. Picking whichever bound is nearer,
+        // or testing high first, reads exactly as plausibly and disagrees
+        // here. The wire carries the two bounds as independent optional
+        // fields, so nothing stops a tree declaring this pair.
+        let mut r = StringReader::from_str("3");
+        let e = ArgKind::Integer { min: 5, max: 1 }
+            .parse(&mut r, CommandCtx::default())
+            .unwrap_err();
+        assert_eq!(
+            e,
+            ReaderError::OutOfRange {
+                kind: NumKind::Integer,
+                too_high: false,
+                found: "3".into(),
+                bound: "5".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_float_bound_prints_as_a_float_and_a_double_bound_as_a_double() {
+        // `Float.toString` and `Double.toString` are not the same function:
+        // the first prints the shortest decimal that round-trips as an f32.
+        // Widening `0.1f` to a double and printing that gives
+        // `0.10000000149011612`, which is sixteen wrong digits in the middle
+        // of a message a player reads.
+        let mut r = StringReader::from_str("9");
+        let e = ArgKind::Float {
+            min: 0.0,
+            max: 0.1f32 as f64,
+        }
+        .parse(&mut r, CommandCtx::default())
+        .unwrap_err();
+        assert_eq!(
+            e,
+            ReaderError::OutOfRange {
+                kind: NumKind::Float,
+                too_high: true,
+                found: "9.0".into(),
+                bound: "0.1".into(),
+            }
+        );
+        // …and the same bound through the double arm keeps every digit of the
+        // f32 it was widened from, which is what makes the two observable.
+        let mut r = StringReader::from_str("9");
+        let e = ArgKind::Double {
+            min: 0.0,
+            max: 0.1f32 as f64,
+        }
+        .parse(&mut r, CommandCtx::default())
+        .unwrap_err();
+        assert_eq!(
+            e,
+            ReaderError::OutOfRange {
+                kind: NumKind::Double,
+                too_high: true,
+                found: "9.0".into(),
+                bound: "0.10000000149011612".into(),
+            }
+        );
     }
 
     #[test]

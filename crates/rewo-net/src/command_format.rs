@@ -313,7 +313,7 @@ pub const ERROR_COLOR: u32 = 0xFF_FFFF;
 /// visible of the three: with **no** recorded exception at all, a reader that
 /// can still read and a node with no argument children produce
 /// `Commands.getParseException` — that is what puts *"Unknown command at
-/// position 1: /<--[HERE]"* under a mistyped command.
+/// position 1: /<--\[HERE\]"* under a mistyped command.
 ///
 /// `lang` is `Option` for the reason [`crate::command_errors`] records: a
 /// caller without the table renders the key, which is what vanilla renders

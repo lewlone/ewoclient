@@ -616,6 +616,25 @@ mod tests {
     }
 
     #[test]
+    fn the_single_error_keeps_its_own_cursor_and_not_the_readers() {
+        // `getParseException` returns the EXCEPTION, which carries the cursor
+        // its own `createWithContext` captured. `parse.getReader()` is a
+        // different number: the level rewinds to its start when no child
+        // parsed, so the reader sits at 6 while the separator error that was
+        // recorded there sits at 7.
+        //
+        // The two coincide for `/give 99` — the numeric arm rewinds before it
+        // throws — which is why the fixture above cannot see this and a
+        // mutation swapping them survived it.
+        let t = tree();
+        let bad = u("/give 5x");
+        let p = parse(&t, &bad, 1, CommandCtx::default());
+        assert_eq!(p.errors.len(), 1);
+        assert_eq!(p.reader.cursor(), 6, "the level rewound");
+        assert_eq!(parse_exception(&p).unwrap().1, 7);
+    }
+
+    #[test]
     fn a_fully_consumed_input_has_no_parse_exception_at_all() {
         // `if (!parse.getReader().canRead()) return null` — the guard that
         // keeps a correct command from reporting one.
@@ -644,5 +663,22 @@ mod tests {
                 "{input} recorded a literalIncorrect"
             );
         }
+
+        // Rewo has one raise site vanilla has no counterpart for — a `Root`
+        // found as somebody's child — and **that is unreachable too**, one
+        // layer earlier: `getRelevantNodes` collects only literal and
+        // argument children, so a Root child is filtered out before anything
+        // is tried. So the type cannot be produced at all, which is what
+        // makes `updateUsageInfo`'s literal counter equivalent to a constant
+        // zero here rather than merely untested. A hostile server can declare
+        // such a node; it contributes nothing either way.
+        let mut t = tree();
+        t.nodes[0].children.push(5);
+        t.nodes.push(n(0, vec![], NodeKind::Root));
+        let p = parse(&t, &u("/anything"), 1, CommandCtx::default());
+        assert!(p
+            .errors
+            .iter()
+            .all(|e| e.error != ReaderError::LiteralIncorrect));
     }
 }
