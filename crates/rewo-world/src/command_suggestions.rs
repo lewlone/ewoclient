@@ -5,8 +5,9 @@
 //! their call sites; this is what fills them. The popup itself is shared by
 //! two paths that have nothing else in common: plain chat, which completes
 //! player names locally from the set `custom_chat_completions` maintains, and
-//! `/`-commands, which need a parse. Only the first is reachable here — see
-//! "What is deliberately not here" below.
+//! `/`-commands, which need a parse. **Both are live**; this module answers
+//! the first itself and hands the second out at a seam — see "Where the
+//! command path lives" below.
 //!
 //! # The list is positioned from the input, and can end up off-screen left
 //!
@@ -66,26 +67,39 @@
 //! `"minecraft:" + lastWord` test; [`crate::suggestions::matches_sub_str`]
 //! deliberately does not split on `:`.
 //!
-//! # What is deliberately not here
+//! # Where the command path lives
+//!
+//! **This section said "what is deliberately not here" and listed three
+//! things; all three shipped, and it was wrong about them from M116 onwards
+//! without anybody noticing.** They are not here because they are somewhere
+//! else, not because they are missing.
 //!
 //! **The command path's local half.** `updateCommandInfo`'s `/` branch runs
 //! `dispatcher.parse` and `getCompletionSuggestions` against a client-side
-//! Brigadier `CommandDispatcher` built from the tree M113 decodes. Rewo has
-//! the tree as data and no dispatcher, so it cannot answer a literal
-//! locally. [`CommandInfo::Command`] reports the branch was taken and carries
-//! the text a caller may ask the *server* about; M114d does exactly that.
+//! Brigadier `CommandDispatcher` built from the tree M113 decodes. **M116
+//! built that dispatcher** — `rewo_net::dispatcher` — so a literal *is*
+//! answered locally and `/g` completes with no packet at all. It is not
+//! called from here because this crate is below `rewo-net` in the dependency
+//! order and the parse needs the tree, the online names and the block/item
+//! registries. [`CommandInfo::Command`] is therefore a **seam**, not a
+//! surrender: it reports the branch was taken and carries the text, and the
+//! app parses it and asks the server only where a candidate child's provider
+//! is `ask_server`.
 //!
 //! **The usage lines.** `updateUsageInfo` renders `getSmartUsage` and
-//! Brigadier's parse exceptions under the field. Both need the same
-//! dispatcher.
+//! Brigadier's parse exceptions under the field. **M117 shipped the usage
+//! entries and M134 the exceptions** — both in
+//! `rewo_net::command_format::usage_lines`, for the same reason: they read
+//! the parse.
 //!
 //! **Syntax highlighting.** `formatChat` colours parsed arguments through five
-//! rotating styles and the unparsed tail red; it reads `currentParse`, so it
-//! needs the dispatcher too. Without one every character stays the field's
-//! ordinary colour, which is a state vanilla also passes through — before the
-//! first parse, `formatChat` returns `null`.
+//! rotating styles and the unparsed tail red. **M117 shipped it** as
+//! `rewo_net::command_format::format_text`. The state this section
+//! described as permanent — every character in the field's own colour — is
+//! still reachable and is still vanilla's: `formatChat` returns `null` before
+//! there is a parse, and an ordinary chat message never gets one.
 //!
-//! **Narration.** Rewo has no narrator.
+//! **Narration.** Rewo has no narrator. This one is still true.
 
 use crate::edit_box::{EditBox, Input};
 use crate::suggestions::{suggest_matching, Suggestion, Suggestions, SuggestionsBuilder};
@@ -106,10 +120,12 @@ pub const UNSELECTED_COLOR: u32 = 0xFFAA_AAAA;
 /// The scroll-indicator dashes — `-1`.
 pub const INDICATOR_COLOR: u32 = 0xFFFF_FFFF;
 
-/// The ten constructor arguments `ChatScreen` passes, minus the four this
-/// module does not need (the narrator, the screen, the font, and
-/// `commandsOnly`/`onlyShowIfCursorPastError`, which only the unreachable
-/// command branch reads).
+/// The ten constructor arguments `ChatScreen` passes, minus the ones this
+/// module does not need: the narrator, the screen, the font, and
+/// `commandsOnly`/`onlyShowIfCursorPastError`, which only the command branch
+/// reads — and that branch is answered a crate up (see the module docs), so
+/// the two flags travel with it rather than living here. `ChatScreen` passes
+/// `false` for both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SuggestionsConfig {
     /// `lineStartOffset` — see the module docs; it is what keeps the selected
@@ -172,9 +188,15 @@ pub enum CommandInfo {
     /// Ordinary chat. The suggestions are computed locally and are already in
     /// [`CommandSuggestions::pending`].
     Message,
-    /// The field starts with `/`. Rewo has no client-side dispatcher, so the
-    /// local answer is unavailable; the string is the input up to the cursor,
-    /// which is what a caller sends to the server. See the module docs.
+    /// The field starts with `/`. The string is the input up to the cursor,
+    /// and it is a **seam** rather than a shortfall: `rewo-net`'s dispatcher
+    /// (M116) parses it locally and only asks the server where a candidate
+    /// child's suggestion provider is `ask_server`. This crate hands it out
+    /// because it sits below `rewo-net` and cannot reach the tree. See the
+    /// module docs.
+    ///
+    /// Until M116 there was no dispatcher and every `/` went to the server;
+    /// the variant is unchanged because the seam was already the right shape.
     Command(String),
 }
 
@@ -300,8 +322,9 @@ impl CommandSuggestions {
         let cursor = edit.cursor_position().min(units.len());
         let value = String::from_utf16_lossy(&units);
         if value.starts_with('/') {
-            // `commandsOnly || startsWithSlash`. Rewo has no dispatcher, so
-            // the local half is unavailable; the caller may ask the server.
+            // `commandsOnly || startsWithSlash`. The local half runs a crate
+            // up, in `rewo_net::dispatcher` (M116) — see the module docs on
+            // why the seam is here and the parse is not.
             self.pending = None;
             return CommandInfo::Command(String::from_utf16_lossy(&units[..cursor]));
         }
