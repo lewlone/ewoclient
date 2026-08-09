@@ -330,6 +330,15 @@ pub fn parse_untrusted_uri(uri: &str) -> Option<String> {
 
 /// `URI.getScheme()` for an absolute URI — `None` when the string is a
 /// relative reference, which is what makes `scheme == null` reachable.
+///
+/// **The two character rules below are unobservable through
+/// [`parse_untrusted_uri`], and provably so**: the only schemes that survive
+/// `ALLOWED_UNTRUSTED_LINK_PROTOCOLS` are `http` and `https`, both of which
+/// already satisfy them, so no input exists for which they decide the answer.
+/// They are transcribed because they are RFC 2396's and because the whitelist
+/// is one line away from changing, and they are tested **here rather than
+/// through the public entry point** — a mutation battery on the caller
+/// correctly reports them as equivalent.
 fn uri_scheme(uri: &str) -> Option<&str> {
     let colon = uri.find(':')?;
     let scheme = &uri[..colon];
@@ -762,5 +771,27 @@ mod tests {
             assert!(show_text_lines(&style, None, 854, &w6s).is_none());
         }
         assert!(show_text_lines(&ChatStyle::WHITE, None, 854, &w6s).is_none());
+    }
+
+    /// RFC 2396's `scheme = ALPHA *( ALPHA | DIGIT | "+" | "-" | "." )`.
+    ///
+    /// Tested directly because the whitelist makes it unobservable from
+    /// `parse_untrusted_uri` — see that function's note.
+    #[test]
+    fn the_scheme_grammar_is_rfc_2396s() {
+        assert_eq!(uri_scheme("http://x"), Some("http"));
+        assert_eq!(uri_scheme("HTTP://x"), Some("HTTP"));
+        assert_eq!(uri_scheme("a+b-c.d:x"), Some("a+b-c.d"));
+        // A scheme must START with a letter.
+        assert_eq!(uri_scheme("1http://x"), None);
+        assert_eq!(uri_scheme("+x:y"), None);
+        // And may not contain anything else.
+        assert_eq!(uri_scheme("a_b:x"), None);
+        assert_eq!(uri_scheme("a/b:x"), None);
+        // No colon at all is a relative reference — `getScheme()` is null.
+        assert_eq!(uri_scheme("//example.com"), None);
+        assert_eq!(uri_scheme("example.com"), None);
+        // An empty first segment likewise.
+        assert_eq!(uri_scheme(":x"), None);
     }
 }
