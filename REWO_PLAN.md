@@ -19,7 +19,7 @@ trusting a paragraph.**
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-09 after M126)
+## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-09 after the M127–M134 integration)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-08 after M126: **2615 tests, 0 failures**
-(**world 1078, net 798, gpu 274, data 221, app 183, mesh 45, proto 16** — read
-off the runner per crate; they sum to 2582). Note the per-crate invocation is
+Current measurement, taken 2026-08-09 after the M127–M134 integration:
+**2846 tests, 0 failures** (**world 1147, net 949, gpu 274, data 224, app 191,
+mesh 45, proto 16** — read off the runner per crate; they sum to 2846). Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
 other six take `--lib`, and `--lib` there is `error: no library targets`, exit
 101, and **no** `test result` line at all. Assert that a result line exists
@@ -146,17 +146,18 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` 39/39 with validation ON and 0
-validation errors, last run for M126**; demo PNG `2cc56b4acbfb92cb`,
-byte-identical. `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C
+34/34, `mobshot` 246/246, **`live --render-check` 44/44 with validation ON and 0
+validation errors, last run for the integration**; demo PNG
+`2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C
 **12** — M96–M107 consume packets M93y already decoded, M108 resolved
 `delete_chat`, M113 the Brigadier tree and M114 the two suggestion packets.
 
-**There are 33 serverless gate commands, not the "fourteen" older paragraphs in
+**There are 34 serverless gate commands, not the "fourteen" older paragraphs in
 this file say** — those sentences are historical records of the count *at the
 time* and are correct as such. Re-measured from a cold start on 2026-08-08 by
-running every one, and again after M125 and M126: all 33 green, **0 validation
-errors**. Enumerate them rather
+running every one, and again after M125, M126 and the M127–M134 integration:
+all 34 green, **0 validation errors**. `sidebarshot` (17) is the new one, from
+M132. Enumerate them rather
 than trusting a list, since the list is what rots:
 
 ```
@@ -209,60 +210,67 @@ injected**: the container, the book and the chat all drive themselves, so only
 r25 — which needs a real server to grant recipes — could tell. A gate whose
 witnesses are mostly self-driven can look healthy against nothing.
 
-### What to do next (written 2026-08-08, after M126)
+### What to do next (written 2026-08-09, after the M127–M134 integration)
 
-**M126 shipped the styled chat pipeline, which was the previous list's item 2
-and the stated prerequisite for its item 1.** `GuiMessage::content` is a span
-list, `StringSplitter` carries the parts through the wrap, and the text pass
-draws all five `Style` flags. **The chat decoration is now unblocked and is the
-cheapest thing to pick up** — it was item 1 before and it still is, with its
-last obstacle gone.
+**Eight milestones landed at once**, developed in parallel on six branches off
+the M126 merge and integrated in one pass — M127 the chat decoration, M128
+clickable chat, M129 the disconnect reason, M130 the linear-colour correction
+and the title's style flags, M131 the sound model, M132 the scoreboard sidebar,
+M133 the recipe book's widget tooltips, M134 the command line's exception
+messages. **Every item this section recommended before is now shipped**, which
+is why it is rewritten rather than appended to.
 
-1. **The chat decoration** — `boundChatType.decorate`, the thing that turns a
-   message into `<Steve> hi`. **Everything it needs now exists**, which M125
-   verified rather than assumed: `minecraft:chat_type` is in
-   `RegistryDataLoader.SYNCHRONIZED_REGISTRIES` so it arrives in the
-   configuration `registry_data` (M42's rule — contents *and* id order are the
-   server's, and the index IS the id); the inline `holder == 0` form is
-   already walked by `read_chat_type_bound` and merely discarded; the `Bound`'s
-   name and target components are decoded; and the styled translatable
-   resolution landed in M125. Five of the seven vanilla chat types carry
-   `Style.EMPTY`, so a plain-text decoration is byte-exact for them — and the
-   two `/msg` ones are GRAY + italic, which **M126 shipped the machinery for**,
-   so the decoration can now be complete rather than land with a stated
-   deviation. That was the whole argument for doing the pipeline first.
-2. ~~**The styled chat pipeline.**~~ **Shipped as M126.** `GuiMessage::content`
-   is a `ChatLine`, `wrap_components` and `split_lines_wrapped` take and return
-   spans, and `TextPass` draws bold / italic / underline / strikethrough /
-   obfuscated. What it leaves open is named in the M126 entry: the title path
-   and the death screen carry spans and still ignore the flags, and both hand
-   their colours to the text pass in the wrong space.
+1. **AUDIO — the largest single gap, and it now needs one decision rather than
+   a design.** M63/M64/M66 decoded the packets and built the 1,968-entry
+   registry and the weighted-variant index; **M131 added the sound-instance
+   model, the channel budget and a device seam on top of them and deliberately
+   stopped there**, so what is missing is the device and the attenuation curve
+   behind that seam. `REWO_FEATURE_SURVEY.md` puts ~117M downloads of demand on
+   it. It is still the **first Rewo milestone that cannot be headlessly
+   verified end to end**, so settle up front what the gate asserts and what it
+   plainly does not — a mixer's output buffer can be asserted; "it sounds
+   right" cannot. Pick a crate (cpal / rodio / kira) and read M131's seam
+   first, since it names the shape it expects.
+2. **`REWO_FEATURE_SURVEY.md`** — features rather than milestones, now that the
+   packet ladder and the chat/command arc are both closed. Audit its items
+   against the crates first: five are already at vanilla parity, and the arc
+   just merged closed several more.
+3. **The remaining wire-time flattens.** M125 carried components forward on the
+   *chat* path and M127/M129 extended that to the decoration and the disconnect
+   reason. Every other `to_plain_text` / `nbt_text` call site is still
+   decode-time with no language table — item names and lore, the MOTD, entity
+   nametags, suggestion tooltips — so a translatable in any of them still shows
+   its key. Each needs its component carried to a place holding
+   `BakedAssets::lang`.
+4. **`PlayerChat::unsigned_content`** is still flattened at the wire; carrying
+   it as `Nbt` would also make `ChatTrustLevel::containsModifiedStyle`
+   reachable.
 
-   **It also unblocks clickable chat text**, which this section lists at the
-   bottom as needing "a `Style` to find" — there is one now, on every span,
-   though the *click targets* (`ClickEvent`/`HoverEvent`) are still dropped at
-   the wire and are the next piece of that.
-3. **AUDIO — the largest single gap, and it needs a decision from the user.**
-   M63/M64/M66 decoded the packets, built the 1,968-entry sound registry and
-   the weighted-variant index from the asset index, and deliberately stopped
-   before playback. `REWO_FEATURE_SURVEY.md` puts ~117M downloads of demand
-   behind it. It is the **first Rewo milestone that cannot be headlessly
-   verified end to end**, so the thing to settle up front is what the gate
-   asserts and what it plainly does not — a mixer's output buffer can be
-   asserted; "it sounds right" cannot. Pick a crate (cpal / rodio / kira), a
-   device model, and vanilla's attenuation curve.
-4. **`REWO_FEATURE_SURVEY.md`** — the feature roadmap, for picking the next
-   *feature* rather than the next milestone. Audit its items against the crates
-   first: five of its entries are already at vanilla parity.
+**A note the next integrator will want.** These six branches were developed
+concurrently and every one of them was green *alone*. Integration still found a
+real break that no branch's own gate could see: r42's click was being eaten by
+the suggestion popup, because M128 branched before M127c added its decoration
+witnesses to the same injection block, and the clickable row — the newest
+message — ended up drawn under the popup. **A branch being green is not
+evidence about the merged tree.** Run `live --render-check` after integrating,
+not just after implementing.
+
+Two more integration hazards from the same pass, both invisible to a textual
+merge: `ChatStyle` lost `Copy` (M128 put an `Arc` on it) and broke five
+by-value uses in code written against the `Copy` version; and `TextLine::color`
+became `color_linear` (M130), which E0560'd every literal on the other
+branches. Both fail at build, which is the good outcome — the dangerous one was
+the `usage_box` conflict, where **one side compiled and silently reverted
+M134b**.
 
 Smaller, named rather than forgotten:
 
 * **The rest of the components that still flatten at the wire.** M125 carried
-  the component forward on the *chat* path only. Every other
-  `to_plain_text` / `nbt_text` call site is decode-time with no table — item
-  names and lore, the MOTD, disconnect reasons, entity nametags, suggestion
-  tooltips, server links — so a translatable in any of them still shows its
-  key. Each needs its component carried to a place that holds
+  the component forward on the *chat* path; M127 extended it to the decoration
+  and M129 to the disconnect reason. Every other `to_plain_text` / `nbt_text`
+  call site is still decode-time with no table — item names and lore, the MOTD,
+  entity nametags, suggestion tooltips — so a translatable in any of them still
+  shows its key. Each needs its component carried to a place that holds
   `BakedAssets::lang`, the way `SystemChat` and `DisguisedChat` now are.
 * **`PlayerChat::unsigned_content`** is still flattened at the wire. It is the
   server's rewrite of a player's message and is essentially never a
@@ -276,16 +284,28 @@ Smaller, named rather than forgotten:
   registries (M84) — and the `resource*` family's registries beyond blocks and
   items, where the wire always names the right registry and the limit is which
   ones Rewo holds.
-* The **exception messages** under the command field (`BuiltInExceptions`'
-  literals plus `command.context.parse_error`). M117 models this as a gate: it
-  shows *nothing* where vanilla shows a message, rather than approximating.
-* The which-of-these overlay's own tooltips.
-* Still needing a subsystem Rewo lacks: **clickable chat text** — item 2's
-  prerequisite is met (a chat line is styled spans since M126), but
-  `ChatStyle` carries no `ClickEvent`/`HoverEvent`, because `parse_component`
-  reads colour and the five flags and drops the rest. That is the next piece.
-  Also the chat delay queue and its expand link, and the restricted-chat
-  prompt (`ChatAbilities`, a packet Rewo does not decode).
+* ~~The **exception messages** under the command field~~ — **shipped as
+  M134**: `BuiltInExceptions`' literals and `command.context.parse_error`, in
+  the usage box. M134b found the box had been drawing every line white since
+  M117, because `extractUsage` passes one `-1` for the lot and
+  `Font.getTextColor` uses it only as a DEFAULT — the style baked into each
+  line decides, and an exception message carries none.
+* ~~The which-of-these overlay's own tooltips.~~ **This item was never real,
+  and M133 retired it**: `OverlayRecipeComponent.java` contains the string
+  "tooltip" zero times, so the overlay has none. What was actually missing was
+  the recipe book's three WIDGET tooltips (both page arrows and the filter),
+  which M133 shipped — and M106's own test comment had said so three
+  milestones earlier without anyone reading it back.
+* ~~**Clickable chat text**~~ — **shipped as M128**: `parse_component` carries
+  `ClickEvent`/`HoverEvent` on the span, `ChatScreen::mouse_clicked` runs a
+  `ClickableStyleFinder` over the drawn lines, and r42 witnesses a click
+  running its command. Still open beside it: the chat delay queue and its
+  expand link, and the restricted-chat prompt — and **M134c corrected the
+  reason for that last one**. `ChatAbilities` arrives on *no packet at all*;
+  `Minecraft.computeChatAbilities()` builds it client-side from the
+  `chatVisibility` option, the launcher's `allowsChat` flag and the profile's
+  `CHAT_ALLOWED` user flag. The blocker is an options screen and an account
+  fetch, not a decode.
 
 **Two gate notes that will save a confusing minute.** `--render-check`'s r32
 needs an argument that suggests *nothing*, so its precondition **recedes by one

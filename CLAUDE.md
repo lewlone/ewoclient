@@ -1678,6 +1678,32 @@ CLAUDE.md's own top-level Rewo status block was three milestones behind at M93 /
 number with a test behind it stays true and the sentence next to it does not.**
 Repo hygiene: the twenty stale `claude/rewo-m93*` branches and the two leftover
 agent worktrees were verified fully merged and clean, then pruned.*
+*Update (2026-08-09 session, Rewo): **the M127–M134 integration** — eight
+milestones that had been built in parallel on six branches off the M126 merge,
+none of them merged, integrated in one pass. M127 the chat decoration
+(`boundChatType.decorate`, so a message renders as its chat type formats it),
+M128 clickable chat, M129 the disconnect reason, M130 the linear-colour
+correction (**the text pass wants LINEAR and nine of twenty-two callers were
+handing it the sRGB byte**) plus the title's and death screen's style flags,
+M131 the sound-instance model and a device seam, M132 the scoreboard sidebar,
+M133 the recipe book's widget tooltips, M134 the command line's exception
+messages. Merge order was chosen so the trunk landed first and M130's
+`TextLine::color` → `color_linear` rename hit a settled tree once.
+**The integration's own findings are the part worth keeping.** A witness-number
+collision — three branches each minting an r42 — that git merges silently,
+because `--render-check` ends `pass == rows.len()` with no declared count and
+no uniqueness check. Two breaks invisible to a textual merge: `ChatStyle` lost
+`Copy` (M128 put an `Arc` on it) and broke five by-value uses written against
+the `Copy` version, and the `color_linear` rename E0560'd every literal on the
+other branches — both fail loud, which is the good outcome. The dangerous one
+was the `usage_box` conflict, where **one side compiled and silently reverted
+M134b**. And a real regression no branch's own gate could see: r42's click was
+being eaten by the suggestion popup, because M128 branched before M127c added
+its decoration witnesses to the same injection block and the clickable row —
+the newest message — ended up drawn under the popup. **A branch being green is
+not evidence about the merged tree.** 2846 tests, 34 gates,
+`--render-check` 44/44, demo PNG byte-identical.*
+
 *Update (2026-08-08 session, Rewo): **M126 — the styled chat pipeline**, which
 §0.0 recommended taking before the chat decoration precisely so the decoration
 could ship complete. `GuiMessage::content` was a `String`, so the chat store
@@ -1734,18 +1760,18 @@ note.*
 
 ---
 
-## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, particles, the first-person hand, the Velvet type stack, the container arc, the recipe book, chat, translated text, and styled spans)
+## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, particles, the first-person hand, the Velvet type stack, the container arc, the recipe book, chat, translated text, styled spans, the chat decoration, clickable text, and the scoreboard sidebar)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
-**Everything is shipped, gated and merged to `main`** as of 2026-08-08
-(M126) — **2615 tests / 0 failures** (world 1078, net 798, gpu 274, data 221,
-app 183, mesh 45, proto 16, read off the runner per crate), `mobshot` 246/246,
+**Everything is shipped, gated and merged to `main`** as of 2026-08-09
+(M134) — **2846 tests / 0 failures** (world 1147, net 949, gpu 274, data 224,
+app 191, mesh 45, proto 16, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
-`handshot` 34/34, `swingshot` 97/97, all **33** serverless gates green with 0
-validation errors, `live --render-check` **39/39** with validation ON and 0
+`handshot` 34/34, `swingshot` 97/97, all **34** serverless gates green with 0
+validation errors, `live --render-check` **44/44** with validation ON and 0
 validation errors, demo PNG `2cc56b4acbfb92cb`.
 **The recipe book is closed** (M105–M107) and **M108–M111 shipped chat** —
 `ChatComponent`, the wrap under it, the `MessageSignatureCache` without which
