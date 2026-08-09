@@ -432,6 +432,30 @@ fn resolved_style(tag: &Nbt, parent: ChatStyle) -> ChatStyle {
     }
 }
 
+/// Every key [`resolve_style`] reads, in the order it reads them.
+///
+/// Exposed because a caller that *builds* a component carrying a style has to
+/// know which keys survive the walk, and the alternative is a second copy of
+/// this list that drifts. The one caller today is M127's chat decoration,
+/// which merges a `ChatTypeDecoration`'s `style` compound onto the synthetic
+/// translatable it constructs — vanilla's
+/// `Component.translatable(key, args).withStyle(style)`, where
+/// `withStyle(Style patch)` is `setStyle(patch.applyTo(getStyle()))` against a
+/// fresh component's `Style.EMPTY`, so the patch *becomes* the style verbatim.
+///
+/// Copying only these keys rather than the whole compound is deliberate:
+/// `Style.Serializer.CODEC` is a record codec, so a stray `text` field in a
+/// server's style object is dropped by vanilla and must be dropped here too —
+/// merging the compound wholesale would let it displace the translation.
+pub const STYLE_FIELDS: [&str; 6] = [
+    "color",
+    "bold",
+    "italic",
+    "underlined",
+    "strikethrough",
+    "obfuscated",
+];
+
 /// `Style.applyTo(parent)` — a field present on this component wins, absent
 /// inherits.
 ///

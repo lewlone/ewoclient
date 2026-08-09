@@ -599,6 +599,10 @@ pub struct PlaySession {
     /// The `minecraft:enchantment` registry from configuration (M42), indexed
     /// by protocol id. Empty on a server that syncs none.
     pub enchantments: Vec<crate::enchantment_parse::EnchantmentDef>,
+    /// The `minecraft:chat_type` registry from configuration (M127), indexed
+    /// by protocol id. Empty on a server that syncs none, which leaves every
+    /// chat line undecorated rather than guessing a decoration.
+    pub chat_types: Vec<crate::chat_type_parse::ChatTypeDef>,
     /// The two trim registries, index = protocol id (M48).
     pub trim_materials: Vec<crate::trim_parse::TrimMaterialDef>,
     pub trim_patterns: Vec<crate::trim_parse::TrimPatternDef>,
@@ -1445,6 +1449,9 @@ impl<'a> Connection<'a> {
         // The enchantment registry, in wire order (M42) — the index is the
         // protocol id a component patch carries.
         let enchantments = std::mem::take(&mut self.enchantments);
+        // The chat-type registry, likewise in wire order (M127) — the index is
+        // the id a `ChatType.Bound` names.
+        let chat_types = std::mem::take(&mut self.chat_types);
         let trim_materials = std::mem::take(&mut self.trim_materials);
         let trim_patterns = std::mem::take(&mut self.trim_patterns);
         // The tags the server sent during configuration (M69). Moved rather
@@ -1517,6 +1524,7 @@ impl<'a> Connection<'a> {
             // the wrong player the moment two share a prefix.
             own_uuid: auth.map(|a| a.uuid),
             enchantments,
+            chat_types,
             trim_materials,
             trim_patterns,
             cat_variants,

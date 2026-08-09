@@ -23,6 +23,7 @@ pub mod chat_sign;
 // `rewo_world::chat` has to name `ChatSpan` and the dependency runs net -> world.
 // Re-exported under their old paths so no call site moved with them.
 pub use rewo_world::{chat_style, chat_translate};
+pub mod chat_type_parse;
 pub mod chat_wire;
 pub mod command_format;
 pub mod commands;
@@ -282,6 +283,9 @@ pub struct Connection<'a> {
     /// The `minecraft:enchantment` registry in wire order — the index is the
     /// protocol id a component patch carries (M42).
     enchantments: Vec<crate::enchantment_parse::EnchantmentDef>,
+    /// The `minecraft:chat_type` registry in wire order — the index is the id
+    /// a `ChatType.Bound`'s `holder` VarInt names, minus one (M127).
+    chat_types: Vec<crate::chat_type_parse::ChatTypeDef>,
     trim_materials: Vec<crate::trim_parse::TrimMaterialDef>,
     trim_patterns: Vec<crate::trim_parse::TrimPatternDef>,
     /// The three metadata-variant registries (M64), in raw wire order.
@@ -332,6 +336,7 @@ impl<'a> Connection<'a> {
             },
             biome_defs: Vec::new(),
             enchantments: Vec::new(),
+            chat_types: Vec::new(),
             trim_materials: Vec::new(),
             cat_variants: Vec::new(),
             wolf_variants: Vec::new(),
@@ -617,6 +622,13 @@ impl<'a> Connection<'a> {
             // server's — nothing here may be assumed from bootstrap order.
             self.enchantments = crate::enchantment_parse::parse_enchantment_registry(&mut r, count);
             log::info!("net: {} enchantment(s) synced", self.enchantments.len());
+            return Ok(());
+        }
+        // M127: the chat-type registry, datapack-driven for the same reason —
+        // the index is the id `ChatType.Bound`'s `holder` VarInt names.
+        if registry == crate::chat_type_parse::CHAT_TYPE_REGISTRY {
+            self.chat_types = crate::chat_type_parse::parse_chat_type_registry(&mut r, count);
+            log::info!("net: {} chat type(s) synced", self.chat_types.len());
             return Ok(());
         }
         // M48: the two trim registries, datapack-driven for the same reason.

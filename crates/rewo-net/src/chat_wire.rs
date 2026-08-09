@@ -314,7 +314,10 @@ impl SignedMessageBody {
 }
 
 /// One decoded `player_chat` body.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Not `Eq`: the bound's name is a component now (M127), and `Nbt` carries
+/// floats.
+#[derive(Clone, Debug, PartialEq)]
 pub struct PlayerChat {
     pub global_index: i32,
     pub sender: u128,
@@ -768,8 +771,8 @@ mod tests {
             unsigned_content: unsigned.map(str::to_string),
             filter_mask: FilterMask::PassThrough,
             bound: crate::session::ChatTypeBound {
-                chat_type: Some(0),
-                name: "Steve".into(),
+                chat_type: crate::session::ChatTypeRef::Registry(0),
+                name: rewo_proto::nbt::Nbt::String("Steve".into()),
                 target_name: None,
             },
         }
@@ -961,8 +964,14 @@ mod tests {
         assert_eq!(got.body.last_seen, vec![PackedSignature::Cached(0)]);
         assert_eq!(got.unsigned_content, None);
         assert_eq!(got.filter_mask, FilterMask::PassThrough);
-        assert_eq!(got.bound.name, "Steve");
-        assert_eq!(got.bound.chat_type, Some(0));
+        assert_eq!(
+            got.bound.name,
+            rewo_proto::nbt::Nbt::String("Steve".into())
+        );
+        assert_eq!(
+            got.bound.chat_type,
+            crate::session::ChatTypeRef::Registry(0)
+        );
     }
 
     #[test]

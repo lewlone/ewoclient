@@ -1456,7 +1456,9 @@ fn check_session(c: &mut Checker, ids: &Ids) {
     let mut r = PacketReader::new(&referenced);
     let ref_bound = read_chat_type_bound(&mut r);
     let ref_ok = ref_bound.as_ref().is_ok_and(|b| {
-        b.chat_type == Some(3) && b.name == "Notch" && b.target_name.is_none()
+        b.chat_type == rewo_net::session::ChatTypeRef::Registry(3)
+            && b.name.to_plain_text() == "Notch"
+            && b.target_name.is_none()
     }) && r.remaining() == 0;
 
     let decoration = |key: &str| {
@@ -1474,10 +1476,25 @@ fn check_session(c: &mut Checker, ids: &Ids) {
     inline.extend(wire_component("Herobrine"));
     let mut r = PacketReader::new(&inline);
     let inline_bound = read_chat_type_bound(&mut r);
+    // M127 grades the inline decoration itself, not just that the bytes were
+    // stepped over: a walker that consumed the right number of bytes and a
+    // reader that understood them are indistinguishable from the fields after
+    // it, and only one of them can decorate the line.
     let inline_ok = inline_bound.as_ref().is_ok_and(|b| {
-        b.chat_type.is_none()
-            && b.name == "Notch"
-            && b.target_name.as_deref() == Some("Herobrine")
+        matches!(
+            &b.chat_type,
+            rewo_net::session::ChatTypeRef::Inline(ty)
+                if ty.chat.as_ref().is_some_and(|d| {
+                    d.translation_key == "chat.type.text"
+                        && d.parameters
+                            == vec![
+                                rewo_net::chat_type_parse::Parameter::Sender,
+                                rewo_net::chat_type_parse::Parameter::Content,
+                            ]
+                })
+        ) && b.name.to_plain_text() == "Notch"
+            && b.target_name.as_ref().map(rewo_proto::nbt::Nbt::to_plain_text)
+                == Some("Herobrine".to_string())
     }) && r.remaining() == 0;
     c.record(
         "w9.the_chat_type_holder_is_id_plus_one_with_zero_meaning_inline",
