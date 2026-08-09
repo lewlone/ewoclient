@@ -57,6 +57,8 @@ pub mod skins;
 pub mod slot_ranges;
 pub mod snbt;
 pub mod snbt_grammar;
+pub mod sound_engine;
+pub mod sound_instance;
 pub mod sounds;
 pub mod suggestion_wire;
 pub mod spawn_info;
