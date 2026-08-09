@@ -3168,14 +3168,15 @@ impl PlaySession {
                 Err(e) => log::warn!("net: delete_chat decode failed: {e}"),
             }
         } else if id == ids.cb_play_disconnect {
-            let mut r = PacketReader::new(body);
-            let reason = r.nbt().map(|n| n.to_plain_text()).unwrap_or_default();
+            // M129 — resolved against the language table rather than
+            // flattened. Every vanilla kick is a `Component.translatable`, so
+            // this was the most translatable-dense component Rewo received and
+            // the one that rendered as a raw key most often. The decode lives
+            // in `rewo_world::disconnect_screen` so a test can reach it.
+            let (reason, cause) =
+                rewo_world::disconnect_screen::read_disconnect(body, self.lang.as_deref());
             self.disconnect = Some(reason);
-            // `handleDisconnect` is `connection.disconnect(packet.reason())` —
-            // the ONE-argument `DisconnectionDetails`, so no bug-report link
-            // however many the server advertised (M85).
-            self.disconnect_cause =
-                Some(rewo_world::disconnect_screen::DisconnectCause::ServerRequested);
+            self.disconnect_cause = Some(cause);
         }
         Ok(())
     }

@@ -5842,7 +5842,13 @@ impl LiveApp {
                     rewo_net::server_links::ServerLinkLabel::Known(t) => {
                         self.lang.or_key(&t.lang_key()).to_string()
                     }
-                    rewo_net::server_links::ServerLinkLabel::Custom(text) => text.clone(),
+                    // M129 — resolved here rather than flattened at the
+                    // wire, so a custom label honours the player's language
+                    // exactly as the `Known` arm above already does. The two
+                    // arms disagreeing was the visible half of the gap.
+                    rewo_net::server_links::ServerLinkLabel::Custom(tag) => {
+                        rewo_world::chat_translate::chat_component_text(tag, Some(&self.lang))
+                    }
                 })
                 .collect(),
         };
