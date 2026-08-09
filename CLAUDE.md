@@ -3437,8 +3437,11 @@ and discarding as `let _latency = r.varint()?;`. One line was the whole gap.
 A **negative latency is a state**, not a decode error (`PlayerTabOverlay`
 buckets `< 0` into the no-connection icon), and `None` ≠ `Some(0)`.
 
-**Chat styling (`M52d`).** `crates/rewo-net/src/chat_style.rs` — legacy `§`
-codes and component trees into styled runs, renderer-agnostic. Six rules a
+**Chat styling (`M52d`).** `chat_style.rs` — legacy `§` codes and component
+trees into styled runs, renderer-agnostic. (**It lived in `crates/rewo-net/`
+until M126 moved it to `crates/rewo-world/`**, because `rewo_world::chat` has
+to name `ChatSpan` and the dependency runs net → world; `rewo-net` re-exports
+it, so the old paths still resolve.) Six rules a
 plausible implementation gets silently wrong, each pinned: a **colour code
 clears the five format flags** (`§c§lX` is bold red, `§l§cX` is plain red);
 **`§r` resets to the enclosing style, not white**; an unrecognised code

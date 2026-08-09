@@ -6,7 +6,7 @@ committed). Every number below is that tool's output — if you change the
 facets, the `MODERN` version set or the classifiers, the numbers move and this
 document is stale.
 
-> **Not re-run since M86 (2026-08-02).** M87–M125 shipped the container/menu
+> **Not re-run since M86 (2026-08-02).** M87–M126 shipped the container/menu
 > screens, the recipe book, the whole chat stack (the HUD box, the screen you
 > type into, the scrollbar, the Brigadier command tree and a complete local
 > command line) and translatable-component resolution, after this snapshot was
