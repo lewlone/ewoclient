@@ -1428,8 +1428,11 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    reading every `.rs` under `crates/` as **bytes**, most recently 2026-08-08
    after M126. **Exactly FIVE files are not pure LF**, and the list is the
    stable statement here — a count of the LF ones is not, because it grows
-   with every file added (343 at M124, 355 at M125, **355 of 360 at M126** —
-   a number rotting on schedule rather than a change):
+   with every file added (343 at M124, 355 at M125, 355 of 360 at M126,
+   **364 of 369 after the M127-M134 integration** — a number rotting on
+   schedule rather than a change). The integration is a fair test of the LIST,
+   incidentally: six branches added nine files between them and every one
+   arrived LF, so the five below are still the same five:
 
    * pure CRLF: `rewo-gpu/src/cem.rs`
    * mixed: `rewo-app/src/mobshot_cmd.rs`, `rewo-gpu/src/vanilla_hier.rs`,
