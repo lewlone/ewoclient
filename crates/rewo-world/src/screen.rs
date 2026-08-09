@@ -457,12 +457,30 @@ impl Widget {
     }
 
     /// The colour `getMessage()` resolves to: white while active, `0xA0A0A0`
-    /// once `active` goes false.
+    /// once `active` goes false — **and only for a widget that greys at all.**
+    ///
+    /// The greying is not `AbstractWidget`'s, it is
+    /// `AbstractWidget.WithInactiveMessage.getMessage()`'s, and exactly three
+    /// classes extend it: `AbstractButton`, `AbstractSliderButton` and
+    /// `TabButton`. `AbstractStringWidget` — the parent of both `StringWidget`
+    /// and `MultiLineTextWidget` — extends `AbstractWidget` directly, so a
+    /// label draws white however its `active` flag reads.
+    ///
+    /// That flag is not even a choice for them: `StringWidget`'s constructor
+    /// ends `this.active = false;` so the widget cannot take focus, and Rewo's
+    /// [`Widget::label`] / [`Widget::multi_label`] copy it. Reading it as
+    /// "grey" therefore greyed **every** dialog title and disconnect reason.
+    ///
+    /// Nothing caught it for three milestones because the text pass was handed
+    /// `160/255` in a slot the sRGB attachment treats as linear, so the grey
+    /// stored as **208** and `serverlinkshot`'s `> 200` "is it white" probes
+    /// were satisfied by it. M130's colour-space fix dropped it to 160 and both
+    /// witnesses went red — the first bug had been hiding the second.
     pub fn label_color(&self) -> [f32; 3] {
-        if self.active {
-            DEFAULT_LABEL
-        } else {
-            INACTIVE_LABEL
+        match self.kind {
+            WidgetKind::Label { .. } | WidgetKind::MultiLabel { .. } => DEFAULT_LABEL,
+            _ if self.active => DEFAULT_LABEL,
+            _ => INACTIVE_LABEL,
         }
     }
 
@@ -1189,6 +1207,23 @@ mod tests {
         w.active = false;
         assert_eq!(w.label_color(), INACTIVE_LABEL);
         assert_eq!(w.label_color(), [160.0 / 255.0; 3]);
+    }
+
+    /// …but only a **button** greys. `AbstractStringWidget` extends
+    /// `AbstractWidget`, not `AbstractWidget.WithInactiveMessage`, so a label
+    /// draws white — and `StringWidget`'s own constructor sets
+    /// `this.active = false`, which is the state this asserts over.
+    #[test]
+    fn a_string_widget_does_not_grey_although_it_is_inactive() {
+        let label = Widget::label(0, 4, 4, 100, "title");
+        let multi = Widget::multi_label(1, 4, 4, 100, vec!["a".into(), "b".into()], true);
+        assert!(!label.active, "StringWidget's constructor sets active = false");
+        assert!(!multi.active);
+        assert_eq!(label.label_color(), DEFAULT_LABEL);
+        assert_eq!(multi.label_color(), DEFAULT_LABEL);
+        // The mutation this exists to catch: reading `active` for every kind,
+        // which greys every dialog title and every disconnect reason.
+        assert_ne!(label.label_color(), INACTIVE_LABEL);
     }
 
     #[test]

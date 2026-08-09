@@ -27,7 +27,13 @@ pub struct TextLine<'a> {
     /// Pixel size of one font pixel (GUI scale; vanilla text cell is 8px).
     pub px: f32,
     /// Linear-space color of the text (shadow is a darkened copy).
-    pub color: [f32; 3],
+    ///
+    /// **Linear**, because this pass writes it unchanged into an sRGB
+    /// attachment and the hardware encodes on store: handing over a vanilla
+    /// colour byte `/255` stores `srgb_encode(byte/255)`, which for `0xA0A0A0`
+    /// is 208 rather than 160. Named for the space after M130 found nine
+    /// callers doing exactly that; see [`crate::world::OwnedTextLine`].
+    pub color_linear: [f32; 3],
     /// Opacity (chat fades old lines).
     pub alpha: f32,
     /// `graphics.text(font, str, x, y, color, **shadow**)`'s last argument.
@@ -47,7 +53,7 @@ pub struct TextLine<'a> {
 
 /// The five `Style` flags this pass can draw, resolved.
 ///
-/// Colour is not here: it is already `TextLine::color`, because vanilla
+/// Colour is not here: it is already `TextLine::color_linear`, because vanilla
 /// resolves `Style.getColor()` against the call site's default before the
 /// glyph is built (`Font.PreparedTextBuilder.getTextColor`) and Rewo's chat
 /// pipeline does the same in `chat_style`.
@@ -307,21 +313,38 @@ impl TextPass {
     /// why the choice below is a deliberate divergence rather than a
     /// transcription.
     fn obfuscated_glyph(&self, b: u8, run: u64, index: usize) -> u8 {
-        obfuscated_glyph(&self.glyphs_by_width, &self.advance, b, self.frame, run, index)
+        obfuscated_glyph(
+            &self.glyphs_by_width,
+            &self.advance,
+            b,
+            self.frame,
+            run,
+            index,
+        )
     }
 
     /// Build this frame's glyph quads and draw them.
-    pub fn draw(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D, lines: &[TextLine<'_>]) {
+    pub fn draw(
+        &mut self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        extent: vk::Extent2D,
+        lines: &[TextLine<'_>],
+    ) {
         self.frame = self.frame.wrapping_add(1);
         self.cursor = (self.cursor + 1) % RING;
         let mut v: Vec<Vertex> = Vec::with_capacity(1024);
         for line in lines {
             // Shadow first (offset +1 font-px, darkened), then the glyph.
             if line.shadow {
-                let sh = [line.color[0] * 0.25, line.color[1] * 0.25, line.color[2] * 0.25];
+                let sh = [
+                    line.color_linear[0] * 0.25,
+                    line.color_linear[1] * 0.25,
+                    line.color_linear[2] * 0.25,
+                ];
                 self.push_line(&mut v, line, line.px, line.px, sh, line.alpha);
             }
-            self.push_line(&mut v, line, 0.0, 0.0, line.color, line.alpha);
+            self.push_line(&mut v, line, 0.0, 0.0, line.color_linear, line.alpha);
         }
         self.verts = v.len() as u32;
         if let Some(slice) = self.allocs[self.cursor]
@@ -986,7 +1009,7 @@ mod tests {
             x: 4.0,
             y: 100.0,
             px: 2.0,
-            color: [1.0; 3],
+            color_linear: [1.0; 3],
             alpha: 1.0,
             shadow: true,
             style: TextStyle {

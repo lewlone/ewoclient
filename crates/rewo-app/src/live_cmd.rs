@@ -8466,7 +8466,7 @@ impl LiveApp {
             // box computed and the popup covered never reached the screen,
             // and a counter upstream of the exclusion would say it did.
             if usage_text.iter().any(|l| {
-                l.text.starts_with("Unknown command") && l.color == [1.0, 1.0, 1.0]
+                l.text.starts_with("Unknown command") && l.color_linear == [1.0, 1.0, 1.0]
             }) {
                 if let Some(c) = self.check.as_mut() {
                     c.parse_error_frames += 1;
@@ -8516,7 +8516,13 @@ impl LiveApp {
                 let row = &drawn[at.min(drawn.len())..(at + n).min(drawn.len())];
                 let mut colors: Vec<[u32; 3]> = row
                     .iter()
-                    .map(|l| [l.color[0].to_bits(), l.color[1].to_bits(), l.color[2].to_bits()])
+                    .map(|l| {
+                        [
+                            l.color_linear[0].to_bits(),
+                            l.color_linear[1].to_bits(),
+                            l.color_linear[2].to_bits(),
+                        ]
+                    })
                     .collect();
                 colors.sort_unstable();
                 colors.dedup();
@@ -8532,7 +8538,7 @@ impl LiveApp {
                 if row_text.contains("RewoStyleWitness whispers to you: whispered")
                     && !row.is_empty()
                     && row.iter().all(|l| {
-                        l.color.iter().all(|c| (c - GRAY_LINEAR).abs() < COLOR_EPS)
+                        l.color_linear.iter().all(|c| (c - GRAY_LINEAR).abs() < COLOR_EPS)
                             && l.style.italic
                     })
                 {
@@ -9054,6 +9060,18 @@ fn apply_chat(session: &mut PlaySession, advance: Option<[u8; 256]>) {
     session.apply_chat_events(tick, &ctx);
 }
 
+/// `-2039584` — `EditBox.textColor`'s default, and `DebugScreenOverlay`'s
+/// literal for every F3 line.
+///
+/// One constant because vanilla writes the same number in both places, not
+/// because Rewo chose to share it: `EditBox` declares
+/// `private int textColor = -2039584;` and `DebugScreenOverlay.renderLines`
+/// calls `graphics.text(this.font, line, left, top, -2039584, false)`.
+///
+/// It is **not** white. Every text surface that wanted "the off-white vanilla
+/// uses" and reached for a literal instead got a different wrong number.
+pub(crate) const EDIT_BOX_TEXT_COLOR: u32 = 0xE0_E0E0;
+
 /// `chat.deleted_marker`'s English value.
 ///
 /// **The literal, not a `baked.lang` lookup**, and that is a divergence rather
@@ -9082,7 +9100,14 @@ fn build_text(
     std::ops::Range<usize>,
 ) {
     use rewo_gpu::world::OwnedTextLine;
-    let white = [0.93, 0.93, 0.93];
+    // `DebugScreenOverlay.renderLines` — `graphics.text(font, line, left, top,
+    // -2039584, false)`, the same [`EDIT_BOX_TEXT_COLOR`] the chat input uses.
+    //
+    // It was `[0.93; 3]` from the first screen-space-text commit until M130 —
+    // an invented near-white that is neither the byte (`224/255 = 0.878`) nor
+    // its linear form (`0.745`). Two independent errors in one literal, which
+    // is what a value nobody derived looks like.
+    let white = srgb_bytes_to_linear(EDIT_BOX_TEXT_COLOR);
     let mut lines = Vec::new();
     // F3 debug block (top-left). Toggled by F3 in the windowed client;
     // always on in headless so a verification PNG shows the state.
@@ -9134,7 +9159,7 @@ fn build_text(
                 x: 3.0 * px,
                 y: (3.0 + i as f32 * 10.0) * px,
                 px,
-                color: white,
+                color_linear: white,
                 alpha: 1.0,
                 shadow: true,
                 style: rewo_gpu::text::TextStyle::PLAIN,
@@ -9187,11 +9212,34 @@ fn chat_input_lines(
     // vertically centred by `(height - 8) / 2` — 2 here, not 0 and not 3.
     let text_x = x as f32 * px;
     let text_y = (y + (h - 8) / 2) as f32 * px;
-    let color = if screen.is_draft() {
-        // `ChatFormatting.GRAY` — 0xAAAAAA.
-        [0.667, 0.667, 0.667]
+    // `ChatScreen.formatChat` — a FORMATTER, not a field colour:
+    //
+    // ```java
+    // return this.isDraft
+    //    ? FormattedCharSequence.forward(text, Style.EMPTY.withColor(ChatFormatting.GRAY).withItalic(true))
+    //    : null;
+    // ```
+    //
+    // so a draft is GRAY **and italic**, and null means "no formatter", i.e.
+    // the field's own `textColor` — not white.
+    //
+    // **The draft grey does NOT reach the caret**, and the mechanism is why:
+    // `graphics.text(font, applyFormat(half, …), drawX, textY, color, …)`
+    // hands the formatter's style a chance to override `color` per character,
+    // where `TextCursorUtils.extractAppendCursor` draws a bare `"_"` **String**
+    // with `color` itself. So on a draft the text greys and the caret stays
+    // off-white. Two bindings, not one, for exactly that reason.
+    let field_color = srgb_bytes_to_linear(EDIT_BOX_TEXT_COLOR);
+    let (color, style) = if screen.is_draft() {
+        (
+            srgb_bytes_to_linear(0xAA_AAAA),
+            rewo_gpu::text::TextStyle {
+                italic: true,
+                ..rewo_gpu::text::TextStyle::PLAIN
+            },
+        )
     } else {
-        [0.93, 0.93, 0.93]
+        (field_color, rewo_gpu::text::TextStyle::PLAIN)
     };
     let value = screen.input.value();
     // M117 — one line per coloured run, laid out with the FONT's advances
@@ -9207,7 +9255,7 @@ fn chat_input_lines(
                     x,
                     y: text_y,
                     px,
-                    color: srgb_bytes_to_linear(run.color),
+                    color_linear: srgb_bytes_to_linear(run.color),
                     alpha: 1.0,
                     shadow: true,
                     style: rewo_gpu::text::TextStyle::PLAIN,
@@ -9220,10 +9268,10 @@ fn chat_input_lines(
             x: text_x,
             y: text_y,
             px,
-            color,
+            color_linear: color,
             alpha: 1.0,
             shadow: true,
-            style: rewo_gpu::text::TextStyle::PLAIN,
+            style,
             text: value.clone(),
         }),
     }
@@ -9245,8 +9293,12 @@ fn chat_input_lines(
                 x: caret_x - px,
                 y: text_y,
                 px,
-                // `-8355712` — 0x808080.
-                color: [0.216, 0.216, 0.216],
+                // `-8355712` — 0x808080, converted rather than written out:
+                // the literal it replaces WAS the right number (0.216 is
+                // `srgb_to_linear(128/255)` to three places), but a magic
+                // constant is indistinguishable from a `/255` at a glance,
+                // which is how the two colours above it stayed wrong.
+                color_linear: srgb_bytes_to_linear(0x80_8080),
                 alpha: 1.0,
                 shadow: true,
                 style: rewo_gpu::text::TextStyle::PLAIN,
@@ -9261,7 +9313,9 @@ fn chat_input_lines(
             x: caret_x,
             y: text_y,
             px,
-            color: [0.93, 0.93, 0.93],
+            // `extractAppendCursor(…, color, …)` — the FIELD colour, so the
+            // caret does not follow the draft's grey (see the binding above).
+            color_linear: field_color,
             alpha: 1.0,
             shadow: true,
             style: rewo_gpu::text::TextStyle::PLAIN,
@@ -9355,7 +9409,7 @@ fn suggestion_popup_text(
                 x: (rect.x + 1) as f32 * px,
                 y: (rect.y + 2 + LINE_HEIGHT * i as i32) as f32 * px,
                 px,
-                color: srgb_bytes_to_linear(argb & 0x00FF_FFFF),
+                color_linear: srgb_bytes_to_linear(argb & 0x00FF_FFFF),
                 alpha: ((argb >> 24) & 0xFF) as f32 / 255.0,
                 shadow: true,
                 style: rewo_gpu::text::TextStyle::PLAIN,
@@ -9448,7 +9502,11 @@ fn usage_box(
             // exception message, which therefore keeps the white. This drew
             // every line white from M117 until M134, when the second kind of
             // line arrived and made the difference observable.
-            color: srgb_bytes_to_linear(line.color),
+            //
+            // The field is `color_linear` since M130, which renamed it to say
+            // which space it is in. Taking M130's side of this conflict would
+            // have compiled and quietly restored the constant white.
+            color_linear: srgb_bytes_to_linear(line.color),
             alpha: 1.0,
             shadow: true,
             style: rewo_gpu::text::TextStyle::PLAIN,
@@ -9593,7 +9651,7 @@ fn chat_lines(
                     // runs are the precedent; the death screen and the XP
                     // level still hand over `/255` bytes and are a hair bright
                     // (named in the plan, not fixed here).
-                    color: srgb_bytes_to_linear_f(span.color),
+                    color_linear: srgb_bytes_to_linear_f(span.color),
                     // `alpha * textOpacity`, where `textOpacity` is
                     // `chatOpacity * 0.9 + 0.1` and so never reaches 0.
                     alpha: line.alpha * text_opacity,
@@ -9707,7 +9765,7 @@ pub(crate) fn sidebar_text(
                     x: pen,
                     y: y as f32 * px,
                     px,
-                    color: srgb_bytes_to_linear_f(span.color),
+                    color_linear: srgb_bytes_to_linear_f(span.color),
                     alpha: 1.0,
                     shadow: rewo_net::sidebar::DROP_SHADOW,
                     style: rewo_gpu::text::TextStyle {
@@ -9739,7 +9797,7 @@ pub(crate) fn sidebar_text(
 /// Beside [`srgb_bytes_to_linear`] rather than folded into it because the
 /// input is a triple that has already been divided, not a packed `u32` — and
 /// both go through `rewo_gpu`'s one transfer function for M111's reason.
-fn srgb_bytes_to_linear_f(rgb: [f32; 3]) -> [f32; 3] {
+pub(crate) fn srgb_bytes_to_linear_f(rgb: [f32; 3]) -> [f32; 3] {
     [
         srgb_to_linear(rgb[0]),
         srgb_to_linear(rgb[1]),
@@ -9758,7 +9816,7 @@ fn srgb_bytes_to_linear_f(rgb: [f32; 3]) -> [f32; 3] {
 /// **Built on `rewo_gpu`'s per-channel `srgb_to_linear`** rather than a second
 /// transfer function: two copies of a curve are two chances to differ by a
 /// hundredth, and this one is already the renderer's.
-fn srgb_bytes_to_linear(rgb: u32) -> [f32; 3] {
+pub(crate) fn srgb_bytes_to_linear(rgb: u32) -> [f32; 3] {
     let ch = |shift: u32| srgb_to_linear(((rgb >> shift) & 0xFF) as f32 / 255.0);
     [ch(16), ch(8), ch(0)]
 }
@@ -9937,7 +9995,10 @@ fn selected_item_name_line(
         x: x as f32 * px,
         y: y as f32 * px,
         px,
-        color,
+        // `rarity_color` yields vanilla's byte `/255`, and three of its five
+        // callers feed the tooltip and Velvet passes rather than this one — so
+        // the conversion belongs here, at the line, not inside the helper.
+        color_linear: srgb_bytes_to_linear_f(color),
         alpha: alpha as f32 / 255.0,
         shadow: true,
         style: rewo_gpu::text::TextStyle::PLAIN,
@@ -10268,7 +10329,7 @@ pub(crate) fn experience_level_lines(
             x: (x + dx) as f32 * px,
             y: (y + dy) as f32 * px,
             px,
-            color: rewo_net::chat_style::rgb_f32(color & 0x00FF_FFFF),
+            color_linear: srgb_bytes_to_linear(color & 0x00FF_FFFF),
             alpha: 1.0,
             shadow: false,
             style: rewo_gpu::text::TextStyle::PLAIN,
@@ -10282,6 +10343,42 @@ pub(crate) fn experience_level_lines(
     push(0, -1, rewo_gpu::hud::EXPERIENCE_LEVEL_OUTLINE);
     push(0, 0, rewo_gpu::hud::EXPERIENCE_LEVEL_COLOR);
     out
+}
+
+/// A parsed span's five renderable `Style` flags, for the bitmap text pass.
+///
+/// `Font.PreparedTextBuilder.accept` reads all five off the `Style` the
+/// `FormattedCharSequence` carries per character — there is no surface at
+/// which vanilla honours a component's colour and drops its bold. Rewo had
+/// exactly that asymmetry on the title and the death screen until M130,
+/// because both were written before `TextPass` could draw a flag (M126c) and
+/// neither was revisited when it could.
+pub(crate) fn text_style_of(span: &rewo_world::chat_style::ChatSpan) -> rewo_gpu::text::TextStyle {
+    rewo_gpu::text::TextStyle {
+        bold: span.bold,
+        italic: span.italic,
+        underlined: span.underlined,
+        strikethrough: span.strikethrough,
+        obfuscated: span.obfuscated,
+    }
+}
+
+/// `Font.width(FormattedText)` over a parsed line — the per-span widths summed
+/// with each span's OWN bold flag.
+///
+/// **Not `width(plain_text(line))`.** `getBoldOffset()` is 1.0 charged per
+/// character (M126b), so flattening a line to measure it undercounts a bold
+/// run by its length — and every consumer here divides the result by two to
+/// centre, so the error lands as a visible half-width offset rather than as a
+/// pixel. Vanilla's `font.width(this.title)` is style-aware for the same
+/// reason: its splitter's width provider takes the style.
+pub(crate) fn styled_line_width(
+    line: &rewo_world::chat_style::ChatLine,
+    advance: &[u8; 256],
+) -> i32 {
+    line.iter()
+        .map(|s| rewo_gpu::text::width_styled(&s.text, advance, s.bold))
+        .sum()
 }
 
 /// The title, the subtitle and the action bar — `Hud.extractTitle` and
@@ -10318,48 +10415,51 @@ pub(crate) fn title_lines(
     // whole-number scale. `scale` multiplies the *font* pixel, which is why
     // the title is 4× and the subtitle 2× rather than being pre-scaled
     // strings.
-    let mut run =
-        |out: &mut Vec<rewo_gpu::world::OwnedTextLine>,
-         line: &chat_style::ChatLine,
-         x: i32,
-         y: i32,
-         scale: i32,
-         alpha: f32| {
-            let mut pen = x;
-            for span in line {
-                let w = rewo_gpu::text::width(&span.text, advance);
-                if !span.text.is_empty() {
-                    out.push(rewo_gpu::world::OwnedTextLine {
-                        x: pen as f32 * px,
-                        y: y as f32 * px,
-                        px: px * scale as f32,
-                        color: span.color,
-                        alpha,
-                        shadow: true,
-                        style: rewo_gpu::text::TextStyle::PLAIN,
-                        text: span.text.clone(),
-                    });
-                }
-                pen += w * scale;
+    let run = |out: &mut Vec<rewo_gpu::world::OwnedTextLine>,
+               line: &chat_style::ChatLine,
+               x: i32,
+               y: i32,
+               scale: i32,
+               alpha: f32| {
+        let mut pen = x;
+        for span in line {
+            let w = rewo_gpu::text::width_styled(&span.text, advance, span.bold);
+            if !span.text.is_empty() {
+                out.push(rewo_gpu::world::OwnedTextLine {
+                    x: pen as f32 * px,
+                    y: y as f32 * px,
+                    px: px * scale as f32,
+                    // The span's own colour, in the LINEAR space the pass
+                    // writes into an sRGB attachment. M117's coloured
+                    // command runs are the precedent.
+                    color_linear: srgb_bytes_to_linear_f(span.color),
+                    alpha,
+                    shadow: true,
+                    style: text_style_of(span),
+                    text: span.text.clone(),
+                });
             }
-        };
+            pen += w * scale;
+        }
+    };
 
     // `if (this.title != null && this.titleTime > 0)`.
     if let Some(title) = t.title.as_ref().filter(|_| t.title_time > 0) {
-        let alpha = rewo_gpu::hud::title_alpha(t.title_time, t.fade_in, t.stay, t.fade_out, partial);
+        let alpha =
+            rewo_gpu::hud::title_alpha(t.title_time, t.fade_in, t.stay, t.fade_out, partial);
         // `if (alpha > 0)` — the draw's own guard, so a fully-faded frame
         // emits nothing rather than a transparent quad.
         if alpha > 0 {
             let a = alpha as f32 / 255.0;
             let line = chat_style::parse_component(title, ChatStyle::WHITE, lang);
-            let width = rewo_gpu::text::width(&chat_style::plain_text(&line), advance);
+            let width = styled_line_width(&line, advance);
             let (x, y) = rewo_gpu::hud::title_pos(gw, gh, width);
             run(&mut out, &line, x, y, rewo_gpu::hud::TITLE_SCALE, a);
             // The subtitle is drawn *inside* the title's block, at the title's
             // alpha — it has no ramp of its own.
             if let Some(subtitle) = &t.subtitle {
                 let line = chat_style::parse_component(subtitle, ChatStyle::WHITE, lang);
-                let width = rewo_gpu::text::width(&chat_style::plain_text(&line), advance);
+                let width = styled_line_width(&line, advance);
                 let (x, y) = rewo_gpu::hud::subtitle_pos(gw, gh, width);
                 run(&mut out, &line, x, y, rewo_gpu::hud::SUBTITLE_SCALE, a);
             }
@@ -10376,7 +10476,7 @@ pub(crate) fn title_lines(
         let alpha = rewo_gpu::hud::action_bar_alpha(t.overlay_message_time, partial);
         if alpha > 0 {
             let line = chat_style::parse_component(message, ChatStyle::WHITE, lang);
-            let width = rewo_gpu::text::width(&chat_style::plain_text(&line), advance);
+            let width = styled_line_width(&line, advance);
             let (x, y) = rewo_gpu::hud::action_bar_pos(gw, gh, width);
             run(&mut out, &line, x, y, 1, alpha as f32 / 255.0);
         }
@@ -12416,13 +12516,13 @@ mod tests {
             assert!(t.shadow, "the five-argument graphics.text drops one");
         }
         // `-256` is 0xFFFF00: red and green at full, blue at nothing.
-        assert_eq!(text[0].color[0], 1.0);
-        assert_eq!(text[0].color[1], 1.0);
-        assert_eq!(text[0].color[2], 0.0);
+        assert_eq!(text[0].color_linear[0], 1.0);
+        assert_eq!(text[0].color_linear[1], 1.0);
+        assert_eq!(text[0].color_linear[2], 0.0);
         // `-5592406` is 0xAAAAAA: neutral, and not full.
-        assert_eq!(text[1].color[0], text[1].color[1]);
-        assert_eq!(text[1].color[1], text[1].color[2]);
-        assert!(text[1].color[0] > 0.0 && text[1].color[0] < 1.0);
+        assert_eq!(text[1].color_linear[0], text[1].color_linear[1]);
+        assert_eq!(text[1].color_linear[1], text[1].color_linear[2]);
+        assert!(text[1].color_linear[0] > 0.0 && text[1].color_linear[0] < 1.0);
     }
 
     #[test]
@@ -12470,7 +12570,7 @@ mod tests {
         assert_eq!(lines[1].text, "5");
         assert_eq!(lines[1].x - lines[0].x, 6.0 * 4.0);
         // The two runs carry different colours, which is the whole point.
-        assert_ne!(lines[0].color, lines[1].color);
+        assert_ne!(lines[0].color_linear, lines[1].color_linear);
         // And the caret sits after the WHOLE value, measured the same way.
         let caret = lines.iter().find(|l| l.text == "_").expect("a caret");
         assert_eq!(caret.x - lines[0].x, 7.0 * 4.0);
@@ -12556,15 +12656,15 @@ mod tests {
             t.chars().count() as i32 * 6
         });
         // White is 1.0 in both spaces, which is what hid this.
-        assert_eq!(text[1].color, [1.0, 1.0, 1.0]);
-        assert_ne!(text[0].color, text[1].color);
+        assert_eq!(text[1].color_linear, [1.0, 1.0, 1.0]);
+        assert_ne!(text[0].color_linear, text[1].color_linear);
         // …and the grey is the sRGB byte decoded, not the byte itself: the
         // HUD tint multiplies in linear space (0xAA is 0.667 encoded and
         // ~0.402 linear).
         assert!(
-            (text[0].color[0] - 0.402).abs() < 0.01,
+            (text[0].color_linear[0] - 0.402).abs() < 0.01,
             "{:?}",
-            text[0].color
+            text[0].color_linear
         );
     }
 
@@ -12598,11 +12698,154 @@ mod tests {
         use rewo_world::chat_screen::{ChatMethod, ChatScreen, Draft};
         let draft = Draft::of("remembered");
         let mut s = ChatScreen::open(ChatMethod::Message, Some(&draft), 0);
-        let grey = super::chat_input_lines(&s, 1.0, 320, 240, 0, None, &|t: &str| t.chars().count() as i32 * 6)[0].color;
-        assert_eq!(grey, [0.667, 0.667, 0.667], "ChatFormatting.GRAY");
+        let grey = super::chat_input_lines(&s, 1.0, 320, 240, 0, None, &|t: &str| {
+            t.chars().count() as i32 * 6
+        })[0]
+            .color_linear;
+        // `ChatFormatting.GRAY` is `0xAAAAAA`, and the pass wants LINEAR.
+        // 0.4020 is `((170/255 + 0.055) / 1.055)^2.4` — written out rather
+        // than called, so this pins the number against the sRGB transfer
+        // function itself and not against `srgb_bytes_to_linear`, which the
+        // renderer also calls (M93q's self-calibration trap).
+        assert!(
+            grey.iter().all(|c| (c - 0.401_977_8).abs() < 1e-5),
+            "ChatFormatting.GRAY in linear, got {grey:?}"
+        );
+        // The pre-M130 value, and the exact signature of the bug: handing the
+        // byte over `/255` stores 213 where vanilla stores 170.
+        assert!(
+            (grey[0] - 2.0 / 3.0).abs() > 0.1,
+            "the /255 byte is what M130 removed"
+        );
         s.char_typed('!', &chat_env());
-        let normal = super::chat_input_lines(&s, 1.0, 320, 240, 0, None, &|t: &str| t.chars().count() as i32 * 6)[0].color;
+        let normal = super::chat_input_lines(&s, 1.0, 320, 240, 0, None, &|t: &str| {
+            t.chars().count() as i32 * 6
+        })[0]
+            .color_linear;
         assert_ne!(normal, grey);
+    }
+
+    /// A restored draft is grey **and italic**, and its caret is neither.
+    ///
+    /// `ChatScreen.formatChat` returns
+    /// `Style.EMPTY.withColor(GRAY).withItalic(true)`, and the draft field on
+    /// `rewo_world::chat_screen` has said "drives the grey **italic**
+    /// rendering" in its own doc since M110 while the renderer drew
+    /// `TextStyle::PLAIN` — the fifth comment in this project to describe
+    /// behaviour its code did not have.
+    ///
+    /// The caret half is the part a plausible implementation gets wrong.
+    /// `graphics.text(font, applyFormat(half, …), …, color, …)` lets the
+    /// formatter's `Style` override `color` per character, but
+    /// `TextCursorUtils.extractAppendCursor` draws a bare `"_"` **String** with
+    /// `color` itself — so the draft's grey and italic reach the text and stop
+    /// at the caret.
+    #[test]
+    fn a_draft_is_italic_and_its_caret_is_not() {
+        use rewo_world::chat_screen::{ChatMethod, ChatScreen, Draft};
+        let draft = Draft::of("remembered");
+        // t=0 is inside `isCursorVisible`'s first 300 ms window, so the caret
+        // is emitted; without it this test would silently assert over one line.
+        let lines = super::chat_input_lines(
+            &ChatScreen::open(ChatMethod::Message, Some(&draft), 0),
+            1.0,
+            320,
+            240,
+            0,
+            None,
+            &|t: &str| t.chars().count() as i32 * 6,
+        );
+        let text = lines
+            .iter()
+            .find(|l| l.text == "remembered")
+            .expect("the draft text");
+        let caret = lines.iter().find(|l| l.text == "_").expect("the caret");
+        assert!(text.style.italic, "withItalic(true)");
+        assert_eq!(
+            text.style,
+            rewo_gpu::text::TextStyle {
+                italic: true,
+                ..rewo_gpu::text::TextStyle::PLAIN
+            },
+            "italic and ONLY italic — the style is a patch, not a preset"
+        );
+        assert_eq!(
+            caret.style,
+            rewo_gpu::text::TextStyle::PLAIN,
+            "a bare String never meets the formatter"
+        );
+        assert_ne!(
+            caret.color_linear, text.color_linear,
+            "and it keeps the field's textColor rather than the draft's grey"
+        );
+        assert_eq!(caret.color_linear, srgb_bytes_to_linear(EDIT_BOX_TEXT_COLOR));
+    }
+
+    /// The two converters really are the sRGB transfer function.
+    ///
+    /// Pinned against the **formula**, written out, rather than against
+    /// `rewo_gpu::srgb_to_linear`, which both of them call: a witness that
+    /// asks the implementation what to expect asserts only that the
+    /// implementation equals itself (M93q). `((b/255 + 0.055) / 1.055)^2.4` for
+    /// each byte below, computed independently.
+    ///
+    /// This is what stops the whole M130 conversion decaying into an identity
+    /// without a single gate going red — nine of the sites it fixed are graded
+    /// only by the pixel gates named in the milestone message, and four
+    /// (the tooltip's bitmap line, the statistics rows, the enchanting costs
+    /// and the held-item name) by nothing else at all.
+    #[test]
+    fn the_converters_are_the_srgb_transfer_function() {
+        for (byte, want) in [
+            (0x00u32, 0.0f32),
+            (0x55, 0.090_841_7),
+            (0x80, 0.215_860_5),
+            (0xA0, 0.351_532_6),
+            (0xAA, 0.401_977_8),
+            (0xBA, 0.491_020_8),
+            (0xE0, 0.745_404_2),
+            (0xFF, 1.0),
+        ] {
+            let packed = super::srgb_bytes_to_linear(byte << 16 | byte << 8 | byte);
+            let triple = super::srgb_bytes_to_linear_f([byte as f32 / 255.0; 3]);
+            for c in packed.iter().chain(triple.iter()) {
+                assert!(
+                    (c - want).abs() < 1e-5,
+                    "0x{byte:02X} -> {c}, want {want} (identity would give {})",
+                    byte as f32 / 255.0
+                );
+            }
+        }
+    }
+
+    /// The enchanting table's cost numerals convert too.
+    ///
+    /// This one has **no pixel witness anywhere** — `containershot` grades the
+    /// rows' geometry and their three states, not the numeral's colour — so
+    /// without this the site is covered only by the `color_linear` rename.
+    #[test]
+    fn the_enchant_cost_numerals_are_linear() {
+        use rewo_world::menu_screen::{EnchantRow, ENCHANT_COST_ENABLED};
+        let rows = [
+            EnchantRow::Available { cost: 3 },
+            EnchantRow::Empty,
+            EnchantRow::Empty,
+        ];
+        let lines = super::enchant_cost_labels(rows, &advances(), 1280.0, 720.0);
+        assert_eq!(lines.len(), 1, "an empty row draws no numeral");
+        // `0x80FF20` — green. Its red channel is 0x80, whose linear value is
+        // 0.2159 against the byte's 0.5020: a difference no eye would call a
+        // colour change and every pixel would.
+        assert!(
+            (lines[0].color_linear[0] - 0.215_860_5).abs() < 1e-5,
+            "got {:?} for {ENCHANT_COST_ENABLED:#08X}",
+            lines[0].color_linear
+        );
+        assert!(
+            (lines[0].color_linear[1] - 1.0).abs() < 1e-6,
+            "0xFF is 1.0 in both spaces, so it cannot witness the conversion \
+             on its own — the red channel above is what does"
+        );
     }
 
     /// An empty chat produces no lines at all — not one blank row.
@@ -13473,8 +13716,18 @@ mod tests {
         assert!(hint_of("iron", true).is_none());
         // Its colour is the hint style's grey, not the field's white.
         let h = hint_of("", false).unwrap();
-        assert_eq!(h.color, rb::SEARCH_HINT_COLOR);
-        assert_ne!(h.color, [1.0, 1.0, 1.0]);
+        // `SEARCH_HINT_STYLE` is `ChatFormatting.GRAY` — `0xAAAAAA` — and the
+        // text pass takes LINEAR, so the constant converts on the way in
+        // rather than being handed over as the byte.
+        assert!(
+            h.color_linear
+                .iter()
+                .all(|c| (c - 0.401_977_8).abs() < 1e-5),
+            "GRAY in linear, got {:?}",
+            h.color_linear
+        );
+        assert_ne!(h.color_linear, rb::SEARCH_HINT_COLOR, "not the raw /255");
+        assert_ne!(h.color_linear, [1.0, 1.0, 1.0]);
     }
 
     /// The typed text is drawn at the field's text origin, in white.
@@ -13487,7 +13740,7 @@ mod tests {
         let text = labels.iter().find(|l| l.text == "iron").expect("the text");
         assert_eq!(text.x, bl + rb::SEARCH_TEXT_X as f32 * scale);
         assert_eq!(text.y, bt + rb::SEARCH_TEXT_Y as f32 * scale);
-        assert_eq!(text.color, [1.0, 1.0, 1.0], "setTextColor(-1)");
+        assert_eq!(text.color_linear, [1.0, 1.0, 1.0], "setTextColor(-1)");
     }
 
     // -- the page counter (M105) --------------------------------------------
@@ -13606,7 +13859,7 @@ mod tests {
     #[test]
     fn the_counter_is_white_and_shadowed() {
         let c = counter(0, 3).unwrap();
-        assert_eq!(c.color, [1.0, 1.0, 1.0]);
+        assert_eq!(c.color_linear, [1.0, 1.0, 1.0]);
         assert_eq!(c.alpha, 1.0, "ARGB.alpha(-1) — and text() skips alpha 0");
         assert!(c.shadow, "the 5-arg overload passes true");
     }
@@ -16081,6 +16334,9 @@ pub(crate) fn screen_text_lines(
 ) -> Vec<rewo_gpu::world::OwnedTextLine> {
     use rewo_world::screen::WidgetKind;
     let mut out = Vec::new();
+    // `color` arrives as vanilla's byte `/255` (`screen::INACTIVE_LABEL` is
+    // `0xA0A0A0`); the pass wants linear. One conversion, in the one closure
+    // every branch below pushes through.
     let mut push = |text: &str, x: i32, y: i32, color: [f32; 3]| {
         if text.is_empty() {
             return;
@@ -16089,7 +16345,7 @@ pub(crate) fn screen_text_lines(
             x: x as f32 * px,
             y: y as f32 * px,
             px,
-            color,
+            color_linear: srgb_bytes_to_linear_f(color),
             alpha: 1.0,
             shadow: true,
             style: rewo_gpu::text::TextStyle::PLAIN,
@@ -16150,7 +16406,7 @@ pub(crate) fn death_screen_lines(
     px: f32,
     (screen_w, _screen_h): (f32, f32),
 ) -> Vec<rewo_gpu::world::OwnedTextLine> {
-    use rewo_net::chat_style::{self, ChatSpan};
+    use rewo_net::chat_style::ChatSpan;
     use rewo_world::death_screen as ds;
     let gui_w = (screen_w / px) as i32;
     let mut out = Vec::new();
@@ -16158,23 +16414,28 @@ pub(crate) fn death_screen_lines(
     // A run of spans laid end to end from a GUI-space top-left, at a
     // whole-number extra scale. `scale` multiplies the *font* pixel, which is
     // how the title comes out double-size without a second font.
-    let mut run = |out: &mut Vec<rewo_gpu::world::OwnedTextLine>,
-                   spans: &[ChatSpan],
-                   x: i32,
-                   y: i32,
-                   scale: i32| {
+    let run = |out: &mut Vec<rewo_gpu::world::OwnedTextLine>,
+               spans: &[ChatSpan],
+               x: i32,
+               y: i32,
+               scale: i32| {
         let mut pen = x;
         for span in spans {
-            let w = rewo_gpu::text::width(&span.text, advance);
+            let w = rewo_gpu::text::width_styled(&span.text, advance, span.bold);
             if !span.text.is_empty() {
                 out.push(rewo_gpu::world::OwnedTextLine {
                     x: pen as f32 * px,
                     y: y as f32 * px,
                     px: px * scale as f32,
-                    color: span.color,
+                    // `ActiveTextCollector.accept` builds its `GuiTextRenderState`
+                    // with `ARGB.white(opacity)` as the BASE and lets the
+                    // component's own `Style` override it per character — so
+                    // the colour is the span's, in linear, and the five flags
+                    // are the span's too.
+                    color_linear: srgb_bytes_to_linear_f(span.color),
                     alpha: 1.0,
                     shadow: true,
-                    style: rewo_gpu::text::TextStyle::PLAIN,
+                    style: text_style_of(span),
                     text: span.text.clone(),
                 });
             }
@@ -16195,7 +16456,7 @@ pub(crate) fn death_screen_lines(
 
     // The death message, in the server's own styling.
     if let Some(cause) = &view.cause {
-        let w = rewo_gpu::text::width(&chat_style::plain_text(cause), advance);
+        let w = styled_line_width(cause, advance);
         let (x, y) = ds::cause_pos(gui_w, w);
         run(&mut out, cause, x, y, 1);
     }
@@ -16205,7 +16466,7 @@ pub(crate) fn death_screen_lines(
     // literal inside an unstyled template, so the number is yellow and the
     // word is not.
     let score = score_spans(&view.labels.score_template, view.model.score);
-    let w = rewo_gpu::text::width(&chat_style::plain_text(&score), advance);
+    let w = styled_line_width(&score, advance);
     let (x, y) = ds::score_pos(gui_w, w);
     run(&mut out, &score, x, y, 1);
 
@@ -19358,7 +19619,7 @@ fn book_page_label(
         x: bl + rb::page_label_x(width) as f32 * scale,
         y: bt + rb::PAGE_LABEL_Y as f32 * scale,
         px: scale,
-        color: [1.0, 1.0, 1.0],
+        color_linear: [1.0, 1.0, 1.0],
         alpha: 1.0,
         shadow: true,
         style: rewo_gpu::text::TextStyle::PLAIN,
@@ -20385,7 +20646,7 @@ fn tooltip_layout(
                 x: tx as f32 * scale,
                 y: y as f32 * scale,
                 px: scale,
-                color,
+                color_linear: srgb_bytes_to_linear_f(color),
                 alpha: 1.0,
                 shadow: true,
                 style: rewo_gpu::text::TextStyle::PLAIN,
@@ -20772,7 +21033,7 @@ fn count_label_of(
         x: x + (17.0 - width) * scale,
         y: y + 9.0 * scale,
         px: scale,
-        color: [1.0, 1.0, 1.0],
+        color_linear: [1.0, 1.0, 1.0],
         alpha: 1.0,
         shadow: true,
         style: rewo_gpu::text::TextStyle::PLAIN,
@@ -20811,11 +21072,7 @@ fn enchant_cost_labels(
             x: left + x as f32 * scale,
             y: top + y as f32 * scale,
             px: scale,
-            color: [
-                ((rgb >> 16) & 0xFF) as f32 / 255.0,
-                ((rgb >> 8) & 0xFF) as f32 / 255.0,
-                (rgb & 0xFF) as f32 / 255.0,
-            ],
+            color_linear: srgb_bytes_to_linear(rgb),
             alpha: 1.0,
             shadow: true,
             style: rewo_gpu::text::TextStyle::PLAIN,
@@ -20903,7 +21160,7 @@ fn edit_box_render(
             px: scale,
             // `setTextColor(-1)` AND `setTextColorUneditable(-1)` — the anvil
             // sets both to white, so an uneditable field is not greyed.
-            color: [1.0, 1.0, 1.0],
+            color_linear: [1.0, 1.0, 1.0],
             alpha: 1.0,
             shadow: true,
             style: rewo_gpu::text::TextStyle::PLAIN,
@@ -20923,8 +21180,9 @@ fn edit_box_render(
                 px: scale,
                 // The hint is a styled COMPONENT, so its own colour wins over
                 // the field's — `SEARCH_HINT_STYLE` is gray, where the book
-                // sets the field itself to white.
-                color,
+                // sets the field itself to white. The constant is vanilla's
+                // byte `/255`, so it converts here.
+                color_linear: srgb_bytes_to_linear_f(color),
                 alpha: 1.0,
                 shadow: true,
                 style: rewo_gpu::text::TextStyle::PLAIN,
@@ -21001,7 +21259,7 @@ fn edit_box_render(
                 x: left + cursor_x as f32 * scale,
                 y: top + fy as f32 * scale,
                 px: scale,
-                color: [1.0, 1.0, 1.0],
+                color_linear: [1.0, 1.0, 1.0],
                 alpha: 1.0,
                 shadow: true,
                 style: rewo_gpu::text::TextStyle::PLAIN,

@@ -64,7 +64,7 @@ use rewo_net::ids::Ids;
 
 /// Total named properties this gate asserts. Locked so a skipped property
 /// fails the run even when nothing mismatched.
-const EXPECTED_WITNESSES: usize = 55;
+const EXPECTED_WITNESSES: usize = 57;
 
 const W: u32 = 640;
 const H: u32 = 480;
@@ -304,6 +304,28 @@ fn component_string(s: &str) -> Vec<u8> {
 
 /// `{"text": …, "color": …}` as a network-NBT compound, so the styled path is
 /// exercised rather than the bare-string one.
+/// A component carrying all five renderable `Style` flags, as NBT.
+///
+/// All five at once on purpose: the five are five separate booleans on the
+/// wire and five separate fields on `TextStyle`, so a wiring that carried one
+/// and dropped four would satisfy any single-flag witness.
+fn component_styled(text: &str) -> Vec<u8> {
+    let mut out = vec![10u8]; // TAG_Compound
+    out.push(8); // TAG_String
+    out.extend_from_slice(&4u16.to_be_bytes());
+    out.extend_from_slice(b"text");
+    out.extend_from_slice(&(text.len() as u16).to_be_bytes());
+    out.extend_from_slice(text.as_bytes());
+    for k in ["bold", "italic", "underlined", "strikethrough", "obfuscated"] {
+        out.push(1); // TAG_Byte
+        out.extend_from_slice(&(k.len() as u16).to_be_bytes());
+        out.extend_from_slice(k.as_bytes());
+        out.push(1);
+    }
+    out.push(0); // TAG_End
+    out
+}
+
 fn component_colored(text: &str, color: &str) -> Vec<u8> {
     let mut out = vec![10u8]; // TAG_Compound
     for (k, v) in [("text", text), ("color", color)] {
@@ -809,15 +831,15 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
     c.record(
         "m5.a_coloured_title_takes_the_span_colour_and_still_fades",
         lines.len() == 1
-            && lines[0].color[0] > 0.9
-            && lines[0].color[1] < 0.4
+            && lines[0].color_linear[0] > 0.9
+            && lines[0].color_linear[1] < 0.4
             && (lines[0].alpha - want_alpha).abs() < 1e-6
             && want_alpha < 1.0,
         format!(
             "red {:?} at alpha {:.3} (MUTATION: taking the span's colour whole — \
              including its opaque alpha — gives a coloured title that snaps in \
              and out at full opacity while a white one fades)",
-            lines[0].color, lines[0].alpha
+            lines[0].color_linear, lines[0].alpha
         ),
     );
 
@@ -860,7 +882,17 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
         ..ExperienceState::default()
     };
     let level = crate::live_cmd::experience_level_lines(&xp, true, None, advance, px, screen);
-    let green = rewo_net::chat_style::rgb_f32(rewo_gpu::hud::EXPERIENCE_LEVEL_COLOR & 0xFF_FFFF);
+    // `-8323296` = `0xFF80FF20`, pushed through THIS FILE's own `srgb_decode`
+    // rather than through `live_cmd`'s converter: the expectation must not be
+    // computed by the function under test (M93q). Before M130 the line carried
+    // the byte `/255`, so the number here was `rgb_f32`'s and the witness was
+    // self-calibrating for the space as well as for the value.
+    let want = rewo_gpu::hud::EXPERIENCE_LEVEL_COLOR;
+    let green = [
+        srgb_decode(((want >> 16) & 0xFF) as u8),
+        srgb_decode(((want >> 8) & 0xFF) as u8),
+        srgb_decode((want & 0xFF) as u8),
+    ];
     let offsets: Vec<(f32, f32)> = level
         .iter()
         .map(|l| (l.x - level[4].x, l.y - level[4].y))
@@ -869,8 +901,12 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
         "m8.the_level_number_is_five_shadowless_draws_with_a_four_way_outline",
         level.len() == 5
             && level.iter().all(|l| !l.shadow)
-            && level[4].color == green
-            && level[..4].iter().all(|l| l.color == [0.0, 0.0, 0.0])
+            && level[4]
+                .color_linear
+                .iter()
+                .zip(green)
+                .all(|(a, b)| (a - b).abs() < 1e-6)
+            && level[..4].iter().all(|l| l.color_linear == [0.0, 0.0, 0.0])
             && offsets[..4].contains(&(px, 0.0))
             && offsets[..4].contains(&(-px, 0.0))
             && offsets[..4].contains(&(0.0, px))
@@ -893,6 +929,72 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
         none_at_zero.is_empty() && none_in_creative.is_empty(),
         "`hasExperience() && experienceLevel > 0` — two separate gates, and \
          level 0 draws no number even in survival",
+    );
+
+    // m9b — a styled title carries all five `Style` flags, and is MEASURED
+    // with bold rather than merely drawn with it (M130).
+    //
+    // `Hud.extractTitle` passes `this.title` — a `Component` — to
+    // `textWithBackdrop`, which calls `graphics.text(font, str, …)`, which
+    // takes `getVisualOrderText()`. There is no surface at which vanilla
+    // honours a component's colour and drops its bold: `Font.PreparedTextBuilder
+    // .accept` reads all five off the same `Style` it reads the colour off.
+    //
+    // The width half is the load-bearing one. `getBoldOffset()` is 1.0 charged
+    // PER CHARACTER, so a five-character bold title is five pixels wider — and
+    // `title_pos` centres by halving the width, so a style-blind measure is not
+    // a subtle difference in the glyph, it is the whole line sitting two and a
+    // half pixels off centre at 1x and ten at the title's 4x.
+    let mut styled = TitleOverlay::default();
+    styled.set_title(rewo_net::hud_state::read_component(&component_styled("BOLD")).unwrap());
+    for _ in 0..15 {
+        styled.tick();
+    }
+    let slines = crate::live_cmd::title_lines(&styled, advance, px, screen, 0.0, None);
+    let plain_w = rewo_gpu::text::width("BOLD", advance);
+    let (bold_x, _) = ref_title_pos(GUI_W, GUI_H, plain_w + 4);
+    c.record(
+        "m9b.a_styled_title_carries_the_five_flags_and_is_measured_with_bold",
+        slines.len() == 1
+            && slines[0].style
+                == rewo_gpu::text::TextStyle {
+                    bold: true,
+                    italic: true,
+                    underlined: true,
+                    strikethrough: true,
+                    obfuscated: true,
+                }
+            && (slines[0].x - bold_x as f32 * px).abs() < 1e-6,
+        format!(
+            "{:?} at x={} (bold width {} = plain {plain_w} + one px per \
+             character; MUTATION: `TextStyle::PLAIN` drops all five, and \
+             `width` instead of `width_styled` moves x by {} px)",
+            slines[0].style,
+            slines[0].x,
+            plain_w + 4,
+            (ref_title_pos(GUI_W, GUI_H, plain_w).0 - bold_x) * SCALE
+        ),
+    );
+
+    // m9c — and a title with no styling still says so. The pair is what makes
+    // m9b a claim about the WIRE rather than about a constant: a builder that
+    // hard-coded every flag true would pass m9b alone.
+    let mut bare = TitleOverlay::default();
+    bare.set_title(rewo_proto::nbt::Nbt::String("BOLD".into()));
+    for _ in 0..15 {
+        bare.tick();
+    }
+    let blines = crate::live_cmd::title_lines(&bare, advance, px, screen, 0.0, None);
+    c.record(
+        "m9c.an_unstyled_title_is_plain_and_measured_without_bold",
+        blines.len() == 1
+            && blines[0].style == rewo_gpu::text::TextStyle::PLAIN
+            && (blines[0].x - ref_title_pos(GUI_W, GUI_H, plain_w).0 as f32 * px).abs() < 1e-6,
+        format!(
+            "{:?} at x={} — the same string, four pixels wider and four flags \
+             richer once the component carries them",
+            blines[0].style, blines[0].x
+        ),
     );
 
     // m10 — the gauges resolver.
