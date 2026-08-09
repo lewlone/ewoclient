@@ -39,6 +39,15 @@
 //! **backspace clears the whole field** rather than deleting one character.
 //! Both stop at the first edit.
 //!
+//! # Clickable chat text (M128)
+//!
+//! [`ChatScreen::mouse_clicked`] runs a `ClickableStyleFinder` — see
+//! [`crate::active_text`] — and [`ChatScreen::handle_component_clicked`]
+//! resolves what it found. The paragraph that used to sit under "what is
+//! deliberately not here" said there was no `Style` left to find, because a
+//! component was flattened to plain text at the wire; M126 made a chat line
+//! styled spans and M128 put the events on them.
+//!
 //! # What is deliberately not here
 //!
 //! **`CommandSuggestions`.** It needs the `commands` packet (the Brigadier
@@ -48,19 +57,61 @@
 //! but the four `keyPressed` / `mouseScrolled` / `mouseClicked` early-outs it
 //! owns are recorded at their call sites rather than silently absent.
 //!
-//! **Clickable chat text.** `mouseClicked` runs a `ClickableStyleFinder` over
-//! the rendered lines; Rewo flattens a component to plain text at the wire, so
-//! there is no `Style` left to find. That is the same limitation
-//! [`crate::chat`] records for the decoration.
-//!
 //! **Chat abilities and the restricted prompt.** `ChatAbilities` arrives on a
 //! packet Rewo does not decode, so `displayMode` is always `FOREGROUND` and
 //! never `FOREGROUND_RESTRICTED`.
 
+use crate::chat_events::ClickEvent;
+use crate::chat_style::ChatStyle;
 use crate::edit_box::{key, EditBox, Input};
 
 /// `ChatScreen.MOUSE_SCROLL_SPEED`.
 pub const MOUSE_SCROLL_SPEED: f64 = 7.0;
+
+/// `ChatComponent.QUEUE_EXPAND_ID` —
+/// `Identifier.withDefaultNamespace("internal/expand_chat_queue")`, the
+/// `Custom` id on the "N messages held back" link.
+pub const QUEUE_EXPAND_ID: &str = "minecraft:internal/expand_chat_queue";
+
+/// `ChatComponent.GO_TO_RESTRICTIONS_SCREEN` — the `Custom` id on the
+/// restricted-chat prompt's red underlined line.
+pub const GO_TO_RESTRICTIONS_SCREEN: &str = "minecraft:internal/go_to_restrictions_screen";
+
+/// `Commands.trimOptionalPrefix` — `command.startsWith("/") ? command
+/// .substring(1) : command`.
+///
+/// **One slash, not all of them**: `//co i` (a common plugin command) trims to
+/// `/co i`, which is what the server expects on the wire.
+pub fn trim_optional_prefix(command: &str) -> &str {
+    command.strip_prefix('/').unwrap_or(command)
+}
+
+/// What a click on chat text asks the caller to do.
+///
+/// The screen owns no socket and no platform, so — like [`ChatAction`] — every
+/// effect leaves as a value. The two it can perform itself
+/// (`suggest_command`'s replace and the shift-insertion) it does, because it
+/// owns the [`EditBox`] they write to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChatClick {
+    /// `handleComponentClicked` returned false — the click was not consumed
+    /// and `super.mouseClicked` should run. Also the shift-insertion path,
+    /// **which mutates the field and still answers false**.
+    NotHandled,
+    /// Consumed, and everything it asked for has already happened.
+    Handled,
+    /// `Util.getPlatform().openUri(uri)`. Already gated to `http`/`https` at
+    /// decode — see [`crate::chat_events`] — so the caller does not re-check
+    /// and cannot forget to.
+    OpenUrl(String),
+    /// `connection.sendUnattendedCommand(command)`, the leading slash already
+    /// trimmed.
+    RunCommand(String),
+    /// An action Rewo decodes and deliberately does not perform. The string
+    /// says why, and is a `&'static str` so it cannot carry server text into a
+    /// log line.
+    Declined(&'static str),
+}
 
 /// `input.setMaxLength(256)`, and also `trimChatMessage`'s cap.
 pub const MAX_CHAT_LENGTH: usize = 256;
@@ -393,9 +444,154 @@ impl ChatScreen {
     }
 
     /// `ChatScreen.mouseClicked` — the popup gets first refusal, exactly as it
-    /// does for keys.
-    pub fn mouse_clicked(&mut self, x: i32, y: i32) -> bool {
-        self.suggestions.mouse_clicked(x, y, &mut self.input)
+    /// does for keys, and clickable chat text is what it refuses *to* (M128).
+    ///
+    /// ```java
+    /// if (this.commandSuggestions.mouseClicked(event)) return true;
+    /// if (event.button() == 0) {
+    ///    … ClickableStyleFinder … captureClickableText …
+    ///    Style clicked = finder.result();
+    ///    if (clicked != null && this.handleComponentClicked(clicked, this.insertionClickMode())) {
+    ///       this.initial = this.input.getValue();
+    ///       return true;
+    ///    }
+    /// }
+    /// return super.mouseClicked(event, doubleClick);
+    /// ```
+    ///
+    /// `hit` is a **closure**, not a value, so the hit test runs only after the
+    /// popup declines — that ordering is vanilla's and is free to keep. It is
+    /// the caller's because the chat store, the font and the box geometry all
+    /// live outside this screen; [`crate::chat::clickable_style_at`] is the
+    /// function it should be.
+    ///
+    /// `button` is the raw button index, because **only the left button
+    /// looks** (`event.button() == 0`) — a right-click on a link does nothing
+    /// at all.
+    pub fn mouse_clicked(
+        &mut self,
+        x: i32,
+        y: i32,
+        button: u8,
+        shift: bool,
+        hit: &dyn Fn(bool) -> Option<ChatStyle>,
+    ) -> ChatClick {
+        if self.suggestions.mouse_clicked(x, y, &mut self.input) {
+            return ChatClick::Handled;
+        }
+        if button != 0 {
+            return ChatClick::NotHandled;
+        }
+        // `insertionClickMode()` is `minecraft.hasShiftDown()`, and it is
+        // passed BOTH to the finder (so a shift-click can find a style whose
+        // only affordance is an insertion) and to the handler (so it takes the
+        // insertion branch). One flag, two jobs.
+        let Some(style) = hit(shift) else {
+            return ChatClick::NotHandled;
+        };
+        self.handle_component_clicked(&style, shift)
+    }
+
+    /// `ChatScreen.handleComponentClicked(Style, boolean allowInsertions)`.
+    ///
+    /// ```java
+    /// ClickEvent event = clicked.getClickEvent();
+    /// if (allowInsertions) {
+    ///    if (clicked.getInsertion() != null) this.insertText(clicked.getInsertion(), false);
+    /// } else if (event != null) {
+    ///    switch (event) { … default: defaultHandleGameClickEvent(event, …); }
+    ///    return true;
+    /// }
+    /// return false;
+    /// ```
+    ///
+    /// **Shift REPLACES the click path; it does not prefer the insertion over
+    /// it.** The `else if` means a shift-click never runs a command, whether or
+    /// not the style carries an insertion — a "prefer insertion, else click"
+    /// reading runs commands vanilla never runs, which is the difference
+    /// between shift-clicking a player's name and executing whatever the
+    /// server attached to it.
+    ///
+    /// **And the insertion branch returns `false`**, even when the insertion
+    /// happened: the `return true` is inside the `else if`. So a shift-click
+    /// falls through to `super.mouseClicked` and the widgets underneath still
+    /// see it. `event` is read into a local before the branch and then never
+    /// used on that path, which is what makes the shape easy to misread.
+    pub fn handle_component_clicked(
+        &mut self,
+        clicked: &ChatStyle,
+        allow_insertions: bool,
+    ) -> ChatClick {
+        if allow_insertions {
+            if let Some(insertion) = clicked.insertion() {
+                // `insertText(text, false)` — INSERT at the caret, not replace.
+                let insertion = insertion.to_owned();
+                self.input.insert_text(&insertion);
+                self.is_draft = false;
+            }
+            return ChatClick::NotHandled;
+        }
+        let Some(event) = clicked.click() else {
+            return ChatClick::NotHandled;
+        };
+        let outcome = self.dispatch_click_event(&event.clone());
+        // `this.initial = this.input.getValue()` — a consumed click
+        // re-baselines the draft, so a `suggest_command` that filled the field
+        // is not then discarded as an untouched draft on close.
+        self.is_draft = false;
+        outcome
+    }
+
+    /// `Screen.defaultHandleGameClickEvent` followed by
+    /// `Screen.defaultHandleClickEvent`, with `ChatScreen`'s two `Custom`
+    /// interceptions in front of both.
+    fn dispatch_click_event(&mut self, event: &ClickEvent) -> ChatClick {
+        match event {
+            // `case ClickEvent.Custom when id.equals(ChatComponent
+            // .QUEUE_EXPAND_ID)` and `… GO_TO_RESTRICTIONS_SCREEN`. Both are
+            // vanilla's own internal affordances — the delayed-message expand
+            // link and the restricted-chat prompt — and both need a subsystem
+            // Rewo lacks (the chat delay queue; `ChatAbilities`, which arrives
+            // on a packet Rewo does not decode). Named rather than folded into
+            // the generic `Custom` decline, because a server cannot produce
+            // them and a later milestone will want them exactly here.
+            ClickEvent::Custom { id, .. } if id == QUEUE_EXPAND_ID => {
+                ChatClick::Declined("the chat delay queue is not modelled")
+            }
+            ClickEvent::Custom { id, .. } if id == GO_TO_RESTRICTIONS_SCREEN => {
+                ChatClick::Declined("there is no restrictions screen")
+            }
+            // --- defaultHandleGameClickEvent ---
+            ClickEvent::RunCommand(command) => {
+                // `clickCommandAction` → `sendUnattendedCommand(Commands
+                // .trimOptionalPrefix(command), screenAfterCommand)`.
+                ChatClick::RunCommand(trim_optional_prefix(command).to_owned())
+            }
+            ClickEvent::ShowDialog(_) => ChatClick::Declined("there is no dialog screen"),
+            ClickEvent::Custom { .. } => ChatClick::Declined("custom_click_action is not sent"),
+            // --- defaultHandleClickEvent ---
+            ClickEvent::OpenUrl(uri) => ChatClick::OpenUrl(uri.clone()),
+            ClickEvent::SuggestCommand(command) => {
+                // `activeScreen.insertText(command, true)` — REPLACE, where the
+                // insertion path passes `false` and inserts.
+                self.input.set_value(command);
+                ChatClick::Handled
+            }
+            ClickEvent::CopyToClipboard(_) => {
+                // Rewo's clipboard is in-process (M93t) — nothing outside the
+                // chat field could paste it, so writing there would look like
+                // success and not be it.
+                ChatClick::Declined("the clipboard is in-process only")
+            }
+            // `default -> LOGGER.error("Don't know how to handle {}", event)`.
+            // **`change_page` reaches this, in vanilla too**: it is a
+            // `BookViewScreen` action (that screen's own `handleClickEvent`
+            // switch takes it before delegating), and from chat it only logs.
+            // Declining it is exact rather than a deviation.
+            ClickEvent::ChangePage(_) => {
+                ChatClick::Declined("change_page belongs to the book screen")
+            }
+        }
     }
 
     /// The hover half: moving the pointer over a row selects it.
@@ -1020,5 +1216,154 @@ mod tests {
         let mut clip = String::new();
         // F5, which the caller should still get.
         assert_eq!(s.key_pressed(k(294), &mut clip, &[], 10, &env()), ChatAction::NotHandled);
+    }
+
+    // ---- M128: clickable chat text ---------------------------------------
+
+    use crate::chat_events::{ChatEvents, ClickEvent};
+    use std::sync::Arc;
+
+    fn styled(events: ChatEvents) -> ChatStyle {
+        ChatStyle { events: Some(Arc::new(events)), ..ChatStyle::WHITE }
+    }
+
+    fn with_click(click: ClickEvent) -> ChatStyle {
+        styled(ChatEvents { click: Some(click), ..Default::default() })
+    }
+
+
+    /// `Commands.trimOptionalPrefix` takes ONE slash, so `//co i` survives as
+    /// `/co i` — a plugin command, not a typo.
+    #[test]
+    fn trim_optional_prefix_takes_one_slash() {
+        assert_eq!(trim_optional_prefix("/kill"), "kill");
+        assert_eq!(trim_optional_prefix("//co i"), "/co i");
+        assert_eq!(trim_optional_prefix("kill"), "kill");
+        assert_eq!(trim_optional_prefix(""), "");
+    }
+
+    #[test]
+    fn a_run_command_click_leaves_as_a_command_without_its_slash() {
+        let mut s = screen(0);
+        assert_eq!(
+            s.handle_component_clicked(&with_click(ClickEvent::RunCommand("/kill @e".into())), false),
+            ChatClick::RunCommand("kill @e".into())
+        );
+    }
+
+    #[test]
+    fn an_open_url_click_leaves_as_the_url() {
+        let mut s = screen(0);
+        assert_eq!(
+            s.handle_component_clicked(
+                &with_click(ClickEvent::OpenUrl("https://example.com".into())),
+                false
+            ),
+            ChatClick::OpenUrl("https://example.com".into())
+        );
+    }
+
+    /// `suggest_command` is `insertText(command, true)` — **replace**, so the
+    /// field's previous contents go.
+    #[test]
+    fn a_suggest_command_click_replaces_the_field() {
+        let mut s = screen(0);
+        s.input.set_value("typed");
+        assert_eq!(
+            s.handle_component_clicked(
+                &with_click(ClickEvent::SuggestCommand("/tp Steve".into())),
+                false
+            ),
+            ChatClick::Handled
+        );
+        assert_eq!(s.input.value(), "/tp Steve");
+    }
+
+    /// The four Rewo does not perform, and the two `ChatComponent` ids in
+    /// front of them.
+    #[test]
+    fn the_declined_actions_are_declined_rather_than_approximated() {
+        let mut s = screen(0);
+        for event in [
+            ClickEvent::CopyToClipboard("x".into()),
+            ClickEvent::ChangePage(3),
+            ClickEvent::ShowDialog(rewo_proto::nbt::Nbt::String("d".into())),
+            ClickEvent::Custom { id: "ns:thing".into(), payload: None },
+            ClickEvent::Custom { id: QUEUE_EXPAND_ID.into(), payload: None },
+            ClickEvent::Custom { id: GO_TO_RESTRICTIONS_SCREEN.into(), payload: None },
+        ] {
+            assert!(
+                matches!(s.handle_component_clicked(&with_click(event.clone()), false), ChatClick::Declined(_)),
+                "{event:?}"
+            );
+        }
+    }
+
+    /// **Shift REPLACES the click path.** The `else if` means a shift-click on
+    /// a `run_command` link runs nothing, whether or not the style also
+    /// carries an insertion — a "prefer insertion, else click" reading would
+    /// run commands vanilla never runs.
+    #[test]
+    fn shift_never_runs_the_command() {
+        let mut s = screen(0);
+        let both = styled(ChatEvents {
+            click: Some(ClickEvent::RunCommand("/kill".into())),
+            insertion: Some("Steve".into()),
+            ..Default::default()
+        });
+        assert_eq!(s.handle_component_clicked(&both, true), ChatClick::NotHandled);
+        assert_eq!(s.input.value(), "Steve");
+
+        // And with no insertion at all, a shift-click still does not run it.
+        let mut s = screen(0);
+        let click_only = with_click(ClickEvent::RunCommand("/kill".into()));
+        assert_eq!(s.handle_component_clicked(&click_only, true), ChatClick::NotHandled);
+        assert_eq!(s.input.value(), "");
+    }
+
+    /// `insertText(text, false)` — the insertion is INSERTED at the caret,
+    /// where `suggest_command` replaces.
+    #[test]
+    fn a_shift_insertion_inserts_rather_than_replaces() {
+        let mut s = screen(0);
+        s.input.set_value("hi ");
+        let style = styled(ChatEvents { insertion: Some("Steve".into()), ..Default::default() });
+        assert_eq!(s.handle_component_clicked(&style, true), ChatClick::NotHandled);
+        assert_eq!(s.input.value(), "hi Steve");
+    }
+
+    /// A style with nothing on it is not consumed either way.
+    #[test]
+    fn a_plain_style_is_not_consumed() {
+        let mut s = screen(0);
+        assert_eq!(s.handle_component_clicked(&ChatStyle::WHITE, false), ChatClick::NotHandled);
+        assert_eq!(s.handle_component_clicked(&ChatStyle::WHITE, true), ChatClick::NotHandled);
+    }
+
+    /// `event.button() == 0` — a right-click on a link does not even look.
+    #[test]
+    fn only_the_left_button_looks() {
+        let hit = |_shift: bool| Some(with_click(ClickEvent::RunCommand("/kill".into())));
+        let mut s = screen(0);
+        assert_eq!(s.mouse_clicked(0, 0, 1, false, &hit), ChatClick::NotHandled);
+        let mut s = screen(0);
+        assert_eq!(
+            s.mouse_clicked(0, 0, 0, false, &hit),
+            ChatClick::RunCommand("kill".into())
+        );
+    }
+
+    /// The hit test runs only after the popup has declined, and the shift flag
+    /// reaches it — `includeInsertions(this.insertionClickMode())`.
+    #[test]
+    fn the_hit_test_is_told_whether_shift_is_down() {
+        let seen = std::cell::Cell::new(None);
+        let hit = |shift: bool| {
+            seen.set(Some(shift));
+            None
+        };
+        let mut s = screen(0);
+        assert_eq!(s.mouse_clicked(0, 0, 0, true, &hit), ChatClick::NotHandled);
+        assert_eq!(seen.get(), Some(true));
     }
 }
