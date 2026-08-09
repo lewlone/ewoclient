@@ -15394,6 +15394,7 @@ fn plain_span(text: &str) -> rewo_net::chat_style::ChatSpan {
         underlined: false,
         strikethrough: false,
         obfuscated: false,
+        events: None,
     }
 }
 

@@ -784,6 +784,7 @@ const DELETED_MARKER_STYLE: ChatStyle = ChatStyle {
     underlined: false,
     strikethrough: false,
     obfuscated: false,
+    events: None,
 };
 
 /// Everything the store needs from outside itself to wrap a message: the font,
@@ -1333,5 +1334,30 @@ mod tests {
         assert_eq!(c.recent_chat(), ["/help"]);
         c.clear_messages(true);
         assert!(c.recent_chat().is_empty());
+    }
+
+    /// **`ComponentRenderUtils.INDENT` carries `Style.EMPTY`**, so the space a
+    /// width wrap prepends is not part of the link it continues:
+    /// `FormattedCharSequence.composite(INDENT, reorderedText)` chains two
+    /// sequences and the first one has no style of its own. Clicking the
+    /// indent therefore does nothing, while clicking the text one pixel to its
+    /// right runs the command (M128).
+    #[test]
+    fn the_wrap_indent_is_not_part_of_the_link() {
+        use crate::chat_events::{ChatEvents, ClickEvent};
+        let link = ChatStyle {
+            events: Some(std::sync::Arc::new(ChatEvents {
+                click: Some(ClickEvent::RunCommand("/x".into())),
+                ..Default::default()
+            })),
+            ..ChatStyle::WHITE
+        };
+        let lines = wrap_components(&vec![link.span("abc def")], 18, &w6s);
+        assert_eq!(lines.len(), 2);
+        // The continuation is `[indent, text]`.
+        assert_eq!(lines[1][0].text, " ");
+        assert_eq!(lines[1][0].click(), None);
+        assert_eq!(lines[1][1].text, "def");
+        assert_eq!(lines[1][1].click(), Some(&ClickEvent::RunCommand("/x".into())));
     }
 }

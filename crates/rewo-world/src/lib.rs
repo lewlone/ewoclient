@@ -22,6 +22,7 @@ pub mod border;
 pub mod cape;
 pub mod celestial;
 pub mod chat;
+pub mod chat_events;
 pub mod chat_screen;
 pub mod chat_style;
 pub mod chat_translate;

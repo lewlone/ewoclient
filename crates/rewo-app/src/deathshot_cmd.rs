@@ -786,6 +786,7 @@ fn check_pixels(
             underlined: false,
             strikethrough: false,
             obfuscated: false,
+            events: None,
         }]),
         respawn_epoch: 0,
     };
