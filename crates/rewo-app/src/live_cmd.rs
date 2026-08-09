@@ -189,6 +189,23 @@ struct RenderCheck {
     /// the two are comparable; r23's threshold is a floor, so its meaning is
     /// unchanged.
     book_quads_max: usize,
+    /// M132 — frames on which the SCOREBOARD SIDEBAR put text on the list.
+    ///
+    /// The gate injects an objective, three scores and a display-slot
+    /// assignment through the production router, so this grades the whole
+    /// chain: the three packets decode into `Scoreboard`, `select_objective`
+    /// finds the slot, the rows resolve and format, and the layout places
+    /// them. A break anywhere drops it to zero. It is a *text* count rather
+    /// than a fill count because the two bands are drawn unconditionally once
+    /// a sidebar exists, while a row's glyphs need every stage above.
+    sidebar_frames: u64,
+    /// The most text lines the sidebar drew in any frame.
+    ///
+    /// Separate from the frame count because a sidebar with a title and no
+    /// rows still scores `sidebar_frames` — this is what says the *scores*
+    /// reached the renderer. Three injected rows with a name and a number
+    /// each, plus the title, is seven.
+    sidebar_text_max: usize,
     /// M111 — frames on which the chat SCROLLBAR was drawn.
     ///
     /// It exists only while the screen is open AND the backlog exceeds the box
@@ -841,6 +858,27 @@ impl RenderCheck {
                 self.container_overlays_max
             ),
         );
+        // M132 — the scoreboard sidebar. Nothing before this could see it:
+        // Rewo decoded the four scoreboard packets from M65 and drew nothing,
+        // so every other witness here is satisfied by a client with no sidebar
+        // at all.
+        //
+        // The gate injects an objective, three scores and a display-slot
+        // assignment as raw bodies through the production router (M17's rule),
+        // which makes the whole chain the claim: the packets have to decode,
+        // `select_objective` has to find the slot, the rows have to resolve
+        // their names and formats, and the layout has to place them. A hidden
+        // holder is injected alongside, so a client that skipped
+        // `isHidden` scores EIGHT lines rather than seven and fails on the
+        // count as well as on the ordering.
+        row(
+            "r42 the scoreboard sidebar was drawn in the windowed client",
+            self.sidebar_frames > 0 && self.sidebar_text_max == 7,
+            format!(
+                "{} of {} frames drew a sidebar, at most {} text lines (must be                  exactly 7: a title, then three visible rows of name + score.                  A fourth `#hidden` holder is injected too, so 9 means                  `isHidden` was skipped and 1 means only the title resolved)",
+                self.sidebar_frames, self.frames, self.sidebar_text_max
+            ),
+        );
         row(
             "r17 validation was enabled",
             self.validation,
@@ -1139,6 +1177,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
             args,
             want_validation,
             dirt_item,
+            username,
         ),
     }
 }
@@ -4625,6 +4664,11 @@ struct LiveApp {
     /// to see whether F3 was used as a chord modifier before treating it as a
     /// toggle (`if (this.usedDebugKeyAsModifier) { clear it } else { toggle }`).
     debug: bool,
+    /// The local player's profile name, which IS its scoreboard name
+    /// (`ScoreHolder.getScoreboardName`). The sidebar needs it to ask which
+    /// team the viewer is on, and the answer changes which objective is
+    /// shown — so this is not a cosmetic label.
+    username: String,
     /// `Hud.isHidden()` — F1 (M70). Vanilla's is a plain `toggle()` on press,
     /// with none of F3's modifier dance, and it starts `false`.
     ///
@@ -4654,6 +4698,8 @@ struct LiveApp {
     /// Latched so the inject happens once rather than every frame past the
     /// threshold, which would re-open the menu and reset its state each frame.
     container_injected: bool,
+    /// M132 — whether the scoreboard sidebar injection has happened.
+    sidebar_injected: bool,
     /// Whether `--render-check` has force-opened the chat screen yet (M110).
     chat_injected: bool,
     /// Whether it has typed a `/`-command yet (M116).
@@ -6801,6 +6847,69 @@ impl LiveApp {
             // — the M86 shape. It goes in EARLY and stays open: the screen is
             // closed by nothing here, so every later frame carries its bar and
             // the count is unambiguous.
+            // M132 — an objective, four scores and a display-slot assignment,
+            // as raw bodies through the production router (M17's rule). No
+            // server sets a sidebar up unprompted, so without this r42 would
+            // be a witness over a path the gate cannot reach.
+            //
+            // Injected EARLY and never cleared, so the sidebar is live for
+            // most of the run and its frame count is unambiguous. The fourth
+            // holder is named `#hidden`, which `PlayerScoreEntry.isHidden`
+            // filters out: a client that skipped that filter draws nine text
+            // lines rather than seven and fails r42 on the count.
+            if !self.sidebar_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.1 {
+                    if let Some(session) = self.session.as_mut() {
+                        let obj = "rewo_sidebar";
+                        let mc_string = |b: &mut Vec<u8>, s: &str| {
+                            rewo_proto::varint::write_varint(b, s.len() as i32);
+                            b.extend_from_slice(s.as_bytes());
+                        };
+                        let nbt_string = |b: &mut Vec<u8>, s: &str| {
+                            b.push(8); // TAG_String
+                            b.extend_from_slice(&(s.len() as u16).to_be_bytes());
+                            b.extend_from_slice(s.as_bytes());
+                        };
+                        // `set_objective`, METHOD_ADD.
+                        let mut body: Vec<u8> = Vec::new();
+                        mc_string(&mut body, obj);
+                        body.push(0); // ADD
+                        nbt_string(&mut body, "Rewo Sidebar");
+                        rewo_proto::varint::write_varint(&mut body, 0); // INTEGER
+                        body.push(0); // no number format
+                        session.inject_packet(session.ids.cb_play_set_objective, &body);
+
+                        // Four holders. The scores are deliberately out of
+                        // order on the wire, so a client that drew them in
+                        // arrival order rather than by value would place them
+                        // differently — which the sort test pins and this
+                        // keeps honest end to end.
+                        for (owner, value) in
+                            [("RewoAlpha", 3), ("#hidden", 999), ("RewoGamma", 9), ("RewoBeta", 6)]
+                        {
+                            let mut b: Vec<u8> = Vec::new();
+                            mc_string(&mut b, owner);
+                            mc_string(&mut b, obj);
+                            rewo_proto::varint::write_varint(&mut b, value);
+                            b.push(0); // no display override
+                            b.push(0); // no number format
+                            session.inject_packet(session.ids.cb_play_set_score, &b);
+                        }
+
+                        // `set_display_objective` — slot 1 is SIDEBAR. Sent
+                        // last, because it is what makes the panel appear.
+                        let mut b: Vec<u8> = Vec::new();
+                        rewo_proto::varint::write_varint(
+                            &mut b,
+                            rewo_net::scoreboard::DisplaySlot::Sidebar.id(),
+                        );
+                        mc_string(&mut b, obj);
+                        session.inject_packet(session.ids.cb_play_set_display_objective, &b);
+                    }
+                    self.sidebar_injected = true;
+                }
+            }
             if !self.chat_injected {
                 let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
                 if self.started.elapsed().as_secs_f32() >= limit * 0.2 {
@@ -7877,14 +7986,37 @@ impl LiveApp {
         // so a row's backdrop and its glyphs cannot disagree about which rows
         // exist. Set every frame, including when it is empty: a stale backdrop
         // under nothing is a black bar hanging over the world.
-        let mut backdrops = hud_fills(
+        // M132 — the scoreboard sidebar. `Hud.extractRenderState` reaches
+        // `extractScoreboardSidebar` in an earlier stratum than
+        // `extractChat`, so its two bands go on the list BEFORE the chat's
+        // rows and its text before the chat's glyphs. The two overlap only on
+        // a narrow window, which is exactly when a wrong order would show.
+        let sidebar = resolve_sidebar(
+            &session.scoreboard,
+            &self.username,
+            self.hud_hidden,
+            &self.lang,
+            state.world_renderer.font_advance().copied(),
+        );
+        let sidebar_layout = sidebar.as_ref().map(|s| {
+            rewo_net::sidebar::layout(
+                s,
+                (extent.width as f32 / px) as i32,
+                (extent.height as f32 / px) as i32,
+            )
+        });
+        let mut backdrops = match sidebar_layout.as_ref() {
+            Some(l) => sidebar_fills(l),
+            None => Vec::new(),
+        };
+        backdrops.extend(hud_fills(
             &session.chat,
             session.ticks as i32,
             px,
             extent.height as f32,
             &rewo_world::chat::ChatOptions::default(),
             chat_focused,
-        );
+        ));
         if chat_focused {
             // The input bar goes on the same list AFTER the rows, so it sits
             // over them — one list, and its order is the order on screen.
@@ -7943,7 +8075,7 @@ impl LiveApp {
         // the order on screen.
 
         let fps = (!self.cpu.is_empty()).then(|| 1000.0 / self.cpu.average().max(0.001));
-        let (mut text, chat_rows, chat_range) = build_text(
+        let (built, chat_rows, built_chat_range) = build_text(
             session,
             px,
             extent.height as f32,
@@ -7952,6 +8084,26 @@ impl LiveApp {
             chat_focused,
             state.world_renderer.font_advance().copied(),
         );
+        // M132 — the sidebar's lines lead the list, for the stratum reason
+        // above. `chat_range` indexes into `text`, so it shifts with them
+        // rather than the sidebar being appended into the wrong stratum to
+        // keep an index valid.
+        let mut text = match (sidebar.as_ref(), sidebar_layout.as_ref()) {
+            (Some(s), Some(l)) => {
+                sidebar_text(s, l, px, state.world_renderer.font_advance().copied())
+            }
+            _ => Vec::new(),
+        };
+        let sidebar_lines = text.len();
+        if let Some(c) = self.check.as_mut() {
+            if sidebar_lines > 0 {
+                c.sidebar_frames += 1;
+                c.sidebar_text_max = c.sidebar_text_max.max(sidebar_lines);
+            }
+        }
+        let chat_range =
+            (built_chat_range.start + sidebar_lines)..(built_chat_range.end + sidebar_lines);
+        text.extend(built);
         if let Some(cs) = self.chat_screen.as_ref() {
             let (gw, gh) = ((extent.width as f32 / px) as i32, (extent.height as f32 / px) as i32);
             let advance = state.world_renderer.font_advance().copied();
@@ -8310,6 +8462,9 @@ fn run_windowed(
     args: LiveArgs,
     want_validation: bool,
     dirt_item: Option<i32>,
+    // The local player's profile name — the scoreboard name M132's sidebar
+    // asks the team map about.
+    username: String,
 ) -> Result<(), String> {
     // M86's gate runs in the rain, unless the caller asked for something else.
     //
@@ -8366,6 +8521,8 @@ fn run_windowed(
         command_injected: false,
         coords_injected: false,
         literal_table_injected: false,
+        sidebar_injected: false,
+        username,
         chat_parse: None,
         drag: DragState::default(),
         last_click: None,
@@ -9102,6 +9259,123 @@ fn chat_lines(
     (out, rows)
 }
 
+// ── The scoreboard sidebar (M132) ─────────────────────────────────────────
+
+/// Resolve the sidebar for this frame, or `None` when there is nothing to
+/// show.
+///
+/// `Hud.extractRenderState` reaches `extractScoreboardSidebar` only inside
+/// `if (!this.isHidden)`, so F1 suppresses the whole panel — the same gate
+/// M70 already reads for floating labels.
+pub(crate) fn resolve_sidebar(
+    scoreboard: &rewo_net::scoreboard::Scoreboard,
+    local_name: &str,
+    hud_hidden: bool,
+    lang: &rewo_data::lang::Language,
+    advance: Option<[u8; 256]>,
+) -> Option<rewo_net::sidebar::Sidebar> {
+    if hud_hidden {
+        return None;
+    }
+    let width_of = move |t: &str, style: rewo_world::chat_style::ChatStyle| match &advance {
+        Some(a) => rewo_gpu::text::width_styled(t, a, style.bold),
+        None => 0,
+    };
+    rewo_net::sidebar::resolve(
+        scoreboard,
+        local_name,
+        &rewo_net::sidebar::SidebarInput {
+            width_of: &width_of,
+            lang: Some(lang),
+        },
+    )
+}
+
+/// The sidebar's two background bands, in **GUI pixels**.
+///
+/// Two fills and no more: `displayScoreboardSidebar` has exactly one for the
+/// header and one for the body, and the body's is a single rect covering every
+/// row rather than one per row (which is what `PlayerTabOverlay` does, one
+/// class over, and is the plausible symmetry to reach for).
+///
+/// **No `px` multiply, and that is deliberate.** [`rewo_gpu::hud::HudFill`]'s
+/// own doc comment says GUI pixels and `HudPass::draw`'s `tinted_quad` scales
+/// every rect by the GUI scale itself — measured, not assumed: a fill at
+/// `(100, 100, 20, 20)` lands at screen `(200, 200)-(240, 240)` at scale 2
+/// (`sidebarshot`'s development probe). Every OTHER producer in this file
+/// multiplies by `px` first and is therefore scaled twice; see the note on
+/// [`hud_fills`]. Do not "fix" this one into agreement with them.
+pub(crate) fn sidebar_fills(
+    layout: &rewo_net::sidebar::SidebarLayout,
+) -> Vec<rewo_gpu::hud::HudFill> {
+    use rewo_net::sidebar::{BODY_BACKGROUND, HEADER_BACKGROUND};
+    let fill = |r: rewo_net::sidebar::Rect, argb: u32| rewo_gpu::hud::HudFill {
+        x: r.x as f32,
+        y: r.y as f32,
+        w: r.w as f32,
+        h: r.h as f32,
+        alpha: ((argb >> 24) & 0xFF) as f32 / 255.0,
+        rgb: srgb_bytes_to_linear(argb & 0x00FF_FFFF),
+    };
+    vec![
+        fill(layout.header_background, HEADER_BACKGROUND),
+        fill(layout.body_background, BODY_BACKGROUND),
+    ]
+}
+
+/// The sidebar's text — the title, then each row's name and score.
+///
+/// Every one of the three `graphics.text` calls passes an explicit `false` for
+/// `dropShadow`, which is why these do too. The five-argument overload one
+/// class over defaults it to `true`, so the tab list's rows *do* drop a shadow
+/// from the same method — the asymmetry is deliberate in vanilla and not a
+/// transcription slip here.
+pub(crate) fn sidebar_text(
+    sidebar: &rewo_net::sidebar::Sidebar,
+    layout: &rewo_net::sidebar::SidebarLayout,
+    px: f32,
+    advance: Option<[u8; 256]>,
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
+    use rewo_gpu::world::OwnedTextLine;
+    let mut out: Vec<OwnedTextLine> = Vec::new();
+    let mut push_line = |line: &rewo_world::chat_style::ChatLine, x: i32, y: i32| {
+        let mut pen = x as f32 * px;
+        for span in line {
+            let w = advance
+                .as_ref()
+                .map(|a| rewo_gpu::text::width_styled(&span.text, a, span.bold))
+                .unwrap_or(0);
+            if !span.text.is_empty() {
+                out.push(OwnedTextLine {
+                    x: pen,
+                    y: y as f32 * px,
+                    px,
+                    color: srgb_bytes_to_linear_f(span.color),
+                    alpha: 1.0,
+                    shadow: rewo_net::sidebar::DROP_SHADOW,
+                    style: rewo_gpu::text::TextStyle {
+                        bold: span.bold,
+                        italic: span.italic,
+                        underlined: span.underlined,
+                        strikethrough: span.strikethrough,
+                        obfuscated: span.obfuscated,
+                    },
+                    text: span.text.clone(),
+                });
+            }
+            pen += w as f32 * px;
+        }
+    };
+    push_line(&sidebar.title, layout.title.0, layout.title.1);
+    for (row, entry) in layout.rows.iter().zip(&sidebar.entries) {
+        push_line(&entry.name, row.name.0, row.name.1);
+        if let Some((sx, sy)) = row.score {
+            push_line(&entry.score, sx, sy);
+        }
+    }
+    out
+}
+
 /// A span's already-unpacked `[f32; 3]` (sRGB, `chat_style::rgb_f32`'s plain
 /// `/255`) into linear.
 ///
@@ -9161,6 +9435,19 @@ fn srgb_bytes_to_linear(rgb: u32) -> [f32; 3] {
 ///   The text's multiplier has a 0.1 floor (`chatOpacity * 0.9 + 0.1`) and the
 ///   background's has none, so at "Text Background: 0" the fill vanishes
 ///   entirely while the text stays faintly visible.
+/// **Known wrong, and out of M132's scope: these are screen pixels where
+/// [`rewo_gpu::hud::HudFill`] is documented as GUI pixels.**
+///
+/// `HudPass::draw`'s `tinted_quad` multiplies every fill by the GUI scale, so
+/// a rect already multiplied by `px` here is scaled twice — at scale 2 a chat
+/// row's backdrop is drawn at twice its intended `y`, which is off the bottom
+/// of the screen, so the backdrops are simply absent rather than misplaced.
+/// The same applies to [`chat_input_backdrop`], [`chat_scrollbar`] and
+/// [`suggestion_popup_fills`]. No gate can see it: `inventoryshot`'s
+/// chat-backdrop witnesses render at 256x256, where the GUI scale is 1 and the
+/// two readings coincide, and `--render-check`'s counters count the emitted
+/// LIST rather than pixels. Measured during M132 with a unit probe — a fill at
+/// `(100, 100, 20, 20)` lands at screen `(200, 200)-(240, 240)`.
 fn hud_fills(
     chat: &rewo_world::chat::ChatComponent,
     gui_tick: i32,

@@ -32,6 +32,7 @@ mod lightmapshot_cmd;
 mod meshshot_cmd;
 mod tintshot_cmd;
 mod locatorshot_cmd;
+mod sidebarshot_cmd;
 mod titleshot_cmd;
 mod mobshot_cmd;
 mod modules;
@@ -192,6 +193,13 @@ enum Command {
     /// assert the pixels against a synthetic magenta subject with `--check`
     /// (no server; Vulkan required).
     Titleshot(titleshot_cmd::TitleshotArgs),
+    /// M132 scoreboard-sidebar oracle: drive raw `set_objective`, `set_score`
+    /// and `set_display_objective` bodies through the real parsers and the
+    /// real `Scoreboard`, resolve the panel with the SAME `resolve_sidebar`
+    /// the windowed frame calls, then render its fills and text offscreen and
+    /// assert the geometry against literals transcribed from
+    /// `displayScoreboardSidebar` with `--check` (no server; Vulkan required).
+    Sidebarshot(sidebarshot_cmd::SidebarshotArgs),
     /// M83's locator-bar oracle: the `waypoint` packet and the HUD strip.
     Locatorshot(locatorshot_cmd::LocatorshotArgs),
     /// M82 screen-framework + death-screen oracle: drive a raw
@@ -338,6 +346,7 @@ fn main() {
         Some(Command::Eventshot(ev_args)) => eventshot_cmd::run(ev_args),
         Some(Command::Abilityshot(ab_args)) => abilityshot_cmd::run(ab_args),
         Some(Command::Titleshot(t_args)) => titleshot_cmd::run(t_args),
+        Some(Command::Sidebarshot(sb_args)) => sidebarshot_cmd::run(sb_args),
         Some(Command::Locatorshot(l_args)) => locatorshot_cmd::run(l_args),
         Some(Command::Deathshot(d_args)) => deathshot_cmd::run(d_args),
         Some(Command::Statshot(s_args)) => statshot_cmd::run(s_args),
