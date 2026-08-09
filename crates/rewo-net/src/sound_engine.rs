@@ -1505,6 +1505,83 @@ mod tests {
         );
     }
 
+    /// Four equally-weighted variants, like the real `block.stone.break`.
+    fn four_variant_index() -> SoundsIndex {
+        let mut idx = SoundsIndex::new();
+        idx.handle_registration(
+            "minecraft:block.stone.break",
+            &SoundEventRegistration {
+                sounds: (1..=4)
+                    .map(|i| Sound::file(format!("minecraft:dig/stone{i}")))
+                    .collect(),
+                replace: false,
+                subtitle: None,
+            },
+            &SoundFileSet::All,
+        );
+        idx
+    }
+
+    #[test]
+    fn the_packet_seed_reaches_the_variant_pick() {
+        // The whole reason a seed is on the wire: every client hearing the same
+        // event must hear the same file.
+        //
+        // **Two fixture traps, both of which this witness fell into first.**
+        // A one-variant event cannot witness anything — any seed picks the only
+        // file — so this uses four, which is what a real block sound has. And
+        // *small consecutive seeds cannot witness anything either*:
+        // `java.util.Random`'s scramble is `seed ^ 0x5DEECE66D` and one step of
+        // the LCG does not carry a difference in the low five bits up to the
+        // two bits `nextInt(4)` reads, so `new Random(n).nextInt(4)` is **2 for
+        // every n in 0..24**. Seeding 0..23 produced one variant twenty-four
+        // times over and read as "the seed is ignored". Vanilla's seeds are
+        // `level.random.nextLong()` outputs, i.e. full-range, so the fixture
+        // spreads them with a 64-bit odd multiplier.
+        let idx = four_variant_index();
+        let spread = |k: i64| k.wrapping_mul(0x9E37_79B9_7F4A_7C15_u64 as i64);
+        let attached = |seed: i64| -> String {
+            let mut eng = SoundEngine::new();
+            let mut dev = RecordingDevice::default();
+            let mut i = stone(1.0, 1.0);
+            i.seed = Some(seed);
+            eng.play(i, &idx, &EmptyWorld, &mut dev);
+            dev.calls_to(0)
+                .into_iter()
+                .find_map(|c| match c {
+                    ChannelCall::AttachStaticBuffer(p) => Some(p),
+                    _ => None,
+                })
+                .expect("a file was attached")
+        };
+
+        let picked: std::collections::BTreeSet<String> =
+            (1..=24).map(|k| attached(spread(k))).collect();
+        assert_eq!(
+            picked.len(),
+            4,
+            "24 spread seeds reached {picked:?} — all four variants must be reachable"
+        );
+        // Deterministic: the same seed twice is the same file.
+        assert_eq!(attached(spread(7)), attached(spread(7)));
+        // Pinned against `LegacyRandom48` — M66's transcription of
+        // `java.util.Random` — so a change to the generator lands here too.
+        let mut rng = rewo_data::sounds_json::LegacyRandom48::new(spread(7));
+        let expect = 1 + rewo_data::sounds_json::SoundRandom::next_int(&mut rng, 4);
+        assert_eq!(
+            attached(spread(7)),
+            format!("minecraft/sounds/dig/stone{expect}.ogg")
+        );
+        // And the small-seed degeneracy itself, so a future gate author does
+        // not rediscover it the hard way.
+        let small: std::collections::BTreeSet<String> = (0..24).map(attached).collect();
+        assert_eq!(
+            small.len(),
+            1,
+            "seeds 0..23 must all land on one variant — that is the trap"
+        );
+    }
+
     #[test]
     fn attenuation_none_disables_rather_than_passing_an_infinite_distance() {
         let mut eng = SoundEngine::new();
@@ -1549,6 +1626,50 @@ mod tests {
         )));
         assert_eq!(dev.budget().used(Pool::Streaming), 1);
         assert_eq!(dev.budget().used(Pool::Static), 0);
+    }
+
+    #[test]
+    fn the_sounds_json_entrys_own_volume_and_pitch_multiply_the_instances() {
+        // `AbstractSoundInstance.getVolume()` is `this.volume *
+        // sound.getVolume().sample(random)`. **Every fixture built from
+        // `Sound::file` has volume and pitch 1**, where the product equals the
+        // instance's own value and the two readings agree — so the mutation
+        // that drops the multiplication survived until this existed.
+        let mut idx = SoundsIndex::new();
+        idx.handle_registration(
+            "minecraft:block.stone.break",
+            &SoundEventRegistration {
+                sounds: vec![Sound {
+                    volume: 0.5,
+                    pitch: 1.5,
+                    attenuation_distance: 8,
+                    ..Sound::file("minecraft:dig/stone1")
+                }],
+                replace: false,
+                subtitle: None,
+            },
+            &SoundFileSet::All,
+        );
+        let mut eng = SoundEngine::new();
+        let mut dev = RecordingDevice::default();
+        // Instance volume 0.8, pitch 1.0 → gain 0.4, pitch 1.5.
+        eng.play(stone(0.8, 1.0), &idx, &EmptyWorld, &mut dev);
+        let calls = dev.calls_to(0);
+        assert!(calls.contains(&ChannelCall::SetVolume(0.4)), "{calls:?}");
+        assert!(calls.contains(&ChannelCall::SetPitch(1.5)), "{calls:?}");
+        // And the *same* product feeds the attenuation distance: 0.4 is below
+        // 1, so `max(_, 1)` holds the range at the entry's own 8.
+        assert!(calls.contains(&ChannelCall::LinearAttenuation(8.0)), "{calls:?}");
+
+        // Now push the product above 1 so the range moves: 4.0 * 0.5 = 2.0.
+        dev.clear_calls();
+        eng.play(stone(4.0, 1.0), &idx, &EmptyWorld, &mut dev);
+        let calls = dev.calls_to(1);
+        assert!(calls.contains(&ChannelCall::SetVolume(1.0)), "gain saturates");
+        assert!(
+            calls.contains(&ChannelCall::LinearAttenuation(16.0)),
+            "range is 2.0 * 8 = 16, not 4.0 * 8 = 32: {calls:?}"
+        );
     }
 
     #[test]
@@ -1628,6 +1749,58 @@ mod tests {
         );
         assert_eq!(r, PlayResult::NotStarted(NotStarted::IntentionallyEmpty));
         assert!(dev.calls.is_empty());
+    }
+
+    #[test]
+    fn a_registered_event_that_resolves_to_nothing_is_a_different_refusal() {
+        // Vanilla asks two questions — `soundEvent == null` and
+        // `sound == EMPTY_SOUND` — and M66's index answers both with `None`,
+        // so the *reason* is recovered by asking whether the event exists.
+        // Both are silence, so collapsing them would be behaviourally right;
+        // they are told apart because they want different fixes. Nothing
+        // reached this arm until this witness: every other fixture registers
+        // an event that resolves, so `UnknownEvent` and `EmptySound` agreed.
+        let mut eng = SoundEngine::new();
+        let mut dev = RecordingDevice::default();
+
+        // (a) `validateSoundResource` dropped the only variant, so the event
+        // exists with no sounds — the real-world case, since a pack can list a
+        // file it does not ship.
+        let mut idx = SoundsIndex::new();
+        idx.handle_registration(
+            "minecraft:block.stone.break",
+            &SoundEventRegistration {
+                sounds: vec![Sound::file("minecraft:dig/absent")],
+                replace: false,
+                subtitle: None,
+            },
+            &SoundFileSet::Only(Default::default()),
+        );
+        assert!(idx.get("minecraft:block.stone.break").is_some(), "registered");
+        let (_, r) = eng.play(stone(1.0, 1.0), &idx, &EmptyWorld, &mut dev);
+        assert_eq!(r, PlayResult::NotStarted(NotStarted::EmptySound));
+
+        // (b) A total weight of zero — vanilla's `weight != 0` guard.
+        let mut idx = SoundsIndex::new();
+        idx.handle_registration(
+            "minecraft:block.stone.break",
+            &SoundEventRegistration {
+                sounds: vec![Sound {
+                    weight: 0,
+                    ..Sound::file("minecraft:dig/stone1")
+                }],
+                replace: false,
+                subtitle: None,
+            },
+            &SoundFileSet::All,
+        );
+        let (_, r) = eng.play(stone(1.0, 1.0), &idx, &EmptyWorld, &mut dev);
+        assert_eq!(r, PlayResult::NotStarted(NotStarted::EmptySound));
+
+        // …against the event that was never registered at all.
+        let (_, r) = eng.play(stone(1.0, 1.0), &SoundsIndex::new(), &EmptyWorld, &mut dev);
+        assert_eq!(r, PlayResult::NotStarted(NotStarted::UnknownEvent));
+        assert!(dev.calls.is_empty(), "none of the three touched a channel");
     }
 
     #[test]
@@ -1713,6 +1886,19 @@ mod tests {
     // ---- the grace period and the reclaim ---------------------------------
 
     #[test]
+    fn the_grace_period_is_twenty_ticks_pinned_against_the_decompiles_literal() {
+        // `SoundEngine`'s `private static final int MIN_SOURCE_LIFETIME = 20;`.
+        //
+        // Stated separately because the boundary test below computes its own
+        // expectation *from this constant* and is therefore self-calibrating:
+        // changing it moves the code and the expectation together, so that
+        // test alone cannot see a wrong value. M93r's finding, and this
+        // battery caught it here — the 20 → 19 mutation survived until this
+        // assertion existed.
+        assert_eq!(MIN_SOURCE_LIFETIME, 20);
+    }
+
+    #[test]
     fn a_finished_sound_is_not_reclaimed_before_the_minimum_lifetime() {
         let idx = plain_index();
         let mut eng = SoundEngine::new();
@@ -1729,9 +1915,9 @@ mod tests {
             eng.tick(false, &idx, &EmptyWorld, &mut dev);
             assert!(eng.is_active(id), "at tick {}", eng.tick_count());
         }
-        assert_eq!(eng.tick_count(), MIN_SOURCE_LIFETIME - 1);
+        assert_eq!(eng.tick_count(), 19, "literal, not derived from the const");
         eng.tick(false, &idx, &EmptyWorld, &mut dev);
-        assert_eq!(eng.tick_count(), MIN_SOURCE_LIFETIME);
+        assert_eq!(eng.tick_count(), 20);
         assert!(!eng.is_active(id), "reclaimed when deleteTime <= tickCount");
     }
 

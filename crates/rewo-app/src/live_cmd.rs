@@ -20955,3 +20955,72 @@ mod m93m_beacon {
         }
     }
 }
+
+/// M131 — the sound model's live constructor.
+#[cfg(test)]
+mod m131_sounds {
+    use super::build_sounds;
+
+    /// The one thing about the live wiring a unit test can reach.
+    ///
+    /// What it does NOT reach is that `run_headless` and `LiveApp::frame`
+    /// actually *call* `LiveSounds::drive`: those are composition roots in a
+    /// binary crate with no seam, and only `live --render-check` could see
+    /// them. Deleting either call site survives the whole suite — measured
+    /// with the mutation battery, not assumed.
+    #[test]
+    fn build_sounds_produces_a_system_that_can_resolve_a_real_event() {
+        let Some(paths) = rewo_data::DataPaths::for_version("26.2") else {
+            eprintln!("SKIP: no config dir");
+            return;
+        };
+        if !paths.registries_json().exists() {
+            eprintln!("SKIP: no datagen report");
+            return;
+        }
+        let registry =
+            rewo_data::sound_events::SoundEvents::load(&paths.registries_json()).expect("registry");
+        let live = build_sounds("26.2", &registry);
+        // The registry half: the id table came across intact, and id 0 is the
+        // one that separates a `protocol_id` table from an alphabetised one.
+        assert_eq!(
+            live.registry.name(0),
+            Some("minecraft:entity.allay.ambient_with_item")
+        );
+        // The SKIP must be decided by the **store on disk**, not by what
+        // `build_sounds` handed back. Guarding on `sounds.is_empty()` reads
+        // "this machine has no assets" and "the loader is broken" identically,
+        // and the mutation battery proved it: replacing the whole loader with
+        // an empty index left this test green (it merely SKIPped).
+        let store_present = rewo_data::sounds_json::asset_index_id("26.2")
+            .and_then(|id| rewo_data::sounds_json::shared_assets_dir().map(|r| (r, id)))
+            .map(|(root, id)| root.join("indexes").join(format!("{id}.json")).exists())
+            .unwrap_or(false);
+        if !store_present {
+            eprintln!("SKIP: no unpacked asset store, so no sounds.json");
+            return;
+        }
+        assert!(
+            !live.system.sounds.is_empty(),
+            "the asset store is present but build_sounds resolved no events"
+        );
+        // The index half. **An event name and its file path are unrelated
+        // strings** — `block.stone.break` resolves to `dig/stone1..4`, a
+        // pre-1.13 path the sound file never got renamed out of. This witness
+        // asserted `block/stone/…` on its first run and was wrong; the
+        // mismatch is exactly what M66 means by "the event names four files
+        // and none of them is the event".
+        let got = live
+            .system
+            .sounds
+            .get_sound_seeded("minecraft:block.stone.break", 0)
+            .expect("a variant");
+        assert!(got.name.starts_with("minecraft:dig/stone"), "{}", got.name);
+        assert_ne!(got.name, "minecraft:block.stone.break");
+        assert_eq!(
+            got.asset_path(),
+            format!("minecraft/sounds/dig/stone{}.ogg", &got.name["minecraft:dig/stone".len()..])
+        );
+        assert_eq!(got.attenuation_distance, 16);
+    }
+}
