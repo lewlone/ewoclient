@@ -4484,6 +4484,19 @@ impl PlaySession {
         crate::chat_translate::chat_component_text(tag, self.lang.as_deref())
     }
 
+    /// The protocol id of a named `minecraft:chat_type` entry.
+    ///
+    /// For witnesses. The registry is the SERVER's (M42's rule), so a gate
+    /// that wants a specific decoration has to ask rather than assume an
+    /// index — which is the point: the lookup is then part of what the witness
+    /// grades, and an empty registry answers `None` instead of index 0.
+    pub fn chat_type_id(&self, name: &str) -> Option<i32> {
+        self.chat_types
+            .iter()
+            .position(|d| d.id == name)
+            .and_then(|i| i32::try_from(i).ok())
+    }
+
     /// `ChatType.Bound.decorate(content)` — the component vanilla renders.
     ///
     /// Falls back to the content unchanged when the bound names a chat type

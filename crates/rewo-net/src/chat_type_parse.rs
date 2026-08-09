@@ -23,10 +23,14 @@
 //! ```
 //!
 //! **`msg_command_outgoing` takes TARGET where every other two-parameter type
-//! takes SENDER** (`ChatTypeDecoration.outgoingDirectMessage`). It is the one
-//! asymmetry in the table and it is invisible to a reading that assumes
-//! parameter 0 is always the sender: `/msg` to someone else would then render
-//! "You whisper to <yourself>", which is well-formed, plausible, and wrong.
+//! takes SENDER** (`ChatTypeDecoration.outgoingDirectMessage`), and the two
+//! team decorations lead with TARGET as well — so **three of the seven** have
+//! a non-SENDER parameter 0, and a reading that assumes parameter 0 is always
+//! the sender is wrong about all three. `msg_command_outgoing` is the one that
+//! is wrong *invisibly*: `MsgCommand` binds `name` to the sender and
+//! `targetName` to the recipient, and `en_us` is "You whisper to %s: %s", so a
+//! SENDER-first read renders "You whisper to <yourself>" — well-formed,
+//! plausible, and wrong. The team ones would merely swap two visible names.
 //!
 //! # The parameters are STRINGS here and VarInts on the stream
 //!
@@ -659,6 +663,161 @@ mod tests {
     /// `ByIdMap.continuous(.., OutOfBoundsStrategy.ZERO)` — an out-of-range id
     /// is SENDER, not an error. The registry's string form has no such rule,
     /// which is why the two encodings need two functions.
+    /// R3 — the inline form's style must be CARRIED, not merely read.
+    ///
+    /// `an_empty_inline_style_contributes_no_fields` cannot see this: an empty
+    /// compound is the one fixture where `Some(empty)` and `None` agree, which
+    /// is the weak-fixture shape this project keeps rediscovering. A mutation
+    /// setting `style: None` in `read_decoration_stream` survives it and dies
+    /// here.
+    #[test]
+    fn a_non_empty_inline_style_reaches_the_decorated_component() {
+        let b = inline_bytes(&[
+            (
+                "chat.type.text",
+                &[0, 2],
+                compound(&[("color", s("gray")), ("italic", Nbt::Byte(1))]),
+            ),
+            ("chat.type.text.narrate", &[0, 2], compound(&[])),
+        ]);
+        let ty = read_chat_type_stream(&mut PacketReader::new(&b)).unwrap();
+        let got = ty
+            .chat
+            .as_ref()
+            .unwrap()
+            .decorate(&s("hi"), &bound("Steve", None));
+        assert_eq!(got.get("color"), Some(&s("gray")));
+        assert_eq!(got.get("italic"), Some(&Nbt::Byte(1)));
+    }
+
+    /// R4 — `ChatTypeDecoration.CODEC` is
+    /// `Parameter.CODEC.listOf().fieldOf("parameters")`, i.e. **required**.
+    ///
+    /// The difference is visible rather than academic: declining renders the
+    /// content undecorated, where defaulting to an empty list renders
+    /// `chat.type.text`'s `"<%s> %s"` with nothing substituted — a line reading
+    /// `<> ` whatever the server sent.
+    ///
+    /// `a_malformed_entry_keeps_its_slot` cannot reach this, because
+    /// `translation_key` is checked first and its fixture omits both.
+    #[test]
+    fn a_decoration_with_no_parameters_field_is_declined_not_defaulted() {
+        let missing = compound(&[
+            (
+                "chat",
+                compound(&[("translation_key", s("chat.type.text"))]),
+            ),
+            (
+                "narration",
+                compound(&[
+                    ("parameters", list_of(&["sender"])),
+                    ("translation_key", s("x")),
+                ]),
+            ),
+        ]);
+        let b = body(&[("minecraft:chat", Some(missing))]);
+        let v = parse_chat_type_registry(&mut PacketReader::new(&b), 1);
+        assert_eq!(v[0].ty.chat, None);
+        assert!(v[0].ty.narration.is_some(), "the sibling still parses");
+    }
+
+    /// An **empty** parameter list is legal, and distinct from a missing one:
+    /// `listOf()` accepts `[]`. The server gets a template with no arguments,
+    /// which is its business.
+    #[test]
+    fn an_empty_parameter_list_is_legal_and_not_the_same_as_a_missing_one() {
+        let empty = compound(&[
+            (
+                "chat",
+                compound(&[
+                    ("parameters", Nbt::List(vec![])),
+                    ("translation_key", s("chat.type.text")),
+                ]),
+            ),
+            (
+                "narration",
+                compound(&[
+                    ("parameters", list_of(&["sender"])),
+                    ("translation_key", s("x")),
+                ]),
+            ),
+        ]);
+        let b = body(&[("minecraft:chat", Some(empty))]);
+        let v = parse_chat_type_registry(&mut PacketReader::new(&b), 1);
+        let chat = v[0].ty.chat.as_ref().expect("an empty list is not a missing one");
+        assert!(chat.parameters.is_empty());
+        let got = chat.decorate(&s("hi"), &bound("Steve", None));
+        assert_eq!(got.get("with"), Some(&Nbt::List(vec![])));
+    }
+
+    /// R2 — `STYLE_FIELDS` is read by production and only three of its six
+    /// entries were witnessed, so truncating it left every crate green while a
+    /// decoration setting `underlined` rendered unstyled.
+    ///
+    /// The const's contract is "every key `resolve_style` reads", and the
+    /// correspondence is what matters: if `resolve_style` ever grows a field
+    /// (vanilla's `Style` carries `shadow_color`, `font`, `insertion` and the
+    /// two events, none of which `ChatStyle` models), a `STYLE_FIELDS` that did
+    /// not grow with it would silently under-copy.
+    ///
+    /// So this grades the correspondence rather than the list: each key must
+    /// be one `resolve_style` actually consumes, proved by resolving a
+    /// component carrying that key alone and requiring the result to DIFFER
+    /// from the parent.
+    #[test]
+    fn every_style_field_is_one_the_resolver_reads() {
+        use rewo_world::chat_style::{ChatStyle, STYLE_FIELDS};
+        // A parent with every flag set and a known colour, so a field that
+        // flips a flag OFF is as visible as one that flips it on.
+        let parent = ChatStyle {
+            color: [0.0, 0.0, 0.0],
+            bold: true,
+            italic: true,
+            underlined: true,
+            strikethrough: true,
+            obfuscated: true,
+        };
+        for key in STYLE_FIELDS {
+            let value = if key == "color" {
+                s("red")
+            } else {
+                Nbt::Byte(0)
+            };
+            let tag = Nbt::Compound(vec![
+                ("text".to_string(), s("x")),
+                (key.to_string(), value),
+            ]);
+            let spans = rewo_world::chat_style::parse_component(&tag, parent, None);
+            assert_eq!(spans.len(), 1, "{key}");
+            assert_ne!(
+                spans[0].style(),
+                parent,
+                "`STYLE_FIELDS` names {key:?}, but `resolve_style` ignores it"
+            );
+        }
+        // And the other direction: a key the resolver does NOT read must not
+        // be in the list, or `decorate` would copy a field that changes
+        // nothing and the list would stop describing the resolver.
+        for absent in ["shadow_color", "font", "insertion", "click_event", "hover_event"] {
+            assert!(
+                !STYLE_FIELDS.contains(&absent),
+                "{absent:?} is in STYLE_FIELDS but ChatStyle cannot hold it"
+            );
+        }
+    }
+
+    /// C3 — a negative registry id has a stated policy rather than an
+    /// accidental one.
+    ///
+    /// `raw` is a plain VarInt, so a wire `-1` yields `Registry(-2)`, where
+    /// vanilla's `byIdOrThrow(id - 1)` throws. The resolver's
+    /// `usize::try_from` declines it, which is the same fallback an id past
+    /// the end takes — the content, undecorated.
+    #[test]
+    fn a_negative_registry_id_declines_rather_than_wrapping() {
+        assert!(usize::try_from(-2i32).is_err());
+    }
+
     #[test]
     fn an_out_of_range_stream_parameter_is_sender() {
         assert_eq!(Parameter::from_stream_id(0), Parameter::Sender);

@@ -121,6 +121,34 @@ pub struct LiveArgs {
 /// gate rather than a soak.
 const RENDER_CHECK_SECONDS: f32 = 8.0;
 
+/// `ChatFormatting.GRAY`'s 0xAAAAAA, in the LINEAR space the text pass wants.
+///
+/// Spelled out rather than taken from `parse_color` + `srgb_to_linear`,
+/// because a witness that computes its expectation from the functions under
+/// test is self-calibrating (§0.0 gotcha 0a) — it would pass with a wrong
+/// palette entry and with a wrong transfer function alike.
+///
+/// **The first version of r41 compared against the sRGB value and read 0 with
+/// the feature working**, which is this codebase's own open item (the title
+/// path and the death screen hand the text pass `/255` bytes where it wants
+/// linear) reproduced inside a new witness. The chat path converts correctly;
+/// the witness did not.
+///
+/// **The second version read 0 too, and for a different reason worth keeping.**
+/// It compared bits. The renderer evaluates the transfer function in `f32` at
+/// every step and reaches `0.40197787`; the same formula in `f64`, narrowed
+/// once at the end, reaches `0.40197778`. Those are different `f32`s. A
+/// bit-exact comparison across two evaluation orders of one formula is a
+/// **wrong** assertion rather than a strict one — the same shape as M12's
+/// finding that JOML's `Math.fma` is non-fused by default and so `lengthSquared`
+/// must be read right-associatively. The tolerance below is ~40x tighter than
+/// one 8-bit colour step (1/255) and ~1000x looser than the gap above, so it
+/// cannot admit a wrong palette entry or a missing conversion.
+const GRAY_LINEAR: f32 = 0.401_977_78;
+
+/// Well under one 8-bit colour step, well over the f32/f64 evaluation gap.
+const COLOR_EPS: f32 = 1e-4;
+
 /// What `live --render-check` observed (M86).
 ///
 /// Every field is a **count of frames on which something happened**, never a
@@ -277,6 +305,11 @@ struct RenderCheck {
     /// Counted over the DRAWN lines in `build_text`'s chat range, not over the
     /// chat store — M125's rule, one surface further on.
     styled_chat_frames: u64,
+    /// M127 — frames whose chat drew a DECORATED line: `<name> text`, from an
+    /// injected `disguised_chat` bound to the server's own `minecraft:chat`.
+    decorated_chat_frames: u64,
+    /// M127 — frames where that decoration's OWN style reached the row.
+    styled_decoration_frames: u64,
     /// M126d — frames on which a drawn chat line carried a non-plain
     /// `TextStyle`.
     ///
@@ -651,6 +684,41 @@ impl RenderCheck {
             format!(
                 "{} of {} frames drew italic/underline/strikethrough (the flags                  ride `TextStyle`, a different field from the colour, so a                  wiring that dropped them would leave r38 green)",
                 self.flagged_chat_frames, self.frames
+            ),
+        );
+        // M127 — the decoration. r26, r37, r38 and r39 are all satisfied by a
+        // client that renders a chat line's own content and never decorates
+        // it, which is what Rewo did from M1 to M126: a player line read `hi`
+        // where vanilla reads `<Steve> hi`.
+        //
+        // This grades the WHOLE chain and nothing else can: the server's
+        // configuration `registry_data` has to have carried
+        // `minecraft:chat_type` and been parsed (an unsynced registry makes
+        // `chat_type_id` answer `None` and the injection is skipped, scoring
+        // zero); the bound's `holder` VarInt has to resolve back to that entry;
+        // the decoration has to build `Component.translatable("chat.type.text",
+        // [name, content])`; M125's resolution has to find `<%s> %s` and
+        // substitute both arguments; and M126's spans have to reach the glyphs.
+        row(
+            "r40 a drawn chat line was DECORATED by its chat type",
+            self.decorated_chat_frames > 0,
+            format!(
+                "{} of {} frames drew \"<RewoDecoWitness> decorated\" — the                  server's own `minecraft:chat` entry, looked up by name rather                  than assumed, so an unsynced registry scores 0 rather than                  silently using index 0",
+                self.decorated_chat_frames, self.frames
+            ),
+        );
+        // M127 — and that the decoration's own `Style` reached the row, which
+        // r40 cannot see: `chat.type.text` carries `Style.EMPTY`, so a
+        // decoration that dropped `withStyle` entirely would leave r40 green.
+        // Five of the seven vanilla types are unstyled and the two `/msg` ones
+        // are `withColor(GRAY).withItalic(true)` — which is the whole reason
+        // M126's pipeline had to land before this milestone.
+        row(
+            "r41 the decoration's own style reached the row",
+            self.styled_decoration_frames > 0,
+            format!(
+                "{} of {} frames drew the `/msg` decoration's row entirely in                  gray AND italic. The arguments are bare literals with                  `Style.EMPTY`, so they INHERIT it — which is the composition                  rule (`getStyle().applyTo(parentStyle)`) and not a coincidence",
+                self.styled_decoration_frames, self.frames
             ),
         );
         // M110 — the chat SCREEN, as distinct from r26's read-only box. A zero
@@ -6781,6 +6849,45 @@ impl LiveApp {
                             session.inject_packet(pid, &body);
                         }
                     }
+                    // M127 — two `disguised_chat` bodies, bound to the
+                    // SERVER's own chat types by name. `handleDisguisedChat`
+                    // is the shortest path to a decorated line: a component,
+                    // a bound, and no signature machinery. Injected as raw
+                    // bodies through the production router (M17's rule).
+                    //
+                    // The ids are looked up rather than assumed, because the
+                    // registry is datapack-driven and the index is whatever
+                    // the server's packs say. That also makes the lookup part
+                    // of the claim: a client that never parsed
+                    // `registry_data` for this registry answers `None` here
+                    // and injects nothing, so r40 and r41 read zero instead of
+                    // quietly decorating with entry 0.
+                    if let Some(session) = self.session.as_mut() {
+                        let pid = session.ids.cb_play_disguised_chat;
+                        let plain = session.chat_type_id("minecraft:chat");
+                        let whisper =
+                            session.chat_type_id("minecraft:msg_command_incoming");
+                        let mut body = |content: &str, name: &str, id: i32| {
+                            let mut b: Vec<u8> = vec![8];
+                            b.extend_from_slice(&(content.len() as u16).to_be_bytes());
+                            b.extend_from_slice(content.as_bytes());
+                            // `ByteBufCodecs.holder` — id + 1, 0 meaning inline.
+                            rewo_proto::varint::write_varint(&mut b, id + 1);
+                            b.push(8);
+                            b.extend_from_slice(&(name.len() as u16).to_be_bytes());
+                            b.extend_from_slice(name.as_bytes());
+                            b.push(0); // no targetName
+                            b
+                        };
+                        if let Some(id) = plain {
+                            let b = body("decorated", "RewoDecoWitness", id);
+                            session.inject_packet(pid, &b);
+                        }
+                        if let Some(id) = whisper {
+                            let b = body("whispered", "RewoStyleWitness", id);
+                            session.inject_packet(pid, &b);
+                        }
+                    }
                     // M115 — a completion word, then a keystroke, so r29
                     // measures the whole production chain rather than a
                     // hand-built `Suggestions`: the packet reaches
@@ -7907,6 +8014,8 @@ impl LiveApp {
             let drawn = &text[chat_range.clone()];
             let mut at = 0usize;
             let mut multi = false;
+            let mut decorated = false;
+            let mut styled_decoration = false;
             for (_, n) in &chat_rows {
                 let row = &drawn[at.min(drawn.len())..(at + n).min(drawn.len())];
                 let mut colors: Vec<[u32; 3]> = row
@@ -7916,10 +8025,33 @@ impl LiveApp {
                 colors.sort_unstable();
                 colors.dedup();
                 multi |= colors.len() > 1;
+                // M127 — r40/r41, on the same per-row slice, because both are
+                // claims about ONE row: "the box contains these characters
+                // somewhere" is satisfied by a client that draws the name and
+                // the message as two unrelated lines.
+                let row_text: String = row.iter().map(|l| l.text.as_str()).collect();
+                if row_text.contains("<RewoDecoWitness> decorated") {
+                    decorated = true;
+                }
+                if row_text.contains("RewoStyleWitness whispers to you: whispered")
+                    && !row.is_empty()
+                    && row.iter().all(|l| {
+                        l.color.iter().all(|c| (c - GRAY_LINEAR).abs() < COLOR_EPS)
+                            && l.style.italic
+                    })
+                {
+                    styled_decoration = true;
+                }
                 at += n;
             }
             if multi {
                 c.styled_chat_frames += 1;
+            }
+            if decorated {
+                c.decorated_chat_frames += 1;
+            }
+            if styled_decoration {
+                c.styled_decoration_frames += 1;
             }
             if drawn
                 .iter()

@@ -61,17 +61,20 @@
 //! line was appearing in the chat log as well as (or instead of) above the
 //! hotbar.
 //!
-//! # What is decoded and deliberately not acted on
+//! # The decoration (M127)
 //!
-//! The **decoration** — `boundChatType.decorate(content)`, which is what turns
-//! a bare message into `<Steve> hi`. M78 recorded the blocker and it is
-//! unchanged: it needs the `minecraft:chat_type` registry's *contents* from
-//! configuration `registry_data`, which Rewo does not parse for that registry,
-//! plus the language table, which `rewo-net` cannot see. Both halves are now
-//! *reachable* (M42 parses one datapack registry, M54 loads the language map),
-//! so this is a scheduling decision rather than a wall — named here so it is
-//! not mistaken for an oversight. Until then a player line renders as its
-//! content, which is what the pre-M108 code did too.
+//! `boundChatType.decorate(content)` — what turns a bare message into
+//! `<Steve> hi` — is applied. Every milestone from M78 to M126 recorded it as
+//! decoded-and-not-acted-on, because it needs the `minecraft:chat_type`
+//! registry's contents from configuration `registry_data` and the language
+//! table. Both arrived: [`crate::chat_type_parse`] parses the registry, M54
+//! loads the table, and `PlaySession` holds both.
+//!
+//! [`show_message`] therefore takes the decoration and the flattening as
+//! closures. It decorates in BOTH branches — the masked one re-decorates the
+//! filtered content, as `showMessageToPlayer` does — and the trust level is
+//! evaluated against the decorated component, which is what vanilla asks and
+//! what Rewo could not ask before.
 
 use rewo_proto::reader::PacketReader;
 use rewo_proto::Result;
