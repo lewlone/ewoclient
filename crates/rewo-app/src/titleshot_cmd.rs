@@ -809,15 +809,15 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
     c.record(
         "m5.a_coloured_title_takes_the_span_colour_and_still_fades",
         lines.len() == 1
-            && lines[0].color[0] > 0.9
-            && lines[0].color[1] < 0.4
+            && lines[0].color_linear[0] > 0.9
+            && lines[0].color_linear[1] < 0.4
             && (lines[0].alpha - want_alpha).abs() < 1e-6
             && want_alpha < 1.0,
         format!(
             "red {:?} at alpha {:.3} (MUTATION: taking the span's colour whole — \
              including its opaque alpha — gives a coloured title that snaps in \
              and out at full opacity while a white one fades)",
-            lines[0].color, lines[0].alpha
+            lines[0].color_linear, lines[0].alpha
         ),
     );
 
@@ -860,7 +860,17 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
         ..ExperienceState::default()
     };
     let level = crate::live_cmd::experience_level_lines(&xp, true, None, advance, px, screen);
-    let green = rewo_net::chat_style::rgb_f32(rewo_gpu::hud::EXPERIENCE_LEVEL_COLOR & 0xFF_FFFF);
+    // `-8323296` = `0xFF80FF20`, pushed through THIS FILE's own `srgb_decode`
+    // rather than through `live_cmd`'s converter: the expectation must not be
+    // computed by the function under test (M93q). Before M130 the line carried
+    // the byte `/255`, so the number here was `rgb_f32`'s and the witness was
+    // self-calibrating for the space as well as for the value.
+    let want = rewo_gpu::hud::EXPERIENCE_LEVEL_COLOR;
+    let green = [
+        srgb_decode(((want >> 16) & 0xFF) as u8),
+        srgb_decode(((want >> 8) & 0xFF) as u8),
+        srgb_decode((want & 0xFF) as u8),
+    ];
     let offsets: Vec<(f32, f32)> = level
         .iter()
         .map(|l| (l.x - level[4].x, l.y - level[4].y))
@@ -869,8 +879,12 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
         "m8.the_level_number_is_five_shadowless_draws_with_a_four_way_outline",
         level.len() == 5
             && level.iter().all(|l| !l.shadow)
-            && level[4].color == green
-            && level[..4].iter().all(|l| l.color == [0.0, 0.0, 0.0])
+            && level[4]
+                .color_linear
+                .iter()
+                .zip(green)
+                .all(|(a, b)| (a - b).abs() < 1e-6)
+            && level[..4].iter().all(|l| l.color_linear == [0.0, 0.0, 0.0])
             && offsets[..4].contains(&(px, 0.0))
             && offsets[..4].contains(&(-px, 0.0))
             && offsets[..4].contains(&(0.0, px))

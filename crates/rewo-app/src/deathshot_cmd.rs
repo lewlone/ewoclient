@@ -957,22 +957,31 @@ fn check_pixels(
     // On `button_disabled` the sheet's brightest texel is 52, so the label is
     // unmistakable — and so is its absence.
     //
-    // **`0xA0A0A0` reaches the framebuffer as `srgb_encode(160/255)` = 208,
-    // not 160.** Rewo's text pass writes its colour straight to an sRGB
-    // attachment, so the number it is handed is treated as *linear*. That is a
-    // pre-existing Rewo-wide convention — the chat, the F3 block, the titles
-    // and the HUD all share it — and a real deviation from vanilla, which
-    // composites GUI text in gamma space. Recorded here rather than fixed:
-    // changing it would move every text pixel in every existing gate.
+    // **`0xA0A0A0` reaches the framebuffer as `160` — vanilla's own byte.**
+    //
+    // Until M130 it reached it as `srgb_encode(160/255)` = 208, because the
+    // text pass writes its colour straight into an sRGB attachment and every
+    // caller handed over the byte `/255`, which the hardware then treated as
+    // linear. This comment used to record that as "a pre-existing Rewo-wide
+    // convention … changing it would move every text pixel in every existing
+    // gate". It moved three gates, and this witness is one of them: the
+    // expectation is now the decompile's number rather than the deviation's.
+    //
+    // What is still NOT vanilla is the drop shadow. `ARGB.scaleRGB(color,
+    // 0.25F)` scales the gamma-space byte and truncates; this pass scales the
+    // linear float, so a shadow of `0xA0A0A0` stores 121 where vanilla stores
+    // 40. `interior_max` reads the glyph, not its shadow, so this witness does
+    // not see it — named here so the gap is recorded rather than implied.
     let label_band = |buf: &[u8]| interior_max(buf, bx0 + 6, by0 + 8, bx1 - 6, by1 - 8);
-    let dead_label = srgb_encode(160.0 / 255.0);
+    let dead_label = 160u8;
     c.record(
         "p8.an_active_label_is_white_and_a_dead_one_is_the_inactive_grey",
         label_band(&frame) == 255 && label_band(&dead_frame) == dead_label,
         format!(
-            "active max {} (white), dead max {} == srgb_encode(160/255), over \
-             a sheet whose own maximum is 52 — colouring the dead label white \
-             instead pushes the second number to 255",
+            "active max {} (white), dead max {} == 0xA0 itself, over a sheet \
+             whose own maximum is 52 — colouring the dead label white instead \
+             pushes the second number to 255, and handing the byte over as if \
+             it were already linear (the pre-M130 bug) pushes it to 208",
             label_band(&frame),
             label_band(&dead_frame)
         ),
@@ -1006,11 +1015,14 @@ fn check_pixels(
         ),
     );
 
-    // p10: the score's value is yellow where its template is white. Rewo's
-    // text pass writes its colour straight to an sRGB attachment, so 0x55
-    // stores as `srgb_encode(85/255)`; that is a pre-existing Rewo-wide
-    // convention, not this milestone's, and the prediction accounts for it.
-    let blue_of_yellow = srgb_encode(85.0 / 255.0);
+    // p10: the score's value is yellow where its template is white.
+    //
+    // `ChatFormatting.YELLOW` is `0xFFFF55`, so the blue channel is **85** —
+    // the byte itself. Before M130 the span's colour reached the pass as
+    // `85/255` in a slot the attachment treats as linear, so it stored 156 and
+    // this prediction said `srgb_encode(85/255)`. The number a witness expects
+    // and the number vanilla writes are now the same one.
+    let blue_of_yellow = 85u8;
     let score_band = ((100 * SCALE) as u32, ((100 + 8) * SCALE) as u32);
     let mut saw_yellow = false;
     let mut saw_white = false;
@@ -1030,8 +1042,9 @@ fn check_pixels(
         "p10.the_score_value_renders_yellow_beside_a_white_template",
         saw_yellow && saw_white,
         format!(
-            "expected blue channel {blue_of_yellow} for 0xFFFF55; yellow={} \
-             white={} — colouring the value white loses the first",
+            "expected blue channel {blue_of_yellow} for 0xFFFF55 (the byte, not \
+             the 156 a `/255` would store); yellow={} white={} — colouring the \
+             value white loses the first",
             saw_yellow, saw_white
         ),
     );

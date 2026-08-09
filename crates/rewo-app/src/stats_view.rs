@@ -396,6 +396,9 @@ pub fn lines(
 ) -> Vec<OwnedTextLine> {
     let m = &view.model;
     let mut out = Vec::new();
+    // Every colour below (`ROW_DIM` 0xBABABA, `ROW_GREY` 0x808080,
+    // `INACTIVE_LABEL` 0xA0A0A0) is vanilla's byte `/255`; the text pass wants
+    // linear. One conversion, in the one closure every row goes through.
     let run = |out: &mut Vec<OwnedTextLine>, text: &str, x: i32, y: i32, color: [f32; 3]| {
         if text.is_empty() {
             return;
@@ -404,7 +407,7 @@ pub fn lines(
             x: x as f32 * px,
             y: y as f32 * px,
             px,
-            color,
+            color_linear: crate::live_cmd::srgb_bytes_to_linear_f(color),
             alpha: 1.0,
             shadow: true,
             style: rewo_gpu::text::TextStyle::PLAIN,

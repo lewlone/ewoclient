@@ -38,7 +38,16 @@ pub struct OwnedTextLine {
     pub x: f32,
     pub y: f32,
     pub px: f32,
-    pub color: [f32; 3],
+    /// [`crate::text::TextLine::color_linear`] — **linear**, not the `/255` of
+    /// a vanilla colour byte.
+    ///
+    /// Named for the space rather than called `color` because M130 found nine
+    /// of the twenty-two callers handing over the byte: the pass writes this
+    /// value straight into an **sRGB** attachment, so a `/255` renders a third
+    /// of a stop bright and looks entirely plausible. A field called `color`
+    /// admits both readings and cannot be got wrong loudly; this one at least
+    /// says which it wants at the point of assignment.
+    pub color_linear: [f32; 3],
     pub alpha: f32,
     /// [`crate::text::TextLine::shadow`] — deliberately **not** defaulted, so
     /// adding a caller is a decision rather than an omission. Everything but
@@ -2959,7 +2968,7 @@ impl WorldRenderer {
                         x: l.x,
                         y: l.y,
                         px: l.px,
-                        color: l.color,
+                        color_linear: l.color_linear,
                         alpha: l.alpha,
                         shadow: l.shadow,
                         style: l.style,
