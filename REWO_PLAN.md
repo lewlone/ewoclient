@@ -19,7 +19,7 @@ trusting a paragraph.**
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-08 after M125)
+## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-09 after M126)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -155,7 +155,8 @@ byte-identical. `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C
 **There are 33 serverless gate commands, not the "fourteen" older paragraphs in
 this file say** — those sentences are historical records of the count *at the
 time* and are correct as such. Re-measured from a cold start on 2026-08-08 by
-running every one, and again after M125: all 33 green, **0 validation errors**. Enumerate them rather
+running every one, and again after M125 and M126: all 33 green, **0 validation
+errors**. Enumerate them rather
 than trusting a list, since the list is what rots:
 
 ```
@@ -1405,10 +1406,10 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
 9. **Line endings: the tree is overwhelmingly LF, and the previous claim here
    — "uniformly CRLF" — was produced by a broken detector.** Re-measured by
    reading every `.rs` under `crates/` as **bytes**, most recently 2026-08-08
-   after M125. **Exactly FIVE files are not pure LF**, and the list is the
+   after M126. **Exactly FIVE files are not pure LF**, and the list is the
    stable statement here — a count of the LF ones is not, because it grows
-   with every file added (it read 343 at M124 and 355 at M125, which is a
-   number rotting on schedule rather than a change):
+   with every file added (343 at M124, 355 at M125, **355 of 360 at M126** —
+   a number rotting on schedule rather than a change):
 
    * pure CRLF: `rewo-gpu/src/cem.rs`
    * mixed: `rewo-app/src/mobshot_cmd.rs`, `rewo-gpu/src/vanilla_hier.rs`,

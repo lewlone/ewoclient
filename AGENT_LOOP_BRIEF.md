@@ -294,7 +294,7 @@ not yet pushed". Everything is merged and pushed; there is no work branch.
   under `crates/` are not** — one pure CRLF (`rewo-gpu/src/cem.rs`) and four
   mixed (`rewo-app/src/mobshot_cmd.rs`, `rewo-gpu/src/vanilla_hier.rs`,
   `rewo-world/src/chunk.rs`, `rewo-world/src/light.rs`). Measured as **bytes**,
-  most recently 2026-08-08 after M125; `REWO_PLAN.md` §0.0 gotcha 9 carries the
+  most recently 2026-08-09 after M126; `REWO_PLAN.md` §0.0 gotcha 9 carries the
   full version, including why the obvious `grep -c $'\r$'` detector answers
   "every line" for *any* file and must not be used. Two hazards, in opposite
   directions: an editor may normalise one of those five to CRLF, which trips
