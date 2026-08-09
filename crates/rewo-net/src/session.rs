@@ -269,8 +269,12 @@ pub struct SessionState {
     /// Disguised-chat lines awaiting the session's chat log. Drained by
     /// [`Self::take_chat`] rather than written directly, so this module needs
     /// no reference to `PlaySession`. Components rather than strings, because
-    /// the resolution that turns one into text is `PlaySession`'s (M125).
-    chat: Vec<rewo_proto::nbt::Nbt>,
+    /// the resolution that turns one into text is `PlaySession`'s (M125) — and
+    /// whole [`DisguisedChat`]s rather than bare components since M127, because
+    /// the decoration needs the bound and dropping it here would have made
+    /// `handleDisguisedChatMessage`'s `boundChatType.decorate` unreachable from
+    /// the one place that can perform it.
+    chat: Vec<DisguisedChat>,
 }
 
 impl SessionState {
@@ -293,7 +297,7 @@ impl SessionState {
     }
 
     /// Take the disguised-chat lines decoded since the last call.
-    pub fn take_chat(&mut self) -> Vec<rewo_proto::nbt::Nbt> {
+    pub fn take_chat(&mut self) -> Vec<DisguisedChat> {
         std::mem::take(&mut self.chat)
     }
 }
@@ -394,7 +398,7 @@ pub fn apply(kind: SessionPacket, body: &[u8], state: &mut SessionState) -> bool
                 // decorates and adds unconditionally — so this is Rewo's own
                 // guard, preserved where it was rather than quietly dropped in
                 // a milestone about something else.
-                state.chat.push(chat.message);
+                state.chat.push(chat);
                 true
             }
             Err(err) => {
@@ -956,10 +960,14 @@ mod tests {
 
         let mut s = SessionState::default();
         assert!(apply(SessionPacket::DisguisedChat, &body, &mut s));
-        assert_eq!(
-            s.take_chat(),
-            vec![rewo_proto::nbt::Nbt::String("psst".into())]
-        );
+        let queued = s.take_chat();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].message, Nbt::String("psst".into()));
+        // M127: the BOUND is queued with the message now. Dropping it here
+        // would leave `handleDisguisedChatMessage`'s `boundChatType.decorate`
+        // unreachable from the one place that holds the registry.
+        assert_eq!(queued[0].bound.chat_type, ChatTypeRef::Registry(1));
+        assert_eq!(queued[0].bound.name.to_plain_text(), "Notch");
         // Drained, not duplicated.
         assert!(s.take_chat().is_empty());
     }

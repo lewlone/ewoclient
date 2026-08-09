@@ -1298,7 +1298,14 @@ fn check_session(c: &mut Checker, ids: &Ids) {
         && s.cookie("mynet:session") == Some(&[0xdeu8, 0xad][..])
         && s.game_rules.get("minecraft:keep_inventory").map(String::as_str) == Some("true")
         && s.server_data.as_ref().map(|d| d.motd.as_str()) == Some("A Minecraft Server")
-        && s.take_chat() == vec![rewo_proto::nbt::Nbt::String("psst".into())];
+        && {
+            // M127: the queue carries whole `DisguisedChat`s, because the
+            // decoration needs the bound and the bound is decoded here.
+            let queued = s.take_chat();
+            queued.len() == 1
+                && queued[0].message == rewo_proto::nbt::Nbt::String("psst".into())
+                && queued[0].bound.name.to_plain_text() == "Notch"
+        };
     c.record(
         "w9.every_session_id_routes_to_its_own_effect",
         all_routed && landed,

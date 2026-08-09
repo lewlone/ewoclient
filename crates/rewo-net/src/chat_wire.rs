@@ -258,22 +258,97 @@ impl FilterMask {
             .is_some_and(|w| (*w as u64) >> (index % 64) & 1 == 1)
     }
 
-    /// `FilterMask.apply` — `None` is vanilla's `null`, i.e. **show nothing**.
+    /// `FilterMask.applyWithFormatting` — `None` is vanilla's `null`, i.e.
+    /// **show nothing**.
     ///
-    /// The substitution is per **char**, and the loop is bounded by
-    /// `mask.length()` as well as the text, so bits past the end of the string
-    /// are ignored and characters past the last set bit are untouched.
-    pub fn apply(&self, text: &str) -> Option<String> {
+    /// **A component, not a string, and that is the method the client calls.**
+    /// `showMessageToPlayer`'s masked branch is
+    /// `filterMask.applyWithFormatting(message.signedContent())`, which builds
+    /// `Component.empty()` and appends alternating runs: an unfiltered run as a
+    /// bare `append(String)` (a literal with `Style.EMPTY`, so it inherits),
+    /// and a filtered run as a `#`-repeat carrying **`FILTERED_STYLE`** —
+    /// `Style.EMPTY.withColor(DARK_GRAY).withHoverEvent(ShowText("chat.filtered"))`.
+    ///
+    /// Rewo used `FilterMask.apply`, the *string* sibling, which exists for the
+    /// server's log line. The visible difference is the colour: vanilla's `#`s
+    /// are dark grey against the message's own colour, and a string of `#`s
+    /// takes whatever colour surrounds it. The hover half is not modelled —
+    /// [`rewo_world::chat_style::ChatStyle`] carries no events — so a filtered
+    /// run has the colour and not the tooltip.
+    ///
+    /// # The index basis is UTF-16, and Rewo's used to be scalar values
+    ///
+    /// Vanilla indexes with `BitSet.nextSetBit` / `nextClearBit` against
+    /// `String.substring`, i.e. **Java char indices**, which are UTF-16 code
+    /// units. Rewo's replaced `apply` walked `str::chars()`, so every bit past
+    /// the first astral character (an emoji, say) addressed the wrong
+    /// character. This walks code units.
+    ///
+    /// One stated approximation: a surrogate pair whose two units disagree
+    /// cannot be reproduced, because vanilla's `substring` may split the pair
+    /// and Rust's `String` cannot hold an unpaired surrogate. Such a scalar is
+    /// filtered when **either** unit is set. Exact for every mask that does not
+    /// cut a pair in half, which is every mask a word-boundary filter produces.
+    pub fn apply_with_formatting(&self, text: &str) -> Option<rewo_proto::nbt::Nbt> {
+        use rewo_proto::nbt::Nbt;
         match self {
-            Self::PassThrough => Some(text.to_string()),
+            // `Component.literal(text)`.
+            Self::PassThrough => Some(Nbt::String(text.to_string())),
             Self::FullyFiltered => None,
-            Self::PartiallyFiltered(longs) => Some(
-                text.chars()
-                    .enumerate()
-                    .map(|(i, c)| if Self::bit(longs, i) { '#' } else { c })
-                    .collect(),
-            ),
+            Self::PartiallyFiltered(longs) => {
+                let mut runs: Vec<Nbt> = Vec::new();
+                let mut current = String::new();
+                let mut current_filtered: Option<bool> = None;
+                let mut unit = 0usize;
+                for c in text.chars() {
+                    let width = c.len_utf16();
+                    // "either unit of a surrogate pair", per the doc above.
+                    let filtered = (0..width).any(|k| Self::bit(longs, unit + k));
+                    unit += width;
+                    if current_filtered != Some(filtered) && !current.is_empty() {
+                        runs.push(run(std::mem::take(&mut current), current_filtered == Some(true)));
+                    }
+                    current_filtered = Some(filtered);
+                    // `StringUtils.repeat('#', nextIndex - previousIndex)` — the
+                    // count is in the same units as the index, so an astral
+                    // character is masked by **two** hashes, not one.
+                    if filtered {
+                        for _ in 0..width {
+                            current.push('#');
+                        }
+                    } else {
+                        current.push(c);
+                    }
+                }
+                if !current.is_empty() {
+                    runs.push(run(current, current_filtered == Some(true)));
+                }
+                // `Component.empty()` with the runs appended — a literal of ""
+                // carrying children, which is what `MutableComponent.append`
+                // produces and what an empty mask yields on its own.
+                Some(Nbt::Compound(vec![
+                    ("text".to_string(), Nbt::String(String::new())),
+                    ("extra".to_string(), Nbt::List(runs)),
+                ]))
+            }
         }
+    }
+}
+
+
+/// One run of `applyWithFormatting`'s alternation.
+///
+/// A filtered run carries `FILTERED_STYLE`'s colour; an unfiltered one is
+/// `append(String)`, i.e. a literal with `Style.EMPTY`, which inherits.
+fn run(text: String, filtered: bool) -> rewo_proto::nbt::Nbt {
+    use rewo_proto::nbt::Nbt;
+    if filtered {
+        Nbt::Compound(vec![
+            ("text".to_string(), Nbt::String(text)),
+            ("color".to_string(), Nbt::String("dark_gray".to_string())),
+        ])
+    } else {
+        Nbt::String(text)
     }
 }
 
@@ -324,9 +399,14 @@ pub struct PlayerChat {
     pub index: i32,
     pub signature: Option<Box<Signature>>,
     pub body: SignedMessageBody,
-    /// The server's replacement rendering, flattened. `None` when absent, which
-    /// is the common case.
-    pub unsigned_content: Option<String>,
+    /// The server's replacement rendering, **unflattened** (M127). `None` when
+    /// absent, which is the common case.
+    ///
+    /// A component because `decoratedContent()` feeds the decoration, and a
+    /// server that rewrites a message is exactly the server that colours the
+    /// rewrite. Flattening it here also made `ChatTrustLevel`'s
+    /// `containsModifiedStyle` half unreachable — see [`Self::trust_level`].
+    pub unsigned_content: Option<rewo_proto::nbt::Nbt>,
     pub filter_mask: FilterMask,
     pub bound: crate::session::ChatTypeBound,
 }
@@ -339,7 +419,7 @@ impl PlayerChat {
         let index = r.varint()?;
         let signature = r.option(read_signature)?;
         let body = SignedMessageBody::read(r)?;
-        let unsigned_content = r.option(|r| Ok(r.nbt()?.to_plain_text()))?;
+        let unsigned_content = r.option(|r| r.nbt())?;
         let filter_mask = FilterMask::read(r)?;
         let bound = crate::session::read_chat_type_bound(r)?;
         Ok(Self {
@@ -354,34 +434,54 @@ impl PlayerChat {
         })
     }
 
-    /// `PlayerChatMessage.decoratedContent()` — the unsigned override when the
-    /// server sent one, else the signed content.
-    pub fn decorated_content(&self) -> &str {
+    /// `PlayerChatMessage.decoratedContent()` —
+    /// `Objects.requireNonNullElseGet(unsignedContent, () -> Component.literal(signedContent))`.
+    ///
+    /// A **component**: the unsigned override when the server sent one, else a
+    /// literal of the signed string. The literal branch is why a bare
+    /// `Nbt::String` is the right fallback rather than a compound — that is
+    /// exactly what `Component.literal` serialises to.
+    pub fn decorated_content(&self) -> rewo_proto::nbt::Nbt {
         self.unsigned_content
-            .as_deref()
-            .unwrap_or(&self.body.content)
+            .clone()
+            .unwrap_or_else(|| rewo_proto::nbt::Nbt::String(self.body.content.clone()))
     }
 
     /// `ChatTrustLevel.evaluate`, minus the one branch Rewo cannot see.
     ///
+    /// **`decorated_plain` is the DECORATED message's text, not the content's**
+    /// — `handlePlayerChatMessage` builds `decoratedMessage` and hands *that*
+    /// to `evaluateTrustLevel`, whose `isModified` asks
+    /// `!decoratedMessage.getString().contains(message.signedContent())`. So
+    /// the question is whether `<Steve> hello` still contains `hello`, not
+    /// whether `hello` does.
+    ///
+    /// Before M127 Rewo had no decoration and asked it of the undecorated
+    /// content. The two agree for every ordinary message, because a decoration
+    /// only wraps text around the content — and they diverge exactly when the
+    /// decoration DROPS it: a translation key the language table does not
+    /// carry, or a server-defined chat type whose parameter list omits
+    /// `content`. Vanilla calls both of those MODIFIED. This is M92's shape —
+    /// a value that could not be derived is derivable now.
+    ///
     /// `isModified`'s second test is `containsModifiedStyle(unsignedContent)` —
-    /// whether any style run names a non-default **font**. Rewo flattens a
-    /// component to plain text at the wire, so no font survives to test and
-    /// that half is unreachable rather than omitted; the first test
-    /// (`!decorated.contains(signedContent)`) is the one that fires for the
-    /// ordinary "the server rewrote my message" case and is transcribed.
+    /// whether any style run names a non-default **font**. M127 stopped
+    /// flattening `unsigned_content`, so the component survives; the half is
+    /// still unreachable, but for a different and smaller reason:
+    /// [`rewo_world::chat_style::ChatStyle`] models six visual fields and
+    /// `font` is not one of them.
     ///
     /// `received_millis` is the client's clock, so a message stamped in the
     /// future is *not* expired — the test is one-sided (`now.isAfter(stamp +
     /// window)`).
-    pub fn trust_level(&self, received_millis: i64) -> ChatTrustLevel {
+    pub fn trust_level(&self, received_millis: i64, decorated_plain: &str) -> ChatTrustLevel {
         if self.signature.is_none()
             || received_millis
                 > self.body.timestamp_millis + MESSAGE_EXPIRES_AFTER_CLIENT_MILLIS
         {
             return ChatTrustLevel::NotSecure;
         }
-        if !self.decorated_content().contains(&self.body.content) {
+        if !decorated_plain.contains(&self.body.content) {
             return ChatTrustLevel::Modified;
         }
         ChatTrustLevel::Secure
@@ -409,12 +509,19 @@ impl ChatTrustLevel {
 }
 
 /// What `showMessageToPlayer` decides to put on screen.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Not `Eq`: the shown content is a component now (M127), and `Nbt` carries
+/// floats.
+#[derive(Clone, Debug, PartialEq)]
 pub enum ChatOutcome {
     /// Nothing is shown — `isFullyFiltered`, or a fully-masked partial.
     Dropped,
     Shown {
-        text: String,
+        /// The **decorated** component to render — what
+        /// `ChatComponent.addPlayerMessage` is handed. A component rather than
+        /// a string since M127, because that is what the decoration produces
+        /// and what carries its style.
+        content: rewo_proto::nbt::Nbt,
         tag: Option<rewo_world::chat::MessageTag>,
     },
 }
@@ -432,19 +539,44 @@ pub enum ChatOutcome {
 /// sends both an unsigned rewrite *and* a filter mask has its rewrite ignored;
 /// the mask is applied to what was actually signed, which is the only string
 /// its bit indices line up with.
-pub fn show_message(chat: &PlayerChat, received_millis: i64) -> ChatOutcome {
+pub fn show_message(
+    chat: &PlayerChat,
+    received_millis: i64,
+    decorate: &dyn Fn(&rewo_proto::nbt::Nbt) -> rewo_proto::nbt::Nbt,
+    plain: &dyn Fn(&rewo_proto::nbt::Nbt) -> String,
+) -> ChatOutcome {
+    // Both closures are the session's: decorating needs the `chat_type`
+    // registry and the message's bound, and flattening needs the language
+    // table. They are parameters rather than a `&PlaySession` because that type
+    // owns a socket and has no test module anywhere in the repo (M71/M97), so
+    // anything reachable only through it is untestable by construction.
+
+    // `handlePlayerChatMessage` decorates BEFORE `showMessageToPlayer`, and the
+    // decorated component is what the trust level is evaluated against.
+    let decorated = decorate(&chat.decorated_content());
+    // Vanilla evaluates the trust level first and tests `isFullyFiltered`
+    // after; the order is unobservable here (nothing is mutated) and kept so
+    // the transcription reads in vanilla's sequence.
+    let tag = chat
+        .trust_level(received_millis, &plain(&decorated))
+        .create_tag();
     if chat.filter_mask.is_fully_filtered() {
         return ChatOutcome::Dropped;
     }
-    let tag = chat.trust_level(received_millis).create_tag();
     if chat.filter_mask.is_empty() {
         return ChatOutcome::Shown {
-            text: chat.decorated_content().to_string(),
+            content: decorated,
             tag,
         };
     }
-    match chat.filter_mask.apply(&chat.body.content) {
-        Some(text) => ChatOutcome::Shown { text, tag },
+    // The masked branch re-decorates the **signed** content, so a server that
+    // sends both a rewrite and a mask has its rewrite ignored — and the mask is
+    // applied to the only string that was actually signed.
+    match chat.filter_mask.apply_with_formatting(&chat.body.content) {
+        Some(filtered) => ChatOutcome::Shown {
+            content: decorate(&filtered),
+            tag,
+        },
         None => ChatOutcome::Dropped,
     }
 }
@@ -737,24 +869,103 @@ mod tests {
         assert!(!FilterMask::PartiallyFiltered(vec![0]).is_empty());
     }
 
+    /// The plain text of a mask's component form, for the tests that only
+    /// care which characters survived.
+    fn masked_text(m: &FilterMask, text: &str) -> Option<String> {
+        m.apply_with_formatting(text).map(|c| {
+            rewo_world::chat_style::plain_text(&rewo_world::chat_style::parse_component(
+                &c,
+                rewo_world::chat_style::ChatStyle::WHITE,
+                None,
+            ))
+        })
+    }
+
     #[test]
     fn a_partial_mask_hashes_the_set_bits_only() {
         let m = FilterMask::PartiallyFiltered(vec![0b0110]);
-        assert_eq!(m.apply("abcd").as_deref(), Some("a##d"));
+        assert_eq!(masked_text(&m, "abcd").as_deref(), Some("a##d"));
     }
 
     #[test]
     fn a_fully_filtered_message_is_shown_as_nothing() {
-        assert_eq!(FilterMask::FullyFiltered.apply("abcd"), None);
+        assert_eq!(FilterMask::FullyFiltered.apply_with_formatting("abcd"), None);
     }
 
     #[test]
     fn mask_bits_past_the_end_of_the_text_are_ignored() {
         let m = FilterMask::PartiallyFiltered(vec![-1i64]);
-        assert_eq!(m.apply("ab").as_deref(), Some("##"));
+        assert_eq!(masked_text(&m, "ab").as_deref(), Some("##"));
+    }
+
+    /// The client calls `applyWithFormatting`, not `apply`, and the difference
+    /// is visible: `FILTERED_STYLE` is `withColor(DARK_GRAY)`, so the hashes
+    /// are grey against the message's own colour. A string of `#`s takes
+    /// whatever colour surrounds it, which is what Rewo drew before M127.
+    #[test]
+    fn a_filtered_run_is_dark_gray_and_an_unfiltered_one_inherits() {
+        let m = FilterMask::PartiallyFiltered(vec![0b0110]);
+        let spans = rewo_world::chat_style::parse_component(
+            &m.apply_with_formatting("abcd").unwrap(),
+            rewo_world::chat_style::ChatStyle::plain([1.0, 0.0, 0.0]),
+            None,
+        );
+        let dark_gray = rewo_world::chat_style::parse_color("dark_gray").unwrap();
+        let runs: Vec<(&str, [f32; 3])> =
+            spans.iter().map(|s| (s.text.as_str(), s.color)).collect();
+        assert_eq!(
+            runs,
+            vec![
+                ("a", [1.0, 0.0, 0.0]),
+                ("##", dark_gray),
+                ("d", [1.0, 0.0, 0.0]),
+            ],
+            "the hashes are grey; the surviving text keeps the parent colour"
+        );
+    }
+
+    /// `applyWithFormatting` walks `BitSet.nextSetBit` against
+    /// `String.substring`, i.e. **UTF-16 code units**. The replaced `apply`
+    /// walked `str::chars()`, so every bit past the first astral character
+    /// addressed the wrong one.
+    ///
+    /// MUTATION: index by scalar values (`chars().enumerate()`). Under that
+    /// reading bit 2 lands on the `b` and the emoji survives, which is the
+    /// exact inverse of this assertion.
+    #[test]
+    fn the_mask_indexes_utf16_code_units_not_scalars() {
+        // "a" is unit 0; the emoji occupies units 1 and 2; "b" is unit 3.
+        let m = FilterMask::PartiallyFiltered(vec![0b0110]);
+        assert_eq!(
+            masked_text(&m, "a\u{1F600}b").as_deref(),
+            Some("a##b"),
+            "the astral character is masked, and by TWO hashes"
+        );
+        // And the bit that a scalar-indexed reading would have used for `b`.
+        let m = FilterMask::PartiallyFiltered(vec![0b1000]);
+        assert_eq!(masked_text(&m, "a\u{1F600}b").as_deref(), Some("a\u{1F600}#"));
     }
 
     // ── trust level ──────────────────────────────────────────────────────
+
+    /// A component's plain text, as the session's flattener would produce it.
+    fn plain(tag: &rewo_proto::nbt::Nbt) -> String {
+        rewo_world::chat_style::plain_text(&rewo_world::chat_style::parse_component(
+            tag,
+            rewo_world::chat_style::ChatStyle::WHITE,
+            None,
+        ))
+    }
+
+    /// A session with no `chat_type` registry decorates nothing — the fallback
+    /// `decorate_chat` takes, and the pre-M127 behaviour.
+    fn undecorated(content: &rewo_proto::nbt::Nbt) -> rewo_proto::nbt::Nbt {
+        content.clone()
+    }
+
+    fn shown(c: &PlayerChat, received: i64) -> ChatOutcome {
+        show_message(c, received, &undecorated, &plain)
+    }
 
     fn chat(signature: Option<Box<Signature>>, content: &str, unsigned: Option<&str>) -> PlayerChat {
         PlayerChat {
@@ -768,7 +979,7 @@ mod tests {
                 salt: 0,
                 last_seen: Vec::new(),
             },
-            unsigned_content: unsigned.map(str::to_string),
+            unsigned_content: unsigned.map(|u| rewo_proto::nbt::Nbt::String(u.to_string())),
             filter_mask: FilterMask::PassThrough,
             bound: crate::session::ChatTypeBound {
                 chat_type: crate::session::ChatTypeRef::Registry(0),
@@ -781,7 +992,7 @@ mod tests {
     #[test]
     fn an_unsigned_message_is_not_secure() {
         assert_eq!(
-            chat(None, "hi", None).trust_level(0),
+            chat(None, "hi", None).trust_level(0, "hi"),
             ChatTrustLevel::NotSecure,
         );
     }
@@ -790,11 +1001,11 @@ mod tests {
     fn an_expired_message_is_not_secure_however_well_signed() {
         let c = chat(Some(sig(1)), "hi", None);
         assert_eq!(
-            c.trust_level(MESSAGE_EXPIRES_AFTER_CLIENT_MILLIS),
+            c.trust_level(MESSAGE_EXPIRES_AFTER_CLIENT_MILLIS, "hi"),
             ChatTrustLevel::Secure,
         );
         assert_eq!(
-            c.trust_level(MESSAGE_EXPIRES_AFTER_CLIENT_MILLIS + 1),
+            c.trust_level(MESSAGE_EXPIRES_AFTER_CLIENT_MILLIS + 1, "hi"),
             ChatTrustLevel::NotSecure,
         );
     }
@@ -804,7 +1015,7 @@ mod tests {
         // `now.isAfter(stamp + window)` — a message stamped in the future is
         // not expired, it is merely early.
         let c = chat(Some(sig(1)), "hi", None);
-        assert_eq!(c.trust_level(-1_000_000), ChatTrustLevel::Secure);
+        assert_eq!(c.trust_level(-1_000_000, "hi"), ChatTrustLevel::Secure);
     }
 
     #[test]
@@ -812,7 +1023,7 @@ mod tests {
         // `isModified` is `!decorated.contains(signedContent)` — a server that
         // merely *decorates* has not modified.
         assert_eq!(
-            chat(Some(sig(1)), "hi", Some("[VIP] hi")).trust_level(0),
+            chat(Some(sig(1)), "hi", Some("[VIP] hi")).trust_level(0, "[VIP] hi"),
             ChatTrustLevel::Secure,
         );
     }
@@ -820,7 +1031,7 @@ mod tests {
     #[test]
     fn an_unsigned_override_that_replaces_the_text_is_modified() {
         assert_eq!(
-            chat(Some(sig(1)), "hi", Some("goodbye")).trust_level(0),
+            chat(Some(sig(1)), "hi", Some("goodbye")).trust_level(0, "goodbye"),
             ChatTrustLevel::Modified,
         );
     }
@@ -843,13 +1054,11 @@ mod tests {
     #[test]
     fn an_empty_mask_shows_the_unsigned_override() {
         let c = chat(Some(sig(1)), "hi", Some("[VIP] hi"));
-        assert_eq!(
-            show_message(&c, 0),
-            ChatOutcome::Shown {
-                text: "[VIP] hi".into(),
-                tag: None,
-            },
-        );
+        let ChatOutcome::Shown { content, tag } = shown(&c, 0) else {
+            panic!("expected a shown message")
+        };
+        assert_eq!(plain(&content), "[VIP] hi");
+        assert_eq!(tag, None);
     }
 
     #[test]
@@ -861,13 +1070,11 @@ mod tests {
         // `the_tag_is_judged_on_the_message_not_on_what_is_rendered`.
         let mut c = chat(Some(sig(1)), "hello", Some("REWRITTEN"));
         c.filter_mask = FilterMask::PartiallyFiltered(vec![0b1]);
-        assert_eq!(
-            show_message(&c, 0),
-            ChatOutcome::Shown {
-                text: "#ello".into(),
-                tag: Some(rewo_world::chat::MessageTag::CHAT_MODIFIED),
-            },
-        );
+        let ChatOutcome::Shown { content, tag } = shown(&c, 0) else {
+            panic!("expected a shown message")
+        };
+        assert_eq!(plain(&content), "#ello");
+        assert_eq!(tag, Some(rewo_world::chat::MessageTag::CHAT_MODIFIED));
     }
 
     #[test]
@@ -881,9 +1088,10 @@ mod tests {
         // which is the more intuitive reading and would hide the rewrite.
         let mut c = chat(Some(sig(1)), "hello", Some("REWRITTEN"));
         c.filter_mask = FilterMask::PartiallyFiltered(vec![0b1]);
-        let ChatOutcome::Shown { text, tag } = show_message(&c, 0) else {
+        let ChatOutcome::Shown { content, tag } = shown(&c, 0) else {
             panic!("expected a shown message");
         };
+        let text = plain(&content);
         assert!(text.contains("ello"), "rendered from the signed content");
         assert!(!text.contains("REWRITTEN"));
         assert_eq!(tag, Some(rewo_world::chat::MessageTag::CHAT_MODIFIED));
@@ -896,20 +1104,79 @@ mod tests {
         // message with a `PassThrough` mask and renders "[VIP] hi".
         let mut c = chat(Some(sig(1)), "hello", Some("REWRITTEN"));
         c.filter_mask = FilterMask::PartiallyFiltered(vec![0]);
-        assert_eq!(
-            show_message(&c, 0),
-            ChatOutcome::Shown {
-                text: "hello".into(),
-                tag: Some(rewo_world::chat::MessageTag::CHAT_MODIFIED),
-            },
-        );
+        let ChatOutcome::Shown { content, tag } = shown(&c, 0) else {
+            panic!("expected a shown message")
+        };
+        assert_eq!(plain(&content), "hello");
+        assert_eq!(tag, Some(rewo_world::chat::MessageTag::CHAT_MODIFIED));
     }
 
     #[test]
     fn a_fully_filtered_message_is_dropped_before_the_tag_is_computed() {
         let mut c = chat(None, "hello", None);
         c.filter_mask = FilterMask::FullyFiltered;
-        assert_eq!(show_message(&c, 0), ChatOutcome::Dropped);
+        assert_eq!(shown(&c, 0), ChatOutcome::Dropped);
+    }
+
+    // ── the decoration, from `show_message`'s side ───────────────────────
+
+    /// A decorator that wraps the content the way `chat.type.text` does. Not
+    /// the real one — this file has no registry — but the same shape: a
+    /// component whose text contains the content.
+    fn angle_brackets(content: &rewo_proto::nbt::Nbt) -> rewo_proto::nbt::Nbt {
+        rewo_proto::nbt::Nbt::String(format!("<Steve> {}", plain(content)))
+    }
+
+    #[test]
+    fn the_shown_content_is_the_decorated_component() {
+        let c = chat(Some(sig(1)), "hi", None);
+        let ChatOutcome::Shown { content, .. } = show_message(&c, 0, &angle_brackets, &plain)
+        else {
+            panic!("expected a shown message")
+        };
+        assert_eq!(plain(&content), "<Steve> hi");
+    }
+
+    /// **The masked branch re-decorates the filtered content**, so the
+    /// decoration is applied twice over in neither branch and exactly once in
+    /// both. A reading that decorated only the unmasked branch would render a
+    /// filtered message with no sender.
+    #[test]
+    fn the_masked_branch_decorates_too() {
+        let mut c = chat(Some(sig(1)), "hello", None);
+        c.filter_mask = FilterMask::PartiallyFiltered(vec![0b1]);
+        let ChatOutcome::Shown { content, .. } = show_message(&c, 0, &angle_brackets, &plain)
+        else {
+            panic!("expected a shown message")
+        };
+        assert_eq!(plain(&content), "<Steve> #ello");
+    }
+
+    /// `evaluateTrustLevel` is handed the **decorated** message, so
+    /// `isModified` asks whether `<Steve> hello` contains `hello` — not
+    /// whether `hello` does.
+    ///
+    /// The two readings agree for every ordinary message, because a decoration
+    /// only wraps text around the content. They diverge exactly when the
+    /// decoration DROPS it: a translation key the table does not carry, or a
+    /// server-defined chat type whose parameters omit `content`.
+    ///
+    /// MUTATION: pass the undecorated content to `trust_level` (the pre-M127
+    /// behaviour). Both fixtures below then read Secure.
+    #[test]
+    fn a_decoration_that_drops_the_content_is_modified() {
+        let c = chat(Some(sig(1)), "hello", None);
+        // A decoration that keeps it.
+        assert_eq!(
+            c.trust_level(0, &plain(&angle_brackets(&c.decorated_content()))),
+            ChatTrustLevel::Secure,
+        );
+        // One that does not — `chat.type.emote` with the content parameter
+        // omitted, which a datapack may legally define.
+        assert_eq!(
+            c.trust_level(0, "* Steve waves"),
+            ChatTrustLevel::Modified,
+        );
     }
 
     // ── the packet walks ─────────────────────────────────────────────────
