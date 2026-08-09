@@ -19879,6 +19879,34 @@ were handing it the sRGB byte** — the pass writes into an sRGB attachment, so 
 `/255` value is encoded twice. M117's coloured command runs were the one
 existing site that got it right.
 
+**The fix uncovered a second bug it had been hiding.** `Widget::label_color`
+greyed any `!active` widget, but vanilla's greying is not a property of being
+inactive — it is a **second, cached message** returned only when `!active`.
+`AbstractWidget.getMessage()` is `this.active ? super.getMessage() :
+this.inactiveMessage`, and `defaultInactiveMessage` builds that field once with
+`ComponentUtils.mergeStyles(activeMessage, Style.EMPTY.withColor(-6250336))` —
+so the grey belongs to the *class*, and **exactly three extend
+`WithInactiveMessage`**: `AbstractButton`, `AbstractSliderButton`, `TabButton`.
+`AbstractStringWidget` extends `AbstractWidget` directly and `StringWidget`'s
+constructor ends `this.active = false`, so **every dialog title and disconnect
+reason was drawn grey where vanilla draws it white**. (Reading it as
+`getMessage() => mergeStyles(...)` greys every *active* label instead, which is
+the same shape of bug in the other direction.)
+
+Nothing caught it because the grey stored as 208, and `serverlinkshot`'s
+white-check is `p[0] > 200 && p[1] > 200 && p[2] > 200`; both witnesses went red
+the moment the colour space was fixed, and **neither gate needed editing — the
+probe was never wrong, the render was.** Three gates had encoded the deviation
+as their expectation, including `titleshot`'s m8, which computed its
+expectation with the same `chat_style::rgb_f32` production called and was
+therefore self-calibrating for the space as well as the value (M93q).
+
+Three literals were not decompile-grounded at all: `[0.93; 3]` appeared three
+times — the F3 block, the chat input's text, its caret — where vanilla writes
+`-2039584` (`0xE0E0E0`) in both `EditBox.textColor` and
+`DebugScreenOverlay.renderLines`. 0.93 is neither that byte nor its linear
+form, so it was two errors in one invented number, copied three times.
+
 M130c closes the gap the rename would otherwise leave: four of the nine
 converted sites are graded by nothing but the rename, and a rename guards
 against a new caller rather than against the conversion decaying in place.

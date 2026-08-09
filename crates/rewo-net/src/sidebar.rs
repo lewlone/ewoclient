@@ -86,6 +86,18 @@ pub const LEFT_OVERHANG: i32 = 2;
 pub const BODY_BACKGROUND: u32 = 0x4C00_0000;
 
 /// `options.getBackgroundColor(0.4F)` — `floor(0.4 * 255) = 102` (`0x66`).
+///
+/// **Both alphas are the DEFAULT PROFILE's, not vanilla's only answer.**
+/// `getBackgroundOpacity(default)` is
+/// `backgroundForChatOnly.get() ? default : textBackgroundOpacity().get()`,
+/// and `backgroundForChatOnly` defaults to `true` — so the two arguments
+/// (0.3 and 0.4) are what a default client uses and the header is the more
+/// opaque of the two. Set Text Background to "Everywhere" and **both calls
+/// return the same slider value**, so the header stops being more opaque and
+/// the two bands become indistinguishable. Rewo has no options screen, so the
+/// default is the only reachable profile today and the constants are right;
+/// the test below asserts `HEADER > BODY`, which is true of this profile and
+/// would not be of that one.
 pub const HEADER_BACKGROUND: u32 = 0x6600_0000;
 
 /// The `-1` colour argument every one of the three `graphics.text` calls
@@ -1164,6 +1176,8 @@ mod tests {
         assert_eq!(BODY_BACKGROUND & 0x00FF_FFFF, 0);
         assert_eq!(HEADER_BACKGROUND & 0x00FF_FFFF, 0);
         // The header is the *more* opaque of the two -- 0.4 against 0.3.
+        // True of the DEFAULT profile, which is the only one Rewo can be in;
+        // see `HEADER_BACKGROUND`'s docs for the option that equalises them.
         assert!(HEADER_BACKGROUND >> 24 > BODY_BACKGROUND >> 24);
     }
 

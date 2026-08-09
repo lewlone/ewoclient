@@ -573,7 +573,11 @@ impl ChatScreen {
             // vanilla's own internal affordances — the delayed-message expand
             // link and the restricted-chat prompt — and both need a subsystem
             // Rewo lacks (the chat delay queue; `ChatAbilities`, which arrives
-            // on a packet Rewo does not decode). Named rather than folded into
+            // on **no packet at all** — see this module's own docs, where
+            // M134c corrected exactly this sentence. M128 was written before
+            // that correction existed and the two landed in this file from
+            // different branches without conflicting, so the file contradicted
+            // itself until the integration). Named rather than folded into
             // the generic `Custom` decline, because a server cannot produce
             // them and a later milestone will want them exactly here.
             ClickEvent::Custom { id, .. } if id == QUEUE_EXPAND_ID => {
