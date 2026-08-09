@@ -11955,6 +11955,73 @@ mod tests {
         assert_eq!(caret.color_linear, srgb_bytes_to_linear(EDIT_BOX_TEXT_COLOR));
     }
 
+    /// The two converters really are the sRGB transfer function.
+    ///
+    /// Pinned against the **formula**, written out, rather than against
+    /// `rewo_gpu::srgb_to_linear`, which both of them call: a witness that
+    /// asks the implementation what to expect asserts only that the
+    /// implementation equals itself (M93q). `((b/255 + 0.055) / 1.055)^2.4` for
+    /// each byte below, computed independently.
+    ///
+    /// This is what stops the whole M130 conversion decaying into an identity
+    /// without a single gate going red — nine of the sites it fixed are graded
+    /// only by the pixel gates named in the milestone message, and four
+    /// (the tooltip's bitmap line, the statistics rows, the enchanting costs
+    /// and the held-item name) by nothing else at all.
+    #[test]
+    fn the_converters_are_the_srgb_transfer_function() {
+        for (byte, want) in [
+            (0x00u32, 0.0f32),
+            (0x55, 0.090_841_7),
+            (0x80, 0.215_860_5),
+            (0xA0, 0.351_532_6),
+            (0xAA, 0.401_977_8),
+            (0xBA, 0.491_020_8),
+            (0xE0, 0.745_404_2),
+            (0xFF, 1.0),
+        ] {
+            let packed = super::srgb_bytes_to_linear(byte << 16 | byte << 8 | byte);
+            let triple = super::srgb_bytes_to_linear_f([byte as f32 / 255.0; 3]);
+            for c in packed.iter().chain(triple.iter()) {
+                assert!(
+                    (c - want).abs() < 1e-5,
+                    "0x{byte:02X} -> {c}, want {want} (identity would give {})",
+                    byte as f32 / 255.0
+                );
+            }
+        }
+    }
+
+    /// The enchanting table's cost numerals convert too.
+    ///
+    /// This one has **no pixel witness anywhere** — `containershot` grades the
+    /// rows' geometry and their three states, not the numeral's colour — so
+    /// without this the site is covered only by the `color_linear` rename.
+    #[test]
+    fn the_enchant_cost_numerals_are_linear() {
+        use rewo_world::menu_screen::{EnchantRow, ENCHANT_COST_ENABLED};
+        let rows = [
+            EnchantRow::Available { cost: 3 },
+            EnchantRow::Empty,
+            EnchantRow::Empty,
+        ];
+        let lines = super::enchant_cost_labels(rows, &advances(), 1280.0, 720.0);
+        assert_eq!(lines.len(), 1, "an empty row draws no numeral");
+        // `0x80FF20` — green. Its red channel is 0x80, whose linear value is
+        // 0.2159 against the byte's 0.5020: a difference no eye would call a
+        // colour change and every pixel would.
+        assert!(
+            (lines[0].color_linear[0] - 0.215_860_5).abs() < 1e-5,
+            "got {:?} for {ENCHANT_COST_ENABLED:#08X}",
+            lines[0].color_linear
+        );
+        assert!(
+            (lines[0].color_linear[1] - 1.0).abs() < 1e-6,
+            "0xFF is 1.0 in both spaces, so it cannot witness the conversion \
+             on its own — the red channel above is what does"
+        );
+    }
+
     /// An empty chat produces no lines at all — not one blank row.
     #[test]
     fn an_empty_chat_draws_nothing() {
