@@ -224,6 +224,10 @@ struct RenderCheck {
     /// Mutually exclusive with r29 by construction, so it cannot be satisfied
     /// by the same moment: the popup and the box never coexist.
     usage_box_frames: u64,
+    /// M134 — frames whose usage box held a parse-error MESSAGE rather than
+    /// usage lines. Strictly narrower than `usage_box_frames`: the two name
+    /// disjoint moments, because an exception suppresses the entries.
+    parse_error_frames: u64,
     /// M118 — how many times an `@`-selector was offered by the client's own
     /// `EntitySelectorParser`.
     ///
@@ -769,6 +773,21 @@ impl RenderCheck {
             format!(
                 "{} of {} frames drew a usage line (needs an ARGUMENT expected                  at the cursor and no popup over it)",
                 self.usage_box_frames, self.frames
+            ),
+        );
+        // M134 — and a parse-error MESSAGE in that same box, which is a
+        // strictly narrower claim than r32's and names a disjoint moment:
+        // `if (commandUsage.isEmpty())` means an exception suppresses the
+        // usage entries, so no frame can score both. The staged input is a
+        // command that does not exist, whose `getExceptions()` is EMPTY —
+        // it reaches the line through `Commands.getParseException`, the
+        // branch M117 omitted outright.
+        row(
+            "r42 a parse error was drawn white under the command field",
+            self.parse_error_frames > 0,
+            format!(
+                "{} of {} frames drew a line opening \"Unknown command\" in the                  usage box, in WHITE. Grey is `USAGE_FORMAT`'s and a brigadier                  message carries no style at all, so `extractUsage`'s `-1`                  stands — the colour is half the claim because the box drew                  every line white from M117 until this milestone",
+                self.parse_error_frames, self.frames
             ),
         );
         // M118 — and a SELECTOR among them, which needs the entity argument
@@ -4662,6 +4681,8 @@ struct LiveApp {
     coords_injected: bool,
     /// M124 — whether the `scoreboard objectives setdisplay ` typing has run.
     literal_table_injected: bool,
+    /// M134 — whether the unknown-command typing has run.
+    bad_command_injected: bool,
     /// `CommandSuggestions.currentParse` (M117) — the parse the syntax
     /// highlighting reads, cached against the text it was made from.
     ///
@@ -6096,6 +6117,10 @@ impl LiveApp {
             parsed,
             cursor,
             cs.suggestions.pending().is_none_or(|s| s.is_empty()),
+            // M134 — `getExceptionMessage` wraps every message in
+            // `command.context.parse_error`, so the box needs the table the
+            // session already carries for chat.
+            session.lang.as_deref(),
         );
         if lines.is_empty() {
             return empty;
@@ -6112,7 +6137,7 @@ impl LiveApp {
         let start = rewo_net::command_format::usage_lines_start(parsed, cursor);
         let value: Vec<u16> = cs.input.value().encode_utf16().collect();
         let prefix = String::from_utf16_lossy(&value[..start.min(value.len())]);
-        let box_width = lines.iter().map(|l| width_of(l)).max().unwrap_or(0);
+        let box_width = lines.iter().map(|l| width_of(&l.text)).max().unwrap_or(0);
         let position = rewo_net::command_format::usage_position(
             fx + width_of(&prefix),
             fx,
@@ -6998,6 +7023,34 @@ impl LiveApp {
                         self.chat_char(ch);
                     }
                     self.literal_table_injected = true;
+                }
+            }
+            // M134 — a command that does not exist, which is the shortest
+            // route to `updateUsageInfo`'s THIRD branch and therefore to an
+            // exception message. Injected after every other typing stage
+            // because it is the one that must not have a popup over it: no
+            // literal matches, so no completion is offered, so
+            // `extractRenderState` falls through to the usage box. Every
+            // earlier stage exists to open a popup, and a popup would hide
+            // this.
+            //
+            // Nothing is recorded in `getExceptions()` for this input — the
+            // root's children are all literals, none matched, and
+            // `getRelevantNodes` therefore returned the empty argument set —
+            // so this reaches the line through `Commands.getParseException`
+            // rather than through the exception loop. That is the branch M117
+            // omitted entirely.
+            if self.literal_table_injected && !self.bad_command_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.95 {
+                    self.close_chat_screen();
+                    // The draft drop M120 needed, for M110's reason.
+                    self.chat_draft = None;
+                    self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Command);
+                    for ch in "rewonosuchcommand".chars() {
+                        self.chat_char(ch);
+                    }
+                    self.bad_command_injected = true;
                 }
             }
             if !self.container_injected {
@@ -7982,6 +8035,17 @@ impl LiveApp {
             .as_ref()
             .is_some_and(|cs| cs.suggestions.list().is_none())
         {
+            // M134 — counted HERE rather than in `usage_box_parts`, because
+            // this `if` is the mutual exclusion with the popup: a message the
+            // box computed and the popup covered never reached the screen,
+            // and a counter upstream of the exclusion would say it did.
+            if usage_text.iter().any(|l| {
+                l.text.starts_with("Unknown command") && l.color == [1.0, 1.0, 1.0]
+            }) {
+                if let Some(c) = self.check.as_mut() {
+                    c.parse_error_frames += 1;
+                }
+            }
             text.extend(usage_text);
         }
         if !chat_rows.is_empty() {
@@ -8366,6 +8430,7 @@ fn run_windowed(
         command_injected: false,
         coords_injected: false,
         literal_table_injected: false,
+        bad_command_injected: false,
         chat_parse: None,
         drag: DragState::default(),
         last_click: None,
@@ -8910,14 +8975,14 @@ fn chat_runs(
 /// The box and the suggestion popup are **mutually exclusive**:
 /// `extractRenderState` is `if (!extractSuggestions(..)) extractUsage(..)`.
 fn usage_box(
-    lines: &[String],
+    lines: &[rewo_net::command_format::UsageLine],
     position: i32,
     gui_h: i32,
     px: f32,
     fill_color: u32,
     width_of: &dyn Fn(&str) -> i32,
 ) -> (Vec<rewo_gpu::hud::HudFill>, Vec<rewo_gpu::world::OwnedTextLine>) {
-    let box_width = lines.iter().map(|l| width_of(l)).max().unwrap_or(0);
+    let box_width = lines.iter().map(|l| width_of(&l.text)).max().unwrap_or(0);
     let mut fills = Vec::new();
     let mut text = Vec::new();
     for (y, line) in lines.iter().enumerate() {
@@ -8935,12 +9000,18 @@ fn usage_box(
             x: position as f32 * px,
             y: (line_y + 2) as f32 * px,
             px,
-            // `-1` — white.
-            color: [1.0, 1.0, 1.0],
+            // **Per line, not per box.** `extractUsage` passes one `-1` for
+            // the lot and `Font.getTextColor` uses it only as a default, so
+            // the style baked into each `FormattedCharSequence` decides:
+            // `USAGE_FORMAT`'s grey on a usage entry, nothing at all on an
+            // exception message, which therefore keeps the white. This drew
+            // every line white from M117 until M134, when the second kind of
+            // line arrived and made the difference observable.
+            color: srgb_bytes_to_linear(line.color),
             alpha: 1.0,
             shadow: true,
             style: rewo_gpu::text::TextStyle::PLAIN,
-            text: line.clone(),
+            text: line.text.clone(),
         });
     }
     (fills, text)
@@ -11845,11 +11916,19 @@ mod tests {
         assert_eq!(lines[0].text, "hello there");
     }
 
+    /// A `USAGE_FORMAT`-styled line, which is what `fillNodeUsage` produces.
+    fn gray(text: &str) -> rewo_net::command_format::UsageLine {
+        rewo_net::command_format::UsageLine {
+            text: text.to_string(),
+            color: rewo_net::command_format::USAGE_COLOR,
+        }
+    }
+
     #[test]
     fn the_usage_box_grows_upward_from_the_bottom() {
         // `lineY = height - 27 - 12 * y`, so entry 0 is the LOWEST. Laying it
         // out downward from a top puts a two-line box over the field.
-        let lines = vec!["<count>".to_string(), "<flag>".to_string()];
+        let lines = vec![gray("<count>"), gray("<flag>")];
         let (fills, text) = super::usage_box(&lines, 40, 240, 1.0, 0xD000_0000, &|t| {
             t.chars().count() as i32 * 6
         });
@@ -11865,7 +11944,7 @@ mod tests {
     #[test]
     fn the_usage_fill_is_one_pixel_wider_than_its_text_on_each_side() {
         // `position - 1` to `position + width + 1`.
-        let lines = vec!["<count>".to_string()];
+        let lines = vec![gray("<count>")];
         let (fills, text) = super::usage_box(&lines, 40, 240, 1.0, 0xD000_0000, &|t| {
             t.chars().count() as i32 * 6
         });
@@ -11876,12 +11955,44 @@ mod tests {
 
     #[test]
     fn the_usage_box_is_as_wide_as_its_widest_line() {
-        let lines = vec!["<a>".to_string(), "<a much longer one>".to_string()];
+        let lines = vec![gray("<a>"), gray("<a much longer one>")];
         let (fills, _) = super::usage_box(&lines, 0, 240, 1.0, 0xD000_0000, &|t| {
             t.chars().count() as i32 * 6
         });
         let widest = "<a much longer one>".chars().count() as i32 * 6 + 2;
         assert!(fills.iter().all(|f| f.w == widest as f32));
+    }
+
+    #[test]
+    fn each_usage_line_takes_its_own_colour_rather_than_the_boxs(
+    ) {
+        // M134. `extractUsage` passes ONE `-1` for the whole list and
+        // `Font.getTextColor` uses it only where the style has no colour —
+        // so a grey usage entry and a white exception message land in the
+        // same box with different colours. Drawing the box in one colour is
+        // wrong for one of the two whichever is picked, and it drew
+        // everything white from M117 until the messages arrived.
+        let lines = vec![
+            gray("<count>"),
+            rewo_net::command_format::UsageLine {
+                text: "Unknown command at position 1: /<--[HERE]".to_string(),
+                color: rewo_net::command_format::ERROR_COLOR,
+            },
+        ];
+        let (_, text) = super::usage_box(&lines, 0, 240, 1.0, 0xD000_0000, &|t| {
+            t.chars().count() as i32 * 6
+        });
+        // White is 1.0 in both spaces, which is what hid this.
+        assert_eq!(text[1].color, [1.0, 1.0, 1.0]);
+        assert_ne!(text[0].color, text[1].color);
+        // …and the grey is the sRGB byte decoded, not the byte itself: the
+        // HUD tint multiplies in linear space (0xAA is 0.667 encoded and
+        // ~0.402 linear).
+        assert!(
+            (text[0].color[0] - 0.402).abs() < 0.01,
+            "{:?}",
+            text[0].color
+        );
     }
 
     /// The input field's caret sits after the text before the cursor, and the
