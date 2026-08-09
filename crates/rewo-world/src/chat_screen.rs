@@ -50,16 +50,29 @@
 //!
 //! # What is deliberately not here
 //!
-//! **`CommandSuggestions`.** It needs the `commands` packet (the Brigadier
-//! tree), which is class C in `REWO_PACKET_COVERAGE.md`. Vanilla's own
-//! `init` calls `setAllowSuggestions(false)` and only `onEdited` turns it on,
-//! so a screen that never suggests is a state vanilla itself passes through —
-//! but the four `keyPressed` / `mouseScrolled` / `mouseClicked` early-outs it
-//! owns are recorded at their call sites rather than silently absent.
+//! **`CommandSuggestions` — no longer true, and it is the field above.** This
+//! entry said the popup needed the `commands` packet, which was class C. M113
+//! decoded that packet, M114 built the popup, M115 drew it and M116 gave it a
+//! dispatcher; [`ChatScreen::suggestions`] has been a real
+//! [`crate::command_suggestions::CommandSuggestions`] since M114 and the four
+//! early-outs this entry promised are wired. What survives of it is one
+//! observation that is still vanilla's: `init` calls
+//! `setAllowSuggestions(false)` and only `onEdited` turns it on, so a freshly
+//! opened box shows no popup even with a restored draft.
 //!
-//! **Chat abilities and the restricted prompt.** `ChatAbilities` arrives on a
-//! packet Rewo does not decode, so `displayMode` is always `FOREGROUND` and
-//! never `FOREGROUND_RESTRICTED`.
+//! **Chat abilities and the restricted prompt.** This entry said
+//! `ChatAbilities` "arrives on a packet Rewo does not decode". **It arrives on
+//! no packet at all** — `Minecraft.computeChatAbilities()` builds it entirely
+//! client-side from three inputs: the `chatVisibility` option
+//! (`HIDDEN` → chat *and* commands disabled, `SYSTEM` → chat only), the
+//! launcher's `allowsChat` flag, and the Mojang profile's `CHAT_ALLOWED` user
+//! flag, the last two only `if (isMultiplayerServer())`. Rewo has none of the
+//! three, so `displayMode` is always `FOREGROUND` and never
+//! `FOREGROUND_RESTRICTED`, and `CommandSuggestions.setRestrictions` is never
+//! called with anything but `(true, true)` — which is why
+//! `chat_screen.commands_not_allowed` and `chat_screen.messages_not_allowed`
+//! are unreachable in `rewo_net::command_format::usage_lines`. The blocker is
+//! an options screen and an account fetch, not a decode.
 
 use crate::chat_events::ClickEvent;
 use crate::chat_style::ChatStyle;

@@ -256,7 +256,12 @@ impl StringReader {
             if escaped {
                 if c != terminator && c != b'\\' as u16 {
                     self.cursor -= 1;
-                    return Err(ReaderError::InvalidEscape);
+                    // `readerInvalidEscape().createWithContext(this,
+                    // String.valueOf(c))` — the offending character is the
+                    // exception's argument, and its message quotes it.
+                    return Err(ReaderError::InvalidEscape(
+                        String::from_utf16_lossy(&[c]),
+                    ));
                 }
                 out.push(c);
                 escaped = false;
@@ -321,17 +326,110 @@ pub enum ReaderError {
     InvalidFloat(String),
     ExpectedBool,
     InvalidBool(String),
-    InvalidEscape,
+    /// The offending character, as `String.valueOf(c)`.
+    InvalidEscape(String),
     ExpectedEndOfQuote,
     /// `IntegerArgumentType`'s own range checks and their siblings.
-    OutOfRange,
+    ///
+    /// Four types × two bounds is eight `Dynamic2CommandExceptionType`s in
+    /// `BuiltInExceptions`, and they differ in the type NAME they print, so
+    /// one variant carrying the name is the same table written once.
+    ///
+    /// **The lambda's arguments and the message's are transposed**:
+    /// `createWithContext(reader, result, this.minimum)` feeds
+    /// `(found, min) -> "Integer must not be less than " + min + ", found " +
+    /// found`, so the value that arrives FIRST is printed LAST. Both numbers
+    /// are already `String.valueOf`'d here, because only the parse site knows
+    /// whether they are an `int`, a `long`, a `float` or a `double` — and
+    /// `Float.toString(0.5f)` and `Double.toString(0.5)` are not the same
+    /// function.
+    OutOfRange {
+        kind: NumKind,
+        /// `integerTooHigh` rather than `integerTooLow`.
+        too_high: bool,
+        found: String,
+        bound: String,
+    },
     /// `literalIncorrect` — the one `updateUsageInfo` counts separately.
+    ///
+    /// **Unreachable from any brigadier parse**, and the argument is
+    /// structural rather than empirical: `getRelevantNodes` hands
+    /// `parseNodes` a `LiteralCommandNode` only when the next word equals its
+    /// name exactly, and `LiteralCommandNode.parse` on that word always
+    /// succeeds.
+    ///
+    /// Rewo's other raise site — a `Root` node found as somebody's child,
+    /// which vanilla has no counterpart for — is unreachable one layer
+    /// earlier still: `relevant_nodes` collects only literal and argument
+    /// children, so a Root child never reaches the parse at all. The arm
+    /// exists because the match must be total. See [`crate::command_errors`]
+    /// for what all of that makes dead in `updateUsageInfo`.
     LiteralIncorrect,
     /// `dispatcherExpectedArgumentSeparator`.
     ExpectedArgumentSeparator,
     /// Rewo's own: an argument type this client cannot parse. Vanilla has no
     /// equivalent because it has every type.
+    ///
+    /// It is also what a *failed* selector / block / item read reports, so it
+    /// covers two different things: "this client has no reader for that type"
+    /// and "the reader ran and refused". Neither has a `BuiltInExceptions`
+    /// literal to print — see [`crate::command_errors::message`], which
+    /// answers `None` for it rather than inventing text.
     UnknownArgumentType,
+}
+
+/// Which of the four numeric `BuiltInExceptions` families an
+/// [`ReaderError::OutOfRange`] belongs to. The name is printed verbatim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NumKind {
+    Integer,
+    Long,
+    Float,
+    Double,
+}
+
+impl NumKind {
+    /// The word the message opens with — `"Integer must not be less than…"`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Integer => "Integer",
+            Self::Long => "Long",
+            Self::Float => "Float",
+            Self::Double => "Double",
+        }
+    }
+}
+
+/// The four numeric argument types' shared bound check.
+///
+/// ```java
+/// if (result < this.minimum) { ...integerTooLow()... }
+/// else if (result > this.maximum) { ...integerTooHigh()... }
+/// ```
+///
+/// The LOW test runs first, so a range whose min exceeds its max reports the
+/// low bound for every value — which is what an `else if` means and is not
+/// the same as picking whichever bound is nearer.
+fn range_error<T: PartialOrd>(
+    kind: NumKind,
+    found: T,
+    min: T,
+    max: T,
+    show: impl Fn(&T) -> String,
+) -> Option<ReaderError> {
+    let (too_high, bound) = if found < min {
+        (false, &min)
+    } else if found > max {
+        (true, &max)
+    } else {
+        return None;
+    };
+    Some(ReaderError::OutOfRange {
+        kind,
+        too_high,
+        found: show(&found),
+        bound: show(bound),
+    })
 }
 
 /// A parseable argument type, resolved from the wire's props and type name.
@@ -417,36 +515,42 @@ impl ArgKind {
             Self::Integer { min, max } => {
                 let start = reader.cursor();
                 let v = reader.read_i32()? as i64;
-                if v < *min || v > *max {
+                if let Some(e) = range_error(NumKind::Integer, v, *min, *max, i64::to_string) {
                     reader.set_cursor(start);
-                    return Err(ReaderError::OutOfRange);
+                    return Err(e);
                 }
                 Ok(())
             }
             Self::Long { min, max } => {
                 let start = reader.cursor();
                 let v = reader.read_i64()?;
-                if v < *min || v > *max {
+                if let Some(e) = range_error(NumKind::Long, v, *min, *max, i64::to_string) {
                     reader.set_cursor(start);
-                    return Err(ReaderError::OutOfRange);
+                    return Err(e);
                 }
                 Ok(())
             }
             Self::Float { min, max } => {
                 let start = reader.cursor();
                 let v = reader.read_f32()? as f64;
-                if v < *min || v > *max {
+                // `Float.toString`, not `Double.toString`: the bound is a
+                // `float` field and the value came off `readFloat`, so both
+                // box to `Float` and print the shortest decimal that
+                // round-trips **as an f32**.
+                let f = |x: &f64| rewo_world::chat_translate::java_float_string(*x as f32);
+                if let Some(e) = range_error(NumKind::Float, v, *min, *max, f) {
                     reader.set_cursor(start);
-                    return Err(ReaderError::OutOfRange);
+                    return Err(e);
                 }
                 Ok(())
             }
             Self::Double { min, max } => {
                 let start = reader.cursor();
                 let v = reader.read_f64()?;
-                if v < *min || v > *max {
+                let f = |x: &f64| rewo_world::chat_translate::java_double_string(*x);
+                if let Some(e) = range_error(NumKind::Double, v, *min, *max, f) {
                     reader.set_cursor(start);
-                    return Err(ReaderError::OutOfRange);
+                    return Err(e);
                 }
                 Ok(())
             }
@@ -695,13 +799,34 @@ pub struct SuggestionContext {
     pub start_pos: usize,
 }
 
+/// One entry of `ParseResults.getExceptions()`.
+///
+/// Vanilla's value is a whole `CommandSyntaxException`, which is
+/// `{type, message, input, cursor}`. [`ReaderError`] is the type plus the
+/// message's arguments; `cursor` is the reader's position **at the throw**,
+/// which is what `getContext()` excerpts around and what
+/// `command.context.parse_error` prints. The `input` is not stored because
+/// every exception a client parse records was created against the same
+/// command string — `parseNodes` hands each child a *copy* of the reader —
+/// so [`ParseResults::reader`]'s string is it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParseError {
+    /// The child node that failed. Vanilla keys its `LinkedHashMap` by the
+    /// node itself; each child is visited once per `parseNodes`, so there is
+    /// no de-duplication to reproduce.
+    pub node: i32,
+    pub error: ReaderError,
+    /// `reader.getCursor()` when `createWithContext` ran.
+    pub cursor: usize,
+}
+
 /// `ParseResults`.
 #[derive(Clone, Debug)]
 pub struct ParseResults {
     pub context: ContextBuilder,
     pub reader: StringReader,
-    /// `(node, error)` in insertion order — vanilla's `LinkedHashMap`.
-    pub errors: Vec<(i32, ReaderError)>,
+    /// `getExceptions()` in insertion order — vanilla's `LinkedHashMap`.
+    pub errors: Vec<ParseError>,
 }
 
 impl ParseResults {
@@ -814,7 +939,7 @@ fn parse_nodes(
         };
     };
     let cursor = original.cursor();
-    let mut errors: Vec<(i32, ReaderError)> = Vec::new();
+    let mut errors: Vec<ParseError> = Vec::new();
     let mut potentials: Vec<ParseResults> = Vec::new();
 
     for child_index in relevant_nodes(tree, node, original) {
@@ -861,7 +986,17 @@ fn parse_nodes(
             Ok(())
         })();
         if let Err(e) = outcome {
-            errors.push((child_index, e));
+            // `errors.put(child, ex); reader.setCursor(cursor);` — in that
+            // order, so the exception keeps the cursor the FAILING read left
+            // and the retry rewinds afterwards. Reading the cursor after the
+            // rewind (or from `original`) would excerpt the start of the
+            // argument for every error, and `getContext`'s whole job is to
+            // point at where the parse actually stopped.
+            errors.push(ParseError {
+                node: child_index,
+                error: e,
+                cursor: reader.cursor(),
+            });
             continue;
         }
 
@@ -1128,7 +1263,12 @@ mod tests {
         let mut r = StringReader::from_str(r#""a\"b""#);
         assert_eq!(r.read_string().unwrap(), r#"a"b"#);
         let mut r = StringReader::from_str(r#""a\nb""#);
-        assert_eq!(r.read_string(), Err(ReaderError::InvalidEscape));
+        // The exception carries the offending CHARACTER, which is what its
+        // message quotes — `n`, not the backslash and not the whole escape.
+        assert_eq!(
+            r.read_string(),
+            Err(ReaderError::InvalidEscape("n".to_string()))
+        );
     }
 
     #[test]
@@ -1607,6 +1747,72 @@ mod tests {
     }
 
     #[test]
+    fn an_impossible_range_reports_its_LOW_bound_for_every_value() {
+        // `if (result < minimum) ... else if (result > maximum) ...` — an
+        // `else if`, so with min above max the low arm answers everything and
+        // the high arm is never reached. Picking whichever bound is nearer,
+        // or testing high first, reads exactly as plausibly and disagrees
+        // here. The wire carries the two bounds as independent optional
+        // fields, so nothing stops a tree declaring this pair.
+        let mut r = StringReader::from_str("3");
+        let e = ArgKind::Integer { min: 5, max: 1 }
+            .parse(&mut r, CommandCtx::default())
+            .unwrap_err();
+        assert_eq!(
+            e,
+            ReaderError::OutOfRange {
+                kind: NumKind::Integer,
+                too_high: false,
+                found: "3".into(),
+                bound: "5".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_float_bound_prints_as_a_float_and_a_double_bound_as_a_double() {
+        // `Float.toString` and `Double.toString` are not the same function:
+        // the first prints the shortest decimal that round-trips as an f32.
+        // Widening `0.1f` to a double and printing that gives
+        // `0.10000000149011612`, which is sixteen wrong digits in the middle
+        // of a message a player reads.
+        let mut r = StringReader::from_str("9");
+        let e = ArgKind::Float {
+            min: 0.0,
+            max: 0.1f32 as f64,
+        }
+        .parse(&mut r, CommandCtx::default())
+        .unwrap_err();
+        assert_eq!(
+            e,
+            ReaderError::OutOfRange {
+                kind: NumKind::Float,
+                too_high: true,
+                found: "9.0".into(),
+                bound: "0.1".into(),
+            }
+        );
+        // …and the same bound through the double arm keeps every digit of the
+        // f32 it was widened from, which is what makes the two observable.
+        let mut r = StringReader::from_str("9");
+        let e = ArgKind::Double {
+            min: 0.0,
+            max: 0.1f32 as f64,
+        }
+        .parse(&mut r, CommandCtx::default())
+        .unwrap_err();
+        assert_eq!(
+            e,
+            ReaderError::OutOfRange {
+                kind: NumKind::Double,
+                too_high: true,
+                found: "9.0".into(),
+                bound: "0.10000000149011612".into(),
+            }
+        );
+    }
+
+    #[test]
     fn an_unparseable_argument_stops_the_parse_rather_than_failing_the_command() {
         // Every `minecraft:` type is Unknown, so the parse reaches the literal
         // and stops. That is the same shape as a malformed input, which is
@@ -1614,7 +1820,7 @@ mod tests {
         let t = tree();
         let p = parse(&t, &u("/tp Steve"), 1, CommandCtx::default());
         assert_eq!(p.errors.len(), 1);
-        assert_eq!(p.errors[0].1, ReaderError::UnknownArgumentType);
+        assert_eq!(p.errors[0].error, ReaderError::UnknownArgumentType);
         // …and the literal it did consume is still in the context, which is
         // what lets `findSuggestionContext` reach `tp`'s children.
         assert_eq!(p.context.nodes.len(), 1);
@@ -1761,9 +1967,13 @@ mod tests {
         let t = tree();
         let p = parse(&t, &u("/give 5x"), 1, CommandCtx::default());
         assert_eq!(
-            p.errors.iter().map(|(_, e)| e.clone()).collect::<Vec<_>>(),
+            p.errors.iter().map(|e| e.error.clone()).collect::<Vec<_>>(),
             [ReaderError::ExpectedArgumentSeparator]
         );
+        // The cursor the exception kept is where the argument stopped — after
+        // `5`, i.e. on the `x` — not the start of the word and not the end of
+        // the input. `getContext` excerpts up to it.
+        assert_eq!(p.errors[0].cursor, 7);
         assert!(!p.is_valid(&t));
     }
 

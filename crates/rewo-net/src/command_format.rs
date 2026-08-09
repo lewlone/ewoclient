@@ -60,9 +60,21 @@
 //! So `/g` shows nothing at all — every child of the root is a literal — and
 //! the usage box appears only where an **argument** is expected. That single
 //! test is why the box is not a permanent menu of every subcommand.
+//!
+//! # …but the box is not only usage lines (M134)
+//!
+//! `commandUsage` also holds `updateUsageInfo`'s exception messages, which
+//! M117 modelled as a gate and left blank. [`usage_lines`] now returns both,
+//! as [`UsageLine`]s carrying the colour each one's style resolves to;
+//! [`crate::command_errors`] owns the messages. The `/g`-shows-nothing rule
+//! above is exactly what makes the third branch reachable: an empty
+//! `fillNodeUsage` under a reader that can still read is what prints
+//! *"Unknown command"*.
 
+use crate::command_errors::{self, BuiltIn};
 use crate::commands::{CommandNode, CommandTree, NodeKind};
-use crate::dispatcher::ParseResults;
+use crate::dispatcher::{ParseResults, ReaderError};
+use rewo_data::lang::Language;
 
 /// `ChatFormatting`'s colours, as `Style.withColor` resolves them.
 pub const GRAY: u32 = 0xAA_AAAA;
@@ -245,50 +257,139 @@ pub fn node_usage(tree: &CommandTree, parent: i32) -> Vec<String> {
         .collect()
 }
 
+/// One line of `commandUsage`, with the colour its own style resolves to.
+///
+/// Vanilla's list is `List<FormattedCharSequence>` and `extractUsage` draws
+/// every entry with the same `-1`; `Font.getTextColor` uses that only as a
+/// **default**, so a line's baked style decides. Two styles reach the list
+/// from a client parse — `USAGE_FORMAT` (grey) on the usage entries and
+/// nothing at all on an exception message, which therefore takes the white.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageLine {
+    pub text: String,
+    pub color: u32,
+}
+
+/// `USAGE_FORMAT` — `Style.EMPTY.withColor(ChatFormatting.GRAY)`.
+pub const USAGE_COLOR: u32 = GRAY;
+
+/// The `-1` `extractUsage` passes, which an unstyled message keeps.
+pub const ERROR_COLOR: u32 = 0xFF_FFFF;
+
 /// `CommandSuggestions.updateUsageInfo`, usage half.
 ///
 /// Returns the lines to draw under the field, topmost **last** — see
 /// `extractUsage`, which walks them with `height - 27 - 12 * y` so the first
 /// entry is the LOWEST and the list grows upward.
 ///
-/// # The error branch is a GATE here, not a message
+/// # One list, and the exclusion inside it runs one way
 ///
 /// ```java
 /// if (this.input.getCursorPosition() == this.input.getValue().length()) {
 ///    if (suggestions.isEmpty() && !currentParse.getExceptions().isEmpty()) {
-///       ... commandUsage.add(getExceptionMessage(exception)) ...
+///       ... this.commandUsage.add(getExceptionMessage(exception)) ...
+///    } else if (currentParse.getReader().canRead()) {
+///       trailingCharacters = true;
+///    }
+/// }
+/// ...
+/// if (this.commandUsage.isEmpty()) {
+///    List<FormattedCharSequence> usageEntries = this.fillNodeUsage(...);
+///    if (usageEntries.isEmpty() && trailingCharacters) {
+///       this.commandUsage.add(getExceptionMessage(Commands.getParseException(currentParse)));
+///    }
+///    this.commandUsage.addAll(usageEntries);
+/// }
 /// ```
 ///
-/// and then `if (this.commandUsage.isEmpty())` guards the usage entries — so
-/// when vanilla has an error to show it shows **that instead**. Rewo cannot
-/// render the message: `BuiltInExceptions`' text is a set of `LiteralMessage`
-/// literals that interpolate the offending value and the bound, and
-/// `command.context.parse_error` wraps them with a cursor and an excerpt.
-/// Those are transcribable and are simply not transcribed yet.
+/// The messages and the usage entries share `commandUsage`, so this is **not**
+/// a third panel — the mutual exclusion M117 recorded is between the box and
+/// the suggestion popup, one level up. The exclusion *here* is
+/// `if (commandUsage.isEmpty())`, and it is one-directional: an exception
+/// suppresses the usage entries, and the usage entries never suppress an
+/// exception.
 ///
-/// What *is* modelled is the gate: when the error branch would fire, this
-/// returns **nothing**. Showing the usage entries there would put "what may
-/// come next" under a command that is already wrong, which is the one place
-/// vanilla deliberately does not.
+/// Note the third branch, which M117 omitted entirely and which is the most
+/// visible of the three: with **no** recorded exception at all, a reader that
+/// can still read and a node with no argument children produce
+/// `Commands.getParseException` — that is what puts *"Unknown command at
+/// position 1: /<--\[HERE\]"* under a mistyped command.
 ///
-/// `literalIncorrect` is counted separately by vanilla and replaced with a
-/// single `dispatcherUnknownArgument` line; with no message text that
-/// distinction has nothing to change, and it is recorded rather than
-/// implemented.
+/// `lang` is `Option` for the reason [`crate::command_errors`] records: a
+/// caller without the table renders the key, which is what vanilla renders
+/// for a missing translation.
 pub fn usage_lines(
     tree: &CommandTree,
     parse: &ParseResults,
     cursor: usize,
     suggestions_empty: bool,
-) -> Vec<String> {
-    let at_end = cursor >= parse.reader.total_length();
-    if at_end && suggestions_empty && !parse.errors.is_empty() {
-        return Vec::new();
-    }
-    let Some(ctx) = parse.context.find_suggestion_context(cursor) else {
-        return Vec::new();
+    lang: Option<&Language>,
+) -> Vec<UsageLine> {
+    let mut usage: Vec<UsageLine> = Vec::new();
+    let input = parse.reader.string();
+    let error_line = |e: BuiltIn<'_>, at: usize| {
+        command_errors::exception_message(e, input, at, lang).map(|text| UsageLine {
+            text,
+            color: ERROR_COLOR,
+        })
     };
-    node_usage(tree, ctx.parent)
+    let mut trailing_characters = false;
+    // **The gate, kept separate from what it produced.** In vanilla the
+    // exception branch always adds at least one line, so
+    // `commandUsage.isEmpty()` below is an exact test for "the branch did not
+    // run". Rewo has one exception type with no vanilla text
+    // (`UnknownArgumentType` — see `command_errors::message`), so the branch
+    // can run and add nothing; testing emptiness alone would then fall
+    // through and print "what may come next" under a command that is already
+    // wrong, which is the one thing this branch exists to prevent. M117
+    // shipped the gate without the messages for exactly that reason and it
+    // survives here unchanged.
+    let mut exception_branch = false;
+    // `getCursorPosition() == getValue().length()`. The cursor can never
+    // exceed the field's length, so `==` and `>=` agree; `==` is the source.
+    if cursor == parse.reader.total_length() {
+        if suggestions_empty && !parse.errors.is_empty() {
+            exception_branch = true;
+            let mut literals = 0;
+            for e in &parse.errors {
+                if e.error == ReaderError::LiteralIncorrect {
+                    literals += 1;
+                } else if let Some(line) = error_line(BuiltIn::Reader(&e.error), e.cursor) {
+                    usage.push(line);
+                }
+            }
+            if literals > 0 {
+                // Dead in vanilla — see `command_errors`' module docs on why
+                // `literalIncorrect` cannot be recorded. Transcribed so the
+                // shape reads against the source.
+                if let Some(line) = error_line(BuiltIn::UnknownArgument, parse.reader.cursor()) {
+                    usage.push(line);
+                }
+            }
+        } else if parse.reader.can_read() {
+            trailing_characters = true;
+        }
+    }
+    let ctx = parse.context.find_suggestion_context(cursor);
+    if usage.is_empty() && !exception_branch {
+        let entries = ctx.map(|c| node_usage(tree, c.parent)).unwrap_or_default();
+        if entries.is_empty() && trailing_characters {
+            // `getParseException` is `@Nullable`, and vanilla dereferences it
+            // unguarded — safely, because `trailingCharacters` implies
+            // `getReader().canRead()`, which is the only branch that returns
+            // null. Rewo keeps the Option rather than relying on that.
+            if let Some((e, at)) = command_errors::parse_exception(parse) {
+                if let Some(line) = error_line(e, at) {
+                    usage.push(line);
+                }
+            }
+        }
+        usage.extend(entries.into_iter().map(|text| UsageLine {
+            text,
+            color: USAGE_COLOR,
+        }));
+    }
+    usage
 }
 
 /// `suggestionContextAtCursor.startPos` — where the usage box is anchored.
@@ -540,32 +641,171 @@ mod tests {
         assert!(node_usage(&t, 6).is_empty(), "tp's children are literals");
     }
 
-    #[test]
-    fn the_usage_box_appears_where_an_argument_is_expected_and_not_before() {
-        let t = tree();
-        let give = u("/give ");
-        let p = parse(&t, &give, 1, CommandCtx::default());
-        assert_eq!(usage_lines(&t, &p, give.len(), true), ["<count> <flag>"]);
-        // …and nothing at the top level, where every child is a literal.
-        let slash = u("/");
-        let p = parse(&t, &slash, 1, CommandCtx::default());
-        assert!(usage_lines(&t, &p, slash.len(), true).is_empty());
+    /// The one key `getExceptionMessage` resolves, so a test cannot depend on
+    /// the whole shipped table.
+    fn lang() -> rewo_data::lang::Language {
+        let mut m = std::collections::HashMap::new();
+        m.insert(
+            crate::command_errors::PARSE_ERROR_KEY.to_string(),
+            "%s at position %s: %s".to_string(),
+        );
+        rewo_data::lang::Language::from_map(m)
+    }
+
+    fn texts(lines: &[UsageLine]) -> Vec<&str> {
+        lines.iter().map(|l| l.text.as_str()).collect()
     }
 
     #[test]
-    fn an_error_at_the_end_of_the_line_suppresses_the_usage_entries() {
-        // Vanilla shows the exception message there instead; Rewo has no
-        // message yet, and showing "what may come next" under a command that
-        // is already wrong is the one thing vanilla deliberately does not.
+    fn the_usage_box_appears_where_an_argument_is_expected_and_not_before() {
         let t = tree();
+        let l = lang();
+        let give = u("/give ");
+        let p = parse(&t, &give, 1, CommandCtx::default());
+        assert_eq!(
+            texts(&usage_lines(&t, &p, give.len(), true, Some(&l))),
+            ["<count> <flag>"]
+        );
+        // …and at the top level, where every child is a literal, the usage
+        // entries are empty — so the THIRD branch fires instead of nothing.
+        // `/` alone is not an error: the reader consumed the slash before the
+        // parse began, so it cannot read and there is no trailing text.
+        let slash = u("/");
+        let p = parse(&t, &slash, 1, CommandCtx::default());
+        assert!(usage_lines(&t, &p, slash.len(), true, Some(&l)).is_empty());
+    }
+
+    #[test]
+    fn an_error_at_the_end_of_the_line_replaces_the_usage_entries_with_its_message() {
+        // The gate M117 shipped, now with the message it was standing in for.
+        // Showing "what may come next" under a command that is already wrong
+        // is the one thing vanilla deliberately does not.
+        let t = tree();
+        let l = lang();
         let bad = u("/give 5x");
         let p = parse(&t, &bad, 1, CommandCtx::default());
         assert!(!p.errors.is_empty(), "fixture precondition");
-        assert!(usage_lines(&t, &p, bad.len(), true).is_empty());
-        // The gate needs ALL THREE of its terms: with a suggestion to show,
+        let lines = usage_lines(&t, &p, bad.len(), true, Some(&l));
+        assert_eq!(
+            texts(&lines),
+            ["Expected whitespace to end one argument, but found trailing data \
+              at position 7: /give 5<--[HERE]"]
+        );
+        // …and it is WHITE, where the entries it replaced are grey.
+        assert_eq!(lines[0].color, ERROR_COLOR);
+        // The branch needs ALL THREE of its terms: with a suggestion to show,
         // or with the cursor away from the end, the entries come back.
-        assert!(!usage_lines(&t, &p, bad.len(), false).is_empty());
-        assert!(!usage_lines(&t, &p, 6, true).is_empty());
+        assert_eq!(
+            texts(&usage_lines(&t, &p, bad.len(), false, Some(&l))),
+            ["<count> <flag>"]
+        );
+        assert_eq!(
+            texts(&usage_lines(&t, &p, 6, true, Some(&l))),
+            ["<count> <flag>"]
+        );
+    }
+
+    #[test]
+    fn the_usage_entries_are_grey_and_an_exception_is_white() {
+        // `extractUsage` passes ONE colour for the whole list and
+        // `Font.getTextColor` treats it as a default, so the styles in the
+        // list decide. A box drawn in a single colour is wrong for one of the
+        // two kinds of line whichever colour is picked.
+        let t = tree();
+        let l = lang();
+        let give = u("/give ");
+        let p = parse(&t, &give, 1, CommandCtx::default());
+        assert_eq!(
+            usage_lines(&t, &p, give.len(), true, Some(&l))[0].color,
+            USAGE_COLOR
+        );
+        assert_eq!(USAGE_COLOR, GRAY);
+        assert_ne!(USAGE_COLOR, ERROR_COLOR);
+    }
+
+    #[test]
+    fn an_unknown_command_reports_itself_with_no_exception_recorded_at_all() {
+        // The third branch, which M117 omitted: `getExceptions()` is EMPTY
+        // here — the root's children are all literals and none matched, so
+        // `getRelevantNodes` returned the (empty) argument set and nothing
+        // was ever tried. What produces the line is `trailingCharacters` plus
+        // an empty `fillNodeUsage`.
+        let t = tree();
+        let l = lang();
+        let bad = u("/notacommand");
+        let p = parse(&t, &bad, 1, CommandCtx::default());
+        assert!(p.errors.is_empty(), "fixture: nothing was even tried");
+        let lines = usage_lines(&t, &p, bad.len(), true, Some(&l));
+        assert_eq!(
+            texts(&lines),
+            ["Unknown command at position 1: /<--[HERE]"]
+        );
+        assert_eq!(lines[0].color, ERROR_COLOR);
+    }
+
+    #[test]
+    fn a_bad_argument_at_the_end_reports_the_argument_rather_than_the_command() {
+        // Same branch, other arm of `getParseException`: `tp` matched, so the
+        // root's range is non-empty. `tp`'s children are literals, so
+        // `fillNodeUsage` is empty and the branch is reached.
+        let t = tree();
+        let l = lang();
+        let bad = u("/tp nowhere");
+        let p = parse(&t, &bad, 1, CommandCtx::default());
+        // Position **4**, not 3: `parseNodes` skips the separator before
+        // recursing, so the reader the exception captures sits past the space
+        // and the excerpt therefore ends with it. The witness first claimed
+        // `/tp<--[HERE]` and was wrong.
+        assert_eq!(
+            texts(&usage_lines(&t, &p, bad.len(), true, Some(&l))),
+            ["Incorrect argument for command at position 4: /tp <--[HERE]"]
+        );
+    }
+
+    #[test]
+    fn a_usage_entry_beats_the_third_branch_when_there_is_one_to_show() {
+        // `if (usageEntries.isEmpty() && trailingCharacters)` — both terms.
+        // `/give x` leaves the reader mid-input AND has a `<count>` line to
+        // offer, and vanilla shows the line rather than the exception.
+        let t = tree();
+        let l = lang();
+        let bad = u("/give x");
+        let p = parse(&t, &bad, 1, CommandCtx::default());
+        // Cursor away from the end, so the first branch cannot fire and only
+        // the third is in play.
+        let lines = usage_lines(&t, &p, 6, true, Some(&l));
+        assert_eq!(texts(&lines), ["<count> <flag>"]);
+        assert_eq!(lines[0].color, USAGE_COLOR);
+    }
+
+    #[test]
+    fn an_unnameable_error_prints_nothing_rather_than_inventing_a_message() {
+        // An argument type this client has no reader for reports
+        // `UnknownArgumentType`, which has no `BuiltInExceptions`
+        // counterpart. M121 closed every `minecraft:` type, so the reachable
+        // case is a modded server's own — and the GATE still fires, so the
+        // usage entries stay suppressed. That is M117's behaviour preserved
+        // exactly where there is no vanilla text to print.
+        //
+        // The first draft used `minecraft:entity`, which PARSES a bare player
+        // name perfectly well and recorded no error at all — a fixture that
+        // could not express its claim.
+        let mut t = tree();
+        t.nodes[0].children.push(9);
+        t.nodes.push(n(1, vec![10], NodeKind::Literal("msg".into())));
+        t.nodes.push(n(
+            2 | 4,
+            vec![],
+            arg("modded:thing", "modded:thing", ArgumentProps::None),
+        ));
+        let l = lang();
+        let bad = u("/msg Steve");
+        let p = parse(&t, &bad, 1, CommandCtx::default());
+        assert_eq!(
+            p.errors.iter().map(|e| e.error.clone()).collect::<Vec<_>>(),
+            [crate::dispatcher::ReaderError::UnknownArgumentType]
+        );
+        assert!(usage_lines(&t, &p, bad.len(), true, Some(&l)).is_empty());
     }
 
     #[test]
