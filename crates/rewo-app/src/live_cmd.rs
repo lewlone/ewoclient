@@ -7314,6 +7314,27 @@ impl LiveApp {
                     // box at any GUI scale, because both are screen pixels and
                     // the box is at least that big.
                     self.screen.mouse = ((lx + 1.0) as f64, (ly + 4.0) as f64);
+                    // …and close the suggestion popup first, because
+                    // `ChatScreen::mouse_clicked` gives it precedence over the
+                    // link (`if self.suggestions.mouse_clicked(..) { return
+                    // Handled }`) and `SuggestionsList` claims ANY click inside
+                    // its rect. That is vanilla's ordering, not a bug.
+                    //
+                    // The comment above used to argue the popup "cannot be what
+                    // answers" because the click sits between the screen opening
+                    // and the command screen replacing it. That held on M128's
+                    // own branch and stopped holding when M127c's decoration
+                    // witnesses joined the same injection block: the clickable
+                    // row is the NEWEST message, so it draws nearest the input
+                    // bar — which is exactly where the popup is. The click
+                    // answered `Handled`, the popup's answer, not the link's.
+                    //
+                    // Closing it does not weaken the claim. r42 asks whether a
+                    // click on a chat link runs its command; the popup is a
+                    // different widget, and r29 already witnesses that it draws.
+                    if let Some(cs) = self.chat_screen.as_mut() {
+                        cs.suggestions.hide();
+                    }
                     let outcome = self.chat_mouse_pressed(0);
                     if outcome
                         == rewo_world::chat_screen::ChatClick::RunCommand(
