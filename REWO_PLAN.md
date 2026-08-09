@@ -1628,6 +1628,22 @@ a record, because what it teaches outlived it:
   **UI eyeball itself is still pending** (user).
 
 **Correctness / completeness gaps:**
+- **Four `HudFill` producers double-scale, so their fills are drawn off-screen
+  at any GUI scale above 1** — OPEN, measured by M132 and left unfixed on
+  purpose. `rewo_gpu::hud::HudFill`'s doc says its rect is in GUI pixels and
+  `HudPass::draw`'s `tinted_quad` multiplies every rect by the GUI scale, but
+  `hud_fills` (the chat rows' backdrops), `chat_input_backdrop`,
+  `chat_scrollbar` and `suggestion_popup_fills` each multiply by `px` first —
+  and `gui_px` and the pass's `scale` are the **same expression**, so the
+  factor is exactly the GUI scale. The fills land off the bottom of the screen,
+  so they are **absent rather than misplaced**, which is why nobody has
+  reported them. `sidebar_fills` (M132) emits GUI pixels and says so, and is
+  the correct one to copy.
+  **No existing gate can see it**, which is why the fix needs a witness before
+  it needs a patch: `inventoryshot`'s fill witnesses render at 256x256 where
+  the GUI scale is 1 and the two readings coincide, and `--render-check`'s
+  counters count the emitted LIST rather than pixels. `live --render-check`
+  runs at 1600x900, where the scale is 3.
 - **`tryPlaceRecipe`'s `lastPlacedRecipe` guard is not modelled** — OPEN since
   M98, and reachable from two places since M104. Vanilla suppresses a second
   click on the **same uncraftable** recipe (`!isCraftable(recipe) &&
@@ -19742,3 +19758,326 @@ rewo-app.
 **Measured.** 2638 → **2642 tests**, 0 failures, per-crate exit codes read
 separately. All **33** serverless gates green, 0 validation errors. Demo PNG
 `2cc56b4acbfb92cb`, byte-identical.
+
+---
+
+### M128 — clickable chat text, and the field that had to move to survive the wrap (2026-08-09)
+
+`parse_component` read colour and the five format flags and dropped the rest,
+so nothing in chat could be clicked or hovered. M128 decodes the other three
+`Style` fields — `click_event`, `hover_event`, `insertion` — and carries them
+to the span.
+
+**The finding that decided the design: they live on `ChatStyle`, not on
+`ChatSpan`.** `FlatComponents::splitAt` rebuilds the tail of a wrapped part as
+`split_style.span(after)` — from the STYLE, not from the span — so events on
+the span alone would survive a link's first line and vanish on its second. That
+is M126b's machinery deciding M128's data layout, two milestones later.
+
+**The hit test is a replay of the layout, not a measurement.** 26.2 has no
+`getClickedComponentStyleAt`: `ChatScreen.mouseClicked` builds an
+`ActiveTextCollector.ClickableStyleFinder`, `ChatComponent.captureClickableText`
+runs it through the **same** private `extractRenderState` the draw runs, and
+`findElementUnderCursor` inverse-transforms the mouse and tests each prepared
+glyph's own rectangle. There is no `font.width` call anywhere in the lookup —
+which is why `active_text::prepare` lays the line out instead of measuring it,
+and why `ChatBoxGeometry` is one struct both the renderer and the hit test read.
+M89's finding on its fifth occurrence here.
+
+**The box is neither the sprite cell nor the advance, and the mix is what makes
+it easy to get wrong.** `TextRenderable.Styled` defaults all four `active*`
+edges to the RENDER box and `BakedSheetGlyph.GlyphInstance` overrides exactly
+one: `activeRight() = x + info.getAdvance(style.isBold())`. So boxes **tile**
+horizontally, where a cell-based reading would have neighbours overlapping by
+two pixels and the wrong glyph winning at the seam. Two more asymmetries belong
+to the space: `addEmptyGlyph` does not call `markSize`, so empty areas are
+absent from `bounds()` and a line of nothing but spaces is unreachable while a
+space *between* glyphs is clickable; and `visit` drains glyphs, then effects,
+then empty areas, with the scanner assigning unconditionally, so where the two
+overlap the space wins. The scanner's guard is not `result = style` but
+`if (getClickEvent() != null || includeInsertions && getInsertion() != null)`,
+so **an unclickable style does not CLEAR an earlier find** — invisible within a
+line, and the accumulation rule across a box.
+
+**Shift REPLACES the click path; it does not prefer the insertion over it.**
+`handleComponentClicked`'s `else if` means a shift-click never runs a command,
+whether or not the style also carries an insertion — and `event` is read into a
+local before the branch and then never used on that path, which is what makes
+"prefer the insertion, else click" the natural misreading. That reading runs
+commands vanilla never runs, on exactly the styles servers attach to player
+names. The insertion branch **returns false even when the insertion happened**,
+so a shift-click still falls through to the widgets underneath.
+
+Four smaller ones, each transcribed: `event.button() == 0`, so a right-click on
+a link does not even look; `Commands.trimOptionalPrefix` strips **one** slash,
+so `//co i` reaches the server as `/co i`; `suggest_command` is
+`insertText(command, true)` — REPLACE — where the shift insertion passes
+`false` and inserts at the caret, one argument apart and opposite; and
+**`change_page` from chat does nothing in vanilla either**, since it is a
+`BookViewScreen` action and from chat reaches `defaultHandleClickEvent`'s
+`default`, so declining it is exact rather than a deviation.
+
+`copy_to_clipboard` is declined with a stated reason — Rewo's clipboard has
+been in-process since M93t, so writing there would look like success and not be
+it — as are `show_dialog`, `custom`, and the two `ChatComponent` ids matched
+ahead of the generic case. `show_text` resolves and wraps (at
+`Math.max(guiWidth / 2, 200)`, an integer halving with a floor rather than a
+clamp, through the same `splitLines` overload the chat wrap uses but **without**
+`wrapComponents`' indent, so a continuation carries no leading space) and is
+deliberately **not drawn**: the tooltip goes through a deferred-tooltip stratum
+Rewo's chat has no equivalent of.
+
+**M128f is a correction to M128c, and the third of its kind in this log.**
+M128c cleared `isDraft` on every consumed click, reading `mouseClicked`'s
+`this.initial = this.input.getValue()` as a draft re-baseline. **That
+assignment is inert**: `initial` has exactly two readers, both inside
+`removed()`, which reassigns it from the same expression on the line above
+them. What actually clears `isDraft` is the field's own responder — `setValue`
+and `insertText` both end in `onValueChange`, wired to `onEdited` — so it is
+cleared exactly when the click CHANGED the field, and not for a `run_command`,
+an `open_url` or a declined action. (After `int border = 4` and
+`OverlayRecipeComponent.centerY`'s `+ 13`.)
+
+Seven mutation batteries, 44 mutations, 7 no-op controls all surviving, 37
+kills. The one survivor was a **third answer** rather than either usual one:
+`uri_scheme`'s RFC 2396 character rules are *provably unobservable* through
+`parse_untrusted_uri`, because the only schemes surviving
+`ALLOWED_UNTRUSTED_LINK_PROTOCOLS` are `http` and `https` and both already
+satisfy them — so the battery was aimed one level too high rather than the
+fixture being weak or the mutant equivalent. The rules have their own test now.
+
+**Its gate witness was minted as r40 and is r42 on `main`**, renumbered when
+the branch was absorbed into the M127 trunk; see the integration note below.
+
+---
+
+### M130 — the text pass wants LINEAR, and nine of twenty-two callers handed it the byte (2026-08-09)
+
+The title and the death screen already carried `ChatSpan`s — colour and all
+five flags — and both handed `TextStyle::PLAIN` to a pass that has been able to
+draw all five since M126c. Neither was revisited when it could, because both
+were written when it could not.
+
+**There is no surface at which vanilla honours a component's colour and drops
+its bold.** `Hud.extractTitle` passes a `Component` to `textWithBackdrop` and
+`DeathScreen.visitText` passes one to `ActiveTextCollector.accept`; both end at
+`getVisualOrderText()`, and `Font.PreparedTextBuilder.accept` reads all five
+flags off the same `Style` it reads `getColor()` off.
+
+**The measurement had to move with the flags, and that is the half a plausible
+patch omits.** `GlyphInfo.getBoldOffset()` is 1.0 charged per character
+(M126b), and every consumer here divides the width by two to centre — so a
+style-blind measure does not merely draw a bold line differently, it puts the
+whole line half its extra width off centre. Measured: an eleven-character bold
+death message recentres by 12 screen px, a four-character bold title by 16.
+`styled_line_width` replaces `width(plain_text(line))` at all five centring
+sites.
+
+The colour half is the larger correction. `TextLine::color` became
+`color_linear` to say which space it is in, and **nine of twenty-two callers
+were handing it the sRGB byte** — the pass writes into an sRGB attachment, so a
+`/255` value is encoded twice. M117's coloured command runs were the one
+existing site that got it right.
+
+M130c closes the gap the rename would otherwise leave: four of the nine
+converted sites are graded by nothing but the rename, and a rename guards
+against a new caller rather than against the conversion decaying in place.
+`the_converters_are_the_srgb_transfer_function` pins both helpers against the
+formula written out rather than against `rewo_gpu::srgb_to_linear`, which both
+call — M93q's rule, since a witness that asks the implementation what to expect
+asserts only that the implementation equals itself. And
+`the_enchant_cost_numerals_are_linear` asserts on the RED channel of
+`0x80FF20`, saying why: the green is `0xFF`, which is 1.0 in both spaces and so
+cannot witness a conversion at all. **Picking the bright channel is how a
+colour-space test quietly measures nothing.**
+
+---
+
+### M131 — the sound-instance model, the channel budget, and a device seam (2026-08-09)
+
+M63/M64/M66 decoded the sound packets, built the 1,968-entry registry and the
+weighted-variant index and deliberately stopped before playback. M131 is the
+model and the seam under it: sound instances, the channel budget, and the point
+a device would attach. **It still makes no sound** — there is no crate, no
+device and no mixer — which is stated rather than implied.
+
+Its mutation battery is the transferable part: 51 mutations across five
+batteries, each with a no-op control that must survive and a baseline guard
+that aborts if the check is already red; 48 killed, and the three survivors are
+a measurement rather than a gap. **Four of its witnesses were wrong and none of
+the code was** — the project's usual ratio, with four different shapes:
+
+* a boundary test looped `MIN_SOURCE_LIFETIME` times and expected that many
+  survivals, where vanilla's test is `minDeleteTime <= tickCount`, so tick 20
+  IS the reclaim tick;
+* `MIN_SOURCE_LIFETIME` was **self-calibrating** — M93r's finding walked into
+  again, since the boundary test computed its expectation from the constant, so
+  changing 20 to 19 moved code and expectation together;
+* `instance.volume * sound.volume` survived deletion because **every fixture
+  built from `Sound::file` has volume and pitch 1** — the classic weak fixture
+  sitting exactly where two readings agree;
+* the `EmptySound` arm had no witness at all, because every fixture registered
+  an event that resolves, so "not registered" and "registered but empty" agreed.
+
+---
+
+### M132 — the scoreboard sidebar, and a fill unit nobody had measured (2026-08-09)
+
+The panel, both bands and all its text, wired into the windowed frame and
+graded by a new serverless gate, `rewo sidebarshot --check` (17 witnesses,
+validation ON, 0 validation errors) — the 34th gate.
+
+**THE FINDING IS NOT THE SIDEBAR.** `rewo_gpu::hud::HudFill`'s own doc says its
+rect is in GUI pixels, and `HudPass::draw`'s `tinted_quad` multiplies every
+rect by the GUI scale. **Every producer in `live_cmd` multiplies by `px`
+first**, so the chat rows' backdrops, the chat input backdrop, the scrollbar
+and the suggestion popup's fills are all scaled **twice** — and `gui_px` and
+the pass's `scale` are the same expression, so the factor is exactly the GUI
+scale. At scale 2 a chat row's backdrop is drawn at twice its `y`, which is off
+the bottom of the screen, so those fills are **absent rather than misplaced**,
+which is why nobody has seen them missing.
+
+**No gate can see it either**, and both reasons are worth keeping: the only
+pixel witnesses for a `HudFill` are `inventoryshot`'s, which render at 256×256
+where the GUI scale is 1 and the two readings COINCIDE (M87's weak-fixture
+shape); and `--render-check`'s counters count the emitted LIST, not pixels.
+M132 recorded the measurement on `hud_fills` and on `sidebar_fills` — which
+emits GUI pixels and says so — and deliberately did not fix the neighbours,
+because they sat in a file two other sessions were editing at the time. **They
+are still unfixed; see the open item in §0.0.**
+
+The gate found it, and the signature is worth recognising: the first run
+reported an alpha of exactly ZERO for both bands while every text witness
+passed — geometry that is present, valid and off-screen.
+
+---
+
+### M133 — the recipe book's widget tooltips, and an open item that does not exist (2026-08-09)
+
+**§0.0 listed "the which-of-these overlay's own tooltips" as an open item, and
+it was a mislabel.** `OverlayRecipeComponent.java` contains the string
+"tooltip" **zero** times — verified here against the decompile rather than
+taken on the milestone's word. The overlay has none, so that item was not a gap.
+
+What was actually missing is three WIDGET tooltips, and **M106's own test
+comment had said so three milestones earlier without anyone reading it back**:
+the two page arrows carry `Tooltip.create` and the filter carries
+`withTooltip`, and all three reach the screen through `AbstractWidget`'s holder
+rather than through `RecipeBookPage.extractTooltip` — which is precisely why
+`page_tooltip_slot` rightly answers `None` for them.
+
+**They come FIRST in the frame**, ahead of the container's item tooltip and the
+book's cell tooltip: `AbstractRecipeBookScreen` runs the component's
+`extractRenderState` — inside which every widget calls
+`refreshTooltipForNextRenderPass` — before `this.extractTooltip`. With
+`setTooltipForNextFrameInternal`'s `deferredTooltip == null || replaceExisting`
+and `replaceExisting` false on every path, the first claim wins. That is the
+third consequence of the one rule M106a found.
+
+**The filter's tooltip names the CURRENT state, not what the click will do** —
+`filtering ? getRecipeFilterName() : ALL_RECIPES_TOOLTIP`, and
+`gui.recipebook.toggleRecipes.all` is "Showing All", so with the filter OFF it
+says it is showing everything. A tooltip usually promises an action, so the
+plausible reading is exactly inverted. And `getRecipeFilterName` is abstract on
+the COMPONENT but a constructor argument from the SCREEN, so the four books
+name four distinct keys — craftable / smeltable / blastable / smokable — and a
+"the three furnaces share one" reading is wrong for two of the three.
+
+An arrow with nowhere to go is **not drawn** rather than greyed
+(`updateArrowButtons` sets `visible`), and an invisible widget is never
+hovered, so a one-page book offers no arrow tooltip at all.
+
+---
+
+### M134 — `BuiltInExceptions`' literals, and a usage box that was never one colour (2026-08-09)
+
+M117 modelled the command field's exception messages as a gate: it showed
+*nothing* where vanilla shows a message, rather than approximating. M134 ships
+them — `BuiltInExceptions`' literals plus `command.context.parse_error`.
+
+**The message is IN the usage box, and the box was never one colour.**
+`extractUsage` passes one `-1` for the lot and `Font.getTextColor` uses it only
+as a DEFAULT, so the style baked into each `FormattedCharSequence` decides:
+`USAGE_FORMAT`'s grey on a usage entry, and nothing at all on an exception
+message, which therefore keeps the white. The box had drawn every line white
+from M117 until the second kind of line arrived and made the difference
+observable — so the colour is half the claim, and r43 asserts it.
+
+M134c is a docs pass over three module docs that had gone false and one that
+never was true. The one that never was: `chat_screen.rs` said `ChatAbilities`
+"arrives on a packet Rewo does not decode". **It arrives on no packet at all** —
+`Minecraft.computeChatAbilities()` builds it client-side from the
+`chatVisibility` option, the launcher's `allowsChat` flag and the profile's
+`CHAT_ALLOWED` user flag, the last two only `if (isMultiplayerServer())`. Rewo
+has none of the three, so `displayMode` is always `FOREGROUND` and
+`CommandSuggestions.setRestrictions` is never called with anything but
+`(true, true)` — which is why `chat_screen.commands_not_allowed` and
+`chat_screen.messages_not_allowed` are unreachable. The blocker is an options
+screen and an account fetch, not a decode.
+
+Its fourth doc correction could not survive the integration: M134c had also
+rewritten the "Clickable chat text" entry to argue the feature was blocked
+because `ChatSpan` carries no `clickEvent`. True when written, and **M128
+ships exactly that feature** — so the merge resolved that paragraph out and
+kept the rest.
+
+---
+
+### The M127–M134 integration (2026-08-09)
+
+Eight milestones, built in parallel on six branches off the M126 merge, none of
+them merged, integrated in one pass. Merge order was chosen so the trunk
+(M127 + M128 + M129 + M133) landed first — every sibling then dedupes by SHA —
+and so M130's `TextLine::color` → `color_linear` rename hit a settled tree
+exactly once rather than being re-resolved three times.
+
+`claude/rewo-m128-clickevents` was **not** merged: `git merge-base
+--is-ancestor` proves it is already contained in the trunk branch, which
+absorbed it and renumbered its r40 to r42.
+
+**Four hazards, ranked by how invisible they were.**
+
+1. **A witness-number collision git merges silently.** Three branches each mint
+   an r42 — M128's click, M132's sidebar, M134's parse error — in regions none
+   of the others edited, so there is no conflict to see. `--render-check` ends
+   `pass == rows.len()` with **no declared count and no uniqueness check**, so
+   all three rows would run, all three would pass, and any doc citing r42 would
+   be ambiguous. Renumbered to r43 (M134) and r44 (M132).
+2. **One conflict whose two sides fail DIFFERENTLY.** In `usage_box`, M134b has
+   `color: srgb_bytes_to_linear(line.color)` and M130 has
+   `color_linear: [1.0, 1.0, 1.0]`. Taking M134b's side fails loud; **taking
+   M130's side compiles and silently reverts M134b**, drawing every usage-box
+   line white again. Only the union is right.
+3. **Two breaks invisible to a textual merge, both loud at build.** `ChatStyle`
+   lost `Copy` (M128 put an `Arc` on it) and broke five by-value uses in
+   `sidebar.rs` written against the `Copy` version — including a `..base`
+   functional update, which is a move a survey of call *arguments* misses. And
+   the `color_linear` rename E0560'd every `OwnedTextLine` literal on the other
+   branches, plus twelve field reads and test accesses.
+4. **A regression no branch's own gate could see.** The merged tree came out at
+   43/44: r42's click answered `Handled`, which is the **suggestion popup's**
+   answer, because `ChatScreen::mouse_clicked` gives it precedence. M128's
+   comment reasons the popup "cannot be what answers"; that held on its own
+   branch and stopped holding at the merge, because M128 branched *before*
+   M127c added its decoration witnesses to the same injection block, and the
+   clickable row — the newest message — ended up drawn under the popup.
+
+**Every one of those six branches was green alone.** A branch being green is
+not evidence about the merged tree; run `live --render-check` after
+integrating, not only after implementing.
+
+Also caught, and reported here because they are instrument failures rather than
+code ones: a conflict matrix that scored all fifteen pairs as conflicting,
+because git 2.37 has no `merge-tree --write-tree` and exits **129 for a usage
+error** which a "non-zero means conflict" reader scores as a conflict (the tell
+was every pair conflicting with zero paths listed); and a line-ending
+re-measurement that answered **0 files** from a torn-down worktree and was
+nearly reported as "no CRLF files". Both scripts now assert they measured
+something before reporting.
+
+**Measured after integration:** 2846 tests / 0 failures (world 1147, net 949,
+gpu 274, data 224, app 191, mesh 45, proto 16), all **34** serverless gates
+green with 0 validation errors, `live --render-check` **44/44** with validation
+ON, demo PNG `2cc56b4acbfb92cb` byte-identical. Nine `.rs` files arrived with
+the branches and every one is LF, so the five non-LF files §0.0 names are still
+the same five.
