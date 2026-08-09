@@ -277,6 +277,51 @@ impl Default for ChannelBudget {
     }
 }
 
+/// The id-and-pool bookkeeping every [`AudioDevice`] needs, whatever it does
+/// with the samples — `Library`'s half of the job, minus OpenAL.
+#[derive(Clone, Debug, Default)]
+pub struct ChannelAllocator {
+    budget: ChannelBudget,
+    next_id: ChannelId,
+    /// Which pool each live channel came from, so `release` returns it to the
+    /// right one. Vanilla's `Library.releaseChannel` finds this by asking both
+    /// pools in turn and **throws** if neither owns the channel.
+    pools: HashMap<ChannelId, Pool>,
+    /// `acquire` returned `None` this many times — the dropped-sound counter,
+    /// which vanilla only logs (and only when running in an IDE).
+    pub refusals: u32,
+}
+
+impl ChannelAllocator {
+    pub fn with_channel_count(total: i32) -> ChannelAllocator {
+        ChannelAllocator {
+            budget: ChannelBudget::from_channel_count(total),
+            ..Default::default()
+        }
+    }
+
+    pub fn budget(&self) -> &ChannelBudget {
+        &self.budget
+    }
+
+    pub fn acquire(&mut self, pool: Pool) -> Option<ChannelId> {
+        if !self.budget.acquire(pool) {
+            self.refusals += 1;
+            return None;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.pools.insert(id, pool);
+        Some(id)
+    }
+
+    pub fn release(&mut self, channel: ChannelId) {
+        if let Some(pool) = self.pools.remove(&channel) {
+            self.budget.release(pool);
+        }
+    }
+}
+
 /// An [`AudioDevice`] that makes no sound and records what it was asked to do.
 ///
 /// This is the whole verification strategy for the parts of audio a machine
@@ -285,28 +330,28 @@ impl Default for ChannelBudget {
 /// [`ChannelBudget`], so the no-eviction rule is exercised rather than assumed.
 #[derive(Clone, Debug, Default)]
 pub struct RecordingDevice {
-    budget: ChannelBudget,
-    next_id: ChannelId,
+    alloc: ChannelAllocator,
     /// Every call, in order, with the channel it went to.
     pub calls: Vec<(ChannelId, ChannelCall)>,
-    /// Which pool each live channel came from, so `release` can return it.
-    pools: HashMap<ChannelId, Pool>,
     /// Channels the test has declared finished, for the reclaim path.
     stopped: Vec<ChannelId>,
-    /// `acquire` returned `None` this many times — the dropped-sound counter.
-    pub refusals: u32,
 }
 
 impl RecordingDevice {
     pub fn with_channel_count(total: i32) -> RecordingDevice {
         RecordingDevice {
-            budget: ChannelBudget::from_channel_count(total),
+            alloc: ChannelAllocator::with_channel_count(total),
             ..Default::default()
         }
     }
 
     pub fn budget(&self) -> &ChannelBudget {
-        &self.budget
+        self.alloc.budget()
+    }
+
+    /// How many `acquire` calls were refused for want of a channel.
+    pub fn refusals(&self) -> u32 {
+        self.alloc.refusals
     }
 
     /// Pretend the device finished playing this channel, so the engine's
@@ -334,20 +379,11 @@ impl RecordingDevice {
 
 impl AudioDevice for RecordingDevice {
     fn acquire(&mut self, pool: Pool) -> Option<ChannelId> {
-        if !self.budget.acquire(pool) {
-            self.refusals += 1;
-            return None;
-        }
-        let id = self.next_id;
-        self.next_id += 1;
-        self.pools.insert(id, pool);
-        Some(id)
+        self.alloc.acquire(pool)
     }
 
     fn release(&mut self, channel: ChannelId) {
-        if let Some(pool) = self.pools.remove(&channel) {
-            self.budget.release(pool);
-        }
+        self.alloc.release(channel);
         self.stopped.retain(|c| *c != channel);
     }
 
@@ -357,6 +393,60 @@ impl AudioDevice for RecordingDevice {
 
     fn stopped(&self, channel: ChannelId) -> bool {
         self.stopped.contains(&channel)
+    }
+}
+
+/// The [`AudioDevice`] production uses **until there is a real one**.
+///
+/// It allocates and frees channels through a real [`ChannelBudget`] and throws
+/// every call away. Its one non-obvious choice is [`AudioDevice::stopped`]:
+/// with no device there is no `AL_SOURCE_STATE` to read, and answering `false`
+/// would mean nothing is ever reclaimed, the pool fills after 25 sounds and
+/// the engine wedges. Answering `true` makes every channel read as finished,
+/// so the engine reclaims it once the [`MIN_SOURCE_LIFETIME`] grace period
+/// expires — which keeps the budget, the grace period and the manual-loop
+/// requeue all exercised on the live path rather than only in tests.
+///
+/// The consequence to know: under this device every sound behaves as if it
+/// were shorter than 20 ticks, so a *long* sound's real lifetime is not
+/// modelled. Nothing here could model it — a sound's length is in its `.ogg`.
+#[derive(Clone, Debug, Default)]
+pub struct SilentDevice {
+    alloc: ChannelAllocator,
+    /// Every call this device was asked to make. A pure counter — the calls
+    /// themselves are dropped.
+    pub calls_made: u64,
+}
+
+impl SilentDevice {
+    pub fn with_channel_count(total: i32) -> SilentDevice {
+        SilentDevice {
+            alloc: ChannelAllocator::with_channel_count(total),
+            ..Default::default()
+        }
+    }
+
+    pub fn budget(&self) -> &ChannelBudget {
+        self.alloc.budget()
+    }
+
+    pub fn refusals(&self) -> u32 {
+        self.alloc.refusals
+    }
+}
+
+impl AudioDevice for SilentDevice {
+    fn acquire(&mut self, pool: Pool) -> Option<ChannelId> {
+        self.alloc.acquire(pool)
+    }
+    fn release(&mut self, channel: ChannelId) {
+        self.alloc.release(channel);
+    }
+    fn submit(&mut self, _channel: ChannelId, _call: ChannelCall) {
+        self.calls_made += 1;
+    }
+    fn stopped(&self, _channel: ChannelId) -> bool {
+        true
     }
 }
 
@@ -1060,6 +1150,179 @@ pub fn stop_from_event(stop: &StopSound) -> (Option<&str>, Option<SoundSource>) 
     (stop.name.as_deref(), stop.source)
 }
 
+/// A [`SoundWorld`] over a live [`rewo_world::entities::EntityTable`].
+///
+/// The position is `render_pos(1.0)` — the **current** interpolated position,
+/// which is what `entity.getX()` returns at tick time — not the synced target
+/// `x/y/z`, which is where the entity is heading. Using the target would put a
+/// moving mob's sound up to three ticks ahead of the mob.
+pub struct EntityTableWorld<'a>(pub &'a rewo_world::entities::EntityTable);
+
+impl SoundWorld for EntityTableWorld<'_> {
+    fn entity_position(&self, entity_id: i32) -> Option<(f64, f64, f64)> {
+        let e = self.0.get(entity_id)?;
+        let p = e.render_pos(1.0);
+        Some((p[0], p[1], p[2]))
+    }
+
+    fn entity_silent(&self, _entity_id: i32) -> bool {
+        // `Entity.DATA_SILENT` is `SynchedEntityData` index 4 and `metadata.rs`
+        // does not decode it, so this is the honest answer rather than a guess:
+        // Rewo cannot tell, and the effect of being wrong is that a silenced
+        // entity is heard. Closing it is a one-index metadata addition; see the
+        // note on [`SoundWorld::entity_silent`].
+        false
+    }
+}
+
+/// What happened to the sound events drained from one tick, for a caller that
+/// wants to know the pipeline is alive without hearing anything.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SoundStats {
+    pub started: u32,
+    pub started_silently: u32,
+    /// A `stop_sound` packet applied.
+    pub stops: u32,
+    /// Refused by [`SoundEngine::play`] — see [`NotStarted`].
+    pub not_started: u32,
+    /// Never reached the engine: the registry, the entity table or the
+    /// event's own kind ruled it out. See [`NoInstance`].
+    pub no_instance: u32,
+}
+
+impl SoundStats {
+    pub fn total(&self) -> u32 {
+        self.started + self.started_silently + self.stops + self.not_started + self.no_instance
+    }
+}
+
+/// Engine + asset index + counters — the object a client owns.
+///
+/// The seam `PlaySession::take_sound_events` was built for in M63 and which
+/// nothing had ever called: before this, the decoded queue filled to its cap
+/// and rotated forever, and `SoundsIndex`, `SoundEvents::name` and
+/// `level_event_sounds::resolve` had **zero production callers between them**.
+#[derive(Clone, Debug, Default)]
+pub struct SoundSystem {
+    pub engine: SoundEngine,
+    /// The merged `sounds.json` index (M66). Empty until loaded, in which case
+    /// every event resolves to [`NotStarted::UnknownEvent`] — a client with no
+    /// resource pack on disk is silent, not broken.
+    pub sounds: SoundsIndex,
+    pub stats: SoundStats,
+}
+
+impl SoundSystem {
+    pub fn new(sounds: SoundsIndex) -> SoundSystem {
+        SoundSystem {
+            engine: SoundEngine::new(),
+            sounds,
+            stats: SoundStats::default(),
+        }
+    }
+
+    /// Feed one drained batch of [`SoundEvent`]s to the engine, in order.
+    ///
+    /// **Order is the contract**, which is why M63 put all four kinds in one
+    /// queue: a `stop_sound` that overtook the `sound` it cancels would leave
+    /// that sound playing forever.
+    pub fn accept(
+        &mut self,
+        events: &[SoundEvent],
+        registry: &rewo_data::sound_events::SoundEvents,
+        world: &dyn SoundWorld,
+        device: &mut dyn AudioDevice,
+    ) {
+        for ev in events {
+            if let SoundEvent::Stop(stop) = ev {
+                let (name, source) = stop_from_event(stop);
+                self.engine.stop_matching(name, source, device);
+                self.stats.stops += 1;
+                continue;
+            }
+            match instance_from_event(ev, registry, world) {
+                Ok(instance) => {
+                    let (_, result) = self.engine.play(instance, &self.sounds, world, device);
+                    match result {
+                        PlayResult::Started => self.stats.started += 1,
+                        PlayResult::StartedSilently => self.stats.started_silently += 1,
+                        PlayResult::NotStarted(_) => self.stats.not_started += 1,
+                    }
+                }
+                Err(_) => self.stats.no_instance += 1,
+            }
+        }
+    }
+
+    /// One 20 Hz engine tick.
+    pub fn tick(&mut self, paused: bool, world: &dyn SoundWorld, device: &mut dyn AudioDevice) {
+        self.engine.tick(paused, &self.sounds, world, device);
+    }
+}
+
+/// Everything a live client needs to drive the sound model, in one object.
+///
+/// The device is a **concrete** [`SilentDevice`] rather than a
+/// `Box<dyn AudioDevice>`, deliberately: a boxed trait object here would read
+/// as "the backend is pluggable and one just has not been plugged in", and the
+/// honest statement is that **no backend exists**. Swapping this field is the
+/// visible one-line edit a device milestone makes, and until then the type
+/// says out loud what the client can do.
+///
+/// It exists so the live wiring is one field and one call per tick site
+/// instead of five, and so the drain logic has a test module — `PlaySession`
+/// has none anywhere in the repo (it owns a socket), which is M71's finding
+/// and the reason nothing that matters should be written there.
+#[derive(Clone, Default)]
+pub struct LiveSounds {
+    pub system: SoundSystem,
+    pub device: SilentDevice,
+    pub registry: rewo_data::sound_events::SoundEvents,
+}
+
+impl LiveSounds {
+    pub fn new(
+        sounds: SoundsIndex,
+        registry: rewo_data::sound_events::SoundEvents,
+    ) -> LiveSounds {
+        LiveSounds {
+            system: SoundSystem::new(sounds),
+            device: SilentDevice::default(),
+            registry,
+        }
+    }
+
+    /// Drain one tick's decoded sound events and advance the engine.
+    ///
+    /// Call once per **client tick**, not once per frame: `SoundEngine.tick`
+    /// is `Minecraft.tick`'s, `tickCount` is a tick counter, and
+    /// `MIN_SOURCE_LIFETIME` is 20 of them. Driving it per frame would make a
+    /// channel's grace period depend on the frame rate.
+    pub fn drive(&mut self, events: &[SoundEvent], entities: &rewo_world::entities::EntityTable) {
+        let world = EntityTableWorld(entities);
+        let before = self.system.stats;
+        self.system
+            .accept(events, &self.registry, &world, &mut self.device);
+        self.system.tick(false, &world, &mut self.device);
+        if !events.is_empty() {
+            let s = self.system.stats;
+            log::debug!(
+                "sound: +{} started, +{} silent, +{} stopped, +{} refused, +{} unresolvable                  ({} holding a channel)",
+                s.started - before.started,
+                s.started_silently - before.started_silently,
+                s.stops - before.stops,
+                s.not_started - before.not_started,
+                s.no_instance - before.no_instance,
+                self.system.engine.live_count(),
+            );
+        }
+    }
+
+    pub fn stats(&self) -> SoundStats {
+        self.system.stats
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1418,7 +1681,7 @@ mod tests {
         }
         let (_, r) = eng.play(stone(1.0, 1.0), &idx, &EmptyWorld, &mut dev);
         assert_eq!(r, PlayResult::NotStarted(NotStarted::NoChannel));
-        assert_eq!(dev.refusals, 1);
+        assert_eq!(dev.refusals(), 1);
         // The 25 that were already playing are untouched — no eviction.
         assert_eq!(eng.live_count(), 25);
     }
@@ -1877,6 +2140,187 @@ mod tests {
         assert_eq!(i.seed, None);
         assert_eq!(i.volume, 0.18);
         assert_eq!(i.identifier, "minecraft:entity.arrow.hit_player");
+    }
+
+    // ---- the system: order, stats, and the silent device ------------------
+
+    fn positioned(seed: i64) -> SoundEvent {
+        SoundEvent::At(PositionedSound {
+            sound: SoundRef::Inline {
+                name: "minecraft:block.stone.break".into(),
+                fixed_range: None,
+            },
+            source: SoundSource::Blocks,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            volume: 1.0,
+            pitch: 1.0,
+            seed,
+        })
+    }
+
+    #[test]
+    fn the_queue_order_decides_whether_a_stop_cancels_the_sound_before_it() {
+        // The whole reason M63 put four kinds in one queue. A stop that
+        // overtook its sound would leave that sound playing forever.
+        let mut sys = SoundSystem::new(plain_index());
+        let mut dev = RecordingDevice::default();
+        let reg = registry();
+        let stop = SoundEvent::Stop(StopSound {
+            source: Some(SoundSource::Blocks),
+            name: None,
+        });
+
+        sys.accept(&[positioned(1), stop.clone()], &reg, &EmptyWorld, &mut dev);
+        assert_eq!(dev.calls_to(0).last(), Some(&ChannelCall::Stop));
+
+        // Reversed: the stop finds nothing and the sound survives it.
+        let mut sys = SoundSystem::new(plain_index());
+        let mut dev = RecordingDevice::default();
+        sys.accept(&[stop, positioned(1)], &reg, &EmptyWorld, &mut dev);
+        assert_eq!(dev.calls_to(0).last(), Some(&ChannelCall::Play));
+    }
+
+    #[test]
+    fn the_stats_account_for_every_event_in_the_batch() {
+        let mut sys = SoundSystem::new(plain_index());
+        let mut dev = RecordingDevice::default();
+        let batch = vec![
+            positioned(1),
+            // An entity sound for an entity nobody is tracking → no instance.
+            SoundEvent::OnEntity(EntitySound {
+                sound: SoundRef::Registry(7),
+                source: SoundSource::Ambient,
+                entity_id: 999,
+                volume: 1.0,
+                pitch: 1.0,
+                seed: 0,
+            }),
+            // A registered-nowhere event → the engine refuses it.
+            SoundEvent::At(PositionedSound {
+                sound: SoundRef::Inline {
+                    name: "minecraft:nope".into(),
+                    fixed_range: None,
+                },
+                source: SoundSource::Blocks,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                volume: 1.0,
+                pitch: 1.0,
+                seed: 0,
+            }),
+            SoundEvent::Stop(StopSound::default()),
+        ];
+        sys.accept(&batch, &registry(), &EmptyWorld, &mut dev);
+        assert_eq!(sys.stats.started, 1);
+        assert_eq!(sys.stats.no_instance, 1);
+        assert_eq!(sys.stats.not_started, 1);
+        assert_eq!(sys.stats.stops, 1);
+        assert_eq!(sys.stats.total(), batch.len() as u32);
+    }
+
+    #[test]
+    fn an_empty_index_is_silent_rather_than_broken() {
+        // A client with no resource pack unpacked: every event resolves to
+        // UnknownEvent, nothing panics, and the counters say so.
+        let mut sys = SoundSystem::default();
+        let mut dev = RecordingDevice::default();
+        sys.accept(&[positioned(1)], &registry(), &EmptyWorld, &mut dev);
+        assert_eq!(sys.stats.not_started, 1);
+        assert!(dev.calls.is_empty());
+    }
+
+    #[test]
+    fn the_silent_device_recycles_its_channels_instead_of_wedging() {
+        // `stopped()` answering `true` is what keeps the pool from filling
+        // permanently. With `false` the 26th sound and every one after it
+        // would be dropped for the rest of the session.
+        let idx = plain_index();
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = SilentDevice::default();
+        let reg = registry();
+        for _ in 0..200 {
+            sys.accept(&[positioned(1)], &reg, &EmptyWorld, &mut dev);
+            for _ in 0..MIN_SOURCE_LIFETIME {
+                sys.tick(false, &EmptyWorld, &mut dev);
+            }
+        }
+        assert_eq!(sys.stats.started, 200);
+        assert_eq!(dev.refusals(), 0);
+        assert!(dev.calls_made > 0);
+        assert_eq!(sys.engine.live_count(), 0, "everything was reclaimed");
+    }
+
+    #[test]
+    fn the_silent_device_still_enforces_the_budget_within_the_grace_period() {
+        // The other half: it does not become an unlimited sink. 25 static
+        // channels, and the 26th sound inside one grace period is dropped.
+        let idx = plain_index();
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = SilentDevice::default();
+        let reg = registry();
+        let batch: Vec<SoundEvent> = (0..26).map(positioned).collect();
+        sys.accept(&batch, &reg, &EmptyWorld, &mut dev);
+        assert_eq!(sys.stats.started, 25);
+        assert_eq!(sys.stats.not_started, 1);
+        assert_eq!(dev.refusals(), 1);
+    }
+
+    #[test]
+    fn live_sounds_drives_the_whole_chain_from_a_decoded_event() {
+        // The end-to-end shape the live client uses: a decoded packet in, an
+        // engine holding a channel out — through the production registry
+        // lookup, instance construction, resolution and budget. If any link
+        // were missing this would count a `no_instance` or a `not_started`.
+        use rewo_world::entities::{EntityState, EntityTable};
+        let mut live = LiveSounds::new(plain_index(), registry());
+        let mut entities = EntityTable::default();
+        entities.add(11, EntityState::new(0, 0, 5.0, 64.0, -5.0, 0.0, 0.0));
+
+        live.drive(&[positioned(3)], &entities);
+        assert_eq!(live.stats().started, 1);
+        assert_eq!(live.system.engine.live_count(), 1);
+
+        // …and an entity-bound one resolves its position through the table.
+        let ev = SoundEvent::OnEntity(EntitySound {
+            sound: SoundRef::Inline {
+                name: "minecraft:block.stone.break".into(),
+                fixed_range: None,
+            },
+            source: SoundSource::Neutral,
+            entity_id: 11,
+            volume: 1.0,
+            pitch: 1.0,
+            seed: 0,
+        });
+        live.drive(&[ev.clone()], &entities);
+        assert_eq!(live.stats().started, 2);
+
+        // An entity the table does not have is dropped, not relocated.
+        entities.remove(11);
+        live.drive(&[ev], &entities);
+        assert_eq!(live.stats().no_instance, 1);
+        assert_eq!(live.stats().started, 2);
+    }
+
+    #[test]
+    fn the_entity_table_world_reads_the_current_position_not_the_synced_target() {
+        use rewo_world::entities::{EntityState, EntityTable};
+        let mut t = EntityTable::default();
+        t.add(5, EntityState::new(0, 0, 0.0, 64.0, 0.0, 0.0, 0.0));
+        // Give it somewhere to head for; `x/y/z` moves at once, `render_pos`
+        // interpolates towards it over the next three ticks.
+        if let Some(e) = t.get_mut(5) {
+            e.set_target(30.0, 64.0, 0.0);
+        }
+        let w = EntityTableWorld(&t);
+        let (x, _, _) = w.entity_position(5).unwrap();
+        assert_ne!(x, 30.0, "the target is not where the entity is yet");
+        assert_eq!(w.entity_position(6), None, "an untracked entity is gone");
+        // The gap this cannot close: nothing tells Rewo an entity is silent.
+        assert!(!w.entity_silent(5));
     }
 
     #[test]

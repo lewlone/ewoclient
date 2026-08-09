@@ -809,6 +809,42 @@ pub fn load_from_asset_store(
     Ok(out)
 }
 
+/// The `assetIndex.id` for a version, read from the per-version manifest the
+/// launcher caches at `<config>/EwoClient/shared/versions/<v>/<v>.json`.
+///
+/// Not a constant, and not guessed from the directory listing. The store holds
+/// several indexes at once (a machine with 1.8 and 26.x installed has
+/// `1.8.json`, `29.json`, `30.json`, `32.json`), so "the newest file" is a
+/// heuristic that silently reads another version's sounds the moment a newer
+/// one is downloaded. The manifest says which one this version means, and
+/// Mojang's manifests are immutable per version, so the answer cannot rot.
+pub fn asset_index_id(version: &str) -> Option<String> {
+    let mut p = dirs::config_dir()?;
+    p.push("EwoClient");
+    p.push("shared");
+    p.push("versions");
+    p.push(version);
+    p.push(format!("{version}.json"));
+    let json = crate::read_json_file(&p).ok()?;
+    json.get("assetIndex")?
+        .get("id")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// [`load_from_asset_store`] for a version, resolving both paths itself.
+///
+/// `Err` covers every "this machine has no unpacked assets" case, which is the
+/// common one on a fresh checkout. A caller should log it and carry on with an
+/// empty index: a client with no `sounds.json` is **silent, not broken**, and
+/// every event then resolves to "unknown event" rather than to a wrong sound.
+pub fn load_for_version(version: &str) -> Result<SoundsIndex, String> {
+    let root = shared_assets_dir().ok_or("no config dir")?;
+    let id = asset_index_id(version)
+        .ok_or_else(|| format!("no assetIndex.id for {version} in the shared version manifest"))?;
+    load_from_asset_store(&root, &id)
+}
+
 /// `<assets_root>/objects/<hash[0..2]>/<hash>` — Mojang's object layout.
 pub fn object_path(assets_root: &Path, hash: &str) -> PathBuf {
     assets_root
@@ -1190,6 +1226,39 @@ mod tests {
     }
 
     // -- the real file -----------------------------------------------------
+
+    /// The derivation must agree with the literal the test below uses.
+    ///
+    /// That is the point of asserting it: `"32"` is written by hand in this
+    /// module's doc comment and in the next test, and
+    /// [`asset_index_id`] derives it from the launcher's per-version manifest.
+    /// Two independent routes to the same string, so a wrong derivation cannot
+    /// pass by matching a constant it read.
+    #[test]
+    fn the_asset_index_id_derived_from_the_manifest_is_the_one_the_tests_hardcode() {
+        let Some(id) = asset_index_id("26.2") else {
+            eprintln!("SKIP: no shared version manifest for 26.2");
+            return;
+        };
+        assert_eq!(id, "32");
+    }
+
+    #[test]
+    fn load_for_version_reaches_the_same_index_as_the_explicit_path() {
+        let Some(root) = shared_assets_dir() else {
+            eprintln!("SKIP: no config dir");
+            return;
+        };
+        if !root.join("indexes/32.json").exists() {
+            eprintln!("SKIP: no asset index at {}", root.display());
+            return;
+        }
+        let by_version = load_for_version("26.2").expect("load_for_version");
+        let by_path = load_from_asset_store(&root, "32").expect("load_from_asset_store");
+        assert_eq!(by_version.len(), by_path.len());
+        // A missing version is an error, never a silently-empty index.
+        assert!(load_for_version("0.0-not-a-version").is_err());
+    }
 
     /// Pins against the **real** 26.2 `sounds.json`. The asset store is the
     /// user's own download, so a machine without it skips loudly rather than

@@ -37,6 +37,7 @@ use rewo_gpu::world::{SkyMode, WorldLightmapState, WorldRenderer};
 use rewo_gpu::Gpu;
 use rewo_mesh::pool::{MeshPool, MeshTables};
 use rewo_net::play::PlaySession;
+use rewo_net::sound_engine::LiveSounds;
 use rewo_net::Connection;
 use rewo_world::dimension::{DimensionTypeDef, Skybox};
 use rewo_world::lightmap::{
@@ -1122,24 +1123,31 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 args.pack.clone(),
                 args.gamma,
                 args.darkness_effect_scale,
+                build_sounds(&args.version, &data.sound_events),
             )
         }
-        _ => run_windowed(
-            session,
-            baked,
-            etypes,
-            stat_registries,
-            spears,
-            chest_states,
-            sign_states,
-            bow_item,
-            items,
-            blocks,
-            beacon_effects,
-            args,
-            want_validation,
-            dirt_item,
-        ),
+        _ => {
+            // Built before `args` moves into the call — `build_sounds` borrows
+            // `args.version`, and arguments are evaluated left to right.
+            let sounds = build_sounds(&args.version, &data.sound_events);
+            run_windowed(
+                session,
+                baked,
+                etypes,
+                stat_registries,
+                spears,
+                chest_states,
+                sign_states,
+                bow_item,
+                items,
+                blocks,
+                beacon_effects,
+                args,
+                want_validation,
+                dirt_item,
+                sounds,
+            )
+        }
     }
 }
 
@@ -3658,6 +3666,29 @@ fn col_dist((cx, cz): (i32, i32), px: f32, pz: f32) -> f32 {
 
 // -- headless ---------------------------------------------------------------
 
+/// M131 — the sound model, built from the asset store when it is unpacked.
+///
+/// **No device is opened and nothing is heard.** `LiveSounds` carries a
+/// `SilentDevice`; what runs is vanilla's resolution, gain/pitch/attenuation
+/// arithmetic, channel budget and reclaim clock, so the pipeline M63/M64/M66
+/// built is exercised on the live path instead of only in tests. Before this,
+/// `PlaySession::take_sound_events` had **no caller anywhere** and the decoded
+/// queue filled to its cap and rotated forever.
+///
+/// A missing asset store is not an error: an empty index makes every event
+/// resolve to `UnknownEvent`, which is silence — the same thing the client
+/// does today, only counted.
+fn build_sounds(version: &str, registry: &rewo_data::sound_events::SoundEvents) -> LiveSounds {
+    let sounds = match rewo_data::sounds_json::load_for_version(version) {
+        Ok(idx) => idx,
+        Err(e) => {
+            log::info!("live: no sounds.json ({e}); the sound model will resolve nothing");
+            rewo_data::sounds_json::SoundsIndex::new()
+        }
+    };
+    LiveSounds::new(sounds, registry.clone())
+}
+
 fn run_headless(
     mut session: PlaySession,
     baked: assets::BakedAssets,
@@ -3676,6 +3707,8 @@ fn run_headless(
     pack: Option<PathBuf>,
     gamma: f32,
     darkness_option: f32,
+    // M131 — the sound model. Silent by construction; see `build_sounds`.
+    mut sounds: LiveSounds,
 ) -> Result<(), String> {
     let _ = dirt_item;
     let mut gpu = Gpu::new(None, want_validation)?;
@@ -3727,6 +3760,12 @@ fn run_headless(
         let deadline = start + Duration::from_millis(50) * (tick as u32 + 1);
         session.tick(&idle)?;
         flicker.tick();
+        // M131 — one drain per client tick, beside the flicker, because
+        // `SoundEngine.tick` is a *tick* clock (`MIN_SOURCE_LIFETIME` is 20 of
+        // them) and driving it per frame would tie a channel's grace period to
+        // the frame rate.
+        let queued = session.take_sound_events();
+        sounds.drive(&queued, &session.world.entities);
         if let Some(reason) = &session.disconnect {
             return Err(format!("disconnected: {reason}"));
         }
@@ -4611,6 +4650,11 @@ struct LiveApp {
     started: Instant,
     last_frame: Option<Instant>,
     tick_accum: f32,
+    /// M131 — vanilla's sound model, driven once per client tick. It opens no
+    /// device and makes no noise; what it does is resolve every sound the
+    /// server asks for, through the real registry, the real `sounds.json`
+    /// index and the real channel budget. `LiveSounds::stats` is the readout.
+    sounds: LiveSounds,
     logged_spawn: bool,
     uploaded_total: usize,
     flood_logged: bool,
@@ -7243,6 +7287,11 @@ impl LiveApp {
             }
             // Advance the block-light flicker exactly once per successful tick.
             self.flicker.tick();
+            // M131 — and drain the tick's sounds. Per *tick*, not per frame:
+            // `MIN_SOURCE_LIFETIME` is 20 ticks, so a per-frame drive would tie
+            // a channel's grace period to the frame rate.
+            let queued = session.take_sound_events();
+            self.sounds.drive(&queued, &session.world.entities);
             // M71 — a client-generated system message (currently only
             // `NO_RESPAWN_BLOCK_AVAILABLE`) is queued as a *translation key*,
             // because vanilla builds a `Component.translatable` and resolves
@@ -8310,6 +8359,8 @@ fn run_windowed(
     args: LiveArgs,
     want_validation: bool,
     dirt_item: Option<i32>,
+    // M131 — the sound model. Silent by construction; see `build_sounds`.
+    sounds: LiveSounds,
 ) -> Result<(), String> {
     // M86's gate runs in the rain, unless the caller asked for something else.
     //
@@ -8390,6 +8441,7 @@ fn run_windowed(
         started: Instant::now(),
         last_frame: None,
         tick_accum: 0.0,
+        sounds,
         logged_spawn: false,
         uploaded_total: 0,
         flood_logged: false,
