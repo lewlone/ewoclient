@@ -17,6 +17,7 @@ pub mod stacked_contents;
 pub mod attributes;
 pub mod biome;
 pub mod biome_noise;
+pub mod active_text;
 pub mod block_entities;
 pub mod border;
 pub mod cape;

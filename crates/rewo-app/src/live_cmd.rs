@@ -8908,9 +8908,12 @@ fn chat_lines(
     // pixel is `px * scale` screen pixels and every offset below is in chat
     // pixels.
     let chat_px = px * opts.scale as f32;
-    let chat_bottom = ((screen_h / chat_px) - rewo_world::chat::BOTTOM_MARGIN as f32).floor();
-    let entry_height = opts.entry_height() as f32;
-    let to_message_y = opts.entry_bottom_to_message_y() as f32;
+    // M128 — ONE geometry, shared with `rewo_world::chat::clickable_style_at`.
+    // Vanilla's lookup is not a second derivation of the layout: it calls the
+    // same private `extractRenderState` the draw does, and the four times a
+    // per-call-site copy has drifted in this repo are M89, M94/M95, M106b and
+    // M112.
+    let geom = rewo_world::chat::ChatBoxGeometry::new(screen_h, chat_px, opts);
     let text_opacity = opts.text_opacity();
     // Focused chat is a taller box with no fade. Supplied by the caller
     // (M110) rather than hardcoded: it is a fact about whether a `ChatScreen`
@@ -8921,8 +8924,7 @@ fn chat_lines(
     // whole box, which is a different and much weaker claim.
     let mut rows: Vec<(String, usize)> = Vec::new();
     for line in chat.visible_lines(gui_tick, focused, opts) {
-        let entry_bottom = chat_bottom - line.index as f32 * entry_height;
-        let y = (entry_bottom - to_message_y) * chat_px;
+        let y = geom.text_top(line.index) * chat_px;
         // `pose.translate(4.0F, 0.0F)` — `MESSAGE_INDENT`.
         let mut pen = rewo_world::chat::MESSAGE_INDENT as f32 * chat_px;
         let mut row = String::new();

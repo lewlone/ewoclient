@@ -366,6 +366,101 @@ pub struct VisibleLine {
     pub end_of_entry: bool,
 }
 
+/// The chat box's row geometry, in **chat pixels** — the space
+/// `extractRenderState` works in after `pose.scale(scale, scale)`.
+///
+/// One struct rather than three locals so the renderer and the hit test read
+/// the same arithmetic. That is not tidiness: vanilla's lookup is literally the
+/// draw (`captureClickableText` calls the same private `extractRenderState`),
+/// and M89's finding — a per-call-site choice is how two consumers come to
+/// disagree — has now bitten four times in this repo.
+///
+/// **One knowing divergence from vanilla, inherited from Rewo's renderer.**
+/// `extractRenderState` computes `chatBottom = Mth.floor((screenHeight - 40) /
+/// scale)`; Rewo computes `floor(screenHeight / scale - 40)`. They agree
+/// exactly at `scale == 1`, which is [`ChatOptions::default`]'s value and the
+/// only one Rewo can produce (there is no options file). Recorded here rather
+/// than fixed, because changing it moves every existing chat pixel and belongs
+/// to whoever adds the option.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChatBoxGeometry {
+    /// `chatBottom`.
+    pub chat_bottom: f32,
+    /// `entryHeight`.
+    pub entry_height: f32,
+    /// `entryBottomToMessageY`.
+    pub to_message_y: f32,
+}
+
+impl ChatBoxGeometry {
+    /// `screen_h` and `chat_px` are in **screen** pixels — `chat_px` is the GUI
+    /// scale times [`ChatOptions::scale`], so `screen_h / chat_px` is the
+    /// screen height in chat pixels.
+    pub fn new(screen_h: f32, chat_px: f32, opts: &ChatOptions) -> Self {
+        Self {
+            chat_bottom: ((screen_h / chat_px) - BOTTOM_MARGIN as f32).floor(),
+            entry_height: opts.entry_height() as f32,
+            to_message_y: opts.entry_bottom_to_message_y() as f32,
+        }
+    }
+
+    /// `int entryBottom = chatBottom - lineIndex * entryHeight;`
+    pub fn entry_bottom(&self, line_index: i32) -> f32 {
+        self.chat_bottom - line_index as f32 * self.entry_height
+    }
+
+    /// `int textTop = entryBottom - entryBottomToMessageY;` — the y a row's
+    /// text is drawn at, which is the y its glyph boxes are built from.
+    pub fn text_top(&self, line_index: i32) -> f32 {
+        self.entry_bottom(line_index) - self.to_message_y
+    }
+}
+
+/// `ChatScreen.mouseClicked`'s hit test — the style under the cursor, if it is
+/// worth reporting.
+///
+/// `mouse_px` is in **screen** pixels and is converted here, because that
+/// conversion is `findElementUnderCursor`'s `text.pose.invert(…)
+/// .transformPosition(…)` and belongs beside the layout it inverts. The pose is
+/// `scale(scale, scale)` then `translate(4, 0)` (JOML post-multiplies, so a
+/// local point maps to `scale * (p + (4, 0))`), which inverts to
+/// `p = mouse / chat_px - (MESSAGE_INDENT, 0)`.
+///
+/// **The mouse is truncated to an integer first**:
+/// `new ClickableStyleFinder(this.getFont(), (int)event.x(), (int)event.y())`
+/// takes GUI-pixel ints, and only then does the inverse transform run.
+///
+/// `focused` is `true` at every real call site — you cannot click chat text
+/// without a `ChatScreen` — and is a parameter because the box is a different
+/// height either way and a gate needs to drive both.
+#[allow(clippy::too_many_arguments)]
+pub fn clickable_style_at(
+    chat: &ChatComponent,
+    gui_tick: i32,
+    focused: bool,
+    opts: &ChatOptions,
+    geom: &ChatBoxGeometry,
+    gui_px: f32,
+    chat_px: f32,
+    mouse_px: (f32, f32),
+    width_of: &dyn Fn(&str, ChatStyle) -> i32,
+    include_insertions: bool,
+) -> Option<ChatStyle> {
+    let scale = chat_px / gui_px;
+    let test = (
+        (mouse_px.0 / gui_px).floor() / scale - MESSAGE_INDENT as f32,
+        (mouse_px.1 / gui_px).floor() / scale,
+    );
+    let mut finder = crate::active_text::ClickableStyleFinder::new(include_insertions);
+    for line in chat.visible_lines(gui_tick, focused, opts) {
+        // `handleMessage` accepts at `TextAlignment.LEFT, 0, textTop` — x is 0
+        // in the translated pose, which is why the indent is in the transform
+        // above rather than added here.
+        finder.accept(&line.text, 0.0, geom.text_top(line.index), test, width_of);
+    }
+    finder.result()
+}
+
 /// `ChatComponent` — the message store, the scroll, and the deletion queue.
 #[derive(Clone, Debug, Default)]
 pub struct ChatComponent {
@@ -1359,5 +1454,102 @@ mod tests {
         assert_eq!(lines[1][0].click(), None);
         assert_eq!(lines[1][1].text, "def");
         assert_eq!(lines[1][1].click(), Some(&ClickEvent::RunCommand("/x".into())));
+    }
+
+    // ---- M128: the hit test ---------------------------------------------
+
+    fn link_msg(added_time: i32, text: &str, cmd: &str) -> GuiMessage {
+        use crate::chat_events::{ChatEvents, ClickEvent};
+        let style = ChatStyle {
+            events: Some(std::sync::Arc::new(ChatEvents {
+                click: Some(ClickEvent::RunCommand(cmd.into())),
+                ..Default::default()
+            })),
+            ..ChatStyle::WHITE
+        };
+        GuiMessage {
+            added_time,
+            content: vec![style.span(text)],
+            signature: None,
+            source: MessageSource::SystemServer,
+            tag: None,
+        }
+    }
+
+    /// The default options give a nine-pixel row whose text sits eight pixels
+    /// above the row's bottom — `entryHeight = (int)(9 * 1.0)` and
+    /// `entryBottomToMessageY = round(8 * 1.0 - 4 * 0.0)`.
+    #[test]
+    fn the_geometry_is_the_renderers() {
+        let opts = ChatOptions::default();
+        let g = ChatBoxGeometry::new(240.0, 1.0, &opts);
+        assert_eq!(g.chat_bottom, 200.0);
+        assert_eq!(g.entry_height, 9.0);
+        assert_eq!(g.to_message_y, 8.0);
+        assert_eq!(g.text_top(0), 192.0);
+        assert_eq!(g.text_top(1), 183.0);
+    }
+
+    fn hit(chat: &ChatComponent, mouse: (f32, f32)) -> Option<String> {
+        use crate::chat_events::ClickEvent;
+        let opts = ChatOptions::default();
+        let g = ChatBoxGeometry::new(240.0, 1.0, &opts);
+        let style = clickable_style_at(chat, 0, true, &opts, &g, 1.0, 1.0, mouse, &w6s, false)?;
+        match style.click()? {
+            ClickEvent::RunCommand(c) => Some(c.clone()),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The bottom row is index 0 and its text sits at `text_top(0)`; the
+    /// `MESSAGE_INDENT` translate puts its first character at GUI x 4.
+    #[test]
+    fn a_link_on_the_bottom_row_is_found_where_it_is_drawn() {
+        let mut c = ChatComponent::new();
+        c.add_message(link_msg(0, "click", "/x"), &ctx(true));
+        assert_eq!(hit(&c, (4.0, 192.0)).as_deref(), Some("/x"));
+        assert_eq!(hit(&c, (33.0, 200.0)).as_deref(), Some("/x"));
+        // One pixel left of the indent, and one past the last glyph.
+        assert_eq!(hit(&c, (3.0, 196.0)), None);
+        assert_eq!(hit(&c, (34.0, 196.0)), None);
+        // One row above and one row below the nine-pixel band.
+        assert_eq!(hit(&c, (10.0, 191.0)), None);
+        assert_eq!(hit(&c, (10.0, 201.0)), None);
+    }
+
+    /// Rows stack upward: the newest message is row 0 and the one before it is
+    /// row 1, nine chat pixels higher.
+    #[test]
+    fn the_row_above_is_the_older_message() {
+        let mut c = ChatComponent::new();
+        c.add_message(link_msg(0, "old", "/old"), &ctx(true));
+        c.add_message(link_msg(0, "new", "/new"), &ctx(true));
+        assert_eq!(hit(&c, (10.0, 196.0)).as_deref(), Some("/new"));
+        assert_eq!(hit(&c, (10.0, 187.0)).as_deref(), Some("/old"));
+    }
+
+    /// An unclickable message answers nothing, and does not shadow a clickable
+    /// one on another row.
+    #[test]
+    fn a_plain_message_is_not_a_hit() {
+        let mut c = ChatComponent::new();
+        c.add_message(link_msg(0, "link", "/x"), &ctx(true));
+        c.add_message(msg(0, "plain"), &ctx(true));
+        assert_eq!(hit(&c, (10.0, 196.0)), None);
+        assert_eq!(hit(&c, (10.0, 187.0)).as_deref(), Some("/x"));
+    }
+
+    /// The wrapped continuation of a long link is clickable too — the whole
+    /// point of putting the events on the style rather than on the span.
+    #[test]
+    fn the_continuation_of_a_wrapped_link_is_clickable() {
+        let mut c = ChatComponent::new();
+        // The default box is 320 wide; six-pixel characters wrap at 53.
+        let long = "a".repeat(60);
+        c.add_message(link_msg(0, &long, "/x"), &ctx(true));
+        assert_eq!(c.trimmed_messages().len(), 2);
+        // Row 0 is the LAST wrapped line (the continuation), row 1 the first.
+        assert_eq!(hit(&c, (10.0, 196.0)).as_deref(), Some("/x"));
+        assert_eq!(hit(&c, (10.0, 187.0)).as_deref(), Some("/x"));
     }
 }
