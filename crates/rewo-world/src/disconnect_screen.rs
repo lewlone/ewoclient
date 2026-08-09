@@ -245,6 +245,46 @@ impl DisconnectLabels {
 /// they are not the same function — see [`crate::string_splitter`], which owns
 /// the shared `LineBreakFinder` both call and documents where the two diverge.
 /// The sweep below moved there verbatim; every break lands where it did.
+/// `ClientboundDisconnectPacket` — the reason, resolved (M129).
+///
+/// The whole handler rather than a helper it calls, because the handler lives
+/// on `PlaySession`, which owns a socket and has no test module anywhere in
+/// the repo (M71/M97) — a one-line delegation left there would be graded by
+/// nothing, and `reason_text`'s own test would only re-test
+/// `chat_component_text`. Here the decode, the resolution and the cause are
+/// one function a test can drive from BYTES.
+///
+/// `handleDisconnect` is `connection.disconnect(packet.reason())` — the
+/// ONE-argument `DisconnectionDetails`, so a server-sent disconnect carries no
+/// bug-report link however many the server advertised (M85).
+pub fn read_disconnect(
+    body: &[u8],
+    lang: Option<&rewo_data::lang::Language>,
+) -> (String, DisconnectCause) {
+    let mut r = rewo_proto::reader::PacketReader::new(body);
+    let reason = r.nbt().map(|n| reason_text(&n, lang)).unwrap_or_default();
+    (reason, DisconnectCause::ServerRequested)
+}
+
+/// `ClientboundDisconnectPacket.reason()`, as text (M129).
+///
+/// **Every vanilla kick path is a `Component.translatable`** — eleven of them
+/// in `PlayerList` alone (`multiplayer.disconnect.kicked`,
+/// `.duplicate_login`, `.not_whitelisted`, `.banned`, `.server_shutdown`, …),
+/// and some take arguments: `multiplayer.disconnect.banned.reason` carries the
+/// ban's own message. So a disconnect reason is the single most
+/// translatable-dense component a client receives, and Rewo flattened it at
+/// the wire, which meant a kicked player read `multiplayer.disconnect.kicked`
+/// where vanilla reads "Kicked by an operator".
+///
+/// It lives here rather than in the packet handler because that handler is a
+/// `&mut self` method on `PlaySession`, which owns a socket and has no test
+/// module anywhere in the repo (M71/M97) — logic reachable only through it is
+/// untestable by construction.
+pub fn reason_text(tag: &rewo_proto::nbt::Nbt, lang: Option<&rewo_data::lang::Language>) -> String {
+    crate::chat_translate::chat_component_text(tag, lang)
+}
+
 pub fn split_lines(text: &str, max_width: i32, width_of: &dyn Fn(&str) -> i32) -> Vec<String> {
     let bytes: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
@@ -352,6 +392,77 @@ pub fn build(
 
 #[cfg(test)]
 mod tests {
+
+    // ── the reason (M129) ────────────────────────────────────────────────
+
+    /// A network-NBT compound carrying one `translate` key.
+    fn translate_body(key: &str) -> Vec<u8> {
+        let mut b = vec![0x0a]; // TAG_Compound, unnamed root
+        b.push(0x08); // TAG_String
+        b.extend_from_slice(&(9u16).to_be_bytes());
+        b.extend_from_slice(b"translate");
+        b.extend_from_slice(&(key.len() as u16).to_be_bytes());
+        b.extend_from_slice(key.as_bytes());
+        b.push(0x00); // TAG_End
+        b
+    }
+
+    fn lang_with(pairs: &[(&str, &str)]) -> rewo_data::lang::Language {
+        rewo_data::lang::Language::from_map(
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        )
+    }
+
+    /// **Every vanilla kick path is a `Component.translatable`** — eleven in
+    /// `PlayerList` alone. Rewo flattened the reason at the wire, so a kicked
+    /// player read `multiplayer.disconnect.kicked`.
+    ///
+    /// MUTATION: `n.to_plain_text()` instead of `reason_text(&n, lang)` — the
+    /// pre-M129 line. The reason then comes out as the raw key.
+    #[test]
+    fn a_translatable_kick_reason_resolves_against_the_table() {
+        let lang = lang_with(&[("multiplayer.disconnect.kicked", "Kicked by an operator")]);
+        let (reason, cause) = read_disconnect(
+            &translate_body("multiplayer.disconnect.kicked"),
+            Some(&lang),
+        );
+        assert_eq!(reason, "Kicked by an operator");
+        assert_eq!(cause, DisconnectCause::ServerRequested);
+    }
+
+    /// `getOrDefault(key)`'s key-as-default. A server may kick with a key the
+    /// client's table has no entry for (a datapack, a plugin, a newer
+    /// version), and showing the key is vanilla's own answer — not an error and
+    /// not an empty screen.
+    #[test]
+    fn an_unknown_key_falls_back_to_the_key_itself() {
+        let lang = lang_with(&[]);
+        let (reason, _) = read_disconnect(&translate_body("plugin.custom.kick"), Some(&lang));
+        assert_eq!(reason, "plugin.custom.kick");
+    }
+
+    /// A truncated body is an empty reason rather than a panic or a stale one:
+    /// the screen still opens, which is the whole point of a disconnect screen.
+    #[test]
+    fn a_truncated_body_yields_an_empty_reason_and_still_opens_the_screen() {
+        let (reason, cause) = read_disconnect(&[], None);
+        assert!(reason.is_empty());
+        assert_eq!(cause, DisconnectCause::ServerRequested);
+    }
+
+    /// `handleDisconnect` is the ONE-argument `DisconnectionDetails`, so a
+    /// server-sent disconnect never carries a bug-report link — the cause is
+    /// what the screen keys that off, and it must not vary with the body.
+    #[test]
+    fn the_cause_is_server_requested_whatever_the_body_says() {
+        let a = read_disconnect(&translate_body("x"), None).1;
+        let b = read_disconnect(&[0x0a, 0x00], None).1;
+        assert_eq!(a, DisconnectCause::ServerRequested);
+        assert_eq!(b, DisconnectCause::ServerRequested);
+    }
     use super::*;
     use crate::screen::{KeyResult, WidgetKind};
 

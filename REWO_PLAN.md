@@ -19485,3 +19485,237 @@ site that converts. And the chat decoration itself — `boundChatType.decorate`,
 which turns a message into `<Steve> hi` — is now unblocked: five of the seven
 vanilla chat types carry `Style.EMPTY`, and the two `/msg` ones are GRAY +
 italic, which this pipeline can finally carry.
+
+### M127 — the chat decoration, and one enum with two encodings (2026-08-09)
+
+`boundChatType.decorate` is what turns a bare message into `<Steve> hi`. Every
+milestone from M78 to M126 recorded it as decoded-and-not-acted-on, and the
+blocker was real: it lives in the `minecraft:chat_type` registry, which is
+**datapack-driven**, so its contents *and its id order* are the server's (M42's
+rule — the vector index **is** the protocol id, and nothing selects by name).
+The jar ships `data/minecraft/chat_type/*.json` as part of the vanilla
+datapack, which is a cross-check oracle for the transcription and **not** a
+substitute for the wire.
+
+**The finding is that `ChatTypeDecoration.Parameter` carries two codecs and the
+two routes into the client use different ones.**
+
+```text
+CODEC        = StringRepresentable.fromEnum       "sender" / "target" / "content"
+STREAM_CODEC = ByteBufCodecs.idMapper(BY_ID, ..)   0 / 1 / 2
+```
+
+The registry arrives as NBT through `registry_data` and uses the first. The
+inline `holder == 0` form inside a `ChatType.Bound` uses the second. Reading the
+registry with the stream form finds no parameters at all and silently produces a
+decoration that drops both the sender and the message. They differ in their
+failure mode too: the stream resolves through
+`ByIdMap.continuous(.., OutOfBoundsStrategy.ZERO)`, so an out-of-range id is
+`SENDER` rather than an error, where an unknown *name* is a codec failure.
+
+**`msg_command_outgoing` takes TARGET where every other two-parameter type takes
+SENDER**, and the two team decorations lead with TARGET as well — so **three of
+the seven** have a non-SENDER parameter 0. `msg_command_outgoing` is the one
+that is wrong *invisibly*: `MsgCommand` binds `name` to the sender and
+`targetName` to the recipient, and `en_us` is `"You whisper to %s: %s"`, so a
+SENDER-first read renders "You whisper to \<yourself\>". The team ones would
+merely swap two visible names.
+
+`style` is `optionalFieldOf("style", Style.EMPTY)`: five of the seven vanilla
+types carry no `style` key at all, and that is not a truncated entry. On the
+**stream** there is no optionality — `Style.Serializer.TRUSTED_STREAM_CODEC` is
+positional in `StreamCodec.composite`, always written and always read, and an
+unstyled decoration is an empty compound rather than an absent field. A decoder
+that expected the registry's optionality on the wire would desynchronise by the
+two bytes of `TAG_Compound` + `TAG_End`, silently, until the next field.
+
+**The decoration builds a component rather than rendering one**, because
+`ChatTypeDecoration.decorate` is literally
+`Component.translatable(key, params).withStyle(style)`. That is not a
+convenience: the composition rule the grey `/msg` line needs — a template
+literal takes the translatable's own style while a component argument applies
+its own **on top**, since `Component.visit` opens with
+`getStyle().applyTo(parentStyle)` — is implemented once in
+`rewo_world::chat_style`, and a second path here would be a second chance to
+disagree with it. A team-coloured sender name keeping its colour inside a grey
+`/msg` line falls out for free. `withStyle(Style patch)` is
+`setStyle(patch.applyTo(getStyle()))` against a fresh component's `Style.EMPTY`,
+and `Style.applyTo` short-circuits `other == EMPTY ? this` on **reference**
+equality, so the patch is returned as the same object and the merge is exact for
+all eleven fields rather than field-by-field.
+
+**Three things stopped being strings**, each hiding a separate divergence.
+
+`ChatTypeBound`'s `name` and `targetName` are components: they are arguments to
+the decoration's translatable, and a sender's display name is exactly where a
+server puts a team colour. The inline form is **read** rather than walked past —
+the bytes were always being consumed, so it costs nothing and is the difference
+between a message bound to an inline type being decoratable and not.
+
+`decoratedContent()` is
+`Objects.requireNonNullElseGet(unsignedContent, () -> Component.literal(signedContent))`,
+so the unsigned override is the server's *rewrite*, and a server that rewrites a
+message is exactly the server that colours the rewrite. It arrived grey.
+
+**The client calls `applyWithFormatting`, not `apply`.** Rewo used the string
+sibling, which exists for the server's log line. The component form's filtered
+runs carry `FILTERED_STYLE` —
+`withColor(DARK_GRAY).withHoverEvent(ShowText("chat.filtered"))` — so vanilla's
+`#`s are dark grey against the message's own colour where a string of `#`s takes
+whatever colour surrounds it. The hover half is not modelled; `ChatStyle`
+carries no events.
+
+Writing that method fresh surfaced an older bug in the one it replaces: vanilla
+indexes the mask with `BitSet.nextSetBit` against `String.substring`, i.e.
+**UTF-16 code units**, and Rewo walked `str::chars()`. Every bit past the first
+astral character addressed the wrong one, and an emoji was masked by one hash
+where vanilla writes two. One stated approximation remains because it is not
+representable: a surrogate pair whose two units disagree would need an unpaired
+surrogate in a Rust `String`, so such a scalar is filtered when **either** unit
+is set — exact for every mask a word-boundary filter produces.
+
+**`ChatTrustLevel.evaluate` is handed the DECORATED message.** `isModified` is
+`!decoratedMessage.getString().contains(message.signedContent())`, so the
+question is whether `<Steve> hello` still contains `hello` — not whether `hello`
+does. Rewo asked it of the undecorated content, because there was no decoration
+to ask about. The two agree for every ordinary message, since a decoration only
+wraps text around the content, and they diverge exactly when the decoration
+**drops** it: a translation key the table does not carry, or a server-defined
+type whose parameters omit `content`. Vanilla calls both MODIFIED. **M92's
+shape — a value that could not be derived is derivable now.**
+
+`isModified`'s second test, `containsModifiedStyle`, is **still** unreachable,
+and the reason recorded since M19 was wrong. It is not the flattening: it is
+`!style.getFont().equals(FontDescription.DEFAULT)`, and `ChatStyle` models six
+visual fields of which `font` is not one. Blocked by two things, not one.
+
+`show_message` takes the decorator and the flattener as closures rather than a
+`&PlaySession`, because that type owns a socket and has no test module anywhere
+in the repo (M71/M97). **Both branches decorate**, and the masked branch
+decorates the *filtered* content — decorating only the unmasked branch renders a
+filtered message with no sender.
+
+`decorate_chat`'s fallback is the content unchanged when the bound names a type
+this session has no decoration for. Vanilla has no fallback — `byIdOrThrow`
+disconnects — and Rewo declines to turn a chat line into a dropped connection.
+Inventing `DEFAULT_CHAT_DECORATION` would render every such line as
+`<name> text` whatever the server asked for.
+
+**The gate: `live --render-check` 39/39 → 41/41.** r40 injects a
+`disguised_chat` bound to the server's own `minecraft:chat` and asserts the
+drawn row reads `<RewoDecoWitness> decorated`. It grades the whole chain and
+nothing else can — the configuration `registry_data` must have carried the
+registry and been parsed, the `holder` VarInt must resolve back to that entry,
+the decoration must build the translatable, M125 must find `<%s> %s` and
+substitute both arguments, and M126's spans must reach the glyphs. The id is
+looked up **by name**, so a client that never parsed the registry scores zero
+rather than quietly decorating with entry 0. r41 grades the decoration's own
+`Style`, which r40 cannot see: `chat.type.text` carries `Style.EMPTY`, so a
+decoration that dropped `withStyle` leaves r40 green — and the gate battery
+proves the independence by deleting the style merge and watching r40 stay PASS
+while r41 goes to zero.
+
+**Both witnesses were wrong before any code was, and the second failure is the
+one worth keeping.** The first compared the drawn colour against
+`parse_color("gray")` and read 0 with the feature working: the renderer hands
+the text pass **linear** colour and `parse_color` answers sRGB. That is this
+file's own open item — the title path and the death screen hand it `/255` bytes
+where it wants linear — reproduced inside a brand-new witness. A dump of the
+drawn rows settled it in one run where squinting at a counter would not have
+(§0.0 gotcha −1).
+
+The second compared **bits**. The renderer evaluates the transfer function in
+`f32` at every step and reaches `0.40197787`; the same formula in `f64`,
+narrowed once, reaches `0.40197778`. Those are different `f32`s, so **a
+bit-exact comparison across two evaluation orders of one formula is a wrong
+assertion rather than a strict one** — the same shape as M12's finding that
+JOML's `Math.fma` is non-fused by default. The tolerance is ~40× tighter than
+one 8-bit colour step and ~1000× looser than that gap.
+
+**An adversarial review could not refute a single transcription claim and found
+four test gaps**, each of a kind this project keeps rediscovering. The inline
+form's `style` was never witnessed as *carried* — the only fixture was an EMPTY
+compound, the one place `Some(empty)` and `None` agree, so `style: None`
+survived the suite. `parameters` is **required** in the codec and was optional
+here, untested; the difference is visible, since declining renders the content
+undecorated where defaulting to an empty list renders `<%s> %s` with nothing
+substituted. `STYLE_FIELDS` is a six-entry const read by production with three
+entries witnessed — truncating it left every crate green while a decoration
+setting `underlined` rendered unstyled, so it is graded on the
+**correspondence** with `resolve_style` now rather than on the list. And a
+negative registry id had no stated policy.
+
+The review also cleared what had only been believed: `Component.empty()` and a
+bare NBT `""` are the *same object* (`PlainTextContents.create` returns `EMPTY`
+for an empty string), and merging only `STYLE_FIELDS` is right because
+`Style.Serializer.MAP_CODEC` is a record codec of exactly eleven optional
+fields, so a stray `text` key really is discarded by vanilla.
+
+**Measured.** 2615 → **2638 tests** (world 1078, net 821, gpu 274, data 221,
+app 183, mesh 45, proto 16), 0 failures, per-crate exit codes read separately.
+All **33** serverless gates green, 0 validation errors. `live --render-check`
+**41/41** with validation ON and 0 errors. Demo PNG `2cc56b4acbfb92cb`,
+byte-identical. 12 unit mutations and 2 gate mutations, all landing as designed,
+each battery with a baseline and a no-op control that survived.
+
+---
+
+### M129 — the disconnect reason, and a survey that overturned its own plan (2026-08-09)
+
+§0.0 listed "the rest of the components that still flatten at the wire" as six
+items and asserted that every non-chat site "is decode-time with no table". Two
+independent surveys of the repo against the decompile found the premise wrong in
+four ways, and the correction is worth more than the code.
+
+**`PlaySession` already holds the language table** (`play.rs:823`, set from
+`BakedAssets::lang`), and `PlaySession::chat_component_text` has existed since
+M125 with **zero callers**. The real boundary is not decode-versus-render, it is
+the **crate graph**: `rewo-net` and `rewo-world` both depend on `rewo-data` and
+can name `Language`; only `rewo-proto` cannot, which is exactly why
+`Nbt::to_plain_text` can never resolve anything.
+
+**Four of the six named items are measurably invisible.** The MOTD is
+`Component.nullToEmpty` → literal *and* is read only by a `log::debug!`;
+suggestion tooltips are resolved client-side by vanilla, so a server's nodes
+carry none, and `Suggestion.tooltip` has zero readers anywhere in Rewo; item
+name and lore **defaults never cross the wire** (they are patch-only) and Rewo
+already bakes them. Death messages were already correct — the `to_plain_text`
+there is inside a `log::debug!` and the screen resolves the unflattened `Nbt`.
+
+**One item is critical and the plan buried it.** Every vanilla kick path is a
+`Component.translatable` — eleven in `PlayerList` alone, and
+`multiplayer.disconnect.banned.reason` carries an argument — so a disconnect
+reason is the single most translatable-dense component a client receives. Rewo
+flattened it, so a kicked player read `multiplayer.disconnect.kicked`.
+
+The fix is one call, but the decode **moved** to
+`rewo_world::disconnect_screen`. A delegation left in `handle_packet` would be
+graded by nothing (M71/M97), and a test on the delegate alone would only re-test
+`chat_component_text`. `read_disconnect` takes bytes and returns the reason and
+the cause, so one function carries the decode, the resolution and the
+one-argument `DisconnectionDetails` rule, and four tests drive it from the wire.
+
+**And one asymmetry that was visible on screen.** The server-links dialog
+renders `Known` labels through the language table and rendered `Custom` ones as
+a raw flattened string — two label kinds on one screen, one honouring the
+player's language and one not. `ServerLinkLabel::Custom` carries its component
+now and the screen resolves it. Resolution is at the render site because
+`read_server_links` runs in **both** connection states and the configuration
+path has no `PlaySession` — the same reason M125 moved the chat components
+rather than resolving them where they arrive.
+
+**Running two independent surveys paid for itself**: they disagreed about
+whether `ServerLinkLabel::Custom` had a production reader, and the one that said
+it did was right (`live_cmd.rs:5845`).
+
+**Left, and named rather than forgotten:** entity nametags, item name and lore,
+the shulker/bundle preview names and sign text all render a flattened component.
+All four are measurably low — a `custom_name` is operator-set literal (the
+Killer Bunny is vanilla's only translatable nametag) and an anvil rename is
+`Component.literal`. Item name and lore is six hops of threading, or a carry of
+`Nbt` into `SlotText` (which, unlike `ItemSlot`, is not `Copy`) resolved in
+rewo-app.
+
+**Measured.** 2638 → **2642 tests**, 0 failures, per-crate exit codes read
+separately. All **33** serverless gates green, 0 validation errors. Demo PNG
+`2cc56b4acbfb92cb`, byte-identical.

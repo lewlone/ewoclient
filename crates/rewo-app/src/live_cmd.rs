@@ -121,6 +121,83 @@ pub struct LiveArgs {
 /// gate rather than a soak.
 const RENDER_CHECK_SECONDS: f32 = 8.0;
 
+/// `ChatFormatting.GRAY`'s 0xAAAAAA, in the LINEAR space the text pass wants.
+///
+/// Spelled out rather than taken from `parse_color` + `srgb_to_linear`,
+/// because a witness that computes its expectation from the functions under
+/// test is self-calibrating (§0.0 gotcha 0a) — it would pass with a wrong
+/// palette entry and with a wrong transfer function alike.
+///
+/// **The first version of r41 compared against the sRGB value and read 0 with
+/// the feature working**, which is this codebase's own open item (the title
+/// path and the death screen hand the text pass `/255` bytes where it wants
+/// linear) reproduced inside a new witness. The chat path converts correctly;
+/// the witness did not.
+///
+/// **The second version read 0 too, and for a different reason worth keeping.**
+/// It compared bits. The renderer evaluates the transfer function in `f32` at
+/// every step and reaches `0.40197787`; the same formula in `f64`, narrowed
+/// once at the end, reaches `0.40197778`. Those are different `f32`s. A
+/// bit-exact comparison across two evaluation orders of one formula is a
+/// **wrong** assertion rather than a strict one — the same shape as M12's
+/// finding that JOML's `Math.fma` is non-fused by default and so `lengthSquared`
+/// must be read right-associatively. The tolerance below is ~40x tighter than
+/// one 8-bit colour step (1/255) and ~1000x looser than the gap above, so it
+/// cannot admit a wrong palette entry or a missing conversion.
+const GRAY_LINEAR: f32 = 0.401_977_78;
+
+/// Well under one 8-bit colour step, well over the f32/f64 evaluation gap.
+const COLOR_EPS: f32 = 1e-4;
+/// M128 — the text of the one clickable message `--render-check` injects.
+///
+/// Deliberately nothing a server would say, so the drawn-line scan that finds
+/// it cannot match a real message.
+const CLICK_WITNESS_TEXT: &str = "rewo click witness";
+
+/// The command that message's `click_event` runs, **without** its leading
+/// slash — `Commands.trimOptionalPrefix` strips one, and the witness asserts
+/// the trimmed form, so a dispatcher that forgot to trim fails here.
+const CLICK_WITNESS_COMMAND: &str = "rewoclickwitness";
+
+/// The `system_chat` body carrying that message, as network NBT.
+///
+/// Hand-assembled because `rewo_proto::nbt` reads and does not write, and
+/// because a *compound* is required: a `click_event` has nowhere to live on a
+/// bare string component, which is what every other injected witness uses.
+///
+/// ```text
+/// TAG_Compound
+///   TAG_String "text"        = "rewo click witness"
+///   TAG_Compound "click_event"
+///     TAG_String "action"    = "run_command"
+///     TAG_String "command"   = "/rewoclickwitness"
+///   TAG_End
+/// TAG_End
+/// ```
+///
+/// then the `overlay` boolean the packet's second field is.
+fn click_witness_body() -> Vec<u8> {
+    fn string(out: &mut Vec<u8>, name: &str, value: &str) {
+        out.push(8); // TAG_String
+        out.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(&(value.len() as u16).to_be_bytes());
+        out.extend_from_slice(value.as_bytes());
+    }
+    let mut body: Vec<u8> = vec![10]; // TAG_Compound, unnamed at the root
+    string(&mut body, "text", CLICK_WITNESS_TEXT);
+    body.push(10);
+    body.extend_from_slice(&(11u16).to_be_bytes());
+    body.extend_from_slice(b"click_event");
+    string(&mut body, "action", "run_command");
+    // With the slash, so the trim is exercised rather than assumed.
+    string(&mut body, "command", &format!("/{CLICK_WITNESS_COMMAND}"));
+    body.push(0); // end of click_event
+    body.push(0); // end of root
+    body.push(0); // overlay = false
+    body
+}
+
 /// What `live --render-check` observed (M86).
 ///
 /// Every field is a **count of frames on which something happened**, never a
@@ -277,6 +354,11 @@ struct RenderCheck {
     /// Counted over the DRAWN lines in `build_text`'s chat range, not over the
     /// chat store — M125's rule, one surface further on.
     styled_chat_frames: u64,
+    /// M127 — frames whose chat drew a DECORATED line: `<name> text`, from an
+    /// injected `disguised_chat` bound to the server's own `minecraft:chat`.
+    decorated_chat_frames: u64,
+    /// M127 — frames where that decoration's OWN style reached the row.
+    styled_decoration_frames: u64,
     /// M126d — frames on which a drawn chat line carried a non-plain
     /// `TextStyle`.
     ///
@@ -286,6 +368,24 @@ struct RenderCheck {
     /// A wiring that dropped `style` on the floor would leave the colour
     /// witness green.
     flagged_chat_frames: u64,
+    /// M128 — where `chat_lines` DREW the clickable witness message, in
+    /// screen pixels, read off the render rather than recomputed.
+    ///
+    /// That is the whole point of routing the click through this: the hit test
+    /// and the draw are two consumers of one geometry, and the failure this
+    /// repo keeps producing (M89, M94/M95, M106b, M112) is the two disagreeing
+    /// by a row or by a panel's worth of pixels. Feeding the draw's own
+    /// numbers back into the hit test is the only version of the witness that
+    /// can see it.
+    chat_link_at: Option<(f32, f32)>,
+    /// M128 — the click was fired once and answered `RunCommand` with the
+    /// injected command. A count rather than a bool so the report can say how
+    /// many frames it held (it is fired once, so 1 is the healthy value and 0
+    /// is the failure).
+    chat_click_ok: u64,
+    /// The once-guard for the click above, so the gate sends one command
+    /// rather than one per frame.
+    chat_click_fired: bool,
     /// Frames on which a drawn chat line still carried a raw translation key.
     ///
     /// Not redundant with the row above: that one would stay green if the
@@ -651,6 +751,55 @@ impl RenderCheck {
             format!(
                 "{} of {} frames drew italic/underline/strikethrough (the flags                  ride `TextStyle`, a different field from the colour, so a                  wiring that dropped them would leave r38 green)",
                 self.flagged_chat_frames, self.frames
+            ),
+        );
+        // M127 — the decoration. r26, r37, r38 and r39 are all satisfied by a
+        // client that renders a chat line's own content and never decorates
+        // it, which is what Rewo did from M1 to M126: a player line read `hi`
+        // where vanilla reads `<Steve> hi`.
+        //
+        // This grades the WHOLE chain and nothing else can: the server's
+        // configuration `registry_data` has to have carried
+        // `minecraft:chat_type` and been parsed (an unsynced registry makes
+        // `chat_type_id` answer `None` and the injection is skipped, scoring
+        // zero); the bound's `holder` VarInt has to resolve back to that entry;
+        // the decoration has to build `Component.translatable("chat.type.text",
+        // [name, content])`; M125's resolution has to find `<%s> %s` and
+        // substitute both arguments; and M126's spans have to reach the glyphs.
+        row(
+            "r40 a drawn chat line was DECORATED by its chat type",
+            self.decorated_chat_frames > 0,
+            format!(
+                "{} of {} frames drew \"<RewoDecoWitness> decorated\" — the                  server's own `minecraft:chat` entry, looked up by name rather                  than assumed, so an unsynced registry scores 0 rather than                  silently using index 0",
+                self.decorated_chat_frames, self.frames
+            ),
+        );
+        // M127 — and that the decoration's own `Style` reached the row, which
+        // r40 cannot see: `chat.type.text` carries `Style.EMPTY`, so a
+        // decoration that dropped `withStyle` entirely would leave r40 green.
+        // Five of the seven vanilla types are unstyled and the two `/msg` ones
+        // are `withColor(GRAY).withItalic(true)` — which is the whole reason
+        // M126's pipeline had to land before this milestone.
+        row(
+            "r41 the decoration's own style reached the row",
+            self.styled_decoration_frames > 0,
+            format!(
+                "{} of {} frames drew the `/msg` decoration's row entirely in                  gray AND italic. The arguments are bare literals with                  `Style.EMPTY`, so they INHERIT it — which is the composition                  rule (`getStyle().applyTo(parentStyle)`) and not a coincidence",
+                self.styled_decoration_frames, self.frames
+            ),
+        );
+        // M128 — a click on chat text, driven through the production path:
+        // `chat_mouse_pressed` -> `clickable_style_at` -> `ChatScreen
+        // ::mouse_clicked` -> `handle_component_clicked` -> `send_command`.
+        // The click POINT is read off the drawn line rather than recomputed,
+        // so a hit test that disagreed with the renderer about where a row
+        // sits turns this red while every unit test stays green.
+        row(
+            "r42 a click on a chat link ran its command",
+            self.chat_click_ok > 0,
+            format!(
+                "{} clicks answered RunCommand at the drawn line's own                  position (0 means the injected `click_event` did not survive                  the wire, the wrap, the store or the hit test — or that the                  hit test and the draw disagree about where a row is)",
+                self.chat_click_ok
             ),
         );
         // M110 — the chat SCREEN, as distinct from r26's read-only box. A zero
@@ -5150,6 +5299,23 @@ impl ApplicationHandler for LiveApp {
                     _ => {}
                 }
             }
+            // M128 — a click on chat text, while the chat screen is open.
+            // Ahead of every other mouse arm for the reason the keyboard block
+            // above gives: `Gui.screen` is ONE slot, so with a `ChatScreen` in
+            // it there is no other screen to route to and no world to dig.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button,
+                ..
+            } if self.chat_screen.is_some() => {
+                let b = match button {
+                    MouseButton::Left => 0u8,
+                    MouseButton::Right => 1,
+                    MouseButton::Middle => 2,
+                    _ => return,
+                };
+                let _ = self.chat_mouse_pressed(b);
+            }
             // M82: a click on a widget-bearing screen. Before the inventory's
             // arm and before the world's, because
             // `ContainerEventHandler.mouseClicked` returns **true whenever
@@ -5700,6 +5866,89 @@ impl LiveApp {
     /// this before anything is drawn. Windowed, it lives on the entity pass —
     /// `self.baked` was `take()`n in `resumed` and has been `None` ever since
     /// (see the `lang` field's docs).
+
+    /// `ChatScreen.mouseClicked` — the popup, then clickable chat text (M128).
+    ///
+    /// The hit test is passed as a closure so it runs only when the popup
+    /// declines, which is vanilla's order. It needs three things this method
+    /// has and [`rewo_world::chat_screen::ChatScreen`] does not: the chat
+    /// store, the font's advances, and the box geometry.
+    fn chat_mouse_pressed(&mut self, button: u8) -> rewo_world::chat_screen::ChatClick {
+        use rewo_world::chat_screen::ChatClick;
+        let Some(ext) = self.state.as_ref().map(|s| s.window.inner_size()) else {
+            return ChatClick::NotHandled;
+        };
+        let gui_px = gui_px(ext.width, ext.height);
+        let (mx, my) = (self.screen.mouse.0 as f32, self.screen.mouse.1 as f32);
+        let advance = self.advance();
+        let opts = rewo_world::chat::ChatOptions::default();
+        let chat_px = gui_px * opts.scale as f32;
+        let geom = rewo_world::chat::ChatBoxGeometry::new(ext.height as f32, chat_px, &opts);
+        // `mouse_gui` in integers, which is what `(int)event.x()` is.
+        let (imx, imy) = self.mouse_gui();
+        let outcome = {
+            let Some(session) = self.session.as_ref() else {
+                return ChatClick::NotHandled;
+            };
+            // The same clock `build_text` hands `chat_lines`, so the hit test
+            // and the draw agree about which rows have faded out — a faded
+            // line is SKIPPED AND NOT COUNTED, so a stale tick would shift
+            // every row's index.
+            let gui_tick = session.ticks as i32;
+            let chat = &session.chat;
+            let width_of = |s: &str, st: rewo_world::chat_style::ChatStyle| match &advance {
+                Some(a) => rewo_gpu::text::width_styled(s, a, st.bold),
+                None => 0,
+            };
+            let hit = |shift: bool| {
+                rewo_world::chat::clickable_style_at(
+                    chat,
+                    gui_tick,
+                    // The chat screen is open, which is exactly what
+                    // `ChatComponent.isChatFocused()` asks.
+                    true,
+                    &opts,
+                    &geom,
+                    gui_px,
+                    chat_px,
+                    (mx, my),
+                    &width_of,
+                    shift,
+                )
+            };
+            let Some(s) = self.chat_screen.as_mut() else {
+                return ChatClick::NotHandled;
+            };
+            s.mouse_clicked(imx as i32, imy as i32, button, self.shift, &hit)
+        };
+        match &outcome {
+            ChatClick::NotHandled | ChatClick::Handled => {}
+            ChatClick::OpenUrl(uri) => {
+                crate::uri_open::open_uri(uri);
+            }
+            ChatClick::RunCommand(command) => {
+                let command = command.clone();
+                if let Some(session) = self.session.as_mut() {
+                    if let Err(e) = session.send_command(&command) {
+                        log::warn!("chat: run_command failed: {e}");
+                    }
+                }
+            }
+            ChatClick::Declined(why) => {
+                log::info!("chat: click declined ({why})");
+            }
+        }
+        // `onEdited`'s other two lines, for the one outcome that changed the
+        // field: `suggest_command` calls `setValue`, whose `onValueChange`
+        // reaches `setAllowSuggestions(true)` and `updateCommandInfo()` in
+        // vanilla. `ChatScreen` cannot run them itself — they need the
+        // `SuggestionEnv`, which lives out here.
+        if matches!(outcome, ChatClick::Handled) {
+            self.resolve_command_suggestions();
+        }
+        outcome
+    }
+
     fn advance(&self) -> Option<[u8; 256]> {
         self.state
             .as_ref()
@@ -5774,7 +6023,13 @@ impl LiveApp {
                     rewo_net::server_links::ServerLinkLabel::Known(t) => {
                         self.lang.or_key(&t.lang_key()).to_string()
                     }
-                    rewo_net::server_links::ServerLinkLabel::Custom(text) => text.clone(),
+                    // M129 — resolved here rather than flattened at the
+                    // wire, so a custom label honours the player's language
+                    // exactly as the `Known` arm above already does. The two
+                    // arms disagreeing was the visible half of the gap.
+                    rewo_net::server_links::ServerLinkLabel::Custom(tag) => {
+                        rewo_world::chat_translate::chat_component_text(tag, Some(&self.lang))
+                    }
                 })
                 .collect(),
         };
@@ -6781,6 +7036,56 @@ impl LiveApp {
                             session.inject_packet(pid, &body);
                         }
                     }
+                    // M127 — two `disguised_chat` bodies, bound to the
+                    // SERVER's own chat types by name. `handleDisguisedChat`
+                    // is the shortest path to a decorated line: a component,
+                    // a bound, and no signature machinery. Injected as raw
+                    // bodies through the production router (M17's rule).
+                    //
+                    // The ids are looked up rather than assumed, because the
+                    // registry is datapack-driven and the index is whatever
+                    // the server's packs say. That also makes the lookup part
+                    // of the claim: a client that never parsed
+                    // `registry_data` for this registry answers `None` here
+                    // and injects nothing, so r40 and r41 read zero instead of
+                    // quietly decorating with entry 0.
+                    if let Some(session) = self.session.as_mut() {
+                        let pid = session.ids.cb_play_disguised_chat;
+                        let plain = session.chat_type_id("minecraft:chat");
+                        let whisper =
+                            session.chat_type_id("minecraft:msg_command_incoming");
+                        let mut body = |content: &str, name: &str, id: i32| {
+                            let mut b: Vec<u8> = vec![8];
+                            b.extend_from_slice(&(content.len() as u16).to_be_bytes());
+                            b.extend_from_slice(content.as_bytes());
+                            // `ByteBufCodecs.holder` — id + 1, 0 meaning inline.
+                            rewo_proto::varint::write_varint(&mut b, id + 1);
+                            b.push(8);
+                            b.extend_from_slice(&(name.len() as u16).to_be_bytes());
+                            b.extend_from_slice(name.as_bytes());
+                            b.push(0); // no targetName
+                            b
+                        };
+                        if let Some(id) = plain {
+                            let b = body("decorated", "RewoDecoWitness", id);
+                            session.inject_packet(pid, &b);
+                        }
+                        if let Some(id) = whisper {
+                            let b = body("whispered", "RewoStyleWitness", id);
+                            session.inject_packet(pid, &b);
+                    }
+                    }
+                    // M128 — one message carrying a `click_event`, so the
+                    // gate can click it. A COMPOUND rather than a bare string,
+                    // because a `click_event` has nowhere to live on a string
+                    // component; assembled as network NBT bytes by hand, which
+                    // is what `system_chat`'s content is.
+                    if let Some(session) = self.session.as_mut() {
+                        if let Some(pid) = session.ids.cb_play_system_chat {
+                            let body = click_witness_body();
+                            session.inject_packet(pid, &body);
+                        }
+                    }
                     // M115 — a completion word, then a keystroke, so r29
                     // measures the whole production chain rather than a
                     // hand-built `Suggestions`: the packet reaches
@@ -6810,6 +7115,39 @@ impl LiveApp {
                     // them; nothing else in a windowed run types.
                     self.chat_char('r');
                     self.chat_injected = true;
+                }
+            }
+            // M128 — click the link, once, at the position the renderer
+            // reported for it. Between the chat screen opening (0.2) and the
+            // command screen replacing it (0.55), so the popup under the input
+            // bar cannot be what answers.
+            if self.chat_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                let due = self.started.elapsed().as_secs_f32() >= limit * 0.4;
+                let at = self.check.as_ref().and_then(|c| {
+                    (!c.chat_click_fired).then_some(c.chat_link_at).flatten()
+                });
+                if let (true, Some((lx, ly))) = (due, at) {
+                    if let Some(c) = self.check.as_mut() {
+                        c.chat_click_fired = true;
+                    }
+                    // Four pixels down and one right of the line's origin —
+                    // inside the first glyph's `[x, x + advance) x [y, y + 9)`
+                    // box at any GUI scale, because both are screen pixels and
+                    // the box is at least that big.
+                    self.screen.mouse = ((lx + 1.0) as f64, (ly + 4.0) as f64);
+                    let outcome = self.chat_mouse_pressed(0);
+                    if outcome
+                        == rewo_world::chat_screen::ChatClick::RunCommand(
+                            CLICK_WITNESS_COMMAND.into(),
+                        )
+                    {
+                        if let Some(c) = self.check.as_mut() {
+                            c.chat_click_ok += 1;
+                        }
+                    } else {
+                        log::warn!("rendercheck: chat click answered {outcome:?}");
+                    }
                 }
             }
             // M116 — later, and as its own screen, so r29's frames stay
@@ -7907,6 +8245,8 @@ impl LiveApp {
             let drawn = &text[chat_range.clone()];
             let mut at = 0usize;
             let mut multi = false;
+            let mut decorated = false;
+            let mut styled_decoration = false;
             for (_, n) in &chat_rows {
                 let row = &drawn[at.min(drawn.len())..(at + n).min(drawn.len())];
                 let mut colors: Vec<[u32; 3]> = row
@@ -7916,10 +8256,33 @@ impl LiveApp {
                 colors.sort_unstable();
                 colors.dedup();
                 multi |= colors.len() > 1;
+                // M127 — r40/r41, on the same per-row slice, because both are
+                // claims about ONE row: "the box contains these characters
+                // somewhere" is satisfied by a client that draws the name and
+                // the message as two unrelated lines.
+                let row_text: String = row.iter().map(|l| l.text.as_str()).collect();
+                if row_text.contains("<RewoDecoWitness> decorated") {
+                    decorated = true;
+                }
+                if row_text.contains("RewoStyleWitness whispers to you: whispered")
+                    && !row.is_empty()
+                    && row.iter().all(|l| {
+                        l.color.iter().all(|c| (c - GRAY_LINEAR).abs() < COLOR_EPS)
+                            && l.style.italic
+                    })
+                {
+                    styled_decoration = true;
+                }
                 at += n;
             }
             if multi {
                 c.styled_chat_frames += 1;
+            }
+            if decorated {
+                c.decorated_chat_frames += 1;
+            }
+            if styled_decoration {
+                c.styled_decoration_frames += 1;
             }
             if drawn
                 .iter()
@@ -7932,6 +8295,13 @@ impl LiveApp {
                 .any(|(r, _)| r.contains("Gave 1 [Diamond Sword]"))
             {
                 c.translated_chat_frames += 1;
+            }
+            // M128 — the drawn position of the clickable witness line. Taken
+            // from `OwnedTextLine`, i.e. from what the renderer is about to
+            // put on screen, so the click below is a cross-check of the two
+            // derivations rather than a restatement of one.
+            if let Some(l) = drawn.iter().find(|l| l.text.contains(CLICK_WITNESS_TEXT)) {
+                c.chat_link_at = Some((l.x, l.y));
             }
             // The three keys of that one message, one per nesting level. Named
             // exactly rather than detected generally: a "looks like a key"
@@ -8908,9 +9278,12 @@ fn chat_lines(
     // pixel is `px * scale` screen pixels and every offset below is in chat
     // pixels.
     let chat_px = px * opts.scale as f32;
-    let chat_bottom = ((screen_h / chat_px) - rewo_world::chat::BOTTOM_MARGIN as f32).floor();
-    let entry_height = opts.entry_height() as f32;
-    let to_message_y = opts.entry_bottom_to_message_y() as f32;
+    // M128 — ONE geometry, shared with `rewo_world::chat::clickable_style_at`.
+    // Vanilla's lookup is not a second derivation of the layout: it calls the
+    // same private `extractRenderState` the draw does, and the four times a
+    // per-call-site copy has drifted in this repo are M89, M94/M95, M106b and
+    // M112.
+    let geom = rewo_world::chat::ChatBoxGeometry::new(screen_h, chat_px, opts);
     let text_opacity = opts.text_opacity();
     // Focused chat is a taller box with no fade. Supplied by the caller
     // (M110) rather than hardcoded: it is a fact about whether a `ChatScreen`
@@ -8921,8 +9294,7 @@ fn chat_lines(
     // whole box, which is a different and much weaker claim.
     let mut rows: Vec<(String, usize)> = Vec::new();
     for line in chat.visible_lines(gui_tick, focused, opts) {
-        let entry_bottom = chat_bottom - line.index as f32 * entry_height;
-        let y = (entry_bottom - to_message_y) * chat_px;
+        let y = geom.text_top(line.index) * chat_px;
         // `pose.translate(4.0F, 0.0F)` — `MESSAGE_INDENT`.
         let mut pen = rewo_world::chat::MESSAGE_INDENT as f32 * chat_px;
         let mut row = String::new();
@@ -12802,12 +13174,25 @@ mod tests {
             b: Option<&'static str>,
             g: Option<&'static str>,
         ) -> Option<&'static str> {
-            super::frame_tooltip(&mut (), |_| m, |_| b, |_| g)
+            super::frame_tooltip(&mut (), |_| None, |_| m, |_| b, |_| g)
         }
         assert_eq!(pick(Some("menu"), Some("book"), Some("ghost")), Some("menu"));
         assert_eq!(pick(None, Some("book"), Some("ghost")), Some("book"));
         assert_eq!(pick(None, None, Some("ghost")), Some("ghost"));
         assert_eq!(pick(None, None, None), None);
+        // M133 — and the book's WIDGET tooltips are ahead of all three, which
+        // is the same rule read one call earlier: the widgets set theirs inside
+        // `extractRenderState`, which runs before `this.extractTooltip`.
+        assert_eq!(
+            super::frame_tooltip(
+                &mut (),
+                |_| Some("widget"),
+                |_| Some("menu"),
+                |_| Some("book"),
+                |_| Some("ghost"),
+            ),
+            Some("widget"),
+        );
         // The menu's beats the ghost's with no page tooltip in play, which is
         // the pair that is actually reachable together: a ghost sits ON a menu
         // slot, while a page cell and a menu slot can never both be hovered.
@@ -12818,6 +13203,7 @@ mod tests {
         assert_eq!(
             super::frame_tooltip(
                 &mut ran,
+                |_| None,
                 |_| Some("menu"),
                 |n| {
                     *n += 1;
@@ -15394,6 +15780,7 @@ fn plain_span(text: &str) -> rewo_net::chat_style::ChatSpan {
         underlined: false,
         strikethrough: false,
         obfuscated: false,
+        events: None,
     }
 }
 
@@ -15715,6 +16102,30 @@ fn apply_screen(
         // rather than chained with `or_else` here: see `frame_tooltip`.
         frame_tooltip(
         &mut glyphs,
+        // M133 — the three widgets that carry an `AbstractWidget` tooltip.
+        |glyphs| {
+            let b = book.as_ref()?;
+            let view = b.view?;
+            let (bx, by) = book_mouse?;
+            let hit = rewo_world::recipe_book_screen::book_hit(bx, by, view, view.tabs)?;
+            let key = rewo_world::recipe_book_screen::widget_tooltip_key(
+                hit,
+                book_type_of(layout)?,
+                view.filtering,
+                view.page,
+                view.total_pages,
+            )?;
+            tooltip_layout(
+                vec![vec![rewo_gpu::tooltip::Span::new(
+                    baked.lang.or_key(key).to_string(),
+                    [1.0, 1.0, 1.0],
+                )]],
+                &advance,
+                glyphs.as_deref_mut(),
+                mouse,
+                (w, h),
+            )
+        },
         |glyphs| screen_tooltip(
             menu,
             items,
@@ -18355,10 +18766,20 @@ pub(crate) fn hovered_menu_slot_for_gate(
 /// reborrow per call is what makes the laziness expressible at all.
 fn frame_tooltip<T, C>(
     ctx: &mut C,
+    book_widget: impl FnOnce(&mut C) -> Option<T>,
     menu: impl FnOnce(&mut C) -> Option<T>,
     book_page: impl FnOnce(&mut C) -> Option<T>,
     ghost: impl FnOnce(&mut C) -> Option<T>,
 ) -> Option<T> {
+    // M133 — the book's WIDGET tooltips come first, and the order is read off
+    // `AbstractRecipeBookScreen`: `recipeBookComponent.extractRenderState`
+    // runs before `this.extractTooltip`, and every widget rendered inside it
+    // calls `refreshTooltipForNextRenderPass` -> `setTooltipForNextFrame`. So
+    // by the same first-wins rule M106a found, an arrow or the filter beats
+    // both the container's item tooltip and the book's cell tooltip.
+    if let Some(t) = book_widget(ctx) {
+        return Some(t);
+    }
     if let Some(t) = menu(ctx) {
         return Some(t);
     }

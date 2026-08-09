@@ -75,8 +75,12 @@
 //!   between a linear tree and an exponential one.
 //!
 
+use std::sync::Arc;
+
 use rewo_data::lang::{Language, Part};
 use rewo_proto::nbt::Nbt;
+
+use crate::chat_events::{self, ChatEvents};
 
 /// `ChatFormatting.PREFIX_CODE`.
 pub const SECTION_SIGN: char = '\u{00A7}';
@@ -135,7 +139,16 @@ pub fn rgb_f32(rgb: u32) -> [f32; 3] {
 /// call site defaults to", and that default differs by surface (chat is
 /// white, lore is dark purple). Rewo pushes the decision to the *caller* of
 /// [`parse_legacy`] / [`parse_component`] instead of into every span.
-#[derive(Clone, Copy, Debug, PartialEq)]
+///
+/// **It is `Clone` and not `Copy` since M128**, because [`Self::events`] owns
+/// strings. The `Arc` is what keeps a clone three refcount bumps; the reason
+/// the events live *here* rather than on [`ChatSpan`] alone is
+/// [`crate::string_splitter`]'s `splitAt`, which rebuilds the tail of a
+/// width-wrapped part as `split_style.span(after)` — from the **style**, not
+/// from the span. Events on the span alone would therefore survive on a link's
+/// first line and vanish on its continuation, silently, and only for links
+/// long enough to wrap.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ChatStyle {
     pub color: [f32; 3],
     pub bold: bool,
@@ -143,6 +156,11 @@ pub struct ChatStyle {
     pub underlined: bool,
     pub strikethrough: bool,
     pub obfuscated: bool,
+    /// `Style.clickEvent` / `hoverEvent` / `insertion`, resolved (M128).
+    ///
+    /// One field rather than three, merged field-wise on inherit — see
+    /// [`ChatEvents::apply_to`].
+    pub events: Option<Arc<ChatEvents>>,
 }
 
 impl ChatStyle {
@@ -157,13 +175,24 @@ impl ChatStyle {
             underlined: false,
             strikethrough: false,
             obfuscated: false,
+            events: None,
         }
     }
 
     /// Clear the five format flags but keep the colour — `applyLegacyFormat`'s
     /// `default:` branch, which is the whole of rule 1 in the module docs.
-    const fn colored(color: [f32; 3]) -> Self {
-        Self::plain(color)
+    ///
+    /// **The events survive it**, and that is not an oversight to tidy away:
+    /// `applyLegacyFormat`'s `default:` writes five `false`s and a colour and
+    /// then constructs `new Style(color, shadowColor, …, this.clickEvent,
+    /// this.hoverEvent, this.insertion, this.font)`. So `§c` in the middle of a
+    /// clickable run leaves it clickable, and building the result from
+    /// [`Self::plain`] would quietly break every link a server colours
+    /// part-way through. (`§r` is the one that clears them, and even then only
+    /// because `iterateFormatted` substitutes the *enclosing* style — see
+    /// [`apply_legacy`].)
+    fn colored(color: [f32; 3], events: Option<Arc<ChatEvents>>) -> Self {
+        Self { events, ..Self::plain(color) }
     }
 
     pub fn span(&self, text: impl Into<String>) -> ChatSpan {
@@ -175,7 +204,23 @@ impl ChatStyle {
             underlined: self.underlined,
             strikethrough: self.strikethrough,
             obfuscated: self.obfuscated,
+            events: self.events.clone(),
         }
+    }
+
+    /// `Style.getClickEvent()`.
+    pub fn click(&self) -> Option<&chat_events::ClickEvent> {
+        self.events.as_ref()?.click.as_ref()
+    }
+
+    /// `Style.getHoverEvent()`.
+    pub fn hover(&self) -> Option<&chat_events::HoverEvent> {
+        self.events.as_ref()?.hover.as_ref()
+    }
+
+    /// `Style.getInsertion()`.
+    pub fn insertion(&self) -> Option<&str> {
+        self.events.as_ref()?.insertion.as_deref()
     }
 }
 
@@ -192,6 +237,9 @@ pub struct ChatSpan {
     pub underlined: bool,
     pub strikethrough: bool,
     pub obfuscated: bool,
+    /// The run's click / hover / insertion (M128), shared with every other
+    /// span the same component produced.
+    pub events: Option<Arc<ChatEvents>>,
 }
 
 impl ChatSpan {
@@ -204,7 +252,13 @@ impl ChatSpan {
             underlined: self.underlined,
             strikethrough: self.strikethrough,
             obfuscated: self.obfuscated,
+            events: self.events.clone(),
         }
+    }
+
+    /// `Style.getClickEvent()` for this run.
+    pub fn click(&self) -> Option<&chat_events::ClickEvent> {
+        self.events.as_ref()?.click.as_ref()
     }
 }
 
@@ -234,18 +288,23 @@ fn legacy_color_index(code: char) -> Option<usize> {
 ///
 /// `None` is `getByCode` returning null — the caller has still consumed both
 /// characters by then (module rule 3).
-fn apply_legacy(style: ChatStyle, reset: ChatStyle, code: char) -> Option<ChatStyle> {
+fn apply_legacy(style: &ChatStyle, reset: &ChatStyle, code: char) -> Option<ChatStyle> {
     // `getByCode` lowercases before matching, so `§C` is `§c`.
     Some(match code.to_ascii_lowercase() {
-        'k' => ChatStyle { obfuscated: true, ..style },
-        'l' => ChatStyle { bold: true, ..style },
-        'm' => ChatStyle { strikethrough: true, ..style },
-        'n' => ChatStyle { underlined: true, ..style },
-        'o' => ChatStyle { italic: true, ..style },
+        'k' => ChatStyle { obfuscated: true, ..style.clone() },
+        'l' => ChatStyle { bold: true, ..style.clone() },
+        'm' => ChatStyle { strikethrough: true, ..style.clone() },
+        'n' => ChatStyle { underlined: true, ..style.clone() },
+        'o' => ChatStyle { italic: true, ..style.clone() },
         // Not `Style.EMPTY`: `iterateFormatted` substitutes `resetStyle`
         // before `applyLegacyFormat` ever sees RESET.
-        'r' => reset,
-        lower => ChatStyle::colored(rgb_f32(NAMED_COLORS[legacy_color_index(lower)?].1)),
+        'r' => reset.clone(),
+        // The five flags go false and the events RIDE THROUGH — see
+        // `ChatStyle::colored`.
+        lower => ChatStyle::colored(
+            rgb_f32(NAMED_COLORS[legacy_color_index(lower)?].1),
+            style.events.clone(),
+        ),
     })
 }
 
@@ -256,14 +315,14 @@ fn apply_legacy(style: ChatStyle, reset: ChatStyle, code: char) -> Option<ChatSt
 /// `style` as `resetStyle` as well.
 pub fn parse_legacy(text: &str, base: ChatStyle) -> ChatLine {
     let mut out = Vec::new();
-    push_legacy(text, base, base, &mut out);
+    push_legacy(text, &base, &base, &mut out);
     out
 }
 
 /// The four-argument `iterateFormatted`: a current style and a separate reset
 /// target, appending onto an existing line.
-fn push_legacy(text: &str, current: ChatStyle, reset: ChatStyle, out: &mut ChatLine) {
-    let mut style = current;
+fn push_legacy(text: &str, current: &ChatStyle, reset: &ChatStyle, out: &mut ChatLine) {
+    let mut style = current.clone();
     let mut buf = String::new();
     let mut chars = text.chars();
     while let Some(ch) = chars.next() {
@@ -273,17 +332,17 @@ fn push_legacy(text: &str, current: ChatStyle, reset: ChatStyle, out: &mut ChatL
         }
         // `if (i + 1 >= size) break;` — a dangling `§` is dropped, not drawn.
         let Some(code) = chars.next() else { break };
-        let Some(next) = apply_legacy(style, reset, code) else {
+        let Some(next) = apply_legacy(&style, reset, code) else {
             // Unrecognised: `i++` already ran, so both characters are gone and
             // the style is untouched.
             continue;
         };
         if next != style {
-            flush(&mut buf, style, out);
+            flush(&mut buf, &style, out);
             style = next;
         }
     }
-    flush(&mut buf, style, out);
+    flush(&mut buf, &style, out);
 }
 
 /// Emit the buffered run, if there is one.
@@ -292,7 +351,7 @@ fn push_legacy(text: &str, current: ChatStyle, reset: ChatStyle, out: &mut ChatL
 /// codepoint and never sees a run at all, so a zero-length span is an
 /// artefact of batching — and `§a§b§cx` would otherwise produce two invisible
 /// spans before the visible one.
-fn flush(buf: &mut String, style: ChatStyle, out: &mut ChatLine) {
+fn flush(buf: &mut String, style: &ChatStyle, out: &mut ChatLine) {
     if !buf.is_empty() {
         out.push(style.span(std::mem::take(buf)));
     }
@@ -330,13 +389,13 @@ pub const MAX_COMPONENT_STEPS: u32 = 65_536;
 pub fn parse_component(tag: &Nbt, base: ChatStyle, lang: Option<&Language>) -> ChatLine {
     let mut out = Vec::new();
     let mut steps = MAX_COMPONENT_STEPS;
-    walk(tag, base, lang, &mut steps, &mut out);
+    walk(tag, &base, lang, &mut steps, &mut out);
     out
 }
 
 fn walk(
     tag: &Nbt,
-    parent: ChatStyle,
+    parent: &ChatStyle,
     lang: Option<&Language>,
     steps: &mut u32,
     out: &mut ChatLine,
@@ -358,7 +417,7 @@ fn walk(
             walk(first, parent, lang, steps, out);
             let root = resolved_style(first, parent);
             for item in rest {
-                walk(item, root, lang, steps, out);
+                walk(item, &root, lang, steps, out);
             }
         }
 
@@ -368,13 +427,13 @@ fn walk(
             if let Some(Nbt::String(s)) = tag.get("text") {
                 // `resetStyle` is this run's own resolved style, so a `§r`
                 // here returns to the component's colour, not to white.
-                push_legacy(s, style, style, out);
+                push_legacy(s, &style, &style, out);
             } else if let Some(t) = crate::chat_translate::translatable(tag, lang) {
-                walk_translatable(&t, style, lang, steps, out);
+                walk_translatable(&t, &style, lang, steps, out);
             }
             if let Some(Nbt::List(children)) = tag.get("extra") {
                 for child in children {
-                    walk(child, style, lang, steps, out);
+                    walk(child, &style, lang, steps, out);
                 }
             }
         }
@@ -394,7 +453,7 @@ fn walk(
 /// team-coloured sender name keep its colour inside a grey `/msg` line.
 fn walk_translatable(
     t: &crate::chat_translate::Translatable<'_>,
-    style: ChatStyle,
+    style: &ChatStyle,
     lang: Option<&Language>,
     steps: &mut u32,
     out: &mut ChatLine,
@@ -421,24 +480,60 @@ fn walk_translatable(
 /// The style a component resolves to, for use as its children's parent.
 ///
 /// A list's is its first element's, because that element became the root.
-fn resolved_style(tag: &Nbt, parent: ChatStyle) -> ChatStyle {
+fn resolved_style(tag: &Nbt, parent: &ChatStyle) -> ChatStyle {
     match tag {
         Nbt::Compound(_) => resolve_style(tag, parent),
         Nbt::List(items) => items
             .first()
             .map(|first| resolved_style(first, parent))
-            .unwrap_or(parent),
-        _ => parent,
+            .unwrap_or_else(|| parent.clone()),
+        _ => parent.clone(),
     }
 }
+
+/// Every key [`resolve_style`] reads, in the order it reads them.
+///
+/// Exposed because a caller that *builds* a component carrying a style has to
+/// know which keys survive the walk, and the alternative is a second copy of
+/// this list that drifts. The one caller today is M127's chat decoration,
+/// which merges a `ChatTypeDecoration`'s `style` compound onto the synthetic
+/// translatable it constructs — vanilla's
+/// `Component.translatable(key, args).withStyle(style)`, where
+/// `withStyle(Style patch)` is `setStyle(patch.applyTo(getStyle()))` against a
+/// fresh component's `Style.EMPTY`, so the patch *becomes* the style verbatim.
+///
+/// Copying only these keys rather than the whole compound is deliberate:
+/// `Style.Serializer.CODEC` is a record codec, so a stray `text` field in a
+/// server's style object is dropped by vanilla and must be dropped here too —
+/// merging the compound wholesale would let it displace the translation.
+pub const STYLE_FIELDS: [&str; 9] = [
+    "color",
+    "bold",
+    "italic",
+    "underlined",
+    "strikethrough",
+    "obfuscated",
+    // M128 — the three non-visual fields. They belong in this list for the
+    // same reason the six above do: a `ChatTypeDecoration`'s `style` compound
+    // is merged onto a synthetic translatable, and a decoration that carries a
+    // `click_event` (nothing vanilla ships does, but the codec permits it)
+    // would otherwise lose it.
+    "click_event",
+    "hover_event",
+    "insertion",
+];
 
 /// `Style.applyTo(parent)` — a field present on this component wins, absent
 /// inherits.
 ///
 /// Presence, not truth: `"italic": false` under an italic parent is upright
 /// (module rule 4).
-fn resolve_style(tag: &Nbt, parent: ChatStyle) -> ChatStyle {
-    let mut style = parent;
+fn resolve_style(tag: &Nbt, parent: &ChatStyle) -> ChatStyle {
+    let mut style = parent.clone();
+    // M128 — the three non-visual fields, merged INDEPENDENTLY of each other
+    // (`applyTo` is a per-field null check) and independently of the six
+    // visual ones.
+    style.events = ChatEvents::apply_to(chat_events::parse_events(tag).as_ref(), parent.events.as_ref());
     if let Some(color) = tag.get("color").and_then(Nbt::as_str).and_then(parse_color) {
         style.color = color;
     }
@@ -1130,6 +1225,167 @@ mod tests {
     #[test]
     fn a_span_round_trips_through_its_own_style() {
         let style = ChatStyle { obfuscated: true, ..ChatStyle::plain(rgb_f32(RED)) };
-        assert_eq!(style.span("x").style(), style);
+        assert_eq!(style.span("x").style(), style.clone());
+    }
+
+    // ---- M128: the three non-visual fields -------------------------------
+
+    use crate::chat_events::ClickEvent;
+
+    fn run_command(cmd: &str) -> Nbt {
+        compound(&[
+            ("action", Nbt::String("run_command".into())),
+            ("command", Nbt::String(cmd.into())),
+        ])
+    }
+
+    /// The event reaches every span the component produced.
+    #[test]
+    fn a_click_event_reaches_the_span() {
+        let tag = compound(&[
+            ("text", Nbt::String("click me".into())),
+            ("click_event", run_command("/kill")),
+        ]);
+        let line = parse_component(&tag, ChatStyle::WHITE, None);
+        assert_eq!(line.len(), 1);
+        assert_eq!(line[0].click(), Some(&ClickEvent::RunCommand("/kill".into())));
+    }
+
+    /// `applyTo` is a null check per field, so an `extra` child inherits the
+    /// parent's click exactly as it inherits the parent's colour.
+    #[test]
+    fn a_child_inherits_the_parents_click_event() {
+        let tag = compound(&[
+            ("text", Nbt::String("a".into())),
+            ("click_event", run_command("/a")),
+            ("extra", Nbt::List(vec![text("b")])),
+        ]);
+        let line = parse_component(&tag, ChatStyle::WHITE, None);
+        assert_eq!(line.len(), 2);
+        for span in &line {
+            assert_eq!(span.click(), Some(&ClickEvent::RunCommand("/a".into())));
+        }
+    }
+
+    /// And a child's own wins for the field it names, while leaving the other
+    /// two inherited.
+    #[test]
+    fn a_child_click_overrides_and_the_insertion_still_inherits() {
+        let child = compound(&[
+            ("text", Nbt::String("b".into())),
+            ("click_event", run_command("/b")),
+        ]);
+        let tag = compound(&[
+            ("text", Nbt::String("a".into())),
+            ("click_event", run_command("/a")),
+            ("insertion", Nbt::String("Steve".into())),
+            ("extra", Nbt::List(vec![child])),
+        ]);
+        let line = parse_component(&tag, ChatStyle::WHITE, None);
+        assert_eq!(line[0].click(), Some(&ClickEvent::RunCommand("/a".into())));
+        assert_eq!(line[1].click(), Some(&ClickEvent::RunCommand("/b".into())));
+        assert_eq!(line[1].style().insertion(), Some("Steve"));
+    }
+
+    /// **`applyLegacyFormat`'s colour branch keeps the events.** It writes five
+    /// `false`s and a colour and then reconstructs with `this.clickEvent,
+    /// this.hoverEvent, this.insertion` — so `§c` in the middle of a link
+    /// leaves the rest of it clickable. Building the result from a fresh plain
+    /// style would drop it, and nothing about the render would look wrong.
+    #[test]
+    fn a_legacy_colour_code_does_not_clear_the_click_event() {
+        let tag = compound(&[
+            ("text", Nbt::String("aa\u{00A7}cbb".into())),
+            ("click_event", run_command("/x")),
+        ]);
+        let line = parse_component(&tag, ChatStyle::WHITE, None);
+        assert_eq!(line.len(), 2);
+        assert_eq!(line[1].text, "bb");
+        assert_eq!(rgb_to_u32(line[1].color), RED);
+        assert_eq!(line[1].click(), Some(&ClickEvent::RunCommand("/x".into())));
+    }
+
+    /// `§r` returns to the ENCLOSING style, events included — because
+    /// `iterateFormatted` substitutes `resetStyle` rather than letting
+    /// `applyLegacyFormat` see RESET and answer `Style.EMPTY`. Inside a
+    /// clickable component the enclosing style is the clickable one.
+    #[test]
+    fn a_legacy_reset_returns_to_the_components_own_events() {
+        let tag = compound(&[
+            ("text", Nbt::String("\u{00A7}caa\u{00A7}rbb".into())),
+            ("click_event", run_command("/x")),
+        ]);
+        let line = parse_component(&tag, ChatStyle::WHITE, None);
+        assert_eq!(line.last().unwrap().text, "bb");
+        assert_eq!(
+            line.last().unwrap().click(),
+            Some(&ClickEvent::RunCommand("/x".into()))
+        );
+    }
+
+    /// A refused event is DROPPED and the message survives — the stated
+    /// divergence from vanilla, which errors the whole component decode.
+    #[test]
+    fn a_refused_click_event_leaves_the_text_intact_and_unclickable() {
+        let tag = compound(&[
+            ("text", Nbt::String("hi".into())),
+            (
+                "click_event",
+                compound(&[
+                    ("action", Nbt::String("open_file".into())),
+                    ("path", Nbt::String("C:/secret".into())),
+                ]),
+            ),
+        ]);
+        let line = parse_component(&tag, ChatStyle::WHITE, None);
+        assert_eq!(plain_text(&line), "hi");
+        assert_eq!(line[0].click(), None);
+    }
+
+    /// The common case allocates nothing: a component with no events leaves
+    /// the field `None` all the way down.
+    #[test]
+    fn an_ordinary_component_carries_no_events() {
+        let tag = compound(&[
+            ("text", Nbt::String("a".into())),
+            ("extra", Nbt::List(vec![text("b")])),
+        ]);
+        for span in parse_component(&tag, ChatStyle::WHITE, None) {
+            assert!(span.events.is_none());
+        }
+    }
+
+    /// `STYLE_FIELDS` is what M127's decoration copies; if a field
+    /// `resolve_style` reads is missing from it the two drift silently.
+    #[test]
+    fn style_fields_names_every_key_resolve_style_reads() {
+        let tag = compound(&[
+            ("color", Nbt::String("red".into())),
+            ("bold", Nbt::Byte(1)),
+            ("italic", Nbt::Byte(1)),
+            ("underlined", Nbt::Byte(1)),
+            ("strikethrough", Nbt::Byte(1)),
+            ("obfuscated", Nbt::Byte(1)),
+            ("click_event", run_command("/x")),
+            (
+                "hover_event",
+                compound(&[
+                    ("action", Nbt::String("show_text".into())),
+                    ("value", Nbt::String("t".into())),
+                ]),
+            ),
+            ("insertion", Nbt::String("i".into())),
+        ]);
+        // Every key above is in the list, and the list names nothing else.
+        let Nbt::Compound(fields) = &tag else { unreachable!() };
+        let keys: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, STYLE_FIELDS.to_vec());
+        // And every one of them is actually consumed.
+        let style = resolve_style(&tag, &ChatStyle::WHITE);
+        assert_eq!(rgb_to_u32(style.color), RED);
+        assert!(style.bold && style.italic && style.underlined);
+        assert!(style.strikethrough && style.obfuscated);
+        assert!(style.click().is_some() && style.hover().is_some());
+        assert_eq!(style.insertion(), Some("i"));
     }
 }

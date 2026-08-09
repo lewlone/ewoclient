@@ -599,6 +599,10 @@ pub struct PlaySession {
     /// The `minecraft:enchantment` registry from configuration (M42), indexed
     /// by protocol id. Empty on a server that syncs none.
     pub enchantments: Vec<crate::enchantment_parse::EnchantmentDef>,
+    /// The `minecraft:chat_type` registry from configuration (M127), indexed
+    /// by protocol id. Empty on a server that syncs none, which leaves every
+    /// chat line undecorated rather than guessing a decoration.
+    pub chat_types: Vec<crate::chat_type_parse::ChatTypeDef>,
     /// The two trim registries, index = protocol id (M48).
     pub trim_materials: Vec<crate::trim_parse::TrimMaterialDef>,
     pub trim_patterns: Vec<crate::trim_parse::TrimPatternDef>,
@@ -1445,6 +1449,9 @@ impl<'a> Connection<'a> {
         // The enchantment registry, in wire order (M42) — the index is the
         // protocol id a component patch carries.
         let enchantments = std::mem::take(&mut self.enchantments);
+        // The chat-type registry, likewise in wire order (M127) — the index is
+        // the id a `ChatType.Bound` names.
+        let chat_types = std::mem::take(&mut self.chat_types);
         let trim_materials = std::mem::take(&mut self.trim_materials);
         let trim_patterns = std::mem::take(&mut self.trim_patterns);
         // The tags the server sent during configuration (M69). Moved rather
@@ -1517,6 +1524,7 @@ impl<'a> Connection<'a> {
             // the wrong player the moment two share a prefix.
             own_uuid: auth.map(|a| a.uuid),
             enchantments,
+            chat_types,
             trim_materials,
             trim_patterns,
             cat_variants,
@@ -2721,12 +2729,11 @@ impl PlaySession {
             // `handleDisguisedChatMessage` adds it with `GuiMessageTag.system()`
             // and a null signature — it is not a signed player message, so it
             // can never be the target of a `delete_chat`.
-            for component in self.session.take_chat() {
-                // M125: `boundChatType.decorate` is still not applied (that
-                // needs the `minecraft:chat_type` registry), but the message
-                // itself now resolves — a `/say` of a translatable, or any
-                // plugin's `Component.translatable`, reads as English.
-                let spans = self.chat_component_spans(&component);
+            for chat in self.session.take_chat() {
+                // M127: decorated, as `handleDisguisedChatMessage` does. A
+                // `/say` therefore reads `[Server] hi` rather than `hi`.
+                let decorated = self.decorate_chat(&chat.message, &chat.bound);
+                let spans = self.chat_component_spans(&decorated);
                 let line = rewo_world::chat_style::plain_text(&spans);
                 if line.is_empty() {
                     continue;
@@ -3064,20 +3071,32 @@ impl PlaySession {
                     self.signature_cache
                         .push(&last_seen, chat.signature.as_deref());
                     let received = self.chat_clock_millis;
-                    if let crate::chat_wire::ChatOutcome::Shown { text, tag } =
-                        crate::chat_wire::show_message(&chat, received)
-                    {
-                        self.chat_log.push(text.clone());
+                    // Bound before the `if let` on purpose: the two closures
+                    // borrow `self`, and an `if let` scrutinee's temporaries
+                    // live for the whole block, which would collide with the
+                    // `self.chat_log.push` inside it.
+                    let outcome = crate::chat_wire::show_message(
+                        &chat,
+                        received,
+                        &|content| self.decorate_chat(content, &chat.bound),
+                        &|tag| self.chat_component_text(tag),
+                    );
+                    if let crate::chat_wire::ChatOutcome::Shown { content, tag } = outcome {
+                        // M127: `content` is the DECORATED component now, so
+                        // the store gets `<Steve> hi` rather than `hi`.
+                        //
                         // Signed chat is a plain `String` on the wire, not a
                         // component — but vanilla still renders it through
                         // `StringDecomposer.iterateFormatted`, so a server's
-                        // `§e` is a colour and not two glyphs of garbage.
-                        let text = rewo_world::chat_style::parse_legacy(
-                            &text,
-                            rewo_world::chat_style::ChatStyle::WHITE,
-                        );
+                        // `§e` is a colour and not two glyphs of garbage. That
+                        // survives the move to a component path: the content is
+                        // wrapped as `Component.literal`, and `chat_style`'s
+                        // walk runs `push_legacy` over a literal's text.
+                        let spans = self.chat_component_spans(&content);
+                        self.chat_log
+                            .push(rewo_world::chat_style::plain_text(&spans));
                         self.chat_events.push(crate::chat_wire::ChatEvent::Message {
-                            text,
+                            text: spans,
                             signature: chat.signature,
                             tag,
                             source: rewo_world::chat::MessageSource::Player,
@@ -3149,14 +3168,15 @@ impl PlaySession {
                 Err(e) => log::warn!("net: delete_chat decode failed: {e}"),
             }
         } else if id == ids.cb_play_disconnect {
-            let mut r = PacketReader::new(body);
-            let reason = r.nbt().map(|n| n.to_plain_text()).unwrap_or_default();
+            // M129 — resolved against the language table rather than
+            // flattened. Every vanilla kick is a `Component.translatable`, so
+            // this was the most translatable-dense component Rewo received and
+            // the one that rendered as a raw key most often. The decode lives
+            // in `rewo_world::disconnect_screen` so a test can reach it.
+            let (reason, cause) =
+                rewo_world::disconnect_screen::read_disconnect(body, self.lang.as_deref());
             self.disconnect = Some(reason);
-            // `handleDisconnect` is `connection.disconnect(packet.reason())` —
-            // the ONE-argument `DisconnectionDetails`, so no bug-report link
-            // however many the server advertised (M85).
-            self.disconnect_cause =
-                Some(rewo_world::disconnect_screen::DisconnectCause::ServerRequested);
+            self.disconnect_cause = Some(cause);
         }
         Ok(())
     }
@@ -4463,6 +4483,49 @@ impl PlaySession {
     /// test module anywhere in the repo).
     fn chat_component_text(&self, tag: &rewo_proto::nbt::Nbt) -> String {
         crate::chat_translate::chat_component_text(tag, self.lang.as_deref())
+    }
+
+    /// The protocol id of a named `minecraft:chat_type` entry.
+    ///
+    /// For witnesses. The registry is the SERVER's (M42's rule), so a gate
+    /// that wants a specific decoration has to ask rather than assume an
+    /// index — which is the point: the lookup is then part of what the witness
+    /// grades, and an empty registry answers `None` instead of index 0.
+    pub fn chat_type_id(&self, name: &str) -> Option<i32> {
+        self.chat_types
+            .iter()
+            .position(|d| d.id == name)
+            .and_then(|i| i32::try_from(i).ok())
+    }
+
+    /// `ChatType.Bound.decorate(content)` — the component vanilla renders.
+    ///
+    /// Falls back to the content unchanged when the bound names a chat type
+    /// this session has no decoration for: a server that syncs no
+    /// `minecraft:chat_type` registry, an id past its end, or an entry whose
+    /// `chat` decoration could not be read. That is exactly what Rewo did
+    /// before M127, and a strictly smaller lie than inventing
+    /// `DEFAULT_CHAT_DECORATION` — which would render every such line as
+    /// `<name> text` whatever the server asked for.
+    ///
+    /// Vanilla has no fallback at all: `byIdOrThrow` disconnects. Rewo declines
+    /// to turn a chat line into a dropped connection.
+    fn decorate_chat(
+        &self,
+        content: &rewo_proto::nbt::Nbt,
+        bound: &crate::session::ChatTypeBound,
+    ) -> rewo_proto::nbt::Nbt {
+        let decoration = match &bound.chat_type {
+            crate::session::ChatTypeRef::Inline(ty) => ty.chat.as_ref(),
+            crate::session::ChatTypeRef::Registry(id) => usize::try_from(*id)
+                .ok()
+                .and_then(|i| self.chat_types.get(i))
+                .and_then(|def| def.ty.chat.as_ref()),
+        };
+        match decoration {
+            Some(d) => d.decorate(content, bound),
+            None => content.clone(),
+        }
     }
 
     /// The same walk, keeping the spans (M126b).

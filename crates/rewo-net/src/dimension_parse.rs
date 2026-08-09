@@ -653,6 +653,26 @@ pub mod builtin {
                 }
                 out.push(0); // TAG_End
             }
+            // A list is `<element tag> <i32 count> <payload>*`, and an EMPTY
+            // one writes `TAG_End` as its element type — which is what the
+            // reader keys off, so an empty list of strings and an empty list
+            // of compounds are the same bytes. Added for M127's chat-type
+            // fixtures, whose `parameters` field is a list of strings.
+            Nbt::List(items) => {
+                let elem = items.first().map_or(0, tag_id);
+                out.push(elem);
+                out.extend_from_slice(&(items.len() as i32).to_be_bytes());
+                for item in items {
+                    assert_eq!(
+                        tag_id(item),
+                        elem,
+                        "an NBT list is homogeneous; a mixed one is written \
+                         wrapped (REWO_PLAN gotcha -2) and this writer will \
+                         not silently produce an unreadable one"
+                    );
+                    write_payload(out, item);
+                }
+            }
             other => panic!("fixture writer does not handle {other:?}"),
         }
     }

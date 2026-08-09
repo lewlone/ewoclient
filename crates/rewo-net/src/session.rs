@@ -157,6 +157,7 @@
 
 use std::collections::BTreeMap;
 
+use rewo_proto::nbt::Nbt;
 use rewo_proto::reader::PacketReader;
 use rewo_proto::Result;
 
@@ -190,18 +191,41 @@ pub struct ServerMetadata {
     pub icon: Option<Vec<u8>>,
 }
 
-/// A decoded `ChatType.Bound`. Nothing renders it yet — see the module docs on
-/// why decoration is out of reach — but it is decoded in full so the body is
-/// validated rather than assumed.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Which `ChatType` a `ChatType.Bound` names.
+///
+/// `ByteBufCodecs.holder` writes `id + 1` for a registry entry and `0` for an
+/// inline one, so the two are a single VarInt apart on the wire and could not
+/// be more different downstream: the first is a lookup into a table that
+/// arrives in configuration, the second carries the whole `ChatType` in the
+/// chat packet itself. Before M127 the inline form's bytes were walked and
+/// dropped; both resolve to a decoration now.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChatTypeRef {
+    /// Wire `n > 0`: `byIdOrThrow(n - 1)`, resolved against the registry
+    /// [`crate::chat_type_parse::parse_chat_type_registry`] captured.
+    Registry(i32),
+    /// Wire `0`: `Holder.direct(directCodec.decode(input))`.
+    Inline(Box<crate::chat_type_parse::ChatType>),
+}
+
+/// A decoded `ChatType.Bound`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ChatTypeBound {
-    /// The `holder` VarInt as it appeared: `None` for the inline form
-    /// (wire `0`), else the registry id (wire minus one).
-    pub chat_type: Option<i32>,
-    /// The sender's display name, flattened.
-    pub name: String,
-    /// `/msg`'s recipient, when the decoration takes one.
-    pub target_name: Option<String>,
+    /// Which `ChatType` this message is bound to, by either of the two routes
+    /// `ByteBufCodecs.holder` allows.
+    pub chat_type: ChatTypeRef,
+    /// The sender's display name, **unflattened** (M127).
+    ///
+    /// A component rather than a string for the same reason M125 stopped
+    /// flattening the message: it is an argument to the decoration's
+    /// translatable, so flattening it here drops its style — and a sender's
+    /// display name is exactly where a server puts a team colour or a rank
+    /// prefix. It is also the one argument that is routinely a `translate`
+    /// component in its own right.
+    pub name: rewo_proto::nbt::Nbt,
+    /// `/msg`'s recipient, when the decoration takes one. Unflattened for the
+    /// same reason.
+    pub target_name: Option<rewo_proto::nbt::Nbt>,
 }
 
 /// One decoded `disguised_chat` body.
@@ -245,8 +269,12 @@ pub struct SessionState {
     /// Disguised-chat lines awaiting the session's chat log. Drained by
     /// [`Self::take_chat`] rather than written directly, so this module needs
     /// no reference to `PlaySession`. Components rather than strings, because
-    /// the resolution that turns one into text is `PlaySession`'s (M125).
-    chat: Vec<rewo_proto::nbt::Nbt>,
+    /// the resolution that turns one into text is `PlaySession`'s (M125) — and
+    /// whole [`DisguisedChat`]s rather than bare components since M127, because
+    /// the decoration needs the bound and dropping it here would have made
+    /// `handleDisguisedChatMessage`'s `boundChatType.decorate` unreachable from
+    /// the one place that can perform it.
+    chat: Vec<DisguisedChat>,
 }
 
 impl SessionState {
@@ -269,7 +297,7 @@ impl SessionState {
     }
 
     /// Take the disguised-chat lines decoded since the last call.
-    pub fn take_chat(&mut self) -> Vec<rewo_proto::nbt::Nbt> {
+    pub fn take_chat(&mut self) -> Vec<DisguisedChat> {
         std::mem::take(&mut self.chat)
     }
 }
@@ -370,7 +398,7 @@ pub fn apply(kind: SessionPacket, body: &[u8], state: &mut SessionState) -> bool
                 // decorates and adds unconditionally — so this is Rewo's own
                 // guard, preserved where it was rather than quietly dropped in
                 // a milestone about something else.
-                state.chat.push(chat.message);
+                state.chat.push(chat);
                 true
             }
             Err(err) => {
@@ -506,45 +534,20 @@ pub fn read_chat_type_bound(r: &mut PacketReader<'_>) -> Result<ChatTypeBound> {
     let raw = r.varint()?;
     let chat_type = if raw == 0 {
         // `Holder.direct(directCodec.decode(input))` — the inline form. Two
-        // whole `ChatTypeDecoration`s follow and must be walked, or the
-        // sender's name is read out of the middle of the first one.
-        skip_chat_type_decoration(r)?;
-        skip_chat_type_decoration(r)?;
-        None
+        // whole `ChatTypeDecoration`s follow and must be read, or the sender's
+        // name is read out of the middle of the first one.
+        ChatTypeRef::Inline(Box::new(crate::chat_type_parse::read_chat_type_stream(r)?))
     } else {
-        // `byIdOrThrow(id - 1)`. Rewo does not resolve the id (the
-        // `minecraft:chat_type` registry is not parsed), so it is kept raw.
-        Some(raw - 1)
+        // `byIdOrThrow(id - 1)`, resolved against the registry.
+        ChatTypeRef::Registry(raw - 1)
     };
-    let name = r.nbt()?.to_plain_text();
-    let target_name = if r.bool()? {
-        Some(r.nbt()?.to_plain_text())
-    } else {
-        None
-    };
+    let name = r.nbt()?;
+    let target_name = if r.bool()? { Some(r.nbt()?) } else { None };
     Ok(ChatTypeBound {
         chat_type,
         name,
         target_name,
     })
-}
-
-/// `ChatTypeDecoration.STREAM_CODEC` — a string, a VarInt-counted list of
-/// VarInt parameters, and an NBT `Style`. Only reached by the inline branch
-/// above, and only walked (nothing renders a decoration).
-fn skip_chat_type_decoration(r: &mut PacketReader<'_>) -> Result<()> {
-    let _translation_key = r.string(32767)?;
-    // `Parameter.STREAM_CODEC.apply(ByteBufCodecs.list())` — an unbounded
-    // `collection`, so the count is guarded by the buffer rather than a
-    // constant. One VarInt per element, hence a minimum of one byte each.
-    let n = r.count("chat type parameters", 1)?;
-    for _ in 0..n {
-        let _parameter = r.varint()?;
-    }
-    // `Style.Serializer.TRUSTED_STREAM_CODEC` is `fromCodecWithRegistriesTrusted`
-    // — one NBT tag, exactly like a `Component`.
-    let _style = r.nbt()?;
-    Ok(())
 }
 
 /// `ClientboundGameRuleValuesPacket` — a VarInt count then that many
@@ -893,8 +896,8 @@ mod tests {
         referenced.push(0x00);
         let mut r = PacketReader::new(&referenced);
         let bound = read_chat_type_bound(&mut r).unwrap();
-        assert_eq!(bound.chat_type, Some(3));
-        assert_eq!(bound.name, "Notch");
+        assert_eq!(bound.chat_type, ChatTypeRef::Registry(3));
+        assert_eq!(bound.name.to_plain_text(), "Notch");
         assert_eq!(bound.target_name, None);
         assert_eq!(r.remaining(), 0, "the whole body is consumed");
 
@@ -914,9 +917,31 @@ mod tests {
         inline.extend(wire_component("Herobrine"));
         let mut r = PacketReader::new(&inline);
         let bound = read_chat_type_bound(&mut r).unwrap();
-        assert_eq!(bound.chat_type, None, "wire 0 is the inline form");
-        assert_eq!(bound.name, "Notch", "not the decoration's translation key");
-        assert_eq!(bound.target_name.as_deref(), Some("Herobrine"));
+        // M127: the inline decorations are *kept* now, not walked past. The
+        // bytes were always being read; what changes is that a message bound
+        // to an inline type can be decorated at all.
+        let ChatTypeRef::Inline(ty) = &bound.chat_type else {
+            panic!("wire 0 is the inline form")
+        };
+        let chat = ty.chat.as_ref().expect("the inline chat decoration");
+        assert_eq!(chat.translation_key, "chat.type.text");
+        assert_eq!(
+            chat.parameters,
+            vec![
+                crate::chat_type_parse::Parameter::Sender,
+                crate::chat_type_parse::Parameter::Content
+            ],
+            "the inline form's parameters are VarInts, not names"
+        );
+        assert_eq!(
+            bound.name.to_plain_text(),
+            "Notch",
+            "not the decoration's translation key"
+        );
+        assert_eq!(
+            bound.target_name.as_ref().map(Nbt::to_plain_text).as_deref(),
+            Some("Herobrine")
+        );
         assert_eq!(r.remaining(), 0);
     }
 
@@ -935,10 +960,14 @@ mod tests {
 
         let mut s = SessionState::default();
         assert!(apply(SessionPacket::DisguisedChat, &body, &mut s));
-        assert_eq!(
-            s.take_chat(),
-            vec![rewo_proto::nbt::Nbt::String("psst".into())]
-        );
+        let queued = s.take_chat();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].message, Nbt::String("psst".into()));
+        // M127: the BOUND is queued with the message now. Dropping it here
+        // would leave `handleDisguisedChatMessage`'s `boundChatType.decorate`
+        // unreachable from the one place that holds the registry.
+        assert_eq!(queued[0].bound.chat_type, ChatTypeRef::Registry(1));
+        assert_eq!(queued[0].bound.name.to_plain_text(), "Notch");
         // Drained, not duplicated.
         assert!(s.take_chat().is_empty());
     }

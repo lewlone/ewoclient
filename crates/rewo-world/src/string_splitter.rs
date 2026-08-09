@@ -175,9 +175,12 @@ pub fn find_styled_line_break(
                 return Some((pos, style));
             }
             if c == ' ' {
-                last_space = Some((pos, style));
+                last_space = Some((pos, style.clone()));
             }
-            let cw = width_of(&c.to_string(), style);
+            // `ChatStyle` stopped being `Copy` at M128 (it owns the run's
+            // click / hover / insertion); the clone is a memcpy plus, for a
+            // clickable run, one refcount bump.
+            let cw = width_of(&c.to_string(), style.clone());
             width += cw;
             if !had_visible || width <= max_width {
                 had_visible |= cw != 0;
@@ -819,7 +822,7 @@ mod tests {
                     // (a) the production pairing — always agrees.
                     let prod = style_at(&input, skip_position);
                     let mut a = FlatComponents::new(&input);
-                    let line_a = a.split_at(skip_position, skip_size, prod);
+                    let line_a = a.split_at(skip_position, skip_size, prod.clone());
                     let mut b: Vec<ChatSpan> =
                         input.iter().filter(|p| !p.text.is_empty()).cloned().collect();
                     let line_b = split_at_ge(&mut b, skip_position, skip_size, prod);
@@ -830,7 +833,7 @@ mod tests {
                     // (b) an unrelated split style — where they come apart.
                     let odd = ChatStyle::plain([0.0, 1.0, 0.0]);
                     let mut c = FlatComponents::new(&input);
-                    let lc = c.split_at(skip_position, skip_size, odd);
+                    let lc = c.split_at(skip_position, skip_size, odd.clone());
                     let mut d: Vec<ChatSpan> =
                         input.iter().filter(|p| !p.text.is_empty()).cloned().collect();
                     let ld = split_at_ge(&mut d, skip_position, skip_size, odd);
@@ -987,5 +990,69 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- M128: the events survive the wrap -------------------------------
+
+    fn clickable(text: &str, cmd: &str) -> ChatSpan {
+        use crate::chat_events::{ChatEvents, ClickEvent};
+        ChatStyle {
+            events: Some(std::sync::Arc::new(ChatEvents {
+                click: Some(ClickEvent::RunCommand(cmd.into())),
+                ..Default::default()
+            })),
+            ..ChatStyle::WHITE
+        }
+        .span(text)
+    }
+
+    /// **`splitAt` rebuilds the tail from the STYLE, not from the span** —
+    /// `self.parts[0] = split_style.span(after)` — so anything a span carries
+    /// and a style does not is dropped on the continuation of a width wrap and
+    /// kept on its first line. That is why M128 put the events on
+    /// [`ChatStyle`]. The failure it prevents is exactly the one that matters
+    /// most: a link long enough to wrap, live on line one and dead on line two.
+    #[test]
+    fn a_click_event_survives_a_width_wrap_onto_the_continuation() {
+        use crate::chat_events::ClickEvent;
+        let out = split_lines_wrapped(&[clickable("aaa bbb", "/x")], 24, &w6s);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].plain(), "aaa");
+        assert_eq!(out[1].plain(), "bbb");
+        for l in &out {
+            for span in &l.spans {
+                assert_eq!(span.click(), Some(&ClickEvent::RunCommand("/x".into())));
+            }
+        }
+    }
+
+    /// And across an explicit newline, which takes the other branch of
+    /// `splitAt`'s `position <= size` test.
+    #[test]
+    fn a_click_event_survives_a_newline_break() {
+        use crate::chat_events::ClickEvent;
+        let out = split_lines_wrapped(&[clickable("aa\nbb", "/x")], 600, &w6s);
+        assert_eq!(out.len(), 2);
+        for l in &out {
+            for span in &l.spans {
+                assert_eq!(span.click(), Some(&ClickEvent::RunCommand("/x".into())));
+            }
+        }
+    }
+
+    /// A break between two differently-linked parts keeps each side's own —
+    /// `getSplitStyle` hands over the style at the break, and the head of the
+    /// line comes through `ChatSpan { text, ..parts[0].clone() }`.
+    #[test]
+    fn two_links_on_one_line_keep_their_own_targets() {
+        use crate::chat_events::ClickEvent;
+        let out = split_lines_wrapped(
+            &[clickable("aaa ", "/a"), clickable("bbb", "/b")],
+            24,
+            &w6s,
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].spans[0].click(), Some(&ClickEvent::RunCommand("/a".into())));
+        assert_eq!(out[1].spans[0].click(), Some(&ClickEvent::RunCommand("/b".into())));
     }
 }

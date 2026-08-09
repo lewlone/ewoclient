@@ -255,7 +255,10 @@ fn check_wire(c: &mut Checker, ids: &Ids, baked: &assets::BakedAssets) {
         "w3.the_either_flag_is_true_for_the_known_type_and_false_for_the_custom_one",
         label(0) == Some(ServerLinkLabel::Known(KnownLinkType::BugReport))
             && label(1) == Some(ServerLinkLabel::Known(KnownLinkType::Website))
-            && label(2) == Some(ServerLinkLabel::Custom("Our Discord".into())),
+            && label(2)
+                == Some(ServerLinkLabel::Custom(rewo_proto::nbt::Nbt::String(
+                    "Our Discord".into()
+                ))),
         format!("{:?}", links.entries().iter().map(|e| &e.label).collect::<Vec<_>>()),
     );
 
@@ -326,7 +329,7 @@ fn check_wire(c: &mut Checker, ids: &Ids, baked: &assets::BakedAssets) {
     // an arbitrary server string on the disconnect screen's report button.
     let decoy = ServerLinks::new(vec![
         ServerLink {
-            label: ServerLinkLabel::Custom("Report a bug".into()),
+            label: ServerLinkLabel::Custom(rewo_proto::nbt::Nbt::String("Report a bug".into())),
             link: "https://decoy.example".into(),
         },
         ServerLink {

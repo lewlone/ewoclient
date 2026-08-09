@@ -231,17 +231,26 @@ impl KnownLinkType {
 ///
 /// The variant names follow the `Either`: `Known` is the **left** and is what
 /// the boolean `true` selects.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Not `Eq`: a custom label is a component now (M129), and `Nbt` carries floats.
+#[derive(Clone, Debug, PartialEq)]
 pub enum ServerLinkLabel {
     /// `Either.left` — wire boolean `true`, then a VarInt id.
     Known(KnownLinkType),
-    /// `Either.right` — wire boolean `false`, then one NBT tag. Flattened to
-    /// plain text the way every other `Component` in `rewo-net` is.
-    Custom(String),
+    /// `Either.right` — wire boolean `false`, then one NBT tag.
+    ///
+    /// **Unflattened (M129), and the asymmetry is why.** The screen already
+    /// renders `Known` through the language table (`lang.or_key(t.lang_key())`)
+    /// and rendered `Custom` as a raw flattened string, so one of the two label
+    /// kinds honoured the player's language and the other did not. Resolution
+    /// happens at the render site rather than here because `read_server_links`
+    /// runs in **both** connection states, and the configuration path has no
+    /// `PlaySession` and therefore no table — the same reason M125 moved the
+    /// chat components rather than resolving them at the wire.
+    Custom(rewo_proto::nbt::Nbt),
 }
 
 /// `ServerLinks.UntrustedEntry` — straight off the wire, URL unvalidated.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct UntrustedEntry {
     pub label: ServerLinkLabel,
     pub link: String,
@@ -254,14 +263,14 @@ pub struct UntrustedEntry {
 /// no URI type and never dereferences it, and vanilla's own `Entry.link` is
 /// only ever `toString()`ed back for display, the clipboard, and a crash-report
 /// comment.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ServerLink {
     pub label: ServerLinkLabel,
     pub link: String,
 }
 
 /// `ServerLinks` — the trusted list. `ServerLinks.EMPTY` is [`Default`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ServerLinks {
     entries: Vec<ServerLink>,
 }
@@ -357,7 +366,7 @@ pub fn read_server_links(body: &[u8]) -> Result<Vec<UntrustedEntry>> {
             // `true` for the *left*, which is the boring case.
             ServerLinkLabel::Known(KnownLinkType::by_id(r.varint()?))
         } else {
-            ServerLinkLabel::Custom(r.nbt()?.to_plain_text())
+            ServerLinkLabel::Custom(r.nbt()?)
         };
         let link = r.string(32767)?;
         out.push(UntrustedEntry { label, link });
@@ -392,6 +401,47 @@ pub fn trust(entries: Vec<UntrustedEntry>) -> (ServerLinks, usize) {
 
 #[cfg(test)]
 mod tests {
+
+    /// M129 — a custom label survives the decode as a COMPONENT.
+    ///
+    /// The screen already rendered `Known` through the language table and
+    /// `Custom` as a raw flattened string, so one label kind honoured the
+    /// player's language and the other did not. Resolution moved to the render
+    /// site, which means the decode's job is to not destroy the tree.
+    ///
+    /// MUTATION: `r.nbt()?.to_plain_text()` (the pre-M129 line, with `Custom`
+    /// back to a `String`). The translatable then arrives as its raw key with
+    /// its arguments gone, and nothing downstream can recover them.
+    #[test]
+    fn a_custom_label_keeps_its_component_rather_than_flattening_it() {
+        // one entry: Either.right, then a `translate` compound, then the URL.
+        let mut body = Vec::new();
+        rewo_proto::varint::write_varint(&mut body, 1);
+        body.push(0x00); // Either.right -> Custom
+        body.push(0x0a); // TAG_Compound
+        body.push(0x08); // TAG_String
+        body.extend_from_slice(&(9u16).to_be_bytes());
+        body.extend_from_slice(b"translate");
+        let key = "server.links.discord";
+        body.extend_from_slice(&(key.len() as u16).to_be_bytes());
+        body.extend_from_slice(key.as_bytes());
+        body.push(0x00); // TAG_End
+        let url = "https://example.invalid/";
+        rewo_proto::varint::write_varint(&mut body, url.len() as i32);
+        body.extend_from_slice(url.as_bytes());
+
+        let got = read_server_links(&body).unwrap();
+        assert_eq!(got.len(), 1);
+        let ServerLinkLabel::Custom(tag) = &got[0].label else {
+            panic!("expected a custom label")
+        };
+        assert_eq!(
+            tag.get("translate"),
+            Some(&rewo_proto::nbt::Nbt::String(key.to_string())),
+            "the tree survives; a flattening decode leaves only the key's text"
+        );
+        assert_eq!(got[0].link, url);
+    }
     use super::*;
 
     fn wire_string(s: &str) -> Vec<u8> {
@@ -446,7 +496,7 @@ mod tests {
                     link: "https://status.example".into(),
                 },
                 UntrustedEntry {
-                    label: ServerLinkLabel::Custom("Our Discord".into()),
+                    label: ServerLinkLabel::Custom(rewo_proto::nbt::Nbt::String("Our Discord".into())),
                     link: "https://discord.example".into(),
                 },
             ]
@@ -568,7 +618,7 @@ mod tests {
     fn find_known_type_ignores_custom_labels_and_takes_the_first_match() {
         let links = ServerLinks::new(vec![
             ServerLink {
-                label: ServerLinkLabel::Custom("Report a bug".into()),
+                label: ServerLinkLabel::Custom(rewo_proto::nbt::Nbt::String("Report a bug".into())),
                 link: "https://decoy.example".into(),
             },
             ServerLink {
