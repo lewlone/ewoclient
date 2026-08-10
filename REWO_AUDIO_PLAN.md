@@ -171,6 +171,22 @@ Multiplier `32767.5`, bias applied **before** a C-style truncating cast. Reprodu
 **Gate:** unit tests + `--render-check` **r45** — inject a `sound` packet through the real router, assert non-zero `SoundStats.started` on the **windowed** path. This is the only check that can see the composition roots `live_cmd.rs:22169-22173` records as unwitnessed.
 
 ### M138b — decode and the buffer library
+
+> **PARTLY SHIPPED 2026-08-10.** The crate exists, with the **quantisation** and
+> the **buffer library's caching rules** — the two pieces here with an exact
+> vanilla answer, and the two that need no decoder to grade. **Symphonia and the
+> real ogg decode are OPEN.** The split is deliberate: a decoder puts build cost
+> on 34 gates that never want audio, and the transcribed parts do not need one,
+> so the crate ships today with **no dependencies at all**.
+>
+> Two things worth carrying forward. The **failure is cached too** —
+> `computeIfAbsent` stores the future and an exceptionally-completed future stays
+> in the map, so a missing file is not retried; retrying is the obvious design
+> and is not vanilla's. And `buffer_size` records the constructor's latent
+> asymmetry (the field rounds up to even, the *first* buffer allocates the raw
+> argument) and **diverges from it on purpose**, because a one-byte-short first
+> chunk cannot hold a 16-bit sample and vanilla never reaches the path.
+
 New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not yet.** `rewo-net` must not gain a device dependency or 34 gates link an audio stack to decode a packet.
 
 `decode.rs` (ogg → f32 → the `32767.5` quantisation → f32), `buffers.rs` transcribing `SoundBufferLibrary`: statics cached permanently by path, **streams never cached**, and **the loop flag honoured** per §0.2. Paths are asset-index **keys** (`<ns>/sounds/<path>.ogg`), resolved via the index to `<assets>/objects/<hash[0..2]>/<hash>` — a device treating the string as a filesystem path finds nothing.

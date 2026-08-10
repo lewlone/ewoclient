@@ -129,9 +129,11 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-10 after M138a:
-**2865 tests, 0 failures** (**world 1147, net 961, gpu 275, data 224, app 197,
-mesh 45, proto 16** — read off the runner per crate; they sum to 2865). Note the per-crate invocation is
+Current measurement, taken 2026-08-10 after M138b (part):
+**2877 tests, 0 failures** (**world 1147, net 961, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 12** — read off the runner per crate; they sum to 2877).
+**There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
+loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
 other six take `--lib`, and `--lib` there is `error: no library targets`, exit
 101, and **no** `test result` line at all. Assert that a result line exists
@@ -20225,6 +20227,52 @@ milestone measured, but nothing *structurally* stops a fifth from repeating it �
 so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
+
+### M138b (part) — the quantisation, and what a buffer library caches (2026-08-10)
+
+A new crate, `rewo-audio`, with **no dependencies** — the two pieces of M138b
+that have an exact vanilla answer and need no decoder to grade. Symphonia and
+the real ogg decode are open; a decoder would put build cost on 34 gates that
+never want audio, and neither of these needs one.
+
+**The quantisation is the one exact answer in the decode path** —
+`Mth.clamp((int)(sample * 32767.5F - 0.5F), -32768, 32767)` — and every way of
+getting it wrong is inaudible rather than obvious. `32767.5` and not `32767`,
+because the half is what puts `1.0` exactly on 32767 and `-1.0` exactly on
+-32768. The bias applied **before** the cast, so it moves the truncation
+boundary half a step and changes about every other sample by one. And the cast
+**truncates toward zero rather than flooring**, which is observable at silence:
+`(int)(-0.5)` is 0 in Java and -1 under a floor, so a floor puts a constant DC
+offset on every silent sample of every sound. Reproducing a lossy step is the
+fidelity claim, and the literal vectors exist because someone will otherwise read
+it as a pointless precision loss in a float mixer and delete it.
+
+`buffer_size` records the constructor's latent asymmetry — the field rounds up
+to even, the **first** buffer allocates the raw argument, so an odd size gives a
+first chunk too short for a 16-bit sample — and **diverges from it on purpose**,
+since both of vanilla's callers pass even sizes and the path is unreachable
+there. Copying a behaviour, not a bug.
+
+**Three caching rules, two of which read backwards.** Statics are cached
+permanently by path and **a failure is cached with them**, because
+`computeIfAbsent` stores the future and an exceptionally-completed future is
+still in the map — retrying a missing file every frame is the obvious design and
+is not vanilla's. Streams are **never** cached, which is not an oversight: a
+stream holds a decode position, so two sounds sharing one would fight over it.
+And **the loop flag rides with the stream rather than the channel** —
+`SoundEngine.play` tells a streamed source explicitly *not* to loop, because
+`LoopingAudioStream` restarts the decoder on an empty read. That is the plan's
+own §0.2 correction, now in code; modelling it as an AL property plays every
+music track once and stops.
+
+The decoder is a trait, so the caching rules are graded by a source that COUNTS
+its calls — which proves "decoded once" and "never cached" directly where a real
+`.ogg` would only allow them to be inferred.
+
+**Measured:** 2877 tests / 0 failures (the seven crates plus `rewo-audio` 12),
+34 gates green with 0 validation lines, 10/10 mutations with a no-op control
+that SURVIVED. **Nothing here makes a noise**, and the crate's module doc says so
+at length.
 
 ### M138a (rest) — the listener seam, and a witness that asserts a rate (2026-08-10)
 

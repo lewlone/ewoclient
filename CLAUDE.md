@@ -1708,7 +1708,15 @@ with a half turn, so yaw 0 faces +Z while the record's default faces -Z, and a
 test asserting they agree looks obviously right and puts the ears backwards.
 **r45 asserts `pushes == frames` rather than `> 0`**, because a per-tick client
 would still be non-zero; verified by deleting the call site, which drops it to
-0 of 5783 while every unit test stays green.*
+0 of 5783 while every unit test stays green. **M138b then started the audio crate**
+— `rewo-audio`, with no dependencies, holding the two pieces that have an exact
+vanilla answer: the `32767.5 / -0.5 / truncate-toward-zero` quantisation (whose
+every failure mode is inaudible rather than obvious — a floor puts a DC offset on
+every silent sample of every sound) and `SoundBufferLibrary`'s caching, where
+**statics are cached permanently, a FAILURE is cached with them**, streams are
+never cached, and **the loop flag rides with the stream rather than the channel**,
+because `SoundEngine.play` tells a streamed source explicitly not to loop.
+Symphonia and the real decode are still open.*
 
 *Update (2026-08-10 session, Rewo): **M136 and M137 — two fixes recovered from
 worktrees that a handoff called litter.** The claim rested on their branches being
@@ -1845,8 +1853,10 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-10
-(M138a) — **2865 tests / 0 failures** (world 1147, net 961, gpu 275, data 224,
-app 197, mesh 45, proto 16, read off the runner per crate), `mobshot` 246/246,
+(M138b part) — **2877 tests / 0 failures** (world 1147, net 961, gpu 275, data 224,
+app 197, mesh 45, proto 16, **audio 12** — EIGHT crates now, read off the runner
+per crate; a loop written against the old seven drops the new one silently),
+`mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, all **34** serverless gates green with 0
 validation errors, `live --render-check` **44/44** with validation ON and 0
