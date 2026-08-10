@@ -31,7 +31,7 @@
 //! Rewo against them rather than against vanilla.
 
 use crate::buffers::Pcm;
-use rewo_net::sound_engine::{openal, ListenerTransform};
+use rewo_net::sound_engine::{openal, ChannelId, ListenerTransform};
 use std::sync::Arc;
 
 /// One sounding voice — a channel, in OpenAL's sense.
@@ -59,6 +59,17 @@ pub struct Voice {
     pub looping: bool,
     /// Set once the source runs off the end of a non-looping buffer.
     pub finished: bool,
+    /// `Channel.play()` has been called.
+    ///
+    /// **Vanilla's order is properties, then attach, then play**
+    /// (`SoundEngine.java:417-434`), and `alSourcePlay` before a buffer is
+    /// attached is a no-op — so a voice that exists but has not been played must
+    /// be silent, or the eight-call sequence would start sounding halfway
+    /// through itself with whatever properties had arrived so far.
+    pub playing: bool,
+    /// `Channel.pause()` / `unpause()`. Distinct from `finished`: a paused voice
+    /// keeps its cursor and resumes where it stopped.
+    pub paused: bool,
 }
 
 impl Voice {
@@ -73,6 +84,12 @@ impl Voice {
             max_distance: None,
             looping: false,
             finished: false,
+            // **True here and false on the command path**, which is not an
+            // inconsistency. A `Voice` built directly is a caller saying "play
+            // this", and every witness in this file does exactly that; a voice
+            // the ring creates is mid-sequence and must wait for its `Play`.
+            playing: true,
+            paused: false,
         }
     }
 }
@@ -84,7 +101,15 @@ pub struct Mixer {
     /// this conversion is on the hot path for most sounds rather than an edge.
     pub out_rate: u32,
     pub listener: ListenerTransform,
-    voices: Vec<Voice>,
+    /// Keyed by channel, and a `Vec` rather than a map so the mix order is the
+    /// order voices arrived. Float addition is not associative, so a `HashMap`
+    /// would make the output depend on hashing and two identical scenes could
+    /// differ in the last bits.
+    voices: Vec<(ChannelId, Voice)>,
+    /// Commands that arrived for a channel the mixer has never heard of, or that
+    /// the callback cannot honour. Counted rather than logged, because the
+    /// callback must not take a lock or a syscall.
+    pub ignored: u64,
 }
 
 impl Mixer {
@@ -93,22 +118,99 @@ impl Mixer {
             out_rate,
             listener: ListenerTransform::INITIAL,
             voices: Vec::new(),
+            ignored: 0,
         }
     }
 
+    /// Add a voice directly, outside the command path — what the witnesses use.
     pub fn push(&mut self, v: Voice) {
-        self.voices.push(v);
+        let id = self.voices.len() as ChannelId;
+        self.voices.push((id, v));
     }
 
     pub fn voice_count(&self) -> usize {
         self.voices.len()
     }
 
+    pub fn voice(&self, id: ChannelId) -> Option<&Voice> {
+        self.voices.iter().find(|(k, _)| *k == id).map(|(_, v)| v)
+    }
+
+    /// Apply one [`crate::device::Command`] — the callback's whole vocabulary.
+    ///
+    /// **`AttachStaticBuffer` and `AttachBufferStream` are counted and
+    /// ignored**, and that is the design rather than a gap: they carry an asset
+    /// *key*, and resolving one means a store lookup and an ogg decode, neither
+    /// of which may happen on an audio callback. The producer resolves the key
+    /// and sends [`crate::device::Command::Attach`] with the PCM already in
+    /// hand. Seeing a path-carrying attach here means the producer skipped that
+    /// step, so it is counted where a silent ignore would hide it.
+    pub fn apply(&mut self, cmd: &crate::device::Command) {
+        use crate::device::Command;
+        use rewo_net::sound_engine::ChannelCall as C;
+        match cmd {
+            Command::Listener(t) => self.listener = *t,
+            Command::Attach(id, pcm) => {
+                let v = self.ensure(*id);
+                v.pcm = Arc::clone(pcm);
+                v.cursor = 0.0;
+                v.finished = false;
+            }
+            Command::Channel(id, call) => match call {
+                C::Stop => self.voices.retain(|(k, _)| k != id),
+                C::AttachStaticBuffer(_) | C::AttachBufferStream(_, _) => self.ignored += 1,
+                _ => {
+                    let v = self.ensure(*id);
+                    match call {
+                        C::SetPitch(p) => v.pitch = *p,
+                        C::SetVolume(g) => v.gain = *g,
+                        C::LinearAttenuation(d) => v.max_distance = Some(*d),
+                        C::DisableAttenuation => v.max_distance = None,
+                        C::SetLooping(l) => v.looping = *l,
+                        C::SetRelative(r) => v.relative = *r,
+                        C::SetSelfPosition(x, y, z) => {
+                            v.position = [*x as f32, *y as f32, *z as f32]
+                        }
+                        C::Play => {
+                            v.playing = true;
+                            v.paused = false;
+                        }
+                        C::Pause => v.paused = true,
+                        C::Unpause => v.paused = false,
+                        // Handled above; listed so a new variant fails the build
+                        // rather than being silently dropped.
+                        C::Stop | C::AttachStaticBuffer(_) | C::AttachBufferStream(_, _) => {}
+                    }
+                }
+            },
+        }
+    }
+
+    /// The voice for a channel, created silent if it is new.
+    ///
+    /// **Silent, because the properties arrive before the `Play`.** A voice that
+    /// started sounding on its first `SetPitch` would play the first few
+    /// milliseconds at whatever position and volume had not yet been set.
+    fn ensure(&mut self, id: ChannelId) -> &mut Voice {
+        if let Some(i) = self.voices.iter().position(|(k, _)| *k == id) {
+            return &mut self.voices[i].1;
+        }
+        let mut v = Voice::new(Arc::new(Pcm {
+            samples: Vec::new(),
+            channels: 1,
+            sample_rate: 44100,
+        }));
+        v.playing = false;
+        self.voices.push((id, v));
+        let n = self.voices.len();
+        &mut self.voices[n - 1].1
+    }
+
     /// Drop every finished voice. Separate from [`Self::render`] so a caller can
     /// decide when a channel is reclaimable — vanilla's own reclaim is on a
     /// 20-tick grace period, not on the sound ending.
     pub fn retire_finished(&mut self) {
-        self.voices.retain(|v| !v.finished);
+        self.voices.retain(|(_, v)| !v.finished);
     }
 
     /// Fill `out` with interleaved stereo. `out.len()` must be even.
@@ -132,8 +234,8 @@ impl Mixer {
         let right = self.listener.right();
         let right = [right[0] as f32, right[1] as f32, right[2] as f32];
 
-        for v in self.voices.iter_mut() {
-            if v.finished || v.pcm.samples.is_empty() {
+        for (_, v) in self.voices.iter_mut() {
+            if v.finished || v.pcm.samples.is_empty() || !v.playing || v.paused {
                 continue;
             }
             let channels = v.pcm.channels.max(1) as usize;
@@ -660,6 +762,121 @@ mod tests {
         let full = with_gain(1.0);
         assert!((with_gain(0.5) / full - 0.5).abs() < 1e-3);
         assert_eq!(with_gain(0.0), 0.0);
+    }
+
+    // ── the command path (M138d) ──────────────────────────────────────────
+
+    use crate::device::Command;
+    use rewo_net::sound_engine::ChannelCall as C;
+
+    fn drive(m: &mut Mixer, id: rewo_net::sound_engine::ChannelId, calls: &[C]) {
+        for c in calls {
+            m.apply(&Command::Channel(id, c.clone()));
+        }
+    }
+
+    /// **A voice is silent until its `Play`**, which is the whole reason the
+    /// eight calls are a sequence rather than a set.
+    ///
+    /// `alSourcePlay` before a buffer is attached is a no-op in OpenAL, so
+    /// vanilla's order is properties, attach, play. A mixer that started
+    /// sounding on the first `SetPitch` would play the opening milliseconds at
+    /// whatever position and volume had arrived so far — audible as a click from
+    /// the wrong direction, and impossible to attribute.
+    #[test]
+    fn a_voice_built_by_commands_is_silent_until_play() {
+        let mut m = Mixer::new(44100);
+        drive(&mut m, 7, &[C::SetVolume(1.0), C::SetSelfPosition(0.0, 0.0, -1.0)]);
+        m.apply(&Command::Attach(7, dc(44100, 256, 1)));
+        drive(&mut m, 7, &[C::SetLooping(true)]);
+        assert_eq!(m.voice_count(), 1);
+        assert_eq!(peak_lr(&render(&mut m, 64)).0, 0.0, "not played yet");
+
+        drive(&mut m, 7, &[C::Play]);
+        assert!(peak_lr(&render(&mut m, 64)).0 > 0.0, "now it sounds");
+    }
+
+    /// The eight-call sequence lands where it should — read off the voice.
+    #[test]
+    fn the_eight_calls_reach_the_voice() {
+        let mut m = Mixer::new(44100);
+        drive(
+            &mut m,
+            3,
+            &[
+                C::SetPitch(1.5),
+                C::SetVolume(0.25),
+                C::LinearAttenuation(24.0),
+                C::SetLooping(true),
+                C::SetSelfPosition(1.0, 2.0, 3.0),
+                C::SetRelative(true),
+                C::Play,
+            ],
+        );
+        let v = m.voice(3).expect("channel 3");
+        assert_eq!(v.pitch, 1.5);
+        assert_eq!(v.gain, 0.25);
+        assert_eq!(v.max_distance, Some(24.0));
+        assert!(v.looping && v.relative && v.playing);
+        assert_eq!(v.position, [1.0, 2.0, 3.0]);
+        // …and `disableAttenuation` is the other arm rather than a zero.
+        drive(&mut m, 3, &[C::DisableAttenuation]);
+        assert_eq!(m.voice(3).unwrap().max_distance, None);
+    }
+
+    /// Pause keeps the cursor; stop takes the voice away entirely.
+    #[test]
+    fn pause_holds_its_place_and_stop_does_not() {
+        let mut m = Mixer::new(44100);
+        m.apply(&Command::Attach(1, dc(44100, 4096, 1)));
+        drive(&mut m, 1, &[C::SetSelfPosition(0.0, 0.0, -1.0), C::Play]);
+        let _ = render(&mut m, 64);
+        let cursor = m.voice(1).unwrap().cursor;
+        assert!(cursor > 0.0);
+
+        drive(&mut m, 1, &[C::Pause]);
+        assert_eq!(peak_lr(&render(&mut m, 64)).0, 0.0, "paused is silent");
+        assert_eq!(m.voice(1).unwrap().cursor, cursor, "and does not advance");
+
+        drive(&mut m, 1, &[C::Unpause]);
+        assert!(peak_lr(&render(&mut m, 64)).0 > 0.0);
+        assert!(m.voice(1).unwrap().cursor > cursor, "it resumed, not restarted");
+
+        drive(&mut m, 1, &[C::Stop]);
+        assert_eq!(m.voice_count(), 0, "stop removes the channel");
+    }
+
+    /// **A path-carrying attach is counted, not silently dropped.**
+    ///
+    /// It can only arrive if the producer skipped the decode, and the callback
+    /// cannot do that work — a store lookup and an ogg decode are a syscall and
+    /// a large allocation. Counting it is what makes "no sound, and no idea
+    /// why" into a number someone can read.
+    #[test]
+    fn an_unresolved_attach_is_counted_rather_than_ignored() {
+        let mut m = Mixer::new(44100);
+        assert_eq!(m.ignored, 0);
+        m.apply(&Command::Channel(1, C::AttachStaticBuffer("a.ogg".into())));
+        m.apply(&Command::Channel(1, C::AttachBufferStream("b.ogg".into(), true)));
+        assert_eq!(m.ignored, 2);
+        // A resolved attach is the supported path, and it rewinds the voice.
+        m.apply(&Command::Attach(1, dc(44100, 64, 1)));
+        assert_eq!(m.voice(1).unwrap().cursor, 0.0);
+        assert_eq!(m.ignored, 2, "and is not itself counted");
+    }
+
+    /// The listener rides the same ring, so it lands through the same path.
+    #[test]
+    fn a_listener_command_moves_the_ears() {
+        let mut m = Mixer::new(44100);
+        let (forward, up) = rewo_net::sound_engine::listener_basis(180.0, 0.0);
+        m.apply(&Command::Listener(ListenerTransform {
+            position: [5.0, 0.0, 0.0],
+            forward,
+            up,
+        }));
+        assert_eq!(m.listener.position, [5.0, 0.0, 0.0]);
+        assert_eq!(m.listener.forward, forward);
     }
 
     /// `disableAttenuation` is full gain everywhere, not infinite range with a

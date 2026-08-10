@@ -19,3 +19,9 @@ symphonia = { version = "0.5", default-features = false, features = ["ogg", "vor
 # ListenerTransform and the OpenAL gain curve M131 transcribed; rewo-net must
 # never depend on this, or 34 gates link a codec to decode a packet.
 rewo-net = { path = "../rewo-net" }
+
+# **The device, and the only dependency that can make a noise.** Not pulled into
+# rewo-app: linking an audio stack into the client binary would put it in all 34
+# gates for a subsystem none of them exercises. Reach it through
+# `cargo run -p rewo-audio --example listen`.
+cpal = "0.15"

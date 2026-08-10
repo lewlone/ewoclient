@@ -50,6 +50,16 @@ pub enum Command {
     /// `Listener.setTransform`. Not a channel, so not a `ChannelCall` — the
     /// same reasoning that made it a fifth trait method in M138a.
     Listener(ListenerTransform),
+    /// An already-decoded buffer for a channel.
+    ///
+    /// **This is why `ChannelCall::AttachStaticBuffer` cannot cross the ring as
+    /// itself.** That variant carries an asset *key*, and turning one into
+    /// samples is a store lookup and an ogg decode — a syscall and a large
+    /// allocation, both forbidden on an audio callback. The producer does the
+    /// work and sends the result, which is also what vanilla does: the attach is
+    /// a continuation on `getCompleteBuffer(path).thenAccept(...)`
+    /// (`SoundEngine.java:431-434`), not something the audio side waits for.
+    Attach(ChannelId, Arc<crate::buffers::Pcm>),
 }
 
 /// A bounded single-producer / single-consumer ring.
@@ -281,10 +291,17 @@ mod tests {
         }
         let refused = producer.join().unwrap();
         assert_eq!(seen, N);
-        // The producer was refused plenty — a run where it never filled would
-        // not have exercised the full path at all, so this asserts the test was
-        // worth running rather than merely passing.
-        assert!(refused > 0, "the ring never filled; widen N or narrow it");
+        // **Deliberately NOT asserting that the producer was ever refused.**
+        // The first version did, to prove the run had exercised the full path,
+        // and it failed the first time a consumer happened to keep up — a
+        // scheduling-dependent assertion, which is the flaky battery entry this
+        // module's own harness doc argues against. Whether the ring fills is
+        // timing; that a full ring refuses and counts is covered deterministically
+        // by `a_full_ring_drops_the_new_command_and_counts_it`.
+        //
+        // What is asserted is what holds on EVERY interleaving: the counter and
+        // the refusals agree exactly, so a torn count would fail here whether or
+        // not the ring ever filled on this particular run.
         assert_eq!(r.dropped() as u32, refused);
     }
 }
