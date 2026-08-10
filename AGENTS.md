@@ -1762,7 +1762,19 @@ battery down so its `finally` never ran and **left the mutation on disk**, and t
 hung test binary then held the link output so the next build failed with linker
 error 1104 and looked like a broken tree. Both are fixed in the harness — a
 per-run timeout makes a hang a KILL rather than an outage, and a reaper clears
-strays. **Nothing in rewo-audio makes a noise yet.***
+strays. **M138 then completed**: cpal, the mixer's `ChannelCall` interpreter, and
+`examples/listen.rs` — the first code in Rewo that can make a noise, and the first
+that **no gate checks or can check**, since an absent, muted, exclusive-mode or
+unplugged device all look identical from inside the process. Two containments hold:
+**cpal is not wired into `rewo-app`**, so the binary and all 34 gates do not link
+an audio stack, and **no test opens a device**, so `cargo test` stays silent —
+`cargo run -p rewo-audio --example listen` is the only path to a sound, and the
+listening pass is the user's. A voice is created SILENT and waits for its `Play`
+(vanilla's order is properties, attach, play, and `alSourcePlay` before an attach
+is a no-op), and `AttachStaticBuffer` is counted-and-ignored at the callback
+because resolving an asset key is a syscall plus a large allocation. **One stated
+deviation**: `retire_finished` runs in the callback, so a finished voice's last
+`Arc<Pcm>` deallocates there, which can drop out as a sound ends.*
 
 *Update (2026-08-10 session, Rewo): **M136 and M137 — two fixes recovered from
 worktrees that a handoff called litter.** The claim rested on their branches being
@@ -1899,8 +1911,8 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-10
-(M138d part) — **2904 tests / 0 failures** (world 1147, net 961, gpu 275, data 224,
-app 197, mesh 45, proto 16, **audio 39** — EIGHT crates now, read off the runner
+(M138d) — **2909 tests / 0 failures** (world 1147, net 961, gpu 275, data 224,
+app 197, mesh 45, proto 16, **audio 44** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,

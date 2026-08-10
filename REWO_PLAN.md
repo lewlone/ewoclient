@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-10 after M138d (part):
-**2904 tests, 0 failures** (**world 1147, net 961, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 39** — read off the runner per crate; they sum to 2904).
+Current measurement, taken 2026-08-10 after M138d:
+**2909 tests, 0 failures** (**world 1147, net 961, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 2909).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -20227,6 +20227,46 @@ milestone measured, but nothing *structurally* stops a fifth from repeating it �
 so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
+
+### M138d (rest) — the device, and the line where the machine stops (2026-08-10)
+
+cpal, the mixer's `ChannelCall` interpreter, and `examples/listen.rs`. **M138 is
+complete**, and this is the first code in Rewo that can make a noise.
+
+**Nothing here is checked by any gate, and nothing can be** — an absent, muted,
+exclusive-mode or unplugged device all look identical from inside the process.
+What holds it up is that everything beneath is graded separately, so the ungraded
+part is the thin binding rather than the behaviour. **The listening pass is still
+owed and is the user's.**
+
+**Two containments.** cpal is not wired into `rewo-app`, so the binary and all 34
+gates do not link an audio stack for a subsystem none of them exercises; and no
+test opens a device, so `cargo test` stays silent. `cargo run -p rewo-audio
+--example listen` is the only path to a noise.
+
+**A voice is created SILENT and waits for its `Play`**, because vanilla's order
+is properties, attach, play and `alSourcePlay` before an attach is a no-op — one
+that sounded on its first `SetPitch` would play its opening milliseconds from the
+wrong position at the wrong volume. **`AttachStaticBuffer` is counted and
+ignored** at the callback rather than handled: it carries an asset key, and
+resolving one is a syscall plus a large allocation. The producer sends `Attach`
+with the PCM already in hand, which is what vanilla's `thenAccept` continuation
+does.
+
+**One stated deviation**: `retire_finished` runs in the callback, so a finished
+voice's last `Arc<Pcm>` deallocates there. The plan returns retired buffers to a
+worker over a second ring; this cut has none, and the consequence is a possible
+dropout as a sound ends.
+
+**A witness of mine was flaky and is now not.** The two-thread ring test asserted
+the producer must have been refused at least once; it failed the first time a
+consumer kept up. Whether the ring fills is scheduling, and the fill/refuse claim
+has its own deterministic test — so the concurrent one now asserts only what
+holds on every interleaving. Same argument the battery makes for excluding
+memory-ordering mutations: an entry that flakes is worse than none.
+
+**Measured:** 2909 tests / 0 failures, 34 gates green with 0 validation lines,
+both audio batteries re-run at 12/12 and 8/8.
 
 ### M138d (part) — the command ring, and a battery that took itself down (2026-08-10)
 

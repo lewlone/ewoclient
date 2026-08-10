@@ -230,12 +230,26 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 
 ### M138d — the device
 
-> **PARTLY SHIPPED 2026-08-10 — the command ring only.** `device.rs` has the
-> SPSC ring and its discipline, with witnesses including a two-thread round trip
-> over 20,000 commands. **`sink/cpal.rs` is OPEN and is where this stops being
-> machine-checkable**: it is the first thing in Rewo no gate can grade, and it
-> ends with the listening pass §4 mandates. Whoever picks it up should schedule
-> that pass with the user rather than land the binding and hope.
+> **SHIPPED 2026-08-10 — M138 is complete.** The SPSC ring, the mixer's
+> `ChannelCall` interpreter, `cpal_sink.rs`, and `examples/listen.rs`. **The
+> listening pass itself is still owed**, and it is a human's: run
+> `cargo run -p rewo-audio --example listen`.
+>
+> **Two containments worth keeping.** cpal is NOT wired into `rewo-app`, so the
+> client binary and all 34 gates do not link an audio stack for a subsystem none
+> of them exercises; and no test opens a device, so `cargo test` stays silent.
+>
+> **One stated deviation.** `retire_finished` runs in the callback, so dropping a
+> finished voice's last `Arc<Pcm>` deallocates there — the plan's design returns
+> retired buffers to a worker over a second ring and this cut has none. The
+> consequence is a possible dropout as a sound ends.
+>
+> **A voice is created SILENT and waits for its `Play`**, because
+> `alSourcePlay` before an attach is a no-op and vanilla's order is properties,
+> attach, play. And `AttachStaticBuffer` is counted-and-ignored at the callback
+> rather than handled: it carries an asset key, and resolving one is a syscall
+> plus a large allocation. The producer sends `Attach` with the PCM in hand,
+> which is what vanilla's `thenAccept` continuation does too.
 >
 > **Memory-ordering mutations are deliberately not in the battery** — relaxing a
 > `Release` is a real bug a test can only catch by luck, and a flaky battery
