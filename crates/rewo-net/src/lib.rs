@@ -10,6 +10,7 @@
 //! real client this runs on the net thread (REWO_PLAN.md §4); for the M1
 //! soak/replay tools it runs on its own driver.
 
+pub mod music;
 pub mod abilities;
 pub mod attributes;
 pub mod biome_parse;
