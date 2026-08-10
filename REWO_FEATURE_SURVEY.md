@@ -6,10 +6,11 @@ committed). Every number below is that tool's output — if you change the
 facets, the `MODERN` version set or the classifiers, the numbers move and this
 document is stale.
 
-> **Not re-run since M86 (2026-08-02).** M87–M126 shipped the container/menu
+> **Not re-run since M86 (2026-08-02).** M87–M135 shipped the container/menu
 > screens, the recipe book, the whole chat stack (the HUD box, the screen you
 > type into, the scrollbar, the Brigadier command tree and a complete local
-> command line) and translatable-component resolution, after this snapshot was
+> command line), translatable-component resolution, styled spans, the chat
+> decoration, clickable text and the scoreboard sidebar, after this snapshot was
 > taken. Those are *vanilla* features and the 75 here are *mod* features, so
 > nothing is known to have moved into the `parity` bucket — but that is a
 > reasoned expectation, not a measurement, and §0's own rule applies to it:
