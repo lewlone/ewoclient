@@ -2660,6 +2660,13 @@ pub(crate) fn apply_set_entity_data<'a>(
     if let Some(visible) = meta.custom_name_visible {
         entities.set_custom_name_visible(eid, visible);
     }
+    // Slot 4 BOOLEAN → `Entity.DATA_SILENT` (M138a). No kind gate, for the same
+    // reason as slots 0 and 3. Applied both ways, and read by
+    // `EntityTableWorld::entity_silent`, which answered a hardcoded `false`
+    // until this line existed.
+    if let Some(silent) = meta.silent {
+        entities.set_silent(eid, silent);
+    }
     // Slot 8 BYTE → `LivingEntity.DATA_LIVING_ENTITY_FLAGS` (M23 item use).
     // Gated on the type actually being a `LivingEntity`: `Entity` owns 0..7, so
     // slot 8 is the *first* slot any direct subclass may claim — an
@@ -4588,6 +4595,105 @@ mod custom_name_visible_tests {
         apply_set_entity_data(&b, &mut t, None);
         assert!(t.is_custom_name_visible(1));
         assert_eq!(t.pose(1), 5, "a one-byte over-read would lose the pose");
+    }
+}
+
+#[cfg(test)]
+mod entity_silent_tests {
+    //! `Entity.DATA_SILENT` — metadata index 4, BOOLEAN (M138a).
+    //!
+    //! The flag was parsed and discarded from M1 to M138a, and
+    //! `EntityTableWorld::entity_silent` answered a hardcoded `false` with a
+    //! comment saying it could not tell. These pin the decode, the toggle, the
+    //! removal, and — the one that matters — that the SOUND ENGINE consults it,
+    //! because everything above is inert if the world's answer is not read.
+
+    use super::apply_set_entity_data;
+    use rewo_world::entities::{EntityState, EntityTable};
+
+    fn body(eid: u8, index: u8, serializer: u8, value: &[u8]) -> Vec<u8> {
+        let mut b = vec![eid, index, serializer];
+        b.extend_from_slice(value);
+        b.push(0xFF);
+        b
+    }
+
+    #[test]
+    fn index_four_boolean_sets_and_clears_the_flag() {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
+        // `Entity.java:322` seeds it false, so an entity nobody has spoken
+        // about is audible — exact, not a fallback.
+        assert!(!t.is_silent(1));
+
+        apply_set_entity_data(&body(1, 4, 8, &[0x01]), &mut t, None);
+        assert!(t.is_silent(1));
+
+        // Both ways: a latch would leave an entity permanently muted after one
+        // `/data merge ... {Silent:1b}` was undone.
+        apply_set_entity_data(&body(1, 4, 8, &[0x00]), &mut t, None);
+        assert!(!t.is_silent(1));
+    }
+
+    #[test]
+    fn index_four_is_not_index_three() {
+        // The two are adjacent, same class, same serializer, and differ only in
+        // the index byte — which is exactly the pair a transposition would swap
+        // while every decode still succeeded.
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&body(1, 4, 8, &[0x01]), &mut t, None);
+        assert!(t.is_silent(1));
+        assert!(
+            !t.is_custom_name_visible(1),
+            "index 4 must not land on index 3's flag"
+        );
+
+        let mut u = EntityTable::default();
+        u.add(1, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&body(1, 3, 8, &[0x01]), &mut u, None);
+        assert!(u.is_custom_name_visible(1));
+        assert!(!u.is_silent(1), "and index 3 must not land on index 4's");
+    }
+
+    #[test]
+    fn the_flag_dies_with_the_entity() {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&body(1, 4, 8, &[0x01]), &mut t, None);
+        t.remove(1);
+        assert!(!t.is_silent(1), "a recycled id must not inherit it");
+    }
+
+    #[test]
+    fn a_later_field_still_parses_past_index_four() {
+        // Reading the boolean must consume exactly one byte, or the pose that
+        // follows is lost — the same claim index 3's module makes, and it has
+        // to be made again because this is a new arm of the same match.
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&[1u8, 4, 8, 0x01, 6, 20, 5, 0xFF], &mut t, None);
+        assert!(t.is_silent(1));
+        assert_eq!(t.pose(1), 5, "a one-byte over-read would lose the pose");
+    }
+
+    #[test]
+    fn the_sound_world_reads_the_flag_rather_than_answering_false() {
+        // **The load-bearing one.** Everything above passes against a decode
+        // that stores the flag where nothing looks at it, which is precisely
+        // the state this milestone found: parsed since M1, discarded, and the
+        // consumer returning a hardcoded `false`.
+        use crate::sound_engine::{EntityTableWorld, SoundWorld};
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(2, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&body(1, 4, 8, &[0x01]), &mut t, None);
+
+        let w = EntityTableWorld(&t);
+        assert!(w.entity_silent(1), "the silenced entity");
+        assert!(!w.entity_silent(2), "and only it");
+        // An id the table never saw is audible, because vanilla seeds false.
+        assert!(!w.entity_silent(99));
     }
 }
 

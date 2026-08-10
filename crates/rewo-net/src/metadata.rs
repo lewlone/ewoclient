@@ -39,6 +39,25 @@ pub struct EntityMeta {
     /// `DATA_POSE` to 6, which the working pose decode confirms independently.
     /// No kind gate is possible or needed — `Entity` owns 0..7.
     pub custom_name_visible: Option<bool>,
+    /// `Entity.DATA_SILENT` — index **4**, BOOLEAN (M138a).
+    ///
+    /// `Entity.isSilent()` is `entityData.get(DATA_SILENT)`
+    /// (`Entity.java:1512-1514`) and gates `playSound` at `:1501` and `:1507`,
+    /// so this is the whole of whether an entity's sounds are heard.
+    ///
+    /// Index 4 is pinned the same way index 3 is, and by the same list:
+    /// `DATA_SILENT` is declared on the line immediately after
+    /// `DATA_CUSTOM_NAME_VISIBLE` (`Entity.java:272-273`), both on
+    /// `Entity.class`, so it takes the next slot. `Entity` owns 0..7, so no
+    /// kind gate is possible or needed.
+    ///
+    /// **Absent means `false` exactly**, not "unknown":
+    /// `entityDataBuilder.define(DATA_SILENT, false)` at `Entity.java:322`
+    /// seeds it, so an entity that has never been told is audible. Before this
+    /// the flag was parsed and discarded and `entity_silent` answered a
+    /// hardcoded `false` — the same answer for the common case, and wrong for
+    /// exactly the entities someone silenced on purpose.
+    pub silent: Option<bool>,
     /// Entity pose ordinal (index 6, POSE serializer): STANDING=0,
     /// FALL_FLYING, SLEEPING, SWIMMING, SPIN_ATTACK, CROUCHING,
     /// LONG_JUMPING, DYING, CROAKING, USING_TONGUE, SITTING, ROARING,
@@ -229,6 +248,10 @@ pub fn parse(r: &mut PacketReader, components: Option<DataComponentIds>) -> Enti
             // BOOLEAN at 3 = `Entity.DATA_CUSTOM_NAME_VISIBLE` (M70). Serializer
             // 8 is BOOLEAN, the same id the index-16 dancing/baby flag uses.
             (3, 8) => meta.custom_name_visible = r.bool().ok(),
+            // BOOLEAN at 4 = `Entity.DATA_SILENT` (M138a). Declared on the line
+            // after index 3 and on the same class, so it takes the next slot;
+            // `Entity` owns 0..7, so nothing else can claim it.
+            (4, 8) => meta.silent = r.bool().ok(),
             (6, 20) => meta.pose = r.varint().ok().map(|v| v as u8), // POSE
             // BYTE at 8 = `LivingEntity.DATA_LIVING_ENTITY_FLAGS`, the first
             // LivingEntity-owned slot. Unambiguous: Entity owns 0..7.

@@ -108,6 +108,9 @@ def main():
     which = (sys.argv[1] if len(sys.argv) > 1 else "a").lower()
     muts = BATTERIES[which]
 
+    snapshots = {rel: io.open(os.path.join(ROOT, rel), "rb").read()
+                 for _, rel, _, _, _ in muts}
+
     print("BASELINE (unmutated) ...", end=" ", flush=True)
     if run_tests() != 0:
         sys.exit("BASELINE FAILS — every verdict below would be meaningless")
@@ -132,9 +135,14 @@ def main():
         results.append((name, verdict, want, ok))
         print("%-52s %-9s (want %-9s) %s" % (name[:52], verdict, want, "ok" if ok else "<<< UNEXPECTED"))
 
-    dirty = subprocess.run(["git", "diff", "--quiet"], cwd=ROOT).returncode
+    # Bytes, not `git diff --quiet`: that cannot tell a leftover mutation from
+    # uncommitted work, so it cries wolf on every dirty tree. Found by running
+    # M138a's copy of this harness before its own work was committed.
+    leftover = [rel for _, rel, _, _, _ in muts
+                if io.open(os.path.join(ROOT, rel), "rb").read() != snapshots[rel]]
+    dirty = 1 if leftover else 0
     print("-----")
-    print("tree restored: %s" % ("yes" if dirty == 0 else "NO -- MUTATION LEFT ON DISK"))
+    print("files restored: %s" % ("yes" if not leftover else "NO -- MUTATED: %s" % leftover))
     bad = [r for r in results if not r[3]]
     print("battery %s: %d/%d as expected" % (which, len(results) - len(bad), len(results)))
     sys.exit(1 if (bad or dirty != 0) else 0)

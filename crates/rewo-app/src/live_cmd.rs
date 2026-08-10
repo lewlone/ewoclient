@@ -1261,13 +1261,13 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 args.pack.clone(),
                 args.gamma,
                 args.darkness_effect_scale,
-                build_sounds(&args.version, &data.sound_events),
+                build_sounds(&args.version, &data.sound_events, args.render_check),
             )
         }
         _ => {
             // Built before `args` moves into the call — `build_sounds` borrows
             // `args.version`, and arguments are evaluated left to right.
-            let sounds = build_sounds(&args.version, &data.sound_events);
+            let sounds = build_sounds(&args.version, &data.sound_events, args.render_check);
             run_windowed(
                 session,
                 baked,
@@ -3814,12 +3814,30 @@ fn col_dist((cx, cz): (i32, i32), px: f32, pz: f32) -> f32 {
 /// `PlaySession::take_sound_events` had **no caller anywhere** and the decoded
 /// queue filled to its cap and rotated forever.
 ///
-/// A missing asset store is not an error: an empty index makes every event
-/// resolve to `UnknownEvent`, which is silence — the same thing the client
-/// does today, only counted.
-fn build_sounds(version: &str, registry: &rewo_data::sound_events::SoundEvents) -> LiveSounds {
+/// A missing asset store is not an error **in an ordinary run**: an empty index
+/// makes every event resolve to `UnknownEvent`, which is silence, and a machine
+/// with no unpacked assets should still be able to fly around a world.
+///
+/// **Under `--render-check` it is fatal, and that asymmetry is the point.** An
+/// empty index is behaviourally identical to totally broken resolution — every
+/// sound resolves to nothing, every counter reads zero, and the run is green
+/// because it asserted nothing. `sounds_json`'s own test module already records
+/// this trap being found by a mutation battery: replacing the whole loader with
+/// an empty index left a test green *because it merely SKIPped*. A gate that
+/// degrades to a no-op on the one machine where it matters is worse than no
+/// gate, so the strict path fails closed and says which file it wanted.
+fn build_sounds(
+    version: &str,
+    registry: &rewo_data::sound_events::SoundEvents,
+    strict: bool,
+) -> LiveSounds {
     let sounds = match rewo_data::sounds_json::load_for_version(version) {
         Ok(idx) => idx,
+        Err(e) if strict => {
+            panic!(
+                "live --render-check: no sounds.json ({e}). The sound witnesses                  cannot distinguish an empty index from broken resolution, so                  this fails rather than passing vacuously. Unpack the {version}                  assets, or run without --render-check."
+            )
+        }
         Err(e) => {
             log::info!("live: no sounds.json ({e}); the sound model will resolve nothing");
             rewo_data::sounds_json::SoundsIndex::new()
@@ -22183,7 +22201,7 @@ mod m131_sounds {
         }
         let registry =
             rewo_data::sound_events::SoundEvents::load(&paths.registries_json()).expect("registry");
-        let live = build_sounds("26.2", &registry);
+        let live = build_sounds("26.2", &registry, false);
         // The registry half: the id table came across intact, and id 0 is the
         // one that separates a `protocol_id` table from an alphabetised one.
         assert_eq!(
