@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-10 after M140b:
-**2925 tests, 0 failures** (**world 1147, net 977, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 2925).
+Current measurement, taken 2026-08-11 after M141:
+**2968 tests, 0 failures** (**world 1147, net 1020, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 2968).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -235,6 +235,16 @@ the whole audio stack — M138a the listener seam, M138b the decode and buffer
 library, M138c the mixer, M138d the ring and the device — and M140's
 `level_event` sounds and music fade.
 
+**M141 then took half of item 4 below** (2026-08-11): the ten tickable
+`tick()` bodies — *ten*, not the "~8" `REWO_AUDIO_PLAN.md` says — transcribed,
+driven by the engine, and gated by a 39-mutation battery. Its headline is that
+**`MinecartSoundInstance` shadows `AbstractSoundInstance.pitch`**, so vanilla's
+own pitch ramp is dead code and the plausible transcription gives a twenty-second
+glissando that vanilla does not have. It also fixed a live bug (the per-tick
+position was not narrowed through f32, with a comment *justifying* the omission)
+and retired `SoundWorld::entity_position` in favour of one name for one query.
+See §15. **Nothing constructs these instances yet** — the triggers are item 4a.
+
 **AUDIO IS NO LONGER THE TOP ITEM.** `crates/rewo-audio` exists with the
 quantisation, the buffer library, the mixer, the SPSC command ring and a cpal
 sink; `rewo-net` carries the listener transform and the music fade.
@@ -263,9 +273,27 @@ sink; `rewo-net` carries the listener transform and the music fade.
    gate time (the `tools/java_tostring_oracle` precedent). It is what turns the
    mixer's stated approximations — the equal-power pan, the linear resampler —
    from declarations into a measured divergence in dB.
-4. **M140's remainder**: the ~8 tickable per-tick ramps, and the rest of music
-   (selection, the timers, `getSituationalMusic`). Both are gradeable without a
-   device.
+4. **M140's remainder, minus what M141 took.** The ramps are done (ten of them,
+   not ~8) and the rest is:
+   - **4a — the triggers**, which is the natural next milestone and is
+     *wiring rather than decoding*: every construction site is a packet Rewo
+     already routes. `handleAddEntity`'s `postAddEntitySoundInstance` (minecart
+     through `play`, bee through `queueTickingSound` — the asymmetry is
+     vanilla's), `handleEntityEvent` cases **21** and **63**,
+     `LocalPlayer.startRiding` (which plays **both** minecart instances at once
+     and lets each mute itself), and `onSyncedDataUpdated`'s
+     `isFallFlying() && !wasFallFlying` rising edge. **The inputs are the
+     blocker, not the triggers**: `EntityTableWorld`'s doc table names the seven
+     `RampWorld` queries Rewo cannot answer, and **velocity gates four of the
+     ten ramps** — `EntityTable` stores an interpolation target, not a
+     `getDeltaMovement()`. Start there.
+   - **4b — the rest of music**: selection, the `nextSongDelay` timers, and
+     `getSituationalMusic`. Note the last one is **not** the old hardcoded
+     biome switch: 26.2 reads `EnvironmentAttributes.BACKGROUND_MUSIC` through
+     the camera's attribute probe, and `getMusicVolume` reads `MUSIC_VOLUME` the
+     same way — so it needs the environment-attribute system (which M33b
+     transcribed one layer of, for weather) rather than a table. The timers and
+     `MusicFrequency.getNextSongDelay` are self-contained and gradeable today.
 5. **`REWO_FEATURE_SURVEY.md`** — features rather than milestones. Audit its
    items against the crates first: five were already at vanilla parity when it
    was written and the arcs since have closed more.
@@ -20268,6 +20296,223 @@ milestone measured, but nothing *structurally* stops a fifth from repeating it �
 so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
+
+### M141 — the ten tickable ramps, and a pitch ramp that is dead code (2026-08-11)
+
+`SoundEngine.tickInGameSound` walks `tickingSounds`, calls `instance.tick()` on
+each and pushes the result at its channel. M131 built that loop. What it drove
+was **one `tick()` body out of ten**, because `EntityBoundSoundInstance` was the
+only subclass Rewo modelled — so this is `REWO_AUDIO_PLAN.md` §M140's "the ~8
+tickable per-tick ramps", which is **ten** when counted from the decompile
+rather than remembered.
+
+Three commits: M141a a live bug that stands alone, M141b the transcription,
+M141c the engine driving it.
+
+#### The headline: `MinecartSoundInstance`'s pitch ramp reaches nothing
+
+`MinecartSoundInstance.java:16` declares
+
+```java
+private float pitch = 0.0F;
+```
+
+and `AbstractSoundInstance.java:16` already declares
+`protected float pitch = 1.0F;`. **Java field access is statically bound**, so
+`getPitch()` — declared in the superclass, and the only reader
+`SoundEngine.calculatePitch` can reach through the `SoundInstance` interface —
+resolves `this.pitch` to the *superclass* field, which the subclass never
+writes. `tick()` maintains the shadow.
+
+So `PITCH_MIN = 0.0F`, `PITCH_MAX = 1.0F` and `PITCH_DELTA = 0.0025F` name a
+ramp with no effect: a minecart's pitch is a constant 1.0 times its
+`sounds.json` pitch, first tick to last. It is the **only field shadow in the
+whole `client/resources/sounds` package** — checked with a grep over the
+directory, not assumed.
+
+It earns the paragraph because the *plausible* transcription is the wrong one.
+Reading the class in isolation gives a pitch starting at 0 — which
+`calculatePitch` clamps to 0.5, a half-speed rumble — and sweeping to 1.0 over
+400 ticks: twenty seconds of glissando at the start of every minecart ride that
+vanilla does not have. The shadow is reproduced under a name that says what it
+is (`MinecartRamp::shadowed_pitch`), so the ramp stays visible and its deadness
+is a property a test asserts rather than a deletion nobody can check.
+
+#### Three more places the plausible reading diverges
+
+**`Mth.lerp` takes a factor first, and two of these classes clamp it to the
+OUTPUT range.** `Mth.lerp(alpha, p0, p1)` is `p0 + alpha * (p1 - p0)`
+(`Mth.java:550`). The bee writes
+`Mth.lerp(Mth.clamp(speed, 0.0F, 0.5F), 0.0F, 1.2F)`, so the factor saturates
+at **0.5** and the volume at **0.6** — half the `VOLUME_MAX = 1.2F` the class
+declares. The minecart does the same with `0.7F`, ceiling **0.35**. Reading the
+named constant as the ceiling makes both sounds twice as loud as vanilla.
+
+The bee's *pitch* line is stranger:
+
+```java
+this.pitch = Mth.lerp(Mth.clamp(speed, this.getMinPitch(), this.getMaxPitch()),
+                      this.getMinPitch(), this.getMaxPitch());
+```
+
+The factor is clamped to the **pitch range**, so an adult bee's pitch never
+leaves `[0.98, 1.14]` and — since a bee's horizontal speed does not reach 0.7 —
+is in practice the constant **0.98**, a baby's the constant **1.54**. Never the
+`0.7..1.1` / `1.1..1.5` bands the getters describe. Clamping the factor to
+`0..1`, which is what it obviously wants, produces something vanilla does not
+do.
+
+**`RidingEntitySoundInstance` uses `Mth.clampedLerp`**, which clamps the
+*factor* to `0..1` (`Mth.java:118`) and so is a different function agreeing with
+the other two only at zero. Two adjacent classes mapping speed to volume,
+incompatibly.
+
+**`Mob.getTarget()` is never synchronised.** It is a plain field written by AI
+goals in `serverAiStep`, with no `EntityDataAccessor` anywhere, so it is always
+null on a client — which makes the guardian's `!isRemoved() && getTarget() ==
+null` guard just `!isRemoved()`. The question is still asked
+(`RampWorld::has_ai_target`, documented as exactly-false) rather than folded
+away, because folding it hides which guard does the work and because mapping it
+onto the *synced* `DATA_ID_ATTACK_TARGET` one method over — which is what drives
+`clientSideAttackTime` — would silence the sound exactly while it should play.
+
+#### Two structural asymmetries
+
+**`BiomeAmbientSoundsHandler.LoopSoundInstance.tick` has no `else`.** Every
+other body is `if (alive) { ramp } else { stop(); }`; that one calls `stop()`
+and then advances its fade and writes a volume anyway. Its `fadeDirection` also
+starts at **0**, so a freshly built one never moves until `fadeIn`/`fadeOut` is
+called — and those two are not mirrors (`fadeIn` floors at 0, `fadeOut` caps at
+40).
+
+**The underwater loop fades in at +1 and out at −2**, capped above at 40 and not
+below, with the `fade >= 0` guard read *before* the step — so surfacing silences
+it in twenty ticks where submerging takes forty, and it stops on the tick after
+`fade` goes negative rather than the tick it does.
+
+#### M141a — a live bug, and a comment that justified it
+
+`EntityBoundSoundInstance.tick()` is three
+`this.x = (float)this.entity.getX();` assignments into `double` fields
+(`EntityBoundSoundInstance.java:33-35`) — the same narrowing the constructor
+does, which Rewo already reproduced and had a test for. **The per-tick refresh
+did not**, so a sound bound to a distant entity was placed more precisely than
+vanilla places it, moving both its attenuation gain and its stereo pan.
+
+The comment beside it asserted the refresh was *not* narrowed and reasoned that
+an entity-bound sound is therefore "more precisely placed one tick after it
+starts than at the moment it starts". Both halves were wrong. **A comment that
+justifies the wrong behaviour is worse than one that describes it** — a reader
+checking that line comes away reassured. Eighth documented instance of the
+class; the sixth to seventh were M102's.
+
+The existing witness could not have caught it and never could: it moves the
+entity to `(10.0, 65.0, -3.0)`, three coordinates exactly representable in f32,
+so the narrowed and un-narrowed readings are the same number. **A fixture
+sitting where two readings coincide** is this project's most-repeated failure
+shape, and M135 hit it four times in one file the day before.
+
+M141a also corrects `SoundWorld::entity_silent`'s doc, which still said "Rewo
+has no source for this yet … every production caller answers `false`" — true
+until M138a decoded metadata index 4, and the production implementor already
+said so at its own definition.
+
+#### M141c — wiring, and one name for one query
+
+M141b shipped `tickable.rs` with no caller, which M93i's precedent says is the
+shape that hides defects. M141c gives it one: `Live` carries an `Option<Ramp>`,
+`tick_in_game_sound` drives it, and the inline entity-bound path is gone.
+**The ramp's presence IS `tickingSounds` membership** — vanilla keeps a separate
+set tested with `instanceof`, and here the two cannot disagree.
+
+The loop now reproduces three shapes that were implicit: the `canPlaySound` stop
+does **not** `continue` (vanilla stops the channel and ticks the instance
+anyway), `tick()` runs before `isStopped()` is read, and the
+volume/pitch/position push happens only in the `else` — so a stopping tick is
+silent on the wire except for the stop.
+
+**`SoundWorld::entity_position` is gone; `RampWorld::position` is the one
+name.** They were the same query with `isRemoved()` folded into an `Option`, and
+two names for one query is how call sites come to disagree — M89's finding,
+recurred at M90, M106b and M112. The rename also collapsed the f32 narrowing to
+a **single site** (`tickable::follow`), which is why M141a's own battery entry
+now reports `ANCHOR MATCHED 0 TIMES` rather than passing quietly.
+
+`EntityTableWorld` answers **nine of sixteen** queries for real and declares the
+other seven in a table on the type. The rule is *make the ramp inert, never
+plausible*: a sound stuck at its minimum volume is attributable and one ramping
+on a number nobody derived is not (M96's principle, applied to audio). One of
+the seven is exact rather than approximate and is listed precisely because it
+looks like a gap. `on_rails` and `new_minecart_behavior` both answering `false`
+is chosen rather than defaulted: the predicate is a conjunction, so `(false,
+false)` reads as "on rails, old behaviour" — the audible case.
+
+**The bee's switch round-trips through `queuedTickableSounds`**, which is
+drained at the top of a tick, so the replacement first plays on the *next* one
+and no tick has both loops live. `queue_ticking_sound` takes a ramp for that
+reason: a replacement queued without one starts, holds a channel forever and
+never notices the bee calming down.
+
+#### What the batteries found, which was mostly about instruments
+
+`tools/m141_mutate.py`, **39/39**, control survives, both files restored.
+
+* **Reading the exit code cannot tell a failing test from a failing BUILD.** The
+  no-op control came back KILLED, which is impossible for a comment edit; the
+  cause was M138d's recorded linker-1104 hazard one step earlier in the
+  sequence. `run_tests` returns a tri-state off the `test result:` line and
+  retries once. Every earlier battery in `tools/` has this hazard.
+* **My own strengthened bee witness was measuring the wrong thing.** Calming the
+  bee and asserting `entity.bee.loop` is live passes whether or not anything
+  switched back, because the *original* flying loop is still in `live` —
+  `MIN_SOURCE_LIFETIME` is 20 ticks and four had passed. What a ramp-less
+  replacement cannot do is stop itself, so the witness is its channel's `Stop`.
+* **Nothing covered the tick-time silence stop**, a gap that predates M141:
+  `play`'s silence guard was witnessed and the loop's was not.
+* `isAngry`'s `endTime > 0` conjunct **needs a negative game time to witness at
+  all** — for `gameTime >= 0` the second conjunct implies it — so the obvious
+  fixture could not see it deleted. Not an equivalent mutant, because
+  `set_time` carries a signed i64, so the discriminating pair is pinned rather
+  than the guard declared dead.
+* A coverage gap it closed on the way: every riding fixture put the cart on
+  rails, so `shoudlPlaySound`'s whole predicate could be deleted unnoticed.
+
+**A witness was wrong before the code was** (the seventh in this log, and the
+second from reaching for a remembered note instead of evaluating the
+expression). It asserted `directionFromRotation` points at -Z at yaw 0, citing
+M138a — whose note says the opposite: the raw `FORWARDS` constant is -Z and
+`setRotation`'s leading half-turn is what makes **yaw 0 face +Z**. Working it
+out gave something better than a corrected constant:
+**`Vec3.directionFromRotation` IS `Entity.calculateViewVector`**, the `- PI` in
+the yaw terms and the negated `xCos` cancelling pairwise. So the witness now
+grades it against an independent transcription across 56 angles — the third
+expression in this codebase found to compute that vector, after M138a's
+`listener_basis`.
+
+**And the recorded heredoc trap fired anyway**: writing the battery's new
+entries through a bash heredoc turned every `\n` into a real newline and gave an
+unterminated string literal. §0.0 names it; escape-bearing text goes through the
+editor.
+
+#### What this is not
+
+It does not construct these instances. The triggers are
+`handleAddEntity`'s `postAddEntitySoundInstance` (minecart via `play`, bee via
+`queueTickingSound` — the asymmetry is vanilla's), `handleEntityEvent` cases
+**21** (guardian) and **63** (sniffer), `LocalPlayer.startRiding` (which plays
+**both** minecart instances at once and lets each mute itself, so the
+dry/submerged crossfade is two permanently-live voices rather than a switch),
+and `LocalPlayer.onSyncedDataUpdated`'s `isFallFlying() && !wasFallFlying`
+rising edge. Every one of those is a packet Rewo already routes, so the trigger
+milestone is wiring rather than decoding — but the *inputs* are not all there:
+`EntityTableWorld`'s table names the seven that are missing, and velocity is the
+one that gates four of the ten ramps.
+
+**Measured:** 2968 tests / 0 failures (world 1147, **net 1020**, gpu 275, data
+224, app 197, mesh 45, proto 16, audio 44); 34 serverless gates green with **0
+validation errors**; `mobshot` 246/246, `containershot` 107/107, `inventoryshot`
+158/158, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97; demo PNG
+`2cc56b4acbfb92cb` byte-identical; release build clean.
 
 ### M140b — the music fade, and the third volume factor (2026-08-10)
 

@@ -3,10 +3,11 @@
 **Status: MOSTLY SHIPPED (2026-08-10).** `crates/rewo-audio` exists — the
 quantisation, `SoundBufferLibrary`, the symphonia ogg decode, the `Mixer` and
 `NullSink`, the SPSC command ring and a cpal sink — and `rewo-net` carries the
-listener transform and the music fade. **M138a–d are done, M140 is half done,
-M139 has not started.** Each section below carries its own status block; trust
-those over any forward-looking sentence in the body, which was written before
-the code.
+listener transform and the music fade. **M138a–d are done; M140's `level_event`
+sounds and music fade shipped, and its ramps shipped as M141 (there are ten of
+them, not the "~8" §M140 says); M139 has not started.** Each section below
+carries its own status block; trust those over any forward-looking sentence in
+the body, which was written before the code.
 
 **Two things are true and easy to miss.** *(1)* **Nobody has listened to it.** No
 gate in this project opens an audio device, so everything a machine can check
@@ -300,6 +301,24 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 > which arrive one factor earlier through `getFinalSoundSourceVolume`. **The ~8
 > tickable per-tick ramps are still OPEN**, as is the rest of music: selection,
 > the timers, and `getSituationalMusic`.
+>
+> **M141 took the ramps** (2026-08-11) — and there are **TEN** tick bodies, not
+> the "~8" this section claims: `EntityBoundSoundInstance`, `BeeSoundInstance`,
+> `BiomeAmbientSoundsHandler.LoopSoundInstance`, `DirectionalSoundInstance`,
+> `ElytraOnPlayerSoundInstance`, `GuardianAttackSoundInstance`,
+> `MinecartSoundInstance`, `RidingEntitySoundInstance`, `SnifferSoundInstance`,
+> and the two nested in `UnderwaterAmbientSoundInstances`. They live in
+> `crates/rewo-net/src/tickable.rs`, the engine drives them, and **nothing
+> constructs one yet** — the triggers are `REWO_PLAN.md` §0.0 item 4a, where the
+> blocker is *inputs* rather than triggers (velocity gates four of the ten;
+> `EntityTable` stores an interpolation target, not a `getDeltaMovement()`).
+>
+> Its headline belongs in this file too, because it is the kind of thing §5's
+> trap list is for: **`MinecartSoundInstance` shadows
+> `AbstractSoundInstance.pitch`**, and Java field access is statically bound, so
+> vanilla's own pitch ramp writes a field `getPitch()` never reads. The
+> plausible transcription gives every minecart ride a twenty-second pitch
+> glissando that vanilla does not have. See `REWO_PLAN.md` §15.
 >
 > Camera- and listener-placed ids (four of seventy) are declined, because both
 > need the camera and the decode layer does not have it; `distance_delay` is not
