@@ -1768,7 +1768,17 @@ branches is silence rather than a fall-through. A structural fact found while
 writing the witness: **all three global rows are camera-placed**, so that path
 never fires for a global packet — pinned over the whole table. And one of my own
 assertions was a tautology (`assert!(… || true)`) that also contradicted a test two
-functions down.*
+functions down. **M140b then took `MusicManager`'s gain ramp**, whose finding is
+that `calculateVolume`'s third factor `gainBySource` has **exactly one writer in
+the entire client** — the music crossfade, not the options sliders, which arrive
+one factor earlier. Its two branches have different shapes: fading up **the step
+IS the current gain** clamped to `[0.0005, 0.005]` (so a rise from silence
+accelerates, and a constant step agrees only above the clamp), while fading down
+is an exponential blend; and the floor **stops** the track rather than clamping,
+because a silent track would hold one of only two to eight streaming channels. A
+surviving mutation was **proven equivalent** — the down branch's second disjunct
+cannot fire, since the blend never crosses its target — so it is dead code in
+vanilla too, kept and recorded.*
 
 *Update (2026-08-10 session, Rewo): **M136 and M137 — two fixes recovered from
 worktrees that a handoff called litter.** The claim rested on their branches being
@@ -1905,7 +1915,7 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-10
-(M140 part) — **2916 tests / 0 failures** (world 1147, net 968, gpu 275, data 224,
+(M140b) — **2925 tests / 0 failures** (world 1147, net 977, gpu 275, data 224,
 app 197, mesh 45, proto 16, **audio 44** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,

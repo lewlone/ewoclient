@@ -276,8 +276,12 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 
 > **PARTLY SHIPPED 2026-08-10.** `level_event`'s sounds are wired — the block
 > CENTRE (`Level.java:475`), the `data` gates, the per-row volume, and the
-> global-flag match. **The tickable per-tick ramps and
-> `MusicManager`/`update_category_volume` are OPEN.**
+> global-flag match. **`MusicManager`'s gain ramp shipped too, as M140b**, and
+> its finding corrects this section's own framing: `gainBySource` has exactly
+> ONE writer in the client — the music crossfade — and not the options sliders,
+> which arrive one factor earlier through `getFinalSoundSourceVolume`. **The ~8
+> tickable per-tick ramps are still OPEN**, as is the rest of music: selection,
+> the timers, and `getSituationalMusic`.
 >
 > Camera- and listener-placed ids (four of seventy) are declined, because both
 > need the camera and the decode layer does not have it; `distance_delay` is not

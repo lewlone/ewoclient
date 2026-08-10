@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-10 after M140 (part):
-**2916 tests, 0 failures** (**world 1147, net 968, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 2916).
+Current measurement, taken 2026-08-10 after M140b:
+**2925 tests, 0 failures** (**world 1147, net 977, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 2925).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -20227,6 +20227,37 @@ milestone measured, but nothing *structurally* stops a fifth from repeating it �
 so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
+
+### M140b — the music fade, and the third volume factor (2026-08-10)
+
+`calculateVolume` is three factors and the third, `gainBySource`, **has exactly
+one writer in the entire client**: `updateCategoryVolume`, called only from
+`MusicManager.java:133`, for `MUSIC` alone. The obvious reading is wrong — the
+options sliders arrive through `getFinalSoundSourceVolume`, the *second* factor.
+`gainBySource` is the music crossfade and nothing else, so a client without a
+music manager has it correctly pinned at 1.0.
+
+**The two branches have different shapes.** Fading up, **the step IS the current
+gain**, clamped to `[0.0005, 0.005]` — so a track rising from silence accelerates
+until it saturates; a constant step is the natural implementation and agrees only
+above the clamp, which is why the witness pins all three regimes. Fading down is
+an exponential blend, `0.03 * volume + 0.97 * gain`, not the rise reflected. **The
+floor stops the track rather than clamping it** — a clamp would leave a silent
+track holding one of only two to eight streaming channels.
+
+**A survivor was proven equivalent rather than assumed.** The down branch's
+`|| currentGain < volume` cannot fire: the branch needs `gain > volume`, and the
+blend is `volume + 0.97 * (gain - volume)`, always above `volume` for a positive
+difference — dead code in vanilla too. Kept because it is vanilla's, recorded as
+an expected survivor, and pinned by a test that samples the invariant.
+
+**A witness was wrong again** — the seventh this session, this time plain
+arithmetic: it claimed the fade crossed the floor one tick after the first, where
+a 0.97 blend needs about twenty-two. It loops and bounds now, which is a property
+rather than a prediction.
+
+**Measured:** 2925 tests / 0 failures, 34 gates green with 0 validation lines,
+8/8 mutations with a no-op control that SURVIVED.
 
 ### M140 (part) — the level_event sounds nothing had asked for (2026-08-10)
 
