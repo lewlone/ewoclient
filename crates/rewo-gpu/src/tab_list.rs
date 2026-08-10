@@ -96,9 +96,16 @@ pub const DEFAULT_ROW_BACKGROUND: u32 = 553_648_127;
 
 /// Name colour for a normal player (`-1`, opaque white).
 pub const NAME_COLOR: u32 = 0xFFFF_FFFF;
-/// Name colour for a spectator (`-1862270977`), which is `0x9099_9999` —
-/// grey at alpha 144. Spectators are *also* italicised (`decorateName`).
-pub const SPECTATOR_NAME_COLOR: u32 = 0x9099_9999;
+/// Name colour for a spectator: vanilla's literal `-1862270977`, which as an
+/// unsigned 32-bit ARGB is **`0x90FFFFFF`** — *white* at alpha 144, not a
+/// grey. Spectators are also italicised (`decorateName`).
+///
+/// M52f wrote `0x9099_9999` here and said so in the doc comment; both were
+/// wrong, and nothing caught it because nothing consumed the constant. M132
+/// corrected it against the decompile's literal and pinned it below, where
+/// the test derives the value from the signed integer rather than restating
+/// the hex — a witness that restated it would agree with any hex at all.
+pub const SPECTATOR_NAME_COLOR: u32 = 0x90FF_FFFF;
 
 // ── The ping icon bucket ──────────────────────────────────────────────────
 
@@ -675,6 +682,22 @@ mod tests {
         (0..n)
             .map(|i| TabEntry::new(i as u128, format!("p{:03}", i), Some(0)))
             .collect()
+    }
+
+    /// The two name colours, derived from vanilla's own signed literals.
+    ///
+    /// `graphics.text(font, name, xo, yo, info.getGameMode() == SPECTATOR ?
+    /// -1862270977 : -1)`. Deriving them from the `i32` is the point: a test
+    /// that restated the hex would pass against whatever hex the constant
+    /// happened to hold, which is exactly how M52f's `0x9099_9999` survived.
+    #[test]
+    fn a_spectators_name_is_white_at_alpha_144_not_grey() {
+        assert_eq!(NAME_COLOR, (-1i32) as u32);
+        assert_eq!(SPECTATOR_NAME_COLOR, (-1862270977i32) as u32);
+        // The RGB half is FULL white; only the alpha differs from a normal
+        // player's. A grey reading dims the letters as well as fading them.
+        assert_eq!(SPECTATOR_NAME_COLOR & 0x00FF_FFFF, 0x00FF_FFFF);
+        assert_eq!(SPECTATOR_NAME_COLOR >> 24, 144);
     }
 
     // ── ping buckets ──────────────────────────────────────────────────────
