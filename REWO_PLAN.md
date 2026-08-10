@@ -236,8 +236,15 @@ answers a different question from `git status`; ask both before deleting a
 worktree. The list below is otherwise unchanged and **AUDIO is still the top
 item.**
 
-1. **AUDIO — the largest single gap, and it now needs one decision rather than
-   a design.** M63/M64/M66 decoded the packets and built the 1,968-entry
+1. **AUDIO — the largest single gap. [`REWO_AUDIO_PLAN.md`](REWO_AUDIO_PLAN.md)
+   is now the plan for it** (2026-08-10): cpal + symphonia in a new `rewo-audio`
+   crate, a pure caller-driven `Mixer::render` that never names cpal, and four
+   independently shippable steps M138a–d, then M139's loopback oracle and M140's
+   breadth. **M138a ships alone with no new dependency** and closes hazards that
+   exist today — the missing listener transform, a `build_sounds` that swallows a
+   missing `sounds.json`, and `entity_silent` hardcoded to `false`. Read its §0
+   first: it carries three corrections to its own winning design. The item below
+   is the pre-plan framing, kept because its constraint is unchanged.** M63/M64/M66 decoded the packets and built the 1,968-entry
    registry and the weighted-variant index; **M131 added the sound-instance
    model, the channel budget and a device seam on top of them and deliberately
    stopped there**, so what is missing is the device and the attenuation curve
