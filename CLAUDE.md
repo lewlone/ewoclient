@@ -1678,6 +1678,26 @@ CLAUDE.md's own top-level Rewo status block was three milestones behind at M93 /
 number with a test behind it stays true and the sentence next to it does not.**
 Repo hygiene: the twenty stale `claude/rewo-m93*` branches and the two leftover
 agent worktrees were verified fully merged and clean, then pruned.*
+*Update (2026-08-10 session, Rewo): **M136 and M137 — two fixes recovered from
+worktrees that a handoff called litter.** The claim rested on their branches being
+0 commits off `main`, which was true; **`git branch --merged` says nothing about a
+dirty working tree**, and two of the five still held uncommitted work. **M136**: a
+spectator's tab-list name is `-1862270977` = `0x90FFFFFF`, **white at alpha 144**,
+where M52f wrote a grey `0x9099_9999` — and its doc comment restated the same
+wrong value, so code and prose agreed with each other and neither agreed with
+vanilla. Nothing consumed the constant (the tab list is still model-only), which
+is exactly why it survived — the same shape as M135 the same day. **M137**: a
+mutation rendering a styled run style-blind survived `deathshot`'s m20, and it was
+a weak fixture, not an equivalent mutant — **nothing follows a last span**, so a
+styled span placed last has an advance that moves nothing, and bold is charged per
+character. The styled span goes first now, and the identical hole turned out to
+exist at a different call site in `titleshot`, found by asking where else the shape
+could occur rather than by a mutation. Plus a unit test for the one label a pixel
+gate can never grade: every label on the pause/disconnect/dialog screens is white,
+and white is 1.0 in both colour spaces, so only an INACTIVE button (`0xA0A0A0`)
+can show a colour-space error — and none of those screens builds one. 2853 tests,
+34 gates, demo PNG byte-identical.*
+
 *Update (2026-08-10 session, Rewo): **M135 — the chat fills were drawn off the
 bottom of every screen**, a real shipping bug rather than a feature. `HudFill` is
 in GUI pixels and the pass multiplies by the GUI scale; four producers multiplied
@@ -1793,8 +1813,8 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-10
-(M135) — **2851 tests / 0 failures** (world 1147, net 949, gpu 274, data 224,
-app 196, mesh 45, proto 16, read off the runner per crate), `mobshot` 246/246,
+(M137) — **2853 tests / 0 failures** (world 1147, net 949, gpu 275, data 224,
+app 197, mesh 45, proto 16, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, all **34** serverless gates green with 0
 validation errors, `live --render-check` **44/44** with validation ON and 0

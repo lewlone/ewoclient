@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-10 after M135:
-**2851 tests, 0 failures** (**world 1147, net 949, gpu 274, data 224, app 196,
-mesh 45, proto 16** — read off the runner per crate; they sum to 2851). Note the per-crate invocation is
+Current measurement, taken 2026-08-10 after M137:
+**2853 tests, 0 failures** (**world 1147, net 949, gpu 275, data 224, app 197,
+mesh 45, proto 16** — read off the runner per crate; they sum to 2853). Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
 other six take `--lib`, and `--lib` there is `error: no library targets`, exit
 101, and **no** `test result` line at all. Assert that a result line exists
@@ -166,10 +166,13 @@ than trusting a list, since the list is what rots:
 rewo.exe --help | grep -E '^  [a-z]+shot|^  [a-z]+check'
 ```
 
-Their witness counts as of M124: `mobshot` 246, `blockentityshot` 172,
+Their witness counts, re-measured by running all 34 on 2026-08-10 (M137).
+**Only two had drifted from the M124 list this replaced** — `titleshot` and
+`deathshot`, both moved by M130 and M137 — so the rest are unchanged rather than
+unchecked: `mobshot` 246, `blockentityshot` 172,
 `inventoryshot` 158, `containershot` 107, `swingshot` 97, `itemshot` 75,
-`capeshot` 69, `hurtshot` 56, `titleshot` 55, `locatorshot` 49, `labelshot` 47,
-`statshot` 47, `rideshot` 45, `attributeshot` 43, `hudshot` 41, `deathshot` 40,
+`capeshot` 69, `titleshot` 58, `hurtshot` 56, `locatorshot` 49, `labelshot` 47,
+`statshot` 47, `rideshot` 45, `attributeshot` 43, `hudshot` 41, `deathshot` 43,
 `serverlinkshot` 37, `weathershot` 35, `handshot` 34, `particleshot` 34,
 `healthbarshot` 33, `bordershot` 31, `eventshot` 28, `danceshot` 24,
 `breakshot` 22, `captureshot` 17, `portalshot` 12, plus `abilityshot` 96/96 and
@@ -222,11 +225,16 @@ M133 the recipe book's widget tooltips, M134 the command line's exception
 messages. **Every item this section recommended before is now shipped**, which
 is why it is rewritten rather than appended to.
 
-**Update 2026-08-10: M135 shipped**, taking the `HudFill` double-scale out of
-the correctness-gaps list below — a real, shipping bug rather than a milestone,
-which is why it was never in this numbered list. It also added
+**Update 2026-08-10: M135, M136 and M137 shipped**, none of them from this
+numbered list, because all three were bugs rather than milestones. M135 took the
+`HudFill` double-scale out of the correctness-gaps list below and added
 `tools/render_check.py`, so the one gate that needs a server is now one command.
-The list below is otherwise unchanged and **AUDIO is still the top item.**
+M136 and M137 were **recovered from agent worktrees that this section called
+litter** — their branches really were fully merged, and two of the five still
+held uncommitted work, one of it a wrong colour constant. `git branch --merged`
+answers a different question from `git status`; ask both before deleting a
+worktree. The list below is otherwise unchanged and **AUDIO is still the top
+item.**
 
 1. **AUDIO — the largest single gap, and it now needs one decision rather than
    a design.** M63/M64/M66 decoded the packets and built the 1,968-entry
@@ -20210,3 +20218,55 @@ milestone measured, but nothing *structurally* stops a fifth from repeating it �
 so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
+
+### M136/M137 — two fixes recovered from worktrees that looked like litter (2026-08-10)
+
+Both were sitting **uncommitted** in agent worktrees left over from the M127–M134
+integration. The handoff called those worktrees litter on the grounds that their
+branches were 0 commits off `main`, which was true and beside the point:
+**`git branch --merged` says nothing about a dirty working tree.** Three of the
+five were genuinely clean; two held real work, and one of those was a bug.
+Checking cost one `git status` per worktree.
+
+**M136 — a spectator's tab-list name is WHITE at alpha 144, not grey.**
+`PlayerTabOverlay.java:211` passes `-1862270977`, which as unsigned ARGB is
+`0x90FFFFFF`: full white, faded. M52f wrote `0x9099_9999` — a grey — and **its
+doc comment restated the same wrong value**, so the code and the prose agreed
+with each other and neither agreed with vanilla. Nothing consumed the constant
+(the tab list has been model-only since M52f), which is exactly why it survived:
+no render could contradict it and no gate could see it. The same shape as M135
+on the same day — wrong the moment something reads it, silent until then. Its
+test derives both colours from vanilla's own signed literals rather than
+restating the hex, per M93r: a witness that restated `0x90FF_FFFF` would agree
+with whatever hex the constant happened to hold.
+
+**M137 — a one-span fixture cannot witness a pen advance.** A mutation that
+renders a styled run style-BLIND survived `deathshot`'s m20, and it was a **weak
+fixture rather than an equivalent mutant**: the fixture's styled span was LAST,
+and nothing follows a last span, so its measured width moves nothing and the
+line's origin comes from `styled_line_width` rather than from the accumulated
+pen. Bold is charged per character (M126's `getBoldOffset()`), so the bug moves
+everything after a bold span by eleven pixels and the witness could not see it.
+The styled span goes first now, with m21 measuring the gap it opens — and the
+same hole existed at a **different call site** in `titleshot`, where m9b grades
+`styled_line_width` feeding `title_pos` and is structurally unable to see
+`pen += w * scale` inside the run. No mutation had revealed that one; it was
+found by asking where else the shape could occur. `deathshot` 42 → 43,
+`titleshot` 57 → 58.
+
+M137 also adds a unit test for `screen_text_lines`' widget labels, which is a
+**gate** gap rather than a fixture one: every label on the pause, disconnect and
+dialog screens is white, and white is 1.0 in both colour spaces, so no pixel
+witness on any of them can see a linear-vs-sRGB error. The one reachable case is
+an INACTIVE button (`defaultInactiveMessage` is `0xA0A0A0`, linear 0.3515 against
+the byte's 0.6275) and none of those screens builds one.
+
+**The patch was applied three-way and it conflicted, which is the good outcome:**
+M137's branch predates M128's `events` field on `ChatSpan`. Its `live_cmd.rs`
+hunk applied cleanly under 1234+/63- of drift because it is purely additive
+inside the test module — a fact worth verifying rather than assuming, which is
+the M134b lesson from the integration.
+
+**Measured after both:** 2853 tests / 0 failures (world 1147, net 949, gpu 275,
+data 224, app 197, mesh 45, proto 16), 34 gates green with 0 validation lines,
+demo PNG `2cc56b4acbfb92cb` byte-identical.
