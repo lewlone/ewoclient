@@ -1678,6 +1678,29 @@ CLAUDE.md's own top-level Rewo status block was three milestones behind at M93 /
 number with a test behind it stays true and the sentence next to it does not.**
 Repo hygiene: the twenty stale `claude/rewo-m93*` branches and the two leftover
 agent worktrees were verified fully merged and clean, then pruned.*
+*Update (2026-08-10 session, Rewo): **the audio plan, and the first two items
+of it.** [`REWO_AUDIO_PLAN.md`](REWO_AUDIO_PLAN.md) is the decision §0.0 had been
+asking for: cpal + symphonia in a new `rewo-audio` crate, a pure caller-driven
+`Mixer::render` that never names cpal, four shippable steps M138a–d, then a
+loopback oracle and breadth. It records why kira and rodio lose — **kira
+interpolates attenuation in DECIBELS where Minecraft's curve is
+amplitude-linear**, a 24 dB error at half the radius, and rodio's specified voice
+cannot play a stereo source while all the music is stereo — and it carries three
+corrections to its own winning design. Its most important section says what the
+gate does NOT assert: no gate opens a device, so a client that mixes perfectly
+into a stream nobody opened passes every witness, which is why the milestone
+requires an owned human listening pass. **M138a's items 3 and 4 shipped**;
+1 and 2 (the listener seam) are open. `Entity.DATA_SILENT` is metadata index 4,
+parsed and discarded since M1 while `entity_silent` answered a hardcoded
+`false` — and the witness that matters is the one asserting the sound world
+READS it, since every other test passes against a decode stored where nothing
+looks. `build_sounds` now fails closed under `--render-check` rather than turning
+a missing `sounds.json` into an empty index, which is indistinguishable from
+totally broken resolution and green because it asserts nothing. The battery also
+found that **both mutation harnesses proved "nothing left on disk" with `git diff
+--quiet`, which cannot tell a leftover mutation from uncommitted work**; they
+compare file bytes now.*
+
 *Update (2026-08-10 session, Rewo): **M136 and M137 — two fixes recovered from
 worktrees that a handoff called litter.** The claim rested on their branches being
 0 commits off `main`, which was true; **`git branch --merged` says nothing about a
@@ -1813,7 +1836,7 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-10
-(M137) — **2853 tests / 0 failures** (world 1147, net 949, gpu 275, data 224,
+(M138a part) — **2858 tests / 0 failures** (world 1147, net 954, gpu 275, data 224,
 app 197, mesh 45, proto 16, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, all **34** serverless gates green with 0
