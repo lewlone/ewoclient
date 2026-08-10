@@ -4,8 +4,12 @@ Audit date **2026-07-29** (M67), **re-derived 2026-07-29** (M74), counts
 re-checked **2026-08-08** (M124, and again at **M125** and **M126**, neither of
 which resolves a new packet — M125 reads two it already consumed, and M126
 changes only how their text is carried and drawn), and unchanged through the
-**M127–M134** integration and **M135**, which between them decorate, draw and
-correct packets already consumed rather than resolving new ones. The §2 table is
+**M127–M134** integration, **M135** and **M140** — which between them decorate,
+draw, sound and correct packets already consumed rather than resolving new
+ones. (M140 is the one worth noting: it gave `level_event`'s sound table its
+first production caller since M66, which changes what a handled packet
+*consumes* without changing what is resolved — exactly the distinction §4
+exists to record.) The §2 table is
 machine-checked against `ids.rs` by a unit test, so it is the half to trust when
 this prose and the numbers disagree. Against **26.2 / protocol
 776**. Ground truth is the bundled datagen report
@@ -130,7 +134,7 @@ and M65 stayed hidden:
    incoming packet id is actually tested against.
 
 **Both instruments give the same answer, and it is a negative finding: the
-resolved-but-unreferenced set is empty.** Every one of the 105 resolved ids
+resolved-but-unreferenced set is empty.** Every one of the 118 resolved ids
 reaches a dispatch arm in `play.rs` or a `route_*` in `lib.rs`. So the gap is
 entirely in question (2) — 36 names that were never resolved.
 
@@ -170,7 +174,7 @@ belongs in the note column; the status column has two values.
 
 ### Classification
 
-Each of the 36 gaps carries one class. The classes are about **what it would
+Each of the 23 gaps carries one class. The classes are about **what it would
 take**, not about how much anyone wants it:
 
 | Class | Meaning |
@@ -227,9 +231,9 @@ that class costs. `open_screen` and `container_set_data` are eleven lines of
 decode between them; what made them class C is that neither means anything
 without a *menu model* — the 25 slot layouts, and an `Inventory` that stops
 being hard-wired to the player's 46 slots. The decode landed first and on its
-own precisely because it is the small half: the row above says `handled` and
-the feature is still not visible, which is the honest state and is why the
-"what is not" column exists.
+own precisely because it is the small half: for a while the row above said
+`handled` while nothing was visible — which is exactly the state the
+"what is not" column exists to record, and which M87k/M88/M89 then closed.
 
 **Both actionable classes are now empty**, which changes what this document is
 for. It was written to enumerate what Rewo ignores; what remains is **12
@@ -246,8 +250,8 @@ from here now means **choosing a subsystem**, not choosing a packet — and
 The one thing this document still adjudicates on its own is §4: "handled" is not
 "complete", and six consumed packets decode less than their body carries.
 
-M67 audited 56 / 0 / 85 with class A at 31. **Fifty-eight** packets separate
-that published 56 from this 114, and **ten of them had already landed when M67
+M67 audited 56 / 0 / 85 with class A at 31. **Sixty-two** packets separate
+that published 56 from this 118, and **ten of them had already landed when M67
 published** (§8) — three from M67's own sibling work, three from M68, three
 from M69, and `set_passengers` from the M68/M70/M72 trio. Six are M74's, one is
 M75's, three are M76's, three are M77's, eight are M78's, seven are M79's, six are M80's, three are
@@ -324,7 +328,8 @@ authoritative writes, and `update_tags` — are all closed, by M68, M69 and M69
 respectively. **M78 closed two of the three that replaced them**
 (`bundle_delimiter` and `disguised_chat`, kept below as worked examples,
 because what each was ranked *for* is what the milestone had to get right).
-One live entry remains.
+All three are closed now; the section is kept because what each was ranked
+*for* is what the milestone had to get right.
 
 ### 1. `bundle_delimiter` (0) — closed, M78
 
@@ -428,7 +433,7 @@ one of the two reads as fully handled.
 | `explode` (36) | The physics prefix — position and the `Optional<Vec3> playerKnockback` that M68 applies to the local player. | The particle / sound / weighted-block-list tail, deliberately: the particles need M37 kinds Rewo has not transcribed and the sound needs playback, which M63 scoped out. `crate::motion::read_explode` returns how many bytes it used precisely so this stays honest. |
 | `level_event` (46) | **Both halves.** The particle half through M37's `route_level_event`, and since **M140** the sound half through `route_level_event_sound` — the block CENTRE (`Level.java:475`), the `data` gates, and the per-row volume. | The four camera- and listener-placed ids of seventy, which need the camera the decode layer does not have; and `distance_delay`, which vanilla defers by `distance / 340` s and Rewo's queue cannot express, so those arrive early rather than not at all. |
 | `block_changed_ack` (4) | The id. The arm is a `log::debug!`. | The sequence number and the block-prediction rollback it acknowledges — Rewo does not predict block changes, so there is nothing to roll back yet. |
-| `container_set_content` / `container_set_slot` (18 / 20) | Container id **0** — the player's own inventory. `apply_container_set_content` returns early on any other id. | Every other container id, dropped whole (M34's documented choice: there is no screen to put them in). `set_player_inventory` (108) and `set_cursor_item` (96) share the rule. |
+| `container_set_content` / `container_set_slot` (18 / 20) — **closed, M87** | Both targets. `container_target` picks the player's inventory or the open menu, and `apply_container_set_content` takes an `expect_container` where it once hard-coded 0 — one dispatcher, because `handleContainerContent` is `if id == 0 { inventoryMenu } else if id == containerMenu.containerId { containerMenu }` and splitting it would put two seams on one packet id. | Nothing. Kept because M34's stated reason — "there is no screen to put them in" — outlived the wall it justified: M87k drew the panel, M88's r19/r20 witness it in the windowed client, M89 made it clickable. `set_player_inventory` (108) and `set_cursor_item` (96) are M69 and no longer share the old rule. |
 | `player_info_update` (70) | `ADD_PLAYER`, `UPDATE_GAME_MODE`, `UPDATE_LISTED`, `UPDATE_LATENCY`, `UPDATE_LIST_ORDER`, `UPDATE_HAT`, and the walk past the rest. | `UPDATE_DISPLAY_NAME` and `INITIALIZE_CHAT` are walked and discarded rather than stored. The walk is correct — M62 unified it into one function after finding a drifted copy — but the values do not survive it. |
 | `move_minecart_along_track` (55) — M77 | The whole body, and the whole client-side `NewMinecartBehavior` schedule it feeds. The first handler guard, `instanceof AbstractMinecart`, is enforced. | The **second** handler guard, `getBehavior() instanceof NewMinecartBehavior`. It is not a class fact — the constructor picks the behaviour from `level.enabledFeatures().contains(MINECART_IMPROVEMENTS)` — and `update_enabled_features` is a **configuration** packet, outside this survey's scope and not in `ids.rs`. It is also structurally unreachable: the only sender of this packet is `handleMinecartPosRot`, which `ServerEntity` reaches down the same `instanceof` branch. Decoding the flag set is the follow-up. |
 | `set_entity_link` (100) — M77 | Both i32s, and the holder id onto the leashed entity. | **The rope.** Class B, and unstarted. Also `getLeashHolder`'s *cache*: vanilla promotes the delayed id to an `Entity` reference once and keeps it, so a holder that leaves the tracking range stays attached until the server re-sends; Rewo resolves on demand and reports none. Nothing reads it yet. |
@@ -493,9 +498,9 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 15 | `command_suggestions` | handled | `req!` → `cb_play_command_suggestions` | **M114.** The autocomplete reply: a request id, a `start`/`length` span, and a list of `(text, optional component tooltip)`. `toSuggestions` builds its list with the **constructor**, not `Suggestions.create`, so the server's order is shown verbatim and duplicates are not removed — routing it through `create`, which is what the rest of the subsystem does, would silently re-order every server's autocomplete. Matched against a **single** outstanding request id, so a reply to a superseded one is dropped; vanilla's idle sentinel for that id is `-1`, which is also a legal VarInt, so a server sending `-1` while nothing is pending dereferences a null future in vanilla and is inert here. |
 | 16 | `commands` | handled | `req!` → `cb_play_commands` | **M113.** A counted list of nodes then the root index. **An argument node's properties have no length prefix and only its own type knows their size**, so an unknown `command_argument_type` id makes the rest of the packet unreadable — vanilla's reader returns `null` *without consuming them* and then reads the next node from the wrong offset, so Rewo makes it a decode error. 44 of the 57 types are `SingletonArgumentInfo` and read nothing; the other 13 are transcribed. The suggestion id is read **after** the properties, not beside its flag. |
 | 17 | `container_close` | handled | `req!` → `cb_play_container_close` | **M74.** One VarInt container id, which vanilla reads and then **ignores** — `handleContainerClose` closes whatever is open without comparing ids. |
-| 18 | `container_set_content` | handled | `req!` → `cb_play_container_set_content` | §4 partial — container id 0 only. |
+| 18 | `container_set_content` | handled | `req!` → `cb_play_container_set_content` | **M34 + M87.** Addresses either menu via `container_target`; the id is a parameter, not a hard-coded 0. |
 | 19 | `container_set_data` | handled | — | M87 decode, **M91/M92 consumers**. VarInt container id then **two signed `readShort`s**, applied only when the id matches the open menu. Every menu that sends it now draws from it: the three furnaces (flame + arrow), the brewing stand (fuel bar, brew arrow, bubbles), the enchanting table (three row states + numerals + cost text) and the beacon (button chrome + effect icons). The slot *meanings* are per-menu and invert against each other — the furnace puts fuel at 0 and the brewing stand puts its tick counter there, and the beacon encodes bsent\ as 0 with ids shifted up by one where the enchanting table uses -1. Negative values are the normal case for the enchanting clues, which is why the shorts must be signed. |
-| 20 | `container_set_slot` | handled | `req!` → `cb_play_container_set_slot` | §4 partial — container id 0 only. |
+| 20 | `container_set_slot` | handled | `req!` → `cb_play_container_set_slot` | **M34 + M87.** Same routing as 18. Its index is a **signed short** among the var-ints. |
 | 21 | `cookie_request` | handled | `opt!` → `cb_play_cookie_request` | Answered from the jar `store_cookie` (120) fills, since **M78**. Before it, "handled" was true only of the M1-era `Connection::run_play` harness — `PlaySession` had no arm at all, so the real client left a play-state request unanswered. §4, §9. |
 | 22 | `cooldown` | handled | `req!` → `cb_play_cooldown` | **M79.** An `Identifier` **cooldown group** + a VarInt duration — no start tick, no end tick; `addCooldown` supplies the start from `ItemCooldowns.tickCount`. `duration == 0` routes to `removeCooldown`, so it **cancels** rather than starting a zero-length cooldown whose percent would be `0/0`. |
 | 23 | `custom_chat_completions` | handled | `req!` → `cb_play_custom_chat_completions` | **M114.** An `Action` ordinal then a counted string list. `readEnum` indexes an array, so an out-of-range ordinal is a **decode error**, not a defaulted `ADD` — M65's strict convention. `SET` **clears before it adds**, so it is not `ADD` on an empty set. The result is unioned with the online-player names by `getCustomTabSuggestions`, deduped, and is what makes plain-chat Tab completion work without any parser. |
@@ -521,7 +526,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 43 | `initialize_border` | handled | `req!` → `cb_play_initialize_border` | **M80.** The whole border at once. Its `lerpTime > 0` guard picks `setSize(newSize)` over `lerpSizeBetween` — the guard `set_border_lerp_size` (89) does *not* have. |
 | 44 | `keep_alive` | handled | `req!` → `cb_play_keep_alive` | |
 | 45 | `level_chunk_with_light` | handled | `req!` → `cb_play_level_chunk` | |
-| 46 | `level_event` | handled | `opt!` → `cb_play_level_event` | §4 partial — the particle half only. |
+| 46 | `level_event` | handled | `opt!` → `cb_play_level_event` | M37 (particles) + **M140** (sounds). Both halves of the id table are consumed; §4 records the two boundaries that remain — camera-placed ids and `distance_delay`. |
 | 47 | `level_particles` | handled | `opt!` → `cb_play_level_particles` | M37. |
 | 48 | `light_update` | handled | `opt!` → `cb_play_light_update` | |
 | 49 | `login` | handled | `req!` → `cb_play_login` | |
@@ -534,11 +539,11 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 56 | `move_entity_rot` | handled | `req!` → `cb_play_move_entity_rot` | |
 | 57 | `move_vehicle` | handled | `req!` → `cb_play_move_vehicle` | **M68.** Carries **no entity id** — the client resolves `getRootVehicle()`. Sent only as a rejection of a serverbound vehicle move, so a passenger-only client never receives one. |
 | 58 | `open_book` | absent | **C** | Book screen. |
-| 59 | `open_screen` | handled | — | M87. VarInt container id, the `minecraft:menu` id as a **raw 0-based** `registry` (not `holder`'s `id + 1`), then an NBT title. All 25 layouts resolve; an unregistered type opens nothing, as `MenuScreens.create` does. No screen renders it yet. |
+| 59 | `open_screen` | handled | — | M87. VarInt container id, the `minecraft:menu` id as a **raw 0-based** `registry` (not `holder`'s `id + 1`), then an NBT title. All 25 layouts resolve; an unregistered type opens nothing, as `MenuScreens.create` does. M87k/M88/M89 render it: the packet opens the screen, the panel is the menu's own (r19/r20 in `live --render-check`), and clicks route to the shown menu. |
 | 60 | `open_sign_editor` | absent | **C** | Sign edit screen. |
 | 61 | `ping` | handled | `req!` → `cb_play_ping` | |
 | 62 | `pong_response` | absent | **D** | The reply to a serverbound `ping_request` Rewo never sends (`pingDebugMonitor`). |
-| 63 | `place_ghost_recipe` | handled | — | Decoded and held (M93y). The BOOK is still a subsystem Rewo lacks; this is the decode half, on M63's split. |
+| 63 | `place_ghost_recipe` | handled | — | Decoded in M93y and **drawn in M103** — the ghost item sandwiched between a red wash under and a white wash over, only the lower of which widens for a big result slot. The book itself was built by M93z–M107. |
 | 64 | `player_abilities` | handled | — | Flags byte + `flyingSpeed` + `walkingSpeed`, nine fixed bytes. Landed by **M75** with the flight / no-clip physics it feeds and the `GameType` binding M71 left unstarted. The **serverbound** twin is one byte carrying only `FLAG_FLYING` — writing the clientbound body there desyncs the stream by eight. |
 | 65 | `player_chat` | handled | `opt!` → `cb_play_player_chat` | |
 | 66 | `player_combat_end` | handled | `req!` → `cb_play_player_combat_end` | **M78.** Vestigial: the handler is an **empty method**, so nothing is stored — inventing a field would be a divergence dressed as decode-and-state. The body is **not** empty (a VarInt `duration`), and the only gradeable property is that the reader consumes exactly it. §9. |
@@ -623,13 +628,13 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 
 Stated explicitly, because the counts above are easy to over-read.
 
-- **It does not verify that the 105 handled packets are decoded correctly.**
+- **It does not verify that the 118 handled packets are decoded correctly.**
   It verifies that the id is resolved and that a dispatch arm tests it.
-  Correctness of those 72 is what the `*shot --check` gates and the unit tests
+  Correctness of those 118 is what the `*shot --check` gates and the unit tests
   cover, and they cover it unevenly: `inventoryshot` is exhaustive about the
   container packets, while `player_info_update`'s walk is graded only by unit
   tests inside `rewo-net`.
-- **It does not verify that the 105 are decoded *completely*.** §4 lists the
+- **It does not verify that the 118 are decoded *completely*.** §4 lists the
   known partials found by reading the arms; there may be more. Nothing
   mechanical distinguishes "consumed the body" from "read the first field" —
   and that includes the machine check in §1, which is why §4 exists.
