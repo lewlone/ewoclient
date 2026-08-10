@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-10 after M138b:
-**2883 tests, 0 failures** (**world 1147, net 961, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 18** — read off the runner per crate; they sum to 2883).
+Current measurement, taken 2026-08-10 after M138c:
+**2897 tests, 0 failures** (**world 1147, net 961, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 32** — read off the runner per crate; they sum to 2897).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -20227,6 +20227,41 @@ milestone measured, but nothing *structurally* stops a fifth from repeating it �
 so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
+
+### M138c — the mixer, and what the up vector is actually for (2026-08-10)
+
+Caller-driven like `alcRenderSamplesSOFT` — no device, no thread, no clock — so
+the same `Mixer` runs under a real sink and under a gate rendering to memory, and
+every witness reads the **output** rather than recomputing a gain.
+
+**The module doc splits transcription from approximation**, because the thing it
+replaces is not in the decompile at all: `Channel.java` sets seven properties and
+OpenAL Soft does the arithmetic. The attenuation curve is exact (the OpenAL 1.1
+specification, from the three properties `linearAttenuation` writes); the **pan
+law and resampler are stated approximations** against code that lives in a DLL;
+HRTF is absent. M139's oracle turns those declarations into a measured
+divergence.
+
+**The finding: `right = forward x up` is `(-cos yaw, 0, -sin yaw)` for every
+pitch**, since pitching turns about the right axis. So the witness written first
+— that looking down moves a source between the ears — was wrong twice: it had the
+direction backwards at yaw 0 (M138a's `INITIAL`-versus-camera finding, tripped
+over by its own author) and its premise was false. What the up vector buys shows
+in exactly one place: **pin it to `(0,1,0)` and at pitch 90 `forward x up` is the
+ZERO vector**, collapsing the image to centre. The witness asserts a downward
+listener still pans hard left, and demonstrates the degenerate case beside it.
+
+**Two weak fixtures the battery caught, both worth generalising.** A
+rate-conversion witness whose sources outlasted its 8192-frame render window
+measured *the window* — both readings truncated to 8192 and agreed, so dropping
+the rate conversion survived. And every witness rendered into a freshly-allocated
+buffer, which arrives zeroed, so deleting `render`'s clear was invisible; a real
+device hands the same buffer back each callback, where that is unbounded
+accumulation.
+
+**Measured:** 2897 tests / 0 failures, 34 gates green with 0 validation lines,
+12/12 mutations with a no-op control that SURVIVED. Still nothing that makes a
+noise: `NullSink` renders to memory and the device is M138d.
 
 ### M138b (rest) — the ogg decode, and a peak blind to its own subject (2026-08-10)
 

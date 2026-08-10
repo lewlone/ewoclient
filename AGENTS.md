@@ -1741,8 +1741,18 @@ witness blind to its own subject** — dropping the `-0.5` bias moves a real sou
 PEAK by one and its SUM by 812, so the assertion moved to the sum. The other
 survivor was proven genuinely equivalent: symphonia's probe rejects every truncated
 ogg before the `channels == 0` guard can be reached, so it is recorded as an
-expected survivor rather than left looking untested. M138b is complete; nothing in
-it makes a noise, and M138c's mixer is next.*
+expected survivor rather than left looking untested. **M138c then shipped the
+mixer** — caller-driven like `alcRenderSamplesSOFT`, with the module doc splitting
+transcription (the OpenAL attenuation curve, exact) from **stated approximation**
+(the pan law and the resampler, which live in a DLL Rewo cannot read) and HRTF
+absent entirely. Its finding is what the listener's up vector is FOR: `right =
+forward x up` is `(-cos yaw, 0, -sin yaw)` at every pitch, so almost every way of
+breaking the basis is invisible — except pinning up to `(0,1,0)`, which at pitch 90
+makes `forward x up` the **zero vector** and collapses the stereo image to centre.
+The battery also caught two weak fixtures: a rate witness whose sources outlasted
+its render window measured the window, and witnesses rendering into freshly-zeroed
+buffers cannot see a missing clear. **Nothing in rewo-audio makes a noise yet** —
+M138d's device is the first piece that could.*
 
 *Update (2026-08-10 session, Rewo): **M136 and M137 — two fixes recovered from
 worktrees that a handoff called litter.** The claim rested on their branches being
@@ -1879,8 +1889,8 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-10
-(M138b) — **2883 tests / 0 failures** (world 1147, net 961, gpu 275, data 224,
-app 197, mesh 45, proto 16, **audio 18** — EIGHT crates now, read off the runner
+(M138c) — **2897 tests / 0 failures** (world 1147, net 961, gpu 275, data 224,
+app 197, mesh 45, proto 16, **audio 32** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,

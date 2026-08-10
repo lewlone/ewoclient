@@ -205,6 +205,25 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 **Gate:** `soundshot --check` layers (w)(s)(d).
 
 ### M138c — the mixer
+
+> **SHIPPED 2026-08-10.** `mixer.rs` with `Mixer`, `Voice` and `NullSink`;
+> layer (m)'s claims are unit witnesses reading the rendered output, and the
+> `soundshot` command that would gather (w)(s)(a)(d)(m) under one
+> `EXPECTED_WITNESSES` lock is still to build.
+>
+> **What the listener's up vector is for, measured.** `right = forward x up` is
+> `(-cos yaw, 0, -sin yaw)` for EVERY pitch — pitching turns about the right
+> axis and cannot move it — so almost every way of breaking the basis is
+> invisible. The one that is not: pin `up` to `(0,1,0)` and at pitch 90 the
+> forward vector is `(0,-1,0)`, making `forward x up` the ZERO vector and
+> collapsing the stereo image to centre.
+>
+> **Two weak fixtures the battery caught**, both worth remembering: a
+> rate-conversion witness whose sources were longer than its render window
+> measured the window rather than the rate; and witnesses that render into a
+> freshly-allocated (therefore zeroed) buffer cannot see a missing clear, which
+> on a real device is unbounded accumulation.
+
 `mixer.rs` + `sink/null.rs`. Pure; no device, no thread, no clock. Same shape as `alcRenderSamplesSOFT`: caller-driven.
 
 **Gate:** `soundshot` layer (m).
