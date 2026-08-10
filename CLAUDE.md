@@ -1689,8 +1689,7 @@ cannot play a stereo source while all the music is stereo — and it carries thr
 corrections to its own winning design. Its most important section says what the
 gate does NOT assert: no gate opens a device, so a client that mixes perfectly
 into a stream nobody opened passes every witness, which is why the milestone
-requires an owned human listening pass. **M138a's items 3 and 4 shipped**;
-1 and 2 (the listener seam) are open. `Entity.DATA_SILENT` is metadata index 4,
+requires an owned human listening pass. **M138a shipped in full.** `Entity.DATA_SILENT` is metadata index 4,
 parsed and discarded since M1 while `entity_silent` answered a hardcoded
 `false` — and the witness that matters is the one asserting the sound world
 READS it, since every other test passes against a decode stored where nothing
@@ -1699,7 +1698,17 @@ a missing `sounds.json` into an empty index, which is indistinguishable from
 totally broken resolution and green because it asserts nothing. The battery also
 found that **both mutation harnesses proved "nothing left on disk" with `git diff
 --quiet`, which cannot tell a leftover mutation from uncommitted work**; they
-compare file bytes now.*
+compare file bytes now. The listener seam then closed the gap the survey called
+structural — nothing in Rewo carried a listener, so every sound was panned
+against ears at the origin facing -Z. **`listener_basis`'s forward vector turns
+out to be exactly `Entity.calculateViewVector`**, reached by a different route,
+which is what makes the transcription checkable instead of self-consistent; and
+**`ListenerTransform::INITIAL` is not a camera at yaw 0** — `setRotation` opens
+with a half turn, so yaw 0 faces +Z while the record's default faces -Z, and a
+test asserting they agree looks obviously right and puts the ears backwards.
+**r45 asserts `pushes == frames` rather than `> 0`**, because a per-tick client
+would still be non-zero; verified by deleting the call site, which drops it to
+0 of 5783 while every unit test stays green.*
 
 *Update (2026-08-10 session, Rewo): **M136 and M137 — two fixes recovered from
 worktrees that a handoff called litter.** The claim rested on their branches being
@@ -1836,7 +1845,7 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-10
-(M138a part) — **2858 tests / 0 failures** (world 1147, net 954, gpu 275, data 224,
+(M138a) — **2865 tests / 0 failures** (world 1147, net 961, gpu 275, data 224,
 app 197, mesh 45, proto 16, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, all **34** serverless gates green with 0

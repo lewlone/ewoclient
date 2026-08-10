@@ -177,6 +177,130 @@ pub trait AudioDevice {
     fn submit(&mut self, channel: ChannelId, call: ChannelCall);
     /// `Channel.stopped()` — `AL_SOURCE_STATE == AL_STOPPED`.
     fn stopped(&self, channel: ChannelId) -> bool;
+    /// `Listener.setTransform` — where the ears are (M138a).
+    ///
+    /// **A trait method rather than a [`ChannelCall`]**, because the listener is
+    /// not a channel: handing it a fake [`ChannelId`] so it could reuse `submit`
+    /// would drop it into the per-channel call log, and every witness that
+    /// asserts a channel's exact eight-call sequence would then have to learn to
+    /// skip it.
+    ///
+    /// **Pushed per FRAME, unlike everything else on this seam.**
+    /// `SoundEngine.updateSource(camera)` runs on the render path with a camera
+    /// carrying the frame's partial tick, while `SoundEngine.tick` is
+    /// `Minecraft.tick`'s. Driving this per tick would step the stereo image at
+    /// 20 Hz while the world turned smoothly.
+    fn set_listener(&mut self, transform: ListenerTransform);
+}
+
+/// `com.mojang.blaze3d.audio.ListenerTransform` — where the ears are and which
+/// way they point (M138a).
+///
+/// ```java
+/// public record ListenerTransform(Vec3 position, Vec3 forward, Vec3 up) {
+///    public static final ListenerTransform INITIAL =
+///       new ListenerTransform(Vec3.ZERO, new Vec3(0, 0, -1), new Vec3(0, 1, 0));
+///    public Vec3 right() { return this.forward.cross(this.up); }
+/// }
+/// ```
+///
+/// `Listener.setTransform` hands it straight to OpenAL as a position plus **six
+/// floats**: `alListener3f(AL_POSITION, x, y, z)` then
+/// `alListenerfv(AL_ORIENTATION, {fx, fy, fz, ux, uy, uz})`
+/// (`Listener.java:14-15`). There is no listener velocity — vanilla never sets
+/// `AL_VELOCITY` — so there is no doppler to model.
+///
+/// **Why forward/up are `f32` while position is `f64`.** The record holds three
+/// `Vec3`, but forward and up are *built* from `Vector3f`: `new
+/// Vec3(camera.forwardVector())` at `SoundEngine.java:493` widens an f32 basis,
+/// and `Listener` narrows it straight back for `alListenerfv`. Storing f32 is
+/// therefore exactly what the device receives, and storing f64 would invite a
+/// recomputation in double precision that vanilla never performs. The position
+/// is a genuine `Vec3` — it comes from `camera.position()`, and only OpenAL
+/// narrows it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ListenerTransform {
+    /// `camera.position()`.
+    pub position: [f64; 3],
+    /// `camera.forwardVector()` — the rotated `FORWARDS` basis vector.
+    pub forward: [f32; 3],
+    /// `camera.upVector()`.
+    pub up: [f32; 3],
+}
+
+impl ListenerTransform {
+    /// `ListenerTransform.INITIAL` — the origin, facing -Z, up +Y.
+    ///
+    /// This is the transform a listener has **before any camera exists**, and
+    /// until M138a it was the only one Rewo could express, because nothing
+    /// carried a listener at all: every sound was positioned in absolute world
+    /// coordinates against ears sitting at the origin facing -Z.
+    pub const INITIAL: ListenerTransform = ListenerTransform {
+        position: [0.0; 3],
+        forward: [0.0, 0.0, -1.0],
+        up: [0.0, 1.0, 0.0],
+    };
+
+    /// `ListenerTransform.right()` — `forward.cross(up)`.
+    ///
+    /// **In `Vec3`, i.e. f64**, because vanilla's `right()` is a method on the
+    /// record's widened fields rather than on the `Vector3f` basis. The order is
+    /// forward × up and not up × forward; those differ by a sign, which is the
+    /// difference between a stereo image and its mirror.
+    pub fn right(&self) -> [f64; 3] {
+        let f = [
+            self.forward[0] as f64,
+            self.forward[1] as f64,
+            self.forward[2] as f64,
+        ];
+        let u = [self.up[0] as f64, self.up[1] as f64, self.up[2] as f64];
+        [
+            f[1] * u[2] - f[2] * u[1],
+            f[2] * u[0] - f[0] * u[2],
+            f[0] * u[1] - f[1] * u[0],
+        ]
+    }
+}
+
+/// `Camera.setRotation`'s basis — the forward and up vectors for a yaw/pitch in
+/// **degrees**, as `camera.forwardVector()` / `camera.upVector()` return them.
+///
+/// ```java
+/// this.rotation.rotationYXZ((float)Math.PI - yRot * (float)(Math.PI / 180.0),
+///                           -xRot * (float)(Math.PI / 180.0), 0.0F);
+/// FORWARDS.rotate(this.rotation, this.forwards);   // FORWARDS = (0, 0, -1)
+/// UP.rotate(this.rotation, this.up);               // UP       = (0, 1, 0)
+/// ```
+/// (`Camera.java:337-342`; the constants at `:42-44`.)
+///
+/// JOML's `rotationYXZ(y, x, z)` is `rotationY(y).rotateX(x).rotateZ(z)`, so the
+/// rotation is `Ry(pi - yaw) * Rx(-pitch)` with the z term identically zero.
+/// Composing that by hand and simplifying with `sin(pi - a) = sin a` and
+/// `cos(pi - a) = -cos a` collapses both vectors to closed forms, with no
+/// quaternion left in them:
+///
+/// ```text
+/// forward = (-cos(pitch) * sin(yaw), -sin(pitch),  cos(pitch) * cos(yaw))
+/// up      = (-sin(pitch) * sin(yaw),  cos(pitch),  sin(pitch) * cos(yaw))
+/// ```
+///
+/// **The forward vector is exactly `Entity.calculateViewVector`**, and that is
+/// the independent check on the whole derivation rather than a nice-to-know:
+/// that method reaches `(sin(-yaw)cos(pitch), -sin(pitch), cos(-yaw)cos(pitch))`
+/// by a completely different route, and the two agree identically. `up` has no
+/// such twin, so it is pinned by the composition instead.
+///
+/// **`up` is not the constant `(0, 1, 0)`**, which is the tempting
+/// simplification and is wrong the moment the player looks off the horizon: at
+/// pitch 90 the forward vector points straight down and `up` becomes the
+/// horizontal heading. A listener whose up never tilts has a stereo image that
+/// refuses to roll when you look up, and nothing about that looks wrong in a log.
+pub fn listener_basis(yaw_deg: f32, pitch_deg: f32) -> ([f32; 3], [f32; 3]) {
+    let yaw = yaw_deg.to_radians();
+    let pitch = pitch_deg.to_radians();
+    let (sy, cy) = (yaw.sin(), yaw.cos());
+    let (sp, cp) = (pitch.sin(), pitch.cos());
+    ([-cp * sy, -sp, cp * cy], [-sp * sy, cp, sp * cy])
 }
 
 /// `Library.CountingChannelPool` plus `Library.init`'s sizing.
@@ -335,6 +459,12 @@ pub struct RecordingDevice {
     pub calls: Vec<(ChannelId, ChannelCall)>,
     /// Channels the test has declared finished, for the reclaim path.
     stopped: Vec<ChannelId>,
+    /// Every listener transform pushed, in order (M138a).
+    ///
+    /// A history rather than a latest-value: the claims worth asserting are
+    /// mostly about the *sequence* — that it is pushed at all, that a turn
+    /// changes it, that it arrives per frame rather than per tick.
+    pub listener_history: Vec<ListenerTransform>,
 }
 
 impl RecordingDevice {
@@ -394,6 +524,10 @@ impl AudioDevice for RecordingDevice {
     fn stopped(&self, channel: ChannelId) -> bool {
         self.stopped.contains(&channel)
     }
+
+    fn set_listener(&mut self, transform: ListenerTransform) {
+        self.listener_history.push(transform);
+    }
 }
 
 /// The [`AudioDevice`] production uses **until there is a real one**.
@@ -412,6 +546,14 @@ impl AudioDevice for RecordingDevice {
 /// modelled. Nothing here could model it — a sound's length is in its `.ogg`.
 #[derive(Clone, Debug, Default)]
 pub struct SilentDevice {
+    /// How many listener transforms have arrived (M138a).
+    ///
+    /// Separate from `calls_made` because the claim r45 makes is a *rate* —
+    /// one per frame — and mixing it with per-channel calls would make the
+    /// number depend on how many sounds happened to be playing.
+    pub listener_pushes: u64,
+    /// The most recent one, so a gate can assert on the value delivered.
+    pub last_listener: Option<ListenerTransform>,
     alloc: ChannelAllocator,
     /// Every call this device was asked to make. A pure counter — the calls
     /// themselves are dropped.
@@ -447,6 +589,19 @@ impl AudioDevice for SilentDevice {
     }
     fn stopped(&self, _channel: ChannelId) -> bool {
         true
+    }
+    fn set_listener(&mut self, transform: ListenerTransform) {
+        // Counted like every other call, so the live path can show the listener
+        // is being pushed without a device existing to hear it. A device that
+        // threw this away silently would make M138d's first symptom "no sound"
+        // with nothing upstream to look at.
+        self.calls_made += 1;
+        // Recorded, so `--render-check`'s r45 can read back what the device was
+        // handed instead of recomputing it from the session — a witness that
+        // re-derives the value it is checking grades the derivation twice and
+        // the delivery not at all (M88's r20).
+        self.listener_pushes += 1;
+        self.last_listener = Some(transform);
     }
 }
 
@@ -1320,6 +1475,37 @@ impl LiveSounds {
                 self.system.engine.live_count(),
             );
         }
+    }
+
+    /// `SoundEngine.updateSource(camera)` — push this frame's listener (M138a).
+    ///
+    /// ```java
+    /// public void updateSource(final Camera camera) {
+    ///    if (this.loaded && camera.isInitialized()) {
+    ///       ListenerTransform transform = new ListenerTransform(
+    ///          camera.position(), new Vec3(camera.forwardVector()), new Vec3(camera.upVector()));
+    ///       this.executor.execute(() -> this.listener.setTransform(transform));
+    ///    }
+    /// }
+    /// ```
+    ///
+    /// **Call once per FRAME**, which is the opposite of [`Self::drive`]'s
+    /// contract and deliberately so: vanilla calls this from the render path
+    /// with a camera carrying the frame's partial tick, while `SoundEngine.tick`
+    /// is `Minecraft.tick`'s. Pushing the listener per tick would step the
+    /// stereo image at 20 Hz while the world turned smoothly, which reads as
+    /// the audio "lagging" the view and has nothing to do with latency.
+    ///
+    /// The `loaded` guard has no analogue here — there is no device to load —
+    /// and `isInitialized()` is subsumed by the caller only having a camera once
+    /// the session is up.
+    pub fn update_listener(&mut self, position: [f64; 3], yaw_deg: f32, pitch_deg: f32) {
+        let (forward, up) = listener_basis(yaw_deg, pitch_deg);
+        self.device.set_listener(ListenerTransform {
+            position,
+            forward,
+            up,
+        });
     }
 
     pub fn stats(&self) -> SoundStats {
@@ -2525,5 +2711,164 @@ mod tests {
         );
         let SoundEvent::Stop(s) = &ev else { unreachable!() };
         assert_eq!(stop_from_event(s), (None, Some(SoundSource::Records)));
+    }
+}
+#[cfg(test)]
+mod listener_tests {
+    //! `ListenerTransform` and `Camera.setRotation`'s basis (M138a).
+    //!
+    //! Before this, nothing in Rewo carried a listener at all: `AudioDevice`
+    //! had four methods and none of them was one, so every `SetSelfPosition`
+    //! was an absolute world coordinate panned against ears at the origin
+    //! facing -Z. These pin the basis, the record, and that the seam carries it.
+
+    use super::{listener_basis, AudioDevice, ListenerTransform, RecordingDevice};
+
+    /// `Entity.calculateViewVector` — an INDEPENDENT derivation of the same
+    /// forward vector, reached without composing a single rotation.
+    ///
+    /// ```java
+    /// float f = pitch * (pi/180), g = -yaw * (pi/180);
+    /// float h = cos(g), i = sin(g), j = cos(f), k = sin(f);
+    /// return new Vec3(i * j, -k, h * j);
+    /// ```
+    ///
+    /// This is what makes `listener_basis` checkable rather than
+    /// self-consistent: `Camera.setRotation` builds the vector by rotating
+    /// `(0,0,-1)` through `Ry(pi - yaw) * Rx(-pitch)`, and this reaches the same
+    /// place by a different route, so agreeing is evidence.
+    fn view_vector(yaw_deg: f32, pitch_deg: f32) -> [f32; 3] {
+        let f = pitch_deg.to_radians();
+        let g = -yaw_deg.to_radians();
+        [g.sin() * f.cos(), -f.sin(), g.cos() * f.cos()]
+    }
+
+    fn close(a: [f32; 3], b: [f32; 3], what: &str) {
+        for i in 0..3 {
+            assert!(
+                (a[i] - b[i]).abs() < 1e-5,
+                "{what}: component {i}, {a:?} vs {b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn forward_agrees_with_calculate_view_vector_everywhere() {
+        // Not one angle: a transposed sine or a dropped negation agrees at 0 and
+        // diverges elsewhere, and a fixture at the origin is the shape this
+        // repo keeps being caught by.
+        for yaw in [-180.0f32, -135.0, -90.0, -45.0, 0.0, 30.0, 90.0, 179.0] {
+            for pitch in [-90.0f32, -45.0, -12.5, 0.0, 17.0, 45.0, 90.0] {
+                let (fwd, _) = listener_basis(yaw, pitch);
+                close(fwd, view_vector(yaw, pitch), &format!("yaw {yaw} pitch {pitch}"));
+            }
+        }
+    }
+
+    #[test]
+    fn the_basis_is_orthonormal() {
+        // `alListenerfv(AL_ORIENTATION, ...)` takes an at-vector and an
+        // up-vector; OpenAL orthonormalises, but a basis that is not already
+        // orthogonal means the up we computed is not the up that gets used, and
+        // the error is silent.
+        for yaw in [0.0f32, 37.0, -128.0] {
+            for pitch in [0.0f32, 41.0, -73.0] {
+                let (f, u) = listener_basis(yaw, pitch);
+                let dot = f[0] * u[0] + f[1] * u[1] + f[2] * u[2];
+                assert!(dot.abs() < 1e-5, "yaw {yaw} pitch {pitch}: dot {dot}");
+                for (v, name) in [(f, "forward"), (u, "up")] {
+                    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                    assert!((len - 1.0).abs() < 1e-5, "{name} length {len}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn up_is_not_the_constant_zero_one_zero() {
+        // The tempting simplification, and wrong off the horizon. At pitch 90
+        // the forward vector points straight down and `up` becomes the
+        // horizontal heading — a listener pinned to (0,1,0) has a stereo image
+        // that refuses to roll when you look up, which looks like nothing at all
+        // in a log.
+        let (fwd, up) = listener_basis(0.0, 90.0);
+        close(fwd, [0.0, -1.0, 0.0], "looking straight down");
+        close(up, [0.0, 0.0, 1.0], "up becomes the heading");
+
+        // …and at the horizon it really is (0,1,0), so the constant is right for
+        // exactly the fixture someone would have chosen.
+        let (_, level) = listener_basis(45.0, 0.0);
+        close(level, [0.0, 1.0, 0.0], "level");
+    }
+
+    #[test]
+    fn right_is_forward_cross_up_and_not_the_reverse() {
+        // The two differ by a sign, which is a stereo image against its mirror.
+        // Facing -Z with up +Y, vanilla's `right()` is forward x up =
+        // (0,0,-1) x (0,1,0) = (0*0 - -1*1, -1*0 - 0*0, 0*1 - 0*0) = (1, 0, 0).
+        let r = ListenerTransform::INITIAL.right();
+        assert!((r[0] - 1.0).abs() < 1e-9, "got {r:?}");
+        assert!(r[1].abs() < 1e-9 && r[2].abs() < 1e-9, "got {r:?}");
+    }
+
+    #[test]
+    fn initial_is_the_unrotated_constant_and_not_a_camera_at_yaw_zero() {
+        // `new ListenerTransform(Vec3.ZERO, new Vec3(0, 0, -1), new Vec3(0, 1, 0))`.
+        assert_eq!(ListenerTransform::INITIAL.position, [0.0, 0.0, 0.0]);
+        assert_eq!(ListenerTransform::INITIAL.forward, [0.0, 0.0, -1.0]);
+        assert_eq!(ListenerTransform::INITIAL.up, [0.0, 1.0, 0.0]);
+
+        // **And a level camera at yaw 0 faces the OTHER way.** This test first
+        // asserted the two were equal, which reads as obvious and is wrong:
+        // `INITIAL` is `Camera`'s raw `FORWARDS` constant, the value the field
+        // holds before any rotation, whereas `setRotation` opens with
+        // `rotationYXZ(pi - yaw, ...)` — a half turn about Y even at yaw 0. So
+        // yaw 0 is +Z (south, as Minecraft's yaw convention has it) and the
+        // record's default is -Z. Conflating them would put the ears backwards
+        // for exactly the fixture a test would reach for first.
+        let (f, u) = listener_basis(0.0, 0.0);
+        close(f, [0.0, 0.0, 1.0], "a level camera at yaw 0 faces +Z");
+        assert!(
+            (f[2] - ListenerTransform::INITIAL.forward[2]).abs() > 1.5,
+            "the pi in rotationYXZ is what separates them"
+        );
+        close(u, ListenerTransform::INITIAL.up, "up does agree, at the horizon");
+    }
+
+    #[test]
+    fn the_seam_carries_the_listener() {
+        // The load-bearing one: a basis nothing pushes is inert, which is the
+        // state every other test here would still pass in.
+        let mut d = RecordingDevice::default();
+        assert!(d.listener_history.is_empty());
+        let (forward, up) = listener_basis(90.0, 0.0);
+        d.set_listener(ListenerTransform {
+            position: [1.0, 2.0, 3.0],
+            forward,
+            up,
+        });
+        assert_eq!(d.listener_history.len(), 1);
+        assert_eq!(d.listener_history[0].position, [1.0, 2.0, 3.0]);
+        close(d.listener_history[0].forward, [-1.0, 0.0, 0.0], "facing +yaw 90");
+    }
+
+    #[test]
+    fn live_sounds_builds_the_transform_from_camera_angles() {
+        // `update_listener` is the production entry point, and driving it rather
+        // than `set_listener` is what stops this witnessing a helper the app does
+        // not call. It goes to a `SilentDevice`, which counts rather than stores,
+        // so the assertion is on the count moving.
+        let live = super::LiveSounds::new(
+            super::SoundsIndex::new(),
+            rewo_data::sound_events::SoundEvents::default(),
+        );
+        let mut live = live;
+        let before = live.device.calls_made;
+        live.update_listener([0.0, 64.0, 0.0], 12.0, -3.0);
+        assert_eq!(
+            live.device.calls_made,
+            before + 1,
+            "the listener push must reach the device"
+        );
     }
 }

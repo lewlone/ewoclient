@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-10 after M138a (part):
-**2858 tests, 0 failures** (**world 1147, net 954, gpu 275, data 224, app 197,
-mesh 45, proto 16** — read off the runner per crate; they sum to 2858). Note the per-crate invocation is
+Current measurement, taken 2026-08-10 after M138a:
+**2865 tests, 0 failures** (**world 1147, net 961, gpu 275, data 224, app 197,
+mesh 45, proto 16** — read off the runner per crate; they sum to 2865). Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
 other six take `--lib`, and `--lib` there is `error: no library targets`, exit
 101, and **no** `test result` line at all. Assert that a result line exists
@@ -147,7 +147,7 @@ were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
 34/34, `mobshot` 246/246, **`live --render-check` 44/44 with validation ON and 0
-validation errors, last run for M135** (and easiest to reproduce with
+validation errors, last run for M138a, now **45/45** with r45** (and easiest to reproduce with
 `python tools/render_check.py`, which stands up a fresh server and carries both
 caller requirements); demo PNG
 `2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C
@@ -20225,6 +20225,45 @@ milestone measured, but nothing *structurally* stops a fifth from repeating it �
 so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
+
+### M138a (rest) — the listener seam, and a witness that asserts a rate (2026-08-10)
+
+**Nothing in Rewo carried a listener at all** — `AudioDevice` had four methods
+and none was one — so every `SetSelfPosition` was an absolute world coordinate
+panned against ears at the origin facing -Z. `ListenerTransform` and
+`listener_basis` close it, and a fifth trait method carries it, per **frame**.
+
+`listener_basis` transcribes `Camera.setRotation`: JOML's `rotationYXZ` is
+`Ry(pi - yaw) * Rx(-pitch)` with the z term zero, and composing it by hand
+collapses both vectors to closed forms with no quaternion left. **The forward
+vector is exactly `Entity.calculateViewVector`**, which reaches the same place by
+a wholly different route — that agreement is what makes the derivation checkable
+rather than self-consistent, and the witness compares them over 56 angle pairs.
+**`up` is not the constant `(0,1,0)`**: at pitch 90 the forward vector points
+straight down and up becomes the horizontal heading, so a pinned up gives a
+stereo image that will not roll when you look up, and nothing about that looks
+wrong in a log.
+
+**A witness was wrong before the code**, the fifth this session. It asserted
+`INITIAL == listener_basis(0, 0)`, which reads as obviously true and is false:
+`INITIAL` is `Camera`'s raw `FORWARDS`, the value before any rotation, while
+`setRotation` opens with a half turn about Y even at yaw 0. Yaw 0 faces **+Z**;
+the record's default faces -Z. The test pins the distinction and names the `pi`.
+
+**r45 asserts a RATE.** `SoundEngine.updateSource(camera)` takes the camera the
+frame is about to use, so the push belongs on the render path; moved beside
+`sounds.drive` it would still be non-zero and would score about the tick count,
+an order of magnitude below the frames. `> 0` cannot see that and `== frames`
+can — it reads 5898 of 5898. It also reads the transform **back off the device**
+rather than recomputing it from the session (M88's r20). Verified by deleting the
+call site: `0 pushes over 5783 frames`, 44/45, **with the whole unit suite still
+green** — which is the point, that call being a composition root in a binary
+crate.
+
+**Measured:** 2865 tests / 0 failures (world 1147, net 961, gpu 275, data 224,
+app 197, mesh 45, proto 16), 34 gates green with 0 validation lines,
+`live --render-check` **45/45**, demo PNG `2cc56b4acbfb92cb` byte-identical,
+11/11 mutations with a no-op control that SURVIVED. **M138a is complete.**
 
 ### M138a (part) — `DATA_SILENT`, and a gate that could assert nothing (2026-08-10)
 

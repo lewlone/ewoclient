@@ -256,6 +256,16 @@ struct RenderCheck {
     /// reached the renderer. Three injected rows with a name and a number
     /// each, plus the title, is seven.
     sidebar_text_max: usize,
+    /// M138a — listener transforms that reached the audio device.
+    ///
+    /// Compared against `frames`, not merely to zero: the interesting claim is
+    /// that the push happens per FRAME. A client that moved it beside
+    /// `sounds.drive` would still be non-zero here and would score roughly the
+    /// tick count instead, which at any real frame rate is an order of
+    /// magnitude smaller.
+    listener_pushes: u64,
+    /// The forward vector the device last received, for a shape check.
+    listener_forward: Option<[f32; 3]>,
     /// M111 — frames on which the chat SCROLLBAR was drawn.
     ///
     /// It exists only while the screen is open AND the backlog exceeds the box
@@ -978,6 +988,30 @@ impl RenderCheck {
             format!(
                 "{} of {} frames drew a sidebar, at most {} text lines (must be                  exactly 7: a title, then three visible rows of name + score.                  A fourth `#hidden` holder is injected too, so 9 means                  `isHidden` was skipped and 1 means only the title resolved)",
                 self.sidebar_frames, self.frames, self.sidebar_text_max
+            ),
+        );
+        // M138a — the listener seam. `AudioDevice` had four methods and none of
+        // them was a listener, so every sound was positioned in absolute world
+        // coordinates against ears at the origin facing -Z.
+        //
+        // **Compared against the frame count, not against zero.** The push
+        // belongs on the render path, because vanilla's
+        // `SoundEngine.updateSource(camera)` is called with the camera the frame
+        // is about to use, while `SoundEngine.tick` is `Minecraft.tick`'s. Moved
+        // beside `sounds.drive` this would still be non-zero and would score
+        // about the tick count — an order of magnitude below the frames — so a
+        // `> 0` threshold cannot tell the two apart. This is also the only check
+        // that reaches the call site at all: it is a composition root in a binary
+        // crate, and deleting it survives the whole unit suite.
+        row(
+            "r45 the listener reached the audio device, once per frame",
+            self.listener_pushes == self.frames
+                && self
+                    .listener_forward
+                    .is_some_and(|f| (f[0] * f[0] + f[1] * f[1] + f[2] * f[2] - 1.0).abs() < 1e-3),
+            format!(
+                "{} pushes over {} frames (must be equal -- per tick would be                  roughly the tick count), last forward {:?} (must be a unit                  vector, which a default-constructed or zeroed transform is not)",
+                self.listener_pushes, self.frames, self.listener_forward
             ),
         );
         row(
@@ -7902,6 +7936,23 @@ impl LiveApp {
         );
         let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
         let eye = player_eye(session);
+        // M138a — `SoundEngine.updateSource(camera)`, and it lives HERE rather
+        // than beside `sounds.drive` because vanilla calls it from the render
+        // path: per frame, with the camera this frame is about to use. The tick
+        // loop drains sound *events*; this moves the ears.
+        self.sounds.update_listener(
+            eye_f64(session),
+            session.player.yaw,
+            session.player.pitch,
+        );
+        // Read BACK off the device rather than counting the call: deleting
+        // `update_listener`'s body would leave a call-site counter green.
+        let pushes = self.sounds.device.listener_pushes;
+        let fwd = self.sounds.device.last_listener.map(|t| t.forward);
+        if let Some(c) = self.check.as_mut() {
+            c.listener_pushes = pushes;
+            c.listener_forward = fwd;
+        }
         // Before `set_entities`: the entity pass reads the eye as the CEM
         // `player_pos_*`, which FA aims mob eyes/heads with.
         state.world_renderer.set_camera(eye.to_array());
