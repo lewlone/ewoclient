@@ -232,10 +232,13 @@ the feature is still not visible, which is the honest state and is why the
 "what is not" column exists.
 
 **Both actionable classes are now empty**, which changes what this document is
-for. It was written to enumerate what Rewo ignores; what remains is 16 packets
-that need a subsystem (a chat-input path, a map-image pipeline, a
-resource-pack fetcher, a reconnect flow, an advancement tree, a dialog
-framework) and 11 that do not apply. **The recipe book was on that list and is
+for. It was written to enumerate what Rewo ignores; what remains is **12
+packets that need a subsystem and 11 that do not apply** — §2's machine-checked
+table is the authority, and this sentence said 16 until 2026-08-10, which is the
+third time this narrative has drifted from the table above it. The subsystems are
+a map-image pipeline, a resource-pack fetcher, a reconnect flow, an advancement
+tree and a dialog framework; **the chat-input path was on that list and is no
+longer**, since M110 built the `ChatScreen` and M114–M124 the command line. **The recipe book was on that list and is
 no longer** — M93y decoded it, M93z–M107 built the UI (M107 closed it), and its
 four packets are `handled`. Picking work
 from here now means **choosing a subsystem**, not choosing a packet — and
@@ -250,7 +253,9 @@ from M69, and `set_passengers` from the M68/M70/M72 trio. Six are M74's, one is
 M75's, three are M76's, three are M77's, eight are M78's, seven are M79's, six are M80's, three are
 M81's, and one each from M82, M83 and M85.
 
-**Class A is exhausted; class B is down to one screen.** M76 took the last
+**Class A and class B are both exhausted** (this heading said "class B is down
+to one screen" until 2026-08-10; M84 closed it, and §0 item 2 had said so). M76
+took the last
 three pure-state gaps (`player_rotation`, `player_look_at`,
 `set_default_spawn_position`, §3), and the five milestones after it took eighteen
 of class B's twenty. What they established is worth keeping: **the class letter
@@ -265,11 +270,12 @@ with one state machine, one physics consequence and one wall, and splitting the
 decode from the render would have left the state machine untestable against
 anything.
 
-The one that remains is `award_stats` (3), the statistics screen — taken by a
-sibling milestone running in parallel with M85. When it lands, **class B is
-empty**: every clientbound-play packet that needs a renderer will be rendered,
-and the whole remaining gap is class C (a subsystem Rewo lacks) and class D
-(not applicable).
+The last of them was `award_stats` (3), the statistics screen, taken by **M84**
+in parallel with M85 — so **class B is empty**: every clientbound-play packet
+that needs a renderer is rendered, and the whole remaining gap is class C (a
+subsystem Rewo lacks) and class D (not applicable). This paragraph was written
+while that milestone was still in flight and read "the one that remains … when it
+lands" for six days after it landed.
 
 **M82 took the third screen, `player_combat_kill` (68), and with it the
 framework the other two were waiting on.** What this document said about them —
@@ -420,7 +426,7 @@ one of the two reads as fully handled.
 | `game_event` (38) — **closed, M71** | All fourteen types, via `rewo_net::game_event`. Ten are applied: the four weather levels, `CHANGE_GAME_MODE` → `ClientGameState::game_mode`, the `IMMEDIATE_RESPAWN` / `LIMITED_CRAFTING` flags, `WIN_GAME` / `DEMO_EVENT` / `LEVEL_CHUNKS_LOAD_START` as markers, `NO_RESPAWN_BLOCK_AVAILABLE` as a queued translation key, and the three local sounds. | **`GUARDIAN_ELDER_EFFECT`'s particle** — `ParticleTypes.ELDER_GUARDIAN` is not one of M37's six transcribed kinds, and M37's rule is that an unknown kind is dropped rather than rendered as something else. The gamemode is **modelled, not acted on** (§4.1). `WIN_GAME` and `DEMO_EVENT` open screens Rewo has no screen system for. |
 | `chunk_batch_finished` (11) — **closed, M74** | The `batchSize` **VarInt**, folded into `ChunkBatchSizeCalculator` along with `chunk_batch_start`'s clock stamp, and the reply is now `getDesiredChunksPerTick()`. | Nothing. Recorded because the row it used to have was **wrong in two ways**: it called the unread field "the `batchSize` float" (it is a VarInt — the *float* in this exchange is the serverbound reply's `desiredChunksPerTick`), and it classed a hard-coded `p.f32(64.0)` as an unread field when it was a **live flow-control divergence**: vanilla's seeded opening bid is `3.5`, so Rewo over-bid the server ~18× on every batch of every session and never adapted. See §8. |
 | `explode` (36) | The physics prefix — position and the `Optional<Vec3> playerKnockback` that M68 applies to the local player. | The particle / sound / weighted-block-list tail, deliberately: the particles need M37 kinds Rewo has not transcribed and the sound needs playback, which M63 scoped out. `crate::motion::read_explode` returns how many bytes it used precisely so this stays honest. |
-| `level_event` (46) | The particle half, through M37's `route_level_event`. | The sound half of the same id table — deliberately, per M63: playback, not decode. |
+| `level_event` (46) | **Both halves.** The particle half through M37's `route_level_event`, and since **M140** the sound half through `route_level_event_sound` — the block CENTRE (`Level.java:475`), the `data` gates, and the per-row volume. | The four camera- and listener-placed ids of seventy, which need the camera the decode layer does not have; and `distance_delay`, which vanilla defers by `distance / 340` s and Rewo's queue cannot express, so those arrive early rather than not at all. |
 | `block_changed_ack` (4) | The id. The arm is a `log::debug!`. | The sequence number and the block-prediction rollback it acknowledges — Rewo does not predict block changes, so there is nothing to roll back yet. |
 | `container_set_content` / `container_set_slot` (18 / 20) | Container id **0** — the player's own inventory. `apply_container_set_content` returns early on any other id. | Every other container id, dropped whole (M34's documented choice: there is no screen to put them in). `set_player_inventory` (108) and `set_cursor_item` (96) share the rule. |
 | `player_info_update` (70) | `ADD_PLAYER`, `UPDATE_GAME_MODE`, `UPDATE_LISTED`, `UPDATE_LATENCY`, `UPDATE_LIST_ORDER`, `UPDATE_HAT`, and the walk past the rest. | `UPDATE_DISPLAY_NAME` and `INITIALIZE_CHAT` are walked and discarded rather than stored. The walk is correct — M62 unified it into one function after finding a drifted copy — but the values do not survive it. |

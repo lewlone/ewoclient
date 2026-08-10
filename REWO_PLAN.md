@@ -2060,8 +2060,13 @@ workflow in §11 is what makes re-pinning cheap).
   too). It is simultaneously: the deterministic perf benchmark for every
   1%-low comparison, the offline dev fixture (renderer work without a
   server), and a bug-repro format.
-- **Sound: explicitly post-v1.** Asset index already gives us the files;
-  `rodio` when it happens. Silence is acceptable for the experiment phase.
+- ~~**Sound: explicitly post-v1.**~~ **SHIPPED 2026-08-10** as M138a–d —
+  `crates/rewo-audio`, plus M140's `level_event` sounds and M140b's music fade.
+  **Do not act on this line's crate suggestion**: it said `rodio`, which
+  [`REWO_AUDIO_PLAN.md`](REWO_AUDIO_PLAN.md) then rejected on evidence — its
+  specified voice cannot play a stereo source and all the music is stereo, and
+  its pan law is 0/0 for every UI sound. cpal + symphonia is what shipped.
+  Nobody has listened to it yet.
 - **Server resource packs: policy decision** (§10, D8).
 
 ---
@@ -2896,12 +2901,24 @@ not a corner of this one.
 
 ### Deliberately not proposed (as of §16's writing)
 
-- **Particles** — a whole subsystem, and every existing gate is geometry-based;
-  it would need a new verification approach before it could be shipped honestly.
-  **Still true.**
-- **Sound** — outside a renderer's scope. **Still true.**
-- **First-person hand / GUI** — needs an inventory model Rewo does not have.
-  **Still true, and now the single largest gap** — see §0.0.
+- ~~**Particles**~~ — called a whole subsystem needing a new verification
+  approach, **shipped as M37** (§15). The objection stated here is exactly what
+  M37 disproved: `Particle.tick()` contains no randomness at all, every generator
+  is `java.util.Random`'s LCG, and a fixed seed turns spawn offset, velocity,
+  lifetime, colour and sprite index into assertable numbers. The gate was
+  geometry-based after all.
+- ~~**Sound**~~ — called outside a renderer's scope, **shipped as M138a–d**
+  (2026-08-10) in `crates/rewo-audio`, plus M140's `level_event` sounds and
+  M140b's music fade. It was outside a *renderer's* scope and that was never the
+  boundary that mattered. **Nobody has listened to it yet** — see
+  [`REWO_AUDIO_PLAN.md`](REWO_AUDIO_PLAN.md).
+- ~~**First-person hand / GUI**~~ — called blocked on an inventory model,
+  **shipped**: M34 built the inventory, M35 the screen, M38 the hand.
+
+*(All three carried a "**Still true.**" marker until 2026-08-10, long after they
+were false. The heading says "as of §16's writing", which would have made them
+records — but a later hand-added "Still true." is a CURRENT-STATE claim, and
+claims rot. If you annotate an old list, you have taken ownership of it.)*
 - ~~**Weather and clouds**~~ — called filler here, **shipped as M33/M33b**
   (§15). It stopped being filler once M12's celestials made "clear weather
   only" the last thing missing from the sky.

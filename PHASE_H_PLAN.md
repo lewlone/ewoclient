@@ -94,6 +94,14 @@ widget on the launcher. The Discord-MC link is the canonical identity.
 - **Bot is the sole source of truth.** Launcher never persists friend
   lists or presence to local disk. Loss of connectivity = blank UI with
   "reconnecting…", not a stale cache that lies.
+  > **⚠ NO LONGER TRUE as shipped.** The in-game FRIENDS overlay tab (2026-05-31)
+  > is a **file bridge**: the launcher writes a per-profile `ewo-friends.txt`
+  > snapshot that the cdylib reads, because the in-game side does no HTTP. So a
+  > friend list *is* persisted to local disk, and it *is* a cache that can lie —
+  > the launcher only rewrites it while it is the foreground window, so during
+  > play the list reflects roughly the state at launch. That was a deliberate
+  > trade for keeping HTTP out of the cdylib, not an oversight, but it is the
+  > exact failure mode this bullet was written to forbid.
 - **Friendships are stored once per pair, not twice.** Row convention
   `user_a < user_b`. Status enum carries direction for the pending
   states. Cuts storage in half; queries cheap on both sides because of

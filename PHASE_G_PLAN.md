@@ -26,6 +26,22 @@ modules — not now, not ever. No KillAura, no reach, no ESP, no names from that
 world. The in-game MODULES view is a clean Velvet feature list, styled like the
 existing MODS list — explicitly *not* a hacked-client ClickGUI grid.
 
+> **⚠ SUPERSEDED, and the record matters more than the rule.** This constraint
+> was written for Phase G and then **drifted across a series of post-G sprints**
+> that shipped PvP and macro modules without any docs update — including a
+> `Reach Lock`, which this paragraph names explicitly as out of bounds. An
+> anticheat ban on CatPvP landed **with the macros switched off**, pointing at
+> class-name fingerprinting rather than behaviour detection.
+>
+> The 2026-05-26 refactor is the current rule, and it is a SPLIT rather than a
+> reversal: **12 legit modules ship in the default build** (zero packet
+> synthesis), and **14 assist modules exist only under `--features pvp` /
+> `build.ps1 -Pvp`**, with their Java classes under `dev.lewlone.ewohud.assist.*`
+> filtered out of the legit jar entirely so their names never enter the runtime.
+> Three were deleted outright (`auto_crit`, `mace_combo`, `wind_charge_mlg`).
+> **CLAUDE.md's "Post-ban refactor" section is authoritative**; this paragraph is
+> kept because a rule that was broken silently is worth being able to see.
+
 ---
 
 ## The core problem
