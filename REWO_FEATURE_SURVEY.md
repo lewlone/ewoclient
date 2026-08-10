@@ -6,12 +6,14 @@ committed). Every number below is that tool's output — if you change the
 facets, the `MODERN` version set or the classifiers, the numbers move and this
 document is stale.
 
-> **Not re-run since M86 (2026-08-02).** M87–M135 shipped the container/menu
+> **Not re-run since M86 (2026-08-02).** M87–M140 shipped the container/menu
 > screens, the recipe book, the whole chat stack (the HUD box, the screen you
 > type into, the scrollbar, the Brigadier command tree and a complete local
 > command line), translatable-component resolution, styled spans, the chat
 > decoration, clickable text and the scoreboard sidebar, after this snapshot was
-> taken. Those are *vanilla* features and the 75 here are *mod* features, so
+> taken, and **M138 shipped an audio stack** — which matters here because three
+> of the 75 items are listed as blocked on audio. Re-read those three before
+> assuming they still are; the device exists, though nothing has listened to it. Those are *vanilla* features and the 75 here are *mod* features, so
 > nothing is known to have moved into the `parity` bucket — but that is a
 > reasoned expectation, not a measurement, and §0's own rule applies to it:
 > **audit any feature against the crates before scheduling it.** This table was

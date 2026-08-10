@@ -217,59 +217,90 @@ injected**: the container, the book and the chat all drive themselves, so only
 r25 — which needs a real server to grant recipes — could tell. A gate whose
 witnesses are mostly self-driven can look healthy against nothing.
 
-### What to do next (written 2026-08-09, after the M127–M134 integration)
+### What to do next (rewritten 2026-08-10, after M135–M140b)
 
-**Eight milestones landed at once**, developed in parallel on six branches off
-the M126 merge and integrated in one pass — M127 the chat decoration, M128
-clickable chat, M129 the disconnect reason, M130 the linear-colour correction
-and the title's style flags, M131 the sound model, M132 the scoreboard sidebar,
-M133 the recipe book's widget tooltips, M134 the command line's exception
-messages. **Every item this section recommended before is now shipped**, which
-is why it is rewritten rather than appended to.
+**This section was rewritten rather than appended to, because appending is what
+broke it.** The version before this one still opened with "AUDIO is still the top
+item" and told the reader to *pick a crate (cpal / rodio / kira)* — a decision
+that had been made, shipped and merged — and an update paragraph bolted onto its
+front had left a stray `**` mid-sentence, running two paragraphs together. That
+is this file's own most-repeated lesson landing on itself: **the numbers stay
+true because a test checks them and the prose does not.** Check any
+forward-looking paragraph here against `git log --oneline` before acting on it.
 
-**Update 2026-08-10: M135, M136 and M137 shipped**, none of them from this
-numbered list, because all three were bugs rather than milestones. M135 took the
-`HudFill` double-scale out of the correctness-gaps list below and added
-`tools/render_check.py`, so the one gate that needs a server is now one command.
-M136 and M137 were **recovered from agent worktrees that this section called
-litter** — their branches really were fully merged, and two of the five still
-held uncommitted work, one of it a wrong colour constant. `git branch --merged`
-answers a different question from `git status`; ask both before deleting a
-worktree. The list below is otherwise unchanged and **AUDIO is still the top
-item.**
+**Eleven milestones shipped on 2026-08-10**, none of them from the list this
+replaces. M135 (the `HudFill` double-scale), M136 (a spectator's tab-list
+colour), M137 (a one-span fixture that could not witness a pen advance), then
+the whole audio stack — M138a the listener seam, M138b the decode and buffer
+library, M138c the mixer, M138d the ring and the device — and M140's
+`level_event` sounds and music fade.
 
-1. **AUDIO — the largest single gap. [`REWO_AUDIO_PLAN.md`](REWO_AUDIO_PLAN.md)
-   is now the plan for it** (2026-08-10): cpal + symphonia in a new `rewo-audio`
-   crate, a pure caller-driven `Mixer::render` that never names cpal, and four
-   independently shippable steps M138a–d, then M139's loopback oracle and M140's
-   breadth. **M138a ships alone with no new dependency** and closes hazards that
-   exist today — the missing listener transform, a `build_sounds` that swallows a
-   missing `sounds.json`, and `entity_silent` hardcoded to `false`. Read its §0
-   first: it carries three corrections to its own winning design. The item below
-   is the pre-plan framing, kept because its constraint is unchanged.** M63/M64/M66 decoded the packets and built the 1,968-entry
-   registry and the weighted-variant index; **M131 added the sound-instance
-   model, the channel budget and a device seam on top of them and deliberately
-   stopped there**, so what is missing is the device and the attenuation curve
-   behind that seam. `REWO_FEATURE_SURVEY.md` puts ~117M downloads of demand on
-   it. It is still the **first Rewo milestone that cannot be headlessly
-   verified end to end**, so settle up front what the gate asserts and what it
-   plainly does not — a mixer's output buffer can be asserted; "it sounds
-   right" cannot. Pick a crate (cpal / rodio / kira) and read M131's seam
-   first, since it names the shape it expects.
-2. **`REWO_FEATURE_SURVEY.md`** — features rather than milestones, now that the
-   packet ladder and the chat/command arc are both closed. Audit its items
-   against the crates first: five are already at vanilla parity, and the arc
-   just merged closed several more.
-3. **The remaining wire-time flattens.** M125 carried components forward on the
+**AUDIO IS NO LONGER THE TOP ITEM.** `crates/rewo-audio` exists with the
+quantisation, the buffer library, the mixer, the SPSC command ring and a cpal
+sink; `rewo-net` carries the listener transform and the music fade.
+[`REWO_AUDIO_PLAN.md`](REWO_AUDIO_PLAN.md) marks what shipped at each section.
+
+1. **THE LISTENING PASS, and it is the user's.**
+   `cargo run -p rewo-audio --example listen`. Everything a machine can check
+   about the audio stack passes, and **that is precisely not the same claim** as
+   it making a correct noise — no gate in this project opens a device, so an
+   absent, muted, exclusive-mode or unplugged one all look identical from inside
+   the process. Until someone listens, "the audio tests pass" must not be read
+   as "audio works". `REWO_AUDIO_PLAN.md` §4 says what to listen for. **Do this
+   before M139**, whose whole job is measuring a divergence from vanilla — there
+   is no sense grading a divergence before anyone has confirmed there is a
+   signal.
+2. **Wire `rewo-audio` into the client.** Nothing in `rewo-app` depends on it
+   yet: that containment was deliberate, so 34 gates would not link an audio
+   stack for a subsystem none of them exercises, and it is also why no sound
+   plays in `rewo live` today. Undoing it is a decision to take on purpose
+   rather than by drift — the ring's producer end has to resolve asset keys to
+   PCM off the tick thread, which is M138b's `SoundBufferLibrary` and a worker,
+   not a call from `LiveSounds::drive`.
+3. **M139 — the loopback oracle**, once (1) is done. A Java harness driving
+   vanilla's own `Library`/`Listener`/`Channel` against an OpenAL Soft loopback
+   device, dumping PCM, with the **vectors** checked in so no JVM is needed at
+   gate time (the `tools/java_tostring_oracle` precedent). It is what turns the
+   mixer's stated approximations — the equal-power pan, the linear resampler —
+   from declarations into a measured divergence in dB.
+4. **M140's remainder**: the ~8 tickable per-tick ramps, and the rest of music
+   (selection, the timers, `getSituationalMusic`). Both are gradeable without a
+   device.
+5. **`REWO_FEATURE_SURVEY.md`** — features rather than milestones. Audit its
+   items against the crates first: five were already at vanilla parity when it
+   was written and the arcs since have closed more.
+6. **The remaining wire-time flattens.** M125 carried components forward on the
    *chat* path and M127/M129 extended that to the decoration and the disconnect
    reason. Every other `to_plain_text` / `nbt_text` call site is still
    decode-time with no language table — item names and lore, the MOTD, entity
    nametags, suggestion tooltips — so a translatable in any of them still shows
    its key. Each needs its component carried to a place holding
    `BakedAssets::lang`.
-4. **`PlayerChat::unsigned_content`** is still flattened at the wire; carrying
+7. **`PlayerChat::unsigned_content`** is still flattened at the wire; carrying
    it as `Nbt` would also make `ChatTrustLevel::containsModifiedStyle`
    reachable.
+
+**Two hazards the 2026-08-10 run turned up, both about tooling rather than
+code.** A mutation battery whose mutant HANGS takes the whole battery down, its
+`finally` never runs, and **the mutation is left on disk** — then the hung test
+binary keeps holding the link output, so the next build fails with linker error
+1104 and looks like a broken tree. `tools/m138d_mutate.py` onward carry a
+per-run timeout (a hang is a KILL) and a reaper; check the file's integrity
+before diagnosing anything after an interrupted battery. And **a witness that
+asserts a scheduling-dependent fact will flake** — one asserting a concurrent
+producer "must have been refused at least once" failed the first time a consumer
+kept up, and a flaky entry is worse than none because a red run stops meaning
+anything.
+
+**The dominant failure mode of that run, by a wide margin: the WITNESS was
+wrong, not the code.** Seven times, against three code defects. The shapes
+repeat — a fixture sitting where two readings coincide (every `HudFill` fixture
+at GUI scale 1), a fixture outlasting the window it is measured in (a
+rate-conversion witness whose sounds ran past its render buffer, so both
+readings truncated and agreed), a buffer that arrives zeroed hiding a missing
+clear, an assertion computed from the constant it is testing, plain arithmetic
+done in the head, and twice a tautology (`assert!(… || true)`). Suspect the
+witness first.
 
 **A note the next integrator will want.** These six branches were developed
 concurrently and every one of them was green *alone*. Integration still found a
