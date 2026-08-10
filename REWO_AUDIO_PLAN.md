@@ -137,12 +137,24 @@ Multiplier `32767.5`, bias applied **before** a C-style truncating cast. Reprodu
 ### M138a — the listener seam, and the two live false greens
 **No new dependency.** Ships alone, merges green, and closes hazards that exist today.
 
-> **PARTLY SHIPPED 2026-08-10.** Items **3 (`build_sounds` fails closed) and 4
-> (`DATA_SILENT`) are done and merged**; see `REWO_PLAN.md` §15. Items **1 and 2
-> (the listener seam and `listener_basis`) and the r45 witness are OPEN** and are
-> the next thing to pick up here. They were separated because 3 and 4 are live
-> bugs that stand alone, while 1 and 2 are the structural gap the device needs —
-> and shipping a half-built seam would have been worse than shipping neither.
+> **SHIPPED IN FULL 2026-08-10** — all four items and r45; see `REWO_PLAN.md`
+> §15. It landed in two commits (3 and 4 first, as live bugs that stand alone;
+> then 1 and 2, the structural gap the device needs), which is why the log
+> carries two entries.
+>
+> **Two things the plan did not anticipate.** `listener_basis`'s forward vector
+> is *exactly* `Entity.calculateViewVector`, reached by a completely different
+> route — which turns the transcription from self-consistent into checkable, and
+> is the witness this step leans on. And **`ListenerTransform::INITIAL` is not a
+> camera at yaw 0**: it is `Camera`'s raw `FORWARDS` constant, while
+> `setRotation` opens with `rotationYXZ(pi - yaw, ...)`, so yaw 0 faces +Z and
+> the record's default faces -Z. A test asserting they agree looks obviously
+> right and puts the ears backwards.
+>
+> **r45 asserts `pushes == frames`, not `pushes > 0`**, because the push
+> belonging on the render path rather than the tick loop is the whole claim; a
+> per-tick client would still be non-zero. Verified by deleting the call site:
+> 0 of 5783, 44/45, with the unit suite entirely green.
 >
 > One correction from doing them: item 4 is smaller than "one index" suggests in
 > only one respect and larger in another. The decode really is one match arm, but
