@@ -67,6 +67,42 @@ MUTATIONS = [
         "        let _ = entity_id;\n        false",
         "KILLED",
     ),
+    # --- the listener seam (items 1 and 2) --------------------------------
+    (
+        "flip the sign of forward.z",
+        SOUND,
+        "    ([-cp * sy, -sp, cp * cy], [-sp * sy, cp, sp * cy])",
+        "    ([-cp * sy, -sp, -cp * cy], [-sp * sy, cp, sp * cy])",
+        "KILLED",
+    ),
+    (
+        "pin up to the constant (0, 1, 0) -- right at the horizon, wrong off it",
+        SOUND,
+        "    ([-cp * sy, -sp, cp * cy], [-sp * sy, cp, sp * cy])",
+        "    ([-cp * sy, -sp, cp * cy], [0.0, 1.0, 0.0])",
+        "KILLED",
+    ),
+    (
+        "swap right() to up x forward -- the stereo image mirrored",
+        SOUND,
+        "            f[1] * u[2] - f[2] * u[1],\n            f[2] * u[0] - f[0] * u[2],\n            f[0] * u[1] - f[1] * u[0],",
+        "            u[1] * f[2] - u[2] * f[1],\n            u[2] * f[0] - u[0] * f[2],\n            u[0] * f[1] - u[1] * f[0],",
+        "KILLED",
+    ),
+    (
+        "RecordingDevice drops the listener instead of recording it",
+        SOUND,
+        "    fn set_listener(&mut self, transform: ListenerTransform) {\n        self.listener_history.push(transform);\n    }",
+        "    fn set_listener(&mut self, _transform: ListenerTransform) {}",
+        "KILLED",
+    ),
+    (
+        "update_listener builds a transform and never sends it",
+        SOUND,
+        "        self.device.set_listener(ListenerTransform {\n            position,\n            forward,\n            up,\n        });",
+        "        let _ = (position, forward, up);",
+        "KILLED",
+    ),
 ]
 
 
