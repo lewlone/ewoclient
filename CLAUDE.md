@@ -730,7 +730,11 @@ The launcher re-reads the loader manifest on every launch (no TTL cache in `load
 
 **Adding a new bundled mod:** three-place change (the BundledMods verification fails loud if any two drift):
 1. `crates/ewo-launcher/src/bundled.rs::CATALOG` — adds the UI row + library-name → mod-id mapping the launcher uses for classpath stripping.
-2. `EwoLoaderV1/manifest/0.1.0/26.1.json::libraries[]` — adds the download artifact entry.
+2. `EwoLoaderV1/manifest/0.1.0/<version>.json::libraries[]` — adds the download
+   artifact entry. **There are TWO manifests now**, `26.1.json` and `26.2.json`,
+   and the launcher picks one per Minecraft version line, so a mod added to only
+   one of them is missing on the other with no error until `BundledMods`
+   verification fires at launch.
 3. `EwoLoaderV1/src/main/java/.../BundledMods.java::BUNDLED_MODS` — adds the post-discovery verification entry.
 
 **GitHub Release snapshots (off-box backup of the fat jar):** versioned snapshots of the fat jar live on `lewlone/ewo-loader` GitHub Releases (private). `v0.19.2-bundle.1` was the first one. The loader manifest's fat-jar URL stays `file://` for active dev (per the iteration loop above — fast rebuild + no upload step), so the launcher reads the local jar on every launch. The Release exists as a versioned backup + a stepping-stone if the loader ever needs to ship to a second machine. To cut a new snapshot:
@@ -1925,7 +1929,7 @@ per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, all **34** serverless gates green with 0
-validation errors, `live --render-check` **44/44** with validation ON and 0
+validation errors, `live --render-check` **45/45** with validation ON and 0
 validation errors, demo PNG `2cc56b4acbfb92cb`.
 **The recipe book is closed** (M105–M107) and **M108–M111 shipped chat** —
 `ChatComponent`, the wrap under it, the `MessageSignatureCache` without which
