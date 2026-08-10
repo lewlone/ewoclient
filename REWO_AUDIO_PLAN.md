@@ -172,12 +172,23 @@ Multiplier `32767.5`, bias applied **before** a C-style truncating cast. Reprodu
 
 ### M138b — decode and the buffer library
 
-> **PARTLY SHIPPED 2026-08-10.** The crate exists, with the **quantisation** and
-> the **buffer library's caching rules** — the two pieces here with an exact
-> vanilla answer, and the two that need no decoder to grade. **Symphonia and the
-> real ogg decode are OPEN.** The split is deliberate: a decoder puts build cost
-> on 34 gates that never want audio, and the transcribed parts do not need one,
-> so the crate ships today with **no dependencies at all**.
+> **SHIPPED IN FULL 2026-08-10** — the quantisation, the buffer library's
+> caching rules, and the symphonia decode. It landed in two commits (the two
+> pieces with an exact vanilla answer first, on a crate with no dependencies at
+> all; then the decoder), which is why the log carries two entries.
+>
+> **Two claims in §2.8 stopped being citations and became measurements.**
+> `item/goat_horn/call3.ogg` is 2-channel where `call0` is mono, and the store is
+> mixed-rate (chicken 44100, horn 48000) — both now asserted against real assets,
+> with the measured vectors committed and the audio left in the user's install.
+>
+> **The peak cannot see the quantisation.** Dropping the `-0.5` bias moves a
+> real sound's peak by one (19988 -> 19987) and its SUM by 812 across 1728
+> samples; the witness is on the sum. Found by a mutation surviving, not by
+> reading. And the `channels == 0` guard is unreachable — symphonia's probe
+> rejects every truncated ogg before a track exists — so that mutation is
+> recorded as an expected survivor with the proof rather than left looking
+> untested.
 >
 > Two things worth carrying forward. The **failure is cached too** —
 > `computeIfAbsent` stores the future and an exceptionally-completed future stays
