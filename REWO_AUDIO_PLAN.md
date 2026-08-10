@@ -273,6 +273,19 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 **Feasible, verified:** 26.2 pins `org.lwjgl:lwjgl-openal:3.4.1` **[read from `26.2.json`]** — and note both `3.3.3/` and `3.4.1/` are on disk **[read]**, which is how one survey graded the wrong jar. The 3.4.1 jar carries `SOFTLoopback`/`SOFTHRTF`/`SOFTOutputLimiter` and the shipped DLL is OpenAL Soft 1.25.1 exporting `alcLoopbackOpenDeviceSOFT` / `alcRenderSamplesSOFT` / `alcIsRenderFormatSupportedSOFT` **[concurring, two independent reads]**. A Java harness drives **vanilla's own** `Library`/`Listener`/`Channel` against a loopback device and dumps PCM — the M37 and M125 `tools/java_tostring_oracle/` precedent, checking in the **vectors** so no JVM is needed at gate time. It must pin `ALC_FORMAT_CHANNELS_SOFT`, `ALC_FORMAT_TYPE_SOFT`, frequency, `ALC_HRTF_SOFT`, `ALC_OUTPUT_LIMITER_SOFT` **and read `ALC_MONO_SOURCES` back** (the artefact that settles §0.1), or the vectors rot silently when the DLL's default output mode changes — and a checked-in vector file that stops matching looks like a Rewo regression.
 
 ### M140 — breadth
+
+> **PARTLY SHIPPED 2026-08-10.** `level_event`'s sounds are wired — the block
+> CENTRE (`Level.java:475`), the `data` gates, the per-row volume, and the
+> global-flag match. **The tickable per-tick ramps and
+> `MusicManager`/`update_category_volume` are OPEN.**
+>
+> Camera- and listener-placed ids (four of seventy) are declined, because both
+> need the camera and the decode layer does not have it; `distance_delay` is not
+> modelled, so those sounds arrive early rather than late. And a structural fact
+> found while writing the witness: **all three global rows are camera-placed**,
+> so the sound path never fires for a global packet at all — asserted over the
+> whole table, so adding a block-placed global row fails loudly.
+
 `level_event_sounds` has **zero production callers** today; most block interactions (dispenser, anvil, composter) arrive as `level_event` ids, so a large fraction of world sound stays silent even with a perfect device. Plus the ~8 tickable per-tick ramps and `MusicManager`/`update_category_volume` (which is why `gainBySource` is pinned at 1.0).
 
 ---

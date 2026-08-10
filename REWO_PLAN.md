@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-10 after M138d:
-**2909 tests, 0 failures** (**world 1147, net 961, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 2909).
+Current measurement, taken 2026-08-10 after M140 (part):
+**2916 tests, 0 failures** (**world 1147, net 968, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 2916).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -20227,6 +20227,38 @@ milestone measured, but nothing *structurally* stops a fifth from repeating it �
 so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
+
+### M140 (part) — the level_event sounds nothing had asked for (2026-08-10)
+
+`rewo_data::level_event_sounds` has carried the whole 83-id switch since M66,
+partition-tested, with **zero production callers**. Most block interactions
+arrive as a `level_event` id rather than a `sound` packet — a dispenser, an
+anvil, a wither breaking a block — so a large fraction of the world's noise was
+silent regardless of the device.
+
+**The position is the block CENTRE**: `Level.playLocalSound(BlockPos, …)`
+delegates to `pos.getX() + 0.5` on all three axes (`Level.java:475`), and the
+corner reading is half a block out on three axes at once — a few percent of gain
+and a visible shift in the image at a 16-block radius, invisible in a log.
+**Volume is carried and matters**: a ghast warning is 10.0 against a bat's 0.05.
+**A `data` gate outside its branches is silence**, not a fall-through to the
+first row, because vanilla's `if/else if` has no `else`.
+
+**A structural fact found while writing the witness:** all three `global: true`
+rows are camera-placed, so this path can never fire for a global packet — pinned
+over the whole table, so a block-placed global row added later fails here.
+
+**One assertion was a tautology** (`assert!(… || true)`), which also contradicted
+a test two functions down; it survived as long as it took to read back. The same
+defect M69's battery found in its own witness.
+
+**Stated boundaries:** camera- and listener-placed ids (four of seventy) are
+declined because both need the camera; `distance_delay` is unmodelled, so those
+arrive early rather than not at all.
+
+**Measured:** 2916 tests / 0 failures, 34 gates green with 0 validation lines,
+8/8 mutations with a no-op control that SURVIVED. M140's other two parts — the
+tickable ramps and `MusicManager` — remain open.
 
 ### M138d (rest) — the device, and the line where the machine stops (2026-08-10)
 
