@@ -10,8 +10,15 @@ rather than an outage, and a byte comparison at the end rather than
 `git diff --quiet` (which cannot tell a leftover mutation from uncommitted
 work).
 
-Unlike its predecessors this one mutates TWO files, because M141a's fix lives in
-`sound_engine.rs` and its witness would otherwise be ungraded.
+Unlike its predecessors this one mutates TWO files, because half the milestone
+is the engine driving the ramps and half is the ramps themselves.
+
+M141a's inline f32 narrowing has **no entry of its own**, and that is not an
+omission: M141c moved it into `tickable::follow`, so the engine no longer
+narrows anywhere and "the ramps' shared follow() drops the f32 narrowing" is
+the same claim at its new single site. The battery reported it as
+`ANCHOR MATCHED 0 TIMES` rather than silently passing, which is the behaviour
+that made the move visible.
 """
 import io
 import os
@@ -274,12 +281,40 @@ MUTATIONS = [
         "    inst.x = pos.0;\n    inst.y = pos.1;\n    inst.z = pos.2;",
         "KILLED",
     ),
-    # --- M141a, in the other file ------------------------------------------
+    # --- M141c: the engine actually drives the ramps -----------------------
     (
         E,
-        "M141a: the engine's per-tick refresh drops the f32 narrowing",
-        "                    l.instance.x = x as f32 as f64;\n                    l.instance.y = y as f32 as f64;\n                    l.instance.z = z as f32 as f64;",
-        "                    l.instance.x = x;\n                    l.instance.y = y;\n                    l.instance.z = z;",
+        "M141c: a stopping tick still pushes volume/pitch/position",
+        "                l.instance.looping = false;\n                to_stop.push(l.channel);\n                continue;",
+        "                l.instance.looping = false;\n                to_stop.push(l.channel);",
+        "KILLED",
+    ),
+    (
+        E,
+        "M141c: a ramp's queued replacement is dropped",
+        "            if let Some((inst, next)) = outcome.queued {\n                queued.push((inst, Some(next)));\n            }",
+        "            if let Some((inst, next)) = outcome.queued {\n                let _ = (inst, next);\n            }",
+        "KILLED",
+    ),
+    (
+        E,
+        "M141c: the queued replacement loses its ramp",
+        "                queued.push((inst, Some(next)));",
+        "                let _ = next;\n                queued.push((inst, None));",
+        "KILLED",
+    ),
+    (
+        E,
+        "M141c: an entity-bound instance gets no ramp, so nothing ticks",
+        "        let ramp = match instance.binding {\n            Binding::Entity(e) => Some(crate::tickable::Ramp::EntityBound { entity: e }),\n            Binding::Fixed => None,\n        };",
+        "        let ramp = None;",
+        "KILLED",
+    ),
+    (
+        E,
+        "M141c: the silent-entity stop is skipped",
+        "            if let Some(entity) = ramp.entity() {\n                if world.entity_silent(entity) {\n                    to_stop.push(l.channel);\n                }\n            }",
+        "            if false {\n                to_stop.push(l.channel);\n            }",
         "KILLED",
     ),
 ]
