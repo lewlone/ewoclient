@@ -1774,7 +1774,17 @@ listening pass is the user's. A voice is created SILENT and waits for its `Play`
 is a no-op), and `AttachStaticBuffer` is counted-and-ignored at the callback
 because resolving an asset key is a syscall plus a large allocation. **One stated
 deviation**: `retire_finished` runs in the callback, so a finished voice's last
-`Arc<Pcm>` deallocates there, which can drop out as a sound ends.*
+`Arc<Pcm>` deallocates there, which can drop out as a sound ends. **M140 then gave
+`level_event_sounds` its first production caller** — the 83-id table has been
+complete and partition-tested since M66 and nothing called it, so a dispenser, an
+anvil and a wither breaking a block were silent regardless of the device. The
+position is the block **CENTRE** (`Level.java:475` delegates to `pos.getX() + 0.5`
+on all three axes), volume is carried and spans 200x, and a `data` gate outside its
+branches is silence rather than a fall-through. A structural fact found while
+writing the witness: **all three global rows are camera-placed**, so that path
+never fires for a global packet — pinned over the whole table. And one of my own
+assertions was a tautology (`assert!(… || true)`) that also contradicted a test two
+functions down.*
 
 *Update (2026-08-10 session, Rewo): **M136 and M137 — two fixes recovered from
 worktrees that a handoff called litter.** The claim rested on their branches being
@@ -1911,7 +1921,7 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-10
-(M138d) — **2909 tests / 0 failures** (world 1147, net 961, gpu 275, data 224,
+(M140 part) — **2916 tests / 0 failures** (world 1147, net 968, gpu 275, data 224,
 app 197, mesh 45, proto 16, **audio 44** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
