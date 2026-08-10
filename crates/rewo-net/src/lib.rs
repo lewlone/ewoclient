@@ -67,6 +67,7 @@ pub mod suggestion_wire;
 pub mod spawn_info;
 pub mod tab_list_text;
 pub mod tags;
+pub mod tickable;
 pub mod teams;
 pub mod ticking;
 pub mod view_area;
