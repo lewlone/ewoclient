@@ -65,7 +65,7 @@ use rewo_world::screen::{ButtonSprite, KeyResult, MouseResult, Screen, ScreenKin
 
 /// Total named properties this gate asserts. Locked so a skipped property
 /// fails the run even when nothing mismatched.
-const EXPECTED_WITNESSES: usize = 42;
+const EXPECTED_WITNESSES: usize = 43;
 
 const W: u32 = 640;
 const H: u32 = 480;
@@ -656,17 +656,14 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
     // decides both the colour and all five flags, per character. The cause is
     // the one line here a server controls, which is what makes dropping its
     // styling a wire-visible deviation rather than a cosmetic one.
+    //
+    // **The styled span is FIRST.** The first cut put it second, and the
+    // mutation that pens the run out style-blind SURVIVED: nothing follows the
+    // last span, so its advance is unobservable, and the line's origin comes
+    // from `styled_line_width` rather than from the pen. A weak fixture, not an
+    // equivalent mutant — the bug it missed moves the following span by eleven
+    // pixels. m21 below measures exactly that gap.
     let styled_cause = vec![
-        rewo_net::chat_style::ChatSpan {
-            text: "Steve was ".into(),
-            color: [1.0, 1.0, 1.0],
-            bold: false,
-            italic: false,
-            underlined: false,
-            strikethrough: false,
-            obfuscated: false,
-            events: None,
-        },
         rewo_net::chat_style::ChatSpan {
             text: "obliterated".into(),
             color: [1.0, 1.0, 1.0],
@@ -675,6 +672,21 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
             underlined: true,
             strikethrough: true,
             obfuscated: true,
+            events: None,
+        },
+        rewo_net::chat_style::ChatSpan {
+            text: " by a Zombie".into(),
+            color: [1.0, 1.0, 1.0],
+            bold: false,
+            italic: false,
+            underlined: false,
+            strikethrough: false,
+            obfuscated: false,
+            // M128's field, which landed on `main` after this witness was
+            // written. The three-way apply CONFLICTED here rather than
+            // dropping it, which is the whole reason the patch was applied
+            // that way — a blind apply would have compiled against the older
+            // struct and failed, or worse, reverted the field elsewhere.
             events: None,
         },
     ];
@@ -699,7 +711,7 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
         .collect();
     let plain: Vec<_> = styled_lines
         .iter()
-        .filter(|l| l.text == "Steve was ")
+        .filter(|l| l.text == " by a Zombie")
         .collect();
     c.record(
         "m20.the_death_message_keeps_its_five_style_flags_span_by_span",
@@ -715,22 +727,43 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
                 }
             && plain[0].style == rewo_gpu::text::TextStyle::PLAIN,
         format!(
-            "styled span {:?} beside a plain one {:?} — the PAIR is the claim, \
-             because a builder that hard-coded every flag would satisfy the \
-             first half alone (MUTATION: `TextStyle::PLAIN` for both)",
+            "styled span {:?} beside a plain one {:?} — the PAIR is the claim,              because a builder that hard-coded every flag would satisfy the              first half alone (MUTATION: `TextStyle::PLAIN` for both)",
             flagged.first().map(|l| l.style),
             plain.first().map(|l| l.style)
         ),
     );
 
-    // m21 — and the bold span is MEASURED with bold, so the centring moves.
+    // m21 — the PEN advances by the bold-measured width.
     //
-    // `getBoldOffset()` is 1.0 per character (M126b) and `cause_pos` centres by
-    // halving the width, so measuring the flattened string puts the whole line
-    // five and a half pixels right of centre for an eleven-character bold run.
+    // `getBoldOffset()` is 1.0 charged per character (M126b), so the eleven
+    // characters of "obliterated" put the next span eleven GUI pixels further
+    // right than a style-blind measure would. This is the witness the first cut
+    // did not have: with the bold span LAST, nothing follows it and the run's
+    // `pen += w * scale` is unobservable, so a style-blind pen survived.
+    let x_of = |v: &[rewo_gpu::world::OwnedTextLine], t: &str| {
+        v.iter().find(|l| l.text == t).map(|l| l.x)
+    };
+    let gap = match (x_of(&styled_lines, "obliterated"), x_of(&styled_lines, " by a Zombie")) {
+        (Some(a), Some(b)) => Some(b - a),
+        _ => None,
+    };
+    let bold_w = rewo_gpu::text::width_styled("obliterated", &advance, true);
+    let plain_w = rewo_gpu::text::width("obliterated", &advance);
+    c.record(
+        "m21.the_pen_advances_by_the_bold_measured_width_of_the_span_before_it",
+        gap == Some(bold_w as f32 * SCALE as f32) && bold_w == plain_w + 11,
+        format!(
+            "gap {gap:?} == bold width {bold_w} x {SCALE} (plain would be              {plain_w}, eleven px less — one per character, not one per run;              MUTATION: `width` rather than `width_styled` in the run)"
+        ),
+    );
+
+    // m22 — and the line's ORIGIN is the bold-measured width too, which is a
+    // different call site (`styled_line_width`, feeding `cause_pos`) and so a
+    // different mutation. `cause_pos` centres by halving, so the whole line
+    // moves five and a half pixels when the flag is dropped.
     let bold_free = {
         let mut c = styled_cause.clone();
-        c[1].bold = false;
+        c[0].bold = false;
         c
     };
     let unbold_view = crate::live_cmd::DeathView {
@@ -744,19 +777,13 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
         SCALE as f32,
         (W as f32, H as f32),
     );
-    let x_of = |v: &[rewo_gpu::world::OwnedTextLine], t: &str| {
-        v.iter().find(|l| l.text == t).map(|l| l.x)
-    };
     c.record(
-        "m21.a_bold_cause_is_measured_with_bold_so_the_line_recentres",
-        x_of(&styled_lines, "Steve was ") != x_of(&unbold_lines, "Steve was "),
+        "m22.the_causes_centring_uses_the_bold_measured_width",
+        x_of(&styled_lines, "obliterated") != x_of(&unbold_lines, "obliterated"),
         format!(
-            "bold run starts the line at {:?} where the same text unbolded \
-             starts it at {:?} — eleven bold characters are eleven pixels \
-             wider, so the centre moves five (MUTATION: `width` rather than \
-             `width_styled` makes these equal)",
-            x_of(&styled_lines, "Steve was "),
-            x_of(&unbold_lines, "Steve was ")
+            "bold run starts the line at {:?} where the same text unbolded              starts it at {:?} (MUTATION: `width(plain_text(line))` in              `styled_line_width` makes these equal)",
+            x_of(&styled_lines, "obliterated"),
+            x_of(&unbold_lines, "obliterated")
         ),
     );
 }

@@ -13045,6 +13045,43 @@ mod tests {
         }
     }
 
+    /// `screen_text_lines`' widget labels convert too.
+    ///
+    /// **Found by a surviving mutation, and it was a real gap rather than an
+    /// equivalent mutant.** `deathshot`'s p8 grades a button label that comes
+    /// through `death_screen_lines`, a different builder; `serverlinkshot`
+    /// drives this one but every label on the pause / disconnect / dialog
+    /// screens is WHITE — the titles and reasons after M130a's
+    /// `WithInactiveMessage` fix, and its buttons because they are active — and
+    /// white is 1.0 in both spaces, so no pixel witness there can see a
+    /// colour-space change. The one reachable case is an INACTIVE BUTTON, which
+    /// none of those screens builds. Hence a unit test rather than a gate.
+    #[test]
+    fn an_inactive_button_label_is_linear() {
+        use rewo_world::screen::{Screen, ScreenKind, Widget};
+        let mut b = Widget::button(0, 10, 10, 200, 20, "Respawn");
+        b.active = false;
+        let screen = Screen::new(ScreenKind::Death, 320, 240).with_widgets(vec![b]);
+        let lines = screen_text_lines(&screen, &advances(), 1.0);
+        assert_eq!(lines.len(), 1);
+        // `defaultInactiveMessage` is `withColor(-6250336)` = `0xA0A0A0`, whose
+        // linear value is 0.3515 against the byte's 0.6275 — the difference
+        // between the framebuffer storing 160, as vanilla does, and 208.
+        assert!(
+            lines[0]
+                .color_linear
+                .iter()
+                .all(|c| (c - 0.351_532_6).abs() < 1e-5),
+            "got {:?}",
+            lines[0].color_linear
+        );
+        assert_ne!(
+            lines[0].color_linear,
+            [160.0 / 255.0; 3],
+            "the /255 byte is what M130 removed"
+        );
+    }
+
     /// The enchanting table's cost numerals convert too.
     ///
     /// This one has **no pixel witness anywhere** — `containershot` grades the

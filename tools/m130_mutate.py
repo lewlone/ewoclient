@@ -89,6 +89,28 @@ DEATH_STYLE = """                    alpha: 1.0,
                     shadow: true,
                     style: text_style_of(span),"""
 
+# Same problem one line up: the `let w = width_styled(…)` line is byte-identical
+# in both runs, indentation included, so each anchor reaches to the first
+# comment that differs.
+TITLE_PEN = """            let w = rewo_gpu::text::width_styled(&span.text, advance, span.bold);
+            if !span.text.is_empty() {
+                out.push(rewo_gpu::world::OwnedTextLine {
+                    x: pen as f32 * px,
+                    y: y as f32 * px,
+                    px: px * scale as f32,
+                    // The span's own colour"""
+DEATH_PEN = """            let w = rewo_gpu::text::width_styled(&span.text, advance, span.bold);
+            if !span.text.is_empty() {
+                out.push(rewo_gpu::world::OwnedTextLine {
+                    x: pen as f32 * px,
+                    y: y as f32 * px,
+                    px: px * scale as f32,
+                    // `ActiveTextCollector.accept`"""
+STYLE_BLIND_PEN = (
+    "width_styled(&span.text, advance, span.bold)",
+    "width(&span.text, advance)",
+)
+
 BATTERIES = {
     "a": (
         "the model half: the draft's italic, its caret, and the two greys",
@@ -143,6 +165,8 @@ BATTERIES = {
             (LIVE, "        .map(|s| rewo_gpu::text::width_styled(&s.text, advance, s.bold))",
                    "        .map(|s| rewo_gpu::text::width(&s.text, advance))",
                    "KILLED", "m9b: a bold title is measured style-blind and centres wrong"),
+            (LIVE, TITLE_PEN, TITLE_PEN.replace(*STYLE_BLIND_PEN),
+                   "KILLED", "m9d: the title's PEN is style-blind (invisible to a one-span fixture)"),
             (LIVE, "            color_linear: srgb_bytes_to_linear(color & 0x00FF_FFFF),",
                    "            color_linear: rewo_net::chat_style::rgb_f32(color & 0x00FF_FFFF),",
                    "KILLED", "m8: the XP level is handed over as the /255 byte"),
@@ -161,9 +185,11 @@ BATTERIES = {
                     shadow: true,
                     style: rewo_gpu::text::TextStyle::PLAIN,""",
                    "KILLED", "m20: the death message drops all five Style flags"),
-            (LIVE, "            let w = rewo_gpu::text::width_styled(&span.text, advance, span.bold);",
-                   "            let w = rewo_gpu::text::width(&span.text, advance);",
+            (LIVE, DEATH_PEN, DEATH_PEN.replace(*STYLE_BLIND_PEN),
                    "KILLED", "m21: a bold cause is penned out style-blind"),
+            (LIVE, "        .map(|s| rewo_gpu::text::width_styled(&s.text, advance, s.bold))",
+                   "        .map(|s| rewo_gpu::text::width(&s.text, advance))",
+                   "KILLED", "m22: the cause's CENTRING is style-blind"),
             (LIVE, "                    color_linear: srgb_bytes_to_linear_f(span.color),\n                    alpha: 1.0,",
                    "                    color_linear: span.color,\n                    alpha: 1.0,",
                    "KILLED", "p10: the score's yellow is handed over as the /255 byte"),

@@ -64,7 +64,7 @@ use rewo_net::ids::Ids;
 
 /// Total named properties this gate asserts. Locked so a skipped property
 /// fails the run even when nothing mismatched.
-const EXPECTED_WITNESSES: usize = 57;
+const EXPECTED_WITNESSES: usize = 58;
 
 const W: u32 = 640;
 const H: u32 = 480;
@@ -322,6 +322,40 @@ fn component_styled(text: &str) -> Vec<u8> {
         out.extend_from_slice(k.as_bytes());
         out.push(1);
     }
+    out.push(0); // TAG_End
+    out
+}
+
+/// `{"text": a, "bold": true, "extra": [{"text": b}]}` — a BOLD span with
+/// another span after it.
+///
+/// Two spans because a one-span title cannot witness the run's
+/// `pen += w * scale` at all: nothing follows the last span, so its advance
+/// moves nothing. `deathshot` shipped that hole first and a mutation found it.
+/// The child inherits `bold` (a `Style` is a patch over its parent's), which is
+/// fine — what the witness needs is a bold span with something after it.
+fn component_bold_pair(a: &str, b: &str) -> Vec<u8> {
+    let mut out = vec![10u8]; // TAG_Compound
+    out.push(8); // TAG_String "text"
+    out.extend_from_slice(&4u16.to_be_bytes());
+    out.extend_from_slice(b"text");
+    out.extend_from_slice(&(a.len() as u16).to_be_bytes());
+    out.extend_from_slice(a.as_bytes());
+    out.push(1); // TAG_Byte "bold"
+    out.extend_from_slice(&4u16.to_be_bytes());
+    out.extend_from_slice(b"bold");
+    out.push(1);
+    out.push(9); // TAG_List "extra"
+    out.extend_from_slice(&5u16.to_be_bytes());
+    out.extend_from_slice(b"extra");
+    out.push(10); // element type: compound
+    out.extend_from_slice(&1i32.to_be_bytes());
+    out.push(8); // TAG_String "text"
+    out.extend_from_slice(&4u16.to_be_bytes());
+    out.extend_from_slice(b"text");
+    out.extend_from_slice(&(b.len() as u16).to_be_bytes());
+    out.extend_from_slice(b.as_bytes());
+    out.push(0); // TAG_End of the child
     out.push(0); // TAG_End
     out
 }
@@ -994,6 +1028,37 @@ fn check_lines(c: &mut Checker, baked: &assets::BakedAssets, items: &rewo_data::
             "{:?} at x={} — the same string, four pixels wider and four flags \
              richer once the component carries them",
             blines[0].style, blines[0].x
+        ),
+    );
+
+    // m9d — the title run's PEN advances by the bold-measured width too.
+    //
+    // A different call site from m9b's: m9b grades `styled_line_width` feeding
+    // `title_pos`, this grades `pen += w * scale` inside the run. m9b cannot
+    // see it, because its fixture is one span and nothing follows a last span.
+    // `deathshot` shipped exactly that hole and a mutation found it there.
+    let mut pair = TitleOverlay::default();
+    pair.set_title(rewo_net::hud_state::read_component(&component_bold_pair("AB", "CD")).unwrap());
+    for _ in 0..15 {
+        pair.tick();
+    }
+    let plines = crate::live_cmd::title_lines(&pair, advance, px, screen, 0.0, None);
+    let gap = match (plines.first(), plines.get(1)) {
+        (Some(a), Some(b)) => Some(b.x - a.x),
+        _ => None,
+    };
+    // The title's own extra scale is 4, on top of the GUI's 2.
+    let step = rewo_gpu::hud::TITLE_SCALE as f32 * px;
+    let bold_w = rewo_gpu::text::width_styled("AB", advance, true);
+    c.record(
+        "m9d.the_titles_pen_advances_by_the_bold_measured_width_of_the_span_before_it",
+        plines.len() == 2
+            && gap == Some(bold_w as f32 * step)
+            && bold_w == rewo_gpu::text::width("AB", advance) + 2,
+        format!(
+            "gap {gap:?} == bold width {bold_w} x {step} (plain would be two px \
+             less — one per character; MUTATION: `width` rather than \
+             `width_styled` in the run closure)"
         ),
     );
 
