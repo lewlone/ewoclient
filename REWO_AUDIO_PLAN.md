@@ -1,7 +1,25 @@
 # REWO_AUDIO_PLAN.md — the audio milestone
 
-**Status: a PLAN, not shipped code.** Nothing in `crates/` implements any of it
-yet. `main` is at M137; audio is M138–M140.
+**Status: MOSTLY SHIPPED (2026-08-10).** `crates/rewo-audio` exists — the
+quantisation, `SoundBufferLibrary`, the symphonia ogg decode, the `Mixer` and
+`NullSink`, the SPSC command ring and a cpal sink — and `rewo-net` carries the
+listener transform and the music fade. **M138a–d are done, M140 is half done,
+M139 has not started.** Each section below carries its own status block; trust
+those over any forward-looking sentence in the body, which was written before
+the code.
+
+**Two things are true and easy to miss.** *(1)* **Nobody has listened to it.** No
+gate in this project opens an audio device, so everything a machine can check
+passes and that is **not** the same claim —
+`cargo run -p rewo-audio --example listen` is the outstanding work and it is a
+human's. *(2)* **`rewo live` is still silent**: `rewo-app` deliberately does not
+depend on `rewo-audio`, so the 34 gates do not link an audio stack for a
+subsystem none of them exercises.
+
+*(This line read "a PLAN, not shipped code — nothing in `crates/` implements any
+of it yet" until the header was updated to match its own body. It is the exact
+failure this project keeps recording: a status line at the top of a file that its
+own sections had already contradicted.)*
 
 **Provenance.** Produced 2026-08-10 by a 14-agent survey → design → judge →
 refute → synthesise pass over the 26.2 decompile and the Rewo tree. Read

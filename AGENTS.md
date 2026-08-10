@@ -1927,12 +1927,13 @@ note.*
 ## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, particles, the first-person hand, the Velvet type stack, the container arc, the recipe book, chat, translated text, styled spans, the chat decoration, clickable text, and the scoreboard sidebar)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
-read its §0.0 HANDOFF first**, and
-**[REWO_AUDIO_PLAN.md](REWO_AUDIO_PLAN.md) is the detail behind its audio item**
-(shipped M138a–d and M140; **the listening pass is the outstanding work and it is
-the user's** — no gate opens a device) (it consolidates current state, what to do next,
+read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
+**[REWO_AUDIO_PLAN.md](REWO_AUDIO_PLAN.md) is the detail behind its audio
+item** — M138a–d and half of M140 have shipped, and **the listening pass is the
+outstanding work and it is the user's**, because no gate in this project opens an
+audio device.
 **Everything is shipped, gated and merged to `main`** as of 2026-08-10
 (M140b) — **2925 tests / 0 failures** (world 1147, net 977, gpu 275, data 224,
 app 197, mesh 45, proto 16, **audio 44** — EIGHT crates now, read off the runner
