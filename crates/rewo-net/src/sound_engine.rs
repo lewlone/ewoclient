@@ -615,13 +615,14 @@ pub trait SoundWorld {
     /// `EntityBoundSoundInstance.tick`'s `entity.isRemoved()` branch.
     fn entity_position(&self, entity_id: i32) -> Option<(f64, f64, f64)>;
 
-    /// `entity.isSilent()`.
+    /// `entity.isSilent()` — `SynchedEntityData` index 4.
     ///
-    /// **Rewo has no source for this yet**: it is `SynchedEntityData` index 4
-    /// and `metadata.rs` skips it, so every production caller answers `false`
-    /// and a silenced entity is not silenced. The predicate exists and is
-    /// correct; the input is missing, and that is recorded rather than papered
-    /// over with a default implementation.
+    /// **Decoded since M138a.** This doc used to say "Rewo has no source for
+    /// this yet … every production caller answers `false`", which was the
+    /// honest shape while the metadata parser skipped index 4 and stopped
+    /// being true the moment it did not. The production implementor reads the
+    /// decoded flag and says so at its own definition; this one is where a
+    /// reader looks first, so it is the one that matters.
     fn entity_silent(&self, entity_id: i32) -> bool;
 }
 
@@ -1103,14 +1104,28 @@ impl SoundEngine {
                 to_stop.push(l.channel);
             }
             match world.entity_position(entity) {
-                // `EntityBoundSoundInstance.tick`'s else-branch. The refresh is
-                // NOT narrowed through f32 — only the constructor's initial
-                // read is — so an entity-bound sound is more precisely placed
-                // one tick after it starts than at the moment it starts.
+                // `EntityBoundSoundInstance.tick`'s else-branch, which is
+                // `this.x = (float)this.entity.getX();` on all three axes into
+                // a `double` field — the SAME narrowing the constructor does.
+                //
+                // This comment used to say the refresh was not narrowed, and
+                // reasoned that an entity-bound sound is therefore "more
+                // precisely placed one tick after it starts than at the moment
+                // it starts". Both halves were wrong: the cast is right there
+                // in `EntityBoundSoundInstance.java:33-35`, and the precision
+                // never changes because every read is narrowed. A comment that
+                // *justifies* the wrong behaviour is worse than one that merely
+                // describes it — a reader checking this line is reassured.
+                //
+                // The witness could not have caught it either: it moved the
+                // entity to `(10.0, 65.0, -3.0)`, three coordinates exactly
+                // representable in f32, so the narrowed and un-narrowed
+                // readings are the same number. See
+                // `an_entity_bound_sound_position_is_narrowed_through_f32`.
                 Some((x, y, z)) => {
-                    l.instance.x = x;
-                    l.instance.y = y;
-                    l.instance.z = z;
+                    l.instance.x = x as f32 as f64;
+                    l.instance.y = y as f32 as f64;
+                    l.instance.z = z as f32 as f64;
                 }
                 None => {
                     // `entity.isRemoved()` → `stop()`, which sets `stopped` and
@@ -2189,6 +2204,59 @@ mod tests {
         world.positions.remove(&7);
         eng.tick(false, &idx, &world, &mut dev);
         assert!(dev.calls_to(0).contains(&ChannelCall::Stop));
+    }
+
+    /// **The per-tick refresh is narrowed through f32**, exactly as the
+    /// constructor's read is: `EntityBoundSoundInstance.java:33-35` is three
+    /// `this.x = (float)this.entity.getX();` assignments into `double` fields.
+    ///
+    /// The test above cannot witness this and never could: it moves the entity
+    /// to `(10.0, 65.0, -3.0)`, and all three are exactly representable in
+    /// f32, so a narrowing and a non-narrowing client agree to the bit. That
+    /// is why the refresh shipped un-narrowed with a comment asserting it was
+    /// correct. **A fixture sitting where two readings coincide is this
+    /// project's most-repeated failure shape**, so this one picks a coordinate
+    /// where they do not.
+    #[test]
+    fn an_entity_bound_sound_position_is_narrowed_through_f32() {
+        let idx = plain_index();
+        let mut eng = SoundEngine::new();
+        let mut dev = RecordingDevice::default();
+        // 1_000_000.1 has no f32 representation; the nearest is 1000000.0625.
+        // A block sound a million blocks out is unusual, but the *divergence*
+        // begins as soon as a coordinate needs more than 24 bits of mantissa,
+        // which is a few million blocks for the integer part alone and much
+        // sooner for the fraction — an entity at x = 131072.1 is already off.
+        let far = 1_000_000.1_f64;
+        let mut world = TestWorld {
+            positions: HashMap::from([(7, (0.0, 64.0, 0.0))]),
+            silent: vec![],
+        };
+        let i = SoundInstance::entity_bound(
+            "minecraft:block.stone.break",
+            SoundSource::Blocks,
+            1.0,
+            1.0,
+            0,
+            7,
+            0.0,
+            64.0,
+            0.0,
+        );
+        eng.play(i, &idx, &world, &mut dev);
+        dev.clear_calls();
+
+        world.positions.insert(7, (far, 64.0, 0.0));
+        eng.tick(false, &idx, &world, &mut dev);
+
+        let narrowed = far as f32 as f64;
+        assert_ne!(narrowed, far, "the fixture must not sit where both agree");
+        assert!(
+            dev.calls_to(0)
+                .contains(&ChannelCall::SetSelfPosition(narrowed, 64.0, 0.0)),
+            "expected the f32-narrowed x, got {:?}",
+            dev.calls_to(0)
+        );
     }
 
     #[test]
