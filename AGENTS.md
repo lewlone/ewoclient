@@ -1751,8 +1751,18 @@ breaking the basis is invisible — except pinning up to `(0,1,0)`, which at pit
 makes `forward x up` the **zero vector** and collapses the stereo image to centre.
 The battery also caught two weak fixtures: a rate witness whose sources outlasted
 its render window measured the window, and witnesses rendering into freshly-zeroed
-buffers cannot see a missing clear. **Nothing in rewo-audio makes a noise yet** —
-M138d's device is the first piece that could.*
+buffers cannot see a missing clear. **M138d then shipped its testable half** — the SPSC command ring, whose discipline
+reads backwards on purpose: a full ring drops the NEWEST command and never blocks,
+because a full ring means the callback has stopped, and blocking the render thread
+on a dead device trades a silent sound for a frozen client. **The cpal binding is
+deliberately NOT shipped** — it is the first thing in Rewo no gate can check, and
+it ends with the listening pass a machine cannot perform. Its battery also fired
+both harness hazards this file records at once: a mutant that hangs took the
+battery down so its `finally` never ran and **left the mutation on disk**, and the
+hung test binary then held the link output so the next build failed with linker
+error 1104 and looked like a broken tree. Both are fixed in the harness — a
+per-run timeout makes a hang a KILL rather than an outage, and a reaper clears
+strays. **Nothing in rewo-audio makes a noise yet.***
 
 *Update (2026-08-10 session, Rewo): **M136 and M137 — two fixes recovered from
 worktrees that a handoff called litter.** The claim rested on their branches being
@@ -1889,8 +1899,8 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-10
-(M138c) — **2897 tests / 0 failures** (world 1147, net 961, gpu 275, data 224,
-app 197, mesh 45, proto 16, **audio 32** — EIGHT crates now, read off the runner
+(M138d part) — **2904 tests / 0 failures** (world 1147, net 961, gpu 275, data 224,
+app 197, mesh 45, proto 16, **audio 39** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,

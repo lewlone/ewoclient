@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-10 after M138c:
-**2897 tests, 0 failures** (**world 1147, net 961, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 32** — read off the runner per crate; they sum to 2897).
+Current measurement, taken 2026-08-10 after M138d (part):
+**2904 tests, 0 failures** (**world 1147, net 961, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 39** — read off the runner per crate; they sum to 2904).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -20227,6 +20227,41 @@ milestone measured, but nothing *structurally* stops a fifth from repeating it �
 so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
+
+### M138d (part) — the command ring, and a battery that took itself down (2026-08-10)
+
+M138d's testable half. The **cpal binding is deliberately not in it**: it is the
+first thing in Rewo no gate can check, it ends with a listening pass a machine
+cannot perform, and an unexercised device binding in a workspace where 34 gates
+link it is not a trade this project takes.
+
+**The discipline reads backwards on purpose.** A full ring drops the NEW command
+and counts it, never blocking, because a full ring *means* the callback has
+stopped — a dead device — and blocking the render thread on one trades a silent
+sound for a frozen client. It refuses the newest rather than evicting the oldest,
+because eviction would silently reorder a channel's exact eight-call sequence.
+The drop count never resets, so it still reads non-zero when someone looks after
+a glitch.
+
+**Memory-ordering mutations are deliberately absent from the battery**, and the
+harness says why: relaxing a `Release` is a real bug a test catches only by luck,
+and a flaky entry is worse than none, because a red run stops meaning anything.
+The orderings are argued in the doc. What *is* tested is a two-thread round trip
+over 20,000 commands — order, no loss, no duplication — which additionally
+asserts the producer was refused at least once, so a run that never filled the
+ring fails rather than passing without exercising the path.
+
+**Both of the harness hazards this repo has written down fired at once.** The
+off-by-one full test makes the ring read FULL at construction, so the two-thread
+witness spins forever; the ten-minute cap killed the battery, its `finally` never
+ran, and **the mutation was left on disk** — caught by checking the file before
+anything else. Then the hung test binary was still holding the link output, so
+the next build failed with linker error 1104 and looked like a broken tree. Both
+are now fixed in the harness: a per-run timeout makes **a hang a KILL rather than
+an outage**, and a reaper clears strays.
+
+**Measured:** 2904 tests / 0 failures, 34 gates green with 0 validation lines,
+8/8 mutations with a no-op control that SURVIVED.
 
 ### M138c — the mixer, and what the up vector is actually for (2026-08-10)
 
