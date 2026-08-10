@@ -8370,7 +8370,7 @@ impl LiveApp {
             // over them — one list, and its order is the order on screen.
             let gw = (extent.width as f32 / px) as i32;
             let gh = (extent.height as f32 / px) as i32;
-            backdrops.push(chat_input_backdrop(px, gw, gh));
+            backdrops.push(chat_input_backdrop(gw, gh));
             // M111 — the scrollbar, which only exists while the screen is up
             // (`isForeground`). It reads the same `visible_lines` count the
             // rows do, because vanilla passes `forEachLine`'s own return here.
@@ -8392,7 +8392,7 @@ impl LiveApp {
             // `ChatScreen.extractRenderState` hands off to it.
             if let Some(cs) = self.chat_screen.as_ref() {
                 if let Some(list) = cs.suggestions.list() {
-                    let fills = suggestion_popup_fills(list, cs.suggestions.config(), px);
+                    let fills = suggestion_popup_fills(list, cs.suggestions.config());
                     if !fills.is_empty() {
                         if let Some(c) = self.check.as_mut() {
                             c.suggestion_popup_frames += 1;
@@ -9359,19 +9359,23 @@ fn chat_input_lines(
 ///    more entries. These are per-pixel `fill` calls in vanilla and stay
 ///    per-pixel here; merging them into one rect would draw a solid line.
 /// 3. One **row fill** per visible line.
+/// **It takes no GUI scale, deliberately** — see [`chat_input_backdrop`].
+/// `SuggestionsList::rect` is already in GUI pixels, which is the unit
+/// [`rewo_gpu::hud::HudFill`] is in. Its screen-pixel sibling
+/// [`suggestion_popup_text`] does take one, because the text pass is the pass
+/// that wants screen pixels.
 fn suggestion_popup_fills(
     list: &rewo_world::command_suggestions::SuggestionsList,
     cfg: rewo_world::command_suggestions::SuggestionsConfig,
-    px: f32,
 ) -> Vec<rewo_gpu::hud::HudFill> {
     use rewo_world::command_suggestions::{INDICATOR_COLOR, LINE_HEIGHT};
     let rect = list.rect;
     let limit = list.shown(cfg) as i32;
     let fill = |x: i32, y: i32, w: i32, h: i32, argb: u32| rewo_gpu::hud::HudFill {
-        x: x as f32 * px,
-        y: y as f32 * px,
-        w: w as f32 * px,
-        h: h as f32 * px,
+        x: x as f32,
+        y: y as f32,
+        w: w as f32,
+        h: h as f32,
         alpha: ((argb >> 24) & 0xFF) as f32 / 255.0,
         rgb: srgb_bytes_to_linear(argb & 0x00FF_FFFF),
     };
@@ -9554,16 +9558,20 @@ fn chat_scrollbar(
     let chat_bottom = ((screen_h / chat_px) - rewo_world::chat::BOTTOM_MARGIN as f32).floor();
     let max_width = (opts.width() as f32 / opts.scale as f32).ceil();
     let visible = chat.visible_lines(gui_tick, true, opts).len() as i32;
+    // GUI pixels, exactly as in `hud_fills` and for the same reason — `chat_px`
+    // converts the screen height into chat space above and is not what the fill
+    // list wants.
+    let chat_gui = opts.scale as f32;
     chat.scrollbar(visible, chat_bottom as i32, max_width as i32, opts)
         .into_iter()
         .flatten()
         .map(|r| rewo_gpu::hud::HudFill {
             // The pose is translated by `MESSAGE_INDENT` before these, exactly
             // as it is before the rows' fills.
-            x: (r.x + rewo_world::chat::MESSAGE_INDENT) as f32 * chat_px,
-            y: r.y as f32 * chat_px,
-            w: r.w as f32 * chat_px,
-            h: r.h as f32 * chat_px,
+            x: (r.x + rewo_world::chat::MESSAGE_INDENT) as f32 * chat_gui,
+            y: r.y as f32 * chat_gui,
+            w: r.w as f32 * chat_gui,
+            h: r.h as f32 * chat_gui,
             alpha: r.alpha as f32 / 255.0,
             rgb: srgb_bytes_to_linear(r.rgb),
         })
@@ -9576,13 +9584,20 @@ fn chat_scrollbar(
 /// — a fixed alpha 128, which does **not** follow the text-background slider
 /// the chat rows' own fills read. See
 /// [`rewo_world::chat_screen::INPUT_BACKDROP_ALPHA`].
-fn chat_input_backdrop(px: f32, gui_w: i32, gui_h: i32) -> rewo_gpu::hud::HudFill {
+///
+/// **It takes no GUI scale, deliberately.** `input_backdrop_rect` is handed GUI
+/// dimensions and returns GUI pixels, which is already the unit
+/// [`rewo_gpu::hud::HudFill`] is in — so there is nothing here to convert.
+/// This function used to take `px` and multiply by it, which put the bar at
+/// y 2034 on a 720-tall screen; not having the scale in scope is a stronger
+/// guarantee than remembering not to use it.
+fn chat_input_backdrop(gui_w: i32, gui_h: i32) -> rewo_gpu::hud::HudFill {
     let (x, y, w, h) = rewo_world::chat_screen::input_backdrop_rect(gui_w, gui_h);
     rewo_gpu::hud::HudFill {
-        x: x as f32 * px,
-        y: y as f32 * px,
-        w: w as f32 * px,
-        h: h as f32 * px,
+        x: x as f32,
+        y: y as f32,
+        w: w as f32,
+        h: h as f32,
         alpha: rewo_world::chat_screen::INPUT_BACKDROP_ALPHA,
         // `getBackgroundColor` builds it with `colorFromFloat(_, 0, 0, 0)` —
         // black, like the rows'.
@@ -9898,6 +9913,19 @@ fn hud_fills(
     // `Mth.ceil(this.getWidth() / scale)`.
     let max_width = (opts.width() as f32 / opts.scale as f32).ceil();
     let bg = opts.text_background_opacity as f32;
+    // **A chat pixel is `opts.scale` GUI pixels, not `chat_px` of them.**
+    //
+    // `chat_px` is one chat pixel's size on the SCREEN, and it is the right
+    // conversion for `chat_bottom` above, which turns a screen height into chat
+    // space. It is the wrong one here: [`rewo_gpu::hud::HudFill`] is in GUI
+    // pixels and `HudPass::draw` multiplies by the GUI scale itself, so
+    // emitting `chat_px` applied that scale a second time and put every row's
+    // backdrop `gui_scale` times too far down — off the bottom of the screen,
+    // which is why they read as missing rather than as misplaced. The sibling
+    // `chat_lines` DOES want `chat_px`, because the text pass takes screen
+    // pixels; the two conventions sitting one function apart is how this
+    // happened.
+    let chat_gui = opts.scale as f32;
     chat.visible_lines(gui_tick, focused, opts)
         .into_iter()
         .map(|line| {
@@ -9905,11 +9933,11 @@ fn hud_fills(
             let entry_top = entry_bottom - entry_height;
             rewo_gpu::hud::HudFill {
                 // `fill(-4, …)` under a pose translated by +4.
-                x: (rewo_world::chat::MESSAGE_INDENT as f32 - 4.0) * chat_px,
-                y: entry_top * chat_px,
+                x: (rewo_world::chat::MESSAGE_INDENT as f32 - 4.0) * chat_gui,
+                y: entry_top * chat_gui,
                 // right - left = (maxWidth + 4 + 4) - (-4).
-                w: (max_width + 12.0) * chat_px,
-                h: entry_height * chat_px,
+                w: (max_width + 12.0) * chat_gui,
+                h: entry_height * chat_gui,
                 alpha: line.alpha * bg,
                 // `ARGB.black(a)` sets only the alpha byte.
                 rgb: [0.0; 3],
@@ -10506,10 +10534,14 @@ pub(crate) fn title_lines(
 }
 
 /// Auto GUI scale (vanilla: largest integer fitting a ~320×240 base).
+///
+/// Delegates to [`rewo_gpu::hud::gui_scale`] rather than repeating its body.
+/// This was a third copy of that expression, and "it is the same expression"
+/// was a claim the plan had to make in prose — which is how M135's four
+/// producers came to multiply by it a second time on top of the pass. One
+/// definition makes the identity a fact instead.
 fn gui_px(w: u32, h: u32) -> f32 {
-    ((h as f32 / 240.0).min(w as f32 / 320.0))
-        .floor()
-        .clamp(1.0, 4.0)
+    rewo_gpu::hud::gui_scale(w as f32, h as f32)
 }
 
 /// Vanilla F3's "Towards …" axis hint — the dominant world axis of the look
@@ -12102,6 +12134,176 @@ mod tests {
         }
     }
 
+    // ── M135: the fills are in GUI pixels, and land where their text is ─────
+    //
+    // Everything below exists because the witness one function up CANNOT see
+    // the bug M135 fixed, and the reason generalises.
+    //
+    // [`rewo_gpu::hud::HudFill`] is in **GUI** pixels — `HudPass::draw` puts
+    // every rect through `tinted_quad`, which multiplies by
+    // [`rewo_gpu::hud::gui_scale`]. [`rewo_gpu::world::OwnedTextLine`], one
+    // pass over, is already in **screen** pixels. Four producers emitted screen
+    // pixels into the GUI-pixel field, so their fills were drawn at `gui_scale`
+    // times their true depth.
+    //
+    // `each_fill_covers_its_own_row_and_meets_the_next` compares the two
+    // producers' RAW outputs, and both sides were then in the same wrong space
+    // and agreed with each other perfectly. **An agreement witness has to model
+    // whatever sits between the producer and the screen**, or it grades the two
+    // derivations against each other rather than against the frame.
+
+    /// The pass's own rule, applied to a fill so a witness can ask where it
+    /// LANDS rather than what was emitted. This is `tinted_quad`'s
+    /// `(x * scale, y * scale, qw * scale, qh * scale)`.
+    fn on_screen(f: &rewo_gpu::hud::HudFill, px: f32) -> (f32, f32, f32, f32) {
+        (f.x * px, f.y * px, f.w * px, f.h * px)
+    }
+
+    /// 960x720 gives `min(720/240, 960/320) = 3`, so these run at the GUI scale
+    /// `live --render-check` uses and every older fixture avoids.
+    const PX: f32 = 3.0;
+    const SCREEN_W: f32 = 960.0;
+    const SCREEN_H: f32 = 720.0;
+
+    /// The GUI scale these fixtures assume is the one the pass will apply — not
+    /// a number chosen to make them pass.
+    #[test]
+    fn the_fixture_scale_is_the_scale_the_pass_computes() {
+        assert_eq!(rewo_gpu::hud::gui_scale(SCREEN_W, SCREEN_H), PX);
+        // …and the app's own helper is that same function, not a fourth copy.
+        assert_eq!(super::gui_px(SCREEN_W as u32, SCREEN_H as u32), PX);
+    }
+
+    /// A chat row's backdrop lands under its own text at a GUI scale above 1.
+    ///
+    /// Grounded on `chat_lines`, an independent producer that `--render-check`'s
+    /// r26/r38 exercise against a real server, so this is an agreement witness
+    /// and not a restatement of `hud_fills`' own arithmetic.
+    ///
+    /// **The fixture separates the two factors on purpose.** The GUI scale is 3
+    /// and the chat scale is 2, which makes all three candidate readings
+    /// distinct: a chat pixel is 2 GUI pixels (right), 6 (multiplying by the GUI
+    /// scale a second time — the bug), or 1 (dropping the chat scale along with
+    /// it — the over-correction). Every fixture written before this one uses
+    /// px 1 and chat scale 1, the single point where all three agree, which is
+    /// why eight milestones of green tests never contradicted the bug.
+    #[test]
+    fn a_row_backdrop_lands_under_its_text_at_gui_scale_three() {
+        let mut opts = rewo_world::chat::ChatOptions::default();
+        opts.scale = 2.0;
+        let c = chat_fixture(3, 0);
+        let fills = super::hud_fills(&c, 0, PX, SCREEN_H, &opts, false);
+        let lines = super::chat_lines(&c, 0, PX, SCREEN_H, &opts, None, false).0;
+        assert_eq!(fills.len(), lines.len());
+        assert!(!fills.is_empty(), "the fixture drew no rows");
+        for i in 0..fills.len() {
+            let (_, y, _, h) = on_screen(&fills[i], PX);
+            assert!(
+                y <= lines[i].y && lines[i].y < y + h,
+                "row {i}: its text is at {} but its backdrop covers {}..{}",
+                lines[i].y,
+                y,
+                y + h
+            );
+        }
+    }
+
+    /// …and the visible symptom: they are on the screen at all.
+    ///
+    /// Three times too far down puts them off the bottom, so the fills were
+    /// **absent rather than misplaced** — which is why nobody reported them in
+    /// the eight milestones since M109. Covers the scrollbar too, which has no
+    /// text of its own to agree with.
+    #[test]
+    fn every_chat_fill_is_on_the_screen_at_gui_scale_three() {
+        let opts = rewo_world::chat::ChatOptions::default();
+        // Focused, and long enough that the backlog outruns the box — otherwise
+        // the scrollbar is empty and this witnesses a path it never enters.
+        let c = chat_fixture(30, 0);
+        let mut all = super::hud_fills(&c, 0, PX, SCREEN_H, &opts, true);
+        let rows = all.len();
+        let bar = super::chat_scrollbar(&c, 0, PX, SCREEN_H, &opts);
+        assert!(rows > 0, "no rows");
+        assert!(!bar.is_empty(), "no scrollbar — the fixture cannot scroll");
+        all.extend(bar);
+        for (i, f) in all.iter().enumerate() {
+            let (x, y, w, h) = on_screen(f, PX);
+            assert!(
+                y >= 0.0 && y + h <= SCREEN_H,
+                "fill {i} spans y {y}..{} on a {SCREEN_H}-tall screen",
+                y + h
+            );
+            // **The horizontal bound is not the screen width, and that is
+            // vanilla's doing rather than a slack threshold.** `getWidth()` is
+            // `chatWidth * 280 + 40` — 320 at the default, computed with no
+            // reference to the screen — and the backdrop is `maxWidth + 12`
+            // wide. At this fixture's GUI width of exactly 320 the box already
+            // fills the screen, so the row fills genuinely run 12 GUI pixels
+            // past the right edge and are clipped there. A wider fixture would
+            // hide that rather than settle it, and asserting `<= SCREEN_W`
+            // would assert something vanilla does not do. The bound still
+            // catches a scale error, which is three times over.
+            const OVERHANG_GUI: f32 = 12.0;
+            assert!(
+                x >= 0.0 && x + w <= SCREEN_W + OVERHANG_GUI * PX,
+                "fill {i} spans x {x}..{} on a {SCREEN_W}-wide screen",
+                x + w
+            );
+        }
+    }
+
+    /// The input bar sits behind the text it is a backdrop for.
+    ///
+    /// `input_backdrop_rect` is handed GUI dimensions and returns GUI pixels, so
+    /// the fill is that rect unscaled; `chat_input_lines` is the screen-pixel
+    /// sibling. Multiplying the rect by the GUI scale put the bar at y 2034 on a
+    /// 720-tall screen.
+    #[test]
+    fn the_input_backdrop_lands_under_its_text_at_gui_scale_three() {
+        use rewo_world::chat_screen::{ChatMethod, ChatScreen};
+        let (gw, gh) = ((SCREEN_W / PX) as i32, (SCREEN_H / PX) as i32);
+        let mut s = ChatScreen::open(ChatMethod::Message, None, 0);
+        s.char_typed('h', &chat_env());
+        let text = super::chat_input_lines(&s, PX, gw, gh, 0, None, &|t: &str| {
+            t.chars().count() as i32 * 6
+        });
+        let (_, y, _, h) = on_screen(&super::chat_input_backdrop(gw, gh), PX);
+        assert!(
+            y <= text[0].y && text[0].y < y + h,
+            "the input text is at {} but its bar covers {}..{}",
+            text[0].y,
+            y,
+            y + h
+        );
+    }
+
+    /// Each suggestion row's fill sits behind that row's text.
+    ///
+    /// `SuggestionsList::rect` is GUI pixels — which
+    /// `the_popup_fills_one_rect_per_visible_row` already asserts by comparing
+    /// against `list.rect` directly, and could not enforce, because it runs at
+    /// px 1 where the scaled and unscaled readings are the same number.
+    #[test]
+    fn each_popup_row_lands_under_its_text_at_gui_scale_three() {
+        let (s, _) = popup(3);
+        let cs = &s.suggestions;
+        let list = cs.list().expect("the popup opened");
+        let fills = super::suggestion_popup_fills(list, cs.config());
+        let text = super::suggestion_popup_text(list, cs.config(), PX);
+        assert_eq!(fills.len(), text.len());
+        assert!(!fills.is_empty());
+        for i in 0..fills.len() {
+            let (_, y, _, h) = on_screen(&fills[i], PX);
+            assert!(
+                y <= text[i].y && text[i].y < y + h,
+                "row {i}: its text is at {} but its fill covers {}..{}",
+                text[i].y,
+                y,
+                y + h
+            );
+        }
+    }
+
     /// The fill's alpha is `alpha * backgroundOpacity`, and the text's is
     /// `alpha * (chatOpacity * 0.9 + 0.1)` — **different multipliers**. At
     /// "Text Background: 0" the fill vanishes while the text stays visible.
@@ -12381,8 +12583,12 @@ mod tests {
         assert_eq!(super::hovered_menu_slot(layout, mouse, w, h, true), Some(9));
     }
 
-    /// The scrollbar reaches the frame's fill list, in screen pixels, and its
+    /// The scrollbar reaches the frame's fill list, in GUI pixels, and its
     /// colour is converted OUT of sRGB.
+    ///
+    /// It said "screen pixels" until M135, which is the unit the TEXT pass one
+    /// function over takes; the fill list is in GUI pixels and the pass scales
+    /// it. The comment was a symptom of the same confusion as the code.
     ///
     /// The conversion is the half that hides: black is 0 in both spaces, so
     /// M109 and M110's fills could pass their bytes straight through and this
@@ -12474,7 +12680,7 @@ mod tests {
         let (s, _) = popup(3);
         let cs = &s.suggestions;
         let list = cs.list().expect("the popup opened");
-        let fills = super::suggestion_popup_fills(list, cs.config(), 1.0);
+        let fills = super::suggestion_popup_fills(list, cs.config());
         // Three rows, no truncation bars.
         assert_eq!(fills.len(), 3);
         for (i, f) in fills.iter().enumerate() {
@@ -12496,7 +12702,7 @@ mod tests {
         let cs = &s.suggestions;
         let list = cs.list().expect("the popup opened");
         assert_eq!(list.offset(), 0, "fixture precondition: at the top");
-        let fills = super::suggestion_popup_fills(list, cs.config(), 1.0);
+        let fills = super::suggestion_popup_fills(list, cs.config());
         let rows = 10;
         let dashes = (list.rect.w as usize).div_ceil(2);
         assert_eq!(fills.len(), 2 + dashes + rows);
@@ -12520,7 +12726,7 @@ mod tests {
         let (s, _) = popup(4);
         let cs = &s.suggestions;
         let list = cs.list().unwrap();
-        let fills = super::suggestion_popup_fills(list, cs.config(), 1.0);
+        let fills = super::suggestion_popup_fills(list, cs.config());
         assert!(fills.iter().all(|f| f.h == 12.0), "rows only");
     }
 
@@ -12707,7 +12913,7 @@ mod tests {
         // Two characters at 6 px each.
         assert_eq!(lines[1].x, 4.0 + 12.0);
 
-        let bar = super::chat_input_backdrop(1.0, 320, 240);
+        let bar = super::chat_input_backdrop(320, 240);
         assert_eq!((bar.x, bar.y, bar.w, bar.h), (2.0, 226.0, 316.0, 12.0));
         // A fixed 128/255 — NOT the text-background slider the rows read.
         assert!((bar.alpha - 128.0 / 255.0).abs() < 1e-6);

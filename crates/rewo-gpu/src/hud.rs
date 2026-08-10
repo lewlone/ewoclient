@@ -389,7 +389,10 @@ impl HudPass {
     ) {
         let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
         // Auto GUI scale (vanilla: largest integer fitting a ~320×240 base).
-        let scale = ((h / 240.0).min(w / 320.0)).floor().clamp(1.0, 4.0);
+        // `gui_scale`, not a fourth copy of its body: this line WAS a copy, and
+        // the drift its doc warns about is exactly what M135 found — the chat
+        // fills were built against a caller's own copy and landed off-screen.
+        let scale = gui_scale(w, h);
         let (sw, sh) = (w / scale, h / scale);
 
         self.cursor = (self.cursor + 1) % RING;
