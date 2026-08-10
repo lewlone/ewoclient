@@ -229,6 +229,24 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 **Gate:** `soundshot` layer (m).
 
 ### M138d — the device
+
+> **PARTLY SHIPPED 2026-08-10 — the command ring only.** `device.rs` has the
+> SPSC ring and its discipline, with witnesses including a two-thread round trip
+> over 20,000 commands. **`sink/cpal.rs` is OPEN and is where this stops being
+> machine-checkable**: it is the first thing in Rewo no gate can grade, and it
+> ends with the listening pass §4 mandates. Whoever picks it up should schedule
+> that pass with the user rather than land the binding and hope.
+>
+> **Memory-ordering mutations are deliberately not in the battery** — relaxing a
+> `Release` is a real bug a test can only catch by luck, and a flaky battery
+> entry is worse than none. The orderings are argued in the type's doc instead.
+>
+> **Two harness lessons, both of which cost a run.** A mutant that hangs takes
+> the whole battery down, its `finally` never runs, and the mutation is left on
+> disk — so a per-run timeout now makes a hang a KILL rather than an outage. And
+> the hung test binary keeps holding the link output, so the *next* build fails
+> with linker error 1104 and looks like a broken tree; the harness reaps strays.
+
 `sink/cpal.rs` + `device.rs`. Four threads: render thread (one SPSC ring write per `ChannelCall` — a `play` emits exactly 8, so a busy tick starting 30 sounds is ~240 writes, bounded and countable); the cpal callback (no allocation, no lock, no syscall, **no drops** — retired buffers return to a worker on a channel); decode workers (`std::thread` + mpsc, the established pattern; CLAUDE.md forbids tokio/smol); a device watchdog.
 
 **Ring full → drop and count, never block.** A full ring means the callback is not running, i.e. the device is dead, and stalling the renderer for a dead device is the wrong trade. **Buffer not ready → do not wait**, because vanilla already defers it (`SoundEngine.java:431-434`).

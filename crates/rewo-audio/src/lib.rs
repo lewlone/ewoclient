@@ -25,5 +25,6 @@
 
 pub mod buffers;
 pub mod decode;
+pub mod device;
 pub mod mixer;
 pub mod quantise;
