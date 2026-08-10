@@ -676,6 +676,18 @@ pub struct EntityTable {
     /// frozen — the same argument that pins `DATA_POSE` to 6, which is
     /// independently confirmed by the working pose decode.
     custom_name_visible: std::collections::HashSet<i32>,
+    /// `Entity.DATA_SILENT` — metadata index **4**, BOOLEAN (M138a).
+    ///
+    /// Same shape and same reasoning as [`Self::custom_name_visible`] one slot
+    /// up: membership means `true`, the router removes the id on `false` so a
+    /// toggle back on is not a latch, and absent is exactly `false` because
+    /// `Entity.java:322` seeds it. Cleared on removal.
+    ///
+    /// This is what `Entity.isSilent()` reads, and it gates `playSound`, so a
+    /// wrong answer here is a sound that plays when a server said it should
+    /// not. Until M138a nothing stored it and the sound engine's world answered
+    /// a hardcoded `false`.
+    silent: std::collections::HashSet<i32>,
     /// `ClientboundSetPassengersPacket` — vehicle id → its passengers, in wire
     /// order (M70). Present-and-empty and absent both mean "nothing is
     /// riding"; the packet is the only writer, so an entity never seen as a
@@ -1117,6 +1129,7 @@ impl EntityTable {
         self.attributes.remove(&id);
         self.shared_flags.remove(&id);
         self.custom_name_visible.remove(&id);
+        self.silent.remove(&id);
         self.clear_riding(id);
         self.model_customisation.remove(&id);
         self.wavy_capes.remove(&id);
@@ -1336,6 +1349,27 @@ impl EntityTable {
     /// `LivingEntity.shouldShowName()`.
     pub fn is_custom_name_visible(&self, id: i32) -> bool {
         self.custom_name_visible.contains(&id)
+    }
+
+    /// Apply `Entity.DATA_SILENT` (metadata index 4, BOOLEAN) — M138a.
+    ///
+    /// `false` is applied as eagerly as `true` for the same reason index 3's
+    /// is: the server toggles it both ways, and a latch would leave an entity
+    /// permanently muted after one `/data merge`.
+    pub fn set_silent(&mut self, id: i32, silent: bool) {
+        if silent {
+            self.silent.insert(id);
+        } else {
+            self.silent.remove(&id);
+        }
+    }
+
+    /// `Entity.isSilent()` (`Entity.java:1512-1514`), which gates `playSound`.
+    ///
+    /// An entity nothing has been said about is **audible**, which is exact
+    /// rather than a fallback: `Entity.java:322` seeds the flag `false`.
+    pub fn is_silent(&self, id: i32) -> bool {
+        self.silent.contains(&id)
     }
 
     /// Apply `ClientboundSetPassengersPacket` — the vehicle's roster,

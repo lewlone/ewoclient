@@ -1165,13 +1165,17 @@ impl SoundWorld for EntityTableWorld<'_> {
         Some((p[0], p[1], p[2]))
     }
 
-    fn entity_silent(&self, _entity_id: i32) -> bool {
-        // `Entity.DATA_SILENT` is `SynchedEntityData` index 4 and `metadata.rs`
-        // does not decode it, so this is the honest answer rather than a guess:
-        // Rewo cannot tell, and the effect of being wrong is that a silenced
-        // entity is heard. Closing it is a one-index metadata addition; see the
-        // note on [`SoundWorld::entity_silent`].
-        false
+    fn entity_silent(&self, entity_id: i32) -> bool {
+        // `Entity.isSilent()` — metadata index 4, decoded since M138a. This was
+        // a hardcoded `false` with a comment saying so, which is the honest
+        // shape for an undecodable fact and the wrong shape once it is one
+        // line of table.
+        //
+        // **An entity this table has never seen is audible**, and that is
+        // exact rather than a fallback: `Entity.java:322` seeds `DATA_SILENT`
+        // to `false`, so an unknown entity and an un-silenced one really do
+        // answer the same thing.
+        self.0.is_silent(entity_id)
     }
 }
 

@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-10 after M137:
-**2853 tests, 0 failures** (**world 1147, net 949, gpu 275, data 224, app 197,
-mesh 45, proto 16** — read off the runner per crate; they sum to 2853). Note the per-crate invocation is
+Current measurement, taken 2026-08-10 after M138a (part):
+**2858 tests, 0 failures** (**world 1147, net 954, gpu 275, data 224, app 197,
+mesh 45, proto 16** — read off the runner per crate; they sum to 2858). Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
 other six take `--lib`, and `--lib` there is `error: no library targets`, exit
 101, and **no** `test result` line at all. Assert that a result line exists
@@ -20226,6 +20226,53 @@ so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
 
+### M138a (part) — `DATA_SILENT`, and a gate that could assert nothing (2026-08-10)
+
+The first audio work, and neither half of it is the device.
+[`REWO_AUDIO_PLAN.md`](REWO_AUDIO_PLAN.md) is the plan; this is items 3 and 4 of
+its M138a. **Items 1 and 2 — the listener seam and `listener_basis` — and the
+r45 witness are OPEN**, and the plan says so at that section. They were split
+because 3 and 4 are live bugs that stand alone while 1 and 2 are the structural
+gap the device needs, and half a seam is worse than none.
+
+**`Entity.DATA_SILENT` is metadata index 4** — declared on the line immediately
+after `DATA_CUSTOM_NAME_VISIBLE`, on the same class (`Entity.java:272-273`), so
+it takes the next slot; `Entity` owns 0..7, so no kind gate is possible or
+needed. It had been parsed and discarded since M1, and
+`EntityTableWorld::entity_silent` answered a hardcoded `false` behind a comment
+saying it could not tell — **the honest shape for an undecodable fact, and the
+wrong shape once it is one line of table.** `isSilent()` gates `playSound`
+(`:1501`, `:1507`), so the old answer means an entity someone silenced on
+purpose is heard. Absent is `false` **exactly** rather than "unknown", because
+`:322` seeds it — so an unseen entity and an un-silenced one genuinely agree,
+which is a transcription rather than a coincidence.
+
+**`build_sounds` now fails closed under `--render-check`.** It turned a missing
+`sounds.json` into an empty index behind a `log::info!`, which is behaviourally
+identical to totally broken resolution: everything resolves to nothing, every
+counter reads zero, and the run is green because it asserted nothing.
+`sounds_json`'s own tests already record that trap being caught by a mutation
+battery — replacing the whole loader with an empty index left a test green
+*because it merely SKIPped*. An ordinary run still degrades gracefully; only the
+gate path panics, and it names the file it wanted.
+
+**The load-bearing witness is the one asserting the sound world reads the flag**,
+because every other test here passes against a decode stored where nothing looks
+— which is precisely the state this found. The battery makes it concrete:
+reverting the consumer to `false` is one of six mutations and dies alone.
+
+**The battery found a flaw in its own predecessor.** Both harnesses proved "no
+mutation left on disk" with `git diff --quiet`, which **cannot tell a leftover
+mutation from a milestone's own uncommitted work** — so on a dirty tree it cries
+wolf every run and the warning stops meaning anything. It fired here on a clean
+restore. Both now snapshot the touched files and compare bytes;
+`tools/m135_mutate.py` had the same flaw and never showed it, because it only
+ever ran against a committed tree.
+
+**Measured:** 2858 tests / 0 failures (world 1147, net 954, gpu 275, data 224,
+app 197, mesh 45, proto 16), 34 gates green with 0 validation lines,
+`live --render-check` 44/44, demo PNG `2cc56b4acbfb92cb` byte-identical, 6/6
+mutations with a no-op control that SURVIVED.
 ### M136/M137 — two fixes recovered from worktrees that looked like litter (2026-08-10)
 
 Both were sitting **uncommitted** in agent worktrees left over from the M127–M134

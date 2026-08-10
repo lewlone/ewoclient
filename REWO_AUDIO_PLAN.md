@@ -137,6 +137,20 @@ Multiplier `32767.5`, bias applied **before** a C-style truncating cast. Reprodu
 ### M138a — the listener seam, and the two live false greens
 **No new dependency.** Ships alone, merges green, and closes hazards that exist today.
 
+> **PARTLY SHIPPED 2026-08-10.** Items **3 (`build_sounds` fails closed) and 4
+> (`DATA_SILENT`) are done and merged**; see `REWO_PLAN.md` §15. Items **1 and 2
+> (the listener seam and `listener_basis`) and the r45 witness are OPEN** and are
+> the next thing to pick up here. They were separated because 3 and 4 are live
+> bugs that stand alone, while 1 and 2 are the structural gap the device needs —
+> and shipping a half-built seam would have been worse than shipping neither.
+>
+> One correction from doing them: item 4 is smaller than "one index" suggests in
+> only one respect and larger in another. The decode really is one match arm, but
+> **the witness that matters is the one asserting the sound world READS the
+> flag** — every other test passes against a decode stored where nothing looks,
+> which was the pre-existing state. Reverting the consumer is a mutation in the
+> battery for exactly that reason.
+
 1. **A fifth trait method**, not a `ChannelCall` variant: `fn set_listener(&mut self, t: ListenerTransform)`. The listener is not a channel, and a fake channel id would be both ugly and unassertable. `RecordingDevice` gains `listener_history`. Today `AudioDevice` is four methods with **no listener call** (`sound_engine.rs:165-180` **[read]**), so every `SetSelfPosition` is an absolute world coordinate panned against the origin facing +Z.
 2. **`listener_basis(yaw, pitch) -> (forward, up)`** in `rewo-net`, transcribing `Camera.java:339-341`. The handedness lives where the tests are (M97's lesson). `rewo-app` passes camera angles, **per frame**.
 3. **`build_sounds` stops swallowing** — today a missing sounds.json becomes an empty index behind a `log::info!` (`live_cmd.rs:3820-3828` **[concurring]**), behaviourally identical to totally broken resolution. Fail closed under `--render-check`.
