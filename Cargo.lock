@@ -2372,6 +2372,7 @@ dependencies = [
 name = "rewo-audio"
 version = "0.1.0"
 dependencies = [
+ "rewo-net",
  "symphonia",
 ]
 

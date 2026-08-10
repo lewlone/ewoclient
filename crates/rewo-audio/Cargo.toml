@@ -14,3 +14,8 @@ edition = "2021"
 # gates link an audio stack to decode a packet. The store lookup that turns an
 # asset key into bytes therefore lives on the caller's side of `PcmSource`.
 symphonia = { version = "0.5", default-features = false, features = ["ogg", "vorbis"] }
+
+# **The direction that is allowed.** rewo-audio may depend on rewo-net, for
+# ListenerTransform and the OpenAL gain curve M131 transcribed; rewo-net must
+# never depend on this, or 34 gates link a codec to decode a packet.
+rewo-net = { path = "../rewo-net" }
