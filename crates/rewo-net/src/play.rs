@@ -2417,6 +2417,15 @@ impl PlaySession {
                 log::debug!("net: particle event {ev:?}");
                 self.particle_events.push(ev);
             }
+            // M140 — the same packet also asks for a sound, and the two are
+            // independent: 2001 (a block breaking) is both, 1000 (a dispenser)
+            // is sound only, and 2000 (smoke) is particle only. Deriving one
+            // from the other would lose whichever the id does not have.
+            if Some(id) == ids.cb_play_level_event {
+                if let Some(s) = crate::route_level_event_sound(body) {
+                    self.push_sound_event(s);
+                }
+            }
         } else if id == ids.cb_play_sound
             || id == ids.cb_play_sound_entity
             || id == ids.cb_play_stop_sound

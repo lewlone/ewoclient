@@ -3502,6 +3502,248 @@ pub fn route_level_event(body: &[u8]) -> Option<rewo_world::particles::ParticleE
     })
 }
 
+/// The sound a `level_event` packet asks for (M140).
+///
+/// `rewo_data::level_event_sounds` has carried the whole 83-id switch since
+/// M66 and had **zero production callers** until this: most block interactions
+/// — a dispenser firing, an anvil landing, a composter filling — arrive as a
+/// `level_event` id rather than as a `sound` packet, so a large fraction of the
+/// world's noise was silent no matter how good the device was.
+///
+/// **The position is the block CENTRE.** `Level.playLocalSound(BlockPos, …)`
+/// delegates to `playLocalSound(pos.getX() + 0.5, pos.getY() + 0.5,
+/// pos.getZ() + 0.5, …)` at `Level.java:475`, and reading the corner instead
+/// puts every block sound half a block out on all three axes — which at a
+/// 16-block attenuation radius is a few percent of gain and a visible shift in
+/// the stereo image, wrong in a way that looks like nothing in a log.
+///
+/// **The sound is named rather than numbered.** The table stores registry
+/// names, so this yields [`crate::sounds::SoundRef::Inline`] — the
+/// identified-by-name variant — instead of resolving through the report. That
+/// costs nothing (M63's rule is that an inline event returns its own identifier
+/// without consulting the table) and keeps the decode layer free of a registry
+/// it would otherwise have to be handed.
+///
+/// ## What this deliberately does not do
+///
+/// * **`Placement::Camera` and `Placement::Listener` yield `None`** — four ids
+///   of seventy. Camera places the sound two blocks from the *camera* along the
+///   direction to `pos`, and Listener attaches it to the listener so it neither
+///   attenuates nor pans; both need the camera, which this layer does not have
+///   and should not be handed. Named here rather than left as a mystery.
+/// * **Pitch is `1.0`.** Over thirty rows randomise it off `ClientLevel.random`,
+///   a generator with nothing on the wire, so there is no correct value to
+///   transcribe — the jitter belongs to the playback layer, which is the same
+///   argument the table's own module doc makes for not carrying it.
+/// * **`distance_delay` is not modelled.** Vanilla defers those by
+///   `distance / 340` seconds; nothing in Rewo's sound queue can express a
+///   delay yet, so the sound arrives early rather than not at all.
+pub fn route_level_event_sound(body: &[u8]) -> Option<crate::sounds::SoundEvent> {
+    use rewo_data::level_event_sounds::Placement;
+    let mut r = PacketReader::new(body);
+    let kind = r.i32().ok()?;
+    let (x, y, z) = r.position().ok()?;
+    let data = r.i32().ok()?;
+    let global = r.bool().ok()?;
+
+    // `global` is matched rather than ignored: `globalLevelEvent` and
+    // `levelEvent` are disjoint switches, so a mismatched flag is silence in
+    // vanilla too rather than a fall-through.
+    let row = rewo_data::level_event_sounds::resolve(kind, data, global)?;
+    if row.placement != Placement::Block {
+        return None;
+    }
+    let source = crate::sounds::SoundSource::from_name(row.source)?;
+    Some(crate::sounds::SoundEvent::At(crate::sounds::PositionedSound {
+        sound: crate::sounds::SoundRef::Inline {
+            name: row.sound.to_string(),
+            // `getRange` falls back to `16 * max(volume, 1)`, which is what a
+            // level event wants; a fixed range here would override it.
+            fixed_range: None,
+        },
+        source,
+        x: x as f64 + 0.5,
+        y: y as f64 + 0.5,
+        z: z as f64 + 0.5,
+        // Two rows of seventy carry no literal; 1.0 is vanilla's own default
+        // for them. The rest matter a great deal — a ghast fireball is 10.0
+        // and a bat taking off is 0.05, a factor of two hundred.
+        volume: row.volume.unwrap_or(1.0),
+        pitch: 1.0,
+        // `level_event` carries no seed. Variant selection therefore has none
+        // to seed from and the playback layer draws its own, which is exactly
+        // what vanilla does: `playLocalSound` reaches `SimpleSoundInstance`,
+        // whose weight draw is off `ClientLevel.random`.
+        seed: 0,
+    }))
+}
+
+#[cfg(test)]
+mod level_event_sound_tests {
+    //! `level_event` asks for sounds too (M140).
+    //!
+    //! The table has been complete and partition-tested since M66 and had no
+    //! production caller, so every one of these ids was silent — a dispenser,
+    //! an anvil, a composter, a wither spawning.
+
+    use crate::sounds::{SoundEvent, SoundRef};
+
+    /// `kind: i32`, packed `BlockPos`, `data: i32`, `global: bool`.
+    fn body(kind: i32, x: i64, y: i64, z: i64, data: i32, global: bool) -> Vec<u8> {
+        let packed = ((x & 0x3FF_FFFF) << 38) | ((z & 0x3FF_FFFF) << 12) | (y & 0xFFF);
+        let mut b = kind.to_be_bytes().to_vec();
+        b.extend_from_slice(&(packed as i64).to_be_bytes());
+        b.extend_from_slice(&data.to_be_bytes());
+        b.push(u8::from(global));
+        b
+    }
+
+    fn at(kind: i32, data: i32, global: bool) -> Option<crate::sounds::PositionedSound> {
+        match super::route_level_event_sound(&body(kind, 10, 64, -7, data, global)) {
+            Some(SoundEvent::At(p)) => Some(p),
+            Some(other) => panic!("expected a positioned sound, got {other:?}"),
+            None => None,
+        }
+    }
+
+    /// **The block CENTRE, not the corner.**
+    ///
+    /// `Level.playLocalSound(BlockPos, …)` delegates to `pos.getX() + 0.5` on
+    /// all three axes (`Level.java:475`). The corner reading puts every block
+    /// sound half a block out in three axes at once, which at a 16-block radius
+    /// is a few percent of gain and a visible shift in the image — and looks
+    /// like nothing at all in a log.
+    #[test]
+    fn a_dispenser_sounds_at_the_block_centre() {
+        let s = at(1000, 0, false).expect("1000 is a sound");
+        assert_eq!((s.x, s.y, s.z), (10.5, 64.5, -6.5));
+        match &s.sound {
+            SoundRef::Inline { name, fixed_range } => {
+                assert_eq!(name, "minecraft:block.dispenser.dispense");
+                // `getRange` must fall back to `16 * max(volume, 1)`; a fixed
+                // range here would override it.
+                assert_eq!(*fixed_range, None);
+            }
+            other => panic!("expected a named sound, got {other:?}"),
+        }
+        assert_eq!(s.source, crate::sounds::SoundSource::Blocks);
+    }
+
+    /// Volume is carried, and it is not decorative.
+    #[test]
+    fn volume_spans_a_factor_of_two_hundred() {
+        // A ghast warning against a bat taking off.
+        assert_eq!(at(1015, 0, false).unwrap().volume, 10.0);
+        assert_eq!(at(1025, 0, false).unwrap().volume, 0.05);
+        // A mixer that assumed 1.0 everywhere would be wrong by 200x across
+        // these two, which is only ever audible rather than assertable
+        // elsewhere.
+        assert_eq!(at(1031, 0, false).unwrap().volume, 0.3, "anvil landing");
+    }
+
+    /// **`data` gates some ids, and an ungated value is silence.**
+    ///
+    /// 1009 is two different sounds for `data` 0 and 1, and vanilla's
+    /// `if/else if` has no `else` — so 2 is silence rather than a fall-through
+    /// to the first branch, which is exactly what a `match` written from the
+    /// id alone would produce.
+    #[test]
+    fn a_data_gated_id_is_silent_outside_its_branches() {
+        let a = at(1009, 0, false).expect("data 0");
+        let b = at(1009, 1, false).expect("data 1");
+        assert_ne!(a.sound, b.sound, "two different sounds, not one");
+        assert!(at(1009, 2, false).is_none(), "no else branch");
+        assert!(at(1009, 99, false).is_none());
+    }
+
+    /// The global flag is matched, because the two switches are disjoint.
+    ///
+    /// **And every global row is camera-placed, so this function never emits a
+    /// sound for a global packet at all** — a structural fact rather than a
+    /// coincidence of the three ids, and worth pinning: if a block-placed global
+    /// row is ever added, the second assertion here fails and tells whoever
+    /// added it that the camera boundary now has a case it did not before.
+    ///
+    /// This test first contained `assert!(… || true)`, which is a tautology and
+    /// passes against anything. It survived exactly as long as it took to read
+    /// it back.
+    #[test]
+    fn a_mismatched_global_flag_is_silence() {
+        use rewo_data::level_event_sounds::{Placement, SOUNDS};
+        // 1000 is a `levelEvent`, so the global switch does not have it.
+        assert!(at(1000, 0, false).is_some());
+        assert!(at(1000, 0, true).is_none(), "the flag is matched, not ignored");
+
+        // 1023 IS in the global switch — the table knows it — and is refused
+        // here for its placement rather than its flag.
+        assert!(rewo_data::level_event_sounds::resolve(1023, 0, true).is_some());
+        assert!(at(1023, 0, false).is_none(), "not in the local switch");
+
+        assert!(
+            SOUNDS
+                .iter()
+                .filter(|s| s.global)
+                .all(|s| s.placement == Placement::Camera),
+            "a block-placed global row would be a new case for this function"
+        );
+    }
+
+    /// Camera- and listener-placed ids yield nothing HERE, and that is the
+    /// stated boundary rather than a gap: both need the camera, which this
+    /// layer does not have and should not be handed.
+    #[test]
+    fn camera_and_listener_placements_are_declined() {
+        // 1023 (wither spawn) is Camera and global; 1032 (portal travel) is
+        // Listener. Both resolve in the table and both are refused here.
+        assert!(at(1023, 0, true).is_none(), "camera-placed");
+        assert!(at(1032, 0, false).is_none(), "listener-placed");
+        assert!(
+            rewo_data::level_event_sounds::resolve(1023, 0, true).is_some(),
+            "…and the table does know them, so this is a placement decision"
+        );
+        assert!(rewo_data::level_event_sounds::resolve(1032, 0, false).is_some());
+    }
+
+    /// A particle-only id asks for no sound, and an unknown one does not panic.
+    #[test]
+    fn particle_only_and_unknown_ids_are_silent() {
+        // 2000 is smoke along a face — one of the SILENT ids.
+        assert!(at(2000, 0, false).is_none());
+        assert!(at(123_456, 0, false).is_none(), "unknown id");
+        // A truncated body is refused rather than read past its end.
+        assert!(super::route_level_event_sound(&[0, 0, 3, 232]).is_none());
+        assert!(super::route_level_event_sound(&[]).is_none());
+    }
+
+    /// Every id the table calls a sound and places at a block comes through.
+    ///
+    /// The completeness claim: a hand-written `match` in the router would have
+    /// drifted from the table the first time either changed, so this asserts
+    /// the two agree for the whole set rather than for the handful above.
+    #[test]
+    fn every_block_placed_row_yields_a_sound() {
+        use rewo_data::level_event_sounds::{Placement, SOUNDS};
+        let mut seen = 0;
+        for row in SOUNDS.iter().filter(|s| s.placement == Placement::Block) {
+            // A `data` value the row's own gate accepts. Derived from the
+            // gate rather than hardcoded, so a new gate variant fails the build
+            // here instead of quietly making this loop test nothing.
+            use rewo_data::level_event_sounds::DataGate as G;
+            let data = match row.data {
+                G::Always => 0,
+                G::Eq(v) => v,
+                G::Ne(v) => v.wrapping_add(1),
+                G::Gt(v) => v + 1,
+                G::Le(v) => v,
+            };
+            let got = at(row.id, data, row.global);
+            assert!(got.is_some(), "id {} data {data} yielded nothing", row.id);
+            seen += 1;
+        }
+        assert!(seen > 50, "only {seen} block-placed rows; the table shrank?");
+    }
+}
+
 /// Which of the three sound packets a body is, for [`route_sound`].
 ///
 /// The dispatcher already knows the packet id; passing the kind in rather
