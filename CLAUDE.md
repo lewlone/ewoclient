@@ -730,7 +730,11 @@ The launcher re-reads the loader manifest on every launch (no TTL cache in `load
 
 **Adding a new bundled mod:** three-place change (the BundledMods verification fails loud if any two drift):
 1. `crates/ewo-launcher/src/bundled.rs::CATALOG` — adds the UI row + library-name → mod-id mapping the launcher uses for classpath stripping.
-2. `EwoLoaderV1/manifest/0.1.0/26.1.json::libraries[]` — adds the download artifact entry.
+2. `EwoLoaderV1/manifest/0.1.0/<version>.json::libraries[]` — adds the download
+   artifact entry. **There are TWO manifests now**, `26.1.json` and `26.2.json`,
+   and the launcher picks one per Minecraft version line, so a mod added to only
+   one of them is missing on the other with no error until `BundledMods`
+   verification fires at launch.
 3. `EwoLoaderV1/src/main/java/.../BundledMods.java::BUNDLED_MODS` — adds the post-discovery verification entry.
 
 **GitHub Release snapshots (off-box backup of the fat jar):** versioned snapshots of the fat jar live on `lewlone/ewo-loader` GitHub Releases (private). `v0.19.2-bundle.1` was the first one. The loader manifest's fat-jar URL stays `file://` for active dev (per the iteration loop above — fast rebuild + no upload step), so the launcher reads the local jar on every launch. The Release exists as a versioned backup + a stepping-stone if the loader ever needs to ship to a second machine. To cut a new snapshot:
@@ -1911,12 +1915,13 @@ note.*
 ## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, particles, the first-person hand, the Velvet type stack, the container arc, the recipe book, chat, translated text, styled spans, the chat decoration, clickable text, and the scoreboard sidebar)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
-read its §0.0 HANDOFF first**, and
-**[REWO_AUDIO_PLAN.md](REWO_AUDIO_PLAN.md) is the detail behind its audio item**
-(shipped M138a–d and M140; **the listening pass is the outstanding work and it is
-the user's** — no gate opens a device) (it consolidates current state, what to do next,
+read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
+**[REWO_AUDIO_PLAN.md](REWO_AUDIO_PLAN.md) is the detail behind its audio
+item** — M138a–d and half of M140 have shipped, and **the listening pass is the
+outstanding work and it is the user's**, because no gate in this project opens an
+audio device.
 **Everything is shipped, gated and merged to `main`** as of 2026-08-10
 (M140b) — **2925 tests / 0 failures** (world 1147, net 977, gpu 275, data 224,
 app 197, mesh 45, proto 16, **audio 44** — EIGHT crates now, read off the runner
@@ -1924,7 +1929,7 @@ per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, all **34** serverless gates green with 0
-validation errors, `live --render-check` **44/44** with validation ON and 0
+validation errors, `live --render-check` **45/45** with validation ON and 0
 validation errors, demo PNG `2cc56b4acbfb92cb`.
 **The recipe book is closed** (M105–M107) and **M108–M111 shipped chat** —
 `ChatComponent`, the wrap under it, the `MessageSignatureCache` without which

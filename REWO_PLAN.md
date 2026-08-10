@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: shipped and headlessly verified through M125 (2026-08-08).** `main`
+**Status: shipped and headlessly verified through M140b (2026-08-10).** `main`
 carries all of it and no branch or worktree holds a commit off it; the
 long-standing branch risk (everything from M10 on living on one unmerged
 branch) closed on 2026-07-27 and has stayed closed. See §0.0 for the
@@ -148,10 +148,10 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` 44/44 with validation ON and 0
-validation errors, last run for M138a, now **45/45** with r45** (and easiest to reproduce with
+34/34, `mobshot` 246/246, **`live --render-check` 45/45 with validation ON and 0
+validation errors** — r45 arrived with M138a, and the whole thing reproduces with
 `python tools/render_check.py`, which stands up a fresh server and carries both
-caller requirements); demo PNG
+caller requirements; demo PNG
 `2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C
 **12** — M96–M107 consume packets M93y already decoded, M108 resolved
 `delete_chat`, M113 the Brigadier tree and M114 the two suggestion packets.
@@ -1699,26 +1699,19 @@ a record, because what it teaches outlived it:
   and agreed with the bug at every scale, because both sides were in the same
   wrong space — **an agreement witness has to model whatever sits between the
   producer and the screen.**
-- **`tryPlaceRecipe`'s `lastPlacedRecipe` guard is not modelled** — OPEN since
-  M98, and reachable from two places since M104. Vanilla suppresses a second
-  click on the **same uncraftable** recipe (`!isCraftable(recipe) &&
-  recipe.equals(lastPlacedRecipe)`) *and returns `false` from the whole
-  component*, so that click falls through to the screen instead of being eaten.
-  Rewo places unconditionally and always consumes. Small, self-contained, and
-  the kind of thing that is invisible until someone double-clicks a recipe they
-  cannot afford.
-- **The recipe book draws no tooltips** — OPEN. Neither the page's own
-  (`RecipeBookPage.extractTooltip`, which is also suppressed while the
-  which-of-these overlay is up) nor the ghost's
-  (`GhostSlots.extractTooltip`, M103). The tooltip machinery exists (M40/M41);
-  what is missing is the wiring and the "+ N more recipes" line.
-- **`useMaxItems` never reaches the book's press** — OPEN. Shift-clicking a
-  recipe should place as many as the inventory allows; Rewo does not track the
-  modifier at that call site, so a click always places one.
-- **The page counter text is not drawn** — OPEN, and unusually cheap: the
-  model constants (`PAGE_LABEL_CENTRE_X`, `PAGE_LABEL_Y`, `page_label_x`) have
-  existed since M93z with nothing reading them. `gui.recipebook.page`, "x/y",
-  only when `total_pages > 1`.
+- ~~**`tryPlaceRecipe`'s `lastPlacedRecipe` guard**, ~~**the recipe book's
+  tooltips**~~, ~~**`useMaxItems`**~~ and ~~**the page counter**~~~ — **ALL FOUR
+  RESOLVED, and this list did not notice for three days.** M105 drew the page
+  counter (`gui.recipebook.page`, with `--render-check` witness **r25**), M106a
+  and M106c added the cell and ghost tooltips, M133 the three widget tooltips,
+  and M107 both the `lastPlacedRecipe` guard (`recipe_book_screen.rs:1340`,
+  `:1369`) and `useMaxItems` (`:1413`). They sat here marked OPEN while §15 two
+  thousand lines below recorded them shipped.
+  **That is the failure this file keeps describing, in its own gaps list**: a
+  number with a test behind it stays true, and a hand-maintained list of open
+  items rots silently because nothing fails when it is wrong. If you close
+  something, strike it here in the same commit — and if you are picking work off
+  this list, grep the crates for the symbol before believing it is missing.
 - **A mob can render with another mob's texture when more than one is in
   the scene** — OPEN, found 2026-07-28 during M46, **pre-existing** (a
   stashed pre-M46 build reproduces it exactly). Two zombies summoned side
@@ -2067,8 +2060,13 @@ workflow in §11 is what makes re-pinning cheap).
   too). It is simultaneously: the deterministic perf benchmark for every
   1%-low comparison, the offline dev fixture (renderer work without a
   server), and a bug-repro format.
-- **Sound: explicitly post-v1.** Asset index already gives us the files;
-  `rodio` when it happens. Silence is acceptable for the experiment phase.
+- ~~**Sound: explicitly post-v1.**~~ **SHIPPED 2026-08-10** as M138a–d —
+  `crates/rewo-audio`, plus M140's `level_event` sounds and M140b's music fade.
+  **Do not act on this line's crate suggestion**: it said `rodio`, which
+  [`REWO_AUDIO_PLAN.md`](REWO_AUDIO_PLAN.md) then rejected on evidence — its
+  specified voice cannot play a stereo source and all the music is stereo, and
+  its pan law is 0/0 for every UI sound. cpal + symphonia is what shipped.
+  Nobody has listened to it yet.
 - **Server resource packs: policy decision** (§10, D8).
 
 ---
@@ -2903,12 +2901,24 @@ not a corner of this one.
 
 ### Deliberately not proposed (as of §16's writing)
 
-- **Particles** — a whole subsystem, and every existing gate is geometry-based;
-  it would need a new verification approach before it could be shipped honestly.
-  **Still true.**
-- **Sound** — outside a renderer's scope. **Still true.**
-- **First-person hand / GUI** — needs an inventory model Rewo does not have.
-  **Still true, and now the single largest gap** — see §0.0.
+- ~~**Particles**~~ — called a whole subsystem needing a new verification
+  approach, **shipped as M37** (§15). The objection stated here is exactly what
+  M37 disproved: `Particle.tick()` contains no randomness at all, every generator
+  is `java.util.Random`'s LCG, and a fixed seed turns spawn offset, velocity,
+  lifetime, colour and sprite index into assertable numbers. The gate was
+  geometry-based after all.
+- ~~**Sound**~~ — called outside a renderer's scope, **shipped as M138a–d**
+  (2026-08-10) in `crates/rewo-audio`, plus M140's `level_event` sounds and
+  M140b's music fade. It was outside a *renderer's* scope and that was never the
+  boundary that mattered. **Nobody has listened to it yet** — see
+  [`REWO_AUDIO_PLAN.md`](REWO_AUDIO_PLAN.md).
+- ~~**First-person hand / GUI**~~ — called blocked on an inventory model,
+  **shipped**: M34 built the inventory, M35 the screen, M38 the hand.
+
+*(All three carried a "**Still true.**" marker until 2026-08-10, long after they
+were false. The heading says "as of §16's writing", which would have made them
+records — but a later hand-added "Still true." is a CURRENT-STATE claim, and
+claims rot. If you annotate an old list, you have taken ownership of it.)*
 - ~~**Weather and clouds**~~ — called filler here, **shipped as M33/M33b**
   (§15). It stopped being filler once M12's celestials made "clear weather
   only" the last thing missing from the sky.

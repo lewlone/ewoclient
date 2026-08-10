@@ -70,7 +70,8 @@ change:
   `rewo-*` ones individually. **`cargo test -p A -p B` drops a result line in
   the combined stream**, so run each crate and sum, or you will write a wrong
   total in a doc. **And the per-crate flag is not uniform**: `rewo-app` is a
-  binary crate, so it takes `--bins` where the other six take `--lib`; `--lib`
+  binary crate, so it takes `--bins` where the other **seven** take `--lib`
+  (there are EIGHT rewo crates since M138b added `rewo-audio`); `--lib`
   there is `error: no library targets`, exit 101, and no `test result` line —
   which reads exactly like a crate whose tests failed to compile.
 * Every gate is serverless and fail-closed, and most require Vulkan validation
@@ -243,9 +244,13 @@ listed because they are invisible in the output.
   dismissed M19's biggest gap; a review that read only the *mob* renderer would
   have concluded "everything is EMPTY" and been wrong for players.
 - **Editing a CRLF or mixed-EOL file normalizes line endings across the touched
-  region.** `crates/rewo-gpu/src/entities.rs` is mixed in HEAD and
-  `crates/rewo-data/src/lib.rs` is uniformly CRLF; ordinary edits inflated the
-  former's diff from 341/28 to 529/216, all invisible churn. Fix:
+  region**, inflating a diff with invisible churn — one such edit went from
+  341/28 to 529/216. **Do not trust the file names this bullet used to give**
+  (`entities.rs`, `rewo-data/src/lib.rs`): both are pure LF today, and the list
+  that is maintained lives in `REWO_PLAN.md` §0.0, re-measured 2026-08-10 across
+  378 files. There are exactly five: one pure CRLF (`rewo-gpu/src/cem.rs`) and
+  four mixed (`mobshot_cmd.rs`, `vanilla_hier.rs`, `chunk.rs`, `light.rs`).
+  Measure as BYTES in Python before believing any of it. Fix:
   `git diff -- <file> | tr -d '
 ' > p; git checkout HEAD -- <file>;
   git apply --ignore-whitespace p`, then confirm `git diff --numstat` agrees with
@@ -287,9 +292,14 @@ not yet pushed". Everything is merged and pushed; there is no work branch.
   only record of a subtle vanilla behaviour. End with
   `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
 - **After a milestone**, update `REWO_PLAN.md` §15 (the status log — it is the
-  durable record), the Rewo section of `CLAUDE.md`, and the `rewo_client`
-  memory file. Load-bearing conventions belong there so they are never
-  re-derived.
+  durable record), §0.0's measurements, the Rewo section of `CLAUDE.md`, and the
+  `rewo_client` memory file. Load-bearing conventions belong there so they are
+  never re-derived.
+  **Then REGENERATE `AGENTS.md`** — it is a generated mirror of `CLAUDE.md`, its
+  own header carries the one-line command, and forgetting it is how that file
+  drifted 634 lines by 2026-07-27 and 3,061 lines by 2026-08-07. Never hand-edit
+  it. And **do not copy a number into a second document**: point at §0.0
+  instead, because two copies of a count is two things to rot.
 - **Generated code is generated**: `tools/gen_block_light.py`,
   `tools/gen_vanilla_hierarchy.py`, `tools/gen_anim_defs.ps1`. Re-run after a
   version bump; never hand-edit their output. They are written to fail loud
