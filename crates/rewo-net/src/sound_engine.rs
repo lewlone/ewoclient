@@ -605,23 +605,26 @@ impl AudioDevice for SilentDevice {
     }
 }
 
-/// What the engine needs to know about the world to tick an entity-bound
-/// sound.
+/// What the engine needs to know about the world to play and tick a sound.
 ///
-/// Two questions, both `Entity` methods vanilla calls directly:
-/// `isRemoved()` (here: the position is `None`) and `isSilent()`.
-pub trait SoundWorld {
-    /// The entity's current position, or `None` if it is gone —
-    /// `EntityBoundSoundInstance.tick`'s `entity.isRemoved()` branch.
-    fn entity_position(&self, entity_id: i32) -> Option<(f64, f64, f64)>;
-
-    /// `entity.isSilent()`.
+/// One question of its own — `isSilent()` — over
+/// [`crate::tickable::RampWorld`], which is everything the ten `tick()` bodies
+/// read.
+///
+/// **`entity_position` used to live here and is now `RampWorld::position`.**
+/// They were the same query (`entity.isRemoved()` folded into an `Option`), and
+/// two names for one query is exactly how call sites come to disagree — M89's
+/// finding, which has since recurred three times. One name, one implementor
+/// method, and a consumer that wants it has to ask for it.
+pub trait SoundWorld: crate::tickable::RampWorld {
+    /// `entity.isSilent()` — `SynchedEntityData` index 4.
     ///
-    /// **Rewo has no source for this yet**: it is `SynchedEntityData` index 4
-    /// and `metadata.rs` skips it, so every production caller answers `false`
-    /// and a silenced entity is not silenced. The predicate exists and is
-    /// correct; the input is missing, and that is recorded rather than papered
-    /// over with a default implementation.
+    /// **Decoded since M138a.** This doc used to say "Rewo has no source for
+    /// this yet … every production caller answers `false`", which was the
+    /// honest shape while the metadata parser skipped index 4 and stopped
+    /// being true the moment it did not. The production implementor reads the
+    /// decoded flag and says so at its own definition; this one is where a
+    /// reader looks first, so it is the one that matters.
     fn entity_silent(&self, entity_id: i32) -> bool;
 }
 
@@ -630,11 +633,59 @@ pub trait SoundWorld {
 pub struct EmptyWorld;
 
 impl SoundWorld for EmptyWorld {
-    fn entity_position(&self, _entity_id: i32) -> Option<(f64, f64, f64)> {
-        None
-    }
     fn entity_silent(&self, _entity_id: i32) -> bool {
         false
+    }
+}
+
+impl crate::tickable::RampWorld for EmptyWorld {
+    fn position(&self, _entity_id: i32) -> Option<(f64, f64, f64)> {
+        None
+    }
+    fn horizontal_speed(&self, _: i32) -> f64 {
+        0.0
+    }
+    fn speed(&self, _: i32) -> f64 {
+        0.0
+    }
+    fn speed_sqr(&self, _: i32) -> f64 {
+        0.0
+    }
+    fn baby(&self, _: i32) -> bool {
+        false
+    }
+    fn angry(&self, _: i32) -> bool {
+        false
+    }
+    fn underwater(&self, _: i32) -> bool {
+        false
+    }
+    fn has_ai_target(&self, _: i32) -> bool {
+        false
+    }
+    fn attack_animation_scale(&self, _: i32) -> f32 {
+        0.0
+    }
+    fn sniffer_digging(&self, _: i32) -> bool {
+        false
+    }
+    fn on_rails(&self, _: i32) -> bool {
+        false
+    }
+    fn new_minecart_behavior(&self, _: i32) -> bool {
+        false
+    }
+    fn runs_normally(&self) -> bool {
+        true
+    }
+    fn fall_flying(&self, _: i32) -> bool {
+        false
+    }
+    fn vehicle_of(&self, _: i32) -> Option<i32> {
+        None
+    }
+    fn camera_position(&self) -> (f64, f64, f64) {
+        (0.0, 0.0, 0.0)
     }
 }
 
@@ -695,6 +746,14 @@ struct Live {
     delete_time: i32,
     /// `ChannelAccess.ChannelHandle.stopped`, set by [`SoundEngine::schedule_tick`].
     handle_stopped: bool,
+    /// Which `TickableSoundInstance` subclass this is, if any — `None` is a
+    /// plain `SimpleSoundInstance`, which never enters `tickingSounds`.
+    ///
+    /// Vanilla's `tickingSounds` is a separate set and its membership test is
+    /// `instance instanceof TickableSoundInstance`; here the ramp's presence
+    /// *is* that test, which is the same partition by construction rather than
+    /// by two collections agreeing.
+    ramp: Option<crate::tickable::Ramp>,
 }
 
 /// A handle standing in for vanilla's object identity.
@@ -719,7 +778,7 @@ pub struct SoundEngine {
     /// they are due.
     queued: Vec<(InstanceId, SoundInstance, i32)>,
     /// `queuedTickableSounds`.
-    queued_tickable: Vec<SoundInstance>,
+    queued_tickable: Vec<(SoundInstance, Option<crate::tickable::Ramp>)>,
     /// `gainBySource`, `defaultReturnValue(1.0F)`.
     gain_by_source: [f32; SoundSource::ALL.len()],
     /// `Options.soundSourceVolumes`.
@@ -762,6 +821,15 @@ impl SoundEngine {
     /// How many instances hold a channel — `instanceToChannel.size()`.
     pub fn live_count(&self) -> usize {
         self.live.len()
+    }
+
+    /// The event names of the instances currently holding a channel.
+    ///
+    /// Exists so a witness can name *which* sound is playing rather than
+    /// counting how many are — the bee's switch replaces one loop with another
+    /// and a count cannot see it happen.
+    pub fn live_identifiers(&self) -> Vec<&str> {
+        self.live.iter().map(|l| l.instance.identifier.as_str()).collect()
     }
 
     /// `SoundEngine.updateCategoryVolume(source, gain)` — the runtime gain,
@@ -814,6 +882,30 @@ impl SoundEngine {
     pub fn play(
         &mut self,
         instance: SoundInstance,
+        sounds: &SoundsIndex,
+        world: &dyn SoundWorld,
+        device: &mut dyn AudioDevice,
+    ) -> (InstanceId, PlayResult) {
+        // A `SimpleSoundInstance` — no `tick()`, so it never enters
+        // `tickingSounds`. The entity-bound factory carries a ramp instead; see
+        // `play_ramped`.
+        let ramp = match instance.binding {
+            Binding::Entity(e) => Some(crate::tickable::Ramp::EntityBound { entity: e }),
+            Binding::Fixed => None,
+        };
+        self.play_ramped(instance, ramp, sounds, world, device)
+    }
+
+    /// `SoundEngine.play(SoundInstance)` for a `TickableSoundInstance`.
+    ///
+    /// The ramp is what `tickingSounds` membership means here — see
+    /// [`Live::ramp`]. Everything else is identical, which is why this is the
+    /// real body and [`SoundEngine::play`] is the wrapper: a second copy of the
+    /// eleven guards would be eleven chances to drift.
+    pub fn play_ramped(
+        &mut self,
+        instance: SoundInstance,
+        ramp: Option<crate::tickable::Ramp>,
         sounds: &SoundsIndex,
         world: &dyn SoundWorld,
         device: &mut dyn AudioDevice,
@@ -924,6 +1016,7 @@ impl SoundEngine {
             pool,
             delete_time: self.tick_count + MIN_SOURCE_LIFETIME,
             handle_stopped: false,
+            ramp,
         });
 
         (
@@ -946,8 +1039,12 @@ impl SoundEngine {
 
     /// `SoundEngine.queueTickingSound(instance)` — played at the top of the
     /// next tick, and only if it still `canPlaySound()` then.
-    pub fn queue_ticking_sound(&mut self, instance: SoundInstance) {
-        self.queued_tickable.push(instance);
+    pub fn queue_ticking_sound(
+        &mut self,
+        instance: SoundInstance,
+        ramp: Option<crate::tickable::Ramp>,
+    ) {
+        self.queued_tickable.push((instance, ramp));
     }
 
     /// `SoundEngine.stop(SoundInstance)` — asks the device to stop the
@@ -1077,49 +1174,57 @@ impl SoundEngine {
         self.tick_count += 1;
 
         // `queuedTickableSounds.stream().filter(canPlaySound).forEach(play)`.
-        for inst in std::mem::take(&mut self.queued_tickable) {
+        for (inst, ramp) in std::mem::take(&mut self.queued_tickable) {
             let silent = match inst.binding {
                 Binding::Entity(e) => world.entity_silent(e),
                 Binding::Fixed => false,
             };
             if inst.can_play_sound(silent) {
-                self.play(inst, sounds, world, device);
+                self.play_ramped(inst, ramp, sounds, world, device);
             }
         }
 
-        // The ticking sounds: follow the entity, or stop.
+        // ```java
+        // for (TickableSoundInstance instance : this.tickingSounds) {
+        //    if (!instance.canPlaySound()) this.stop(instance);
+        //    instance.tick();
+        //    if (instance.isStopped()) this.stop(instance);
+        //    else { volume/pitch/position -> the channel }
+        // }
+        // ```
+        //
+        // Three shapes worth keeping visible. The `canPlaySound` stop does NOT
+        // `continue` — vanilla stops the channel and then ticks the instance
+        // anyway. `tick()` is called before `isStopped()` is read, so a body
+        // that stops itself this tick still runs. And the volume/pitch/position
+        // push happens **only** in the else, so a stopping instance's last
+        // ramp write never reaches the device.
         let options = self.options;
         let gains = self.gain_by_source;
         let mut to_stop: Vec<ChannelId> = Vec::new();
         let mut updates: Vec<(ChannelId, f32, f32, (f64, f64, f64))> = Vec::new();
+        let mut queued: Vec<(SoundInstance, Option<crate::tickable::Ramp>)> = Vec::new();
         for l in self.live.iter_mut() {
-            let Binding::Entity(entity) = l.instance.binding else {
+            let Some(ramp) = l.ramp.as_mut() else {
                 continue;
             };
-            // `if (!instance.canPlaySound()) this.stop(instance);` — note
-            // vanilla does NOT `continue` here: it stops the channel and then
-            // ticks the instance anyway.
-            if world.entity_silent(entity) {
-                to_stop.push(l.channel);
-            }
-            match world.entity_position(entity) {
-                // `EntityBoundSoundInstance.tick`'s else-branch. The refresh is
-                // NOT narrowed through f32 — only the constructor's initial
-                // read is — so an entity-bound sound is more precisely placed
-                // one tick after it starts than at the moment it starts.
-                Some((x, y, z)) => {
-                    l.instance.x = x;
-                    l.instance.y = y;
-                    l.instance.z = z;
-                }
-                None => {
-                    // `entity.isRemoved()` → `stop()`, which sets `stopped` and
-                    // **clears `looping`** — so a removed entity's looping
-                    // sound does not come back through the manual-loop queue.
-                    l.instance.looping = false;
+            if let Some(entity) = ramp.entity() {
+                if world.entity_silent(entity) {
                     to_stop.push(l.channel);
-                    continue;
                 }
+            }
+
+            let outcome = ramp.tick(&mut l.instance, world);
+            if let Some((inst, next)) = outcome.queued {
+                queued.push((inst, Some(next)));
+            }
+            if outcome.stopped {
+                // `AbstractTickableSoundInstance.stop()` sets `stopped` and
+                // **clears `looping`** — so a stopped instance does not come
+                // back through the manual-loop requeue.
+                l.instance.looping = false;
+                to_stop.push(l.channel);
+                continue;
             }
             updates.push((
                 l.channel,
@@ -1133,6 +1238,11 @@ impl SoundEngine {
                 (l.instance.x, l.instance.y, l.instance.z),
             ));
         }
+        // `SoundManager.queueTickingSound` from inside a `tick()` — the bee's
+        // switch. Vanilla's `queuedTickableSounds` is drained at the TOP of a
+        // tick, so a replacement queued here first plays on the NEXT one, and
+        // there is no tick in which both bee loops are live.
+        self.queued_tickable.extend(queued);
         for ch in to_stop {
             device.submit(ch, ChannelCall::Stop);
         }
@@ -1278,7 +1388,7 @@ fn instance_from_entity(
 ) -> Result<SoundInstance, NoInstance> {
     let name = e.sound.resolve(registry).ok_or(NoInstance::UnknownSoundId)?;
     let (x, y, z) = world
-        .entity_position(e.entity_id)
+        .position(e.entity_id)
         .ok_or(NoInstance::UnknownEntity)?;
     Ok(SoundInstance::entity_bound(
         name, e.source, e.volume, e.pitch, e.seed, e.entity_id, x, y, z,
@@ -1313,13 +1423,115 @@ pub fn stop_from_event(stop: &StopSound) -> (Option<&str>, Option<SoundSource>) 
 /// moving mob's sound up to three ticks ahead of the mob.
 pub struct EntityTableWorld<'a>(pub &'a rewo_world::entities::EntityTable);
 
-impl SoundWorld for EntityTableWorld<'_> {
-    fn entity_position(&self, entity_id: i32) -> Option<(f64, f64, f64)> {
+/// The half of [`crate::tickable::RampWorld`] an [`rewo_world::entities::EntityTable`]
+/// can answer, and an explicit account of the half it cannot.
+///
+/// **Nine of the sixteen queries are real; seven are not, and each says so.**
+/// The rule applied to the seven is *make the ramp inert, never plausible*: a
+/// sound that stays at its minimum volume is a smaller lie than one that ramps
+/// on a number nobody derived, because silence is attributable and a wrong
+/// ramp is not. This is M96's principle — greying a recipe you could make
+/// beats lighting one you cannot — applied to audio.
+///
+/// One of the seven is not an approximation at all. [`RampWorld::has_ai_target`]
+/// answers **`false` exactly**: `Mob.target` is a plain field written by AI
+/// goals in `serverAiStep` and has no `EntityDataAccessor`, so no client ever
+/// sees one. It is listed here because it *looks* like a gap and is not.
+///
+/// The genuine gaps, and what each costs:
+///
+/// | query | why | consequence |
+/// |---|---|---|
+/// | `horizontal_speed`, `speed`, `speed_sqr` | `EntityTable` stores an interpolation target, not a velocity | bee / minecart / riding / elytra sit at their minimum volume |
+/// | `angry` | `Bee.DATA_ANGER_END_TIME` is not decoded | a bee never switches to its aggressive loop |
+/// | `underwater` | needs the level's fluid at the entity, not the table | the dry half of the riding pair plays and the wet half mutes |
+/// | `attack_animation_scale` | `clientSideAttackTime` is a client counter Rewo does not run | a guardian's beam is silent at pitch 0.7 |
+/// | `sniffer_digging` | the state enum is decoded for the gesture rig, not exposed here | a sniffer's dig sound stops on its first tick |
+/// | `on_rails`, `new_minecart_behavior` | needs blocks | **both `false`, which reads as "on rails, old behaviour"** — the audible case, chosen because the pair is a conjunction and `(false, false)` makes `off_rail` false |
+/// | `camera_position` | not a property of the entity table | only `Ramp::Directional` asks, and nothing constructs one |
+///
+/// Closing them is per-input work with its own witnesses, not a refactor —
+/// which is why they are a table rather than a TODO.
+impl crate::tickable::RampWorld for EntityTableWorld<'_> {
+    /// `entity.getX/Y/Z()` at tick time.
+    ///
+    /// `render_pos(1.0)` — the **current** interpolated position, not the
+    /// synced target `x/y/z`, which is where the entity is heading. Using the
+    /// target would put a moving mob's sound up to three ticks ahead of it.
+    fn position(&self, entity_id: i32) -> Option<(f64, f64, f64)> {
         let e = self.0.get(entity_id)?;
         let p = e.render_pos(1.0);
         Some((p[0], p[1], p[2]))
     }
 
+    fn horizontal_speed(&self, _: i32) -> f64 {
+        0.0
+    }
+    fn speed(&self, _: i32) -> f64 {
+        0.0
+    }
+    fn speed_sqr(&self, _: i32) -> f64 {
+        0.0
+    }
+
+    /// `entity.isBaby()` — decoded, and the bee's pitch band reads it.
+    fn baby(&self, entity_id: i32) -> bool {
+        self.0.is_baby(entity_id)
+    }
+
+    fn angry(&self, _: i32) -> bool {
+        false
+    }
+    fn underwater(&self, _: i32) -> bool {
+        false
+    }
+
+    /// **Exact, not a stand-in** — see the type's doc.
+    fn has_ai_target(&self, _: i32) -> bool {
+        false
+    }
+
+    fn attack_animation_scale(&self, _: i32) -> f32 {
+        0.0
+    }
+    fn sniffer_digging(&self, _: i32) -> bool {
+        false
+    }
+    fn on_rails(&self, _: i32) -> bool {
+        false
+    }
+    fn new_minecart_behavior(&self, _: i32) -> bool {
+        false
+    }
+
+    /// `level.tickRateManager().runsNormally()`.
+    ///
+    /// **Also exact rather than a stand-in, for now**: Rewo does not decode
+    /// `ticking_state`, and vanilla's default tick rate *is* normal — so this
+    /// is wrong only against a server that has frozen or slowed ticks, which
+    /// is a decode gap with a name rather than an unknown.
+    fn runs_normally(&self) -> bool {
+        true
+    }
+
+    /// `player.isFallFlying()` — `DATA_SHARED_FLAGS_ID` bit **7**, which the
+    /// cape rig already reads.
+    fn fall_flying(&self, entity_id: i32) -> bool {
+        self.0.shared_flag(entity_id, 7)
+    }
+
+    /// `player.getVehicle()` — M70's riding graph, and `None` is exactly
+    /// `!isPassenger()`.
+    fn vehicle_of(&self, entity_id: i32) -> Option<i32> {
+        self.0.vehicle_of(entity_id)
+    }
+
+    fn camera_position(&self) -> (f64, f64, f64) {
+        (0.0, 0.0, 0.0)
+    }
+}
+
+impl SoundWorld for EntityTableWorld<'_> {
     fn entity_silent(&self, entity_id: i32) -> bool {
         // `Entity.isSilent()` — metadata index 4, decoded since M138a. This was
         // a hardcoded `false` with a comment saying so, which is the honest
@@ -1534,6 +1746,25 @@ mod tests {
         idx
     }
 
+    /// An index carrying several events — the ramp tests need one because a
+    /// bee's switch names a second event, and `play` refuses an unresolvable
+    /// one (which is how the first cut of those tests failed: correctly).
+    fn index_of(events: &[&str]) -> SoundsIndex {
+        let mut idx = SoundsIndex::new();
+        for e in events {
+            idx.handle_registration(
+                e,
+                &SoundEventRegistration {
+                    sounds: vec![Sound::file(&format!("{}1", e.replace(['.', ':'], "/")))],
+                    replace: false,
+                    subtitle: None,
+                },
+                &SoundFileSet::All,
+            );
+        }
+        idx
+    }
+
     fn plain_index() -> SoundsIndex {
         index_with(
             "minecraft:block.stone.break",
@@ -1545,14 +1776,70 @@ mod tests {
     struct TestWorld {
         positions: HashMap<i32, (f64, f64, f64)>,
         silent: Vec<i32>,
+        /// Only the ramp-driving tests set these; everything else leaves them
+        /// empty, which is why the engine's older witnesses are unchanged by
+        /// M141c.
+        horizontal_speed: HashMap<i32, f64>,
+        angry: Vec<i32>,
     }
 
     impl SoundWorld for TestWorld {
-        fn entity_position(&self, entity_id: i32) -> Option<(f64, f64, f64)> {
-            self.positions.get(&entity_id).copied()
-        }
         fn entity_silent(&self, entity_id: i32) -> bool {
             self.silent.contains(&entity_id)
+        }
+    }
+
+    impl crate::tickable::RampWorld for TestWorld {
+        fn position(&self, entity_id: i32) -> Option<(f64, f64, f64)> {
+            self.positions.get(&entity_id).copied()
+        }
+        fn horizontal_speed(&self, e: i32) -> f64 {
+            self.horizontal_speed.get(&e).copied().unwrap_or(0.0)
+        }
+        fn speed(&self, _: i32) -> f64 {
+            0.0
+        }
+        fn speed_sqr(&self, _: i32) -> f64 {
+            0.0
+        }
+        fn baby(&self, _: i32) -> bool {
+            false
+        }
+        fn angry(&self, e: i32) -> bool {
+            self.angry.contains(&e)
+        }
+        fn underwater(&self, _: i32) -> bool {
+            false
+        }
+        fn has_ai_target(&self, _: i32) -> bool {
+            false
+        }
+        fn attack_animation_scale(&self, _: i32) -> f32 {
+            0.0
+        }
+        fn sniffer_digging(&self, _: i32) -> bool {
+            false
+        }
+        fn on_rails(&self, e: i32) -> bool {
+            // The ramp tests want a cart that is audible, and `(false, false)`
+            // already reads as "old behaviour" — this is set so the fixture
+            // states its intent rather than relying on that.
+            self.horizontal_speed.contains_key(&e)
+        }
+        fn new_minecart_behavior(&self, _: i32) -> bool {
+            false
+        }
+        fn runs_normally(&self) -> bool {
+            true
+        }
+        fn fall_flying(&self, _: i32) -> bool {
+            false
+        }
+        fn vehicle_of(&self, _: i32) -> Option<i32> {
+            None
+        }
+        fn camera_position(&self) -> (f64, f64, f64) {
+            (0.0, 0.0, 0.0)
         }
     }
 
@@ -1892,6 +2179,7 @@ mod tests {
         let world = TestWorld {
             positions: HashMap::from([(7, (0.0, 0.0, 0.0))]),
             silent: vec![7],
+            ..Default::default()
         };
         let i = SoundInstance::entity_bound(
             "minecraft:block.stone.break",
@@ -2164,6 +2452,7 @@ mod tests {
         let mut world = TestWorld {
             positions: HashMap::from([(7, (0.0, 64.0, 0.0))]),
             silent: vec![],
+            ..Default::default()
         };
         let i = SoundInstance::entity_bound(
             "minecraft:block.stone.break",
@@ -2189,6 +2478,295 @@ mod tests {
         world.positions.remove(&7);
         eng.tick(false, &idx, &world, &mut dev);
         assert!(dev.calls_to(0).contains(&ChannelCall::Stop));
+    }
+
+    /// **The per-tick refresh is narrowed through f32**, exactly as the
+    /// constructor's read is: `EntityBoundSoundInstance.java:33-35` is three
+    /// `this.x = (float)this.entity.getX();` assignments into `double` fields.
+    ///
+    /// The test above cannot witness this and never could: it moves the entity
+    /// to `(10.0, 65.0, -3.0)`, and all three are exactly representable in
+    /// f32, so a narrowing and a non-narrowing client agree to the bit. That
+    /// is why the refresh shipped un-narrowed with a comment asserting it was
+    /// correct. **A fixture sitting where two readings coincide is this
+    /// project's most-repeated failure shape**, so this one picks a coordinate
+    /// where they do not.
+    #[test]
+    fn an_entity_bound_sound_position_is_narrowed_through_f32() {
+        let idx = plain_index();
+        let mut eng = SoundEngine::new();
+        let mut dev = RecordingDevice::default();
+        // 1_000_000.1 has no f32 representation; the nearest is 1000000.0625.
+        // A block sound a million blocks out is unusual, but the *divergence*
+        // begins as soon as a coordinate needs more than 24 bits of mantissa,
+        // which is a few million blocks for the integer part alone and much
+        // sooner for the fraction — an entity at x = 131072.1 is already off.
+        let far = 1_000_000.1_f64;
+        let mut world = TestWorld {
+            positions: HashMap::from([(7, (0.0, 64.0, 0.0))]),
+            silent: vec![],
+            ..Default::default()
+        };
+        let i = SoundInstance::entity_bound(
+            "minecraft:block.stone.break",
+            SoundSource::Blocks,
+            1.0,
+            1.0,
+            0,
+            7,
+            0.0,
+            64.0,
+            0.0,
+        );
+        eng.play(i, &idx, &world, &mut dev);
+        dev.clear_calls();
+
+        world.positions.insert(7, (far, 64.0, 0.0));
+        eng.tick(false, &idx, &world, &mut dev);
+
+        let narrowed = far as f32 as f64;
+        assert_ne!(narrowed, far, "the fixture must not sit where both agree");
+        assert!(
+            dev.calls_to(0)
+                .contains(&ChannelCall::SetSelfPosition(narrowed, 64.0, 0.0)),
+            "expected the f32-narrowed x, got {:?}",
+            dev.calls_to(0)
+        );
+    }
+
+    // ---- M141c: the engine drives a ramp ---------------------------------
+
+    /// **A ramp's volume reaches the device**, which is the whole point of
+    /// M141c and the thing M141b could not assert: `tickable.rs` had no caller,
+    /// so its `tick` signature was unvalidated. M93i is the precedent — a model
+    /// shipped without its call site had a defect that only wiring exposed.
+    #[test]
+    fn a_ramped_sound_pushes_its_ramped_volume_at_the_channel() {
+        let idx = index_of(&["minecraft:entity.minecart.riding"]);
+        let mut eng = SoundEngine::new();
+        let mut dev = RecordingDevice::default();
+        let world = TestWorld {
+            positions: HashMap::from([(1, (0.0, 64.0, 0.0))]),
+            // 0.5 saturates the minecart's lerp factor, so the ramp's answer is
+            // its ceiling of 0.35 — a number that is neither 0 nor 1, so a
+            // dropped multiplication cannot agree with it (the audio plan's §5
+            // rule about fixtures where two readings coincide).
+            horizontal_speed: HashMap::from([(1, 0.5)]),
+            ..Default::default()
+        };
+        let inst = SoundInstance {
+            volume: 0.0,
+            looping: true,
+            can_start_silent: true,
+            binding: Binding::Entity(1),
+            ..SoundInstance::bare("minecraft:entity.minecart.riding", SoundSource::Neutral)
+        };
+        eng.play_ramped(
+            inst,
+            Some(crate::tickable::Ramp::Minecart(
+                crate::tickable::MinecartRamp {
+                    minecart: 1,
+                    shadowed_pitch: 0.0,
+                },
+            )),
+            &idx,
+            &world,
+            &mut dev,
+        );
+        dev.clear_calls();
+        eng.tick(false, &idx, &world, &mut dev);
+
+        assert!(
+            dev.calls_to(0).contains(&ChannelCall::SetVolume(0.35)),
+            "the ramp's volume must reach the device, got {:?}",
+            dev.calls_to(0)
+        );
+        // …and the pitch is the untouched 1.0, because the minecart's ramp
+        // writes a shadowed field. See `a_minecarts_pitch_ramp_is_dead_code`.
+        assert!(dev.calls_to(0).contains(&ChannelCall::SetPitch(1.0)));
+    }
+
+    /// **A stopping ramp's last write never reaches the device.** Vanilla's
+    /// loop pushes volume/pitch/position only in the `else` of
+    /// `if (instance.isStopped())`, so the tick that stops a sound is silent on
+    /// the wire except for the stop itself.
+    #[test]
+    fn a_stopping_ramp_pushes_a_stop_and_nothing_else() {
+        let idx = index_of(&["minecraft:entity.minecart.riding"]);
+        let mut eng = SoundEngine::new();
+        let mut dev = RecordingDevice::default();
+        let mut world = TestWorld {
+            positions: HashMap::from([(1, (0.0, 64.0, 0.0))]),
+            horizontal_speed: HashMap::from([(1, 0.5)]),
+            ..Default::default()
+        };
+        let inst = SoundInstance {
+            looping: true,
+            binding: Binding::Entity(1),
+            ..SoundInstance::bare("minecraft:entity.minecart.riding", SoundSource::Neutral)
+        };
+        eng.play_ramped(
+            inst,
+            Some(crate::tickable::Ramp::Minecart(
+                crate::tickable::MinecartRamp {
+                    minecart: 1,
+                    shadowed_pitch: 0.0,
+                },
+            )),
+            &idx,
+            &world,
+            &mut dev,
+        );
+        dev.clear_calls();
+
+        world.positions.remove(&1); // `isRemoved()`
+        eng.tick(false, &idx, &world, &mut dev);
+        let calls = dev.calls_to(0);
+        assert!(calls.contains(&ChannelCall::Stop));
+        assert!(
+            !calls.iter().any(|c| matches!(c, ChannelCall::SetVolume(_))),
+            "a stopping tick must push no volume, got {calls:?}"
+        );
+    }
+
+    /// **The bee's switch round-trips through `queuedTickableSounds`**, so the
+    /// replacement first plays on the tick *after* the one that queued it —
+    /// and there is no tick in which both loops hold a channel.
+    ///
+    /// This is the one ramp whose output is another sound, and it is the reason
+    /// `queue_ticking_sound` takes a ramp: a replacement queued without one
+    /// would play once and then never tick again, so an angry bee would be
+    /// stuck on a loop that cannot switch back.
+    #[test]
+    fn an_angered_bee_hands_its_channel_to_the_aggressive_loop_next_tick() {
+        let idx = index_of(&[
+            "minecraft:entity.bee.loop",
+            "minecraft:entity.bee.loop_aggressive",
+        ]);
+        let mut eng = SoundEngine::new();
+        let mut dev = RecordingDevice::default();
+        let world = TestWorld {
+            positions: HashMap::from([(9, (0.0, 64.0, 0.0))]),
+            horizontal_speed: HashMap::from([(9, 0.3)]),
+            angry: vec![9],
+            ..Default::default()
+        };
+        let bee = crate::tickable::bee_instance(
+            crate::tickable::BeeLoop::Flying,
+            9,
+            (0.0, 64.0, 0.0),
+        );
+        eng.play_ramped(
+            bee,
+            Some(crate::tickable::Ramp::Bee(crate::tickable::BeeRamp {
+                bee: 9,
+                loop_kind: crate::tickable::BeeLoop::Flying,
+                has_switched: false,
+            })),
+            &idx,
+            &world,
+            &mut dev,
+        );
+        assert_eq!(eng.live_count(), 1);
+
+        // Tick 1: the flying loop stops and queues the aggressive one. It has
+        // NOT started yet — the queue is drained at the top of a tick.
+        eng.tick(false, &idx, &world, &mut dev);
+        assert_eq!(eng.live_count(), 1, "still only the (now stopping) original");
+
+        // Tick 2: the queue drains and the replacement plays.
+        eng.tick(false, &idx, &world, &mut dev);
+        assert!(
+            eng.live_identifiers()
+                .iter()
+                .any(|n| *n == "minecraft:entity.bee.loop_aggressive"),
+            "the aggressive loop must have started, live: {:?}",
+            eng.live_identifiers()
+        );
+
+        // …and the replacement carries a RAMP, so it can switch back. A
+        // replacement queued without one starts, holds its channel forever and
+        // never notices the bee calming down.
+        //
+        // **The obvious witness for this cannot see it.** Calming the bee and
+        // asserting `entity.bee.loop` is live passes either way, because the
+        // ORIGINAL flying loop is still in `live` — `MIN_SOURCE_LIFETIME` is 20
+        // ticks and only four have passed, so its name is there whether or not
+        // anything switched back. The battery caught exactly that. What a
+        // ramp-less replacement cannot do is **stop itself**, so the witness is
+        // its channel's `Stop`.
+        let aggressive_channel = dev
+            .calls
+            .iter()
+            .map(|(c, _)| *c)
+            .max()
+            .expect("the replacement acquired a channel");
+        dev.clear_calls();
+        let calm = TestWorld {
+            positions: HashMap::from([(9, (0.0, 64.0, 0.0))]),
+            horizontal_speed: HashMap::from([(9, 0.3)]),
+            ..Default::default() // not angry
+        };
+        eng.tick(false, &idx, &calm, &mut dev);
+        assert!(
+            dev.calls_to(aggressive_channel).contains(&ChannelCall::Stop),
+            "a tickable replacement stops itself when the bee calms; got {:?}",
+            dev.calls_to(aggressive_channel)
+        );
+        eng.tick(false, &idx, &calm, &mut dev); // the queue drains
+        assert!(
+            eng.live_identifiers()
+                .iter()
+                .any(|n| *n == "minecraft:entity.bee.loop"),
+            "…and the flying loop comes back, live: {:?}",
+            eng.live_identifiers()
+        );
+    }
+
+    /// **A ticking sound whose entity goes silent is stopped mid-flight**, and
+    /// vanilla does NOT `continue` — it stops the channel and then ticks the
+    /// instance anyway.
+    ///
+    /// The battery found nothing covering this: `play`'s silence guard was
+    /// witnessed and the *tick-time* one was not, so the whole
+    /// `if (!instance.canPlaySound()) this.stop(instance);` line could be
+    /// deleted unnoticed. It predates M141c — the same line was there before
+    /// the loop was generalised.
+    #[test]
+    fn a_ticking_sound_stops_when_its_entity_falls_silent() {
+        let idx = plain_index();
+        let mut eng = SoundEngine::new();
+        let mut dev = RecordingDevice::default();
+        let mut world = TestWorld {
+            positions: HashMap::from([(7, (0.0, 64.0, 0.0))]),
+            ..Default::default()
+        };
+        let i = SoundInstance::entity_bound(
+            "minecraft:block.stone.break",
+            SoundSource::Blocks,
+            1.0,
+            1.0,
+            0,
+            7,
+            0.0,
+            64.0,
+            0.0,
+        );
+        eng.play(i, &idx, &world, &mut dev);
+        dev.clear_calls();
+
+        world.silent.push(7);
+        eng.tick(false, &idx, &world, &mut dev);
+        let calls = dev.calls_to(0);
+        assert!(calls.contains(&ChannelCall::Stop), "got {calls:?}");
+        // …and the instance was still ticked: the position push happens too,
+        // because vanilla's stop does not skip the rest of the body.
+        assert!(
+            calls
+                .iter()
+                .any(|c| matches!(c, ChannelCall::SetSelfPosition(..))),
+            "vanilla does not `continue` after the silence stop; got {calls:?}"
+        );
     }
 
     #[test]
@@ -2458,6 +3036,7 @@ mod tests {
         let world = TestWorld {
             positions: HashMap::from([(42, (8.0, 9.0, 10.0))]),
             silent: vec![],
+            ..Default::default()
         };
         let i = instance_from_event(&ev, &registry(), &world).unwrap();
         assert_eq!(i.binding, Binding::Entity(42));
@@ -2683,6 +3262,7 @@ mod tests {
 
     #[test]
     fn the_entity_table_world_reads_the_current_position_not_the_synced_target() {
+        use crate::tickable::RampWorld;
         use rewo_world::entities::{EntityState, EntityTable};
         let mut t = EntityTable::default();
         t.add(5, EntityState::new(0, 0, 0.0, 64.0, 0.0, 0.0, 0.0));
@@ -2692,9 +3272,9 @@ mod tests {
             e.set_target(30.0, 64.0, 0.0);
         }
         let w = EntityTableWorld(&t);
-        let (x, _, _) = w.entity_position(5).unwrap();
+        let (x, _, _) = w.position(5).unwrap();
         assert_ne!(x, 30.0, "the target is not where the entity is yet");
-        assert_eq!(w.entity_position(6), None, "an untracked entity is gone");
+        assert_eq!(w.position(6), None, "an untracked entity is gone");
         // The gap this cannot close: nothing tells Rewo an entity is silent.
         assert!(!w.entity_silent(5));
     }

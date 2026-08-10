@@ -1935,11 +1935,12 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **[REWO_AUDIO_PLAN.md](REWO_AUDIO_PLAN.md) is the detail behind its audio
-item** — M138a–d and half of M140 have shipped, and **the listening pass is the
-outstanding work and it is the user's**, because no gate in this project opens an
-audio device.
-**Everything is shipped, gated and merged to `main`** as of 2026-08-10
-(M140b) — **2925 tests / 0 failures** (world 1147, net 977, gpu 275, data 224,
+item** — M138a–d, `level_event`'s sounds and the music fade have shipped, and
+**M141 took the tickable ramps** (ten of them, not the "~8" that plan says);
+**the listening pass is the outstanding work and it is the user's**, because no
+gate in this project opens an audio device.
+**Everything is shipped, gated and merged to `main`** as of 2026-08-11
+(M141) — **2968 tests / 0 failures** (world 1147, net 1020, gpu 275, data 224,
 app 197, mesh 45, proto 16, **audio 44** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
@@ -6154,3 +6155,62 @@ bytes.
 * **M97's lesson applied twice more** (`apply_chat_events`, `book_visible_for`),
   both found by a mutation surviving because the rule lived somewhere no test
   could reach.
+
+---
+
+## M141 — the ten tickable ramps (2026-08-11)
+
+`SoundEngine.tickInGameSound` drove **one `tick()` body out of ten** since
+M131, because `EntityBoundSoundInstance` was the only subclass Rewo modelled.
+`crates/rewo-net/src/tickable.rs` is the other nine, and the engine now drives
+all of them. Detail in `REWO_PLAN.md` §15; three things belong here.
+
+**The headline is a vanilla bug that punishes a careful reader.**
+`MinecartSoundInstance.java:16` declares `private float pitch = 0.0F;` over
+`AbstractSoundInstance`'s `protected float pitch = 1.0F;`, and **Java field
+access is statically bound** — so `getPitch()`, declared in the superclass, is
+the only reader and never sees the subclass field. `PITCH_MIN`, `PITCH_MAX` and
+`PITCH_DELTA = 0.0025F` name a ramp that reaches nothing. Transcribing the class
+in isolation gives every minecart ride a twenty-second pitch glissando vanilla
+does not have. It is the only field shadow in the whole
+`client/resources/sounds` package.
+
+**Two more "the named constant is not the ceiling" cases, both from `Mth.lerp`
+taking its factor first.** The bee's volume is
+`lerp(clamp(speed, 0, 0.5), 0, 1.2)`, so the factor saturates at 0.5 and the
+ceiling is **0.6** against the declared 1.2; the minecart's is 0.35 against 0.7.
+And the bee's *pitch* clamps the factor to the **pitch range**, pinning an adult
+bee at a constant 0.98 and a baby at 1.54 — never the bands the getters
+describe. Meanwhile `RidingEntitySoundInstance` uses `Mth.clampedLerp`, which
+clamps the factor to `0..1` and so is a different function. Two adjacent classes
+mapping speed to volume, incompatibly.
+
+**Two live fixes rode along.** The per-tick entity position was not narrowed
+through f32 (the constructor was, and had a test) — with a comment that did not
+merely omit the cast but *justified* omitting it, which is worse, because a
+reader checking that line comes away reassured. Its witness could never have
+caught it: the fixture moved the entity to three coordinates exactly
+representable in f32. And `SoundWorld::entity_position` is gone in favour of
+`RampWorld::position` — one name for one query, M89's finding, which has now
+recurred at M90, M106b and M112.
+
+**The batteries found more about instruments than about code**, which is the
+pattern worth carrying: reading a mutation battery's **exit code cannot
+distinguish a failing test from a failing build**, and this one's no-op control
+came back KILLED because the previous run's binary still held the link output
+(M138d's linker-1104 hazard). `tools/m141_mutate.py` reads the `test result:`
+line and retries once; every earlier battery in `tools/` still has the hazard.
+Two of my own witnesses were also wrong before any code was — one measuring a
+bee's switch against an instance that had simply not been reclaimed yet, and one
+asserting a direction vector from a remembered note rather than from the
+expression, which on being worked out revealed that
+**`Vec3.directionFromRotation` IS `Entity.calculateViewVector`** by another
+route.
+
+**Nothing constructs these instances yet.** Every trigger is a packet Rewo
+already routes (`handleAddEntity`, `handleEntityEvent` 21 and 63,
+`startRiding`, the fall-flying rising edge), so the next milestone is wiring —
+but the *inputs* are the blocker, and **velocity gates four of the ten ramps**,
+because `EntityTable` stores an interpolation target rather than a
+`getDeltaMovement()`. `EntityTableWorld`'s doc carries the full table of what it
+can and cannot answer.
