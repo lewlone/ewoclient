@@ -13,6 +13,7 @@ members = [
     "crates/rewo-net",
     "crates/rewo-world",
     "crates/rewo-mesh",
+    "crates/rewo-audio",
 ]
 
 [workspace.package]

@@ -1,0 +1,12 @@
+[package]
+name = "rewo-audio"
+version = "0.1.0"
+edition = "2021"
+
+# **No dependencies yet, and that is the point of this step.** M138b's plan lists
+# `rewo-net`, `rewo-data` and `symphonia`; the two transcriptions that landed
+# first — the quantisation and the buffer library's caching rules — need none of
+# them, so they ship on their own and the decoder arrives with its own build
+# cost and its own witnesses. `rewo-net` must never gain a device dependency, or
+# 34 gates link an audio stack to decode a packet.
+[dependencies]
