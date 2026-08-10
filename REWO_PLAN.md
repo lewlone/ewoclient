@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-10 after M138b (part):
-**2877 tests, 0 failures** (**world 1147, net 961, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 12** — read off the runner per crate; they sum to 2877).
+Current measurement, taken 2026-08-10 after M138b:
+**2883 tests, 0 failures** (**world 1147, net 961, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 18** — read off the runner per crate; they sum to 2883).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -20227,6 +20227,40 @@ milestone measured, but nothing *structurally* stops a fifth from repeating it �
 so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
+
+### M138b (rest) — the ogg decode, and a peak blind to its own subject (2026-08-10)
+
+Symphonia with `ogg` and `vorbis` only, and still no `rewo-net`/`rewo-data`
+dependency — the store lookup stays on the caller's side of `PcmSource`.
+
+**Rewo cannot grade this bit-for-bit**, and the module says so: Vorbis I defines
+the bitstream, not the exact float a decoder produces. The exact part is the
+quantisation after it. An exact tail on an approximate head.
+
+**The witnesses pin measured vectors, not the audio** — three real sounds
+decoded, their numbers committed, the `.ogg` left in the user's install, exactly
+as the decompile is. Two documented claims became measurements:
+`goat_horn/call3` really is 2-channel where `call0` is mono, and the store really
+is mixed-rate (44100 against 48000). The chicken's 1728 samples are asserted
+exactly, because that count *is* the granule end-trim.
+
+**The battery found a witness that could not see its own subject.** Dropping the
+`-0.5` bias SURVIVED a peak assertion, because the peak moves by one across that
+change (19988 -> 19987) while the sum moves by 812 over 1728 samples — the
+half-step landing once per sample. The witness is on the sum now, with a wide
+enough tolerance that a symphonia bump cannot trip it and a narrow enough one
+that a missing bias cannot hide. **The other survivor is genuinely equivalent**
+and was proven so: symphonia's probe rejects every truncated ogg (nine lengths
+tried) before a track exists, so the `channels == 0` guard is unreachable. It
+stays as defence and the battery records it as an expected survivor.
+
+**Named rather than hidden:** the real-asset witnesses SKIP on a machine with no
+unpacked store, and print that they proved nothing. `soundshot`'s (d) layer is
+where that becomes fail-closed.
+
+**Measured:** 2883 tests / 0 failures, 34 gates green with 0 validation lines,
+14/14 mutations with a no-op control that SURVIVED. **M138b is complete**, and
+still nothing here makes a noise.
 
 ### M138b (part) — the quantisation, and what a buffer library caches (2026-08-10)
 

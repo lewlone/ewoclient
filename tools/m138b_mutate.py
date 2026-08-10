@@ -22,6 +22,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 Q = os.path.join("crates", "rewo-audio", "src", "quantise.rs")
 B = os.path.join("crates", "rewo-audio", "src", "buffers.rs")
+D = os.path.join("crates", "rewo-audio", "src", "decode.rs")
 
 MUTATIONS = [
     (
@@ -85,6 +86,38 @@ MUTATIONS = [
         B,
         "            let decoded = self.source.open(key);\n            self.cache.insert(key.to_string(), decoded);",
         "            let decoded = self.source.open(key);\n            if decoded.is_ok() {\n                self.cache.insert(key.to_string(), decoded);\n            } else {\n                self.cache.insert(key.to_string(), decoded);\n                self.cache.remove(key);\n                self.cache.insert(key.to_string(), self.source.open(key));\n            }",
+        "KILLED",
+    ),
+    (
+        "hardcode the sample rate to 44100",
+        D,
+        "                    sample_rate = spec.rate;",
+        "                    sample_rate = 44100;",
+        "KILLED",
+    ),
+    (
+        "hardcode the channel count to mono",
+        D,
+        "                    channels = spec.channels.count() as u16;",
+        "                    channels = 1;",
+        "KILLED",
+    ),
+    (
+        # Expected to SURVIVE, and proven so rather than assumed: symphonia's
+        # probe rejects every truncated ogg (nine lengths tried) before a track
+        # exists to decode nothing, so the branch is unreachable by fixture. The
+        # guard is kept as defence against a more lenient probe.
+        "UNREACHABLE GUARD: empty Pcm instead of an error (must SURVIVE)",
+        D,
+        '        return Err("ogg stream decoded no audio".into());',
+        "        return Ok(Pcm { samples, channels: 1, sample_rate: 44100 });",
+        "SURVIVED",
+    ),
+    (
+        "replace the quantisation with a naive scale (the -0.5 bias)",
+        D,
+        "                samples.extend(b.samples().iter().copied().map(quantise));",
+        "                samples.extend(b.samples().iter().map(|s| (s * 32767.0) as i16));",
         "KILLED",
     ),
     (

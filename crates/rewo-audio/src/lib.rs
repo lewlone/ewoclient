@@ -24,4 +24,5 @@
 //! subsystem, that inference is the one place in Rewo where it does not hold.
 
 pub mod buffers;
+pub mod decode;
 pub mod quantise;

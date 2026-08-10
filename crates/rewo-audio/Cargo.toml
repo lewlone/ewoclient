@@ -3,10 +3,14 @@ name = "rewo-audio"
 version = "0.1.0"
 edition = "2021"
 
-# **No dependencies yet, and that is the point of this step.** M138b's plan lists
-# `rewo-net`, `rewo-data` and `symphonia`; the two transcriptions that landed
-# first — the quantisation and the buffer library's caching rules — need none of
-# them, so they ship on their own and the decoder arrives with its own build
-# cost and its own witnesses. `rewo-net` must never gain a device dependency, or
-# 34 gates link an audio stack to decode a packet.
 [dependencies]
+# **Ogg and Vorbis only.** `default-features = false` drops the mp3/aac/flac/wav
+# bundles symphonia enables by default; Minecraft ships `.ogg` and nothing else,
+# so every other codec would be build time and attack surface for a format the
+# game cannot contain.
+#
+# This is the crate's ONLY dependency, and deliberately not `rewo-net` or
+# `rewo-data`: `rewo-net` must never gain a device or codec dependency, or 34
+# gates link an audio stack to decode a packet. The store lookup that turns an
+# asset key into bytes therefore lives on the caller's side of `PcmSource`.
+symphonia = { version = "0.5", default-features = false, features = ["ogg", "vorbis"] }

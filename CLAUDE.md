@@ -1716,7 +1716,17 @@ every silent sample of every sound) and `SoundBufferLibrary`'s caching, where
 **statics are cached permanently, a FAILURE is cached with them**, streams are
 never cached, and **the loop flag rides with the stream rather than the channel**,
 because `SoundEngine.play` tells a streamed source explicitly not to loop.
-Symphonia and the real decode are still open.*
+Then the decoder: symphonia, ogg and vorbis only. **Rewo cannot grade a Vorbis
+decode bit-for-bit** — the format defines the bitstream, not the exact float — so
+the witnesses pin measured vectors from three real assets while the audio stays in
+the user's install, and two documented claims became measurements: `goat_horn/call3`
+is stereo where `call0` is mono, and the store is mixed-rate. **The battery caught a
+witness blind to its own subject** — dropping the `-0.5` bias moves a real sound's
+PEAK by one and its SUM by 812, so the assertion moved to the sum. The other
+survivor was proven genuinely equivalent: symphonia's probe rejects every truncated
+ogg before the `channels == 0` guard can be reached, so it is recorded as an
+expected survivor rather than left looking untested. M138b is complete; nothing in
+it makes a noise, and M138c's mixer is next.*
 
 *Update (2026-08-10 session, Rewo): **M136 and M137 — two fixes recovered from
 worktrees that a handoff called litter.** The claim rested on their branches being
@@ -1853,8 +1863,8 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **Everything is shipped, gated and merged to `main`** as of 2026-08-10
-(M138b part) — **2877 tests / 0 failures** (world 1147, net 961, gpu 275, data 224,
-app 197, mesh 45, proto 16, **audio 12** — EIGHT crates now, read off the runner
+(M138b) — **2883 tests / 0 failures** (world 1147, net 961, gpu 275, data 224,
+app 197, mesh 45, proto 16, **audio 18** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
