@@ -1694,6 +1694,32 @@ AGENTS.md's own top-level Rewo status block was three milestones behind at M93 /
 number with a test behind it stays true and the sentence next to it does not.**
 Repo hygiene: the twenty stale `claude/rewo-m93*` branches and the two leftover
 agent worktrees were verified fully merged and clean, then pruned.*
+*Update (2026-08-10 session, Rewo): **M135 — the chat fills were drawn off the
+bottom of every screen**, a real shipping bug rather than a feature. `HudFill` is
+in GUI pixels and the pass multiplies by the GUI scale; four producers multiplied
+by it first, so the chat rows' backdrops, the input bar, the scrollbar and the
+suggestion popup have been **absent rather than misplaced** since M109 — no
+artefact to report, which is how they lasted eight milestones. **The contract was
+documented correctly in two places and it did not help**: the producers were
+written against the function beside each of them, and `OwnedTextLine` takes
+SCREEN pixels. Two passes, two conventions, one file. **The fix is not a deleted
+multiply** — a chat pixel really is `opts.scale` GUI pixels, and dropping both
+factors is a third wrong answer that no `scale == 1` fixture can tell from the
+right one, which is exactly why every existing fixture was blind (all of them
+pass `px = 1.0`). The generalisable finding: an agreement witness already
+compared `hud_fills` against `chat_lines` and **passed at every scale with the
+bug in place**, because both sides were in the same wrong space — **an agreement
+witness has to model whatever sits between the producer and the screen.** One of
+the new witnesses was wrong before the code was (the fourth such instance):
+vanilla's own chat backdrop is `maxWidth + 12` wide against a screen-independent
+320, so on a 320-GUI-px window it really does run past the right edge. Hardening:
+`rewo_gpu::hud::gui_scale` already existed, its doc already warned about
+recomputing it, and **two of the three sites did not call it**; they do now, and
+the two producers whose inputs were already GUI pixels lost their `px` parameter
+outright. Also shipped `tools/render_check.py`, so the one gate needing a server
+is one command with every recorded trap turned into an assertion. 2851 tests, 34
+gates, `--render-check` 44/44 twice, demo PNG byte-identical, 9/9 mutations.*
+
 *Update (2026-08-09 session, Rewo): **the M127–M134 integration** — eight
 milestones that had been built in parallel on six branches off the M126 merge,
 none of them merged, integrated in one pass. M127 the chat decoration
@@ -1782,9 +1808,9 @@ note.*
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
-**Everything is shipped, gated and merged to `main`** as of 2026-08-09
-(M134) — **2846 tests / 0 failures** (world 1147, net 949, gpu 274, data 224,
-app 191, mesh 45, proto 16, read off the runner per crate), `mobshot` 246/246,
+**Everything is shipped, gated and merged to `main`** as of 2026-08-10
+(M135) — **2851 tests / 0 failures** (world 1147, net 949, gpu 274, data 224,
+app 196, mesh 45, proto 16, read off the runner per crate), `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, all **34** serverless gates green with 0
 validation errors, `live --render-check` **44/44** with validation ON and 0

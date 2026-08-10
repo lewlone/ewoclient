@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-09 after the M127–M134 integration:
-**2846 tests, 0 failures** (**world 1147, net 949, gpu 274, data 224, app 191,
-mesh 45, proto 16** — read off the runner per crate; they sum to 2846). Note the per-crate invocation is
+Current measurement, taken 2026-08-10 after M135:
+**2851 tests, 0 failures** (**world 1147, net 949, gpu 274, data 224, app 196,
+mesh 45, proto 16** — read off the runner per crate; they sum to 2851). Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
 other six take `--lib`, and `--lib` there is `error: no library targets`, exit
 101, and **no** `test result` line at all. Assert that a result line exists
@@ -147,7 +147,9 @@ were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
 34/34, `mobshot` 246/246, **`live --render-check` 44/44 with validation ON and 0
-validation errors, last run for the integration**; demo PNG
+validation errors, last run for M135** (and easiest to reproduce with
+`python tools/render_check.py`, which stands up a fresh server and carries both
+caller requirements); demo PNG
 `2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C
 **12** — M96–M107 consume packets M93y already decoded, M108 resolved
 `delete_chat`, M113 the Brigadier tree and M114 the two suggestion packets.
@@ -219,6 +221,12 @@ and the title's style flags, M131 the sound model, M132 the scoreboard sidebar,
 M133 the recipe book's widget tooltips, M134 the command line's exception
 messages. **Every item this section recommended before is now shipped**, which
 is why it is rewritten rather than appended to.
+
+**Update 2026-08-10: M135 shipped**, taking the `HudFill` double-scale out of
+the correctness-gaps list below — a real, shipping bug rather than a milestone,
+which is why it was never in this numbered list. It also added
+`tools/render_check.py`, so the one gate that needs a server is now one command.
+The list below is otherwise unchanged and **AUDIO is still the top item.**
 
 1. **AUDIO — the largest single gap, and it now needs one decision rather than
    a design.** M63/M64/M66 decoded the packets and built the 1,968-entry
@@ -1628,22 +1636,21 @@ a record, because what it teaches outlived it:
   **UI eyeball itself is still pending** (user).
 
 **Correctness / completeness gaps:**
-- **Four `HudFill` producers double-scale, so their fills are drawn off-screen
-  at any GUI scale above 1** — OPEN, measured by M132 and left unfixed on
-  purpose. `rewo_gpu::hud::HudFill`'s doc says its rect is in GUI pixels and
-  `HudPass::draw`'s `tinted_quad` multiplies every rect by the GUI scale, but
-  `hud_fills` (the chat rows' backdrops), `chat_input_backdrop`,
-  `chat_scrollbar` and `suggestion_popup_fills` each multiply by `px` first —
-  and `gui_px` and the pass's `scale` are the **same expression**, so the
-  factor is exactly the GUI scale. The fills land off the bottom of the screen,
-  so they are **absent rather than misplaced**, which is why nobody has
-  reported them. `sidebar_fills` (M132) emits GUI pixels and says so, and is
-  the correct one to copy.
-  **No existing gate can see it**, which is why the fix needs a witness before
-  it needs a patch: `inventoryshot`'s fill witnesses render at 256x256 where
-  the GUI scale is 1 and the two readings coincide, and `--render-check`'s
-  counters count the emitted LIST rather than pixels. `live --render-check`
-  runs at 1600x900, where the scale is 3.
+- ~~**Four `HudFill` producers double-scale, so their fills are drawn
+  off-screen at any GUI scale above 1**~~ — **RESOLVED 2026-08-10 as M135**
+  (§15). Measured by M132 and left unfixed on purpose; the fix is the one-line
+  arithmetic in four places, and the finding is why nothing could see it.
+  `chat_px` stays where it converts a screen height into chat space and a new
+  `chat_gui` (`opts.scale` alone) is what the fill list gets — **not** a
+  deleted multiply, which is a third wrong answer that a `scale == 1` fixture
+  cannot distinguish from the fix. `chat_input_backdrop` and
+  `suggestion_popup_fills` lost their `px` parameter outright, and the pass and
+  `gui_px` now both call `rewo_gpu::hud::gui_scale`, so "the same expression" is
+  a fact rather than a claim this list had to make. The general lesson is in
+  §15: the pre-existing witness *did* compare `hud_fills` against `chat_lines`
+  and agreed with the bug at every scale, because both sides were in the same
+  wrong space — **an agreement witness has to model whatever sits between the
+  producer and the screen.**
 - **`tryPlaceRecipe`'s `lastPlacedRecipe` guard is not modelled** — OPEN since
   M98, and reachable from two places since M104. Vanilla suppresses a second
   click on the **same uncraftable** recipe (`!isCraftable(recipe) &&
@@ -20109,3 +20116,97 @@ green with 0 validation errors, `live --render-check` **44/44** with validation
 ON, demo PNG `2cc56b4acbfb92cb` byte-identical. Nine `.rs` files arrived with
 the branches and every one is LF, so the five non-LF files §0.0 names are still
 the same five.
+
+### M135 — the chat fills were drawn off the bottom of every screen (2026-08-10)
+
+M132 measured this and left it, correctly: it is a one-line arithmetic error in
+four places, and the interesting half is entirely in why nothing could see it.
+
+**The bug.** `rewo_gpu::hud::HudFill` is in GUI pixels — `HudPass::draw` puts
+every rect through `tinted_quad`, which multiplies by the GUI scale. Four
+producers multiplied by it first, so the chat rows' backdrops, the input bar, the
+scrollbar and the suggestion popup's rows were drawn `gui_scale` times too far
+down and too wide. At any ordinary window that is off the bottom edge, so they
+were **absent rather than misplaced** — no visual artefact to report, which is
+how they survived from M109 to M135.
+
+**The contract was documented correctly, twice, and it did not help.** Both
+`HudFill`'s doc and `set_hud_fills`' say "in GUI pixels". What the producers were
+written against was not the doc but the function beside each of them:
+`chat_lines`, `chat_input_lines` and `suggestion_popup_text` all emit
+`OwnedTextLine`, and the TEXT pass takes **screen** pixels. Two passes, two
+conventions, one file — and the convention you can see from where you are
+standing is the wrong one. `sidebar_fills` (M132) is the only one that was
+right, and it is the only one with no text sibling above it.
+
+**The fix is not "delete the multiply", and that matters for the fixture.** A
+chat pixel really is `opts.scale` GUI pixels; only the `px` factor is wrong.
+`chat_px` stays where it converts a screen height into chat space and a new
+`chat_gui` is what the fill list gets. Dropping both factors is a third,
+different wrong answer, and the mutation battery kills it separately.
+
+**Why eight milestones of green tests never contradicted it.** Every fixture for
+these four functions passes `px = 1.0` and the default chat scale 1.0 — the
+single point where the right reading, the double-scaled one and the
+over-corrected one are all the same number. That is the weak-fixture shape the
+plan already names twice (M131's volume×volume, M132's own fill witnesses), here
+in its purest form.
+
+**The generalisable finding is about agreement witnesses.**
+`each_fill_covers_its_own_row_and_meets_the_next` already compared `hud_fills`
+against `chat_lines` and asserted the text sits inside its backdrop. It passes
+at *any* scale with the bug in place, because under the bug both sides are in the
+same wrong space and agree with each other perfectly. **An agreement witness has
+to model whatever sits between the producer and the screen**, or it grades two
+derivations against each other rather than against the frame. The five new
+witnesses apply `tinted_quad`'s own multiply to the fill before comparing, and
+one of them mutates *that* model to prove it is load-bearing.
+
+**The gate split was sound and is not what failed.** `inventoryshot`'s
+chat-backdrop witnesses hand-build their rects on purpose, so the pass and the
+arithmetic are graded separately (M93q's rule). That is still right; the
+arithmetic side simply had no fixture above scale 1.
+
+**A witness was wrong before the code was** — the fourth such instance in this
+log. Bounding a fill by the screen width fails on a *correct* client:
+`ChatComponent.getWidth()` is `chatWidth * 280 + 40` = 320, computed with no
+reference to the screen, and the backdrop is `maxWidth + 12` wide, so on a window
+whose GUI width is exactly 320 vanilla's own rows run 12 px past the right edge
+and are clipped there. The bound names that overhang rather than hiding behind a
+wider fixture.
+
+**Hardening, since the bug is a drift between copies of one number.**
+`rewo_gpu::hud::gui_scale` already existed and its doc already warned about
+"recomputing it slightly differently" — and **two of the three sites did not call
+it**, including the pass itself. They do now, so "the pass's scale is the same
+expression as the app's" is a fact rather than a claim §0.0 had to make in prose.
+`chat_input_backdrop` and `suggestion_popup_fills` lose their `px` parameter
+outright: their inputs are already GUI pixels, and not having the scale in scope
+beats remembering not to use it.
+
+**Also shipped: `tools/render_check.py`.** `live --render-check` is the only gate
+that drives the windowed client and the only one needing a server, and its recipe
+has cost more sessions than the gate — a `nohup` that dies on stdin EOF, a
+BOM'd `eula.txt`, an invented port that lost a run while 27 of 28 witnesses
+passed anyway, a shared directory whose persisted recipe unlocks faked a
+fresh-player witness, and an `ops.json` naming a player other than the one
+connecting. Each is now an assertion. Its own first run failed *after* the gate
+passed, on `print()` raising `UnicodeEncodeError` against cp1252 — M95's em-dash
+bug in a new place — so it writes bytes and puts its report in TEMP rather than
+leaving an untracked file that makes `git status` lie.
+
+**Measured:** 2851 tests / 0 failures (world 1147, net 949, gpu 274, data 224,
+**app 196**, mesh 45, proto 16), each crate's exit code read separately; all
+**34** serverless gates green with **0** validation lines; `mobshot` 246/246,
+`inventoryshot` 158, `containershot` 107; `live --render-check` **44/44** with
+validation ON and 0 validation errors, run twice; demo PNG `2cc56b4acbfb92cb`
+byte-identical. **9 mutations over two batteries, 9/9 as expected**, each battery
+opening with a baseline and carrying a no-op control that must SURVIVE, with the
+tree asserted clean afterwards.
+
+**Open, and named rather than folded in:** the four producers are the four this
+milestone measured, but nothing *structurally* stops a fifth from repeating it —
+`hud_fills` and `chat_scrollbar` still need `px` for their chat-space conversion,
+so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
+newtype pair would make the whole class unrepresentable and is a bigger change
+than this bug justifies on its own.

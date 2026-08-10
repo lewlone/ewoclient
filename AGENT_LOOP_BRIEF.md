@@ -108,6 +108,13 @@ change:
 
 ## Test server
 
+**For `live --render-check`, run `python tools/render_check.py`** — it does
+everything in this section (fresh directory on a probed port, byte-for-byte
+`eula.txt`, `ops.json` for the name it connects with, both `REWO_PRECMD` caller
+requirements, detached start, `FAILED TO BIND` grep, teardown) with each trap
+below turned into an assertion rather than a paragraph to remember. Read on when
+you need a server for something else, or when that script needs changing.
+
 Do **not** reuse a shared directory when the world's shape or the player's state
 matters — a concurrent session once left the shared one with a size-12 world
 border, and unlocked recipes persist into the save (which made a fresh-player

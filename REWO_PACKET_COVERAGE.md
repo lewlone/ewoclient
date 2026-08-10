@@ -3,7 +3,11 @@
 Audit date **2026-07-29** (M67), **re-derived 2026-07-29** (M74), counts
 re-checked **2026-08-08** (M124, and again at **M125** and **M126**, neither of
 which resolves a new packet — M125 reads two it already consumed, and M126
-changes only how their text is carried and drawn), against **26.2 / protocol
+changes only how their text is carried and drawn), and unchanged through the
+**M127–M134** integration and **M135**, which between them decorate, draw and
+correct packets already consumed rather than resolving new ones. The §2 table is
+machine-checked against `ids.rs` by a unit test, so it is the half to trust when
+this prose and the numbers disagree. Against **26.2 / protocol
 776**. Ground truth is the bundled datagen report
 (`%APPDATA%/EwoClient/rewo/26.2/datagen/generated/reports/packets.json`) — the
 same file `crates/rewo-net/src/ids.rs` resolves against — plus the Vineflower
