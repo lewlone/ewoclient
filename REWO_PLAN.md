@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-11 after M141:
-**2968 tests, 0 failures** (**world 1147, net 1020, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 2968).
+Current measurement, taken 2026-08-11 after M141d:
+**2982 tests, 0 failures** (**world 1155, net 1026, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 2982).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -243,7 +243,7 @@ own pitch ramp is dead code and the plausible transcription gives a twenty-secon
 glissando that vanilla does not have. It also fixed a live bug (the per-tick
 position was not narrowed through f32, with a comment *justifying* the omission)
 and retired `SoundWorld::entity_position` in favour of one name for one query.
-See §15. **Nothing constructs these instances yet** — the triggers are item 4a.
+See §15. **M141d then fed them their velocity**, which was the input gating four of the ten — and found that a remote entity's `getDeltaMovement()` is a *decaying echo of the last motion packet*, not a velocity, so a bee visibly gliding past has its buzz fade to silence. **Nothing constructs these instances yet** — the triggers are item 4a.
 
 **AUDIO IS NO LONGER THE TOP ITEM.** `crates/rewo-audio` exists with the
 quantisation, the buffer library, the mixer, the SPSC command ring and a cpal
@@ -282,11 +282,27 @@ sink; `rewo-net` carries the listener transform and the music fade.
      vanilla's), `handleEntityEvent` cases **21** and **63**,
      `LocalPlayer.startRiding` (which plays **both** minecart instances at once
      and lets each mute itself), and `onSyncedDataUpdated`'s
-     `isFallFlying() && !wasFallFlying` rising edge. **The inputs are the
-     blocker, not the triggers**: `EntityTableWorld`'s doc table names the seven
-     `RampWorld` queries Rewo cannot answer, and **velocity gates four of the
-     ten ramps** — `EntityTable` stores an interpolation target, not a
-     `getDeltaMovement()`. Start there.
+     `isFallFlying() && !wasFallFlying` rising edge.
+
+     **M141d closed the velocity**, which was the input gating four of the ten
+     ramps. `EntityTableWorld`'s doc table now names seven unanswered
+     `RampWorld` queries in six rows, and says how to re-derive that count
+     rather than asking to be believed. The two worth knowing before picking
+     this up:
+
+     * **`fall_flying` for the LOCAL player is the elytra's blocker at both
+       ends** — it is the ramp's survival guard *and* its trigger — and it is
+       one decode: the local player's `DATA_SHARED_FLAGS_ID` arrives and is
+       dropped, because `route_set_entity_data` writes into `EntityTable` and
+       the local player has no row there (M73's asymmetry). Keeping it beside
+       the table is the same shape M73 used for attributes.
+     * **`angry` is the bee's**, and it is a synced deadline rather than a
+       flag: `Bee.DATA_ANGER_END_TIME` (a LONG) against the world clock, per
+       `NeutralMob.isAngry()`. `rewo_net::tickable::is_angry` already
+       transcribes the predicate; only the metadata index is missing.
+
+     `attack_animation_scale` is the one that is not a decode — it is a
+     client-side counter (`Guardian.clientSideAttackTime`) Rewo does not run.
    - **4b — the rest of music**: selection, the `nextSongDelay` timers, and
      `getSituationalMusic`. Note the last one is **not** the old hardcoded
      biome switch: 26.2 reads `EnvironmentAttributes.BACKGROUND_MUSIC` through
@@ -20296,6 +20312,161 @@ milestone measured, but nothing *structurally* stops a fifth from repeating it �
 so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
+
+### M141d — the velocity input, which is not a velocity (2026-08-11)
+
+M141's four velocity-reading ramps — the bee, the minecart, the riding loops
+and the elytra — all got a hardcoded `0.0` and sat at their minimum volume.
+This feeds them, and the milestone is almost entirely about **what a remote
+entity's `getDeltaMovement()` actually is on a client**, because the plausible
+answer is wrong twice over.
+
+#### It is a decaying echo of a packet, not a velocity
+
+A client never integrates a remote entity's velocity into its position — the
+position comes from the server and is interpolated — so `deltaMovement` is set
+by `set_entity_motion` and then decays, and nothing else writes it. **A bee
+gliding steadily across your view with no motion packets has it falling to zero
+while it is visibly moving, and its buzz fades with it.** A finite difference
+over `EntityState::cur` is the obvious implementation, is more truthful about
+the bee, and is not what vanilla sounds like. That is why the value is stored
+rather than computed.
+
+#### And it is not one rule (`LivingEntity.aiStep:3038-3073`)
+
+```java
+if (this.isInterpolating()) { this.getInterpolation().interpolate(); }
+else if (!this.canSimulateMovement()) {
+   this.setDeltaMovement(this.getDeltaMovement().scale(0.98));
+}
+```
+
+* **The decay is the `else` of the interpolation branch.** An entity still
+  catching up to a synced position does not decay at all. Running the two
+  beside each other rather than opposite is the shape a parallel implementation
+  reaches for, and it makes a briskly-updated mob — one interpolating almost
+  every tick — fade anyway.
+* **`canSimulateMovement()` is inherited from the controlling passenger.** It
+  is `isLocalInstanceAuthoritative()` → `isLocalClientAuthoritative()`, and
+  `Player`'s is `isLocalPlayer()`, so **a vehicle the local player rides does
+  not decay** and everything else does. Rewo's local player is not in
+  `EntityTable`, so the table needed only the local id to answer it, and only
+  the *first* passenger confers it.
+* **The deadband has two forms and they genuinely differ.** A player's is joint
+  (`horizontalDistanceSqr() < 9.0E-6`); everything else's is per-axis
+  (`|x| < 0.003`). At `(0.0025, 0.0025)` per-axis zeroes both and joint keeps
+  both, because the magnitude is 0.00354 — `physics.rs` already records the
+  same divergence from the local player's side, so this is the other half of a
+  fact the repo half-held. It also reads **one snapshot**, so an axis zeroed
+  cannot change another axis's verdict.
+* **None of it runs for a minecart.** `aiStep` is `LivingEntity`'s, and both
+  minecart behaviours' client branches (`OldMinecartBehavior.tick`'s else,
+  `NewMinecartBehavior.tick`'s else) touch position and rotation only. Its
+  velocity is frozen between packets. `AbstractMinecart` *does* override
+  `lerpMotion`, but it delegates through `MinecartBehavior.setDeltaMovement` to
+  `Entity.setDeltaMovement`, so the stored value is identical and the override
+  is transparent here.
+
+The deadband is also what makes the decay **terminate**: `0.98^n` crosses 0.003
+at n = 288, so a bee's buzz reaches silence rather than becoming quieter
+forever.
+
+Two smaller exactness points: `Entity.setDeltaMovement` is guarded by
+`deltaMovement.isFinite()`, so a non-finite movement is a **silent keep** rather
+than a stored NaN (which would poison every later `sqrt` and surface as a
+silence, not an error); and `Entity.lerpMotion` is a bare `setDeltaMovement`, so
+a motion packet **replaces** rather than blending or accumulating.
+
+#### A comment that outlived its subject, again
+
+`apply_set_entity_motion` dropped a remote entity's motion, reasoning that
+remote entities "are never integrated client-side, so there is nothing for
+their velocity to drive". The first half is right and the second stopped being
+true at M141 — four ramps read it and none of them is a position. Same class as
+M141a's, and the third instance in two milestones.
+
+#### The local player is not a row in the table
+
+`EntityTableWorld` grew a `LocalPlayerView` (id, position, velocity,
+fall-flying). `EntityTable` holds only entities the server sent an `add_entity`
+for and it never sends one for you — M73's asymmetry, hit again — and
+`position` returning `None` **is** `isRemoved()`, so without it the elytra ramp
+stops itself on its first tick. That is a silence indistinguishable from a
+correct one, which is why it has its own witness.
+
+`fall_flying` is the one field it cannot answer and is named rather than
+defaulted quietly. The local player's `DATA_SHARED_FLAGS_ID` does arrive — the
+server sends you your own metadata — but `route_set_entity_data` writes into
+`EntityTable`, which has no row for you. The cost is exact:
+`ElytraOnPlayerSoundInstance`'s guard is `time <= 20 || isFallFlying()`, so an
+elytra sound would play for one second and stop. It is also the elytra's
+*trigger* (`onSyncedDataUpdated`'s rising edge), so **one decode closes both
+ends** and it belongs with the trigger milestone.
+
+#### What the battery found
+
+`tools/m141d_mutate.py`, **21/21**, control survives. Two survivors on the first
+run, both real, plus a third produced by fixing the second:
+
+* **The Y-deadband fixture sat where both thresholds agree.** `0.002` is below
+  0.003 *and* below any larger wrong value, so it passed against a deadband ten
+  times too wide. Two-sided now, with 0.01 as the separating value. The
+  canonical shape, hit for the third time in two days.
+* **Nothing tested the remote branch at all**, because `PlaySession` has no
+  test module anywhere in the repo (it owns a socket) — M97's finding for the
+  fifth time. The body moved to `motion::apply_remote_motion`.
+* That move exposed a third: **no test in `rewo-net` can build an
+  `EntityClasses`.** `EntityClasses::resolve` hard-fails unless handed the full
+  runtime registry — deliberately, and the guard is right — so a fixture-sized
+  one is not constructible and a self-skipping test proves nothing on a bare
+  machine (the audio plan's §0.3 hazard). Rather than record a survivor, the
+  lookup became `motion_class_facts`, taking the two predicates as closures; a
+  test drives both arms and proves they are not swapped, which needs a fixture
+  answering them *differently* since a player is both. What remains ungraded is
+  two method names at one call site.
+
+The `PlaySession` call site is an **expected survivor with its reason in the
+battery** — the composition-root class `REWO_AUDIO_PLAN.md` §0.3 records for
+`LiveSounds::drive`, which needed `--render-check`'s r45. Covering this one
+wants a live server sending motion for a remote *mob*, which is a witness of its
+own and is open.
+
+#### A process note
+
+The branch was cut from the worktree's old HEAD rather than from `main`, so
+M141 was absent from the tree and an edit to `EntityTableWorld`'s `RampWorld`
+impl found no target. Nothing was committed, so it cost a stash and a reset —
+but **the tell was a search coming back empty, not a build failing**, because
+the rest of the work was independent of M141 and compiled fine on the wrong
+base.
+
+**Measured:** 2982 tests / 0 failures (world 1155, net 1026, gpu 275, data 224,
+app 197, mesh 45, proto 16, audio 44); 34 serverless gates green with 0
+validation errors; `live --render-check` **45/45** with validation ON; demo PNG
+`2cc56b4acbfb92cb` byte-identical; release build clean.
+
+**Still nothing constructs a ramp.** The triggers are unchanged as the next
+step, and `EntityTableWorld`'s input table now names **seven** unanswered
+queries in six rows rather than ten: `angry` (the bee's
+`DATA_ANGER_END_TIME`), `underwater`, `attack_animation_scale`,
+`sniffer_digging`, the `on_rails` / `new_minecart_behavior` pair, and
+`camera_position`. The local player's `fall_flying` is an eighth gap that is
+not a table row, because it is not a property of the table.
+
+**Its caption had been wrong in both directions**, which is worth recording
+because it is the class this file keeps re-teaching: before M141d it read "nine
+… seven" over rows summing to *ten* queries, and the first M141d edit made it
+"twelve … four". The doc now says how to re-derive it instead of asking to be
+believed — **an unanswered query is exactly one whose signature is
+`fn name(&self, _: i32)`**, because it does not look at the entity. A number
+beside a table is worth what the table says, and the table is worth what the
+signatures say.
+
+A finding filed rather than acted on: `NewMinecartBehavior.tick`'s **client**
+branch runs `setOnRails(BaseRailBlock.isRail(...))`, so `isOnRails()` is a
+client-side read of the block below and Rewo has the blocks.
+`OldMinecartBehavior`'s client branch does not, so the old-behaviour answer
+stays server-sent — which is why the row is still a gap and not a fix.
 
 ### M141 — the ten tickable ramps, and a pitch ramp that is dead code (2026-08-11)
 

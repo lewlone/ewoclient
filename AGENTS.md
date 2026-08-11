@@ -1940,7 +1940,7 @@ item** — M138a–d, `level_event`'s sounds and the music fade have shipped, an
 **the listening pass is the outstanding work and it is the user's**, because no
 gate in this project opens an audio device.
 **Everything is shipped, gated and merged to `main`** as of 2026-08-11
-(M141) — **2968 tests / 0 failures** (world 1147, net 1020, gpu 275, data 224,
+(M141d) — **2982 tests / 0 failures** (world 1155, net 1026, gpu 275, data 224,
 app 197, mesh 45, proto 16, **audio 44** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
@@ -6158,7 +6158,7 @@ bytes.
 
 ---
 
-## M141 — the ten tickable ramps (2026-08-11)
+## M141 — the ten tickable ramps, and their velocity (2026-08-11)
 
 `SoundEngine.tickInGameSound` drove **one `tick()` body out of ten** since
 M131, because `EntityBoundSoundInstance` was the only subclass Rewo modelled.
@@ -6209,8 +6209,24 @@ route.
 
 **Nothing constructs these instances yet.** Every trigger is a packet Rewo
 already routes (`handleAddEntity`, `handleEntityEvent` 21 and 63,
-`startRiding`, the fall-flying rising edge), so the next milestone is wiring —
-but the *inputs* are the blocker, and **velocity gates four of the ten ramps**,
-because `EntityTable` stores an interpolation target rather than a
-`getDeltaMovement()`. `EntityTableWorld`'s doc carries the full table of what it
-can and cannot answer.
+`startRiding`, the fall-flying rising edge), so the next milestone is wiring.
+
+**M141d fed them the velocity**, which was the input gating four of the ten,
+and its finding is the sort that punishes a sensible implementation: a remote
+entity's `getDeltaMovement()` is **a decaying echo of the last
+`set_entity_motion` packet**, not a velocity. A client never integrates it into
+a position, so a bee gliding steadily past with no motion packets has it falling
+to zero while it is visibly moving — and its buzz fades with it. A finite
+difference over the interpolated positions is more truthful about the bee and is
+not what vanilla sounds like.
+
+Nor is it one rule. The 0.98 decay is the **`else` of the interpolation
+branch**, so an entity still catching up does not decay at all; it is skipped
+for a vehicle the local player rides (authority is inherited from the
+controlling passenger); the deadband that follows has **two forms** (a player's
+joint `< 9.0E-6`, everything else's per-axis `< 0.003`, disagreeing at
+`(0.0025, 0.0025)`); and **none of it runs for a minecart**, because `aiStep` is
+`LivingEntity`'s and both minecart behaviours' client branches touch position
+only. `EntityTableWorld`'s doc carries the full table of what it can and cannot
+answer — and now says how to re-derive that count, having been wrong in both
+directions.

@@ -4933,7 +4933,7 @@ mod entity_silent_tests {
         t.add(2, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
         apply_set_entity_data(&body(1, 4, 8, &[0x01]), &mut t, None);
 
-        let w = EntityTableWorld(&t);
+        let w = EntityTableWorld { table: &t, local: None };
         assert!(w.entity_silent(1), "the silenced entity");
         assert!(!w.entity_silent(2), "and only it");
         // An id the table never saw is audible, because vanilla seeds false.
