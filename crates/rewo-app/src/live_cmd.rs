@@ -1201,6 +1201,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // that count as water and as prismarine, resolved once from the bake.
     session.conduit_states = chest_states.conduit_states().clone();
     session.water_states = baked.water.clone();
+    session.bubble_column_drag = baked.bubble_column_drag.clone();
     session.conduit_frame_states = {
         let mut v = vec![false; baked.water.len()];
         for id in 0..v.len() as u32 {

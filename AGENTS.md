@@ -1939,7 +1939,7 @@ item** — M138a–d, `level_event`'s sounds and the music fade have shipped, an
 **the listening pass is the outstanding work and it is the user's**, because no
 gate in this project opens an audio device.
 **Everything is shipped, gated and merged to `main`** as of 2026-08-11
-(M142b) — **3042 tests / 0 failures** (world 1158, net 1084, gpu 275, data 224,
+(M142c) — **3048 tests / 0 failures** (world 1164, net 1084, gpu 275, data 224,
 app 197, mesh 45, proto 16, **audio 44** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
@@ -6325,11 +6325,27 @@ threshold the wrong answer already satisfied. Strictness needed an exact tie:
 produced none), so the witness reads the draw off a cloned RNG and uses it *as*
 the chance.
 
-**Two of the three handlers are transcribed but not wired**, for stated
-reasons: the bubble column needs a per-state `drag` table the block bake does
-not carry, and the biome loop needs a fade command through the engine, because
-vanilla's handler mutates live instances it holds while Rewo's engine owns the
-ramps. The **directional sound is a different feature** — the End flash from
+**M142c then wired the bubble column**, whose scan has its own inversion:
+"X varies fastest" means the **priority is the reverse** — `betweenClosed`
+visits a whole Z slice before the next, so with `findFirst()` the winner is the
+lowest Z, then Y, then X. My witness asserted it backwards, and **its Y case
+passed for the wrong reason** because the block it expected to win on X was
+also the lower one in Y. Two more: the property is serialised `drag` (not
+`drag_down`) and the block's **default state is `drag=true`**, so a missed
+lookup makes every column a whirlpool rather than silence; and a missing chunk
+**empties the whole scan**, which the handler reads as "no column" and so
+*re-arms* on, firing when the chunk arrives. Its table is graded from the real
+bake by four `blockentityshot` witnesses, because every unit test supplies its
+own — and the battery needed a **per-file runner**, since `assets::bake` is
+unreachable from `cargo test` and a test-only harness would call both its
+mutations SURVIVED. Its one survivor (39/40) is the milestone's only genuinely
+**equivalent** mutant rather than a hole in a witness: every `bubble_column`
+state declares `drag`, so the branch it defaults cannot be reached — pinned as
+a coincidence, so a version that breaks it makes the branch live again.
+
+**One of the three handlers is still unwired**, for a stated reason: the biome
+loop needs a fade command through the engine, because vanilla's handler mutates
+live instances it holds while Rewo's engine owns the ramps. The **directional sound is a different feature** — the End flash from
 `ClientLevel.tick`, needing `EndFlashState` — and one reader in M142's survey
 claimed that class is dead in vanilla and advised deleting Rewo's ramp. It is
 not.

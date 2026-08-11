@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-11 after M142b:
-**3042 tests, 0 failures** (**world 1158, net 1084, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 3042).
+Current measurement, taken 2026-08-11 after M142c:
+**3048 tests, 0 failures** (**world 1164, net 1084, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 3048).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -311,11 +311,11 @@ sink; `rewo-net` carries the listener transform and the music fade.
      * ~~**the three ambient instances**~~ — the `AmbientSoundHandler`
        subsystem **shipped as M142**, along with the `AmbientSounds` attribute
        decode it reads. All three handlers are transcribed and unit-tested;
-       the **underwater pair is wired end to end**, and two remain unwired for
-       stated reasons — the bubble column wants a per-state `drag` table the
-       block bake does not carry, and the biome loop wants a fade command
-       through the engine, because vanilla's handler mutates live instances it
-       holds while Rewo's engine owns the ramps. The **directional sound is a
+       the **underwater pair and the bubble column are wired end to end**
+       (M142b, M142c), and **one** remains unwired for a stated reason — the
+       biome loop wants a fade command through the engine, because vanilla's
+       handler mutates live instances it holds while Rewo's engine owns the
+       ramps. The **directional sound is a
        different feature** and is still open: it is the End flash, from
        `ClientLevel.tick`, and needs `EndFlashState` plus `playDelayed`. Note
        one reader in M142's survey claimed that class is **dead in vanilla**
@@ -20500,15 +20500,69 @@ because the suite kills that particular mutant; one that SURVIVED would have
 committed a real bug with every test green. **Stage before a battery or after
 its summary, never across it.**
 
+#### M142c — the bubble column wired, and a scan whose priority reads backwards
+
+The second handler reaches a running client: a per-state `drag` table in the
+bake, the box scan in `World`, and the tick that joins them.
+
+**The property is serialised `drag`.** `BubbleColumnBlock.DRAG_DOWN` is a
+Java-side alias for `BlockStateProperties.DRAG`, so a lookup by the field name
+finds nothing — and the block's **default state is `drag=true`**, so a reader
+that missed it and fell back to the default makes every column a whirlpool. A
+wrong sound rather than a missing one.
+
+**"X varies fastest" means the priority is the reverse.**
+`BlockPos.betweenClosed` computes `x = i % width`, `y = (i / width) % height`,
+`z = i / width / height`, so every block of one Z slice is visited before any
+of the next; with `findFirst()` the winner is the lowest **Z**, ties broken by
+the lowest **Y**, then **X**. My witness asserted the opposite — its Z case
+failed, and **its Y case passed for the wrong reason**, because the block it
+expected to win on X happened also to be lower in Y. That is the second time in
+this milestone a witness agreed with the implementation for a reason neither of
+them stated.
+
+**Both bounds are floored**, so a box whose max lands exactly on an integer
+includes that block — which is what the handler's `deflate(1.0E-6)` prevents,
+and pinning it is what makes that epsilon mean something rather than look like
+noise.
+
+**A missing chunk empties the whole scan**, not part of it:
+`getBlockStatesIfLoaded` guards the entire box with `hasChunksAt`, so a loaded
+column holding a bubble column is invisible while a neighbour the box also
+covers is absent. The handler reads that as "no column", clears its latch, and
+therefore **re-arms** — firing the moment the chunk arrives.
+
+The degenerate box was worth checking rather than assuming: a swimming pose
+crosses the two 0.4 Y insets, and after flooring the count can reach 0 but
+never goes negative (the insets differ by less than a block), so it is a clean
+empty iteration rather than the runaway `end = width * height * depth` looks
+like it could be. Rewo pins a standing 0.6 x 1.8 box and has no pose model, so
+that case is not representable — stated in the tick rather than approximated.
+
+The table is graded **from the real bake** by four new `blockentityshot`
+witnesses (172 -> 176) against `blocks.json` read raw. That placement is the
+point: every unit test of the handler supplies its own table, so the derivation
+— the part that can silently produce nothing — is untested by construction, and
+it is unreachable from `cargo test` because `assets::bake` needs the client
+jar. The battery gained a **per-file runner** for the same reason: a harness
+that ran only `cargo test` would report both `assets.rs` mutations as SURVIVED
+and be wrong about it.
+
+**39/40, and the survivor is genuinely equivalent** — the first in this
+milestone that was not a hole in a witness. Defaulting an unreadable `drag` to
+the block's own `true` changes no answer the bake can produce, because **every**
+`bubble_column` state in `blocks.json` declares the property, so the branch it
+defaults is unreachable. That is pinned as the coincidence it is (M93g's
+`#loom_dyes` shape, 176 -> 177 witnesses): if a version ever ships a state
+without `drag`, the witness fires, the branch becomes live, and the entry goes
+back to KILLED.
+
 #### What is transcribed but not yet wired
 
-The bubble column and the biome loop. The bubble column needs a per-state
-`drag` table, which the block bake does not carry (the property is serialised
-`drag`, and the block's **default state is `drag=true`**, so a lookup that
-misses it turns every column into a whirlpool). The biome loop needs a fade
-command through the engine, because vanilla's handler mutates live instances it
-holds and Rewo's engine owns the ramps. Both are transcribed and unit-tested
-here; neither is reachable from a running client yet, and the module says so.
+The biome loop, alone now. It needs a fade command through the engine, because
+vanilla's handler mutates live `LoopSoundInstance`s it holds while Rewo's
+engine owns the ramps. It is transcribed and unit-tested here, and the module
+says so.
 
 ### M141h — the riding pair, and a mount that plays two sounds at once (2026-08-11)
 

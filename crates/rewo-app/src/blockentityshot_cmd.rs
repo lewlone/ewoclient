@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 172;
+const EXPECTED_WITNESSES: usize = 177;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -252,6 +252,12 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
     check_conduit_active(&mut c, &paths, &args.version)?;
     check_spawner_mob(&mut c, &blocks, &paths, spawner)?;
     check_end_portal_shader(&mut c, &blocks, &paths, &args.version, end_portal_type)?;
+    {
+        let jar = client_jar(&args.version)
+            .ok_or_else(|| "no client jar for the bubble-column table".to_string())?;
+        let baked = rewo_data::assets::bake(&jar, &paths.blocks_json())?;
+        check_bubble_column_table(&mut c, &baked, &paths.blocks_json())?;
+    }
 
     println!(
         "[blockentityshot] witnesses observed: {} / {EXPECTED_WITNESSES}",
@@ -3680,4 +3686,115 @@ fn check_lifecycle(c: &mut Checker, ids: &Ids, blocks: &rewo_data::blocks::Block
         order == vec![(1, 1), (1, 5), (3, 3), (5, 1)],
         format!("{order:?} — lexicographic by (x, y, z)"),
     );
+}
+
+/// `BakedAssets::bubble_column_drag` — the input
+/// `BubbleColumnAmbientSoundHandler` scans for (M142c).
+///
+/// Graded **from the real bake** rather than from a hand-built table, because
+/// that is the M92/M93b hazard exactly: every unit test of the handler
+/// supplies its own `Option<bool>` vector, so the derivation from
+/// `blocks.json` — the part that can silently produce nothing — is untested by
+/// construction. Deleting the assignment in `assets.rs` leaves all of those
+/// green.
+///
+/// The two facts worth pinning are both traps:
+///
+/// * The property is serialised **`drag`**, not `drag_down`
+///   (`BubbleColumnBlock.DRAG_DOWN` is an alias for
+///   `BlockStateProperties.DRAG`), so a lookup by the Java field name finds
+///   nothing at all.
+/// * The block's **default state is `drag=true`**, so a reader that missed the
+///   property and fell back to the default would turn every column into a
+///   whirlpool — a wrong sound rather than a missing one.
+fn check_bubble_column_table(
+    c: &mut Checker,
+    baked: &rewo_data::assets::BakedAssets,
+    blocks_json: &std::path::Path,
+) -> Result<(), String> {
+    // Read the report RAW, not through `rewo_data::blocks::Blocks` — the
+    // expectation has to come from a source the bake does not share, or the
+    // comparison is the bake against itself.
+    let raw = std::fs::read_to_string(blocks_json).map_err(|e| e.to_string())?;
+    let blocks: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let blocks = &blocks;
+    let table = &baked.bubble_column_drag;
+    let ids: Vec<(u32, bool)> = table
+        .iter()
+        .enumerate()
+        .filter_map(|(id, d)| d.map(|d| (id as u32, d)))
+        .collect();
+
+    // Exactly the states `blocks.json` declares for the block — no more (the
+    // filter is on the block name) and no fewer (both states are present).
+    let want: Vec<(u32, bool)> = blocks
+        .get("minecraft:bubble_column")
+        .and_then(|b| b.get("states"))
+        .and_then(|s| s.as_array())
+        .map(|states| {
+            states
+                .iter()
+                .filter_map(|s| {
+                    let id = s.get("id")?.as_u64()? as u32;
+                    let drag = s.get("properties")?.get("drag")?.as_str()? == "true";
+                    Some((id, drag))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    c.record(
+        "bubble drag table matches blocks.json",
+        !want.is_empty() && ids == want,
+        format!("baked {ids:?} vs blocks.json {want:?}"),
+    );
+    c.record(
+        "bubble column has exactly two states, one of each drag",
+        ids.len() == 2 && ids.iter().any(|&(_, d)| d) && ids.iter().any(|&(_, d)| !d),
+        format!("{ids:?}"),
+    );
+    // The default state is the DRAG=TRUE one, which is why a missed lookup is
+    // audible rather than silent.
+    let default_is_drag = blocks
+        .get("minecraft:bubble_column")
+        .and_then(|b| b.get("states"))
+        .and_then(|s| s.as_array())
+        .and_then(|states| {
+            states.iter().find(|s| s.get("default").and_then(|d| d.as_bool()) == Some(true))
+        })
+        .and_then(|s| s.get("properties")?.get("drag")?.as_str().map(|v| v == "true"));
+    c.record(
+        "the block's DEFAULT state is drag=true",
+        default_is_drag == Some(true),
+        format!("{default_is_drag:?} — a fallback to the default is a whirlpool, not silence"),
+    );
+    // **Every state of the block declares the property**, which is what makes
+    // the reader's "absent is not a column" branch unreachable — and therefore
+    // what makes a mutant that defaults it to the block's `true` EQUIVALENT
+    // rather than merely unwitnessed. Pinned as the coincidence it is (M93g's
+    // `#loom_dyes` shape): if a version ever ships a bubble_column state
+    // without `drag`, this fires and that branch becomes live.
+    let all_declare_drag = blocks
+        .get("minecraft:bubble_column")
+        .and_then(|b| b.get("states"))
+        .and_then(|s| s.as_array())
+        .map(|states| {
+            !states.is_empty()
+                && states
+                    .iter()
+                    .all(|s| s.get("properties").and_then(|p| p.get("drag")).is_some())
+        })
+        .unwrap_or(false);
+    c.record(
+        "every bubble-column state declares `drag`",
+        all_declare_drag,
+        "so the absent-property branch is unreachable on real data, and a          mutant defaulting it to the block's `true` is equivalent rather than          untested",
+    );
+    // Nothing else in the whole 27k-state table claims to be a bubble column.
+    c.record(
+        "no other block state is marked as a bubble column",
+        table.iter().filter(|d| d.is_some()).count() == 2,
+        format!("{} states carry a drag value", table.iter().filter(|d| d.is_some()).count()),
+    );
+    Ok(())
 }

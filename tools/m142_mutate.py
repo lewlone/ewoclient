@@ -28,6 +28,8 @@ B = os.path.join("crates", "rewo-net", "src", "biome_parse.rs")
 W = os.path.join("crates", "rewo-world", "src", "ambient.rs")
 E = os.path.join("crates", "rewo-net", "src", "sound_engine.rs")
 P = os.path.join("crates", "rewo-net", "src", "play.rs")
+L = os.path.join("crates", "rewo-world", "src", "lib.rs")
+K = os.path.join("crates", "rewo-data", "src", "assets.rs")
 
 MUTATIONS = [
     (
@@ -253,7 +255,67 @@ MUTATIONS = [
         "            let inst = SoundInstance {\n                looping: true,\n                delay: 0,\n                volume: 1.0,\n                relative: true,\n                ..SoundInstance::bare(sound, SoundSource::Ambient)",
         "KILLED",
     ),
+    # --- the bubble-column scan (M142c) ------------------------------------
+    (
+        L,
+        "the scan reads through a missing chunk instead of emptying",
+        "                if !self.columns.contains_key(&(cx, cz)) {\n                    return None;\n                }",
+        "                let _ = (cx, cz);",
+        "KILLED",
+    ),
+    (
+        L,
+        "the scan is Y-major, so a lower-Y block beats a lower-Z one",
+        "        for z in z0..=z1 {\n            for y in y0..=y1 {",
+        "        for y in y0..=y1 {\n            for z in z0..=z1 {",
+        "KILLED",
+    ),
+    (
+        L,
+        "the scan is X-major, so a lower-X block beats a lower-Y one",
+        "            for y in y0..=y1 {\n                for x in x0..=x1 {",
+        "            for x in x0..=x1 {\n                for y in y0..=y1 {",
+        "KILLED",
+    ),
+    (
+        L,
+        "the max bound is CEILED rather than floored",
+        "            aabb[3].floor() as i32,\n            aabb[4].floor() as i32,\n            aabb[5].floor() as i32,",
+        "            aabb[3].ceil() as i32,\n            aabb[4].ceil() as i32,\n            aabb[5].ceil() as i32,",
+        "KILLED",
+    ),
+    # These two are graded by `blockentityshot`, NOT by `cargo test` — see
+    # `run_gate`. A battery that ran only the unit tests would call both
+    # SURVIVED and be wrong about it.
+    (
+        K,
+        "the drag property is looked up by its JAVA field name",
+        '                    .and_then(|p| p.get("drag"))',
+        '                    .and_then(|p| p.get("drag_down"))',
+        "KILLED",
+    ),
+    # EQUIVALENT, and proven so rather than left looking untested: **every**
+    # `minecraft:bubble_column` state in `blocks.json` declares `drag`, so the
+    # absent-property branch this defaults is unreachable and the two readings
+    # agree on every input the bake can be given. `blockentityshot`'s "every
+    # bubble-column state declares `drag`" witness pins that coincidence, so if
+    # a future version ever ships a state without the property the branch
+    # becomes live and this entry should go back to KILLED.
+    (
+        K,
+        "an unreadable drag falls back to the block default (EQUIVALENT)",
+        '                    .map(|v| v == "true");',
+        '                    .map(|v| v == "true")\n                    .or(Some(true));',
+        "SURVIVED",
+    ),
     # --- composition roots (PlaySession has no test module anywhere) --------
+    (
+        P,
+        "COMPOSITION ROOT: the bubble handler is never ticked (must SURVIVE)",
+        "        self.ambient_bubble.tick(found, spectator, pos, &mut out);",
+        "        let _ = (found, spectator);",
+        "SURVIVED",
+    ),
     (
         P,
         "COMPOSITION ROOT: the handlers are never ticked (must SURVIVE)",
@@ -271,8 +333,40 @@ MUTATIONS = [
 ]
 
 
-def run_tests():
-    """Returns "ok", "failed" or "build" — see `m141_mutate.py`'s note."""
+def run_gate():
+    """`blockentityshot --check`, which is the ONLY thing that grades the bake.
+
+    `assets::bake` needs the client jar and the datagen report, so its
+    `bubble_column_drag` derivation is not reachable from any unit test — a
+    battery running only `cargo test` would report every `assets.rs` mutation
+    as SURVIVED and be wrong about it. That is M45's hazard from the other
+    side: a harness that does not run the check cannot grade what it covers.
+    """
+    if subprocess.run(
+        ["cargo", "build", "-p", "rewo-app"], cwd=ROOT, capture_output=True
+    ).returncode != 0:
+        return "build"
+    exe = os.path.join(ROOT, "target", "debug", "rewo.exe")
+    try:
+        p = subprocess.run(
+            [exe, "blockentityshot", "--check"],
+            cwd=ROOT,
+            capture_output=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        return "failed"
+    return "ok" if p.returncode == 0 else "failed"
+
+
+def run_tests(rel=None):
+    """Returns "ok", "failed" or "build" — see `m141_mutate.py`'s note.
+
+    `rel` names the mutated file, so the bake's witnesses can be reached: they
+    live in a gate rather than in `cargo test`.
+    """
+    if rel == K:
+        return run_gate()
     for attempt in range(2):
         outs, rcs = [], []
         for args in (
@@ -321,7 +415,7 @@ def main():
             continue
         try:
             io.open(path, "wb").write(text.replace(old, new).encode("utf-8"))
-            r = run_tests()
+            r = run_tests(rel)
             verdict = {"failed": "KILLED", "ok": "SURVIVED", "build": "BUILD-FAIL"}[r]
         finally:
             io.open(path, "wb").write(snapshot)
