@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 176;
+const EXPECTED_WITNESSES: usize = 177;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -3767,6 +3767,28 @@ fn check_bubble_column_table(
         "the block's DEFAULT state is drag=true",
         default_is_drag == Some(true),
         format!("{default_is_drag:?} — a fallback to the default is a whirlpool, not silence"),
+    );
+    // **Every state of the block declares the property**, which is what makes
+    // the reader's "absent is not a column" branch unreachable — and therefore
+    // what makes a mutant that defaults it to the block's `true` EQUIVALENT
+    // rather than merely unwitnessed. Pinned as the coincidence it is (M93g's
+    // `#loom_dyes` shape): if a version ever ships a bubble_column state
+    // without `drag`, this fires and that branch becomes live.
+    let all_declare_drag = blocks
+        .get("minecraft:bubble_column")
+        .and_then(|b| b.get("states"))
+        .and_then(|s| s.as_array())
+        .map(|states| {
+            !states.is_empty()
+                && states
+                    .iter()
+                    .all(|s| s.get("properties").and_then(|p| p.get("drag")).is_some())
+        })
+        .unwrap_or(false);
+    c.record(
+        "every bubble-column state declares `drag`",
+        all_declare_drag,
+        "so the absent-property branch is unreachable on real data, and a          mutant defaulting it to the block's `true` is equivalent rather than          untested",
     );
     // Nothing else in the whole 27k-state table claims to be a bubble column.
     c.record(

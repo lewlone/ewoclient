@@ -315,9 +315,9 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 > constructed and the ordinary triggers are done**. **M142 then built the
 > `AmbientSoundHandler` subsystem** and the `AmbientSounds` attribute decode it
 > reads: all three handlers are transcribed and unit-tested, the underwater
-> pair is wired end to end, and two stay unwired for stated reasons (a
-> per-state `drag` table the block bake lacks; a fade command the engine does
-> not yet have). The **directional sound is not one of them** — it is the End
+> pair and the **bubble column** are wired end to end, and **one** stays
+> unwired for a stated reason — a fade command the engine does not yet have,
+> since vanilla's biome handler mutates live instances it holds. The **directional sound is not one of them** — it is the End
 > flash from `ClientLevel.tick` and needs `EndFlashState`.
 >
 > **M142 belongs in §5's trap list twice.** A tickable ambient instance must be

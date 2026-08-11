@@ -294,12 +294,19 @@ MUTATIONS = [
         '                    .and_then(|p| p.get("drag_down"))',
         "KILLED",
     ),
+    # EQUIVALENT, and proven so rather than left looking untested: **every**
+    # `minecraft:bubble_column` state in `blocks.json` declares `drag`, so the
+    # absent-property branch this defaults is unreachable and the two readings
+    # agree on every input the bake can be given. `blockentityshot`'s "every
+    # bubble-column state declares `drag`" witness pins that coincidence, so if
+    # a future version ever ships a state without the property the branch
+    # becomes live and this entry should go back to KILLED.
     (
         K,
-        "an unreadable drag falls back to the block default (a whirlpool)",
+        "an unreadable drag falls back to the block default (EQUIVALENT)",
         '                    .map(|v| v == "true");',
         '                    .map(|v| v == "true")\n                    .or(Some(true));',
-        "KILLED",
+        "SURVIVED",
     ),
     # --- composition roots (PlaySession has no test module anywhere) --------
     (
