@@ -385,6 +385,27 @@ pub enum SoundEvent {
     Stop(StopSound),
     /// Not from a packet — see [`LocalSound`].
     Local(LocalSound),
+    /// A `TickableSoundInstance` the client decided to start (M141e).
+    ///
+    /// Separate from [`Self::Local`] because these are not one-shots: each
+    /// carries a per-tick ramp and a stop condition, and the engine has to
+    /// attach a [`crate::tickable::Ramp`] rather than just an instance. A
+    /// *spec* rather than the instance itself, for the same reason
+    /// [`LocalSound`] is: naming the vanilla class keeps the construction in
+    /// one place, beside the ramp it has to agree with.
+    Tickable(TickableSound),
+}
+
+/// Which `TickableSoundInstance` the client is starting, and what it follows.
+///
+/// One variant per vanilla construction site rather than per ramp — the ramps
+/// are in [`crate::tickable`] and several of them are reachable from more than
+/// one site (`RidingEntitySoundInstance` from three).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TickableSound {
+    /// `new ElytraOnPlayerSoundInstance(player)` —
+    /// `LocalPlayer.onSyncedDataUpdated`'s fall-flying rising edge.
+    ElytraOnPlayer { player: i32 },
 }
 
 #[cfg(test)]

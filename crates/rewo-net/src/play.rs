@@ -647,6 +647,10 @@ pub struct PlaySession {
     /// crosshair pick reads `block_interaction_range` and
     /// `entity_interaction_range` from here.
     local_attributes: rewo_world::attributes::EntityAttributes,
+    /// The local player's own `SynchedEntityData` (M141e) — see
+    /// [`crate::local_player_data`]. Beside the table for M73's reason: the
+    /// table has no row for you.
+    local_player_data: crate::local_player_data::LocalPlayerData,
     /// The pose of the vehicle the local player rides, from `move_vehicle`.
     ///
     /// `None` in every ordinary session: that packet is only ever the server
@@ -1564,6 +1568,7 @@ impl<'a> Connection<'a> {
             block_updates: 0,
             mounts: crate::motion::Mounts::new(),
             local_attributes: rewo_world::attributes::EntityAttributes::default(),
+            local_player_data: crate::local_player_data::LocalPlayerData::default(),
             vehicle_pose: None,
             motion_stats: MotionStats::default(),
             day_ticks: None,
@@ -1865,6 +1870,10 @@ impl PlaySession {
         // *other* entities — but M34's inventory knows, and the swing duration
         // is a function of the held item. This is the join between the two.
         self.publish_local_hands();
+        // `LocalPlayer.aiStep`'s `this.wasFallFlying = this.isFallFlying();`
+        // (M141e). Once per tick, and that cadence is what makes the elytra
+        // sound's rising edge terminate rather than fire on every packet.
+        self.local_player_data.tick();
         // Step other entities' 3-tick position lerps (vanilla cadence).
         self.world.entities.tick_lerp();
         // `ChestLidController.tickLid` — the client animates the ten ticks the
@@ -2597,6 +2606,14 @@ impl PlaySession {
                 components: self.swing_data.as_ref().map(|d| d.components),
             },
         ) {
+            // M141e: and the local player's own, which the router cannot store.
+            // `handleSetEntityData` is `if (entity != null)` and vanilla's
+            // local player IS in the level, so the server's metadata for you
+            // is processed like anyone else's — but `EntityTable` has no row
+            // for you, so the router returns early on your id and drops it.
+            // Same asymmetry M73 hit with attributes, same fix: decode the
+            // body a second time when it names the camera entity.
+            self.capture_local_metadata(body);
             // Entity metadata (custom name, pose, gesture state, cube size, and
             // the polymorphic index-16 BOOLEAN → Allay dancing / baby). The
             // Allay dance counters then advance in `tick_lerp`.
@@ -3418,8 +3435,39 @@ impl PlaySession {
             id: self.player_id?,
             position: (self.player.x, self.player.y, self.player.z),
             velocity: (self.player.vx, self.player.vy, self.player.vz),
-            fall_flying: false,
+            fall_flying: self.local_player_data.is_fall_flying(),
         })
+    }
+
+    /// `LocalPlayer.onSyncedDataUpdated` (M141e) — the half
+    /// `route_set_entity_data` cannot take.
+    ///
+    /// Runs on **every** `set_entity_data`, exactly as
+    /// `capture_local_attributes` does: a body naming anything but the camera
+    /// entity, or one that does not parse, changes nothing.
+    ///
+    /// The elytra sound is queued rather than played here, because the engine
+    /// lives one layer up — and it goes in the same queue as everything else,
+    /// so `stop_sound` can still silence it in order.
+    fn capture_local_metadata(&mut self, body: &[u8]) {
+        let out = crate::local_player_data::apply_local_metadata(
+            body,
+            self.player_id,
+            self.swing_data.as_ref().map(|d| d.components),
+            &mut self.local_player_data,
+        );
+        if out.start_elytra_sound {
+            if let Some(player) = self.player_id {
+                self.push_sound_event(crate::sounds::SoundEvent::Tickable(
+                    crate::sounds::TickableSound::ElytraOnPlayer { player },
+                ));
+            }
+        }
+    }
+
+    /// The local player's own synced data (M141e).
+    pub fn local_player_data(&self) -> &crate::local_player_data::LocalPlayerData {
+        &self.local_player_data
     }
 
     /// **A remote entity's velocity is stored too, since M141d.** This used to

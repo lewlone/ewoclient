@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-11 after M141d:
-**2982 tests, 0 failures** (**world 1155, net 1026, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 2982).
+Current measurement, taken 2026-08-11 after M141e:
+**2995 tests, 0 failures** (**world 1155, net 1039, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 2995).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -243,7 +243,7 @@ own pitch ramp is dead code and the plausible transcription gives a twenty-secon
 glissando that vanilla does not have. It also fixed a live bug (the per-tick
 position was not narrowed through f32, with a comment *justifying* the omission)
 and retired `SoundWorld::entity_position` in favour of one name for one query.
-See §15. **M141d then fed them their velocity**, which was the input gating four of the ten — and found that a remote entity's `getDeltaMovement()` is a *decaying echo of the last motion packet*, not a velocity, so a bee visibly gliding past has its buzz fade to silence. **Nothing constructs these instances yet** — the triggers are item 4a.
+See §15. **M141d then fed them their velocity**, which was the input gating four of the ten — and found that a remote entity's `getDeltaMovement()` is a *decaying echo of the last motion packet*, not a velocity, so a bee visibly gliding past has its buzz fade to silence. **M141e then built the first trigger** — the elytra, whose `fall_flying` input gates the ramp at both ends, and which found that `canPlaySound()` is a per-CLASS override that six of the ten declare and four decline. The rest of the triggers are item 4a.
 
 **AUDIO IS NO LONGER THE TOP ITEM.** `crates/rewo-audio` exists with the
 quantisation, the buffer library, the mixer, the SPSC command ring and a cpal
@@ -284,25 +284,41 @@ sink; `rewo-net` carries the listener transform and the music fade.
      and lets each mute itself), and `onSyncedDataUpdated`'s
      `isFallFlying() && !wasFallFlying` rising edge.
 
-     **M141d closed the velocity**, which was the input gating four of the ten
-     ramps. `EntityTableWorld`'s doc table now names seven unanswered
-     `RampWorld` queries in six rows, and says how to re-derive that count
-     rather than asking to be believed. The two worth knowing before picking
-     this up:
+     **M141d closed the velocity** and **M141e the elytra**, which is the first
+     tickable sound anything constructs — so the shape is now established and
+     the rest is one trigger at a time. `SoundEvent::Tickable(TickableSound)`
+     is a spec naming the vanilla construction site, `instance_and_ramp` builds
+     the instance and its ramp together, and it rides the same queue as every
+     other sound so `stop_sound` still orders correctly. **Add a variant per
+     construction site**, not per ramp.
 
-     * **`fall_flying` for the LOCAL player is the elytra's blocker at both
-       ends** — it is the ramp's survival guard *and* its trigger — and it is
-       one decode: the local player's `DATA_SHARED_FLAGS_ID` arrives and is
-       dropped, because `route_set_entity_data` writes into `EntityTable` and
-       the local player has no row there (M73's asymmetry). Keeping it beside
-       the table is the same shape M73 used for attributes.
-     * **`angry` is the bee's**, and it is a synced deadline rather than a
-       flag: `Bee.DATA_ANGER_END_TIME` (a LONG) against the world clock, per
-       `NeutralMob.isAngry()`. `rewo_net::tickable::is_angry` already
-       transcribes the predicate; only the metadata index is missing.
+     `EntityTableWorld`'s doc table names the unanswered `RampWorld` queries
+     and says how to re-derive that count rather than asking to be believed.
+     What each remaining trigger still needs:
 
-     `attack_animation_scale` is the one that is not a decode — it is a
-     client-side counter (`Guardian.clientSideAttackTime`) Rewo does not run.
+     * **the bee** — `angry`, which is a synced *deadline* rather than a flag
+       (`Bee.DATA_ANGER_END_TIME`, a LONG, against the world clock, per
+       `NeutralMob.isAngry()`). `rewo_net::tickable::is_angry` already
+       transcribes the predicate; only the metadata index is missing. Its
+       trigger is `handleAddEntity`'s `postAddEntitySoundInstance`, and note
+       the bee goes through `queueTickingSound` where the minecart beside it
+       goes through `play` — a one-tick deferral that is vanilla's, not a
+       tidying opportunity.
+     * **the minecart** — nothing, for the trigger. Its `on_rails` gap only
+       mutes it; `postAddEntitySoundInstance` can construct it today.
+     * **the guardian and the sniffer** — `handleEntityEvent` cases **21** and
+       **63**. The sniffer needs its state enum exposed (already decoded for
+       the gesture rig); the guardian needs `attack_animation_scale`, which is
+       the one input that is **not a decode at all** but a client-side counter
+       (`Guardian.clientSideAttackTime`) Rewo does not run.
+     * **the riding pair** — `LocalPlayer.startRiding`, which plays **both**
+       minecart instances at once and lets each mute itself by submersion, so
+       `underwater` is what it wants.
+
+     And one thing M141e established that applies to all of them:
+     **`canPlaySound()` is per-class**. Six of the ten override it and four do
+     not, so a new ramp's silence gate is `Ramp::silence_gated_entity()` and
+     **not** the entity it follows.
    - **4b — the rest of music**: selection, the `nextSongDelay` timers, and
      `getSituationalMusic`. Note the last one is **not** the old hardcoded
      biome switch: 26.2 reads `EnvironmentAttributes.BACKGROUND_MUSIC` through
@@ -20312,6 +20328,110 @@ milestone measured, but nothing *structurally* stops a fifth from repeating it �
 so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
+
+### M141e — the elytra, and a silence gate that is per-class (2026-08-11)
+
+**The first tickable sound this client constructs at all.** `fall_flying` was
+the input the elytra needed at *both* ends — the ramp's survival guard
+(`time <= 20 || isFallFlying()`) and its trigger
+(`LocalPlayer.onSyncedDataUpdated`'s rising edge) — so one decode closes both,
+which is why they shipped together.
+
+#### The decode is M73's asymmetry, for the third time
+
+`handleSetEntityData` is `if (entity != null)` and vanilla's local player **is**
+in the level, so the server's metadata for you is processed exactly like anyone
+else's. `EntityTable` holds only entities the server sent an `add_entity` for
+and it never sends one for you, so the router returned early on your own id and
+dropped everything in it. Same fix as M73's attributes: decode the body a second
+time when it names the camera entity, and keep the result beside the table
+(`crates/rewo-net/src/local_player_data.rs`).
+
+#### The rising edge is not "the flag changed"
+
+```java
+if (DATA_SHARED_FLAGS_ID.equals(accessor) && this.isFallFlying() && !this.wasFallFlying) {
+   this.minecraft.getSoundManager().play(new ElytraOnPlayerSoundInstance(this));
+}
+```
+
+Three conditions, each with a natural simplification that diverges:
+
+* **The packet must carry index 0.** `SynchedEntityData.assignValues` calls
+  `onSyncedDataUpdated(accessor)` once per *entry in the packet*, so a metadata
+  update that does not mention the shared flags cannot fire this however the
+  flag stands.
+* **There is no change guard.** `assignValues` fires the callback
+  unconditionally — it never compares old with new — so a packet re-sending
+  flags that already had bit 7 set *does* reach the test.
+* **`wasFallFlying` is sampled once per tick**, in `aiStep`, not by the
+  callback. That is what makes the edge terminate — and it means **two
+  flag-carrying packets inside one tick each start a sound**, because
+  `SoundEngine.play` has no dedup, so you get two overlapping elytra loops. A
+  quirk, witnessed rather than fixed, because "did it change?" is the obvious
+  implementation and would quietly not do it.
+
+#### The finding: `canPlaySound()` is per-class, and I had flattened it
+
+The battery left `binding: Fixed` on the elytra instance alive, and that was
+**not** a weak fixture. Rewo's `Binding::Entity` means two things at once —
+"follow this entity" and "silence-gate on it" — and for the elytra they come
+apart: **`ElytraOnPlayerSoundInstance` does not override `canPlaySound()`**, so
+it takes the interface default of a flat `true` (`SoundInstance.java:41`).
+Binding it to the player added a gate vanilla has not got, and a
+`/data`-silenced player would have silenced their own elytra.
+
+Counted from the decompile rather than assumed — `grep -c canPlaySound` over the
+ten classes — **six override it and four do not**: `EntityBoundSoundInstance`,
+`BeeSoundInstance`, `GuardianAttackSoundInstance`, `MinecartSoundInstance`,
+`RidingEntitySoundInstance` and `SnifferSoundInstance` each return
+`!x.isSilent()`; the elytra, both underwater instances, the biome loop and the
+directional sound do not. The tick loop now asks
+`Ramp::silence_gated_entity()`, which is deliberately **not**
+`Ramp::entity()` — they agree for six ramps and disagree for four, and
+conflating them is exactly what hid this.
+
+#### Two more witness failures, both instructive
+
+**A witness that could not observe its own claim.** The control for the gate
+was a bee that is silent *from the start* — but `play` refuses a silent
+entity-bound instance outright, so it never acquires a channel and the
+*tick-time* gate is unobservable. It measured an empty call list. The bee falls
+silent *after* starting now.
+
+**And a regression caught before it landed rather than after.** Routing
+tickables through `play_ramped` made it possible to pass `None` for an ordinary
+entity-bound sound, which would have silently stopped every `sound_entity`
+following its entity. `play` and the queue path share `Ramp::for_instance` now
+— M89's rule applied ahead of the bug rather than after it — and there is a
+witness that goes through `accept`, because the engine's own follow test calls
+`play` directly and could not have seen it.
+
+#### The shape a future trigger inherits
+
+`SoundEvent::Tickable(TickableSound)` is a **spec**, not an instance, for the
+same reason `LocalSound` is: it names the vanilla construction site and
+`instance_and_ramp` builds the pair. The pair is built in one function on
+purpose — an `ElytraOnPlayerSoundInstance` carrying a bee's ramp would fade on
+the wrong input and stop on the wrong condition, and two functions is one more
+place for them to disagree. It goes in the **same queue** as everything else, so
+`stop_sound` can still silence it in order.
+
+**Measured:** 2995 tests / 0 failures (world 1155, net 1039, gpu 275, data 224,
+app 197, mesh 45, proto 16, audio 44); 34 gates green with 0 validation errors;
+`live --render-check` 45/45 with validation ON; demo PNG `2cc56b4acbfb92cb`
+byte-identical. Batteries: `m141e` 16/16, `m141d` 21/21, `m141` 39/39, controls
+surviving.
+
+**M141's battery reported the two anchors this milestone moved as
+`ANCHOR MATCHED 0 TIMES`** rather than passing quietly — the third time that
+behaviour has made a relocation visible. Both retargeted.
+
+**Open**: the two `PlaySession` call sites (the capture and the per-tick sample)
+are composition roots no unit test can reach, and they are named as expected
+survivors in the battery rather than hidden. A `--render-check` witness for the
+elytra is the instrument this wants, on M138a's r45 precedent — it needs a
+server, an elytra and a jump, so it is a gate of its own.
 
 ### M141d — the velocity input, which is not a velocity (2026-08-11)
 
