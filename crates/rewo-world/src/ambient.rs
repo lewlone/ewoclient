@@ -139,11 +139,7 @@ impl AmbientSounds {
     /// give every Nether biome a cave sound it does not have.
     pub fn resolve(dimension_base: &AmbientSounds, biome: Option<&BiomeDef>) -> AmbientSounds {
         match biome.and_then(|b| b.ambient_sounds.as_ref()) {
-            Some(over) => AmbientSounds {
-                loop_sound: over.loop_sound.clone().or(dimension_base.loop_sound.clone()),
-                mood: over.mood.clone().or(dimension_base.mood.clone()),
-                additions: over.additions.clone(),
-            },
+            Some(over) => over.clone(),
             None => dimension_base.clone(),
         }
     }
