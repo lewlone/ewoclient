@@ -11,9 +11,12 @@ document is stale.
 > type into, the scrollbar, the Brigadier command tree and a complete local
 > command line), translatable-component resolution, styled spans, the chat
 > decoration, clickable text and the scoreboard sidebar, after this snapshot was
-> taken, and **M138 shipped an audio stack** — which matters here because three
-> of the 75 items are listed as blocked on audio. Re-read those three before
-> assuming they still are; the device exists, though nothing has listened to it. Those are *vanilla* features and the 75 here are *mod* features, so
+> taken, and **M138–M142 shipped an audio stack and the sound model on top of
+> it** — which matters here because three of the 75 items are listed as blocked
+> on audio. Re-read those three before assuming they still are (see §4's audio
+> note): the mixer, the sink and vanilla's whole tickable/ambient sound model
+> exist, and what is missing is the single wire from `rewo-app` to
+> `rewo-audio`, plus a human to listen. Those are *vanilla* features and the 75 here are *mod* features, so
 > nothing is known to have moved into the `parity` bucket — but that is a
 > reasoned expectation, not a measurement, and §0's own rule applies to it:
 > **audit any feature against the crates before scheduling it.** This table was
@@ -305,7 +308,7 @@ copy behind. Disposition:
 | **QoL — build these** | **49** | the roadmap |
 | **parity** — vanilla version already shipped | 5 | work is *beyond* vanilla; ranked separately |
 | **[port]** — in the Fabric client, not in Rewo | 8 | **one milestone**; 4 of the original 12 shipped in M52a |
-| **audio** — blocked | 3 | Rewo has no audio subsystem at all |
+| **audio** — was blocked, now partly unblocked | 3 | see the note below: the subsystem exists, the *device* is the gap |
 | **atmosphere** — cosmetic, ranked apart | 2 | ambient particles, motion blur |
 | already in the `rewo-*` crates | 5 | F3 overlay, plus Zoom / Fullbright / FOV / Toggle sprint-sneak (M52a) |
 | does not port | 3 | see below |
@@ -455,7 +458,23 @@ mods-per-effort punishes by construction:**
 - **Chat heads** (#40) — 8 mods, 50M. Victory, not apathy.
 - **Audio** — sound physics (52M), ambient sounds (52M), music control (12M).
   **117M of demand behind one prerequisite that is a subsystem, not a
-  feature.** Rewo has no audio at all.
+  feature.** The blanket "Rewo has no audio at all" that stood here is **no
+  longer true**, and the three items have moved apart:
+  - **ambient sounds** is the closest to unblocked. M142 built vanilla's three
+    `AmbientSoundHandler`s and the biome/dimension `AmbientSounds` attribute,
+    so the *model* of what should be playing where is complete and driven per
+    tick.
+  - **sound physics** has its transcription — M138c's mixer carries vanilla's
+    exact OpenAL attenuation curve, with the pan law and the resampler marked
+    as stated approximations because they live in a DLL Rewo cannot read.
+  - **music control** has `MusicManager`'s gain ramp (M140b) and the sound
+    registry (M64), but not the selection or the delay timers.
+
+  **What is still missing is the last hop, and it is one wire**: `rewo-app`
+  deliberately does not depend on `rewo-audio`, so `rewo live` opens no device
+  and is silent. Read `REWO_AUDIO_PLAN.md` before scheduling any of the three
+  — and note that **nobody has listened to any of it**, which no gate in this
+  project can change.
 - **Ambient particles** — 36 mods, **89M**, ranked apart as atmosphere. On raw
   demand it would sit around #4. M37 shipped the particle system, so the
   prerequisite is gone; the reason it is not in the QoL list is that it

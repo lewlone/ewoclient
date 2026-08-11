@@ -376,6 +376,41 @@ impl World {
         water.get(state).copied().unwrap_or(false)
     }
 
+    /// `environmentAttributes().getValue(AMBIENT_SOUNDS, player.position())`
+    /// — the record `BiomeAmbientSoundsHandler` reads (M142d).
+    ///
+    /// `base` is the dimension type's layer, which for the Overworld is
+    /// `LEGACY_CAVE_SETTINGS` and for the Nether is nothing.
+    ///
+    /// **The sample is the RAW QUART**, `QuartPos.fromBlock(Mth.floor(c))`
+    /// straight into `getNoiseBiome` — not the fiddled `BiomeManager.getBiome`
+    /// that M14's block tint uses, and not any blend. Two independent guards
+    /// make it so: the caller passes a null interpolator, and `AMBIENT_SOUNDS`
+    /// is `ofNotInterpolated`. Reusing the colour path's resolver here shifts
+    /// the switch point by a seed-dependent few blocks.
+    ///
+    /// **The Y quart is included**, so flying up out of a cave biome changes
+    /// the loop.
+    ///
+    /// With no biome context attached the base is returned unlayered, which is
+    /// the honest answer for a synthetic world: the dimension still has its
+    /// say, and no biome can override what does not exist.
+    pub fn ambient_sounds_at(
+        &self,
+        pos: [f64; 3],
+        base: &crate::ambient::AmbientSounds,
+    ) -> crate::ambient::AmbientSounds {
+        let Some(ctx) = self.biome.as_ref() else {
+            return base.clone();
+        };
+        let id = self.noise_biome_at_quart(
+            crate::ambient::quart_from_block_coord(pos[0]),
+            crate::ambient::quart_from_block_coord(pos[1]),
+            crate::ambient::quart_from_block_coord(pos[2]),
+        );
+        crate::ambient::AmbientSounds::resolve(base, ctx.registry.biomes.get(id as usize))
+    }
+
     /// `level.getBlockStatesIfLoaded(box).filter(is BUBBLE_COLUMN).findFirst()`
     /// — the scan `BubbleColumnAmbientSoundHandler` runs over the player's
     /// torso box (M142c). `Some(drag)` for the first bubble column found.
@@ -759,5 +794,145 @@ mod bubble_column_scan_tests {
             w.first_bubble_column_in([1.0, 64.0, 1.0, 1.0, 65.0, 1.0], &t),
             Some(true)
         );
+    }
+}
+
+#[cfg(test)]
+mod ambient_sounds_at_tests {
+    use crate::ambient::{AmbientMood, AmbientSounds};
+    use crate::dimension::DimensionShape;
+    use std::sync::Arc;
+
+    fn biome(name: &str, ambient: Option<AmbientSounds>) -> crate::biome::BiomeDef {
+        crate::biome::BiomeDef {
+            name: name.into(),
+            temperature: 0.8,
+            downfall: 0.4,
+            water_color: 0,
+            grass_override: None,
+            foliage_override: None,
+            dry_foliage_override: None,
+            grass_modifier: crate::biome::GrassModifier::None,
+            sky_color: None,
+            fog_color: None,
+            has_precipitation: true,
+            temperature_modifier: Default::default(),
+            ambient_sounds: ambient,
+        }
+    }
+
+    /// Biome 0 declares nothing (so it inherits), biome 1 declares a loop.
+    fn world_with_two_biomes() -> crate::World {
+        let shape = DimensionShape::OVERWORLD;
+        let mut w = crate::World::new(shape);
+        for cx in -1..=1 {
+            for cz in -1..=1 {
+                w.insert_column(cx, cz, crate::chunk::Column::empty_lit(&shape, cx, cz));
+            }
+        }
+        let defs = vec![
+            biome("test:plains", None),
+            biome(
+                "test:nether",
+                Some(AmbientSounds {
+                    loop_sound: Some("test:loop".into()),
+                    mood: None,
+                    additions: Vec::new(),
+                }),
+            ),
+        ];
+        w.set_biome_context(Arc::new(crate::biome::BiomeContext::new(
+            Arc::new(crate::biome::BiomeRegistry::new(defs)),
+            crate::biome::Colormaps::neutral(),
+            0,
+        )));
+        w
+    }
+
+    /// The dimension's base is what an unopinionated biome hears — which is
+    /// the whole reason an Overworld cave has cave sounds, since no vanilla
+    /// Overworld biome sets the attribute at all.
+    #[test]
+    fn an_unopinionated_biome_inherits_the_dimension_base() {
+        let w = world_with_two_biomes();
+        let base = AmbientSounds::legacy_cave();
+        let got = w.ambient_sounds_at([0.5, 64.5, 0.5], &base);
+        assert_eq!(got, base, "biome 0 declares nothing, so the base stands");
+        assert_eq!(
+            got.mood.map(|m| m.sound),
+            Some("minecraft:ambient.cave".to_string())
+        );
+    }
+
+    /// **The sample follows the position.** Biome containers are per section,
+    /// so this varies one by chunk and one by height — enough to show that
+    /// both the horizontal quart and the **Y** quart reach the answer, which
+    /// is why flying up out of a cave biome changes the loop.
+    #[test]
+    fn the_sample_follows_the_position() {
+        let mut w = world_with_two_biomes();
+        let base = AmbientSounds::legacy_cave();
+        let sections = w.shape.section_count();
+
+        // Chunk (0,0): biome 1 everywhere. Chunk (-1,0): left as biome 0.
+        w.apply_chunks_biomes(
+            0,
+            0,
+            (0..sections)
+                .map(|_| crate::palette::Container::single(1))
+                .collect(),
+        );
+        assert_eq!(
+            w.ambient_sounds_at([4.5, 64.5, 4.5], &base)
+                .loop_sound
+                .as_deref(),
+            Some("test:loop"),
+            "the biome under the player answers"
+        );
+        // …and it REPLACED the base rather than merging with it.
+        assert!(
+            w.ambient_sounds_at([4.5, 64.5, 4.5], &base).mood.is_none(),
+            "the biome's record replaces the base's"
+        );
+        // A chunk over is the other biome, so the answer moves with the player.
+        assert_eq!(
+            w.ambient_sounds_at([-4.5, 64.5, 4.5], &base),
+            base,
+            "a different column is a different answer"
+        );
+
+        // Now vary by HEIGHT: the lowest section becomes biome 0 again.
+        let mut per_section: Vec<_> = (0..sections)
+            .map(|_| crate::palette::Container::single(1))
+            .collect();
+        per_section[0] = crate::palette::Container::single(0);
+        w.apply_chunks_biomes(0, 0, per_section);
+        let low_y = w.shape.min_y as f64 + 0.5;
+        assert_eq!(
+            w.ambient_sounds_at([4.5, low_y, 4.5], &base),
+            base,
+            "the Y quart reaches the answer too"
+        );
+        assert_eq!(
+            w.ambient_sounds_at([4.5, 64.5, 4.5], &base)
+                .loop_sound
+                .as_deref(),
+            Some("test:loop"),
+            "…while the section above still hears its own biome"
+        );
+    }
+
+    /// With no biome context the base stands unlayered — the honest answer for
+    /// a synthetic world, where the dimension still has its say and no biome
+    /// can override what does not exist.
+    #[test]
+    fn no_biome_context_leaves_the_base_alone() {
+        let w = crate::World::new(DimensionShape::OVERWORLD);
+        let base = AmbientSounds {
+            loop_sound: Some("test:base".into()),
+            mood: Some(AmbientMood::legacy_cave()),
+            additions: Vec::new(),
+        };
+        assert_eq!(w.ambient_sounds_at([1.0, 2.0, 3.0], &base), base);
     }
 }

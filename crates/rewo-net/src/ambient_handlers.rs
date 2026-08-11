@@ -429,6 +429,77 @@ pub fn tick_additions(a: &AmbientSounds, rng: &mut LegacyRandom, out: &mut Vec<S
     }
 }
 
+/// `BiomeAmbientSoundsHandler` — the loop, the additions and the mood, driven
+/// from **one** `AmbientSounds` snapshot per tick.
+///
+/// That single snapshot is the load-bearing part of the shape. Vanilla reads
+/// the attribute once at the top of `tick()` and all three features use it;
+/// re-querying per sub-feature admits a tick where the loop is biome A's and
+/// the mood is biome B's, which cannot happen in vanilla.
+///
+/// **Only the loop is gated on the value having changed.** The additions and
+/// the mood run every tick regardless — gating them would stop all mood
+/// accumulation and every addition the moment the player stood still.
+#[derive(Clone, Debug, Default)]
+pub struct BiomeAmbientHandler {
+    /// `previousLoopSound`, starting **absent** — so the first tick in a biome
+    /// that declares a loop is itself a transition and starts one.
+    ///
+    /// The key is the **sound identity**, not the biome
+    /// (`Object2ObjectArrayMap<Holder<SoundEvent>, ..>` and
+    /// `!Objects.equals(currentLoopSound, previousLoopSound)`). Two biomes
+    /// declaring the same loop therefore compare equal and crossing between
+    /// them does *nothing* — no fade, no churn. Keying on the biome makes
+    /// every step across an internal boundary dip the volume to zero and back.
+    previous_loop: Option<String>,
+    pub mood: BiomeMoodState,
+}
+
+impl BiomeAmbientHandler {
+    /// One tick, over the record resolved at the player's **feet**.
+    ///
+    /// The mixed origin is vanilla's and is reproduced: the attribute is
+    /// sampled at `player.position()` while the mood's block search is centred
+    /// on `(feetX, eyeY, feetZ)`, eleven lines apart in the same method.
+    pub fn tick(
+        &mut self,
+        ambient: &AmbientSounds,
+        feet: [f64; 3],
+        eye_y: f64,
+        light: &dyn MoodLight,
+        rng: &mut LegacyRandom,
+        out: &mut Vec<SoundEvent>,
+    ) {
+        let current = ambient.loop_sound.as_deref();
+        if current != self.previous_loop.as_deref() {
+            self.previous_loop = current.map(str::to_string);
+            // The engine holds the instances, so the outcome is named rather
+            // than applied here — see `SoundEvent::BiomeLoopTransition`. It is
+            // emitted even when `current` is None, because that case still has
+            // to fade the outgoing loop out.
+            out.push(SoundEvent::BiomeLoopTransition {
+                current: current.map(str::to_string),
+            });
+        }
+
+        tick_additions(ambient, rng, out);
+
+        // `ambientSounds.mood().ifPresent(...)` — the WHOLE block, so a biome
+        // with no mood settings freezes the accumulator rather than draining
+        // it, and the value survives until you re-enter one that has them.
+        if let Some(mood) = &ambient.mood {
+            self.mood.tick(mood, feet, eye_y, light, rng, out);
+        }
+    }
+
+    /// `getMoodiness()` — a **debug readout**, not a pipeline input: its only
+    /// consumer in the whole client is the F3 sound line's `" (Mood %d%%)"`.
+    /// The mood sound is played from inside `tick` itself.
+    pub fn moodiness(&self) -> f32 {
+        self.mood.moodiness
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1011,5 +1082,140 @@ mod tests {
         let mut r = rng();
         tick_additions(&over, &mut r, &mut out);
         assert_eq!(out.len(), 1, "just above the draw fires");
+    }
+    fn with_loop(id: &str) -> AmbientSounds {
+        AmbientSounds {
+            loop_sound: Some(id.into()),
+            mood: None,
+            additions: Vec::new(),
+        }
+    }
+
+    struct NoLight;
+    impl MoodLight for NoLight {
+        fn brightness(&self, _: i32, _: i32, _: i32) -> (i32, i32) {
+            (1, 0) // the freeze point — never fires, never drains
+        }
+    }
+
+    fn transitions(out: &[SoundEvent]) -> Vec<Option<String>> {
+        out.iter()
+            .filter_map(|e| match e {
+                SoundEvent::BiomeLoopTransition { current } => Some(current.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// **The transition key is the SOUND, not the biome.** Two biomes
+    /// declaring the same loop compare equal, so crossing between them emits
+    /// nothing at all — no fade, no churn. Keying on the biome would dip the
+    /// volume to zero and back at every internal boundary.
+    #[test]
+    fn the_transition_keys_on_the_sound_not_the_biome() {
+        let mut h = BiomeAmbientHandler::default();
+        let mut r = rng();
+        let mut out = Vec::new();
+        let a = with_loop("minecraft:ambient.nether_wastes.loop");
+        // Entering: previous is absent, so this IS a transition.
+        h.tick(&a, [0.0; 3], 1.62, &NoLight, &mut r, &mut out);
+        assert_eq!(
+            transitions(&out),
+            vec![Some("minecraft:ambient.nether_wastes.loop".to_string())]
+        );
+        out.clear();
+        // A DIFFERENT record that happens to name the same loop: silence.
+        let same_sound = AmbientSounds {
+            mood: Some(AmbientMood::legacy_cave()),
+            ..a.clone()
+        };
+        h.tick(&same_sound, [0.0; 3], 1.62, &NoLight, &mut r, &mut out);
+        assert!(
+            transitions(&out).is_empty(),
+            "the same loop under a different record is not a transition"
+        );
+        // A different loop is.
+        out.clear();
+        h.tick(&with_loop("minecraft:ambient.crimson_forest.loop"), [0.0; 3], 1.62, &NoLight, &mut r, &mut out);
+        assert_eq!(
+            transitions(&out),
+            vec![Some("minecraft:ambient.crimson_forest.loop".to_string())]
+        );
+    }
+
+    /// Leaving a biome that had a loop for one that has none still emits a
+    /// transition — carrying `None`, which is what fades the outgoing loop
+    /// out. Suppressing it (there is nothing to start) strands the loop
+    /// playing.
+    #[test]
+    fn losing_the_loop_still_transitions() {
+        let mut h = BiomeAmbientHandler::default();
+        let mut r = rng();
+        let mut out = Vec::new();
+        h.tick(&with_loop("a"), [0.0; 3], 1.62, &NoLight, &mut r, &mut out);
+        out.clear();
+        h.tick(&AmbientSounds::empty(), [0.0; 3], 1.62, &NoLight, &mut r, &mut out);
+        assert_eq!(transitions(&out), vec![None], "the fade-out still has to be told");
+        // …and staying there emits nothing more.
+        out.clear();
+        for _ in 0..5 {
+            h.tick(&AmbientSounds::empty(), [0.0; 3], 1.62, &NoLight, &mut r, &mut out);
+        }
+        assert!(transitions(&out).is_empty());
+    }
+
+    /// **One snapshot feeds all three, and only the loop is change-gated.**
+    /// Standing still in a biome with additions must keep firing them; a
+    /// handler that gated everything on the change would go silent.
+    #[test]
+    fn additions_and_mood_run_every_tick_while_only_the_loop_is_gated() {
+        let a = AmbientSounds {
+            loop_sound: Some("a".into()),
+            mood: None,
+            additions: vec![AmbientAddition {
+                sound: "add".into(),
+                tick_chance: 1.0,
+            }],
+        };
+        let mut h = BiomeAmbientHandler::default();
+        let mut r = rng();
+        let mut out = Vec::new();
+        for _ in 0..5 {
+            h.tick(&a, [0.0; 3], 1.62, &NoLight, &mut r, &mut out);
+        }
+        assert_eq!(transitions(&out).len(), 1, "the loop transitions ONCE");
+        let adds = out
+            .iter()
+            .filter(|e| matches!(e, SoundEvent::Instance(i) if i.identifier == "add"))
+            .count();
+        assert_eq!(adds, 5, "…while the addition fires on every tick");
+    }
+
+    /// A mood-less biome **freezes** the accumulator rather than draining it:
+    /// the whole block sits inside `mood().ifPresent`.
+    #[test]
+    fn a_moodless_record_freezes_the_accumulator() {
+        let mut h = BiomeAmbientHandler::default();
+        h.mood.moodiness = 0.9;
+        let mut r = rng();
+        let mut out = Vec::new();
+        // Sky light 15 would drain it hard if the block ran at all.
+        struct Bright;
+        impl MoodLight for Bright {
+            fn brightness(&self, _: i32, _: i32, _: i32) -> (i32, i32) {
+                (0, 15)
+            }
+        }
+        for _ in 0..50 {
+            h.tick(&AmbientSounds::empty(), [0.0; 3], 1.62, &Bright, &mut r, &mut out);
+        }
+        assert_eq!(h.moodiness(), 0.9, "frozen, not drained");
+        // With a mood present, the same light drains it.
+        let with_mood = AmbientSounds {
+            mood: Some(AmbientMood::legacy_cave()),
+            ..AmbientSounds::empty()
+        };
+        h.tick(&with_mood, [0.0; 3], 1.62, &Bright, &mut r, &mut out);
+        assert!(h.moodiness() < 0.9);
     }
 }
