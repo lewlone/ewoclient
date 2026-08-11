@@ -376,6 +376,75 @@ impl World {
         water.get(state).copied().unwrap_or(false)
     }
 
+    /// `level.getBlockStatesIfLoaded(box).filter(is BUBBLE_COLUMN).findFirst()`
+    /// — the scan `BubbleColumnAmbientSoundHandler` runs over the player's
+    /// torso box (M142c). `Some(drag)` for the first bubble column found.
+    ///
+    /// `drag` is `BakedAssets::bubble_column_drag`, indexed by state id.
+    ///
+    /// Three things about this are transcribed rather than chosen:
+    ///
+    /// 1. **Both bounds are FLOORED**, `min` and `max` alike
+    ///    (`LevelReader.java:47-52`). So a box whose max lands exactly on an
+    ///    integer includes that block — which is precisely what the handler's
+    ///    `deflate(1.0E-6)` exists to prevent, and why that epsilon is
+    ///    reproduced rather than rounded away.
+    /// 2. **A missing chunk yields an EMPTY scan, not a partial one and not an
+    ///    error.** `getBlockStatesIfLoaded` guards the whole box with
+    ///    `hasChunksAt` and returns `Stream.empty()` if any covered chunk is
+    ///    absent (`:53`). That is a silent no-op which the handler reads as
+    ///    "no column", so it clears its edge latch — and therefore *re-arms*,
+    ///    firing the moment the chunk arrives. Reading through to the world
+    ///    anyway, as an optimisation, loses that re-arm.
+    /// 3. **X varies fastest and Z slowest, so the PRIORITY is the reverse.**
+    ///    `BlockPos.betweenClosed` (`:410-415`) computes `x = i % width`,
+    ///    `y = (i / width) % height`, `z = i / width / height`, which visits
+    ///    every block of one Z slice before any of the next. Paired with
+    ///    `findFirst()` the winner is therefore the lowest **Z**, ties broken
+    ///    by the lowest **Y**, then the lowest **X** — the opposite reading of
+    ///    "X is fastest" from the one that comes to mind, and observable
+    ///    whenever the player straddles two columns that disagree.
+    ///
+    /// A degenerate box scans nothing: `betweenClosed` computes
+    /// `end = width * height * depth` from `max - min + 1` per axis, so an
+    /// inverted range gives a count of **0** and the iteration is simply
+    /// empty. That is the case a swimming pose reaches — the handler's two
+    /// 0.4 Y insets cross on a 0.6-tall box — and vanilla does **not**
+    /// normalise it. (After flooring the count can reach 0 but never goes
+    /// negative, because the two insets differ by less than one block.)
+    pub fn first_bubble_column_in(&self, aabb: [f64; 6], drag: &[Option<bool>]) -> Option<bool> {
+        let (x0, y0, z0) = (
+            aabb[0].floor() as i32,
+            aabb[1].floor() as i32,
+            aabb[2].floor() as i32,
+        );
+        let (x1, y1, z1) = (
+            aabb[3].floor() as i32,
+            aabb[4].floor() as i32,
+            aabb[5].floor() as i32,
+        );
+        // `hasChunksAt` — the whole box, before any block is read.
+        for cz in (z0 >> 4)..=(z1 >> 4) {
+            for cx in (x0 >> 4)..=(x1 >> 4) {
+                if !self.columns.contains_key(&(cx, cz)) {
+                    return None;
+                }
+            }
+        }
+        // Vanilla's index arithmetic, in vanilla's order.
+        for z in z0..=z1 {
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    let state = self.block_state_at(x, y, z) as usize;
+                    if let Some(d) = drag.get(state).copied().flatten() {
+                        return Some(d);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     pub fn tick_skull_animations(&mut self, powered: &std::collections::HashSet<u32>) {
         if powered.is_empty() {
             return;
@@ -525,5 +594,170 @@ pub(crate) fn fnv(h: &mut u64, v: u64) {
     for i in 0..8 {
         *h ^= (v >> (i * 8)) & 0xff;
         *h = h.wrapping_mul(1099511628211);
+    }
+}
+
+#[cfg(test)]
+mod bubble_column_scan_tests {
+    use crate::dimension::DimensionShape;
+
+    /// Two bubble-column states, mirroring `blocks.json`: 15294 `drag=true`
+    /// (the block's DEFAULT) and 15295 `drag=false`.
+    const DRAG_TRUE: u32 = 1;
+    const DRAG_FALSE: u32 = 2;
+
+    fn drag_table() -> Vec<Option<bool>> {
+        let mut t = vec![None; 8];
+        t[DRAG_TRUE as usize] = Some(true);
+        t[DRAG_FALSE as usize] = Some(false);
+        t
+    }
+
+    fn world_with(cols: &[(i32, i32)]) -> crate::World {
+        let shape = DimensionShape::OVERWORLD;
+        let mut w = crate::World::new(shape);
+        for &(cx, cz) in cols {
+            w.insert_column(cx, cz, crate::chunk::Column::empty_lit(&shape, cx, cz));
+        }
+        w
+    }
+
+    /// A column in the box is found, and its `drag` comes back — not the
+    /// block's default.
+    #[test]
+    fn a_column_in_the_box_is_found_with_its_own_drag() {
+        let t = drag_table();
+        for (state, want) in [(DRAG_TRUE, true), (DRAG_FALSE, false)] {
+            let mut w = world_with(&[(0, 0)]);
+            w.set_block(2, 64, 3, state);
+            let box_ = [1.5, 63.5, 2.5, 3.5, 65.5, 4.5];
+            assert_eq!(w.first_bubble_column_in(box_, &t), Some(want));
+        }
+        // …and an empty box of air finds nothing.
+        let w = world_with(&[(0, 0)]);
+        assert_eq!(
+            w.first_bubble_column_in([1.5, 63.5, 2.5, 3.5, 65.5, 4.5], &t),
+            None
+        );
+    }
+
+    /// **A missing chunk empties the whole scan** — not a partial read.
+    /// `getBlockStatesIfLoaded` guards the entire box with `hasChunksAt`, so a
+    /// column that IS loaded and DOES hold a bubble column is still not seen
+    /// when a neighbouring chunk the box also covers is absent.
+    #[test]
+    fn a_missing_chunk_empties_the_whole_scan() {
+        let t = drag_table();
+        let mut w = world_with(&[(0, 0)]);
+        w.set_block(15, 64, 8, DRAG_TRUE);
+        // Wholly inside the loaded column: found.
+        assert_eq!(
+            w.first_bubble_column_in([15.2, 63.9, 8.2, 15.8, 64.9, 8.8], &t),
+            Some(true)
+        );
+        // Straddling into chunk (1, 0), which is not loaded: nothing at all,
+        // even though the column that holds the block is loaded.
+        assert_eq!(
+            w.first_bubble_column_in([15.2, 63.9, 8.2, 16.8, 64.9, 8.8], &t),
+            None,
+            "hasChunksAt guards the WHOLE box"
+        );
+        // Loading the neighbour makes it visible again — the re-arm the
+        // handler depends on.
+        let mut w2 = w;
+        let shape = DimensionShape::OVERWORLD;
+        w2.insert_column(1, 0, crate::chunk::Column::empty_lit(&shape, 1, 0));
+        assert_eq!(
+            w2.first_bubble_column_in([15.2, 63.9, 8.2, 16.8, 64.9, 8.8], &t),
+            Some(true)
+        );
+    }
+
+    /// **X varies fastest and Z slowest — so the PRIORITY is the reverse.**
+    ///
+    /// `findFirst()` over `BlockPos.betweenClosed`'s index arithmetic
+    /// (`x = i % width`, `y = (i / width) % height`, `z = i / width / height`)
+    /// visits every block of one Z slice before any block of the next, and
+    /// every block of one Y row before the next row. So the winner is the
+    /// lowest **Z**, ties broken by the lowest **Y**, then the lowest **X** —
+    /// the opposite reading of "X is fastest" from the one that comes to mind.
+    ///
+    /// The first draft of this test asserted the other way round and failed on
+    /// the Z case; its Y case *passed for the wrong reason*, because the block
+    /// it expected to win on X happened also to be the lower one in Y.
+    #[test]
+    fn the_scan_order_is_z_major_then_y_then_x() {
+        let t = drag_table();
+        let box_ = [0.5, 64.5, 0.5, 2.5, 66.5, 2.5];
+
+        // Same Z, same Y, differing X: the lower X wins.
+        let mut w = world_with(&[(0, 0)]);
+        w.set_block(2, 65, 1, DRAG_TRUE);
+        w.set_block(1, 65, 1, DRAG_FALSE);
+        assert_eq!(w.first_bubble_column_in(box_, &t), Some(false), "lower X");
+
+        // Same Z, differing Y: the lower Y wins EVEN AT A HIGHER X, so Y
+        // dominates X.
+        let mut w = world_with(&[(0, 0)]);
+        w.set_block(1, 66, 1, DRAG_TRUE); // lower X, higher Y
+        w.set_block(2, 65, 1, DRAG_FALSE); // higher X, lower Y
+        assert_eq!(
+            w.first_bubble_column_in(box_, &t),
+            Some(false),
+            "Y outranks X — a whole Y row is visited before the next"
+        );
+
+        // Differing Z: the lower Z wins even at a higher Y and X, so Z
+        // dominates both.
+        let mut w = world_with(&[(0, 0)]);
+        w.set_block(1, 65, 2, DRAG_TRUE); // lowest X and Y, higher Z
+        w.set_block(2, 66, 1, DRAG_FALSE); // highest X and Y, lower Z
+        assert_eq!(
+            w.first_bubble_column_in(box_, &t),
+            Some(false),
+            "Z outranks everything — a whole Z slice is visited before the next"
+        );
+    }
+
+    /// **Both bounds are floored**, so a box whose max lands exactly on an
+    /// integer includes that block. This is what the handler's 1e-6 deflate
+    /// exists to prevent, and pinning it is what makes that epsilon meaningful
+    /// rather than decorative.
+    #[test]
+    fn both_bounds_floor_so_an_exact_max_is_included() {
+        let t = drag_table();
+        let mut w = world_with(&[(0, 0)]);
+        w.set_block(3, 64, 0, DRAG_TRUE);
+        // max X exactly 3.0 — floor(3.0) == 3, so block 3 IS scanned.
+        assert_eq!(
+            w.first_bubble_column_in([2.0, 64.0, 0.0, 3.0, 64.0, 0.0], &t),
+            Some(true)
+        );
+        // A hair under, and it is not.
+        assert_eq!(
+            w.first_bubble_column_in([2.0, 64.0, 0.0, 3.0 - 1e-6, 64.0, 0.0], &t),
+            None,
+            "the deflate is what keeps the neighbouring block out"
+        );
+    }
+
+    /// A degenerate box scans nothing rather than normalising. That is the
+    /// case vanilla's two 0.4 insets reach on a 0.6-tall pose, and the count
+    /// arithmetic (`max - min + 1` per axis) makes it a clean zero.
+    #[test]
+    fn an_inverted_range_scans_nothing() {
+        let t = drag_table();
+        let mut w = world_with(&[(0, 0)]);
+        w.set_block(1, 64, 1, DRAG_TRUE);
+        assert_eq!(
+            w.first_bubble_column_in([1.0, 65.0, 1.0, 1.0, 64.0, 1.0], &t),
+            None,
+            "maxY below minY is empty, not normalised"
+        );
+        // The same box the right way up does find it.
+        assert_eq!(
+            w.first_bubble_column_in([1.0, 64.0, 1.0, 1.0, 65.0, 1.0], &t),
+            Some(true)
+        );
     }
 }

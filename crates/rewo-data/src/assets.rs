@@ -233,6 +233,21 @@ pub struct BakedAssets {
     /// only `RenderKind::Fluid` would refuse to activate a conduit inside a
     /// perfectly legal frame.
     pub water: Vec<bool>,
+    /// Per block state: `Some(drag)` for `minecraft:bubble_column`, `None` for
+    /// everything else — the input `BubbleColumnAmbientSoundHandler` scans the
+    /// player's torso box for (M142c).
+    ///
+    /// **The property is serialised `drag`**, not `drag_down`:
+    /// `BubbleColumnBlock.DRAG_DOWN` is a Java-side alias for
+    /// `BlockStateProperties.DRAG`, so looking up the field name finds
+    /// nothing. And the block's DEFAULT state is `drag=true`, so a lookup that
+    /// misses the property and falls back to the default turns every column
+    /// into a whirlpool rather than failing.
+    ///
+    /// `Option<bool>` rather than two `Vec<bool>`s because the handler's
+    /// question is "is there a column here, and which kind" — one lookup, and
+    /// "not a column" is unrepresentable as a `drag` value.
+    pub bubble_column_drag: Vec<Option<bool>>,
     /// Per-state collision boxes in block-local `0..1`
     /// (`[minx,miny,minz,maxx,maxy,maxz]`); empty = the block has no
     /// collision. A `solid` state is the unit cube. Non-full-cube shapes come
@@ -941,6 +956,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let mut render = vec![RenderKind::Invisible; max_id + 1];
     let mut solid = vec![false; max_id + 1];
     let mut water = vec![false; max_id + 1];
+    let mut bubble_column_drag: Vec<Option<bool>> = vec![None; max_id + 1];
     let mut collide: Vec<Vec<[f32; 6]>> = vec![Vec::new(); max_id + 1];
     let mut emission = vec![0u8; max_id + 1];
     let mut dampening = vec![0u8; max_id + 1];
@@ -1024,6 +1040,16 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 continue;
             };
             let props = state.get("properties").and_then(|p| p.as_object());
+            if block_name == "minecraft:bubble_column" {
+                // `drag`, not `drag_down`. Absent is not defaulted to the
+                // block's own default (`true`) — a column whose property we
+                // could not read is better treated as no column than as a
+                // whirlpool, and on real data it never happens.
+                bubble_column_drag[id as usize] = props
+                    .and_then(|p| p.get("drag"))
+                    .and_then(|v| v.as_str())
+                    .map(|v| v == "true");
+            }
             let resolved = bs
                 .as_ref()
                 .and_then(|bs| baker.resolve_state(bs, props, foliage, short, &mut models));
@@ -1151,6 +1177,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         render,
         solid,
         water,
+        bubble_column_drag,
         collide,
         emission,
         dampening,

@@ -588,6 +588,10 @@ pub struct PlaySession {
     /// active by looking at the blocks around it — the server sends nothing.
     pub conduit_states: std::collections::HashSet<u32>,
     pub water_states: Vec<bool>,
+    /// `BakedAssets::bubble_column_drag` — `Some(drag)` per bubble-column
+    /// state (M142c). Empty until the bake is attached, which reads as
+    /// "no columns anywhere" and simply keeps the handler quiet.
+    pub bubble_column_drag: Vec<Option<bool>>,
     pub conduit_frame_states: Vec<bool>,
     /// Which entity types are living, and which of them run `updateSwingTime`
     /// (M19) — the machine-extracted classification from `EntityTypes.java` plus
@@ -674,6 +678,10 @@ pub struct PlaySession {
     /// against (M142b). The handler itself is stateless; vanilla's
     /// `tickDelay` field can never gate anything.
     ambient_underwater: crate::ambient_handlers::UnderwaterHandler,
+    /// `BubbleColumnAmbientSoundHandler` — two edge-latch booleans, and
+    /// `firstTick` starts **true**, so spawning inside a column is silent
+    /// until you leave and come back.
+    ambient_bubble: crate::ambient_handlers::BubbleColumnHandler,
     was_underwater: bool,
     /// The ambient handlers' `RandomSource`. Vanilla shares the level's,
     /// which is nanotime-seeded and reproduces nothing, so only the
@@ -1586,6 +1594,7 @@ impl<'a> Connection<'a> {
             powered_skull_states: Default::default(),
             conduit_states: Default::default(),
             water_states: Vec::new(),
+            bubble_column_drag: Vec::new(),
             conduit_frame_states: Vec::new(),
             entity_classes: None,
             entity_types: None,
@@ -1604,6 +1613,7 @@ impl<'a> Connection<'a> {
             local_attributes: rewo_world::attributes::EntityAttributes::default(),
             local_player_data: crate::local_player_data::LocalPlayerData::default(),
             ambient_underwater: Default::default(),
+            ambient_bubble: Default::default(),
             was_underwater: false,
             ambient_rng: rewo_world::biome_noise::LegacyRandom::new(0x5EED_A11B_1E17),
             vehicle_pose: None,
@@ -3703,6 +3713,34 @@ impl PlaySession {
         self.ambient_underwater
             .tick(player, underwater, &mut rng, &mut out);
         self.ambient_rng = rng;
+
+        // `BubbleColumnAmbientSoundHandler` — second in `LocalPlayer`'s list.
+        //
+        // The box is the player's collision AABB **shrunk** 0.4 per side in Y:
+        // vanilla's `inflate(0.0, -0.4F, 0.0)` takes a negative argument, so it
+        // contracts, and the region sampled is the torso rather than the block
+        // underfoot or the one above the head.
+        //
+        // Rewo pins a standing 0.6 x 1.8 box (`physics::PLAYER_HALF_WIDTH` /
+        // `PLAYER_HEIGHT`) and has no pose model, so the swimming and crawling
+        // case — where the two insets cross and vanilla samples nothing at all
+        // — is not representable here. Stated rather than approximated: a
+        // swimming player gets the standing box's answer, which is the audible
+        // reading.
+        let half = rewo_world::physics::PLAYER_HALF_WIDTH;
+        let aabb = [
+            self.player.x - half,
+            self.player.y,
+            self.player.z - half,
+            self.player.x + half,
+            self.player.y + rewo_world::physics::PLAYER_HEIGHT,
+            self.player.z + half,
+        ];
+        let found = self.world.first_bubble_column_in(
+            crate::ambient_handlers::BubbleColumnHandler::torso_box(aabb),
+            &self.bubble_column_drag,
+        );
+        self.ambient_bubble.tick(found, spectator, pos, &mut out);
 
         for ev in out {
             self.push_sound_event(ev);
