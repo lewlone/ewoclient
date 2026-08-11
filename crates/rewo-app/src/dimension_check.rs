@@ -808,6 +808,11 @@ mod tests {
             // behaviour, and the transparent colour is why it has no clouds.
             cloud_color: DEFAULT_CLOUD_COLOR,
             cloud_height: DEFAULT_CLOUD_HEIGHT,
+            // …and it sets no ambient sounds either, which is NOT a default
+            // shared with the other three: the Overworld, its caves and the End
+            // all declare LEGACY_CAVE_SETTINGS here. A universal cave default
+            // would play `ambient.cave` in the Nether.
+            ambient_sounds: None,
         }
     }
 

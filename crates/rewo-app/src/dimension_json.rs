@@ -31,12 +31,14 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use rewo_world::ambient::{AmbientAddition, AmbientMood, AmbientSounds};
 use rewo_world::dimension::{CardinalLightType, DimensionShape, DimensionTypeDef, Skybox};
 use serde_json::Value;
 
 /// The attribute keys the client consumes, spelled out here rather than
 /// imported: this oracle must be able to disagree with the production parser.
 const K_SKY_COLOR: &str = "minecraft:visual/sky_color";
+const K_AMBIENT_SOUNDS: &str = "minecraft:audio/ambient_sounds";
 const K_FOG_COLOR: &str = "minecraft:visual/fog_color";
 const K_AMBIENT_LIGHT_COLOR: &str = "minecraft:visual/ambient_light_color";
 const K_SKY_LIGHT_COLOR: &str = "minecraft:visual/sky_light_color";
@@ -81,6 +83,11 @@ pub struct JsonDimension {
     /// defaulted so the gate can actually catch a wrong cloud colour.
     pub cloud_color: i32,
     pub cloud_height: f32,
+    /// `audio/ambient_sounds`. Parsed HERE, from the JSON, by hand — this
+    /// module is the M16 gate's independent oracle and shares no code with
+    /// `rewo_net::biome_parse`, so an agreement between the two is evidence
+    /// rather than a tautology.
+    pub ambient_sounds: Option<AmbientSounds>,
     /// The raw `timelines` entries, exactly as the file spells them.
     pub timelines_raw: Vec<String>,
     /// Every timeline id the holder set resolves to, tags expanded, sorted.
@@ -117,6 +124,7 @@ impl JsonDimension {
             sky_light_factor: self.sky_light_factor,
             cloud_color: self.cloud_color,
             cloud_height: self.cloud_height,
+            ambient_sounds: self.ambient_sounds.clone(),
         }
     }
 
@@ -170,6 +178,7 @@ impl JsonDimension {
             want.ambient_light_color
         );
         eq!("cloud_color", d.cloud_color, want.cloud_color);
+        eq!("ambient_sounds", d.ambient_sounds, want.ambient_sounds);
         eq!("cloud_height", d.cloud_height, want.cloud_height);
         eq!("sky_light_color", d.sky_light_color, want.sky_light_color);
         eq!(
@@ -350,6 +359,10 @@ fn load_one(data_root: &Path, name: &str, path: &Path) -> Result<JsonDimension, 
     if fog_color.is_none() {
         defaulted.push("attributes.visual/fog_color (absent, NOT black)");
     }
+    let ambient_sounds = json_ambient_sounds(attr(K_AMBIENT_SOUNDS)).map_err(|e| at(&e))?;
+    if ambient_sounds.is_none() {
+        defaulted.push("attributes.audio/ambient_sounds (absent = SILENT, and the Nether really does declare nothing)");
+    }
     let ambient_light_color =
         match opt_color(attr(K_AMBIENT_LIGHT_COLOR), K_AMBIENT_LIGHT_COLOR).map_err(|e| at(&e))? {
             Some(v) => v,
@@ -457,6 +470,7 @@ fn load_one(data_root: &Path, name: &str, path: &Path) -> Result<JsonDimension, 
         sky_light_factor,
         cloud_color,
         cloud_height,
+        ambient_sounds,
         timelines_raw,
         timeline_ids,
         has_day_timeline,
@@ -804,4 +818,81 @@ mod tests {
         assert!(opt_color(Some(&Value::String("#zz00ff".into())), "k").is_err());
         assert!(opt_color(Some(&serde_json::json!({"modifier": "x"})), "k").is_err());
     }
+}
+
+/// `audio/ambient_sounds` out of a dimension-type JSON file.
+///
+/// Hand-written against `AmbientSounds.CODEC` rather than shared with the
+/// network parser, because this module is the gate's *independent* oracle.
+/// Two differences from the NBT side are deliberate and are what make the
+/// agreement meaningful: the JSON reader is **strict** (a malformed record is
+/// an error, not a silent `None`), and it re-derives the `compactListCodec`
+/// rule from the file rather than inheriting the other reader's opinion of it.
+fn json_ambient_sounds(v: Option<&Value>) -> Result<Option<AmbientSounds>, String> {
+    let Some(v) = v else { return Ok(None) };
+    let obj = v
+        .as_object()
+        .ok_or_else(|| format!("{K_AMBIENT_SOUNDS} is not an object"))?;
+    // The `{argument, modifier}` form. `ofNotInterpolated`'s one-arg overload
+    // supplies an EMPTY modifier library, so OVERRIDE is the only legal
+    // modifier and this form never appears — but every field of `AmbientSounds`
+    // is optional, so a modifier compound would decode as a *valid empty
+    // record* rather than failing. Rejecting it explicitly is the difference
+    // between "inherit the base" and "this biome declares silence".
+    if obj.contains_key("modifier") || obj.contains_key("argument") {
+        return Err(format!("{K_AMBIENT_SOUNDS} is a modifier form, not a value"));
+    }
+    let sound = |x: &Value| -> Result<String, String> {
+        x.as_str()
+            .map(str::to_string)
+            .ok_or_else(|| "a sound must be a bare identifier string".to_string())
+    };
+    let loop_sound = match obj.get("loop") {
+        Some(x) => Some(sound(x)?),
+        None => None,
+    };
+    let mood = match obj.get("mood") {
+        None => None,
+        Some(m) => {
+            let m = m.as_object().ok_or("mood is not an object")?;
+            let get_i = |k: &str| -> Result<i32, String> {
+                m.get(k)
+                    .and_then(Value::as_i64)
+                    .map(|v| v as i32)
+                    .ok_or_else(|| format!("mood.{k} missing"))
+            };
+            Some(AmbientMood {
+                sound: sound(m.get("sound").ok_or("mood.sound missing")?)?,
+                tick_delay: get_i("tick_delay")?,
+                block_search_extent: get_i("block_search_extent")?,
+                // Vanilla's JSON key is `offset`; the record field is
+                // `soundPositionOffset`.
+                sound_position_offset: m
+                    .get("offset")
+                    .and_then(Value::as_f64)
+                    .ok_or("mood.offset missing")?,
+            })
+        }
+    };
+    let one_addition = |a: &Value| -> Result<AmbientAddition, String> {
+        let a = a.as_object().ok_or("an addition is not an object")?;
+        Ok(AmbientAddition {
+            sound: sound(a.get("sound").ok_or("addition.sound missing")?)?,
+            tick_chance: a
+                .get("tick_chance")
+                .and_then(Value::as_f64)
+                .ok_or("addition.tick_chance missing")?,
+        })
+    };
+    // `ExtraCodecs.compactListCodec`: one element writes as the BARE element.
+    let additions = match obj.get("additions") {
+        None => Vec::new(),
+        Some(Value::Array(xs)) => xs.iter().map(one_addition).collect::<Result<_, _>>()?,
+        Some(one) => vec![one_addition(one)?],
+    };
+    Ok(Some(AmbientSounds {
+        loop_sound,
+        mood,
+        additions,
+    }))
 }

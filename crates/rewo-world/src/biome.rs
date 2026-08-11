@@ -195,6 +195,12 @@ pub struct BiomeDef {
     /// is; it is precipitation-relevant, because `FROZEN` pins whole patches
     /// of a biome to 0.2 and turns their rain to snow.
     pub temperature_modifier: crate::weather::TemperatureModifier,
+    /// The positional `audio/ambient_sounds` override. `None` = inherit the
+    /// dimension base, the same convention `sky_color` uses — and it is
+    /// load-bearing here, because the Overworld's base is the legacy cave
+    /// mood and a biome that declared `EMPTY` rather than nothing would
+    /// **silence its own caves**. See [`crate::ambient`].
+    pub ambient_sounds: Option<crate::ambient::AmbientSounds>,
 }
 
 impl BiomeDef {
@@ -620,6 +626,7 @@ mod tests {
             fog_color: None,
             has_precipitation: true,
             temperature_modifier: crate::weather::TemperatureModifier::None,
+            ambient_sounds: None,
         }
     }
 
