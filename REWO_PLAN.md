@@ -130,8 +130,8 @@ had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
 Current measurement, taken 2026-08-11 after M142d:
-**3055 tests, 0 failures** (**world 1166, net 1091, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 3055).
+**3059 tests, 0 failures** (**world 1166, net 1092, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 3059).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -217,7 +217,41 @@ injected**: the container, the book and the chat all drive themselves, so only
 r25 — which needs a real server to grant recipes — could tell. A gate whose
 witnesses are mostly self-driven can look healthy against nothing.
 
-### What to do next (rewritten 2026-08-10, after M135–M140b)
+### What to do next (updated 2026-08-11, after M142)
+
+> **Read this box first; the rest of the section is the 2026-08-10 rewrite and
+> its items have moved.** Since it was written, M141 took the ten tickable
+> ramps, M141d–h every ordinary trigger, and **M142 the three
+> `AmbientSoundHandler`s** — so item 4a below is **done**, and the sound model
+> is complete for everything vanilla plays without a screen.
+>
+> **The single highest-value thing left in audio is not a milestone, it is a
+> wire and a human.** `rewo-app` deliberately does not depend on `rewo-audio`,
+> so `rewo live` opens no device and is silent; and **no gate in this project
+> can grade a sound**, because an absent, muted, exclusive-mode or unplugged
+> device all look identical from inside the process. Everything a machine can
+> check passes. `cargo run -p rewo-audio --example listen` is the only path to
+> a noise, and **the listening pass is the user's** — do not conflate it with
+> "the audio tests pass".
+>
+> Candidates for the next *code* milestone, none of them blocked:
+>
+> * **Wire `rewo-audio` into `rewo live`** behind a flag. Small, and it is the
+>   step that turns everything above into something audible. Note the
+>   containment it breaks: today the binary and all 34 gates do not link an
+>   audio stack, which is why they stay silent and fast.
+> * **`EndFlashState`** — the last unconstructed ramp variant (`Directional`),
+>   which needs the flash schedule, `getDefaultClockTime`, `playDelayed`'s
+>   delay queue, and a camera on the tick clock.
+> * **M139 / the rest of music** — selection and the `nextSongDelay` timers;
+>   `MusicManager`'s gain ramp already shipped as M140b.
+> * **Anything from `REWO_FEATURE_SURVEY.md`**, whose audio note was corrected
+>   on 2026-08-11 — it had said "Rewo has no audio at all", which stopped being
+>   true at M138.
+>
+> Packet coverage is **118 / 0 / 23** and machine-checked, with classes A and B
+> empty: picking work there means choosing a **subsystem**, not a packet.
+
 
 **This section was rewritten rather than appended to, because appending is what
 broke it.** The version before this one still opened with "AUDIO is still the top
@@ -243,7 +277,7 @@ own pitch ramp is dead code and the plausible transcription gives a twenty-secon
 glissando that vanilla does not have. It also fixed a live bug (the per-tick
 position was not narrowed through f32, with a comment *justifying* the omission)
 and retired `SoundWorld::entity_position` in favour of one name for one query.
-See §15. **M141d then fed them their velocity**, which was the input gating four of the ten — and found that a remote entity's `getDeltaMovement()` is a *decaying echo of the last motion packet*, not a velocity, so a bee visibly gliding past has its buzz fade to silence. **M141e then built the first trigger** — the elytra, whose `fall_flying` input gates the ramp at both ends, and which found that `canPlaySound()` is a per-CLASS override that six of the ten declare and four decline — and **M141f the bee and the minecart**, which are one vanilla method and whose anger input turned out to be a synced *deadline* at an index that needed counting twice. **M141g then took the guardian and the sniffer** — and found on the way that the sniffer's and armadillo's state enums had been decoding from the wrong INDEX since the gesture rigs shipped, invisible because those rigs inject the state rather than decode it. **M141h then closed the ordinary triggers with the riding pair**, whose mount plays **both** minecart instances at once and lets each mute itself, so the dry/wet choice is the ramp's and not the trigger's. **Seven of the ten are constructed**; the remaining three are ambient instances wanting an `AmbientSoundHandler` subsystem, not another trigger.
+See §15. **M141d then fed them their velocity**, which was the input gating four of the ten — and found that a remote entity's `getDeltaMovement()` is a *decaying echo of the last motion packet*, not a velocity, so a bee visibly gliding past has its buzz fade to silence. **M141e then built the first trigger** — the elytra, whose `fall_flying` input gates the ramp at both ends, and which found that `canPlaySound()` is a per-CLASS override that six of the ten declare and four decline — and **M141f the bee and the minecart**, which are one vanilla method and whose anger input turned out to be a synced *deadline* at an index that needed counting twice. **M141g then took the guardian and the sniffer** — and found on the way that the sniffer's and armadillo's state enums had been decoding from the wrong INDEX since the gesture rigs shipped, invisible because those rigs inject the state rather than decode it. **M141h then closed the ordinary triggers with the riding pair**, whose mount plays **both** minecart instances at once and lets each mute itself, so the dry/wet choice is the ramp's and not the trigger's. **Seven of the ten are constructed**; the remaining three wanted an `AmbientSoundHandler` subsystem rather than another trigger, and **M142 built it** — the biome/dimension `AmbientSounds` attribute plus all three handlers, wired end to end (M142b underwater, M142c bubble column, M142d biome loop with its additions and its mood). Only the **directional sound** is left of the eleven ramp variants, and it is not an ambient handler at all: it is the End flash from `ClientLevel.tick`, needing `EndFlashState` and `playDelayed`.
 
 **AUDIO IS NO LONGER THE TOP ITEM.** `crates/rewo-audio` exists with the
 quantisation, the buffer library, the mixer, the SPSC command ring and a cpal
@@ -275,7 +309,16 @@ sink; `rewo-net` carries the listener transform and the music fade.
    from declarations into a measured divergence in dB.
 4. **M140's remainder, minus what M141 took.** The ramps are done (ten of them,
    not ~8) and the rest is:
-   - **4a — the triggers**, which is the natural next milestone and is
+   - **4a — the triggers. DONE as of 2026-08-11 (M141e–h, M142).** Every
+     ordinary trigger is constructed and all three `AmbientSoundHandler`s are
+     wired end to end. **The only ramp variant still unconstructed is
+     `Directional`**, and it is not part of this item: it is the End flash from
+     `ClientLevel.tick`, needing `EndFlashState`, `Level.getDefaultClockTime`,
+     `SoundEngine.playDelayed` (a delay queue) and a camera position on the
+     TICK clock rather than the frame clock. What follows is the original text,
+     kept because its shape rules still hold for any new ramp.
+
+     The original item — which is the natural next milestone and is
      *wiring rather than decoding*: every construction site is a packet Rewo
      already routes. `handleAddEntity`'s `postAddEntitySoundInstance` (minecart
      through `play`, bee through `queueTickingSound` — the asymmetry is
@@ -20603,6 +20646,18 @@ the **Stop submitted to the device**, not the live entry vanishing: an entry is
 reclaimed when the device reports its channel finished, which is asynchronous
 in vanilla too and which a recording device never volunteers. Waiting for the
 live set to empty is waiting on the test's own device.
+
+**The battery's two misses were both about the harness.** One anchor matched
+**twice** — the new biome-loop arm opens with the same field prefix as the
+underwater one — so that mutation was *skipped*, which is not the same as
+surviving, and is why the harness reports the count rather than quietly moving
+on. The other was a genuine gap with a nastier consequence than the mutation
+suggests: dropping the **ramp-kind** guard from the reuse lookup survived
+because no witness had two live sounds sharing an identifier. A server can send
+an ordinary `sound` packet naming the very event a biome uses for its bed —
+matching on the identifier alone then finds that one-shot, fails the `if let`
+that would fade it, and reports "nothing to create", so **the bed never starts
+at all** for as long as the coincidental sound is live.
 
 ### M141h — the riding pair, and a mount that plays two sounds at once (2026-08-11)
 

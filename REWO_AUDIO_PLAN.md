@@ -1,13 +1,23 @@
 # REWO_AUDIO_PLAN.md — the audio milestone
 
-**Status: MOSTLY SHIPPED (2026-08-10).** `crates/rewo-audio` exists — the
+**Status: MOSTLY SHIPPED (2026-08-11).** `crates/rewo-audio` exists — the
 quantisation, `SoundBufferLibrary`, the symphonia ogg decode, the `Mixer` and
 `NullSink`, the SPSC command ring and a cpal sink — and `rewo-net` carries the
-listener transform and the music fade. **M138a–d are done; M140's `level_event`
-sounds and music fade shipped, and its ramps shipped as M141 (there are ten of
-them, not the "~8" §M140 says); M139 has not started.** Each section below
-carries its own status block; trust those over any forward-looking sentence in
-the body, which was written before the code.
+listener transform, the music fade, and vanilla's whole client-side sound
+model. **M138a–d are done; M140's `level_event` sounds and music fade shipped,
+its ramps shipped as M141 (there are ten of them, not the "~8" §M140 says),
+every ordinary trigger shipped as M141e–h, and M142 shipped the three
+`AmbientSoundHandler`s with the `AmbientSounds` attribute they read. M139 has
+not started.** Each section below carries its own status block; trust those
+over any forward-looking sentence in the body, which was written before the
+code.
+
+**What is left is one wire and one human.** `rewo-app` deliberately does not
+depend on `rewo-audio`, so nothing in the shipping client opens a device and
+`rewo live` is silent; and no gate in this project can grade a sound, because
+an absent, muted, exclusive-mode or unplugged device all look identical from
+inside the process. `cargo run -p rewo-audio --example listen` is the only path
+to a noise, and the listening pass is the user's.
 
 **Two things are true and easy to miss.** *(1)* **Nobody has listened to it.** No
 gate in this project opens an audio device, so everything a machine can check
@@ -62,7 +72,11 @@ Every contested point is now settled against the decompile and the tree. Three o
 
 ## M138–M140 — Audio: the mixer, the sink, and the listener seam M131 left out
 
-**Numbering is provisional.** `main` is at M134; check `git log --oneline` before branching, because concurrent sessions assign numbers independently (`REWO_PLAN.md` §0.0).
+**Numbering is provisional — and this line is HISTORICAL.** It said "`main` is
+at M134" when this section was written; `main` is far past that (M142 as of
+2026-08-11). Check `git log --oneline` before branching, because concurrent
+sessions assign numbers independently (`REWO_PLAN.md` §0.0). The section below
+is the original plan text, kept as a record of what was decided and why.
 
 **Citation convention.** `<D>` = `%APPDATA%/EwoClient/rewo/26.2/decompiled`. Facts marked **[read]** I opened this session. Facts marked **[concurring]** I did not open, but two independent surveys cite them identically — treat as one grade weaker.
 

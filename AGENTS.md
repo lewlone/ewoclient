@@ -1939,7 +1939,7 @@ item** — M138a–d, `level_event`'s sounds and the music fade have shipped, an
 **the listening pass is the outstanding work and it is the user's**, because no
 gate in this project opens an audio device.
 **Everything is shipped, gated and merged to `main`** as of 2026-08-11
-(M142d) — **3055 tests / 0 failures** (world 1166, net 1091, gpu 275, data 224,
+(M142d) — **3059 tests / 0 failures** (world 1166, net 1092, gpu 275, data 224,
 app 197, mesh 45, proto 16, **audio 44** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
@@ -6356,7 +6356,15 @@ reused** rather than replaced, so crossing back inside ~41 ticks resumes the
 same voice instead of restarting the sample. The transition keys on the
 **sound**, not the biome, so two biomes sharing a loop cross silently. And one
 snapshot feeds all three features while only the loop is change-gated —
-otherwise standing still would stop every addition. The **directional sound is a different feature** — the End flash from
+otherwise standing still would stop every addition.
+
+Its battery's two misses were both about the harness rather than the
+transcription: an anchor that matched **twice** (so the mutation was skipped,
+which is not the same as surviving — the count is reported for exactly this
+reason), and a genuine gap whose consequence is worse than the mutation looks.
+Dropping the **ramp-kind** guard from the reuse lookup lets an ordinary sound
+that happens to share the bed's identifier stand in for it, at which point the
+fade fails silently and **the bed never starts at all**. The **directional sound is a different feature** — the End flash from
 `ClientLevel.tick`, needing `EndFlashState` — and one reader in M142's survey
 claimed that class is dead in vanilla and advised deleting Rewo's ramp. It is
 not.
