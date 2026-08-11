@@ -1147,6 +1147,11 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     session.guardian_type_id = data.entity_types.id_of("minecraft:guardian");
     session.elder_guardian_type_id = data.entity_types.id_of("minecraft:elder_guardian");
     session.sniffer_type_id = data.entity_types.id_of("minecraft:sniffer");
+    session.happy_ghast_type_id = data.entity_types.id_of("minecraft:happy_ghast");
+    session.nautilus_type_ids = [
+        data.entity_types.id_of("minecraft:nautilus"),
+        data.entity_types.id_of("minecraft:zombie_nautilus"),
+    ];
     session.creaking_type_id = data.entity_types.id_of("minecraft:creaking");
     // M60: the player, for the index-16 skin-customisation byte (cape bit).
     session.player_type_id = Some(data.entity_types.player_id);

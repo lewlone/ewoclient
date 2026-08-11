@@ -1485,6 +1485,41 @@ pub fn instance_and_ramp(
             };
             Ok((inst, crate::tickable::Ramp::Sniffer { sniffer }))
         }
+        crate::sounds::TickableSound::Riding(r) => {
+            // `RidingEntitySoundInstance`'s constructor: **`Attenuation.NONE`**,
+            // looping, no delay, and `volume = volumeMin` — which is 0.0 for
+            // all four, so `canStartSilent()` (true) is what lets them start.
+            // No attenuation because you are sitting on the thing.
+            let (x, y, z) = world.position(r.vehicle).ok_or(NoInstance::UnknownEntity)?;
+            let inst = SoundInstance {
+                volume: r.volume_min,
+                looping: true,
+                delay: 0,
+                can_start_silent: true,
+                attenuation: Attenuation::None,
+                x,
+                y,
+                z,
+                // It overrides `canPlaySound()` (`!entity.isSilent()`), and on
+                // the **vehicle** — so a silenced cart silences its rider's
+                // loop, which is why the binding is the vehicle rather than
+                // the player.
+                binding: Binding::Entity(r.vehicle),
+                ..SoundInstance::bare(r.sound, SoundSource::Neutral)
+            };
+            Ok((
+                inst,
+                crate::tickable::Ramp::Riding(crate::tickable::RidingRamp {
+                    player: r.player,
+                    vehicle: r.vehicle,
+                    underwater_sound: r.underwater_sound,
+                    volume_min: r.volume_min,
+                    volume_max: r.volume_max,
+                    volume_amplifier: r.volume_amplifier,
+                    is_minecart: r.is_minecart,
+                }),
+            ))
+        }
         crate::sounds::TickableSound::BeeLoop { bee, aggressive } => {
             let kind = if aggressive {
                 crate::tickable::BeeLoop::Aggressive
@@ -1591,6 +1626,13 @@ pub struct LocalPlayerView {
     pub velocity: (f64, f64, f64),
     /// `isFallFlying()` — shared flag 7.
     pub fall_flying: bool,
+    /// `isUnderWater()` — `wasEyeInWater && isInWater()` (M141h).
+    ///
+    /// The local player's, because `RidingMinecartSoundInstance` overrides
+    /// `shouldNotPlayUnderwaterSound()` to ask the **rider** rather than the
+    /// vehicle — which is the whole reason the minecart's two loops crossfade
+    /// on *your* submersion and not the cart's.
+    pub underwater: bool,
 }
 
 /// The half of [`crate::tickable::RampWorld`] an [`rewo_world::entities::EntityTable`]
@@ -1710,8 +1752,18 @@ impl crate::tickable::RampWorld for EntityTableWorld<'_> {
             self.game_time,
         )
     }
-    fn underwater(&self, _: i32) -> bool {
-        false
+    /// `entity.isUnderWater()` — answered for the local player since M141h.
+    ///
+    /// **A remote entity still answers `false`, and the cost is precise.**
+    /// `RidingEntitySoundInstance`'s base class asks the *vehicle*, so a happy
+    /// ghast reads correctly (it is never submerged) and **a ridden nautilus's
+    /// loop is permanently muted**, because its instance is the
+    /// `underwaterSound = true` one and mutes whenever the vehicle is not
+    /// submerged. Closing it wants a per-type eye height, which
+    /// `entity_attachments` does not carry — it extracted seats, not
+    /// dimensions.
+    fn underwater(&self, entity_id: i32) -> bool {
+        self.local.is_some_and(|l| l.id == entity_id && l.underwater)
     }
 
     /// **Exact, not a stand-in** — see the type's doc.
@@ -2827,6 +2879,7 @@ mod tests {
                 // the ramp's answer is neither 0 nor 1: 2.0/4 = 0.5.
                 velocity: (0.0, 0.0, 0.0),
                 fall_flying: true,
+                underwater: false,
             }),
             game_time: 0,
         };
@@ -2868,6 +2921,7 @@ mod tests {
                 position: (1.0, 100.0, 2.0),
                 velocity: (1.0, 0.0, 1.0), // lengthSqr 2.0 → volume 0.5
                 fall_flying: true,
+                underwater: false,
             }),
             game_time: 0,
         };
@@ -2896,6 +2950,7 @@ mod tests {
                 position: (1.0, 100.0, 2.0),
                 velocity: (0.0, 0.0, 0.0),
                 fall_flying: false,
+                underwater: false,
             }),
             game_time: 0,
         };
@@ -3066,6 +3121,219 @@ mod tests {
             "it must still follow; got {:?}",
             dev.calls_to(0)
         );
+    }
+
+    // ---- M141h: the riding pair ------------------------------------------
+
+    /// **`startRiding`'s minecart arm plays TWO instances and both stay live**,
+    /// each muting itself on the wrong side of the waterline. Picking one would
+    /// leave you silent for whichever half you guessed wrong.
+    #[test]
+    fn a_minecart_ride_starts_both_loops_and_mutes_the_wrong_one() {
+        let idx = index_of(&[
+            "minecraft:entity.minecart.inside",
+            "minecraft:entity.minecart.inside.underwater",
+        ]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let mut table = rewo_world::entities::EntityTable::default();
+        table.add(
+            2,
+            rewo_world::entities::EntityState::new(0, 0, 0.0, 64.0, 0.0, 0.0, 0.0),
+        );
+        table.set_passengers(2, vec![1]);
+        // Both loops read the RIDER's submersion, not the cart's — that is
+        // `RidingMinecartSoundInstance`'s override.
+        let dry = EntityTableWorld {
+            table: &table,
+            local: Some(LocalPlayerView {
+                id: 1,
+                position: (0.0, 64.0, 0.0),
+                velocity: (0.0, 0.0, 0.0),
+                fall_flying: false,
+                underwater: false,
+            }),
+            game_time: 0,
+        };
+
+        let events: Vec<SoundEvent> = crate::sounds::RIDING_MINECART
+            .into_iter()
+            .map(|mut r| {
+                r.player = 1;
+                r.vehicle = 2;
+                SoundEvent::Tickable(crate::sounds::TickableSound::Riding(r))
+            })
+            .collect();
+        sys.accept(&events, &registry(), &dry, &mut dev);
+        assert_eq!(sys.stats.started_silently, 2, "stats: {:?}", sys.stats);
+        let mut live = sys.engine.live_identifiers();
+        live.sort_unstable();
+        assert_eq!(
+            live,
+            vec![
+                "minecraft:entity.minecart.inside",
+                "minecraft:entity.minecart.inside.underwater"
+            ]
+        );
+    }
+
+    /// **The ghast's and the nautilus's `underwaterSound` are opposite
+    /// constants for the same class** — so with a dry rider the ghast's loop
+    /// ramps and the nautilus's holds at its minimum.
+    #[test]
+    fn the_ghast_and_nautilus_specs_are_opposite() {
+        assert!(!crate::sounds::RIDING_HAPPY_GHAST.underwater_sound);
+        assert!(crate::sounds::RIDING_NAUTILUS.underwater_sound);
+        // Same class, same amplifier, different sound and side.
+        assert_eq!(
+            crate::sounds::RIDING_HAPPY_GHAST.volume_amplifier,
+            crate::sounds::RIDING_NAUTILUS.volume_amplifier
+        );
+        assert!(!crate::sounds::RIDING_HAPPY_GHAST.is_minecart);
+        assert!(!crate::sounds::RIDING_NAUTILUS.is_minecart);
+        // …and the minecart's pair differs from both in max and amplifier.
+        for r in crate::sounds::RIDING_MINECART {
+            assert!(r.is_minecart);
+            assert_eq!(r.volume_max, 0.75);
+            assert_eq!(r.volume_amplifier, 1.0);
+        }
+        // The two minecart instances differ ONLY in side and sound.
+        let [wet, dry] = crate::sounds::RIDING_MINECART;
+        assert!(wet.underwater_sound && !dry.underwater_sound);
+        assert_ne!(wet.sound, dry.sound);
+        assert_eq!(wet.volume_max, dry.volume_max);
+    }
+
+    /// **The riding loop is `Attenuation.NONE`** — you are sitting on the
+    /// thing — and it is silence-gated on the **vehicle**, so a silenced cart
+    /// silences its rider's loop.
+    #[test]
+    fn a_riding_loop_is_unattenuated_and_gated_on_the_vehicle() {
+        let idx = index_of(&["minecraft:entity.happy_ghast.riding"]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let mut table = rewo_world::entities::EntityTable::default();
+        table.add(
+            2,
+            rewo_world::entities::EntityState::new(0, 0, 0.0, 100.0, 0.0, 0.0, 0.0),
+        );
+        table.set_passengers(2, vec![1]);
+        let world = EntityTableWorld {
+            table: &table,
+            local: Some(LocalPlayerView {
+                id: 1,
+                position: (0.0, 100.0, 0.0),
+                velocity: (0.0, 0.0, 0.0),
+                fall_flying: false,
+                underwater: false,
+            }),
+            game_time: 0,
+        };
+        let mut spec = crate::sounds::RIDING_HAPPY_GHAST;
+        spec.player = 1;
+        spec.vehicle = 2;
+        sys.accept(
+            &[SoundEvent::Tickable(crate::sounds::TickableSound::Riding(
+                spec,
+            ))],
+            &registry(),
+            &world,
+            &mut dev,
+        );
+        assert_eq!(sys.stats.started_silently, 1, "stats: {:?}", sys.stats);
+        assert!(
+            dev.calls_to(0).contains(&ChannelCall::DisableAttenuation),
+            "got {:?}",
+            dev.calls_to(0)
+        );
+        assert_eq!(
+            crate::tickable::Ramp::Riding(crate::tickable::RidingRamp {
+                player: 1,
+                vehicle: 2,
+                underwater_sound: false,
+                volume_min: 0.0,
+                volume_max: 1.0,
+                volume_amplifier: 5.0,
+                is_minecart: false,
+            })
+            .silence_gated_entity(),
+            Some(2),
+            "the VEHICLE, not the rider"
+        );
+
+        // **And the BINDING is the vehicle too**, which is a different
+        // mechanism from the ramp's gate and needs its own witness: the
+        // binding refuses at `play`, the ramp stops later. Asserting only the
+        // ramp left `Binding::Entity(r.player)` alive in the battery — the
+        // same confusion M141f hit on the minecart.
+        let silent = TestWorld {
+            positions: HashMap::from([(1, (0.0, 100.0, 0.0)), (2, (0.0, 100.0, 0.0))]),
+            silent: vec![2], // the VEHICLE is silent; the rider is not
+            ..Default::default()
+        };
+        let mut sys = SoundSystem::new(index_of(&["minecraft:entity.happy_ghast.riding"]));
+        let mut dev = RecordingDevice::default();
+        sys.accept(
+            &[SoundEvent::Tickable(crate::sounds::TickableSound::Riding(
+                spec,
+            ))],
+            &registry(),
+            &silent,
+            &mut dev,
+        );
+        assert_eq!(sys.stats.not_started, 1, "a silenced vehicle refuses it");
+        assert_eq!(sys.engine.live_count(), 0);
+    }
+
+    /// `World::is_water_at_point` — the eye test's data half (M141h).
+    ///
+    /// The battery found it untested: the whole body could be replaced with
+    /// `false` and nothing noticed, because every riding witness supplies
+    /// `underwater` directly rather than deriving it.
+    #[test]
+    fn the_water_point_query_reads_the_block_it_is_given() {
+        let shape = rewo_world::dimension::DimensionShape::OVERWORLD;
+        let mut world = rewo_world::World::new(shape);
+        // `set_block` writes into an EXISTING column and is otherwise a no-op,
+        // so the columns have to be there first — the first cut of this test
+        // wrote into an empty world and measured the write being dropped.
+        for (cx, cz) in [(0, 0), (-1, 0)] {
+            world.insert_column(cx, cz, rewo_world::chunk::Column::empty_lit(&shape, cx, cz));
+        }
+        // State 1 is water, 0 is not.
+        let water = vec![false, true];
+        world.set_block(0, 64, 0, 1);
+        assert!(world.is_water_at_point(0.5, 64.5, 0.5, &water));
+        // …the block below is not, and `floor` is what picks between them.
+        assert!(!world.is_water_at_point(0.5, 63.5, 0.5, &water));
+        assert!(!world.is_water_at_point(1.5, 64.5, 0.5, &water), "next column");
+        // A negative coordinate floors AWAY from zero, which `as i32` alone
+        // would not: -0.5 is in block -1, not block 0.
+        world.set_block(-1, 64, 0, 1);
+        assert!(world.is_water_at_point(-0.5, 64.5, 0.5, &water));
+        // An out-of-range state id is not water rather than a panic.
+        assert!(!world.is_water_at_point(0.5, 64.5, 0.5, &[]));
+    }
+
+    /// The local player's submersion reaches the ramp world, and **only the
+    /// local player's** — a remote entity still reads dry.
+    #[test]
+    fn the_local_players_submersion_reaches_the_ramp_world() {
+        use crate::tickable::RampWorld;
+        let t = rewo_world::entities::EntityTable::default();
+        let w = EntityTableWorld {
+            table: &t,
+            local: Some(LocalPlayerView {
+                id: 1,
+                position: (0.0, 60.0, 0.0),
+                velocity: (0.0, 0.0, 0.0),
+                fall_flying: false,
+                underwater: true,
+            }),
+            game_time: 0,
+        };
+        assert!(w.underwater(1));
+        assert!(!w.underwater(2), "a remote entity has no eye height here");
     }
 
     // ---- M141g: the guardian and the sniffer -----------------------------
@@ -3403,6 +3671,7 @@ mod tests {
                 // reduction cannot agree by accident.
                 velocity: (3.0, 4.0, 12.0),
                 fall_flying: true,
+                underwater: false,
             }),
             game_time: 0,
         };
