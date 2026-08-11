@@ -1940,7 +1940,7 @@ item** — M138a–d, `level_event`'s sounds and the music fade have shipped, an
 **the listening pass is the outstanding work and it is the user's**, because no
 gate in this project opens an audio device.
 **Everything is shipped, gated and merged to `main`** as of 2026-08-11
-(M141d) — **2982 tests / 0 failures** (world 1155, net 1026, gpu 275, data 224,
+(M141e) — **2995 tests / 0 failures** (world 1155, net 1039, gpu 275, data 224,
 app 197, mesh 45, proto 16, **audio 44** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
@@ -6158,7 +6158,7 @@ bytes.
 
 ---
 
-## M141 — the ten tickable ramps, and their velocity (2026-08-11)
+## M141 — the ten tickable ramps, their velocity, and the first trigger (2026-08-11)
 
 `SoundEngine.tickInGameSound` drove **one `tick()` body out of ten** since
 M131, because `EntityBoundSoundInstance` was the only subclass Rewo modelled.
@@ -6207,9 +6207,29 @@ expression, which on being worked out revealed that
 **`Vec3.directionFromRotation` IS `Entity.calculateViewVector`** by another
 route.
 
-**Nothing constructs these instances yet.** Every trigger is a packet Rewo
-already routes (`handleAddEntity`, `handleEntityEvent` 21 and 63,
-`startRiding`, the fall-flying rising edge), so the next milestone is wiring.
+**M141e built the first trigger** — the elytra, which is now the one tickable
+sound this client constructs. Its input, the local player's `fall_flying`, gates
+the ramp at *both* ends (the survival guard `time <= 20 || isFallFlying()` and
+the `onSyncedDataUpdated` rising edge), so one decode closed both. The decode
+itself is **M73's asymmetry for the third time**: vanilla's local player is in
+the level and its metadata is processed like anyone else's, but `EntityTable`
+has no row for you, so the router dropped it.
+
+Its finding is the sort that only a mutation surfaces: **`canPlaySound()` is a
+per-class override that six of the ten declare and four decline**, so the
+elytra — which does not declare it — must *not* be silence-gated on its player,
+and Rewo's `Binding::Entity` had been meaning "follow" and "gate" at once.
+`Ramp::silence_gated_entity()` is deliberately not `Ramp::entity()`.
+
+The rising edge is also not "the flag changed": `assignValues` fires
+`onSyncedDataUpdated` once per *entry in the packet* with **no** change guard,
+and what makes the edge terminate is `wasFallFlying` being sampled once per
+tick — which means two flag-carrying packets inside one tick each start a
+sound, and vanilla has no dedup.
+
+**The remaining triggers are packets Rewo already routes**
+(`handleAddEntity`, `handleEntityEvent` 21 and 63, `startRiding`), so the
+next milestone is wiring, one construction site at a time.
 
 **M141d fed them the velocity**, which was the input gating four of the ten,
 and its finding is the sort that punishes a sensible implementation: a remote

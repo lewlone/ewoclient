@@ -308,8 +308,14 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 > `ElytraOnPlayerSoundInstance`, `GuardianAttackSoundInstance`,
 > `MinecartSoundInstance`, `RidingEntitySoundInstance`, `SnifferSoundInstance`,
 > and the two nested in `UnderwaterAmbientSoundInstances`. They live in
-> `crates/rewo-net/src/tickable.rs`, the engine drives them, and **nothing
-> constructs one yet** — the triggers are `REWO_PLAN.md` §0.0 item 4a.
+> `crates/rewo-net/src/tickable.rs` and the engine drives them. **M141e built
+> the first trigger** — the elytra — so one of the ten is constructed; the rest
+> are `REWO_PLAN.md` §0.0 item 4a, one construction site at a time.
+>
+> M141e's finding belongs in §5's trap list: **`canPlaySound()` is a per-class
+> override that six of the ten declare and four decline**, so a ramp's silence
+> gate is not the entity it follows. Conflating them gives an elytra sound that
+> a `/data`-silenced player silences, which vanilla does not do.
 >
 > **M141d then fed them their velocity**, which was the input gating four of the
 > ten, and its finding belongs in this file's §5 trap list too: a remote
