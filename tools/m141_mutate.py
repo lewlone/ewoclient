@@ -303,17 +303,22 @@ MUTATIONS = [
         "                let _ = next;\n                queued.push((inst, None));",
         "KILLED",
     ),
+    # Both anchors below were retargeted by M141e, which replaced the inline
+    # `match instance.binding` with `Ramp::for_instance` and the tick loop's
+    # `ramp.entity()` with `ramp.silence_gated_entity()`. The battery reported
+    # ANCHOR MATCHED 0 TIMES rather than passing quietly, which is how the move
+    # became visible — the same behaviour that caught M141a's relocation.
     (
         E,
         "M141c: an entity-bound instance gets no ramp, so nothing ticks",
-        "        let ramp = match instance.binding {\n            Binding::Entity(e) => Some(crate::tickable::Ramp::EntityBound { entity: e }),\n            Binding::Fixed => None,\n        };",
+        "        let ramp = crate::tickable::Ramp::for_instance(&instance);",
         "        let ramp = None;",
         "KILLED",
     ),
     (
         E,
         "M141c: the silent-entity stop is skipped",
-        "            if let Some(entity) = ramp.entity() {\n                if world.entity_silent(entity) {\n                    to_stop.push(l.channel);\n                }\n            }",
+        "            if let Some(entity) = ramp.silence_gated_entity() {\n                if world.entity_silent(entity) {\n                    to_stop.push(l.channel);\n                }\n            }",
         "            if false {\n                to_stop.push(l.channel);\n            }",
         "KILLED",
     ),

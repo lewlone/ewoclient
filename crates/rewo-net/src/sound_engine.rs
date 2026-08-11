@@ -886,13 +886,7 @@ impl SoundEngine {
         world: &dyn SoundWorld,
         device: &mut dyn AudioDevice,
     ) -> (InstanceId, PlayResult) {
-        // A `SimpleSoundInstance` — no `tick()`, so it never enters
-        // `tickingSounds`. The entity-bound factory carries a ramp instead; see
-        // `play_ramped`.
-        let ramp = match instance.binding {
-            Binding::Entity(e) => Some(crate::tickable::Ramp::EntityBound { entity: e }),
-            Binding::Fixed => None,
-        };
+        let ramp = crate::tickable::Ramp::for_instance(&instance);
         self.play_ramped(instance, ramp, sounds, world, device)
     }
 
@@ -1208,7 +1202,11 @@ impl SoundEngine {
             let Some(ramp) = l.ramp.as_mut() else {
                 continue;
             };
-            if let Some(entity) = ramp.entity() {
+            // `if (!instance.canPlaySound()) this.stop(instance);` — and
+            // that is the RAMP's predicate, not the followed entity: four of
+            // the ten classes take the interface default and are never
+            // silence-gated. See `Ramp::silence_gated_entity`.
+            if let Some(entity) = ramp.silence_gated_entity() {
                 if world.entity_silent(entity) {
                     to_stop.push(l.channel);
                 }
@@ -1342,6 +1340,9 @@ pub enum NoInstance {
     UnknownEntity,
     /// The event is a [`SoundEvent::Stop`]; see [`stop_from_event`].
     IsStop,
+    /// The event is a [`SoundEvent::Tickable`] — it has a ramp as well as an
+    /// instance, so [`instance_and_ramp`] is its entry point (M141e).
+    IsTickable,
 }
 
 /// Turn one decoded [`SoundEvent`] into the [`SoundInstance`] vanilla builds.
@@ -1368,6 +1369,52 @@ pub fn instance_from_event(
         SoundEvent::OnEntity(e) => instance_from_entity(e, registry, world),
         SoundEvent::Stop(_) => Err(NoInstance::IsStop),
         SoundEvent::Local(l) => Ok(instance_from_local(l)),
+        // A tickable carries a ramp as well as an instance, so it cannot be
+        // reduced to one here — `instance_and_ramp` is its entry point and
+        // this arm exists so a caller that only wants an instance says so.
+        SoundEvent::Tickable(_) => Err(NoInstance::IsTickable),
+    }
+}
+
+/// The instance **and** its ramp, for a [`SoundEvent::Tickable`] (M141e).
+///
+/// The two are built together on purpose. Vanilla's constructor sets the
+/// instance's fields and its `tick()` maintains them, and the pair only makes
+/// sense as a pair: an `ElytraOnPlayerSoundInstance` whose ramp was a bee's
+/// would fade on the wrong input and stop on the wrong condition. Splitting
+/// them across two functions is one more place for them to disagree.
+pub fn instance_and_ramp(
+    t: crate::sounds::TickableSound,
+    world: &dyn SoundWorld,
+) -> Result<(SoundInstance, crate::tickable::Ramp), NoInstance> {
+    match t {
+        crate::sounds::TickableSound::ElytraOnPlayer { player } => {
+            // `ElytraOnPlayerSoundInstance`'s constructor: looping, no delay,
+            // and **volume 0.1** — which `tick()` overwrites on its very first
+            // run, so the only thing the initial value decides is whether
+            // `play` drops it as silent. It does not set `canStartSilent`, so
+            // that 0.1 is load-bearing: at 0.0 the sound would never start.
+            let (x, y, z) = world.position(player).ok_or(NoInstance::UnknownEntity)?;
+            let inst = SoundInstance {
+                volume: 0.1,
+                looping: true,
+                delay: 0,
+                x,
+                y,
+                z,
+                // **`Binding::Fixed`, not `Entity(player)`** — the binding
+                // is what silence-gates a sound at `play`, and
+                // `ElytraOnPlayerSoundInstance` does not override
+                // `canPlaySound()`. Binding it to the player would refuse to
+                // start for a `/data`-silenced one, which vanilla does not do.
+                // The position still tracks: that is the ramp's job.
+                ..SoundInstance::bare("minecraft:item.elytra.flying", SoundSource::Players)
+            };
+            Ok((
+                inst,
+                crate::tickable::Ramp::Elytra(crate::tickable::ElytraRamp { player, time: 0 }),
+            ))
+        }
     }
 }
 
@@ -1693,9 +1740,28 @@ impl SoundSystem {
                 self.stats.stops += 1;
                 continue;
             }
-            match instance_from_event(ev, registry, world) {
-                Ok(instance) => {
-                    let (_, result) = self.engine.play(instance, &self.sounds, world, device);
+            // A tickable carries a ramp, so it goes through `play_ramped`.
+            // Same queue and therefore the same order, which is the contract
+            // `stop_sound` depends on.
+            // A tickable carries a ramp, so it goes through `play_ramped`.
+            // Everything else goes through `play`, which is NOT the same as
+            // `play_ramped(.., None)`: `play` attaches `Ramp::EntityBound` for
+            // an entity-bound instance, and passing `None` here would silently
+            // stop every `sound_entity` following its entity. The engine's own
+            // follow test calls `play` directly and could not have seen it.
+            let built = match ev {
+                SoundEvent::Tickable(t) => instance_and_ramp(*t, world).map(|(i, r)| (i, Some(r))),
+                _ => instance_from_event(ev, registry, world)
+                    .map(|i| {
+                        let r = crate::tickable::Ramp::for_instance(&i);
+                        (i, r)
+                    }),
+            };
+            match built {
+                Ok((instance, ramp)) => {
+                    let (_, result) =
+                        self.engine
+                            .play_ramped(instance, ramp, &self.sounds, world, device);
                     match result {
                         PlayResult::Started => self.stats.started += 1,
                         PlayResult::StartedSilently => self.stats.started_silently += 1,
@@ -2620,6 +2686,263 @@ mod tests {
             dev.calls_to(0)
                 .contains(&ChannelCall::SetSelfPosition(narrowed, 64.0, 0.0)),
             "expected the f32-narrowed x, got {:?}",
+            dev.calls_to(0)
+        );
+    }
+
+    // ---- M141e: the elytra, the first ramp anything constructs ------------
+
+    /// **The first tickable sound this client can start.** Driven through
+    /// `SoundSystem::accept` rather than `play_ramped` directly, so what is
+    /// graded is the queue path a `SoundEvent::Tickable` really takes.
+    #[test]
+    fn a_tickable_event_starts_a_ramped_sound() {
+        let idx = index_of(&["minecraft:item.elytra.flying"]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let t = rewo_world::entities::EntityTable::default();
+        let world = EntityTableWorld {
+            table: &t,
+            local: Some(LocalPlayerView {
+                id: 42,
+                position: (1.0, 100.0, 2.0),
+                // Past the 1e-7 floor and below the 4.0 that saturates it, so
+                // the ramp's answer is neither 0 nor 1: 2.0/4 = 0.5.
+                velocity: (0.0, 0.0, 0.0),
+                fall_flying: true,
+            }),
+        };
+        sys.accept(
+            &[SoundEvent::Tickable(
+                crate::sounds::TickableSound::ElytraOnPlayer { player: 42 },
+            )],
+            &registry(),
+            &world,
+            &mut dev,
+        );
+        assert_eq!(sys.stats.started, 1, "stats: {:?}", sys.stats);
+        assert_eq!(
+            sys.engine.live_identifiers(),
+            vec!["minecraft:item.elytra.flying"]
+        );
+        // It LOOPS — `ElytraOnPlayerSoundInstance` sets `looping = true`, and
+        // a one-shot would end after one buffer however well the ramp ran.
+        // The battery found this untested.
+        assert!(
+            dev.calls_to(0).contains(&ChannelCall::SetLooping(true)),
+            "the elytra sound must loop; got {:?}",
+            dev.calls_to(0)
+        );
+        // …and it is NOT silence-gated: it does not override `canPlaySound`.
+        assert_eq!(
+            crate::tickable::Ramp::Elytra(crate::tickable::ElytraRamp { player: 42, time: 0 })
+                .silence_gated_entity(),
+            None
+        );
+
+        // …and it is RAMPED: forty ticks of a fall-flying player with a real
+        // speed must push the ramp's volume, which the fade puts at
+        // `clamp(speed_sqr/4) * 1.0` once `time >= 40`.
+        let world = EntityTableWorld {
+            table: &t,
+            local: Some(LocalPlayerView {
+                id: 42,
+                position: (1.0, 100.0, 2.0),
+                velocity: (1.0, 0.0, 1.0), // lengthSqr 2.0 → volume 0.5
+                fall_flying: true,
+            }),
+        };
+        for _ in 0..40 {
+            sys.tick(false, &world, &mut dev);
+        }
+        assert!(
+            dev.calls_to(0).contains(&ChannelCall::SetVolume(0.5)),
+            "the elytra ramp must reach the device; got {:?}",
+            dev.calls_to(0)
+        );
+    }
+
+    /// **The ramp stops when the player stops flying** — and not before its
+    /// twentieth tick, because the guard is `time <= 20 || isFallFlying()`.
+    #[test]
+    fn the_elytra_ramp_stops_when_the_player_lands() {
+        let idx = index_of(&["minecraft:item.elytra.flying"]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let t = rewo_world::entities::EntityTable::default();
+        let grounded = EntityTableWorld {
+            table: &t,
+            local: Some(LocalPlayerView {
+                id: 42,
+                position: (1.0, 100.0, 2.0),
+                velocity: (0.0, 0.0, 0.0),
+                fall_flying: false,
+            }),
+        };
+        sys.accept(
+            &[SoundEvent::Tickable(
+                crate::sounds::TickableSound::ElytraOnPlayer { player: 42 },
+            )],
+            &registry(),
+            &grounded,
+            &mut dev,
+        );
+        dev.clear_calls();
+        for tick in 1..=20 {
+            sys.tick(false, &grounded, &mut dev);
+            assert!(
+                !dev.calls_to(0).contains(&ChannelCall::Stop),
+                "tick {tick} must survive: the guard is `time <= 20 || flying`"
+            );
+        }
+        sys.tick(false, &grounded, &mut dev);
+        assert!(dev.calls_to(0).contains(&ChannelCall::Stop), "tick 21 stops");
+    }
+
+    /// **A silenced player does not silence their elytra**, because
+    /// `ElytraOnPlayerSoundInstance` takes the interface default for
+    /// `canPlaySound()`. The tick loop's stop must therefore ask the ramp's
+    /// rule and not the entity it follows.
+    ///
+    /// The battery found this untested: swapping `silence_gated_entity()` for
+    /// `entity()` in the tick loop survived, because nothing had a *live,
+    /// ticking* ramp whose entity was silent.
+    #[test]
+    fn a_silenced_player_does_not_silence_their_elytra() {
+        let idx = index_of(&["minecraft:item.elytra.flying"]);
+        let mut eng = SoundEngine::new();
+        let mut dev = RecordingDevice::default();
+        let world = TestWorld {
+            positions: HashMap::from([(7, (0.0, 100.0, 0.0))]),
+            silent: vec![7],
+            ..Default::default()
+        };
+        let inst = SoundInstance {
+            volume: 0.1,
+            looping: true,
+            ..SoundInstance::bare("minecraft:item.elytra.flying", SoundSource::Players)
+        };
+        eng.play_ramped(
+            inst,
+            Some(crate::tickable::Ramp::Elytra(crate::tickable::ElytraRamp {
+                player: 7,
+                time: 0,
+            })),
+            &idx,
+            &world,
+            &mut dev,
+        );
+        assert_eq!(eng.live_count(), 1, "a silenced player still starts it");
+        dev.clear_calls();
+        eng.tick(false, &idx, &world, &mut dev);
+        assert!(
+            !dev.calls_to(0).contains(&ChannelCall::Stop),
+            "no override, no gate; got {:?}",
+            dev.calls_to(0)
+        );
+
+        // …whereas a bee, which DOES override it, stops.
+        //
+        // It has to fall silent *after* starting: `play` refuses a silent
+        // entity outright (`Binding::Entity` gates there), so a bee that was
+        // silent all along never acquires a channel and the TICK-time gate —
+        // which is what this is about — is unobservable. The first cut did
+        // exactly that and measured an empty call list.
+        let mut eng = SoundEngine::new();
+        let mut dev = RecordingDevice::default();
+        let idx = index_of(&["minecraft:entity.bee.loop"]);
+        let mut audible = TestWorld {
+            positions: HashMap::from([(7, (0.0, 100.0, 0.0))]),
+            ..Default::default()
+        };
+        eng.play_ramped(
+            crate::tickable::bee_instance(crate::tickable::BeeLoop::Flying, 7, (0.0, 100.0, 0.0)),
+            Some(crate::tickable::Ramp::Bee(crate::tickable::BeeRamp {
+                bee: 7,
+                loop_kind: crate::tickable::BeeLoop::Flying,
+                has_switched: false,
+            })),
+            &idx,
+            &audible,
+            &mut dev,
+        );
+        assert_eq!(eng.live_count(), 1, "an audible bee starts");
+        dev.clear_calls();
+        audible.silent.push(7);
+        eng.tick(false, &idx, &audible, &mut dev);
+        assert!(
+            dev.calls_to(0).contains(&ChannelCall::Stop),
+            "a bee IS gated; got {:?}",
+            dev.calls_to(0)
+        );
+    }
+
+    /// A tickable naming an entity the world does not know is dropped, like
+    /// any other entity-addressed sound — and **that includes the local player
+    /// when no `LocalPlayerView` is supplied**, which is the failure mode
+    /// `local: None` produces.
+    #[test]
+    fn a_tickable_for_an_unknown_entity_is_dropped() {
+        let idx = index_of(&["minecraft:item.elytra.flying"]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let t = rewo_world::entities::EntityTable::default();
+        let world = EntityTableWorld {
+            table: &t,
+            local: None,
+        };
+        sys.accept(
+            &[SoundEvent::Tickable(
+                crate::sounds::TickableSound::ElytraOnPlayer { player: 42 },
+            )],
+            &registry(),
+            &world,
+            &mut dev,
+        );
+        assert_eq!(sys.stats.started, 0);
+        assert_eq!(sys.stats.no_instance, 1);
+    }
+
+    /// **`play` and the queue path must agree about the ramp.** An
+    /// entity-bound sound that went through `accept` used to get its
+    /// `EntityBound` ramp from `play`; routing tickables through `play_ramped`
+    /// made it possible to pass `None` there instead and silently stop every
+    /// `sound_entity` following its entity. `Ramp::for_instance` is the one
+    /// derivation, and this is the witness the engine's own follow test could
+    /// not be (it calls `play` directly).
+    #[test]
+    fn an_entity_bound_sound_queued_through_accept_still_follows() {
+        // The index must carry the name the REGISTRY resolves id 0 to, not the
+        // one `plain_index` happens to hold — the first cut used the latter
+        // and the engine correctly refused an unresolvable event.
+        let idx = index_of(&["minecraft:entity.allay.ambient_with_item"]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let mut world = TestWorld {
+            positions: HashMap::from([(7, (0.0, 64.0, 0.0))]),
+            ..Default::default()
+        };
+        sys.accept(
+            &[SoundEvent::OnEntity(crate::sounds::EntitySound {
+                sound: crate::sounds::SoundRef::Registry(0),
+                source: SoundSource::Blocks,
+                entity_id: 7,
+                volume: 1.0,
+                pitch: 1.0,
+                seed: 0,
+            })],
+            &registry(),
+            &world,
+            &mut dev,
+        );
+        assert_eq!(sys.stats.started, 1, "stats: {:?}", sys.stats);
+        dev.clear_calls();
+        world.positions.insert(7, (10.0, 65.0, -3.0));
+        sys.tick(false, &world, &mut dev);
+        assert!(
+            dev.calls_to(0)
+                .contains(&ChannelCall::SetSelfPosition(10.0, 65.0, -3.0)),
+            "it must still follow; got {:?}",
             dev.calls_to(0)
         );
     }

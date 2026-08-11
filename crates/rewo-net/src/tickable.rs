@@ -504,6 +504,59 @@ pub struct RampOutcome {
 }
 
 impl Ramp {
+    /// The ramp an ordinary (non-tickable) instance gets: `EntityBound` when
+    /// it follows an entity, and none otherwise.
+    ///
+    /// **One derivation with two callers**, because `play` and the queue path
+    /// both need it and `play_ramped(.., None)` is not the same thing —
+    /// passing `None` for a `sound_entity` stops it following its entity, and
+    /// the engine's own follow test calls `play` directly so it could not see
+    /// that. M89's rule, applied before it could bite rather than after.
+    pub fn for_instance(instance: &SoundInstance) -> Option<Ramp> {
+        match instance.binding {
+            crate::sound_instance::Binding::Entity(e) => Some(Ramp::EntityBound { entity: e }),
+            crate::sound_instance::Binding::Fixed => None,
+        }
+    }
+
+    /// The entity whose `isSilent()` gates this sound, if any —
+    /// `SoundInstance.canPlaySound()`.
+    ///
+    /// **Six of the ten override it and four do not**, counted from the
+    /// decompile rather than assumed: `EntityBoundSoundInstance`,
+    /// `BeeSoundInstance`, `GuardianAttackSoundInstance`,
+    /// `MinecartSoundInstance`, `RidingEntitySoundInstance` and
+    /// `SnifferSoundInstance` each return `!x.isSilent()`; the elytra, both
+    /// underwater instances, the biome loop and the directional sound take the
+    /// interface default, which is a flat `true` (`SoundInstance.java:41`).
+    ///
+    /// So this is **not** [`Self::entity`]. Using the followed entity for both
+    /// gives an elytra sound that a `/data`-silenced player would silence,
+    /// which vanilla does not do — the class simply has no override. The
+    /// battery found exactly that: `binding: Fixed` on the elytra instance
+    /// survived, because with the two conflated the binding was carrying a
+    /// gate that belongs to the ramp.
+    ///
+    /// `RidingEntitySoundInstance` gates on the **vehicle**, not the rider,
+    /// which is also what it follows — so the two agree there and disagree
+    /// only where a class declines the gate.
+    pub fn silence_gated_entity(&self) -> Option<i32> {
+        match self {
+            Ramp::EntityBound { entity } => Some(*entity),
+            Ramp::Bee(b) => Some(b.bee),
+            Ramp::Guardian { guardian, .. } => Some(*guardian),
+            Ramp::Minecart(m) => Some(m.minecart),
+            Ramp::Riding(r) => Some(r.vehicle),
+            Ramp::Sniffer { sniffer } => Some(*sniffer),
+            // No `canPlaySound` override — the interface default is `true`.
+            Ramp::Elytra(_)
+            | Ramp::UnderwaterLoop(_)
+            | Ramp::UnderwaterSub { .. }
+            | Ramp::BiomeLoop(_)
+            | Ramp::Directional { .. } => None,
+        }
+    }
+
     /// The entity this ramp follows, if any — what the engine needs to look up
     /// before it can tick.
     pub fn entity(&self) -> Option<i32> {
@@ -2007,6 +2060,91 @@ mod tests {
 
         let empty = World::default();
         assert!(r.tick(&mut i, &empty).stopped);
+    }
+
+    /// **Exactly six of the ten are silence-gated**, and the set is not the
+    /// set of ramps that follow an entity — which is the whole point of the
+    /// two accessors being different.
+    #[test]
+    fn only_the_six_that_override_can_play_sound_are_silence_gated() {
+        let riding = riding(true, false);
+        let gated: Vec<(&str, Option<i32>)> = vec![
+            ("entity_bound", Ramp::EntityBound { entity: 1 }.silence_gated_entity()),
+            (
+                "bee",
+                Ramp::Bee(BeeRamp {
+                    bee: 2,
+                    loop_kind: BeeLoop::Flying,
+                    has_switched: false,
+                })
+                .silence_gated_entity(),
+            ),
+            (
+                "guardian",
+                Ramp::Guardian {
+                    guardian: 4,
+                    attack_duration: 80,
+                }
+                .silence_gated_entity(),
+            ),
+            (
+                "minecart",
+                Ramp::Minecart(MinecartRamp {
+                    minecart: 5,
+                    shadowed_pitch: 0.0,
+                })
+                .silence_gated_entity(),
+            ),
+            ("riding", riding.silence_gated_entity()),
+            ("sniffer", Ramp::Sniffer { sniffer: 6 }.silence_gated_entity()),
+        ];
+        for (what, g) in gated {
+            assert!(g.is_some(), "{what} overrides canPlaySound and must gate");
+        }
+
+        // The four that take the interface default's flat `true`. An elytra
+        // sound that a silenced player silenced would be Rewo's invention.
+        let ungated: Vec<(&str, Option<i32>)> = vec![
+            (
+                "elytra",
+                Ramp::Elytra(ElytraRamp { player: 3, time: 0 }).silence_gated_entity(),
+            ),
+            (
+                "underwater loop",
+                Ramp::UnderwaterLoop(UnderwaterRamp { player: 7, fade: 0 })
+                    .silence_gated_entity(),
+            ),
+            (
+                "underwater sub",
+                Ramp::UnderwaterSub { player: 8 }.silence_gated_entity(),
+            ),
+            (
+                "biome loop",
+                Ramp::BiomeLoop(BiomeLoopRamp {
+                    fade: 0,
+                    fade_direction: 0,
+                })
+                .silence_gated_entity(),
+            ),
+            (
+                "directional",
+                Ramp::Directional {
+                    x_angle: 0.0,
+                    y_angle: 0.0,
+                }
+                .silence_gated_entity(),
+            ),
+        ];
+        for (what, g) in ungated {
+            assert_eq!(g, None, "{what} takes the default and must NOT gate");
+        }
+
+        // …and the two accessors disagree exactly where a class declines the
+        // gate while still following something: the elytra follows its player
+        // and is not gated on it.
+        let elytra = Ramp::Elytra(ElytraRamp { player: 3, time: 0 });
+        assert_eq!(elytra.entity(), Some(3));
+        assert_eq!(elytra.silence_gated_entity(), None);
     }
 
     /// Every ramp reports the entity it needs, and the two that follow no

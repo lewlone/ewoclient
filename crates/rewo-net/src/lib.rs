@@ -46,6 +46,7 @@ pub mod item_stack;
 pub mod merchant;
 pub mod recipe_book;
 pub mod menu;
+pub mod local_player_data;
 pub mod metadata;
 pub mod motion;
 pub mod play;
