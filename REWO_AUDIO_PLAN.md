@@ -309,10 +309,19 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 > `MinecartSoundInstance`, `RidingEntitySoundInstance`, `SnifferSoundInstance`,
 > and the two nested in `UnderwaterAmbientSoundInstances`. They live in
 > `crates/rewo-net/src/tickable.rs` and the engine drives them. **M141e built
-> the first trigger** (the elytra) and **M141f two more** (the bee and the
-> minecart, which are one vanilla method), so **three of the ten are
-> constructed**; the rest are `REWO_PLAN.md` §0.0 item 4a, one construction site
-> at a time.
+> the first trigger** (the elytra), **M141f two more** (the bee and the
+> minecart, which are one vanilla method) and **M141g two more** (the guardian
+> and the sniffer), so **five of the ten are constructed**. What is left is one
+> ordinary trigger (the riding pair) plus three ambient instances that want an
+> `AmbientSoundHandler` subsystem rather than call sites — `REWO_PLAN.md` §0.0
+> item 4a.
+>
+> **M141g belongs in §5's trap list twice over.** Its guardian input is the one
+> among the ten that is not a decode but a client-side counter, whose reset is
+> driven by the metadata *arriving* rather than by the value changing. And it
+> found a live decode bug — three state enums read from one index when they sit
+> at two — that no gate could see, because the rigs consuming them are driven by
+> injected state. That is exactly this file's §0.3 hazard, met in the wild.
 >
 > M141e's finding belongs in §5's trap list: **`canPlaySound()` is a per-class
 > override that six of the ten declare and four decline**, so a ramp's silence
