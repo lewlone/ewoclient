@@ -1924,7 +1924,7 @@ item** — M138a–d, `level_event`'s sounds and the music fade have shipped, an
 **the listening pass is the outstanding work and it is the user's**, because no
 gate in this project opens an audio device.
 **Everything is shipped, gated and merged to `main`** as of 2026-08-11
-(M141h) — **3012 tests / 0 failures** (world 1155, net 1056, gpu 275, data 224,
+(M142b) — **3042 tests / 0 failures** (world 1158, net 1084, gpu 275, data 224,
 app 197, mesh 45, proto 16, **audio 44** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
@@ -6273,9 +6273,51 @@ and the mutant never runs. **A battery can only grade claims that survive
 compilation** — anything the types make unrepresentable is pinned harder and
 shows up as BUILD-FAIL noise, so mutate the runtime claim underneath it instead.
 
-**What is left is not a trigger**: the three ambient instances want an
-`AmbientSoundHandler` subsystem (and, for the directional sound, an end-flash
-state Rewo has no equivalent of) rather than more call sites.
+**M142 then took the ambient handlers**, the subsystem that was left — and its
+first finding is that **the class name is not the feature**:
+`UnderwaterAmbientSoundHandler` plays the three rare sub-sounds and *nothing
+else*, while the loop is minted by `LocalPlayer.updateIsUnderwater()`'s rising
+edge alongside two positioned one-shots it never sees. Nor does any of that
+handler's state do anything — `tickDelay` starts at 0, is decremented
+unconditionally, and is only ever assigned 0, so it never gates; its four named
+chance constants are declared and never read. **The three chances partition one
+draw**, so the real rates are 0.0001 / 0.0009 / 0.009, not what the constants
+are called, and **a spectator hears the additions and nothing else**, because
+the early return that suppresses the loop lives in `updateIsUnderwater` while
+the handler has no spectator gate at all.
+
+The load-bearing one for anyone adding another: **a tickable ambient instance
+must be constructed at volume 1.0**, because `SoundEngine.play` returns
+`NOT_STARTED` for a zero-volume instance unless `canStartSilent()` — which none
+of these classes overrides. Building a fading-in loop at 0.0 *because it is
+about to fade in* makes it never play, with a debug log as the only trace. And
+`relative` does **not** imply `Attenuation.NONE`; these three classes are
+exactly what falsifies that pairing.
+
+**The Overworld's cave sounds come from its DIMENSION TYPE**, not from any
+biome: `DimensionTypes.java:43` sets `LEGACY_CAVE_SETTINGS` there, and no
+vanilla Overworld or End biome sets the attribute at all. Drop that layer and
+those dimensions go silent; hard-code it as a universal default and
+`ambient.cave` plays in the Nether, which declares nothing. A biome
+**replaces** the record rather than merging it, samples at the **raw quart**
+with no fiddle (unlike M14's colour path), and does not interpolate.
+
+Its battery came back **23/32 first time, and all eight survivors were real
+gaps in my own witnesses** — including a partition test that *re-implemented
+its subject* and so could not see a widened band, and a placement test whose
+threshold the wrong answer already satisfied. Strictness needed an exact tie:
+`<` versus `<=` differs only when a draw equals the chance (2⁻⁵³, and 4M seeds
+produced none), so the witness reads the draw off a cloned RNG and uses it *as*
+the chance.
+
+**Two of the three handlers are transcribed but not wired**, for stated
+reasons: the bubble column needs a per-state `drag` table the block bake does
+not carry, and the biome loop needs a fade command through the engine, because
+vanilla's handler mutates live instances it holds while Rewo's engine owns the
+ramps. The **directional sound is a different feature** — the End flash from
+`ClientLevel.tick`, needing `EndFlashState` — and one reader in M142's survey
+claimed that class is dead in vanilla and advised deleting Rewo's ramp. It is
+not.
 
 **M141d fed them the velocity**, which was the input gating four of the ten,
 and its finding is the sort that punishes a sensible implementation: a remote

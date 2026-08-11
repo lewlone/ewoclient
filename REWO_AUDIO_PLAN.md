@@ -312,9 +312,20 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 > the first trigger** (the elytra), **M141f two more** (the bee and the
 > minecart, which are one vanilla method), **M141g two more** (the guardian
 > and the sniffer) and **M141h the riding pair**, so **seven of the ten are
-> constructed and the ordinary triggers are done**. What is left is three
-> ambient instances that want an `AmbientSoundHandler` subsystem rather than
-> call sites — `REWO_PLAN.md` §0.0 item 4a.
+> constructed and the ordinary triggers are done**. **M142 then built the
+> `AmbientSoundHandler` subsystem** and the `AmbientSounds` attribute decode it
+> reads: all three handlers are transcribed and unit-tested, the underwater
+> pair is wired end to end, and two stay unwired for stated reasons (a
+> per-state `drag` table the block bake lacks; a fade command the engine does
+> not yet have). The **directional sound is not one of them** — it is the End
+> flash from `ClientLevel.tick` and needs `EndFlashState`.
+>
+> **M142 belongs in §5's trap list twice.** A tickable ambient instance must be
+> born at volume 1.0, because `SoundEngine.play` refuses a zero-volume one
+> unless `canStartSilent()` and none of these classes overrides it — so the
+> natural "start silent, it fades in" makes the sound never play. And its
+> battery came back 23/32, with **every survivor a real gap in the witnesses**,
+> the sharpest being a test that re-implemented its own subject.
 >
 > **M141h's trigger is the one that is not one-instance-per-sound.** A minecart
 > mount plays **both** instances at once — dry and underwater — and each mutes

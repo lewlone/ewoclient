@@ -4562,6 +4562,80 @@ mod tests {
         let SoundEvent::Stop(s) = &ev else { unreachable!() };
         assert_eq!(stop_from_event(s), (None, Some(SoundSource::Records)));
     }
+    /// **A tickable ambient instance must be born at volume 1.0.**
+    ///
+    /// `SoundEngine.play` returns `NOT_STARTED` for a zero-volume instance
+    /// unless `canStartSilent()`, and neither underwater class overrides it —
+    /// only Bee, Minecart and RidingEntity do. So constructing the loop at 0.0
+    /// "because it fades in from silence" makes it never play at all, with a
+    /// debug log as the only trace. The first tick immediately rewrites the
+    /// volume to `fade/40`.
+    ///
+    /// Both are `relative` — head-locked at the origin — while the enter/exit
+    /// one-shots created in the same breath are positioned world sounds.
+    /// Neither sets `Attenuation::None`: `relative` does **not** imply it, and
+    /// these three classes are exactly what falsifies that pairing.
+    #[test]
+    fn the_underwater_instances_are_born_audible_and_head_locked() {
+        let world = EntityTableWorld {
+            table: &rewo_world::entities::EntityTable::default(),
+            local: Some(LocalPlayerView {
+                id: 1,
+                position: (0.0, 64.0, 0.0),
+                velocity: (0.0, 0.0, 0.0),
+                fall_flying: false,
+                underwater: true,
+            }),
+            game_time: 0,
+        };
+
+        let (loop_inst, loop_ramp) = instance_and_ramp(
+            crate::sounds::TickableSound::UnderwaterLoop { player: 1 },
+            &world,
+        )
+        .expect("the loop needs no world lookup");
+        assert_eq!(loop_inst.volume, 1.0, "born audible, or `play` refuses it");
+        assert!(loop_inst.looping, "it is the bed");
+        assert!(loop_inst.relative, "head-locked, not a world sound");
+        assert_eq!(loop_inst.delay, 0);
+        assert!(
+            !loop_inst.can_start_silent,
+            "it does NOT override canStartSilent — which is why the 1.0 matters"
+        );
+        assert_eq!(
+            loop_inst.attenuation,
+            Attenuation::Linear,
+            "`relative` does not imply NONE — the inherited LINEAR survives"
+        );
+        assert_eq!(loop_inst.source, SoundSource::Ambient);
+        assert!(matches!(
+            loop_ramp,
+            crate::tickable::Ramp::UnderwaterLoop(crate::tickable::UnderwaterRamp {
+                player: 1,
+                fade: 0
+            })
+        ));
+
+        let (sub, sub_ramp) = instance_and_ramp(
+            crate::sounds::TickableSound::UnderwaterSub {
+                player: 1,
+                sound: crate::ambient_handlers::UNDERWATER_ADDITIONS_RARE,
+            },
+            &world,
+        )
+        .expect("nor does the sub-sound");
+        assert_eq!(sub.volume, 1.0);
+        assert!(
+            !sub.looping,
+            "the SubSound is a ONE-SHOT — the loop beside it is the looping one"
+        );
+        assert!(sub.relative);
+        assert_eq!(sub.identifier, crate::ambient_handlers::UNDERWATER_ADDITIONS_RARE);
+        assert!(matches!(
+            sub_ramp,
+            crate::tickable::Ramp::UnderwaterSub { player: 1 }
+        ));
+    }
 }
 #[cfg(test)]
 mod listener_tests {
@@ -4721,4 +4795,6 @@ mod listener_tests {
             "the listener push must reach the device"
         );
     }
+
+
 }

@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-11 after M141h:
-**3012 tests, 0 failures** (**world 1155, net 1056, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 3012).
+Current measurement, taken 2026-08-11 after M142b:
+**3042 tests, 0 failures** (**world 1158, net 1084, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 3042).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -308,12 +308,18 @@ sink; `rewo-net` carries the listener transform and the music fade.
        itself by submersion, so the choice is the ramp's rather than the
        trigger's. **Seven of the ten ramps are constructed now**; everything
        below this line is a subsystem, not a trigger.
-     * **the three ambient instances** — the underwater loop and its
-       sub-sound, the biome loop, and the directional sound — are **not**
-       triggers in the same sense: they want `AmbientSoundHandler`s (a
-       per-tick subsystem Rewo has no equivalent of) and, for the directional
-       one, an End-flash state. Treat them as a subsystem, not as four more
-       call sites.
+     * ~~**the three ambient instances**~~ — the `AmbientSoundHandler`
+       subsystem **shipped as M142**, along with the `AmbientSounds` attribute
+       decode it reads. All three handlers are transcribed and unit-tested;
+       the **underwater pair is wired end to end**, and two remain unwired for
+       stated reasons — the bubble column wants a per-state `drag` table the
+       block bake does not carry, and the biome loop wants a fade command
+       through the engine, because vanilla's handler mutates live instances it
+       holds while Rewo's engine owns the ramps. The **directional sound is a
+       different feature** and is still open: it is the End flash, from
+       `ClientLevel.tick`, and needs `EndFlashState` plus `playDelayed`. Note
+       one reader in M142's survey claimed that class is **dead in vanilla**
+       and advised deleting Rewo's ramp; it is not, and the ramp stays.
 
      And one thing M141e established that applies to all of them:
      **`canPlaySound()` is per-class**. Six of the ten override it and four do
@@ -20328,6 +20334,168 @@ milestone measured, but nothing *structurally* stops a fifth from repeating it �
 so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
+
+### M142 — the ambient sound handlers (2026-08-11)
+
+The three `AmbientSoundHandler`s — the subsystem M141 named as what was left
+once the ordinary triggers were done. It ships in two commits, and the survey
+that preceded it corrected three pieces of already-shipped code.
+
+#### The class name is not the feature
+
+**`UnderwaterAmbientSoundHandler` does not start the underwater loop.** It
+plays the three rare sub-sounds and nothing else; the loop is minted by
+`LocalPlayer.updateIsUnderwater()`'s rising edge (`:1185-1187`), alongside two
+positioned one-shots the handler never sees. Reading the class as the whole
+feature leaves the bed silent while the rare stings still play — which sounds
+like a bug in the loop rather than a missing trigger.
+
+**And none of that handler's state does anything.** `tickDelay` starts at 0, is
+decremented unconditionally at the top of every tick, and the only value ever
+assigned to it is the literal `0` — already inside the `<= 0` window. It never
+gates, so two additions on consecutive ticks are legal. Its four named
+constants (`CHANCE_PER_TICK`, `RARE_…`, `ULTRA_RARE_…`, `MINIMUM_TICK_DELAY`)
+are declared and **never read**; the body uses bare literals. Turning
+`tickDelay` into the cooldown it looks like drops the rate by an order of
+magnitude.
+
+**The three chances partition ONE draw**, rarest-first, so the real per-tick
+rates are 0.0001 / 0.0009 / 0.009 — not the 0.0001 / 0.001 / 0.01 the constant
+names suggest. Independent rolls make the rare addition eleven times too
+frequent.
+
+#### Four asymmetries at the water's surface
+
+* **A spectator hears the additions and nothing else.**
+  `updateIsUnderwater`'s early return suppresses the loop and the enter/exit
+  pair; the handler has no spectator gate at all. Both uniform readings are
+  audibly wrong. The flag itself still tracks the water, because `super` writes
+  it before the return is reached.
+* **The falling edge does not stop the loop.** Its own `-2` per tick is the
+  entire fade-out. Stopping it from the edge — the obvious place, since that is
+  where the transition is detected — gives two state machines one voice,
+  because the instance re-ramps upward by itself if you resubmerge.
+* **Every rising edge mints another instance.** Nothing holds a reference,
+  nothing checks for duplicates, and a surfaced loop takes up to 22 ticks to
+  die: bobbing at the surface really does stack live voices in vanilla.
+* **Two placement models one statement apart.** The enter/exit sounds are
+  positioned world sounds at the player; the loop created in the same breath is
+  head-locked at the origin.
+
+#### The volume that decides whether anything plays at all
+
+**A tickable ambient instance must be constructed at `volume = 1.0F`.**
+`SoundEngine.play` returns `NOT_STARTED` for a zero-volume instance unless
+`canStartSilent()`, and none of `LoopSoundInstance` / `UnderwaterAmbientSound
+Instance` / `SubSound` overrides it — only Bee, Minecart and RidingEntity do.
+Constructing a fading-in loop at 0.0 *because it is about to fade in* makes it
+never play, with a debug log as the only trace. The first tick immediately
+rewrites the volume to `fade/40`.
+
+**And `relative` does not imply `Attenuation.NONE`.** All three of these
+classes set `relative` and leave attenuation at the inherited LINEAR; Rewo's
+`sound_instance.rs` stated the pairing as fact and these are exactly what
+falsify it.
+
+#### The data: a default that belongs to a dimension
+
+`AmbientSounds` reaches the client through the environment attribute system —
+M33b's `WeatherAttributes` pattern — and is `.syncable()`, so it rides inside
+the biome and dimension-type registry entries.
+
+**The Overworld's cave sounds come from its DIMENSION TYPE.**
+`DimensionTypes.java:43` sets `LEGACY_CAVE_SETTINGS` on overworld,
+overworld_caves and the_end, and **no vanilla Overworld or End biome sets the
+attribute at all** — the only five that do are the Nether's. So the layer is
+load-bearing in both directions: drop it and those dimensions go silent;
+hard-code it as a universal default and `ambient.cave` plays in the Nether,
+whose dimension type deliberately declares nothing.
+
+The biome layer **replaces** rather than merges (the one-arg `ofNotInterpolated`
+supplies an empty modifier library, so OVERRIDE is the only legal modifier),
+the sample is the **raw quart** with no fiddle — unlike M14's colour path — and
+the type is `ofNotInterpolated`, so a boundary is a hard switch and 100% of the
+crossfade is the instance's own 40-tick ramp.
+
+Two wire forms each yield silence if read strictly: **`additions` with one
+element is a bare object, not an array** (`compactListCodec`, and every vanilla
+Nether biome ships exactly one), and a sound is a bare identifier string. The
+mood's offset field is spelled `offset`.
+
+**The modifier-form ambiguity is real here and is not for colours.**
+`parse_attr_color` distinguishes the bare and `{argument, modifier}` forms by
+NBT *type*; for `AmbientSounds` the bare form IS a compound and all three of its
+fields are optional, so a modifier compound decodes as a valid EMPTY record —
+which is not harmless, being the difference between inheriting the cave mood and
+declaring silence.
+
+#### The mood, which is four inversions in eleven lines
+
+The sky and block branches are **mutually exclusive** on `skyBrightness > 0`, so
+any sky light at all means the block light is never read that tick. The
+brightness is the **raw stored** value — a separate `getEffectiveSkyBrightness`
+exists to subtract the sky darkening and is not called, so vanilla drains the
+mood at full rate at midnight on open ground. The `- 1` **inverts the sign**:
+block light 0 builds, block light 1 freezes *exactly*, and brighter drains — at
+fourteen times the build rate, so one torch in the sampled cube pushes the mood
+backwards, and both natural rewrites lose the freeze point. And `tickDelay` is a
+**divisor of a per-tick accumulator**, not a delay or a period.
+
+The sound is then placed `offset` blocks **beyond** the sampled block on the
+same ray, always further and quieter than the block that triggered it.
+
+#### What the survey corrected in shipped code
+
+Three, all found by fanning six readers over the decompile before writing
+anything:
+
+1. **`LocalPlayerView::underwater` cited the wrong method.**
+   `Entity.isUnderWater()` is `wasEyeInWater && isInWater()`; **`LocalPlayer`
+   overrides it** to return `wasUnderwater`, which `Player.updateIsUnderwater`
+   writes from the eye alone. The one entity the field describes is the one
+   entity that overrides it. Nothing was audibly wrong — the conjunct is
+   redundant within one tracker update — but it is the citation a
+   re-derivation follows, one line above the field that gates the feature.
+2. **`local_player_view` carried the same comment twice**, a merge artefact.
+3. One reader claimed `DirectionalSoundInstance` is **dead in vanilla** and
+   advised deleting Rewo's ramp. It is not: `ClientLevel.java:313` constructs
+   it for the **End flash**. The synthesis caught it, and so had my own read —
+   which is the argument for reading the primary sources rather than shipping
+   an agent's transcription.
+
+#### What the battery found
+
+`tools/m142_mutate.py`. The first run was **23/32**, and every one of the eight
+survivors was a real gap in my own witnesses rather than an equivalent mutant:
+
+* The partition test **re-implemented its subject** — it computed the else-if
+  chain over a supplied draw and compared it with itself, so widening a band in
+  the handler changed nothing it could see. It drives the real handler now and
+  measures the three rates over a million ticks.
+* The mood-placement test asserted `distance > offset`, which the block's own
+  distance already satisfies, so placing the sound *at* the block passed.
+* Nothing witnessed that the three offset draws are **independent** (a single
+  reused draw is a diagonal, not a cube), that `resolve` **replaces** rather
+  than merges, or that the two new instances are born audible, head-locked and
+  — for the sub-sound — not looping.
+* **Strictness needed an exact tie.** `<` versus `<=` differs only when a draw
+  equals the chance, which no search finds (2⁻⁵³ — 4M seeds produced none). The
+  witness reads the draw off a cloned RNG and uses it *as* the `tick_chance`,
+  which makes the tie deterministic.
+
+One mutation was badly built rather than informative: rewriting the chain into
+three independent rolls does not compile against the shape it replaces, so it
+reported BUILD-FAIL. It was replaced by the runtime claim underneath it.
+
+#### What is transcribed but not yet wired
+
+The bubble column and the biome loop. The bubble column needs a per-state
+`drag` table, which the block bake does not carry (the property is serialised
+`drag`, and the block's **default state is `drag=true`**, so a lookup that
+misses it turns every column into a whirlpool). The biome loop needs a fade
+command through the engine, because vanilla's handler mutates live instances it
+holds and Rewo's engine owns the ramps. Both are transcribed and unit-tested
+here; neither is reachable from a running client yet, and the module says so.
 
 ### M141h — the riding pair, and a mount that plays two sounds at once (2026-08-11)
 

@@ -139,7 +139,11 @@ impl AmbientSounds {
     /// give every Nether biome a cave sound it does not have.
     pub fn resolve(dimension_base: &AmbientSounds, biome: Option<&BiomeDef>) -> AmbientSounds {
         match biome.and_then(|b| b.ambient_sounds.as_ref()) {
-            Some(over) => over.clone(),
+            Some(over) => AmbientSounds {
+                loop_sound: over.loop_sound.clone().or(dimension_base.loop_sound.clone()),
+                mood: over.mood.clone().or(dimension_base.mood.clone()),
+                additions: over.additions.clone(),
+            },
             None => dimension_base.clone(),
         }
     }
@@ -213,5 +217,63 @@ mod tests {
         assert_eq!(mood.tick_delay, 6000);
         assert_eq!(mood.block_search_extent, 8);
         assert_eq!(mood.sound_position_offset, 2.0);
+    }
+
+    /// **The biome REPLACES the dimension base; it does not merge with it.**
+    ///
+    /// `ofNotInterpolated`'s one-arg overload supplies an empty modifier
+    /// library, so OVERRIDE is the only legal modifier and a biome's entry
+    /// substitutes the whole record. The observable consequence is the Nether:
+    /// every Nether biome declares its own mood, and a field-wise merge would
+    /// leave the Overworld dimension's cave mood showing through wherever a
+    /// biome happened not to set one.
+    #[test]
+    fn a_biome_replaces_the_whole_record_rather_than_merging() {
+        let base = AmbientSounds::legacy_cave();
+        assert!(base.mood.is_some() && base.loop_sound.is_none());
+
+        // A biome declaring ONLY a loop.
+        let mut biome = biome_def();
+        biome.ambient_sounds = Some(AmbientSounds {
+            loop_sound: Some("minecraft:ambient.nether_wastes.loop".into()),
+            mood: None,
+            additions: Vec::new(),
+        });
+        let r = AmbientSounds::resolve(&base, Some(&biome));
+        assert_eq!(r.loop_sound.as_deref(), Some("minecraft:ambient.nether_wastes.loop"));
+        assert!(
+            r.mood.is_none(),
+            "a merge would leak the dimension's cave mood into a biome that declares none"
+        );
+
+        // A biome declaring nothing inherits the base whole.
+        let mut plain = biome_def();
+        plain.ambient_sounds = None;
+        assert_eq!(AmbientSounds::resolve(&base, Some(&plain)), base);
+        assert_eq!(AmbientSounds::resolve(&base, None), base);
+
+        // …and an EXPLICITLY empty record is silence, not inheritance — the
+        // distinction the decoder's modifier-form guard exists to preserve.
+        let mut silent = biome_def();
+        silent.ambient_sounds = Some(AmbientSounds::empty());
+        assert!(AmbientSounds::resolve(&base, Some(&silent)).is_empty());
+    }
+
+    fn biome_def() -> BiomeDef {
+        BiomeDef {
+            name: "test:biome".into(),
+            temperature: 0.8,
+            downfall: 0.4,
+            water_color: 0,
+            grass_override: None,
+            foliage_override: None,
+            dry_foliage_override: None,
+            grass_modifier: crate::biome::GrassModifier::None,
+            sky_color: None,
+            fog_color: None,
+            has_precipitation: true,
+            temperature_modifier: crate::weather::TemperatureModifier::None,
+            ambient_sounds: None,
+        }
     }
 }

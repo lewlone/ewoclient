@@ -836,4 +836,180 @@ mod tests {
         assert_eq!((i.x, i.y, i.z), (0.0, 0.0, 0.0));
         assert_eq!(i.attenuation, crate::sound_instance::Attenuation::None);
     }
+
+    /// **Driven through the real handler**, unlike the boundary table above.
+    ///
+    /// The first cut of the partition witness re-implemented the else-if chain
+    /// over a supplied draw and compared it with itself — so widening the rare
+    /// band from 0.0009 to 0.001 in the *handler* changed nothing it could see.
+    /// A test that re-implements its subject measures the copy.
+    ///
+    /// The three rates are far enough apart to separate statistically: over a
+    /// million submerged ticks the rare band is ~900 hits and the constant's
+    /// name would give ~1000, an 11% gap against ~3% counting noise.
+    #[test]
+    fn the_measured_band_rates_are_the_partitioned_ones() {
+        let mut h = UnderwaterHandler;
+        let mut r = LegacyRandom::new(987_654);
+        let mut out = Vec::new();
+        const N: usize = 1_000_000;
+        for _ in 0..N {
+            h.tick(1, true, &mut r, &mut out);
+        }
+        let count = |want: &str| {
+            out.iter()
+                .filter(|e| {
+                    matches!(e, SoundEvent::Tickable(TickableSound::UnderwaterSub { sound, .. })
+                        if *sound == want)
+                })
+                .count() as f64
+                / N as f64
+        };
+        let ultra = count(UNDERWATER_ADDITIONS_ULTRA_RARE);
+        let rare = count(UNDERWATER_ADDITIONS_RARE);
+        let plain = count(UNDERWATER_ADDITIONS);
+        // Partitioned: 0.0001 / 0.0009 / 0.009. The constants' names would give
+        // 0.0001 / 0.001 / 0.01.
+        assert!(
+            (rare - 0.0009).abs() < 0.00006,
+            "the rare band is 0.0009 (the constant says 0.001), measured {rare}"
+        );
+        assert!(
+            (plain - 0.009).abs() < 0.0004,
+            "the plain band is 0.009 (the constant says 0.01), measured {plain}"
+        );
+        assert!((ultra - 0.0001).abs() < 0.00005, "ultra rare, measured {ultra}");
+        assert!(
+            (ultra + rare + plain - 0.01).abs() < 0.0005,
+            "…and they sum to the widest band, which is what partitioning means"
+        );
+    }
+
+    /// The three offsets are three INDEPENDENT draws — a uniform cube. Drawing
+    /// one and reusing it gives a diagonal line, which lands on the same block
+    /// column far too often and is invisible to any test that only checks the
+    /// range.
+    #[test]
+    fn the_mood_samples_a_cube_rather_than_a_diagonal() {
+        let mood = AmbientMood::legacy_cave();
+        // A light probe that records where it was asked.
+        struct Recorder(std::cell::RefCell<Vec<(i32, i32, i32)>>);
+        impl MoodLight for Recorder {
+            fn brightness(&self, x: i32, y: i32, z: i32) -> (i32, i32) {
+                self.0.borrow_mut().push((x, y, z));
+                (1, 0) // the freeze point: never fires, never drains
+            }
+        }
+        let rec = Recorder(std::cell::RefCell::new(Vec::new()));
+        let mut s = BiomeMoodState::default();
+        let mut r = LegacyRandom::new(4242);
+        let mut out = Vec::new();
+        for _ in 0..400 {
+            s.tick(&mood, [0.0, 64.0, 0.0], 65.62, &rec, &mut r, &mut out);
+        }
+        let seen = rec.0.borrow();
+        // Every sample is inside the 17³ cube centred on (feet.x, eye.y, feet.z).
+        for &(x, y, z) in seen.iter() {
+            assert!((-8..=8).contains(&x), "x {x}");
+            assert!((57..=73).contains(&y), "y {y} around eye 65");
+            assert!((-8..=8).contains(&z), "z {z}");
+        }
+        // …and the axes are independent: a single reused draw would make
+        // x == z for every sample (both are `off - extent` on the same feet
+        // coordinate), and would make y track them too.
+        let collapsed = seen.iter().filter(|(x, _, z)| x == z).count();
+        assert!(
+            collapsed < seen.len(),
+            "x and z must not be the same draw ({collapsed} of {} identical)",
+            seen.len()
+        );
+        let y_locked = seen.iter().filter(|(x, y, _)| *y - 65 == *x).count();
+        assert!(y_locked < seen.len(), "y must not be the same draw as x");
+    }
+
+    /// The mood sound is placed BEYOND the sampled block — measured against the
+    /// block's own distance, not against the offset alone. The first cut
+    /// asserted `d_sound > offset`, which the block distance already satisfies,
+    /// so placing the sound at the block passed.
+    #[test]
+    fn the_mood_sound_overshoots_the_block_it_sampled() {
+        let mood = AmbientMood::legacy_cave();
+        struct At(i32, i32, i32);
+        impl MoodLight for At {
+            fn brightness(&self, _: i32, _: i32, _: i32) -> (i32, i32) {
+                (0, 0)
+            }
+        }
+        // Force the sample by driving from a moodiness that fires immediately,
+        // and recover the block the RNG picked by replaying the same draws.
+        let feet = [0.0f64, 64.0, 0.0];
+        let eye = 65.62f64;
+        let mut probe = LegacyRandom::new(31337);
+        let span = mood.block_search_extent * 2 + 1;
+        let ox = probe.next_int(span) - mood.block_search_extent;
+        let oy = probe.next_int(span) - mood.block_search_extent;
+        let oz = probe.next_int(span) - mood.block_search_extent;
+        let bx = (feet[0] + ox as f64).floor() as i32;
+        let by = (eye + oy as f64).floor() as i32;
+        let bz = (feet[2] + oz as f64).floor() as i32;
+        let block_dist = ((bx as f64 + 0.5 - feet[0]).powi(2)
+            + (by as f64 + 0.5 - eye).powi(2)
+            + (bz as f64 + 0.5 - feet[2]).powi(2))
+        .sqrt();
+
+        let mut s = BiomeMoodState { moodiness: 1.0 };
+        let mut r = LegacyRandom::new(31337);
+        let mut out = Vec::new();
+        s.tick(&mood, feet, eye, &At(bx, by, bz), &mut r, &mut out);
+        let SoundEvent::Instance(i) = &out[0] else {
+            panic!("{:?}", out[0])
+        };
+        let sound_dist =
+            ((i.x - feet[0]).powi(2) + (i.y - eye).powi(2) + (i.z - feet[2]).powi(2)).sqrt();
+        assert!(
+            (sound_dist - (block_dist + mood.sound_position_offset)).abs() < 1e-9,
+            "the sound sits `offset` beyond the block: block {block_dist}, sound {sound_dist}"
+        );
+        assert!(
+            sound_dist > block_dist + 1.0,
+            "…and is therefore strictly further away than the block"
+        );
+    }
+
+    /// **Strictness, pinned by an exact tie.** `<` vs `<=` differs only when a
+    /// draw exactly equals the chance, which a random search will never find
+    /// (2⁻⁵³). Reading the draw off a cloned RNG and using it AS the chance
+    /// makes the tie deterministic.
+    #[test]
+    fn the_tick_chance_compare_is_strict() {
+        let mut probe = rng();
+        let draw = probe.next_double();
+        let tie = AmbientSounds {
+            loop_sound: None,
+            mood: None,
+            additions: vec![AmbientAddition {
+                sound: "tie".into(),
+                tick_chance: draw,
+            }],
+        };
+        let mut out = Vec::new();
+        let mut r = rng();
+        tick_additions(&tie, &mut r, &mut out);
+        assert!(
+            out.is_empty(),
+            "an exact tie must NOT fire — the compare is `<`, not `<=`"
+        );
+        // …and a hair above it does, which proves the tie was the only thing
+        // keeping it quiet.
+        let over = AmbientSounds {
+            additions: vec![AmbientAddition {
+                sound: "over".into(),
+                tick_chance: draw * 1.000001 + 1e-12,
+            }],
+            ..tie.clone()
+        };
+        let mut r = rng();
+        tick_additions(&over, &mut r, &mut out);
+        assert_eq!(out.len(), 1, "just above the draw fires");
+    }
 }
