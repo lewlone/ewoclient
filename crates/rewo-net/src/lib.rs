@@ -965,7 +965,12 @@ impl<'a> Connection<'a> {
 
 /// Decode an Add Entity packet body into the entity table. Shared by the M1
 /// snapshot path and the M3 live session.
-pub(crate) fn read_add_entity(r: &mut PacketReader, world: &mut World) -> rewo_proto::Result<()> {
+/// Returns the `(entity id, type id)` it added — what vanilla's
+/// `handleAddEntity` holds when it calls `postAddEntitySoundInstance` (M141f).
+pub(crate) fn read_add_entity(
+    r: &mut PacketReader,
+    world: &mut World,
+) -> rewo_proto::Result<(i32, i32)> {
     let id = r.varint()?;
     let uuid = r.uuid()?;
     let type_id = r.varint()?;
@@ -981,7 +986,7 @@ pub(crate) fn read_add_entity(r: &mut PacketReader, world: &mut World) -> rewo_p
     let mut state = rewo_world::entities::EntityState::new(uuid, type_id, x, y, z, yaw, pitch);
     state.set_head_yaw(head_yaw);
     world.entities.add(id, state);
-    Ok(())
+    Ok((id, type_id))
 }
 
 /// Decode + dispatch a `ClientboundEntityEventPacket` body onto the entity
@@ -2492,6 +2497,9 @@ pub struct MetaKinds<'a> {
     /// `minecraft:player` type id (M60) — gates the index-16 BYTE, the
     /// skin-part customisation mask whose bit 0 shows the cape.
     pub player: Option<i32>,
+    /// `minecraft:bee` type id (M141f) — gates the index-19 LONG,
+    /// `Bee.DATA_ANGER_END_TIME`.
+    pub bee: Option<i32>,
     /// The six mobs whose texture is chosen by synched metadata (M64), in the
     /// order `[cat, wolf, frog, axolotl, horse, llama]`.
     ///
@@ -2654,6 +2662,15 @@ pub(crate) fn apply_set_entity_data<'a>(
     // can. Parsed since M1 and discarded until now.
     if let Some(flags) = meta.flags {
         entities.set_shared_flags(eid, flags);
+    }
+    // Slot 19 LONG → `Bee.DATA_ANGER_END_TIME` (M141f). Kind-gated, because
+    // 19 is Bee's own accessor and another class's nineteenth could be a LONG
+    // too. **Not a flag but a deadline**, so it is stored raw and compared
+    // against the world clock at read time — see `tickable::is_angry`.
+    if let Some(t) = meta.long19 {
+        if Some(type_id) == kinds.bee {
+            entities.set_anger_end_time(eid, t);
+        }
     }
     // Slot 3 BOOLEAN → `Entity.DATA_CUSTOM_NAME_VISIBLE` (M70). No kind gate,
     // for the same reason as slot 0: `Entity` owns 0..7, so nothing else can
@@ -4934,7 +4951,7 @@ mod entity_silent_tests {
         t.add(2, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
         apply_set_entity_data(&body(1, 4, 8, &[0x01]), &mut t, None);
 
-        let w = EntityTableWorld { table: &t, local: None };
+        let w = EntityTableWorld { table: &t, local: None, game_time: 0 };
         assert!(w.entity_silent(1), "the silenced entity");
         assert!(!w.entity_silent(2), "and only it");
         // An id the table never saw is audible, because vanilla seeds false.

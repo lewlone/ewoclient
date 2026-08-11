@@ -406,6 +406,22 @@ pub enum TickableSound {
     /// `new ElytraOnPlayerSoundInstance(player)` —
     /// `LocalPlayer.onSyncedDataUpdated`'s fall-flying rising edge.
     ElytraOnPlayer { player: i32 },
+    /// `new MinecartSoundInstance(minecart)` —
+    /// `ClientPacketListener.postAddEntitySoundInstance`'s first arm (M141f).
+    MinecartRiding { minecart: i32 },
+    /// `new BeeFlyingSoundInstance(bee)` / `new BeeAggressiveSoundInstance(bee)`
+    /// — the same method's second arm, which picks by `bee.isAngry()` at spawn
+    /// (M141f).
+    ///
+    /// **It carries which loop rather than the bee's anger**, because the two
+    /// come apart: the choice is made once from the anger *at that moment*,
+    /// and after that the ramp switches on its own. A spec that said "a bee"
+    /// and re-derived the loop would restart the decision every time it was
+    /// resolved.
+    BeeLoop {
+        bee: i32,
+        aggressive: bool,
+    },
 }
 
 #[cfg(test)]

@@ -692,6 +692,7 @@ fn check_wire(c: &mut Checker, paths: &rewo_data::DataPaths) -> Result<(), Strin
             &mut t,
             rewo_net::MetaKinds {
                 player: kinds_player,
+                bee: None,
                 ..Default::default()
             },
         );

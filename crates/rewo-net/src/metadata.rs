@@ -27,6 +27,10 @@ pub struct EntityMeta {
     /// Shared flags byte (index 0): 0x01 on-fire, 0x02 crouching, 0x08
     /// sprinting, 0x10 swimming, 0x20 invisible, 0x40 glowing, 0x80 elytra.
     pub flags: Option<u8>,
+    /// Index 19 LONG — `Bee.DATA_ANGER_END_TIME` (M141f). Kind-gated by the
+    /// caller: 19 is Bee's own slot, and another class's nineteenth accessor
+    /// could be a LONG too.
+    pub long19: Option<i64>,
     /// `Entity.DATA_CUSTOM_NAME_VISIBLE` — index **3**, BOOLEAN (M70).
     ///
     /// This is `Entity.shouldShowName()` for everything except a player
@@ -303,6 +307,16 @@ pub fn parse(r: &mut PacketReader, components: Option<DataComponentIds>) -> Enti
             (18, 1) => meta.int18 = r.varint().ok(),
             (18, 27) => meta.frog_variant = r.varint().ok(),
             (19, 1) => meta.int19 = r.varint().ok(),
+            // M141f: `Bee.DATA_ANGER_END_TIME`, LONG (serializer **2**, a
+            // `ByteBufCodecs.VAR_LONG` rather than a fixed i64). Index 19 is
+            // Bee's second own accessor — Entity 0..7, LivingEntity 8..14,
+            // Mob 15, **AgeableMob 16 AND 17** (`DATA_BABY_ID` and the
+            // `AGE_LOCKED` nobody had noted), Animal none, Bee 18..19. Getting
+            // AgeableMob's count wrong by one puts this on `Bee.DATA_FLAGS_ID`,
+            // which is a BYTE and would simply not match this serializer — so
+            // the arity saves us here, and would not on a slot whose neighbour
+            // shared its type.
+            (19, 2) => meta.long19 = r.varlong().ok(),
             (20, 21) => meta.cat_variant = r.varint().ok(),
             (21, 1) => meta.int21 = r.varint().ok(),
             (23, 25) => meta.wolf_variant = r.varint().ok(),

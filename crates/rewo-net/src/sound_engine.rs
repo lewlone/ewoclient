@@ -1415,6 +1415,49 @@ pub fn instance_and_ramp(
                 crate::tickable::Ramp::Elytra(crate::tickable::ElytraRamp { player, time: 0 }),
             ))
         }
+        crate::sounds::TickableSound::MinecartRiding { minecart } => {
+            // `MinecartSoundInstance`'s constructor: looping, no delay,
+            // **volume 0.0** and `canStartSilent() = true` — the pair that
+            // lets a stationary cart's loop exist at all, since `play` drops a
+            // zero-volume instance unless it says it can start silent.
+            let (x, y, z) = world.position(minecart).ok_or(NoInstance::UnknownEntity)?;
+            let inst = SoundInstance {
+                volume: 0.0,
+                looping: true,
+                delay: 0,
+                can_start_silent: true,
+                x,
+                y,
+                z,
+                // It DOES override `canPlaySound()`, so unlike the elytra it is
+                // silence-gated on its entity.
+                binding: Binding::Entity(minecart),
+                ..SoundInstance::bare("minecraft:entity.minecart.riding", SoundSource::Neutral)
+            };
+            Ok((
+                inst,
+                crate::tickable::Ramp::Minecart(crate::tickable::MinecartRamp {
+                    minecart,
+                    shadowed_pitch: 0.0,
+                }),
+            ))
+        }
+        crate::sounds::TickableSound::BeeLoop { bee, aggressive } => {
+            let kind = if aggressive {
+                crate::tickable::BeeLoop::Aggressive
+            } else {
+                crate::tickable::BeeLoop::Flying
+            };
+            let pos = world.position(bee).ok_or(NoInstance::UnknownEntity)?;
+            Ok((
+                crate::tickable::bee_instance(kind, bee, pos),
+                crate::tickable::Ramp::Bee(crate::tickable::BeeRamp {
+                    bee,
+                    loop_kind: kind,
+                    has_switched: false,
+                }),
+            ))
+        }
     }
 }
 
@@ -1479,6 +1522,13 @@ pub struct EntityTableWorld<'a> {
     /// without this it would see a removed entity and stop itself on its first
     /// tick, which is a silence that looks exactly like a correct one.
     pub local: Option<LocalPlayerView>,
+    /// `level.getGameTime()` (M141f).
+    ///
+    /// Only the bee asks, and it asks because `NeutralMob.isAngry()` is a
+    /// **deadline** compared against the clock rather than a flag — so the
+    /// answer changes every tick with no packet arriving, and a world that did
+    /// not carry the time could only ever report a stale one.
+    pub game_time: i64,
 }
 
 /// The local player's half of [`crate::tickable::RampWorld`].
@@ -1605,8 +1655,17 @@ impl crate::tickable::RampWorld for EntityTableWorld<'_> {
         self.table.is_baby(entity_id)
     }
 
-    fn angry(&self, _: i32) -> bool {
-        false
+    /// `bee.isAngry()` — real since M141f.
+    ///
+    /// A synced deadline against the world clock, not a flag: see
+    /// [`crate::tickable::is_angry`]. An entity that has never sent one is not
+    /// angry, and that is exact rather than a fallback — `Bee` seeds the
+    /// accessor to **-1**, which the same predicate reads as calm.
+    fn angry(&self, entity_id: i32) -> bool {
+        crate::tickable::is_angry(
+            self.table.anger_end_time(entity_id).unwrap_or(-1),
+            self.game_time,
+        )
     }
     fn underwater(&self, _: i32) -> bool {
         false
@@ -1822,10 +1881,12 @@ impl LiveSounds {
         events: &[SoundEvent],
         entities: &rewo_world::entities::EntityTable,
         local: Option<LocalPlayerView>,
+        game_time: i64,
     ) {
         let world = EntityTableWorld {
             table: entities,
             local,
+            game_time,
         };
         let before = self.system.stats;
         self.system
@@ -2711,6 +2772,7 @@ mod tests {
                 velocity: (0.0, 0.0, 0.0),
                 fall_flying: true,
             }),
+            game_time: 0,
         };
         sys.accept(
             &[SoundEvent::Tickable(
@@ -2751,6 +2813,7 @@ mod tests {
                 velocity: (1.0, 0.0, 1.0), // lengthSqr 2.0 → volume 0.5
                 fall_flying: true,
             }),
+            game_time: 0,
         };
         for _ in 0..40 {
             sys.tick(false, &world, &mut dev);
@@ -2778,6 +2841,7 @@ mod tests {
                 velocity: (0.0, 0.0, 0.0),
                 fall_flying: false,
             }),
+            game_time: 0,
         };
         sys.accept(
             &[SoundEvent::Tickable(
@@ -2890,6 +2954,7 @@ mod tests {
         let world = EntityTableWorld {
             table: &t,
             local: None,
+            game_time: 0,
         };
         sys.accept(
             &[SoundEvent::Tickable(
@@ -2947,6 +3012,141 @@ mod tests {
         );
     }
 
+    // ---- M141f: the bee and the minecart ---------------------------------
+
+    /// **`bee.isAngry()` is a deadline against the clock, so the answer changes
+    /// with no packet arriving.** A world that stored a boolean would freeze a
+    /// bee's anger at whatever it was when the last metadata came in.
+    #[test]
+    fn a_bees_anger_expires_without_another_packet() {
+        use crate::tickable::RampWorld;
+        let mut t = rewo_world::entities::EntityTable::default();
+        t.add(
+            9,
+            rewo_world::entities::EntityState::new(0, 0, 0.0, 64.0, 0.0, 0.0, 0.0),
+        );
+        t.set_anger_end_time(9, 100);
+        let angry = EntityTableWorld {
+            table: &t,
+            local: None,
+            game_time: 99,
+        };
+        assert!(angry.angry(9));
+        // One tick later the deadline has passed — same table, same entity, no
+        // packet in between.
+        let calm = EntityTableWorld {
+            table: &t,
+            local: None,
+            game_time: 100,
+        };
+        assert!(!calm.angry(9), "the second test is strict");
+
+        // An entity that never sent one is calm, and that is exact rather than
+        // a fallback: `Bee` seeds the accessor to -1.
+        assert!(!angry.angry(404));
+    }
+
+    /// **A spawning minecart brings its own loop**, and it is silence-gated —
+    /// unlike the elytra, `MinecartSoundInstance` overrides `canPlaySound()`.
+    #[test]
+    fn a_spawning_minecart_starts_a_ramped_loop() {
+        let idx = index_of(&["minecraft:entity.minecart.riding"]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let world = TestWorld {
+            positions: HashMap::from([(5, (1.0, 64.0, 2.0))]),
+            horizontal_speed: HashMap::from([(5, 0.5)]),
+            ..Default::default()
+        };
+        sys.accept(
+            &[SoundEvent::Tickable(
+                crate::sounds::TickableSound::MinecartRiding { minecart: 5 },
+            )],
+            &registry(),
+            &world,
+            &mut dev,
+        );
+        // It starts at volume 0 and `canStartSilent`, so `play` allows it
+        // through as SILENT rather than refusing it — the pair that lets a
+        // stationary cart's loop exist at all.
+        assert_eq!(sys.stats.started_silently, 1, "stats: {:?}", sys.stats);
+        assert_eq!(sys.stats.not_started, 0);
+
+        // …and one tick of the ramp gives its ceiling of 0.35, not 0.7.
+        sys.tick(false, &world, &mut dev);
+        assert!(
+            dev.calls_to(0).contains(&ChannelCall::SetVolume(0.35)),
+            "got {:?}",
+            dev.calls_to(0)
+        );
+        assert_eq!(
+            crate::tickable::Ramp::Minecart(crate::tickable::MinecartRamp {
+                minecart: 5,
+                shadowed_pitch: 0.0
+            })
+            .silence_gated_entity(),
+            Some(5),
+            "a minecart DOES override canPlaySound"
+        );
+
+        // **And the gate applies at `play` too, which is the BINDING's job
+        // rather than the ramp's.** The two are different mechanisms — the
+        // binding refuses a silent entity before a channel is acquired, the
+        // ramp stops one that falls silent later — and asserting only the ramp
+        // left `Binding::Fixed` alive in the battery.
+        let silent = TestWorld {
+            positions: HashMap::from([(5, (1.0, 64.0, 2.0))]),
+            silent: vec![5],
+            ..Default::default()
+        };
+        let mut sys = SoundSystem::new(index_of(&["minecraft:entity.minecart.riding"]));
+        let mut dev = RecordingDevice::default();
+        sys.accept(
+            &[SoundEvent::Tickable(
+                crate::sounds::TickableSound::MinecartRiding { minecart: 5 },
+            )],
+            &registry(),
+            &silent,
+            &mut dev,
+        );
+        assert_eq!(sys.stats.started_silently, 0, "stats: {:?}", sys.stats);
+        assert_eq!(sys.stats.not_started, 1, "a silent cart is refused");
+        assert_eq!(sys.engine.live_count(), 0);
+    }
+
+    /// **The bee's loop is chosen once, at spawn**, from its anger then — and
+    /// the spec carries which loop rather than the bee's id alone, so
+    /// resolving it twice cannot re-decide.
+    #[test]
+    fn a_spawning_bee_starts_the_loop_its_anger_chose() {
+        let idx = index_of(&[
+            "minecraft:entity.bee.loop",
+            "minecraft:entity.bee.loop_aggressive",
+        ]);
+        let world = TestWorld {
+            positions: HashMap::from([(9, (0.0, 64.0, 0.0))]),
+            ..Default::default()
+        };
+        for (aggressive, want) in [
+            (false, "minecraft:entity.bee.loop"),
+            (true, "minecraft:entity.bee.loop_aggressive"),
+        ] {
+            let mut sys = SoundSystem::new(idx.clone());
+            let mut dev = RecordingDevice::default();
+            sys.accept(
+                &[SoundEvent::Tickable(
+                    crate::sounds::TickableSound::BeeLoop { bee: 9, aggressive },
+                )],
+                &registry(),
+                &world,
+                &mut dev,
+            );
+            assert_eq!(sys.engine.live_identifiers(), vec![want], "{aggressive}");
+            // A bee's loop starts silent and is allowed to, like the minecart.
+            assert_eq!(sys.stats.started_silently, 1, "stats: {:?}", sys.stats);
+        }
+    }
+
     // ---- M141d: the velocity input ---------------------------------------
 
     /// **The local player's velocity reaches the ramps**, and it is not the
@@ -2967,6 +3167,7 @@ mod tests {
                 velocity: (3.0, 4.0, 12.0),
                 fall_flying: true,
             }),
+            game_time: 0,
         };
         assert_eq!(w.position(42), Some((1.5, 70.0, -2.5)));
         assert_eq!(w.speed_sqr(42), 169.0);
@@ -2991,6 +3192,7 @@ mod tests {
         let w = EntityTableWorld {
             table: &t,
             local: None,
+            game_time: 0,
         };
         assert_eq!(w.position(42), None);
         let mut r = crate::tickable::Ramp::Elytra(crate::tickable::ElytraRamp {
@@ -3018,6 +3220,7 @@ mod tests {
             let w = EntityTableWorld {
                 table: &t,
                 local: None,
+                game_time: 0,
             };
             assert_eq!(w.horizontal_speed(9), 0.5);
         }
@@ -3025,6 +3228,7 @@ mod tests {
         let w = EntityTableWorld {
             table: &t,
             local: None,
+            game_time: 0,
         };
         assert!(
             (w.horizontal_speed(9) - 0.49).abs() < 1e-12,
@@ -3733,7 +3937,7 @@ mod tests {
         let mut entities = EntityTable::default();
         entities.add(11, EntityState::new(0, 0, 5.0, 64.0, -5.0, 0.0, 0.0));
 
-        live.drive(&[positioned(3)], &entities, None);
+        live.drive(&[positioned(3)], &entities, None, 0);
         assert_eq!(live.stats().started, 1);
         assert_eq!(live.system.engine.live_count(), 1);
 
@@ -3749,12 +3953,12 @@ mod tests {
             pitch: 1.0,
             seed: 0,
         });
-        live.drive(&[ev.clone()], &entities, None);
+        live.drive(&[ev.clone()], &entities, None, 0);
         assert_eq!(live.stats().started, 2);
 
         // An entity the table does not have is dropped, not relocated.
         entities.remove(11);
-        live.drive(&[ev], &entities, None);
+        live.drive(&[ev], &entities, None, 0);
         assert_eq!(live.stats().no_instance, 1);
         assert_eq!(live.stats().started, 2);
     }
@@ -3770,7 +3974,7 @@ mod tests {
         if let Some(e) = t.get_mut(5) {
             e.set_target(30.0, 64.0, 0.0);
         }
-        let w = EntityTableWorld { table: &t, local: None };
+        let w = EntityTableWorld { table: &t, local: None, game_time: 0 };
         let (x, _, _) = w.position(5).unwrap();
         assert_ne!(x, 30.0, "the target is not where the entity is yet");
         assert_eq!(w.position(6), None, "an untracked entity is gone");
