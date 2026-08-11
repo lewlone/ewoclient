@@ -828,6 +828,69 @@ impl SoundEngine {
     /// Exists so a witness can name *which* sound is playing rather than
     /// counting how many are — the bee's switch replaces one loop with another
     /// and a count cannot see it happen.
+    /// `BiomeAmbientSoundsHandler.tick`'s loop transition, applied to the live
+    /// set (M142d). Returns the sound that still needs creating, if any.
+    ///
+    /// Vanilla's handler keeps its own `Object2ObjectArrayMap` of
+    /// `LoopSoundInstance`s and calls `fadeOut()` / `fadeIn()` on them; the
+    /// engine's live set **is** that map here, filtered to biome-loop ramps,
+    /// which is why the reuse falls out rather than being arranged.
+    ///
+    /// Three things are transcribed rather than tidied:
+    ///
+    /// * **`removeIf(isStopped)` runs FIRST**, before the change test. The
+    ///   engine already retires a stopped sound, so the equivalent here is
+    ///   that only *live* entries are visible — and that ordering is what
+    ///   guarantees the reuse below can never hand back a stopped instance and
+    ///   `fadeIn()` it, reviving an object whose channel is gone.
+    /// * **Every loop fades out, including the incoming one.** That reads like
+    ///   a bug and is load-bearing: `fade_out`'s `min(fade, 40)` is the *only*
+    ///   place a runaway `fade` is capped, and the ramp's tick never bounds it
+    ///   upward. Skipping it leaves an instance that has been playing for ten
+    ///   minutes re-entering with `fade == 12000`, and then taking 12000 ticks
+    ///   to fade out next time. The net composition on the incoming loop is
+    ///   `fade = clamp(fade, 0, 40); direction = +1`.
+    /// * **A live instance is REUSED.** Crossing back inside the ~41 ticks it
+    ///   takes to die finds it still here, so there is no second `play`, no
+    ///   channel re-attach and no restart of the sample — `fade_in()` just
+    ///   reverses the ramp from wherever it got to. Creating a fresh instance
+    ///   instead restarts the audio from offset 0.
+    pub fn apply_biome_loop_transition(&mut self, current: Option<&str>) -> Option<String> {
+        for live in &mut self.live {
+            if let Some(crate::tickable::Ramp::BiomeLoop(b)) = &mut live.ramp {
+                b.fade_out();
+            }
+        }
+        let id = current?;
+        let existing = self.live.iter_mut().find(|l| {
+            matches!(l.ramp, Some(crate::tickable::Ramp::BiomeLoop(_)))
+                && l.instance.identifier == id
+        });
+        match existing {
+            Some(live) => {
+                if let Some(crate::tickable::Ramp::BiomeLoop(b)) = &mut live.ramp {
+                    b.fade_in();
+                }
+                None
+            }
+            // Nothing live under that identifier: the caller plays one.
+            None => Some(id.to_string()),
+        }
+    }
+
+    /// The `fade` of the live biome loop with this identifier, for tests.
+    /// `None` if no such loop is live — which is itself the fact several
+    /// witnesses turn on, since a reused instance stays live and a replaced
+    /// one would not.
+    pub fn biome_fade(&self, identifier: &str) -> Option<i32> {
+        self.live.iter().find_map(|l| match &l.ramp {
+            Some(crate::tickable::Ramp::BiomeLoop(b)) if l.instance.identifier == identifier => {
+                Some(b.fade)
+            }
+            _ => None,
+        })
+    }
+
     pub fn live_identifiers(&self) -> Vec<&str> {
         self.live.iter().map(|l| l.instance.identifier.as_str()).collect()
     }
@@ -1340,6 +1403,10 @@ pub enum NoInstance {
     UnknownEntity,
     /// The event is a [`SoundEvent::Stop`]; see [`stop_from_event`].
     IsStop,
+    /// The event is a [`SoundEvent::BiomeLoopTransition`] — it names a change
+    /// to ramps the engine already holds rather than a sound to start, so it
+    /// has no instance at all (M142d).
+    IsBiomeTransition,
     /// The event is a [`SoundEvent::Tickable`] — it has a ramp as well as an
     /// instance, so [`instance_and_ramp`] is its entry point (M141e).
     IsTickable,
@@ -1376,6 +1443,8 @@ pub fn instance_from_event(
         // reduced to one here — `instance_and_ramp` is its entry point and
         // this arm exists so a caller that only wants an instance says so.
         SoundEvent::Tickable(_) => Err(NoInstance::IsTickable),
+        // Not a sound at all: it mutates ramps the engine already owns.
+        SoundEvent::BiomeLoopTransition { .. } => Err(NoInstance::IsBiomeTransition),
     }
 }
 
@@ -1532,6 +1601,31 @@ pub fn instance_and_ramp(
             Ok((
                 inst,
                 crate::tickable::Ramp::UnderwaterSub { player },
+            ))
+        }
+        crate::sounds::TickableSound::BiomeLoop { sound } => {
+            // `LoopSoundInstance`'s constructor: looping, delay 0, **volume
+            // 1.0**, relative — and attenuation left at the inherited LINEAR.
+            //
+            // Same reason as the underwater loop's: `SoundEngine.play` refuses
+            // a zero-volume instance unless `canStartSilent()`, which this
+            // class does not override. It is played BEFORE `fadeIn()` in
+            // vanilla, so 1.0 is what the channel actually receives for one
+            // tick before the ramp writes `fade/40`.
+            let inst = SoundInstance {
+                looping: true,
+                delay: 0,
+                volume: 1.0,
+                relative: true,
+                ..SoundInstance::bare(sound.clone(), SoundSource::Ambient)
+            };
+            Ok((
+                inst,
+                // `fadeIn()` applied at construction — see the variant's doc.
+                crate::tickable::Ramp::BiomeLoop(crate::tickable::BiomeLoopRamp {
+                    fade: 0,
+                    fade_direction: 1,
+                }),
             ))
         }
         crate::sounds::TickableSound::Riding(r) => {
@@ -1916,6 +2010,11 @@ pub struct SoundStats {
     /// Never reached the engine: the registry, the entity table or the
     /// event's own kind ruled it out. See [`NoInstance`].
     pub no_instance: u32,
+    /// Biome-loop transitions applied (M142d). Counted separately because a
+    /// transition is not a play: most of them fade a live loop rather than
+    /// starting anything, so folding them into `started` would make the
+    /// commonest case invisible.
+    pub biome_transitions: u32,
 }
 
 impl SoundStats {
@@ -1968,6 +2067,35 @@ impl SoundSystem {
                 self.stats.stops += 1;
                 continue;
             }
+            // The biome loop's transition mutates ramps the engine already
+            // holds, so it is applied here rather than built into an instance
+            // — and it may ask for exactly one new loop, which is then played
+            // through the ordinary path below so it gets the same channel
+            // budget and the same `NOT_STARTED` accounting as everything else.
+            if let SoundEvent::BiomeLoopTransition { current } = ev {
+                let needed = self.engine.apply_biome_loop_transition(current.as_deref());
+                self.stats.biome_transitions += 1;
+                if let Some(sound) = needed {
+                    let ev = SoundEvent::Tickable(crate::sounds::TickableSound::BiomeLoop { sound });
+                    if let Ok((i, r)) = instance_and_ramp(
+                        match &ev {
+                            SoundEvent::Tickable(t) => t.clone(),
+                            _ => unreachable!(),
+                        },
+                        world,
+                    ) {
+                        let (_, result) =
+                            self.engine
+                                .play_ramped(i, Some(r), &self.sounds, world, device);
+                        match result {
+                            PlayResult::Started => self.stats.started += 1,
+                            PlayResult::StartedSilently => self.stats.started_silently += 1,
+                            PlayResult::NotStarted(_) => self.stats.not_started += 1,
+                        }
+                    }
+                }
+                continue;
+            }
             // A tickable carries a ramp, so it goes through `play_ramped`.
             // Same queue and therefore the same order, which is the contract
             // `stop_sound` depends on.
@@ -1978,7 +2106,7 @@ impl SoundSystem {
             // stop every `sound_entity` following its entity. The engine's own
             // follow test calls `play` directly and could not have seen it.
             let built = match ev {
-                SoundEvent::Tickable(t) => instance_and_ramp(*t, world).map(|(i, r)| (i, Some(r))),
+                SoundEvent::Tickable(t) => instance_and_ramp(t.clone(), world).map(|(i, r)| (i, Some(r))),
                 _ => instance_from_event(ev, registry, world)
                     .map(|i| {
                         let r = crate::tickable::Ramp::for_instance(&i);
@@ -4635,6 +4763,170 @@ mod tests {
             sub_ramp,
             crate::tickable::Ramp::UnderwaterSub { player: 1 }
         ));
+    }
+    /// **A live loop is REUSED, not replaced.** Crossing back inside the ~41
+    /// ticks it takes to die finds the instance still here, so `fade_in()`
+    /// just reverses the ramp from wherever it got to — no second `play`, no
+    /// channel re-attach, no restart of the sample from offset 0.
+    ///
+    /// And **every** loop fades out on a transition, including the one about
+    /// to fade back in. That reads like a bug and is the only place a runaway
+    /// `fade` is capped, since the ramp's tick never bounds it upward.
+    #[test]
+    fn a_biome_loop_transition_fades_all_and_reuses_the_live_one() {
+        let idx = index_of(&["a", "b"]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let table = rewo_world::entities::EntityTable::default();
+        let world = EntityTableWorld {
+            table: &table,
+            local: None,
+            game_time: 0,
+        };
+
+        // Entering a biome whose loop is "a": nothing live, so one is created.
+        sys.accept(
+            &[SoundEvent::BiomeLoopTransition {
+                current: Some("a".into()),
+            }],
+            &registry(),
+            &world,
+            &mut dev,
+        );
+        assert_eq!(sys.engine.live_identifiers(), vec!["a"]);
+        assert_eq!(sys.stats.biome_transitions, 1);
+        let started = sys.stats.started + sys.stats.started_silently;
+        assert_eq!(started, 1, "the missing loop was played");
+
+        // Let it run up, so a restart would be visible as a reset.
+        for _ in 0..30 {
+            sys.tick(false, &world, &mut dev);
+        }
+        let fade_before = sys.engine.biome_fade("a").expect("live");
+        assert!(fade_before > 20, "it ramped up: {fade_before}");
+
+        // Cross to a biome with no loop: it fades OUT, and stays live while
+        // it does — which is what makes the reuse below reachable at all.
+        sys.accept(
+            &[SoundEvent::BiomeLoopTransition { current: None }],
+            &registry(),
+            &world,
+            &mut dev,
+        );
+        sys.tick(false, &world, &mut dev);
+        let fading = sys.engine.biome_fade("a").expect("still live, fading");
+        assert!(fading < fade_before, "now heading down: {fading}");
+
+        // Cross straight back: the SAME instance resumes, and nothing new is
+        // played.
+        let before = sys.stats.started + sys.stats.started_silently;
+        sys.accept(
+            &[SoundEvent::BiomeLoopTransition {
+                current: Some("a".into()),
+            }],
+            &registry(),
+            &world,
+            &mut dev,
+        );
+        assert_eq!(
+            sys.stats.started + sys.stats.started_silently,
+            before,
+            "the live instance was REUSED — a replacement would play again"
+        );
+        assert_eq!(sys.engine.live_identifiers(), vec!["a"], "still one voice");
+        sys.tick(false, &world, &mut dev);
+        assert!(
+            sys.engine.biome_fade("a").expect("live") > fading,
+            "and it resumed from where it was rather than from silence"
+        );
+    }
+
+    /// A transition to a DIFFERENT loop fades the old one and plays the new
+    /// one — two live voices for the length of the crossfade, which is what
+    /// makes it a crossfade rather than a cut.
+    #[test]
+    fn a_new_loop_crossfades_against_the_old() {
+        let idx = index_of(&["a", "b"]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let table = rewo_world::entities::EntityTable::default();
+        let world = EntityTableWorld {
+            table: &table,
+            local: None,
+            game_time: 0,
+        };
+        for id in ["a", "b"] {
+            sys.accept(
+                &[SoundEvent::BiomeLoopTransition {
+                    current: Some(id.into()),
+                }],
+                &registry(),
+                &world,
+                &mut dev,
+            );
+            sys.tick(false, &world, &mut dev);
+        }
+        let mut live = sys.engine.live_identifiers();
+        live.sort_unstable();
+        assert_eq!(live, vec!["a", "b"], "both alive during the crossfade");
+        // "a" is on its way out, "b" on its way in.
+        assert!(sys.engine.biome_fade("a").unwrap() < sys.engine.biome_fade("b").unwrap());
+    }
+
+    /// The outgoing loop **dies on its own**: nothing stops it, and its own
+    /// `-1` per tick carries it past zero into the ramp's stop condition.
+    #[test]
+    fn an_abandoned_loop_retires_itself() {
+        let idx = index_of(&["a"]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let table = rewo_world::entities::EntityTable::default();
+        let world = EntityTableWorld {
+            table: &table,
+            local: None,
+            game_time: 0,
+        };
+        sys.accept(
+            &[SoundEvent::BiomeLoopTransition {
+                current: Some("a".into()),
+            }],
+            &registry(),
+            &world,
+            &mut dev,
+        );
+        for _ in 0..10 {
+            sys.tick(false, &world, &mut dev);
+        }
+        sys.accept(
+            &[SoundEvent::BiomeLoopTransition { current: None }],
+            &registry(),
+            &world,
+            &mut dev,
+        );
+        let stops_before = dev
+            .calls
+            .iter()
+            .filter(|(_, c)| matches!(c, ChannelCall::Stop))
+            .count();
+        for _ in 0..40 {
+            sys.tick(false, &world, &mut dev);
+        }
+        // The observable is the STOP submitted to the device, not the live
+        // entry vanishing: an entry is reclaimed when the device reports its
+        // channel finished, which is asynchronous in vanilla too and which a
+        // recording device never volunteers. A witness that waited for the
+        // live set to empty would be waiting on the test's own device.
+        let stops_after = dev
+            .calls
+            .iter()
+            .filter(|(_, c)| matches!(c, ChannelCall::Stop))
+            .count();
+        assert!(
+            stops_after > stops_before,
+            "the ramp stopped itself — nobody sent it a stop"
+        );
+        // …and it went silent on the way, rather than being cut at full gain.
+        assert!(sys.engine.biome_fade("a").expect("still tracked") < 0);
     }
 }
 #[cfg(test)]

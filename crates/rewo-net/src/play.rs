@@ -682,6 +682,9 @@ pub struct PlaySession {
     /// `firstTick` starts **true**, so spawning inside a column is silent
     /// until you leave and come back.
     ambient_bubble: crate::ambient_handlers::BubbleColumnHandler,
+    /// `BiomeAmbientSoundsHandler` — third and last in `LocalPlayer`'s
+    /// list, and the only one that needs the world's biomes.
+    ambient_biome: crate::ambient_handlers::BiomeAmbientHandler,
     was_underwater: bool,
     /// The ambient handlers' `RandomSource`. Vanilla shares the level's,
     /// which is nanotime-seeded and reproduces nothing, so only the
@@ -1614,6 +1617,7 @@ impl<'a> Connection<'a> {
             local_player_data: crate::local_player_data::LocalPlayerData::default(),
             ambient_underwater: Default::default(),
             ambient_bubble: Default::default(),
+            ambient_biome: Default::default(),
             was_underwater: false,
             ambient_rng: rewo_world::biome_noise::LegacyRandom::new(0x5EED_A11B_1E17),
             vehicle_pose: None,
@@ -3741,6 +3745,40 @@ impl PlaySession {
             &self.bubble_column_drag,
         );
         self.ambient_bubble.tick(found, spectator, pos, &mut out);
+
+        // `BiomeAmbientSoundsHandler` — the dimension type's base, layered by
+        // the biome at the player's FEET. Vanilla samples the attribute at
+        // `player.position()` and centres the mood's block search on the EYE,
+        // eleven lines apart in the same method; both are passed here.
+        let base = self
+            .active_dimension_type
+            .as_ref()
+            .and_then(|d| d.ambient_sounds.clone())
+            .unwrap_or_else(rewo_world::ambient::AmbientSounds::empty);
+        let ambient = self.world.ambient_sounds_at(pos, &base);
+        let mut rng = std::mem::replace(
+            &mut self.ambient_rng,
+            rewo_world::biome_noise::LegacyRandom::new(0),
+        );
+        {
+            // The mood reads RAW stored light — `getBrightness`, not
+            // `getEffectiveSkyBrightness`, which exists to subtract the sky
+            // darkening and is deliberately not called. Raw sky light on open
+            // ground is 15 at midnight, so vanilla drains the mood at full
+            // rate all night; a time-adjusted value plays `ambient.cave` on
+            // the surface every night instead.
+            struct WorldLight<'a>(&'a rewo_world::World);
+            impl crate::ambient_handlers::MoodLight for WorldLight<'_> {
+                fn brightness(&self, x: i32, y: i32, z: i32) -> (i32, i32) {
+                    let (block, sky) = self.0.light_at(x, y, z);
+                    (block as i32, sky as i32)
+                }
+            }
+            let light = WorldLight(&self.world);
+            self.ambient_biome
+                .tick(&ambient, pos, self.player.eye_y(), &light, &mut rng, &mut out);
+        }
+        self.ambient_rng = rng;
 
         for ev in out {
             self.push_sound_event(ev);

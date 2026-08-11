@@ -406,6 +406,23 @@ pub enum SoundEvent {
     /// and LINEAR. Reducing either to a `LocalSound` loses the distinction
     /// silently — the addition would gain a direction it does not have.
     Instance(SoundInstance),
+    /// `BiomeAmbientSoundsHandler.tick`'s loop transition — the one part of
+    /// the ambient work that cannot be expressed as "play this" (M142d).
+    ///
+    /// Vanilla's handler **holds** its `LoopSoundInstance`s and calls
+    /// `fadeOut()` / `fadeIn()` on them directly; Rewo's engine owns the
+    /// ramps, so the handler names the outcome and the engine applies it:
+    ///
+    /// 1. fade out **every** live biome loop, and
+    /// 2. if `current` is `Some`, fade that one back in — reusing a live
+    ///    instance if there is one, and creating it otherwise.
+    ///
+    /// Step 1 includes the incoming loop, which reads like a bug and is
+    /// load-bearing: `fadeOut`'s `min(fade, 40)` is the **only** place a
+    /// runaway `fade` is capped, and `tick()` never bounds it upward. Skip it
+    /// and a loop that has been playing for ten minutes re-enters with
+    /// `fade == 12000` and then takes 12000 ticks to fade out.
+    BiomeLoopTransition { current: Option<String> },
 }
 
 /// Which `TickableSoundInstance` the client is starting, and what it follows.
@@ -413,7 +430,11 @@ pub enum SoundEvent {
 /// One variant per vanilla construction site rather than per ramp — the ramps
 /// are in [`crate::tickable`] and several of them are reachable from more than
 /// one site (`RidingEntitySoundInstance` from three).
-#[derive(Clone, Copy, Debug, PartialEq)]
+// **Not `Copy`.** `BiomeLoop` carries an owned identifier, because which
+// loop plays is decided by the biome at the player's position rather than
+// by a construction site — the other variants' `&'static str`s all name a
+// `SoundEvents` constant. (`Eq` went in M141h, for `RidingSpec`'s floats.)
+#[derive(Clone, Debug, PartialEq)]
 pub enum TickableSound {
     /// `new ElytraOnPlayerSoundInstance(player)` —
     /// `LocalPlayer.onSyncedDataUpdated`'s fall-flying rising edge.
@@ -463,6 +484,15 @@ pub enum TickableSound {
         player: i32,
         sound: &'static str,
     },
+    /// `new BiomeAmbientSoundsHandler.LoopSoundInstance(sound)` — the biome's
+    /// looping bed (M142d).
+    ///
+    /// Created **already fading in**: vanilla plays the instance and then
+    /// calls `fadeIn()` on it in the next statement, and a fresh instance's
+    /// `fade` is 0 with `fadeDirection` 0, so `fadeIn`'s `max(0, fade)` is a
+    /// no-op and only the direction changes. Constructing it at
+    /// `{ fade: 0, fade_direction: 1 }` is that pair, in one step.
+    BiomeLoop { sound: String },
 }
 
 /// Which of `startRiding`'s four instances this is (M141h).

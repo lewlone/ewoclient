@@ -376,6 +376,41 @@ impl World {
         water.get(state).copied().unwrap_or(false)
     }
 
+    /// `environmentAttributes().getValue(AMBIENT_SOUNDS, player.position())`
+    /// — the record `BiomeAmbientSoundsHandler` reads (M142d).
+    ///
+    /// `base` is the dimension type's layer, which for the Overworld is
+    /// `LEGACY_CAVE_SETTINGS` and for the Nether is nothing.
+    ///
+    /// **The sample is the RAW QUART**, `QuartPos.fromBlock(Mth.floor(c))`
+    /// straight into `getNoiseBiome` — not the fiddled `BiomeManager.getBiome`
+    /// that M14's block tint uses, and not any blend. Two independent guards
+    /// make it so: the caller passes a null interpolator, and `AMBIENT_SOUNDS`
+    /// is `ofNotInterpolated`. Reusing the colour path's resolver here shifts
+    /// the switch point by a seed-dependent few blocks.
+    ///
+    /// **The Y quart is included**, so flying up out of a cave biome changes
+    /// the loop.
+    ///
+    /// With no biome context attached the base is returned unlayered, which is
+    /// the honest answer for a synthetic world: the dimension still has its
+    /// say, and no biome can override what does not exist.
+    pub fn ambient_sounds_at(
+        &self,
+        pos: [f64; 3],
+        base: &crate::ambient::AmbientSounds,
+    ) -> crate::ambient::AmbientSounds {
+        let Some(ctx) = self.biome.as_ref() else {
+            return base.clone();
+        };
+        let id = self.noise_biome_at_quart(
+            crate::ambient::quart_from_block_coord(pos[0]),
+            crate::ambient::quart_from_block_coord(pos[1]),
+            crate::ambient::quart_from_block_coord(pos[2]),
+        );
+        crate::ambient::AmbientSounds::resolve(base, ctx.registry.biomes.get(id as usize))
+    }
+
     /// `level.getBlockStatesIfLoaded(box).filter(is BUBBLE_COLUMN).findFirst()`
     /// — the scan `BubbleColumnAmbientSoundHandler` runs over the player's
     /// torso box (M142c). `Some(drag)` for the first bubble column found.
