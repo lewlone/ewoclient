@@ -41,6 +41,7 @@
 //! (`crate::route_level_event`); the sound half of that table is a playback
 //! concern, not a decode gap, so this module leaves it alone.
 
+use crate::sound_instance::SoundInstance;
 use rewo_proto::reader::PacketReader;
 use rewo_proto::{ProtoError, Result};
 
@@ -394,6 +395,17 @@ pub enum SoundEvent {
     /// [`LocalSound`] is: naming the vanilla class keeps the construction in
     /// one place, beside the ramp it has to agree with.
     Tickable(TickableSound),
+    /// A `SimpleSoundInstance` the client built itself, carried whole.
+    ///
+    /// Distinct from [`Self::Local`], which is `level.playSound(...)` — a
+    /// *world* sound with a position and the default LINEAR attenuation.
+    /// `soundManager.play(new SimpleSoundInstance(...))` can set `relative`
+    /// and `attenuation` independently, and the two ambient producers use
+    /// opposite ends of that: an addition is `Attenuation.NONE` and relative
+    /// at the origin (it plays at your ear), while a mood sting is positioned
+    /// and LINEAR. Reducing either to a `LocalSound` loses the distinction
+    /// silently — the addition would gain a direction it does not have.
+    Instance(SoundInstance),
 }
 
 /// Which `TickableSoundInstance` the client is starting, and what it follows.
@@ -435,6 +447,22 @@ pub enum TickableSound {
     /// mutes itself when the rider is on the wrong side of the waterline —
     /// so the crossfade is two permanently-live voices rather than a switch.
     Riding(RidingSpec),
+    /// `new UnderwaterAmbientSoundInstances.UnderwaterAmbientSoundInstance
+    /// (player)` — **not** from the underwater *handler*, which only ever
+    /// plays the sub-sounds, but from `LocalPlayer.updateIsUnderwater()`'s
+    /// rising edge (M142b).
+    UnderwaterLoop { player: i32 },
+    /// `new UnderwaterAmbientSoundInstances.SubSound(player, event)` — one of
+    /// the three `AMBIENT_UNDERWATER_LOOP_ADDITIONS*` events, chosen by a
+    /// single partitioned draw in `UnderwaterAmbientSoundHandler.tick`.
+    ///
+    /// It carries **which** sound rather than the draw, for the same reason
+    /// `BeeLoop` carries which loop: the choice is made once and the instance
+    /// never revisits it.
+    UnderwaterSub {
+        player: i32,
+        sound: &'static str,
+    },
 }
 
 /// Which of `startRiding`'s four instances this is (M141h).

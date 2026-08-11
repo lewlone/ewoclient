@@ -669,6 +669,16 @@ pub struct PlaySession {
     /// [`crate::local_player_data`]. Beside the table for M73's reason: the
     /// table has no row for you.
     local_player_data: crate::local_player_data::LocalPlayerData,
+    /// `UnderwaterAmbientSoundHandler`, and the previous tick's
+    /// submersion that `LocalPlayer.updateIsUnderwater()` compares
+    /// against (M142b). The handler itself is stateless; vanilla's
+    /// `tickDelay` field can never gate anything.
+    ambient_underwater: crate::ambient_handlers::UnderwaterHandler,
+    was_underwater: bool,
+    /// The ambient handlers' `RandomSource`. Vanilla shares the level's,
+    /// which is nanotime-seeded and reproduces nothing, so only the
+    /// distribution is a transcribable fact — this is the same 48-bit LCG.
+    ambient_rng: rewo_world::biome_noise::LegacyRandom,
     /// The pose of the vehicle the local player rides, from `move_vehicle`.
     ///
     /// `None` in every ordinary session: that packet is only ever the server
@@ -1593,6 +1603,9 @@ impl<'a> Connection<'a> {
             mounts: crate::motion::Mounts::new(),
             local_attributes: rewo_world::attributes::EntityAttributes::default(),
             local_player_data: crate::local_player_data::LocalPlayerData::default(),
+            ambient_underwater: Default::default(),
+            was_underwater: false,
+            ambient_rng: rewo_world::biome_noise::LegacyRandom::new(0x5EED_A11B_1E17),
             vehicle_pose: None,
             motion_stats: MotionStats::default(),
             day_ticks: None,
@@ -1898,6 +1911,9 @@ impl PlaySession {
         // (M141e). Once per tick, and that cadence is what makes the elytra
         // sound's rising edge terminate rather than fire on every packet.
         self.local_player_data.tick();
+        // The ambient handlers, at the END of the player tick — vanilla's
+        // order (`LocalPlayer.java:247-249`), after the movement send.
+        self.tick_ambient_sounds();
         // Step other entities' 3-tick position lerps (vanilla cadence).
         self.world.entities.tick_lerp();
         // `ChestLidController.tickLid` — the client animates the ten ticks the
@@ -3471,14 +3487,18 @@ impl PlaySession {
             position: (self.player.x, self.player.y, self.player.z),
             velocity: (self.player.vx, self.player.vy, self.player.vz),
             fall_flying: self.local_player_data.is_fall_flying(),
-            // `isUnderWater()` at the **eye**, which is what
-            // `EntityFluidInteraction`'s `eyesInside` tests. With no water
-            // table the answer is `false`, which is the dry reading — the
-            // minecart's dry loop plays, which is the audible one.
-            // `isUnderWater()` at the **eye**, which is what
-            // `EntityFluidInteraction`'s `eyesInside` tests. `water_states` is
-            // M30's table, already on the session for the conduit scan — one
-            // table, two readers, rather than a second copy of the same bake.
+            // `LocalPlayer.isUnderWater()`, which for the LOCAL player is
+            // the eye test **alone**: `LocalPlayer` overrides the method to
+            // return `wasUnderwater` (`LocalPlayer.java:1172-1175`), and
+            // `Player.updateIsUnderwater` writes that as
+            // `isEyeInFluid(FluidTags.WATER)` with no `isInWater()` conjunct
+            // (`Player.java:304-307`). `Entity.isUnderWater()`'s two-term form
+            // is what every OTHER entity answers — the one entity the field
+            // describes is the one entity that overrides it.
+            //
+            // With no water table the answer is `false`, the dry reading.
+            // `water_states` is M30's table, already on the session for the
+            // conduit scan — one table, several readers.
             underwater: self.world.is_water_at_point(
                 self.player.x,
                 self.player.eye_y(),
@@ -3629,6 +3649,66 @@ impl PlaySession {
     /// All four are `SoundSource.NEUTRAL`: `HappyGhast.getSoundSource()`
     /// overrides the default with the same value, and `AbstractNautilus` does
     /// not override it at all.
+    /// The `AmbientSoundHandler` list, ticked once per client tick.
+    ///
+    /// A thin adapter over [`crate::ambient_handlers`] for M71/M97's reason:
+    /// this type owns a socket and has no test module anywhere in the repo, so
+    /// everything here except the reads and the pushes lives in a tested free
+    /// function.
+    ///
+    /// Vanilla ticks the handlers at the very end of `LocalPlayer.tick()` and
+    /// **only inside `if (this.connection.hasClientLoaded())`** — the whole
+    /// body is gated, so a client still loading ticks none of them.
+    fn tick_ambient_sounds(&mut self) {
+        let Some(player) = self.player_id else {
+            return;
+        };
+        // `LocalPlayer.isUnderWater()` — the eye test alone; see
+        // `local_player_view`.
+        let underwater = self.world.is_water_at_point(
+            self.player.x,
+            self.player.eye_y(),
+            self.player.z,
+            &self.water_states,
+        );
+        let pos = [self.player.x, self.player.y, self.player.z];
+        // Rewo has no spectator concept for the local player yet — gamemode is
+        // decoded (M71) but `PlaySession` does not carry it here. Passing
+        // `false` is the audible reading (a non-spectator hears everything);
+        // the cost is that a spectator would hear the enter/exit pair and the
+        // loop, which vanilla suppresses. Recorded rather than guessed at.
+        let spectator = false;
+
+        let mut out = Vec::new();
+        // `updateIsUnderwater()` runs at the TOP of `Player.tick()`, before
+        // the handlers — but its edge is against the PREVIOUS tick's value,
+        // so evaluating it here with a snapshot taken now is the same
+        // comparison. The handler below then reads the same fresh value the
+        // real `isUnderWater()` would return, because vanilla latches it in
+        // the same tick.
+        crate::ambient_handlers::underwater_edge(
+            player,
+            pos,
+            self.was_underwater,
+            underwater,
+            spectator,
+            &mut out,
+        );
+        self.was_underwater = underwater;
+
+        let mut rng = std::mem::replace(
+            &mut self.ambient_rng,
+            rewo_world::biome_noise::LegacyRandom::new(0),
+        );
+        self.ambient_underwater
+            .tick(player, underwater, &mut rng, &mut out);
+        self.ambient_rng = rng;
+
+        for ev in out {
+            self.push_sound_event(ev);
+        }
+    }
+
     fn start_riding_sound(&mut self) {
         let Some(player) = self.player_id else {
             return;

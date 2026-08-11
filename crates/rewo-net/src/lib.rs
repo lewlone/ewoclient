@@ -12,6 +12,7 @@
 
 pub mod music;
 pub mod abilities;
+pub mod ambient_handlers;
 pub mod attributes;
 pub mod biome_parse;
 pub mod border;
