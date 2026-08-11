@@ -6,6 +6,15 @@ Same rules as its predecessors, and **run it alone** — see `m141g_mutate.py`'s
 note on the interrupted-battery hazard, and `m141_mutate.py`'s on reading the
 `test result:` line rather than the exit code (which cannot tell a failing test
 from a failing build).
+
+**And do not `git add` while this is running.** Each mutation restores the
+WORKING TREE from a byte snapshot when it finishes, so `git status` is clean
+afterwards — but `git add` writes a SEPARATE snapshot into the index at the
+moment it runs, and that moment can fall inside a mutation's window. M142
+committed its `resolve` mutant exactly that way; the tree was already correct
+by the time anyone looked, so the leftover-mutation check (which reads the
+tree) could not see it. Stage before starting a battery or after its summary,
+never across it.
 """
 import io
 import os

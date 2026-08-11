@@ -20485,7 +20485,20 @@ survivors was a real gap in my own witnesses rather than an equivalent mutant:
 
 One mutation was badly built rather than informative: rewriting the chain into
 three independent rolls does not compile against the shape it replaces, so it
-reported BUILD-FAIL. It was replaced by the runtime claim underneath it.
+reported BUILD-FAIL — a mutation that never ran, which is not the same as one
+that survived. It was replaced by the runtime claim underneath it.
+
+**And the battery poisoned a commit, which is a hazard worth its own line.**
+Staging the docs while it was still running captured the `resolve` mutant off
+the working tree: each mutation restores the TREE from a byte snapshot when it
+finishes, so `git status` came back clean, but `git add` writes a SEPARATE
+snapshot into the index at the moment it runs and that moment fell inside a
+mutation's window. The two are independent, so a restored file and a poisoned
+commit look identical from the tree — and the leftover-mutation assertion
+`m141f` added cannot see it, because it reads the tree. It was recoverable only
+because the suite kills that particular mutant; one that SURVIVED would have
+committed a real bug with every test green. **Stage before a battery or after
+its summary, never across it.**
 
 #### What is transcribed but not yet wired
 
