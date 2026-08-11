@@ -1456,9 +1456,18 @@ pub struct LocalPlayerView {
 /// The half of [`crate::tickable::RampWorld`] an [`rewo_world::entities::EntityTable`]
 /// can answer, and an explicit account of the half it cannot.
 ///
-/// **Twelve of the sixteen queries are real; four are not, and each says so.**
-/// M141d closed the three speed queries, which were the ones that mattered:
-/// they gated four of the ten ramps.
+/// **Nine of the sixteen queries are answered; seven are not, and each says
+/// so.** M141d closed the three speed queries, which were the ones that
+/// mattered — they gated four of the ten ramps.
+///
+/// **Count it rather than trusting this sentence**: an unanswered query is
+/// exactly one whose signature is `fn name(&self, _: i32)`, because it does
+/// not look at the entity. Both halves of this doc have been wrong before —
+/// before M141d the caption said "nine … seven" over a table whose rows summed
+/// to *ten* queries, and the first M141d edit said "twelve … four". A number
+/// beside a table is worth what the table says, and the table is worth what
+/// the signatures say.
+///
 /// The rule applied to the seven is *make the ramp inert, never plausible*: a
 /// sound that stays at its minimum volume is a smaller lie than one that ramps
 /// on a number nobody derived, because silence is attributable and a wrong
@@ -1480,6 +1489,15 @@ pub struct LocalPlayerView {
 /// | `sniffer_digging` | the state enum is decoded for the gesture rig, not exposed here | a sniffer's dig sound stops on its first tick |
 /// | `on_rails`, `new_minecart_behavior` | needs blocks | **both `false`, which reads as "on rails, old behaviour"** — the audible case, chosen because the pair is a conjunction and `(false, false)` makes `off_rail` false |
 /// | `camera_position` | not a property of the entity table | only `Ramp::Directional` asks, and nothing constructs one |
+///
+/// Six rows, seven queries — `on_rails`/`new_minecart_behavior` is the only
+/// row naming two, and that is where the caption's number comes from.
+///
+/// One of them is closer than it looks. `NewMinecartBehavior.tick`'s **client**
+/// branch runs `this.minecart.setOnRails(BaseRailBlock.isRail(...))`, so
+/// `isOnRails()` is a client-side read of the block below and Rewo has the
+/// blocks. `OldMinecartBehavior`'s client branch does not, so the old-behaviour
+/// answer stays server-sent — which is why this is a note rather than a fix.
 ///
 /// Closing them is per-input work with its own witnesses, not a refactor —
 /// which is why they are a table rather than a TODO.

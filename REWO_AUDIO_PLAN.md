@@ -309,9 +309,18 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 > `MinecartSoundInstance`, `RidingEntitySoundInstance`, `SnifferSoundInstance`,
 > and the two nested in `UnderwaterAmbientSoundInstances`. They live in
 > `crates/rewo-net/src/tickable.rs`, the engine drives them, and **nothing
-> constructs one yet** — the triggers are `REWO_PLAN.md` §0.0 item 4a, where the
-> blocker is *inputs* rather than triggers (velocity gates four of the ten;
-> `EntityTable` stores an interpolation target, not a `getDeltaMovement()`).
+> constructs one yet** — the triggers are `REWO_PLAN.md` §0.0 item 4a.
+>
+> **M141d then fed them their velocity**, which was the input gating four of the
+> ten, and its finding belongs in this file's §5 trap list too: a remote
+> entity's `getDeltaMovement()` is **a decaying echo of the last
+> `set_entity_motion` packet**, not a velocity, because a client never
+> integrates it into a position. A bee gliding steadily past with no motion
+> packets has its buzz fade to silence. The decay is `0.98` a tick, is the
+> **else** of the interpolation branch, is skipped for a vehicle the local
+> player rides, ends in a deadband with two different forms, and **does not run
+> for a minecart at all** (`aiStep` is `LivingEntity`'s). Four separate ways for
+> a reasonable implementation to be wrong.
 >
 > Its headline belongs in this file too, because it is the kind of thing §5's
 > trap list is for: **`MinecartSoundInstance` shadows
