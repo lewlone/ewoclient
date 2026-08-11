@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-11 after M141g:
-**3007 tests, 0 failures** (**world 1155, net 1051, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 3007).
+Current measurement, taken 2026-08-11 after M141h:
+**3012 tests, 0 failures** (**world 1155, net 1056, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 3012).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -243,7 +243,7 @@ own pitch ramp is dead code and the plausible transcription gives a twenty-secon
 glissando that vanilla does not have. It also fixed a live bug (the per-tick
 position was not narrowed through f32, with a comment *justifying* the omission)
 and retired `SoundWorld::entity_position` in favour of one name for one query.
-See §15. **M141d then fed them their velocity**, which was the input gating four of the ten — and found that a remote entity's `getDeltaMovement()` is a *decaying echo of the last motion packet*, not a velocity, so a bee visibly gliding past has its buzz fade to silence. **M141e then built the first trigger** — the elytra, whose `fall_flying` input gates the ramp at both ends, and which found that `canPlaySound()` is a per-CLASS override that six of the ten declare and four decline — and **M141f the bee and the minecart**, which are one vanilla method and whose anger input turned out to be a synced *deadline* at an index that needed counting twice. **M141g then took the guardian and the sniffer** — and found on the way that the sniffer's and armadillo's state enums had been decoding from the wrong INDEX since the gesture rigs shipped, invisible because those rigs inject the state rather than decode it. **Five of the ten are constructed**; the rest are item 4a.
+See §15. **M141d then fed them their velocity**, which was the input gating four of the ten — and found that a remote entity's `getDeltaMovement()` is a *decaying echo of the last motion packet*, not a velocity, so a bee visibly gliding past has its buzz fade to silence. **M141e then built the first trigger** — the elytra, whose `fall_flying` input gates the ramp at both ends, and which found that `canPlaySound()` is a per-CLASS override that six of the ten declare and four decline — and **M141f the bee and the minecart**, which are one vanilla method and whose anger input turned out to be a synced *deadline* at an index that needed counting twice. **M141g then took the guardian and the sniffer** — and found on the way that the sniffer's and armadillo's state enums had been decoding from the wrong INDEX since the gesture rigs shipped, invisible because those rigs inject the state rather than decode it. **M141h then closed the ordinary triggers with the riding pair**, whose mount plays **both** minecart instances at once and lets each mute itself, so the dry/wet choice is the ramp's and not the trigger's. **Seven of the ten are constructed**; the remaining three are ambient instances wanting an `AmbientSoundHandler` subsystem, not another trigger.
 
 **AUDIO IS NO LONGER THE TOP ITEM.** `crates/rewo-audio` exists with the
 quantisation, the buffer library, the mixer, the SPSC command ring and a cpal
@@ -303,9 +303,11 @@ sink; `rewo-net` carries the listener transform and the music fade.
      * ~~**the guardian and the sniffer**~~ — **shipped as M141g**, which also
        found that the sniffer's state enum was decoding from the wrong index
        (see §15). Five of the ten ramps are constructed now.
-     * **the riding pair** — `LocalPlayer.startRiding`, which plays **both**
-       minecart instances at once and lets each mute itself by submersion, so
-       `underwater` is what it wants. This is the last ordinary trigger.
+     * ~~**the riding pair**~~ — **shipped as M141h**, the last ordinary
+       trigger. It plays **both** minecart instances at once and lets each mute
+       itself by submersion, so the choice is the ramp's rather than the
+       trigger's. **Seven of the ten ramps are constructed now**; everything
+       below this line is a subsystem, not a trigger.
      * **the three ambient instances** — the underwater loop and its
        sub-sound, the biome loop, and the directional sound — are **not**
        triggers in the same sense: they want `AmbientSoundHandler`s (a
@@ -20326,6 +20328,102 @@ milestone measured, but nothing *structurally* stops a fifth from repeating it �
 so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
+
+### M141h — the riding pair, and a mount that plays two sounds at once (2026-08-11)
+
+The last ordinary tickable trigger. **Seven of the ten ramps are constructed**;
+what is left is the three ambient instances, which are a subsystem rather than
+a trigger.
+
+#### The trigger plays both instances and lets them argue
+
+`LocalPlayer.startRiding`'s minecart arm constructs **two**
+`RidingEntitySoundInstance`s and plays both — one keyed to
+`entity.minecart.inside`, one to `entity.minecart.inside.underwater` — and each
+mutes *itself* from the same submersion input. So the choice of which you hear
+is re-made every tick by the ramp, not once at mount time by the trigger.
+
+That inverts the natural implementation. Picking the right sound when the
+player mounts gives a client that is silent for half of every ride, because
+diving does not re-fire `startRiding`. The two-instance form is also what makes
+the crossfade possible at all: one ramps up over the twenty ticks the other
+ramps down, and a single instance switching its identifier would cut.
+
+#### Four constants, one class, and an arity the types already pin
+
+The ghast's and the nautilus's specs are the same class with `underwaterSound`
+set opposite ways; the minecart pair differ from both in ceiling (**0.75**
+against 1.0) and in taking the `isMinecart` hooks. All four have
+`volumeMin = 0.0`.
+
+The "there are two minecart instances" claim is enforced by a **destructure**
+rather than an assertion — `let [wet, dry] = RIDING_MINECART` is an irrefutable
+pattern, so shortening the array is a compile error. That is a stronger pin
+than a test, and it means a mutation battery cannot grade it: the mutant does
+not run. **A battery can only grade claims that survive compilation**; anything
+the types make unrepresentable shows up as BUILD-FAIL noise and should be
+replaced by whatever runtime claim sits underneath it — here, that the two name
+*different* sounds, which `assert_ne!(wet.sound, dry.sound)` does grade.
+
+#### Three facts that read backwards
+
+* **`Attenuation.NONE`.** You are sitting on the thing, so the loop plays at
+  full gain wherever the listener is — the same decision as the guardian's beam
+  in M141g, for the opposite reason (proximity rather than warning).
+* **`volume = volumeMin`, which is 0.0 for all four.** Every riding loop starts
+  **silent**, so `canStartSilent()` returning true is the only thing that gets
+  it a channel; a loop that refused to start silent would never be audible at
+  all, and the mutation for that is a kill rather than a subtlety.
+* **The silence gate is on the VEHICLE, not the rider.** `canPlaySound()` is
+  `!entity.isSilent()` on the vehicle, so a silenced cart silences its rider's
+  loop. M141e's `silence_gated_entity` seam carries it; binding it to the
+  player compiles, reads correctly and gates on the wrong mob — which is
+  exactly the shape M141e found when `binding: Fixed` survived, and the second
+  time this arc that a *plausible* binding was the bug.
+
+#### The submersion input, and a write that was quietly dropped
+
+`eyesInside` is a client-side query about **the camera**, so
+`RampWorld::underwater` answers false for every entity but the local player *by
+construction* rather than by a lookup that could accidentally succeed on
+another. Two mutations grade that from both sides: one that never consults it,
+and one that answers it for everybody.
+
+`World::is_water_at_point` is the block query under it, and its first test was
+wrong before the code was — the **sixth** such instance in the log.
+`World::set_block` writes into an **existing** column and is otherwise a silent
+no-op, so writing water into a freshly constructed world and reading it back
+measures the write being dropped, not the query. The fixture inserts its
+columns first. (There is also no `World::default()`; the constructors are
+`World::new(shape)` and `World::for_dimension`.)
+
+#### What the battery found
+
+`tools/m141h_mutate.py`, **15/15**, with a surviving no-op control and **two**
+surviving composition-root controls — the mount trigger and the ghast arm both
+live in `PlaySession`, which still has no test module anywhere in the repo, so
+their absence is named rather than hidden.
+
+Two of its own entries had to be rewritten rather than accepted, and both
+failure modes are worth recognising: one was the compile error above dressed as
+a mutation, and one had a **stale anchor that matched nothing** after the
+instance grew an explanatory comment between the fields it named. The battery
+reports `ANCHOR MATCHED 0 TIMES` rather than skipping quietly, which is the
+only reason that one was visible — an anchor that silently matches zero times
+is a mutation that never ran and reads as a kill.
+
+**Measured:** 3012 tests / 0 failures (world 1155, net 1056, gpu 275, data 224,
+app 197, mesh 45, proto 16, audio 44); 34 gates green with 0 validation errors
+(`mobshot` 246/246, `containershot` 107/107); `live --render-check` **45/45**
+with validation ON and 0 errors; demo PNG `2cc56b4acbfb92cb` byte-identical.
+
+**What is left of M141 is not a trigger.** The three ambient instances — the
+underwater loop and its sub-sound, the biome loop, and the directional sound —
+want `AmbientSoundHandler`s (a per-tick subsystem) and, for the directional
+one, an end-flash state Rewo has no equivalent of. And **the listening pass
+remains the user's**: no gate in this project opens an audio device, so a
+client that mixes perfectly into a stream nobody opened passes every witness
+above.
 
 ### M141g — the guardian and the sniffer, and a decode bug found on the way (2026-08-11)
 

@@ -401,7 +401,7 @@ pub enum SoundEvent {
 /// One variant per vanilla construction site rather than per ramp — the ramps
 /// are in [`crate::tickable`] and several of them are reachable from more than
 /// one site (`RidingEntitySoundInstance` from three).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TickableSound {
     /// `new ElytraOnPlayerSoundInstance(player)` —
     /// `LocalPlayer.onSyncedDataUpdated`'s fall-flying rising edge.
@@ -428,7 +428,85 @@ pub enum TickableSound {
     /// `new SnifferSoundInstance(sniffer)` — `handleEntityEvent` case **63**
     /// (M141g).
     SnifferDigging { sniffer: i32 },
+    /// `new RidingMinecartSoundInstance(...)` / `new RidingEntitySoundInstance(...)`
+    /// — `LocalPlayer.startRiding`'s three arms (M141h).
+    ///
+    /// The **minecart arm plays two of these**, one per submersion, and each
+    /// mutes itself when the rider is on the wrong side of the waterline —
+    /// so the crossfade is two permanently-live voices rather than a switch.
+    Riding(RidingSpec),
 }
+
+/// Which of `startRiding`'s four instances this is (M141h).
+///
+/// A record rather than three variants, because vanilla's three arms build the
+/// **same class** with different constants — only the minecart's overrides are
+/// a behavioural difference, and that is `is_minecart`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RidingSpec {
+    pub player: i32,
+    pub vehicle: i32,
+    /// Which side of the waterline this instance is the loop for.
+    pub underwater_sound: bool,
+    /// The registry name — the four differ.
+    pub sound: &'static str,
+    pub volume_min: f32,
+    pub volume_max: f32,
+    pub volume_amplifier: f32,
+    /// `RidingMinecartSoundInstance` rather than the base class: it reads the
+    /// **rider's** submersion, the **horizontal** speed, and requires rails.
+    pub is_minecart: bool,
+}
+
+/// `startRiding`'s minecart arm — **two instances**, and both are played.
+pub const RIDING_MINECART: [RidingSpec; 2] = [
+    RidingSpec {
+        player: 0,
+        vehicle: 0,
+        underwater_sound: true,
+        sound: "minecraft:entity.minecart.inside.underwater",
+        volume_min: 0.0,
+        volume_max: 0.75,
+        volume_amplifier: 1.0,
+        is_minecart: true,
+    },
+    RidingSpec {
+        player: 0,
+        vehicle: 0,
+        underwater_sound: false,
+        sound: "minecraft:entity.minecart.inside",
+        volume_min: 0.0,
+        volume_max: 0.75,
+        volume_amplifier: 1.0,
+        is_minecart: true,
+    },
+];
+
+/// `startRiding`'s happy-ghast arm. `underwaterSound = false`, so it plays
+/// while the ghast is dry — which is always.
+pub const RIDING_HAPPY_GHAST: RidingSpec = RidingSpec {
+    player: 0,
+    vehicle: 0,
+    underwater_sound: false,
+    sound: "minecraft:entity.happy_ghast.riding",
+    volume_min: 0.0,
+    volume_max: 1.0,
+    volume_amplifier: 5.0,
+    is_minecart: false,
+};
+
+/// `startRiding`'s nautilus arm. `underwaterSound = **true**` — the opposite of
+/// the ghast's, so it plays only while the nautilus is submerged.
+pub const RIDING_NAUTILUS: RidingSpec = RidingSpec {
+    player: 0,
+    vehicle: 0,
+    underwater_sound: true,
+    sound: "minecraft:entity.nautilus.riding",
+    volume_min: 0.0,
+    volume_max: 1.0,
+    volume_amplifier: 5.0,
+    is_minecart: false,
+};
 
 #[cfg(test)]
 mod tests {

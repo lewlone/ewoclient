@@ -344,6 +344,37 @@ impl World {
         }
     }
 
+    /// `Entity.isUnderWater()` for a point, given the per-state water table
+    /// (M141h).
+    ///
+    /// Vanilla is `wasEyeInWater && isInWater()`, and `wasEyeInWater` is
+    /// `EntityFluidInteraction`'s `eyesInside`: the eye must be in the
+    /// entity's **own block column** and between the fluid's bottom and top,
+    /// where the top is `blockY + fluidHeight` and a source block's height is
+    /// **8/9**, not 1 (`FlowingFluid.getOwnHeight` is `amount / 9`) — unless
+    /// the block above is also the same fluid, in which case it is 1.
+    ///
+    /// **This is an approximation and here is exactly what it is**: the eye's
+    /// block is tested for water and nothing else. So it over-reports by up to
+    /// **1/9 of a block at a free surface** — an eye in the top ninth of a
+    /// surface water block reads as submerged where vanilla says it is not —
+    /// and it does not consult `isInWater()`, which cannot disagree here
+    /// because an eye inside water implies water overlapping the box.
+    ///
+    /// Closing the gap wants the fluid *level* per state, which the bake does
+    /// not carry (M30's scan needed only a boolean). The consequence is
+    /// bounded to a tenth of a block at the waterline, where the audible
+    /// effect is the riding loops swapping fractionally early.
+    pub fn is_water_at_point(&self, x: f64, y: f64, z: f64, water: &[bool]) -> bool {
+        let (bx, by, bz) = (
+            x.floor() as i32,
+            y.floor() as i32,
+            z.floor() as i32,
+        );
+        let state = self.block_state_at(bx, by, bz) as usize;
+        water.get(state).copied().unwrap_or(false)
+    }
+
     pub fn tick_skull_animations(&mut self, powered: &std::collections::HashSet<u32>) {
         if powered.is_empty() {
             return;

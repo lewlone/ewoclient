@@ -542,6 +542,14 @@ pub struct PlaySession {
     /// (M141g). Two ids because the elder is its own registry entry.
     pub guardian_type_id: Option<i32>,
     pub elder_guardian_type_id: Option<i32>,
+    /// `minecraft:happy_ghast` and the two `AbstractNautilus` concretes —
+    /// `startRiding`'s second and third arms (M141h).
+    ///
+    /// **Two nautilus ids**, because `AbstractNautilus` is abstract and both
+    /// `Nautilus` and `ZombieNautilus` extend it; vanilla's `instanceof`
+    /// catches both and a gate naming one would silence the other.
+    pub happy_ghast_type_id: Option<i32>,
+    pub nautilus_type_ids: [Option<i32>; 2],
     /// `minecraft:sniffer` — names the kind entity event 63 reaches (M141g).
     pub sniffer_type_id: Option<i32>,
     /// `minecraft:player` — gates the index-16 skin-customisation byte whose
@@ -1559,6 +1567,8 @@ impl<'a> Connection<'a> {
             guardian_type_id: None,
             elder_guardian_type_id: None,
             sniffer_type_id: None,
+            happy_ghast_type_id: None,
+            nautilus_type_ids: [None; 2],
             player_type_id: None,
             variant_type_ids: crate::VariantKinds::default(),
             take_item_kinds: crate::TakeItemKinds::default(),
@@ -3461,6 +3471,20 @@ impl PlaySession {
             position: (self.player.x, self.player.y, self.player.z),
             velocity: (self.player.vx, self.player.vy, self.player.vz),
             fall_flying: self.local_player_data.is_fall_flying(),
+            // `isUnderWater()` at the **eye**, which is what
+            // `EntityFluidInteraction`'s `eyesInside` tests. With no water
+            // table the answer is `false`, which is the dry reading — the
+            // minecart's dry loop plays, which is the audible one.
+            // `isUnderWater()` at the **eye**, which is what
+            // `EntityFluidInteraction`'s `eyesInside` tests. `water_states` is
+            // M30's table, already on the session for the conduit scan — one
+            // table, two readers, rather than a second copy of the same bake.
+            underwater: self.world.is_water_at_point(
+                self.player.x,
+                self.player.eye_y(),
+                self.player.z,
+                &self.water_states,
+            ),
         })
     }
 
@@ -3579,6 +3603,63 @@ impl PlaySession {
         self.push_sound_event(crate::sounds::SoundEvent::Tickable(spec));
     }
 
+    /// `LocalPlayer.startRiding`'s three arms (M141h).
+    ///
+    /// ```java
+    /// if (entity instanceof AbstractMinecart minecart) {
+    ///    play(new RidingMinecartSoundInstance(this, minecart, true,  MINECART_INSIDE_UNDERWATER, 0, 0.75, 1));
+    ///    play(new RidingMinecartSoundInstance(this, minecart, false, MINECART_INSIDE,            0, 0.75, 1));
+    /// } else if (entity instanceof HappyGhast happyGhast) {
+    ///    play(new RidingEntitySoundInstance(this, happyGhast, false, HAPPY_GHAST_RIDING, ..., 0, 1, 5));
+    /// } else if (entity instanceof AbstractNautilus nautilus) {
+    ///    play(new RidingEntitySoundInstance(this, nautilus,   true,  NAUTILUS_RIDING,    ..., 0, 1, 5));
+    /// }
+    /// ```
+    ///
+    /// **The minecart arm plays TWO instances and both stay live**, each
+    /// muting itself on the wrong side of the waterline — so the crossfade
+    /// between the dry and submerged loops is two voices rather than a switch.
+    /// Picking one would leave you silent for whichever half you guessed
+    /// wrong.
+    ///
+    /// **The ghast's `underwaterSound` is `false` and the nautilus's is
+    /// `true`** — opposite constants for the same class, so the ghast's loop
+    /// plays while it is dry (always) and the nautilus's only while submerged.
+    ///
+    /// All four are `SoundSource.NEUTRAL`: `HappyGhast.getSoundSource()`
+    /// overrides the default with the same value, and `AbstractNautilus` does
+    /// not override it at all.
+    fn start_riding_sound(&mut self) {
+        let Some(player) = self.player_id else {
+            return;
+        };
+        let Some(vehicle) = self.local_vehicle() else {
+            return;
+        };
+        let Some(type_id) = self.world.entities.get(vehicle).map(|e| e.type_id) else {
+            return;
+        };
+        let is_minecart = self
+            .entity_classes
+            .as_deref()
+            .is_some_and(|c| c.is_minecart(type_id));
+        let mut specs: Vec<crate::sounds::RidingSpec> = Vec::new();
+        if is_minecart {
+            specs.extend(crate::sounds::RIDING_MINECART);
+        } else if Some(type_id) == self.happy_ghast_type_id {
+            specs.push(crate::sounds::RIDING_HAPPY_GHAST);
+        } else if self.nautilus_type_ids.contains(&Some(type_id)) {
+            specs.push(crate::sounds::RIDING_NAUTILUS);
+        }
+        for mut spec in specs {
+            spec.player = player;
+            spec.vehicle = vehicle;
+            self.push_sound_event(crate::sounds::SoundEvent::Tickable(
+                crate::sounds::TickableSound::Riding(spec),
+            ));
+        }
+    }
+
     /// The local player's own synced data (M141e).
     pub fn local_player_data(&self) -> &crate::local_player_data::LocalPlayerData {
         &self.local_player_data
@@ -3640,6 +3721,12 @@ impl PlaySession {
             (false, true) => {
                 self.motion_stats.local_mounts += 1;
                 log::debug!("net: mounted vehicle {:?}", self.local_vehicle());
+                // `LocalPlayer.startRiding`'s tail — the riding loop the
+                // vehicle brings with it (M141h). Derived from the transition
+                // rather than from a packet field, because `set_passengers`
+                // has no such field: a mount is a rider list that now names
+                // you (M68).
+                self.start_riding_sound();
             }
             (true, false) => {
                 self.motion_stats.local_dismounts += 1;

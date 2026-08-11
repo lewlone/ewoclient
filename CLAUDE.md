@@ -1924,7 +1924,7 @@ item** — M138a–d, `level_event`'s sounds and the music fade have shipped, an
 **the listening pass is the outstanding work and it is the user's**, because no
 gate in this project opens an audio device.
 **Everything is shipped, gated and merged to `main`** as of 2026-08-11
-(M141g) — **3007 tests / 0 failures** (world 1155, net 1051, gpu 275, data 224,
+(M141h) — **3012 tests / 0 failures** (world 1155, net 1056, gpu 275, data 224,
 app 197, mesh 45, proto 16, **audio 44** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
@@ -6142,7 +6142,7 @@ bytes.
 
 ---
 
-## M141 — the ten tickable ramps, their velocity, and five triggers (2026-08-11)
+## M141 — the ten tickable ramps, their velocity, and every ordinary trigger (2026-08-11)
 
 `SoundEngine.tickInGameSound` drove **one `tick()` body out of ten** since
 M131, because `EntityBoundSoundInstance` was the only subclass Rewo modelled.
@@ -6254,9 +6254,28 @@ live-verified, and `Bee -> 18`, which M141f had just shipped) **before** the
 sniffer's answer was believed. **A counting method is an instrument; calibrate
 it against a known reading before reporting what it finds.**
 
-**What is left is one ordinary trigger** — the riding pair, which needs
-`underwater` — plus the three ambient instances, which want an
-`AmbientSoundHandler` subsystem rather than four more call sites.
+**M141h then closed the ordinary triggers with the riding pair**, so **seven of
+the ten ramps are constructed**. Its finding is that the trigger does *not*
+choose a sound: `LocalPlayer.startRiding`'s minecart arm plays **both**
+instances at once — dry and underwater — and each mutes itself from the same
+submersion input, so the crossfade belongs to the ramp. Picking one at mount
+time is the natural implementation and is silent for half of every ride,
+because diving does not re-fire `startRiding`. Two more, both invertible: the
+loop is `Attenuation.NONE` (you are sitting on the thing), and it is
+silence-gated on the **vehicle**, so a silenced cart silences its rider — the
+same `canPlaySound()` trap M141e found, in the one place where binding it to
+the obvious entity reads perfectly correctly.
+
+It also has the clearest example of a limit on mutation testing: the "there are
+two minecart instances" claim is pinned by a **destructure**
+(`let [wet, dry] = RIDING_MINECART`), so shortening the array is a compile error
+and the mutant never runs. **A battery can only grade claims that survive
+compilation** — anything the types make unrepresentable is pinned harder and
+shows up as BUILD-FAIL noise, so mutate the runtime claim underneath it instead.
+
+**What is left is not a trigger**: the three ambient instances want an
+`AmbientSoundHandler` subsystem (and, for the directional sound, an end-flash
+state Rewo has no equivalent of) rather than more call sites.
 
 **M141d fed them the velocity**, which was the input gating four of the ten,
 and its finding is the sort that punishes a sensible implementation: a remote
