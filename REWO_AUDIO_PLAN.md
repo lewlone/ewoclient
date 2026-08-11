@@ -310,11 +310,18 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 > and the two nested in `UnderwaterAmbientSoundInstances`. They live in
 > `crates/rewo-net/src/tickable.rs` and the engine drives them. **M141e built
 > the first trigger** (the elytra), **M141f two more** (the bee and the
-> minecart, which are one vanilla method) and **M141g two more** (the guardian
-> and the sniffer), so **five of the ten are constructed**. What is left is one
-> ordinary trigger (the riding pair) plus three ambient instances that want an
-> `AmbientSoundHandler` subsystem rather than call sites — `REWO_PLAN.md` §0.0
-> item 4a.
+> minecart, which are one vanilla method), **M141g two more** (the guardian
+> and the sniffer) and **M141h the riding pair**, so **seven of the ten are
+> constructed and the ordinary triggers are done**. What is left is three
+> ambient instances that want an `AmbientSoundHandler` subsystem rather than
+> call sites — `REWO_PLAN.md` §0.0 item 4a.
+>
+> **M141h's trigger is the one that is not one-instance-per-sound.** A minecart
+> mount plays **both** instances at once — dry and underwater — and each mutes
+> itself from the same submersion input, so the crossfade is the ramp's job and
+> picking a sound at mount time is silent for half of every ride. It also has
+> the clearest case of §5's silence-gate trap: the loop is gated on the
+> **vehicle**, so a silenced cart silences its rider.
 >
 > **M141g belongs in §5's trap list twice over.** Its guardian input is the one
 > among the ten that is not a decode but a client-side counter, whose reset is
