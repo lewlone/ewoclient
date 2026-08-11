@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-11 after M141e:
-**2995 tests, 0 failures** (**world 1155, net 1039, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 2995).
+Current measurement, taken 2026-08-11 after M141f:
+**2999 tests, 0 failures** (**world 1155, net 1043, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 2999).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -243,7 +243,7 @@ own pitch ramp is dead code and the plausible transcription gives a twenty-secon
 glissando that vanilla does not have. It also fixed a live bug (the per-tick
 position was not narrowed through f32, with a comment *justifying* the omission)
 and retired `SoundWorld::entity_position` in favour of one name for one query.
-See §15. **M141d then fed them their velocity**, which was the input gating four of the ten — and found that a remote entity's `getDeltaMovement()` is a *decaying echo of the last motion packet*, not a velocity, so a bee visibly gliding past has its buzz fade to silence. **M141e then built the first trigger** — the elytra, whose `fall_flying` input gates the ramp at both ends, and which found that `canPlaySound()` is a per-CLASS override that six of the ten declare and four decline. The rest of the triggers are item 4a.
+See §15. **M141d then fed them their velocity**, which was the input gating four of the ten — and found that a remote entity's `getDeltaMovement()` is a *decaying echo of the last motion packet*, not a velocity, so a bee visibly gliding past has its buzz fade to silence. **M141e then built the first trigger** — the elytra, whose `fall_flying` input gates the ramp at both ends, and which found that `canPlaySound()` is a per-CLASS override that six of the ten declare and four decline — and **M141f the bee and the minecart**, which are one vanilla method and whose anger input turned out to be a synced *deadline* at an index that needed counting twice. **Three of the ten are constructed**; the rest are item 4a.
 
 **AUDIO IS NO LONGER THE TOP ITEM.** `crates/rewo-audio` exists with the
 quantisation, the buffer library, the mixer, the SPSC command ring and a cpal
@@ -296,16 +296,10 @@ sink; `rewo-net` carries the listener transform and the music fade.
      and says how to re-derive that count rather than asking to be believed.
      What each remaining trigger still needs:
 
-     * **the bee** — `angry`, which is a synced *deadline* rather than a flag
-       (`Bee.DATA_ANGER_END_TIME`, a LONG, against the world clock, per
-       `NeutralMob.isAngry()`). `rewo_net::tickable::is_angry` already
-       transcribes the predicate; only the metadata index is missing. Its
-       trigger is `handleAddEntity`'s `postAddEntitySoundInstance`, and note
-       the bee goes through `queueTickingSound` where the minecart beside it
-       goes through `play` — a one-tick deferral that is vanilla's, not a
-       tidying opportunity.
-     * **the minecart** — nothing, for the trigger. Its `on_rails` gap only
-       mutes it; `postAddEntitySoundInstance` can construct it today.
+     * ~~**the bee** and **the minecart**~~ — **shipped as M141f**, together,
+       because `postAddEntitySoundInstance` is one method with two arms and
+       implementing half an `if/else if` is half a transcription. Three of the
+       ten ramps are constructed now.
      * **the guardian and the sniffer** — `handleEntityEvent` cases **21** and
        **63**. The sniffer needs its state enum exposed (already decoded for
        the gesture rig); the guardian needs `attack_animation_scale`, which is
@@ -20328,6 +20322,101 @@ milestone measured, but nothing *structurally* stops a fifth from repeating it �
 so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
+
+### M141f — the bee and the minecart (2026-08-11)
+
+`postAddEntitySoundInstance` is one vanilla method with two arms, so it is
+transcribed as one. The bee's `angry` was the only missing input; the minecart
+needed nothing, and implementing half of an `if/else if` would have been a half
+transcription.
+
+#### The index needed counting twice
+
+**`Bee.DATA_ANGER_END_TIME` is index 19, and the count that gets it wrong is
+AgeableMob's.** Entity 0..7, LivingEntity 8..14, Mob 15, PathfinderMob none,
+**AgeableMob 16 AND 17** — `DATA_BABY_ID` and an `AGE_LOCKED` that no earlier
+milestone had noted — Animal none, Bee 18..19.
+
+Counting AgeableMob as one is the natural mistake, and M20's own note ("index 16
+BOOLEAN is baby for `AgeableMob`") invites it by naming one accessor without
+saying it is the first of two. That reading puts this on `Bee.DATA_FLAGS_ID`.
+**The serializer saves it there and only by luck**: that slot is a BYTE and this
+is a LONG, so the arity would not match — on a slot whose neighbour shared its
+type the same error would land silently.
+
+The serializer is **2** and its codec is `ByteBufCodecs.VAR_LONG` — a var-long,
+not a fixed i64. Rewo's skip table already had that right since M1; the read had
+to agree.
+
+#### Anger is a deadline, not a flag
+
+`NeutralMob.isAngry()` is `endTime > 0 && endTime - gameTime > 0`, and the second
+half changes **every tick with no packet arriving**. So the deadline is stored
+raw and compared against the world clock at read time; storing a boolean would
+freeze a bee's anger at whatever it was when the last metadata came in. That is
+why `EntityTableWorld` grew a `game_time` rather than the table growing a flag.
+`tickable::is_angry` transcribed the predicate at M141b — only the input was
+missing.
+
+An entity that never sent one is calm, and that is **exact rather than a
+fallback**: `Bee` seeds the accessor to `-1` (`Bee.java:165`), which the same
+predicate reads as calm, so an absent entry and a default one agree.
+
+#### Two arms, two entry points, and that is vanilla's
+
+The minecart goes through `play`; the bee through `queueTickingSound`, which
+defers to the top of the next tick and re-checks `canPlaySound()` there.
+Tidying them into one call is the obvious simplification and loses a one-tick
+difference in when a spawning mob's loop starts.
+
+**The bee's loop is chosen once, at spawn**, from its anger at that moment —
+after which the ramp switches on its own via `shouldSwitchSounds`. So the queued
+spec carries *which loop* rather than the bee's id alone: a spec that said "a
+bee" would re-decide every time it was resolved.
+
+Both constructors start at **volume 0 with `canStartSilent`**, which is the pair
+that lets a stationary cart's or a hovering bee's loop exist at all, since `play`
+drops a zero-volume instance unless it says it can start silent. And unlike the
+elytra, both **do** override `canPlaySound()`, so both are silence-gated.
+
+`read_add_entity` now returns the `(id, type)` it built rather than the caller
+reaching for a `last_added` accessor — that is what vanilla's `handleAddEntity`
+holds when it calls this, and it adds no table state nobody else wants.
+
+#### What the battery found, and a hazard that fired
+
+`tools/m141f_mutate.py`, **12/12**. Its survivor was a witness asserting the
+wrong mechanism: `binding: Fixed` on the minecart lived, because the test
+checked the **ramp's** silence gate while the binding's is a different one — the
+binding refuses a silent entity at `play`, before a channel is acquired; the
+ramp stops one that falls silent later. Both are asserted now.
+
+**And the recorded interrupted-battery hazard fired.** Running three batteries
+in one command hit the ten-minute tool cap, `m141e`'s `finally` never ran, and it
+**left a mutation on disk** — the tick loop's `silence_gated_entity()` swapped
+back to `entity()`. `git status` could not tell, because every file that battery
+touches was already modified by this milestone: the same blindness the docs
+record for `git diff --quiet`, one layer up.
+
+What did work is worth keeping: **load each battery's `MUTATIONS` and assert
+every *original* string is still present.** That is independent of what else is
+uncommitted, it names the offending entry, and it takes a second. Run it after
+any battery that did not print its own "files restored: yes".
+
+**Measured:** 2999 tests / 0 failures (world 1155, net 1043, gpu 275, data 224,
+app 197, mesh 45, proto 16, audio 44); 34 gates green with 0 validation errors;
+`live --render-check` 45/45 with validation ON; demo PNG `2cc56b4acbfb92cb`
+byte-identical. Batteries `m141` 39/39, `m141d` 21/21, `m141e` 16/16, `m141f`
+12/12, controls surviving.
+
+**Three of the ten ramps are now constructed** — the elytra, the minecart and
+the bee. What is left, and what each still wants: the **guardian** (entity event
+21) needs `attack_animation_scale`, which is the one input that is not a decode
+at all but a client-side counter Rewo does not run; the **sniffer** (event 63)
+needs its state enum, already decoded for the gesture rig and not exposed here;
+the **riding pair** (`LocalPlayer.startRiding`) needs `underwater`; and the
+underwater, biome-loop and directional instances need ambient handlers Rewo has
+no equivalent of.
 
 ### M141e — the elytra, and a silence gate that is per-class (2026-08-11)
 

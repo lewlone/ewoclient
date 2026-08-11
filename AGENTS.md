@@ -1940,7 +1940,7 @@ item** — M138a–d, `level_event`'s sounds and the music fade have shipped, an
 **the listening pass is the outstanding work and it is the user's**, because no
 gate in this project opens an audio device.
 **Everything is shipped, gated and merged to `main`** as of 2026-08-11
-(M141e) — **2995 tests / 0 failures** (world 1155, net 1039, gpu 275, data 224,
+(M141f) — **2999 tests / 0 failures** (world 1155, net 1043, gpu 275, data 224,
 app 197, mesh 45, proto 16, **audio 44** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
@@ -6158,7 +6158,7 @@ bytes.
 
 ---
 
-## M141 — the ten tickable ramps, their velocity, and the first trigger (2026-08-11)
+## M141 — the ten tickable ramps, their velocity, and three triggers (2026-08-11)
 
 `SoundEngine.tickInGameSound` drove **one `tick()` body out of ten** since
 M131, because `EntityBoundSoundInstance` was the only subclass Rewo modelled.
@@ -6227,9 +6227,26 @@ and what makes the edge terminate is `wasFallFlying` being sampled once per
 tick — which means two flag-carrying packets inside one tick each start a
 sound, and vanilla has no dedup.
 
+**M141f then took the bee and the minecart**, which are one vanilla method
+(`postAddEntitySoundInstance`) with two arms — so implementing half an
+`if/else if` would have been half a transcription. **Three of the ten ramps are
+constructed now.**
+
+Its finding is an index that needed counting twice. `Bee.DATA_ANGER_END_TIME` is
+**19**, and the count that gets it wrong is `AgeableMob`'s: it declares **two**
+accessors (`DATA_BABY_ID` *and* an `AGE_LOCKED` no earlier milestone noted), so
+reading M20's "index 16 BOOLEAN is baby" as the whole of it puts this on
+`Bee.DATA_FLAGS_ID`. The serializer catches that only by luck — one slot is a
+BYTE and the other a LONG — and would not on a neighbour of the same type.
+
+And anger is a **deadline, not a flag**: `endTime > 0 && endTime - gameTime > 0`,
+whose second half changes every tick with no packet arriving. Storing a boolean
+would freeze a bee's anger at whatever it was when the last metadata came in,
+which is why the sound world grew a clock rather than the table growing a flag.
+
 **The remaining triggers are packets Rewo already routes**
-(`handleAddEntity`, `handleEntityEvent` 21 and 63, `startRiding`), so the
-next milestone is wiring, one construction site at a time.
+(`handleEntityEvent` 21 and 63, `startRiding`), so the next milestone is more
+wiring, one construction site at a time.
 
 **M141d fed them the velocity**, which was the input gating four of the ten,
 and its finding is the sort that punishes a sensible implementation: a remote
