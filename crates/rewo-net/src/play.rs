@@ -537,6 +537,13 @@ pub struct PlaySession {
     /// `minecraft:bee` — gates the index-19 anger deadline, and names the kind
     /// `postAddEntitySoundInstance` starts a loop for (M141f).
     pub bee_type_id: Option<i32>,
+    /// `minecraft:guardian` / `minecraft:elder_guardian` — they gate the
+    /// index-17 attack target and name the kinds entity event 21 reaches
+    /// (M141g). Two ids because the elder is its own registry entry.
+    pub guardian_type_id: Option<i32>,
+    pub elder_guardian_type_id: Option<i32>,
+    /// `minecraft:sniffer` — names the kind entity event 63 reaches (M141g).
+    pub sniffer_type_id: Option<i32>,
     /// `minecraft:player` — gates the index-16 skin-customisation byte whose
     /// bit 0 shows the cape (M60). `None` leaves every cape hidden, which is
     /// also what an unsent mask means, so a harness that never resolves it
@@ -1549,6 +1556,9 @@ impl<'a> Connection<'a> {
             sheep_type_id: None,
             creaking_type_id: None,
             bee_type_id: None,
+            guardian_type_id: None,
+            elder_guardian_type_id: None,
+            sniffer_type_id: None,
             player_type_id: None,
             variant_type_ids: crate::VariantKinds::default(),
             take_item_kinds: crate::TakeItemKinds::default(),
@@ -2608,6 +2618,8 @@ impl PlaySession {
                 creaking: self.creaking_type_id,
                 player: self.player_type_id,
                 bee: self.bee_type_id,
+                guardian: self.guardian_type_id,
+                elder_guardian: self.elder_guardian_type_id,
                 variant_kinds: self.variant_type_ids,
                 classes: self.entity_classes.as_deref(),
                 components: self.swing_data.as_ref().map(|d| d.components),
@@ -2913,6 +2925,12 @@ impl PlaySession {
             // peek) were stamped with the current tick — the renderer measures
             // the rig's elapsed time from it. `self.ticks` is the in-progress
             // tick (it increments at the end of `tick()`, after this drain).
+            //
+            // M141g: and the two SOUND events in the same switch. They are
+            // handled here rather than inside `route_entity_event` because
+            // that seam writes the entity table and these push a sound, and
+            // the body is two fixed fields either way.
+            self.entity_event_sound(body);
         } else if crate::route_move_minecart_along_track(
             id,
             body,
@@ -3523,6 +3541,42 @@ impl PlaySession {
                 },
             ));
         }
+    }
+
+    /// `handleEntityEvent`'s two sound cases (M141g).
+    ///
+    /// ```java
+    /// case 21: play(new GuardianAttackSoundInstance((Guardian)entity)); break;
+    /// case 63: play(new SnifferSoundInstance((Sniffer)entity)); break;
+    /// ```
+    ///
+    /// **Both are `play`, not `queueTickingSound`** — the deferral is the
+    /// bee's alone. And both casts are unchecked in vanilla, which is only
+    /// safe because the server never sends those ids to another type; here the
+    /// kind is checked, so a mis-addressed event is inert rather than a sound
+    /// on the wrong mob.
+    ///
+    /// The body is `ClientboundEntityEventPacket`'s: a **fixed big-endian i32**
+    /// entity id and a signed byte event id, neither a VarInt (M17).
+    fn entity_event_sound(&mut self, body: &[u8]) {
+        let mut r = PacketReader::new(body);
+        let (Ok(eid), Ok(event)) = (r.i32(), r.i8()) else {
+            return;
+        };
+        // `packet.getEntity(this.level)` — `if (entity != null)`.
+        let Some(type_id) = self.world.entities.get(eid).map(|e| e.type_id) else {
+            return;
+        };
+        let is_guardian = Some(type_id) == self.guardian_type_id
+            || Some(type_id) == self.elder_guardian_type_id;
+        let spec = match event {
+            21 if is_guardian => crate::sounds::TickableSound::GuardianAttack { guardian: eid },
+            63 if Some(type_id) == self.sniffer_type_id => {
+                crate::sounds::TickableSound::SnifferDigging { sniffer: eid }
+            }
+            _ => return,
+        };
+        self.push_sound_event(crate::sounds::SoundEvent::Tickable(spec));
     }
 
     /// The local player's own synced data (M141e).

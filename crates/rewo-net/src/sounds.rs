@@ -422,6 +422,12 @@ pub enum TickableSound {
         bee: i32,
         aggressive: bool,
     },
+    /// `new GuardianAttackSoundInstance(guardian)` — `handleEntityEvent`
+    /// case **21** (M141g).
+    GuardianAttack { guardian: i32 },
+    /// `new SnifferSoundInstance(sniffer)` — `handleEntityEvent` case **63**
+    /// (M141g).
+    SnifferDigging { sniffer: i32 },
 }
 
 #[cfg(test)]

@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-11 after M141f:
-**2999 tests, 0 failures** (**world 1155, net 1043, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 2999).
+Current measurement, taken 2026-08-11 after M141g:
+**3007 tests, 0 failures** (**world 1155, net 1051, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 3007).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -243,7 +243,7 @@ own pitch ramp is dead code and the plausible transcription gives a twenty-secon
 glissando that vanilla does not have. It also fixed a live bug (the per-tick
 position was not narrowed through f32, with a comment *justifying* the omission)
 and retired `SoundWorld::entity_position` in favour of one name for one query.
-See §15. **M141d then fed them their velocity**, which was the input gating four of the ten — and found that a remote entity's `getDeltaMovement()` is a *decaying echo of the last motion packet*, not a velocity, so a bee visibly gliding past has its buzz fade to silence. **M141e then built the first trigger** — the elytra, whose `fall_flying` input gates the ramp at both ends, and which found that `canPlaySound()` is a per-CLASS override that six of the ten declare and four decline — and **M141f the bee and the minecart**, which are one vanilla method and whose anger input turned out to be a synced *deadline* at an index that needed counting twice. **Three of the ten are constructed**; the rest are item 4a.
+See §15. **M141d then fed them their velocity**, which was the input gating four of the ten — and found that a remote entity's `getDeltaMovement()` is a *decaying echo of the last motion packet*, not a velocity, so a bee visibly gliding past has its buzz fade to silence. **M141e then built the first trigger** — the elytra, whose `fall_flying` input gates the ramp at both ends, and which found that `canPlaySound()` is a per-CLASS override that six of the ten declare and four decline — and **M141f the bee and the minecart**, which are one vanilla method and whose anger input turned out to be a synced *deadline* at an index that needed counting twice. **M141g then took the guardian and the sniffer** — and found on the way that the sniffer's and armadillo's state enums had been decoding from the wrong INDEX since the gesture rigs shipped, invisible because those rigs inject the state rather than decode it. **Five of the ten are constructed**; the rest are item 4a.
 
 **AUDIO IS NO LONGER THE TOP ITEM.** `crates/rewo-audio` exists with the
 quantisation, the buffer library, the mixer, the SPSC command ring and a cpal
@@ -300,14 +300,18 @@ sink; `rewo-net` carries the listener transform and the music fade.
        because `postAddEntitySoundInstance` is one method with two arms and
        implementing half an `if/else if` is half a transcription. Three of the
        ten ramps are constructed now.
-     * **the guardian and the sniffer** — `handleEntityEvent` cases **21** and
-       **63**. The sniffer needs its state enum exposed (already decoded for
-       the gesture rig); the guardian needs `attack_animation_scale`, which is
-       the one input that is **not a decode at all** but a client-side counter
-       (`Guardian.clientSideAttackTime`) Rewo does not run.
+     * ~~**the guardian and the sniffer**~~ — **shipped as M141g**, which also
+       found that the sniffer's state enum was decoding from the wrong index
+       (see §15). Five of the ten ramps are constructed now.
      * **the riding pair** — `LocalPlayer.startRiding`, which plays **both**
        minecart instances at once and lets each mute itself by submersion, so
-       `underwater` is what it wants.
+       `underwater` is what it wants. This is the last ordinary trigger.
+     * **the three ambient instances** — the underwater loop and its
+       sub-sound, the biome loop, and the directional sound — are **not**
+       triggers in the same sense: they want `AmbientSoundHandler`s (a
+       per-tick subsystem Rewo has no equivalent of) and, for the directional
+       one, an End-flash state. Treat them as a subsystem, not as four more
+       call sites.
 
      And one thing M141e established that applies to all of them:
      **`canPlaySound()` is per-class**. Six of the ten override it and four do
@@ -20322,6 +20326,125 @@ milestone measured, but nothing *structurally* stops a fifth from repeating it �
 so they keep the scale in scope and rely on the witnesses. A `GuiPx`/`ScreenPx`
 newtype pair would make the whole class unrepresentable and is a bigger change
 than this bug justifies on its own.
+
+### M141g — the guardian and the sniffer, and a decode bug found on the way (2026-08-11)
+
+The last two entity-event triggers. **Five of the ten ramps are constructed
+now.** It ships in two commits because the first is a live bug that stands
+without the rest.
+
+#### M141g1 — three state enums at three indices, not one
+
+`(17, 35..=37) => gesture_state` claimed the sniffer's, armadillo's and copper
+golem's state enums sit at "their shared first-own-field index". They do not
+share one, and 17 is only one of the three.
+
+The index is the class's first own accessor counted up the
+`ClassTreeIdRegistry` chain, and the count that decides it is **`AgeableMob`'s
+TWO** — `DATA_BABY_ID` and an `AGE_LOCKED` that is easy to miss, and that
+M141f had just been bitten by on the bee:
+
+```
+Sniffer, Armadillo   Entity 8, Living 7, Mob 1, AgeableMob 2, Animal 0
+                     -> first own 18, so the state is 18
+CopperGolem          Entity 8, Living 7, Mob 1, AbstractGolem 0
+                     -> first own 16, and DATA_WEATHER_STATE takes it,
+                        so the golem state is 17
+```
+
+So one of the three really is at 17, which is presumably how "their shared
+index" got written. **On a sniffer, 17 is `AgeableMob.AGE_LOCKED` — a
+BOOLEAN** — so the old arm could never match a real packet and the sniffer's
+and armadillo's states silently never arrived.
+
+**No gate could see it.** The gesture rigs are driven by `REWO_FORCE_GESTURE`
+and `mobshot --gesture`, which *inject* the state rather than decode it — the
+"a gate supplying an input production derives" hazard `REWO_AUDIO_PLAN.md` §5
+names, found in the wild rather than by the sweep it recommends. **And the unit
+test encoded the bug rather than catching it**: it drove `(17, 36)` — the
+armadillo at the copper golem's slot — and asserted it decoded.
+
+**The method was calibrated before being trusted**, which is the transferable
+part. Earlier the same hour I had "found" that Rewo's serializer ids were off by
+one, and the fault was my counting, not the code — a `sed` window plus a
+1-indexed `nl`. So this time the `extends` walk was run mechanically over
+several classes first: it gives `SpellcasterIllager -> 17`, matching Rewo's
+live-verified `DATA_SPELL_CASTING_ID`, and `Bee -> 18`, independently confirming
+what M141f shipped. Only then was the sniffer's 18 believed. **A counting
+method is an instrument; check it against a known-good reading before reporting
+what it finds.**
+
+#### The guardian's counter is the one input that is not a decode
+
+`clientSideAttackTime` is a counter vanilla runs in `Guardian.aiStep`'s client
+branch, so Rewo has to run it too. Its rules read backwards in two places:
+
+* **It increments only while there is a target and never counts down** —
+  vanilla's `if` has no else — so a guardian that loses its target holds its
+  wind-up where it is.
+* **What zeroes it is the metadata arriving, not the target going away.**
+  `onSyncedDataUpdated` resets on every arrival of `DATA_ID_ATTACK_TARGET`,
+  change or not, because `assignValues` has no change guard — M141e's finding,
+  second application. A server re-sending the same target restarts the wind-up,
+  and that is audible: the volume is the scale *squared*, so it drops to silence
+  and climbs again.
+
+`DATA_ID_ATTACK_TARGET` is index 17 INT — a **fourth** claimant of that index
+and a **second** of the INT specifically (`TropicalFish.DATA_ID_TYPE_VARIANT` is
+the other), so the kind gate is load-bearing rather than defensive. It names
+**both species**: the elder is a separate registry entry with the same accessor,
+and a gate naming only the base leaves every elder's beam silent.
+`hasActiveAttackTarget()` is `!= 0`, so zero is "no target" rather than
+"entity 0".
+
+**One stated divergence.** The table stores no type id, so the counter caps at
+the base species' **80** and an elder's scale is computed with 60 at read time,
+which can exceed 1.0 for twenty ticks. Vanilla caps at the elder's own 60. It is
+recorded rather than hidden because the consequence is bounded — an elder's beam
+saturates its volume early rather than misbehaving — and closing it wants the
+type id in the table, which is a bigger change than this milestone earns.
+
+#### The sniffer needed only its predicate
+
+**Two states keep the sound alive, not one**: `DIGGING` (5) *or* `SEARCHING`
+(4). Reading only DIGGING cuts the sound exactly when the sniffer has found
+something.
+
+#### Both triggers, and two constructor facts
+
+`handleEntityEvent` cases **21** and **63**, and **both are `play`** — the
+`queueTickingSound` deferral is the bee's alone. Vanilla's casts there are
+unchecked, which is safe only because the server never sends those ids to
+another type; the kind is checked here, so a mis-addressed event is inert rather
+than a sound on the wrong mob.
+
+The guardian's beam is **`Attenuation.NONE`** — heard at full gain wherever you
+are, which is what makes it a warning rather than an ambience. The sniffer's is
+the only tickable here that **does not loop**, so its ramp's whole job is the
+stop condition rather than a fade.
+
+#### What the battery found
+
+`tools/m141g_mutate.py`, **17/17** after three survivors. One was the
+interesting kind: **`guardian_has_attack_target` had no caller at all**, so
+mutating it changed nothing and it reported as a survivor. That is what a dead
+accessor looks like from outside a battery — indistinguishable from correct
+code with a weak witness. The tick had its own copy of `!= 0`; there is one
+definition and two callers now. The other two survivors were missing kind-gate
+witnesses, including the elder's arm.
+
+**Measured:** 3007 tests / 0 failures (world 1155, net 1051, gpu 275, data 224,
+app 197, mesh 45, proto 16, audio 44); 34 gates green with 0 validation errors;
+`live --render-check` 45/45 with validation ON; demo PNG `2cc56b4acbfb92cb`
+byte-identical.
+
+**Five of the ten ramps are constructed**: elytra, minecart, bee, guardian,
+sniffer. What is left is the **riding pair** (`LocalPlayer.startRiding`, which
+needs `underwater` and plays *both* minecart instances at once so each can mute
+itself), and the three ambient instances — the underwater loop and its sub-sound,
+the biome loop, and the directional sound — which need `AmbientSoundHandler`s
+and an end-flash state that Rewo has no equivalent of. Those are a subsystem
+rather than a trigger.
 
 ### M141f — the bee and the minecart (2026-08-11)
 

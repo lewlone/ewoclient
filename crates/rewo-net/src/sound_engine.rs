@@ -1442,6 +1442,49 @@ pub fn instance_and_ramp(
                 }),
             ))
         }
+        crate::sounds::TickableSound::GuardianAttack { guardian } => {
+            // `GuardianAttackSoundInstance`'s constructor: **`Attenuation.NONE`**,
+            // looping, no delay — and it leaves `volume` and `pitch` at the
+            // `AbstractSoundInstance` defaults of 1.0, which `tick()` then
+            // overwrites on its first run. No attenuation means the beam is
+            // heard at full gain wherever you are, which is what makes it a
+            // warning rather than an ambience.
+            let (x, y, z) = world.position(guardian).ok_or(NoInstance::UnknownEntity)?;
+            let inst = SoundInstance {
+                looping: true,
+                delay: 0,
+                attenuation: Attenuation::None,
+                x,
+                y,
+                z,
+                binding: Binding::Entity(guardian),
+                ..SoundInstance::bare("minecraft:entity.guardian.attack", SoundSource::Hostile)
+            };
+            Ok((
+                inst,
+                crate::tickable::Ramp::Guardian {
+                    guardian,
+                    attack_duration: crate::tickable::GUARDIAN_ATTACK_DURATION,
+                },
+            ))
+        }
+        crate::sounds::TickableSound::SnifferDigging { sniffer } => {
+            // `SnifferSoundInstance`'s constructor: `Attenuation.LINEAR`
+            // (the default, set explicitly) and **`looping = false`** — the
+            // one tickable here that is a one-shot, so its ramp's job is the
+            // stop condition rather than a fade.
+            let (x, y, z) = world.position(sniffer).ok_or(NoInstance::UnknownEntity)?;
+            let inst = SoundInstance {
+                looping: false,
+                delay: 0,
+                x,
+                y,
+                z,
+                binding: Binding::Entity(sniffer),
+                ..SoundInstance::bare("minecraft:entity.sniffer.digging", SoundSource::Neutral)
+            };
+            Ok((inst, crate::tickable::Ramp::Sniffer { sniffer }))
+        }
         crate::sounds::TickableSound::BeeLoop { bee, aggressive } => {
             let kind = if aggressive {
                 crate::tickable::BeeLoop::Aggressive
@@ -1676,11 +1719,24 @@ impl crate::tickable::RampWorld for EntityTableWorld<'_> {
         false
     }
 
-    fn attack_animation_scale(&self, _: i32) -> f32 {
-        0.0
+    /// `guardian.getAttackAnimationScale(0.0F)` — real since M141g.
+    ///
+    /// The duration is the **base** species' 80. An elder guardian's is 60,
+    /// and this world cannot tell them apart because the table stores no type
+    /// id — a stated divergence, bounded to an elder's beam reaching full
+    /// volume a third late rather than misbehaving. See
+    /// `EntityTable::tick_guardian_attacks`.
+    fn attack_animation_scale(&self, entity_id: i32) -> f32 {
+        self.table.guardian_attack_scale(
+            entity_id,
+            rewo_world::entities::GUARDIAN_MAX_ATTACK_DURATION,
+        )
     }
-    fn sniffer_digging(&self, _: i32) -> bool {
-        false
+
+    /// `sniffer.canPlayDiggingSound()` — real since M141g. Two states, not
+    /// one: DIGGING **or** SEARCHING.
+    fn sniffer_digging(&self, entity_id: i32) -> bool {
+        self.table.sniffer_digging(entity_id)
     }
     fn on_rails(&self, _: i32) -> bool {
         false
@@ -3010,6 +3066,187 @@ mod tests {
             "it must still follow; got {:?}",
             dev.calls_to(0)
         );
+    }
+
+    // ---- M141g: the guardian and the sniffer -----------------------------
+
+    /// **The guardian's counter runs only while it has a target, and never
+    /// counts down.** What zeroes it is the *metadata* arriving, not the
+    /// target going away.
+    #[test]
+    fn the_guardian_counter_climbs_while_targeting_and_resets_on_the_packet() {
+        use crate::tickable::RampWorld;
+        let mut t = rewo_world::entities::EntityTable::default();
+        t.add(
+            5,
+            rewo_world::entities::EntityState::new(0, 0, 0.0, 40.0, 0.0, 0.0, 0.0),
+        );
+        // No target yet: `hasActiveAttackTarget()` is `!= 0`, and 0 means none.
+        t.set_guardian_attack_target(5, 0);
+        for _ in 0..10 {
+            t.tick_lerp();
+        }
+        let w = |t: &rewo_world::entities::EntityTable| {
+            EntityTableWorld {
+                table: t,
+                local: None,
+                game_time: 0,
+            }
+            .attack_animation_scale(5)
+        };
+        assert_eq!(w(&t), 0.0, "no target, no wind-up");
+
+        t.set_guardian_attack_target(5, 77);
+        for _ in 0..20 {
+            t.tick_lerp();
+        }
+        assert!((w(&t) - 0.25).abs() < 1e-6, "20/80, got {}", w(&t));
+
+        // Losing the target holds the counter where it is — vanilla's `if`
+        // has no else, so nothing decrements.
+        let held = w(&t);
+        t.set_guardian_attack_target(5, 77); // same value…
+        assert_eq!(w(&t), 0.0, "…and the ARRIVAL resets it, change or not");
+        assert!(held > 0.0);
+    }
+
+    /// The counter caps, so the scale saturates at 1 rather than running past
+    /// it — a guardian that holds its target does not get louder forever.
+    #[test]
+    fn the_guardian_scale_saturates() {
+        use crate::tickable::RampWorld;
+        let mut t = rewo_world::entities::EntityTable::default();
+        t.add(
+            5,
+            rewo_world::entities::EntityState::new(0, 0, 0.0, 40.0, 0.0, 0.0, 0.0),
+        );
+        t.set_guardian_attack_target(5, 77);
+        for _ in 0..500 {
+            t.tick_lerp();
+        }
+        let w = EntityTableWorld {
+            table: &t,
+            local: None,
+            game_time: 0,
+        };
+        assert!((w.attack_animation_scale(5) - 1.0).abs() < 1e-6);
+    }
+
+    /// **Two sniffer states keep the sound alive, not one.** Reading only
+    /// DIGGING cuts it exactly when the sniffer has found something.
+    #[test]
+    fn the_sniffer_digs_audibly_while_searching_too() {
+        use crate::tickable::RampWorld;
+        let mut t = rewo_world::entities::EntityTable::default();
+        t.add(
+            4,
+            rewo_world::entities::EntityState::new(0, 0, 0.0, 64.0, 0.0, 0.0, 0.0),
+        );
+        let w = |t: &rewo_world::entities::EntityTable| {
+            EntityTableWorld {
+                table: t,
+                local: None,
+                game_time: 0,
+            }
+            .sniffer_digging(4)
+        };
+        for (state, want) in [(0u8, false), (3, false), (4, true), (5, true), (6, false)] {
+            t.set_gesture_state(4, state);
+            assert_eq!(w(&t), want, "state {state}");
+        }
+    }
+
+    /// **The guardian's beam has `Attenuation.NONE`** — heard at full gain
+    /// wherever you are, which is what makes it a warning rather than an
+    /// ambience — and its ramp is silence-gated, unlike the elytra's.
+    #[test]
+    fn a_guardian_event_starts_an_unattenuated_ramped_beam() {
+        let idx = index_of(&["minecraft:entity.guardian.attack"]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let mut table = rewo_world::entities::EntityTable::default();
+        table.add(
+            5,
+            rewo_world::entities::EntityState::new(0, 0, 0.0, 40.0, 0.0, 0.0, 0.0),
+        );
+        table.set_guardian_attack_target(5, 77);
+        for _ in 0..40 {
+            table.tick_lerp(); // scale 40/80 = 0.5
+        }
+        let world = EntityTableWorld {
+            table: &table,
+            local: None,
+            game_time: 0,
+        };
+        sys.accept(
+            &[SoundEvent::Tickable(
+                crate::sounds::TickableSound::GuardianAttack { guardian: 5 },
+            )],
+            &registry(),
+            &world,
+            &mut dev,
+        );
+        assert_eq!(sys.stats.started, 1, "stats: {:?}", sys.stats);
+        assert!(
+            dev.calls_to(0).contains(&ChannelCall::DisableAttenuation),
+            "Attenuation.NONE; got {:?}",
+            dev.calls_to(0)
+        );
+
+        // One tick of the ramp: volume is the scale SQUARED (0.25) while the
+        // pitch is linear in it (0.7 + 0.5*0.5 = 0.95).
+        dev.clear_calls();
+        sys.tick(false, &world, &mut dev);
+        assert!(
+            dev.calls_to(0).contains(&ChannelCall::SetVolume(0.25)),
+            "squared, not linear; got {:?}",
+            dev.calls_to(0)
+        );
+        assert!(dev.calls_to(0).contains(&ChannelCall::SetPitch(0.95)));
+    }
+
+    /// **The sniffer's is the one tickable here that does NOT loop** — its
+    /// ramp's job is the stop condition, not a fade.
+    #[test]
+    fn a_sniffer_event_starts_a_one_shot_that_stops_when_it_stops_digging() {
+        let idx = index_of(&["minecraft:entity.sniffer.digging"]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let mut table = rewo_world::entities::EntityTable::default();
+        table.add(
+            4,
+            rewo_world::entities::EntityState::new(0, 0, 0.0, 64.0, 0.0, 0.0, 0.0),
+        );
+        table.set_gesture_state(4, 5); // DIGGING
+        fn world(t: &rewo_world::entities::EntityTable) -> EntityTableWorld<'_> {
+            EntityTableWorld {
+                table: t,
+                local: None,
+                game_time: 0,
+            }
+        }
+        sys.accept(
+            &[SoundEvent::Tickable(
+                crate::sounds::TickableSound::SnifferDigging { sniffer: 4 },
+            )],
+            &registry(),
+            &world(&table),
+            &mut dev,
+        );
+        assert_eq!(sys.stats.started, 1, "stats: {:?}", sys.stats);
+        assert!(
+            dev.calls_to(0).contains(&ChannelCall::SetLooping(false)),
+            "a one-shot; got {:?}",
+            dev.calls_to(0)
+        );
+
+        dev.clear_calls();
+        sys.tick(false, &world(&table), &mut dev);
+        assert!(!dev.calls_to(0).contains(&ChannelCall::Stop), "still digging");
+
+        table.set_gesture_state(4, 0); // IDLING
+        sys.tick(false, &world(&table), &mut dev);
+        assert!(dev.calls_to(0).contains(&ChannelCall::Stop), "stopped digging");
     }
 
     // ---- M141f: the bee and the minecart ---------------------------------

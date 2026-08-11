@@ -311,6 +311,8 @@ mod tests {
             creaking: None,
             player: None,
             bee,
+            guardian: None,
+            elder_guardian: None,
             variant_kinds: Default::default(),
             classes: None,
             components: None,
@@ -331,6 +333,82 @@ mod tests {
         assert_eq!(t2.anger_end_time(9), None, "wrong kind, no write");
         crate::apply_set_entity_data(&body, &mut t2, kinds(None));
         assert_eq!(t2.anger_end_time(9), None, "no kind, no write");
+    }
+
+    /// **`Guardian.DATA_ID_ATTACK_TARGET` is index 17 INT, kind-gated on BOTH
+    /// guardian species** (M141g) — the elder is a separate registry entry
+    /// with the same accessor, so a gate naming only the base leaves every
+    /// elder's beam silent.
+    ///
+    /// Index 17 already has three other claimants (the spellcaster BYTE, the
+    /// pillager/creaking BOOLEAN, and `TropicalFish`'s INT), so the gate is
+    /// doing real work: without it a tropical fish's variant would be read as
+    /// a guardian's attack target.
+    #[test]
+    fn the_guardians_attack_target_is_gated_on_both_species() {
+        use rewo_proto::writer::PacketWriter;
+
+        let body = |eid: i32| {
+            let mut w = PacketWriter::default();
+            w.varint(eid);
+            w.u8(17);
+            w.varint(1); // INT
+            w.varint(77);
+            w.u8(0xFF);
+            w.into_bytes()
+        };
+        let kinds = |guardian: Option<i32>, elder: Option<i32>| crate::MetaKinds {
+            allay: None,
+            pillager: None,
+            sheep: None,
+            creaking: None,
+            player: None,
+            bee: None,
+            guardian,
+            elder_guardian: elder,
+            variant_kinds: Default::default(),
+            classes: None,
+            components: None,
+        };
+        let table = |type_id: i32| {
+            let mut t = rewo_world::entities::EntityTable::default();
+            t.add(
+                5,
+                rewo_world::entities::EntityState::new(0, type_id, 0.0, 40.0, 0.0, 0.0, 0.0),
+            );
+            t
+        };
+
+        // The base species, type id 7.
+        let mut t = table(7);
+        crate::apply_set_entity_data(&body(5), &mut t, kinds(Some(7), Some(8)));
+        assert!(t.guardian_has_attack_target(5), "base guardian");
+
+        // The elder, type id 8 — the arm a one-species gate drops.
+        let mut t = table(8);
+        crate::apply_set_entity_data(&body(5), &mut t, kinds(Some(7), Some(8)));
+        assert!(t.guardian_has_attack_target(5), "elder guardian");
+
+        // Anything else at the same index and serializer is NOT a target: a
+        // tropical fish's variant lives there.
+        let mut t = table(9);
+        crate::apply_set_entity_data(&body(5), &mut t, kinds(Some(7), Some(8)));
+        assert!(!t.guardian_has_attack_target(5), "a fish is not a guardian");
+    }
+
+    /// **Zero means "no target", not "entity 0".**
+    #[test]
+    fn a_zero_attack_target_is_no_target() {
+        let mut t = rewo_world::entities::EntityTable::default();
+        t.add(
+            5,
+            rewo_world::entities::EntityState::new(0, 0, 0.0, 40.0, 0.0, 0.0, 0.0),
+        );
+        assert!(!t.guardian_has_attack_target(5), "never sent one");
+        t.set_guardian_attack_target(5, 0);
+        assert!(!t.guardian_has_attack_target(5), "sent an explicit zero");
+        t.set_guardian_attack_target(5, 1);
+        assert!(t.guardian_has_attack_target(5));
     }
 
     /// A body that does not parse changes nothing rather than panicking — the

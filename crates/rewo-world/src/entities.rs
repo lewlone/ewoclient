@@ -441,6 +441,36 @@ pub struct EntityState {
     fall_fly_ticks: i32,
 }
 
+/// `Sniffer.State.SEARCHING` — ordinal 4.
+pub const SNIFFER_SEARCHING: u8 = 4;
+/// `Sniffer.State.DIGGING` — ordinal 5.
+pub const SNIFFER_DIGGING: u8 = 5;
+
+/// `Guardian.getAttackDuration()` for the base species — the larger of the two,
+/// and the cap this table applies. See [`EntityTable::tick_guardian_attacks`].
+pub const GUARDIAN_MAX_ATTACK_DURATION: i32 = 80;
+
+/// `Guardian`'s attack state — one synced field and one client-side counter.
+///
+/// The counter is **not** synced and is not derivable from anything that is:
+/// vanilla runs it in `Guardian.aiStep`'s client branch, incrementing while
+/// `hasActiveAttackTarget()` and capping at the species' attack duration. It
+/// is the only input among the ten ramps that is not a decode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct GuardianAttack {
+    /// `DATA_ID_ATTACK_TARGET` — an entity id, with **0 meaning none**.
+    target: i32,
+    /// `clientSideAttackTime`.
+    client_side_attack_time: i32,
+}
+
+impl GuardianAttack {
+    /// `hasActiveAttackTarget()`. One definition, two callers.
+    fn has_target(&self) -> bool {
+        self.target != 0
+    }
+}
+
 /// Vanilla `ClientAvatarState`'s cloak position — the lagging anchor the
 /// cape's angles are measured against.
 ///
@@ -807,6 +837,9 @@ pub struct EntityTable {
     vehicle_of: HashMap<i32, i32>,
     /// `Bee.DATA_ANGER_END_TIME` (M141f), by entity id.
     anger_end_time: HashMap<i32, i64>,
+    /// `Guardian`'s synced attack target and the client counter it drives
+    /// (M141g).
+    guardian_attack: HashMap<i32, GuardianAttack>,
     /// The local player's entity id, if the session has told us (M141d).
     ///
     /// The local player is not a row in this table; this exists only so
@@ -1523,6 +1556,53 @@ impl EntityTable {
         self.vehicle_of.get(&id).copied()
     }
 
+    /// `Guardian.DATA_ID_ATTACK_TARGET` (index 17 INT), and the client-side
+    /// counter its arrival resets (M141g).
+    ///
+    /// **`clientSideAttackTime` is reset on EVERY arrival of the accessor,
+    /// not on a change** — `SynchedEntityData.assignValues` calls
+    /// `onSyncedDataUpdated` once per entry in the packet with no comparison
+    /// (M141e's finding, second application). So a server re-sending the same
+    /// target restarts the beam's wind-up, which is audible: the guardian's
+    /// volume is the scale *squared*, so a reset drops it to silence and it
+    /// climbs again.
+    pub fn set_guardian_attack_target(&mut self, id: i32, target: i32) {
+        self.guardian_attack.insert(
+            id,
+            GuardianAttack {
+                target,
+                client_side_attack_time: 0,
+            },
+        );
+    }
+
+    /// `Guardian.hasActiveAttackTarget()` — `DATA_ID_ATTACK_TARGET != 0`.
+    ///
+    /// Zero is "no target", not "entity 0": the accessor stores an entity id
+    /// and vanilla reserves 0 for absent, which is why this is an inequality
+    /// rather than an `Option`.
+    ///
+    /// **The tick calls the same predicate**, rather than repeating `!= 0`.
+    /// It had its own copy and this accessor had no caller at all, so a
+    /// mutation to it changed nothing — the battery reported it as a survivor,
+    /// which is what a dead accessor looks like from the outside.
+    pub fn guardian_has_attack_target(&self, id: i32) -> bool {
+        self.guardian_attack.get(&id).is_some_and(GuardianAttack::has_target)
+    }
+
+    /// `Guardian.getAttackAnimationScale(0.0F)` —
+    /// `clientSideAttackTime / getAttackDuration()`.
+    ///
+    /// The duration is the caller's, because it is **per species**: 80 for a
+    /// guardian and 60 for an elder (`Guardian.java:109`,
+    /// `ElderGuardian.java:40`), so the same counter yields a different scale
+    /// and the elder's beam ramps a third faster.
+    pub fn guardian_attack_scale(&self, id: i32, attack_duration: i32) -> f32 {
+        self.guardian_attack
+            .get(&id)
+            .map_or(0.0, |g| g.client_side_attack_time as f32 / attack_duration as f32)
+    }
+
     /// `Bee.DATA_ANGER_END_TIME` (M141f) — a synced **deadline**, not a flag.
     ///
     /// Stored raw and compared against the world clock at read time, because
@@ -1542,6 +1622,53 @@ impl EntityTable {
     /// a default one agree, and a caller may treat them alike.
     pub fn anger_end_time(&self, id: i32) -> Option<i64> {
         self.anger_end_time.get(&id).copied()
+    }
+
+    /// `Guardian.aiStep`'s client branch (M141g):
+    ///
+    /// ```java
+    /// if (this.hasActiveAttackTarget()) {
+    ///    if (this.clientSideAttackTime < this.getAttackDuration()) {
+    ///       this.clientSideAttackTime++;
+    ///    }
+    ///    ...
+    /// }
+    /// ```
+    ///
+    /// **It runs only while there is a target and it never counts down.** A
+    /// guardian that loses its target holds its counter where it was; what
+    /// zeroes it is the *metadata* arriving, not the target going away — so a
+    /// beam that stops and restarts against the same target resumes from where
+    /// it left off unless the server re-sends the accessor.
+    ///
+    /// The cap is the species' duration, and the table does not know the
+    /// species — so it stores the raw counter and caps at the **larger** of
+    /// the two (80). An elder's scale is then computed with 60 at read time,
+    /// which can exceed 1.0 for 20 ticks. That is a **stated divergence**:
+    /// vanilla caps at the elder's own 60. It is here rather than hidden
+    /// because fixing it wants the type id in the table, which is a bigger
+    /// change than the milestone earns, and because the consequence is bounded
+    /// — an elder's beam saturates its volume early rather than misbehaving.
+    fn tick_guardian_attacks(&mut self) {
+        for g in self.guardian_attack.values_mut() {
+            if g.has_target() && g.client_side_attack_time < GUARDIAN_MAX_ATTACK_DURATION {
+                g.client_side_attack_time += 1;
+            }
+        }
+    }
+
+    /// `Sniffer.canPlayDiggingSound()` — `Sniffer.java:139-141` (M141g).
+    ///
+    /// **Two states keep the sound alive, not one**: `DIGGING` (5) *or*
+    /// `SEARCHING` (4), so a sniffer that has found something keeps digging
+    /// audibly while it searches. Reading only DIGGING cuts the sound at the
+    /// moment it matters most.
+    ///
+    /// The state is `gesture_state`, which the same rig reads — and which
+    /// M141g1 had to move from index 17 to **18** before any of it could
+    /// arrive from a real server.
+    pub fn sniffer_digging(&self, id: i32) -> bool {
+        matches!(self.gesture_state(id), SNIFFER_SEARCHING | SNIFFER_DIGGING)
     }
 
     /// Tell the table which entity id is the local player (M141d).
@@ -2170,6 +2297,7 @@ impl EntityTable {
         for d in self.dances.values_mut() {
             d.tick();
         }
+        self.tick_guardian_attacks();
         self.tick_wavy_capes();
         self.tick_uses();
         self.tick_deaths();

@@ -289,9 +289,32 @@ pub fn parse(r: &mut PacketReader, components: Option<DataComponentIds>) -> Enti
             // parser can keep them apart; which *kind* owns the BYTE is
             // still the caller's call.
             (16, 0) => meta.byte16 = r.u8().ok(),
-            // SNIFFER_STATE(35) / ARMADILLO_STATE(36) / COPPER_GOLEM(37)
-            // at their shared first-own-field index.
-            (17, 35..=37) => meta.gesture_state = r.varint().ok().map(|v| v as u8),
+            // The three state enums, at **three different indices** — they do
+            // not share one, and this arm used to say they did (M141g).
+            //
+            // The index is the class's first own accessor, counted up the
+            // `ClassTreeIdRegistry` chain, and the count that decides it is
+            // **`AgeableMob`'s TWO** (`DATA_BABY_ID` *and* an `AGE_LOCKED`
+            // that is easy to miss):
+            //
+            //   Sniffer, Armadillo  Entity 8, Living 7, Mob 1, AgeableMob 2,
+            //                       Animal 0            -> first own = **18**
+            //   CopperGolem         Entity 8, Living 7, Mob 1, AbstractGolem 0
+            //                                            -> first own = 16, and
+            //                       `DATA_WEATHER_STATE` takes it, so the golem
+            //                       state is **17**
+            //
+            // So one of the three really is at 17, which is presumably how
+            // "their shared index" got written. On a sniffer, 17 is
+            // `AgeableMob.AGE_LOCKED` — a BOOLEAN, so the old arm matched
+            // nothing and the state silently never arrived. No gate could see
+            // it: the gesture rigs are driven by `REWO_FORCE_GESTURE` and by
+            // `mobshot --gesture`, which inject the state rather than decode
+            // it. Method calibrated against `SpellcasterIllager`, whose 17 is
+            // live-verified, before trusting it here.
+            (18, 35) => meta.gesture_state = r.varint().ok().map(|v| v as u8), // SNIFFER_STATE
+            (18, 36) => meta.gesture_state = r.varint().ok().map(|v| v as u8), // ARMADILLO_STATE
+            (17, 37) => meta.gesture_state = r.varint().ok().map(|v| v as u8), // COPPER_GOLEM_STATE
             // `SpellcasterIllager.DATA_SPELL_CASTING_ID` (BYTE) and
             // `Pillager.IS_CHARGING_CROSSBOW` (BOOLEAN) both sit at 17.
             (17, 0) => meta.byte17 = r.u8().ok(),
@@ -533,11 +556,51 @@ mod m20_mob_metadata_tests {
         assert_eq!(m.bool17, Some(true));
         assert_eq!(m.byte17, None);
 
-        // The gesture-state enums share the index but not the serializer, and
-        // must keep decoding as gesture state (35..=37).
-        let m = parse_nc(&mut PacketReader::new(&one(17, 36, &[2])));
+        // The **copper golem's** state is the one that really is at 17
+        // (`AbstractGolem` adds nothing, so its first own is 16 and
+        // `DATA_WEATHER_STATE` takes that).
+        let m = parse_nc(&mut PacketReader::new(&one(17, 37, &[2])));
         assert_eq!(m.gesture_state, Some(2));
         assert_eq!(m.byte17, None);
+    }
+
+    /// **The three state enums are at three different indices**, and this
+    /// test used to assert the opposite: it drove `(17, 36)` — the armadillo
+    /// at the copper golem's slot — and so encoded the bug rather than
+    /// catching it (M141g).
+    ///
+    /// The count that decides it is `AgeableMob`'s **two** accessors,
+    /// `DATA_BABY_ID` and an `AGE_LOCKED` that is easy to miss. On a sniffer,
+    /// index 17 is that `AGE_LOCKED` — a BOOLEAN — so the old arm matched
+    /// nothing and the state silently never arrived from a real server. The
+    /// gesture rigs are driven by injected state (`REWO_FORCE_GESTURE`,
+    /// `mobshot --gesture`), which is why nothing saw it.
+    #[test]
+    fn the_three_state_enums_do_not_share_an_index() {
+        // Sniffer: 18 / SNIFFER_STATE(35).
+        let m = parse_nc(&mut PacketReader::new(&one(18, 35, &[5])));
+        assert_eq!(m.gesture_state, Some(5), "sniffer DIGGING");
+        // Armadillo: 18 / ARMADILLO_STATE(36).
+        let m = parse_nc(&mut PacketReader::new(&one(18, 36, &[2])));
+        assert_eq!(m.gesture_state, Some(2), "armadillo");
+        // Copper golem: 17 / COPPER_GOLEM_STATE(37).
+        let m = parse_nc(&mut PacketReader::new(&one(17, 37, &[1])));
+        assert_eq!(m.gesture_state, Some(1), "copper golem");
+
+        // …and the slots that are NOT theirs decode as something else or not
+        // at all. 17/35 and 17/36 are the old bug's shape.
+        let m = parse_nc(&mut PacketReader::new(&one(17, 35, &[5])));
+        assert_eq!(m.gesture_state, None, "17/35 is nobody's");
+        let m = parse_nc(&mut PacketReader::new(&one(17, 36, &[5])));
+        assert_eq!(m.gesture_state, None, "17/36 is nobody's");
+        let m = parse_nc(&mut PacketReader::new(&one(18, 37, &[5])));
+        assert_eq!(m.gesture_state, None, "18/37 is nobody's");
+
+        // On a sniffer, index 17 is `AgeableMob.AGE_LOCKED` — a BOOLEAN — so
+        // the old arm could never have matched a real packet anyway.
+        let m = parse_nc(&mut PacketReader::new(&one(17, 8, &[1])));
+        assert_eq!(m.bool17, Some(true));
+        assert_eq!(m.gesture_state, None);
     }
 
     #[test]

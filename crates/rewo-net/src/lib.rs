@@ -2500,6 +2500,15 @@ pub struct MetaKinds<'a> {
     /// `minecraft:bee` type id (M141f) — gates the index-19 LONG,
     /// `Bee.DATA_ANGER_END_TIME`.
     pub bee: Option<i32>,
+    /// `minecraft:guardian` and `minecraft:elder_guardian` (M141g) — they gate
+    /// the index-17 INT, `Guardian.DATA_ID_ATTACK_TARGET`.
+    ///
+    /// **Two ids rather than one**, because the elder is a separate registry
+    /// entry with the same accessor and a different `getAttackDuration()` (60
+    /// against 80). A gate naming only the base would leave every elder
+    /// guardian's beam silent.
+    pub guardian: Option<i32>,
+    pub elder_guardian: Option<i32>,
     /// The six mobs whose texture is chosen by synched metadata (M64), in the
     /// order `[cat, wolf, frog, axolotl, horse, llama]`.
     ///
@@ -2670,6 +2679,20 @@ pub(crate) fn apply_set_entity_data<'a>(
     if let Some(t) = meta.long19 {
         if Some(type_id) == kinds.bee {
             entities.set_anger_end_time(eid, t);
+        }
+    }
+    // Slot 17 INT → `Guardian.DATA_ID_ATTACK_TARGET` (M141g). A **third**
+    // claimant of an index the spellcaster BYTE and the pillager BOOLEAN
+    // already share, and a fourth reading of the INT specifically
+    // (`TropicalFish.DATA_ID_TYPE_VARIANT` is the other), so the kind gate is
+    // load-bearing rather than defensive.
+    //
+    // `onSyncedDataUpdated` resets `clientSideAttackTime` on **every** arrival
+    // of this accessor, not on a change — `assignValues` has no change guard
+    // (M141e's finding) — so the reset is unconditional here too.
+    if let Some(target) = meta.int17 {
+        if Some(type_id) == kinds.guardian || Some(type_id) == kinds.elder_guardian {
+            entities.set_guardian_attack_target(eid, target);
         }
     }
     // Slot 3 BOOLEAN → `Entity.DATA_CUSTOM_NAME_VISIBLE` (M70). No kind gate,

@@ -1940,7 +1940,7 @@ item** — M138a–d, `level_event`'s sounds and the music fade have shipped, an
 **the listening pass is the outstanding work and it is the user's**, because no
 gate in this project opens an audio device.
 **Everything is shipped, gated and merged to `main`** as of 2026-08-11
-(M141f) — **2999 tests / 0 failures** (world 1155, net 1043, gpu 275, data 224,
+(M141g) — **3007 tests / 0 failures** (world 1155, net 1051, gpu 275, data 224,
 app 197, mesh 45, proto 16, **audio 44** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
@@ -6158,7 +6158,7 @@ bytes.
 
 ---
 
-## M141 — the ten tickable ramps, their velocity, and three triggers (2026-08-11)
+## M141 — the ten tickable ramps, their velocity, and five triggers (2026-08-11)
 
 `SoundEngine.tickInGameSound` drove **one `tick()` body out of ten** since
 M131, because `EntityBoundSoundInstance` was the only subclass Rewo modelled.
@@ -6244,9 +6244,35 @@ whose second half changes every tick with no packet arriving. Storing a boolean
 would freeze a bee's anger at whatever it was when the last metadata came in,
 which is why the sound world grew a clock rather than the table growing a flag.
 
-**The remaining triggers are packets Rewo already routes**
-(`handleEntityEvent` 21 and 63, `startRiding`), so the next milestone is more
-wiring, one construction site at a time.
+**M141g then took the guardian and the sniffer** (`handleEntityEvent` 21 and
+63), so **five of the ten ramps are constructed**. The guardian's input is the
+one among the ten that is **not a decode at all** — `clientSideAttackTime` is a
+counter vanilla runs in `aiStep`'s client branch, and its rules read backwards
+twice: it increments only while there *is* a target and never counts down, and
+what zeroes it is **the metadata arriving, not the target going away** (there is
+no change guard in `assignValues` — M141e's finding again).
+
+**And it found a live decode bug on the way.** `(17, 35..=37)` claimed the
+sniffer's, armadillo's and copper golem's state enums share an index. They do
+not: `AgeableMob` declares **two** accessors, so the sniffer's and armadillo's
+are at **18** while the copper golem's really is at 17 — which is presumably how
+"their shared index" got written. On a sniffer, 17 is `AgeableMob.AGE_LOCKED`, a
+BOOLEAN, so the state silently never arrived from a real server. **No gate could
+see it**: the gesture rigs are driven by `REWO_FORCE_GESTURE` and
+`mobshot --gesture`, which inject the state rather than decode it — and the unit
+test encoded the bug rather than catching it.
+
+The transferable half is the method, not the fix. An hour earlier I had
+"found" that Rewo's serializer ids were off by one and the fault was my
+counting, so the `extends` walk was run mechanically over several classes and
+checked against two known-good readings (`SpellcasterIllager -> 17`, which is
+live-verified, and `Bee -> 18`, which M141f had just shipped) **before** the
+sniffer's answer was believed. **A counting method is an instrument; calibrate
+it against a known reading before reporting what it finds.**
+
+**What is left is one ordinary trigger** — the riding pair, which needs
+`underwater` — plus the three ambient instances, which want an
+`AmbientSoundHandler` subsystem rather than four more call sites.
 
 **M141d fed them the velocity**, which was the input gating four of the ten,
 and its finding is the sort that punishes a sensible implementation: a remote
