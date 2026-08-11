@@ -805,6 +805,8 @@ pub struct EntityTable {
     /// between vehicles would leave the old one reading as still ridden, and
     /// that vehicle's label would stay suppressed forever.
     vehicle_of: HashMap<i32, i32>,
+    /// `Bee.DATA_ANGER_END_TIME` (M141f), by entity id.
+    anger_end_time: HashMap<i32, i64>,
     /// The local player's entity id, if the session has told us (M141d).
     ///
     /// The local player is not a row in this table; this exists only so
@@ -1519,6 +1521,27 @@ impl EntityTable {
     /// The vehicle this entity is riding, if any — `Entity.getVehicle()`.
     pub fn vehicle_of(&self, id: i32) -> Option<i32> {
         self.vehicle_of.get(&id).copied()
+    }
+
+    /// `Bee.DATA_ANGER_END_TIME` (M141f) — a synced **deadline**, not a flag.
+    ///
+    /// Stored raw and compared against the world clock at read time, because
+    /// `NeutralMob.isAngry()` is `endTime > 0 && endTime - gameTime > 0` and
+    /// the second half changes every tick without any packet. Storing a
+    /// boolean here would freeze a bee's anger at whatever it was when the
+    /// last metadata arrived.
+    pub fn set_anger_end_time(&mut self, id: i32, end_time: i64) {
+        self.anger_end_time.insert(id, end_time);
+    }
+
+    /// `Bee.getPersistentAngerEndTime()`.
+    ///
+    /// `None` for an entity that has never sent one. That is **not** the same
+    /// as `Some(-1)` to any caller that cares, though both are "not angry":
+    /// `Bee` seeds the accessor to -1 (`Bee.java:165`), so an absent entry and
+    /// a default one agree, and a caller may treat them alike.
+    pub fn anger_end_time(&self, id: i32) -> Option<i64> {
+        self.anger_end_time.get(&id).copied()
     }
 
     /// Tell the table which entity id is the local player (M141d).

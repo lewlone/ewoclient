@@ -1143,6 +1143,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // M52: the two kinds that disambiguate an otherwise-shared metadata slot —
     // the sheep's wool byte at 18 and the creaking's `IS_ACTIVE` at 17.
     session.sheep_type_id = data.entity_types.id_of("minecraft:sheep");
+    session.bee_type_id = data.entity_types.id_of("minecraft:bee");
     session.creaking_type_id = data.entity_types.id_of("minecraft:creaking");
     // M60: the player, for the index-16 skin-customisation byte (cape bit).
     session.player_type_id = Some(data.entity_types.player_id);
@@ -3960,6 +3961,7 @@ fn run_headless(
             &queued,
             &session.world.entities,
             session.local_player_view(),
+            session.game_time(),
         );
         if let Some(reason) = &session.disconnect {
             return Err(format!("disconnected: {reason}"));
@@ -7759,6 +7761,7 @@ impl LiveApp {
                 &queued,
                 &session.world.entities,
                 session.local_player_view(),
+                session.game_time(),
             );
             // M71 — a client-generated system message (currently only
             // `NO_RESPAWN_BLOCK_AVAILABLE`) is queued as a *translation key*,

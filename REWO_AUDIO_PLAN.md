@@ -309,8 +309,10 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 > `MinecartSoundInstance`, `RidingEntitySoundInstance`, `SnifferSoundInstance`,
 > and the two nested in `UnderwaterAmbientSoundInstances`. They live in
 > `crates/rewo-net/src/tickable.rs` and the engine drives them. **M141e built
-> the first trigger** — the elytra — so one of the ten is constructed; the rest
-> are `REWO_PLAN.md` §0.0 item 4a, one construction site at a time.
+> the first trigger** (the elytra) and **M141f two more** (the bee and the
+> minecart, which are one vanilla method), so **three of the ten are
+> constructed**; the rest are `REWO_PLAN.md` §0.0 item 4a, one construction site
+> at a time.
 >
 > M141e's finding belongs in §5's trap list: **`canPlaySound()` is a per-class
 > override that six of the ten declare and four decline**, so a ramp's silence

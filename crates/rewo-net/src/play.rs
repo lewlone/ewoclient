@@ -534,6 +534,9 @@ pub struct PlaySession {
     pub sheep_type_id: Option<i32>,
     /// `minecraft:creaking` — gates the index-17 `IS_ACTIVE` boolean (M52).
     pub creaking_type_id: Option<i32>,
+    /// `minecraft:bee` — gates the index-19 anger deadline, and names the kind
+    /// `postAddEntitySoundInstance` starts a loop for (M141f).
+    pub bee_type_id: Option<i32>,
     /// `minecraft:player` — gates the index-16 skin-customisation byte whose
     /// bit 0 shows the cape (M60). `None` leaves every cape hidden, which is
     /// also what an unsent mask means, so a harness that never resolves it
@@ -1545,6 +1548,7 @@ impl<'a> Connection<'a> {
             pillager_type_id: None,
             sheep_type_id: None,
             creaking_type_id: None,
+            bee_type_id: None,
             player_type_id: None,
             variant_type_ids: crate::VariantKinds::default(),
             take_item_kinds: crate::TakeItemKinds::default(),
@@ -2486,7 +2490,9 @@ impl PlaySession {
             );
         } else if id == ids.cb_play_add_entity {
             let mut r = PacketReader::new(body);
-            let _ = crate::read_add_entity(&mut r, &mut self.world);
+            if let Ok((eid, type_id)) = crate::read_add_entity(&mut r, &mut self.world) {
+                self.post_add_entity_sound_instance(eid, type_id);
+            }
         } else if id == ids.cb_play_remove_entities {
             let mut r = PacketReader::new(body);
             if let Ok(n) = r.count("remove entities", 1) {
@@ -2601,6 +2607,7 @@ impl PlaySession {
                 sheep: self.sheep_type_id,
                 creaking: self.creaking_type_id,
                 player: self.player_type_id,
+                bee: self.bee_type_id,
                 variant_kinds: self.variant_type_ids,
                 classes: self.entity_classes.as_deref(),
                 components: self.swing_data.as_ref().map(|d| d.components),
@@ -3462,6 +3469,59 @@ impl PlaySession {
                     crate::sounds::TickableSound::ElytraOnPlayer { player },
                 ));
             }
+        }
+    }
+
+    /// `ClientPacketListener.postAddEntitySoundInstance` — the ambient loop a
+    /// spawning minecart or bee brings with it (M141f).
+    ///
+    /// ```java
+    /// if (entity instanceof AbstractMinecart minecart) {
+    ///    this.minecraft.getSoundManager().play(new MinecartSoundInstance(minecart));
+    /// } else if (entity instanceof Bee bee) {
+    ///    boolean angry = bee.isAngry();
+    ///    BeeSoundInstance soundInstance = angry ? new BeeAggressiveSoundInstance(bee)
+    ///                                           : new BeeFlyingSoundInstance(bee);
+    ///    this.minecraft.getSoundManager().queueTickingSound(soundInstance);
+    /// }
+    /// ```
+    ///
+    /// **The two arms use different entry points, and that is vanilla's**: the
+    /// minecart goes through `play` and the bee through `queueTickingSound`,
+    /// which defers to the top of the next tick and re-checks `canPlaySound()`
+    /// there. So a bee spawning silent never starts, while a minecart spawning
+    /// silent is refused immediately — the same outcome by two routes, and a
+    /// one-tick difference in when. Tidying them into one call is the obvious
+    /// simplification and loses that.
+    ///
+    /// **The bee's loop is chosen once, here**, from its anger at spawn. After
+    /// that the ramp switches on its own (`shouldSwitchSounds`), which is why
+    /// the queued spec carries *which loop* rather than the bee's id alone.
+    ///
+    /// Only the entity the packet just added is considered, which is what
+    /// `handleAddEntity` does — it calls this with the entity it built.
+    fn post_add_entity_sound_instance(&mut self, id: i32, type_id: i32) {
+        let is_minecart = self
+            .entity_classes
+            .as_deref()
+            .is_some_and(|c| c.is_minecart(type_id));
+        if is_minecart {
+            self.push_sound_event(crate::sounds::SoundEvent::Tickable(
+                crate::sounds::TickableSound::MinecartRiding { minecart: id },
+            ));
+        } else if Some(type_id) == self.bee_type_id {
+            // `bee.isAngry()` at this moment — a synced deadline against the
+            // world clock, not a flag.
+            let aggressive = crate::tickable::is_angry(
+                self.world.entities.anger_end_time(id).unwrap_or(-1),
+                self.game_time(),
+            );
+            self.push_sound_event(crate::sounds::SoundEvent::Tickable(
+                crate::sounds::TickableSound::BeeLoop {
+                    bee: id,
+                    aggressive,
+                },
+            ));
         }
     }
 

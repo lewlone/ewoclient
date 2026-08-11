@@ -279,6 +279,60 @@ mod tests {
         assert_eq!(d, LocalPlayerData::default());
     }
 
+    /// **`Bee.DATA_ANGER_END_TIME` is index 19 and serializer 2** (M141f),
+    /// driven through the production `apply_set_entity_data` rather than the
+    /// parser alone, so the kind gate and the table write are graded too.
+    ///
+    /// The index is Bee's *second* own accessor: Entity 0..7, LivingEntity
+    /// 8..14, Mob 15, **AgeableMob 16 AND 17** — `DATA_BABY_ID` and the
+    /// `AGE_LOCKED` that is easy to miss — Animal none, Bee 18..19. Counting
+    /// AgeableMob as one puts this on `Bee.DATA_FLAGS_ID`.
+    #[test]
+    fn the_bees_anger_deadline_is_index_nineteen_long() {
+        use rewo_proto::writer::PacketWriter;
+        let mut t = rewo_world::entities::EntityTable::default();
+        // type id 7 stands in for `minecraft:bee` and is what the gate is told.
+        t.add(
+            9,
+            rewo_world::entities::EntityState::new(0, 7, 0.0, 64.0, 0.0, 0.0, 0.0),
+        );
+        let mut w = PacketWriter::default();
+        w.varint(9);
+        w.u8(19);
+        w.varint(2); // LONG — a VAR_LONG, not a fixed i64
+        w.varlong(1234);
+        w.u8(0xFF);
+        let body = w.into_bytes();
+
+        let kinds = |bee: Option<i32>| crate::MetaKinds {
+            allay: None,
+            pillager: None,
+            sheep: None,
+            creaking: None,
+            player: None,
+            bee,
+            variant_kinds: Default::default(),
+            classes: None,
+            components: None,
+        };
+
+        crate::apply_set_entity_data(&body, &mut t, kinds(Some(7)));
+        assert_eq!(t.anger_end_time(9), Some(1234));
+
+        // **The kind gate is load-bearing**: index 19 is Bee's own slot, and
+        // another class's nineteenth accessor could be a LONG too. A table
+        // told the wrong kind must not store it.
+        let mut t2 = rewo_world::entities::EntityTable::default();
+        t2.add(
+            9,
+            rewo_world::entities::EntityState::new(0, 7, 0.0, 64.0, 0.0, 0.0, 0.0),
+        );
+        crate::apply_set_entity_data(&body, &mut t2, kinds(Some(8)));
+        assert_eq!(t2.anger_end_time(9), None, "wrong kind, no write");
+        crate::apply_set_entity_data(&body, &mut t2, kinds(None));
+        assert_eq!(t2.anger_end_time(9), None, "no kind, no write");
+    }
+
     /// A body that does not parse changes nothing rather than panicking — the
     /// caller runs this on every `set_entity_data`.
     #[test]
