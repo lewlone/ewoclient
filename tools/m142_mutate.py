@@ -234,11 +234,15 @@ MUTATIONS = [
         "KILLED",
     ),
     # --- the instance ------------------------------------------------------
+    # The anchor carries the `bare(...)` line because M142d's biome-loop arm
+    # opens with an identical field prefix — without it this matched TWICE and
+    # was skipped, which is a mutation that never ran rather than one that
+    # survived. The harness reports the count for exactly this reason.
     (
         E,
         "the underwater loop is constructed at volume 0.0 (never plays)",
-        "            let inst = SoundInstance {\n                looping: true,\n                delay: 0,\n                volume: 1.0,\n                relative: true,",
-        "            let inst = SoundInstance {\n                looping: true,\n                delay: 0,\n                volume: 0.0,\n                relative: true,",
+        "                volume: 1.0,\n                relative: true,\n                ..SoundInstance::bare(\n                    crate::ambient_handlers::UNDERWATER_LOOP,",
+        "                volume: 0.0,\n                relative: true,\n                ..SoundInstance::bare(\n                    crate::ambient_handlers::UNDERWATER_LOOP,",
         "KILLED",
     ),
     (

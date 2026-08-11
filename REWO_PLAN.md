@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-11 after M142c:
-**3048 tests, 0 failures** (**world 1164, net 1084, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 3048).
+Current measurement, taken 2026-08-11 after M142d:
+**3055 tests, 0 failures** (**world 1166, net 1091, gpu 275, data 224, app 197,
+mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 3055).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -311,11 +311,11 @@ sink; `rewo-net` carries the listener transform and the music fade.
      * ~~**the three ambient instances**~~ — the `AmbientSoundHandler`
        subsystem **shipped as M142**, along with the `AmbientSounds` attribute
        decode it reads. All three handlers are transcribed and unit-tested;
-       the **underwater pair and the bubble column are wired end to end**
-       (M142b, M142c), and **one** remains unwired for a stated reason — the
-       biome loop wants a fade command through the engine, because vanilla's
-       handler mutates live instances it holds while Rewo's engine owns the
-       ramps. The **directional sound is a
+       and **all three reach a running client** (M142b, M142c, M142d): the
+       underwater pair, the bubble column, and the biome loop with its
+       additions and its mood. The loop needed a fade command through the
+       engine, because vanilla's handler mutates live instances it holds while
+       Rewo's engine owns the ramps. The **directional sound is a
        different feature** and is still open: it is the End flash, from
        `ClientLevel.tick`, and needs `EndFlashState` plus `playDelayed`. Note
        one reader in M142's survey claimed that class is **dead in vanilla**
@@ -20557,12 +20557,52 @@ defaults is unreachable. That is pinned as the coincidence it is (M93g's
 without `drag`, the witness fires, the branch becomes live, and the entry goes
 back to KILLED.
 
-#### What is transcribed but not yet wired
+#### M142d — the biome loop, and a crossfade the engine had to own
 
-The biome loop, alone now. It needs a fade command through the engine, because
-vanilla's handler mutates live `LoopSoundInstance`s it holds while Rewo's
-engine owns the ramps. It is transcribed and unit-tested here, and the module
-says so.
+The last handler. **All three now reach a running client.**
+
+This one could not be expressed as "play a sound", which is why it came last:
+vanilla's handler **holds** its `LoopSoundInstance`s and calls `fadeOut()` /
+`fadeIn()` on them, while Rewo's engine owns the ramps. So the handler names
+the outcome — `SoundEvent::BiomeLoopTransition` — and the engine applies it to
+the live set. That set *is* vanilla's map, filtered to biome-loop ramps, which
+is why the reuse falls out of the design rather than being arranged.
+
+**Every loop fades out on a transition, including the one about to fade back
+in.** It reads like a double call and is load-bearing: `fadeOut`'s
+`min(fade, 40)` is the **only** place a runaway `fade` is capped, and the
+ramp's tick never bounds it upward. Skip it and a loop that has played for ten
+minutes re-enters with `fade == 12000` and then takes 12000 ticks to fade out.
+The net composition on the incoming one is `clamp(fade, 0, 40); direction = +1`.
+
+**A live instance is reused, not replaced.** Crossing back inside the ~41 ticks
+it takes to die finds it still there, so `fade_in()` reverses the ramp from
+wherever it got to — no second `play`, no channel re-attach, no restart of the
+sample from offset 0.
+
+**The transition key is the SOUND, not the biome.** Two biomes declaring the
+same loop compare equal, so crossing between them does nothing at all — keying
+on the biome dips the volume to zero and back at every internal boundary.
+
+**One snapshot feeds all three features, and only the loop is change-gated.**
+Gating the additions and the mood would stop all accumulation the moment the
+player stood still, and re-querying per feature would admit a tick where the
+loop is biome A's and the mood is biome B's — impossible in vanilla.
+
+`ambient_sounds_at` samples the **raw quart**, Y included, so flying up out of
+a cave biome changes the loop; and the mood reads **raw stored light**, because
+`getEffectiveSkyBrightness` exists to subtract the sky darkening and is
+deliberately not called.
+
+`TickableSound` loses `Copy` (`Eq` went in M141h): which loop plays is decided
+by the biome, not by a construction site, so it carries an owned identifier.
+
+**A witness was wrong about its observable rather than its subject** — the
+third distinct failure mode this milestone. An abandoned loop's retirement is
+the **Stop submitted to the device**, not the live entry vanishing: an entry is
+reclaimed when the device reports its channel finished, which is asynchronous
+in vanilla too and which a recording device never volunteers. Waiting for the
+live set to empty is waiting on the test's own device.
 
 ### M141h — the riding pair, and a mount that plays two sounds at once (2026-08-11)
 

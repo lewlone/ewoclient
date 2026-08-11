@@ -314,10 +314,11 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 > and the sniffer) and **M141h the riding pair**, so **seven of the ten are
 > constructed and the ordinary triggers are done**. **M142 then built the
 > `AmbientSoundHandler` subsystem** and the `AmbientSounds` attribute decode it
-> reads: all three handlers are transcribed and unit-tested, the underwater
-> pair and the **bubble column** are wired end to end, and **one** stays
-> unwired for a stated reason — a fade command the engine does not yet have,
-> since vanilla's biome handler mutates live instances it holds. The **directional sound is not one of them** — it is the End
+> reads: **all three handlers reach a running client** — the underwater pair,
+> the bubble column, and the biome loop with its additions and its mood. The
+> loop needed a new seam, `SoundEvent::BiomeLoopTransition`: vanilla's handler
+> holds its instances and fades them directly, while Rewo's engine owns the
+> ramps, so the handler names the outcome and the engine applies it. The **directional sound is not one of them** — it is the End
 > flash from `ClientLevel.tick` and needs `EndFlashState`.
 >
 > **M142 belongs in §5's trap list twice.** A tickable ambient instance must be

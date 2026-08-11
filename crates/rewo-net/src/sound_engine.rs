@@ -4928,6 +4928,67 @@ mod tests {
         // …and it went silent on the way, rather than being cut at full gain.
         assert!(sys.engine.biome_fade("a").expect("still tracked") < 0);
     }
+    /// **The reuse matches on the RAMP KIND as well as the identifier**, and
+    /// dropping that guard is worse than it sounds.
+    ///
+    /// A server can send an ordinary `sound` packet naming the very event a
+    /// biome uses for its bed — `ambient.nether_wastes.loop` is a registry
+    /// sound like any other. Matching on the identifier alone then finds that
+    /// one-shot, fails the `if let` that fades it (it is not a biome-loop
+    /// ramp), and returns "nothing to create" — so **the bed never starts at
+    /// all**, silently, for as long as the coincidental sound is live.
+    #[test]
+    fn a_coincidental_sound_of_the_same_name_does_not_stand_in_for_the_loop() {
+        let idx = index_of(&["a"]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let table = rewo_world::entities::EntityTable::default();
+        let world = EntityTableWorld {
+            table: &table,
+            local: None,
+            game_time: 0,
+        };
+
+        // An ordinary positioned sound that happens to be named "a".
+        sys.accept(
+            &[SoundEvent::Local(crate::sounds::LocalSound {
+                name: "a".into(),
+                source: SoundSource::Ambient,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                volume: 1.0,
+                pitch: 1.0,
+            })],
+            &registry(),
+            &world,
+            &mut dev,
+        );
+        assert_eq!(sys.engine.live_identifiers(), vec!["a"]);
+        assert!(
+            sys.engine.biome_fade("a").is_none(),
+            "it is not a biome loop — only its name matches"
+        );
+
+        // Entering a biome whose loop is also "a" must still START one.
+        sys.accept(
+            &[SoundEvent::BiomeLoopTransition {
+                current: Some("a".into()),
+            }],
+            &registry(),
+            &world,
+            &mut dev,
+        );
+        assert_eq!(
+            sys.engine.live_identifiers().len(),
+            2,
+            "the bed is its own voice, alongside the coincidental one-shot"
+        );
+        assert!(
+            sys.engine.biome_fade("a").is_some(),
+            "and it really is a biome loop, with a ramp that can fade"
+        );
+    }
 }
 #[cfg(test)]
 mod listener_tests {
