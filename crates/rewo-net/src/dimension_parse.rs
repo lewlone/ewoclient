@@ -346,6 +346,12 @@ pub fn parse_dimension_type(name: &str, nbt: &Nbt) -> Result<DimensionTypeDef, D
     // `NON_NEGATIVE_FLOAT`, per `EnvironmentAttributes.CLOUD_HEIGHT`.
     let cloud_height =
         attr_f32(attributes, ATTR_CLOUD_HEIGHT, 0.0..=f32::MAX)?.unwrap_or(DEFAULT_CLOUD_HEIGHT);
+    // `audio/ambient_sounds` shares the biome's projection because it is the
+    // same attribute map on both sides — the dimension supplies the base and a
+    // biome replaces it, and neither reads the other's key. Kept `Option` for
+    // the same reason `sky_color` is: absence means "declare nothing", which
+    // for this attribute is what the Nether does.
+    let ambient_sounds = crate::biome_parse::attribute_ambient_sounds(attributes);
 
     Ok(DimensionTypeDef {
         name: name.to_string(),
@@ -364,6 +370,7 @@ pub fn parse_dimension_type(name: &str, nbt: &Nbt) -> Result<DimensionTypeDef, D
         sky_light_factor,
         cloud_color,
         cloud_height,
+        ambient_sounds,
     })
 }
 
@@ -497,6 +504,18 @@ pub mod builtin {
                 "attributes",
                 c(vec![
                     (
+                        "minecraft:audio/ambient_sounds",
+                        c(vec![(
+                            "mood",
+                            c(vec![
+                                ("block_search_extent", Nbt::Int(8)),
+                                ("offset", Nbt::Double(2.0)),
+                                ("sound", s("minecraft:ambient.cave")),
+                                ("tick_delay", Nbt::Int(6000)),
+                            ]),
+                        )]),
+                    ),
+                    (
                         "minecraft:gameplay/nether_portal_spawns_piglin",
                         Nbt::Byte(1),
                     ),
@@ -582,6 +601,18 @@ pub mod builtin {
             (
                 "attributes",
                 c(vec![
+                    (
+                        "minecraft:audio/ambient_sounds",
+                        c(vec![(
+                            "mood",
+                            c(vec![
+                                ("block_search_extent", Nbt::Int(8)),
+                                ("offset", Nbt::Double(2.0)),
+                                ("sound", s("minecraft:ambient.cave")),
+                                ("tick_delay", Nbt::Int(6000)),
+                            ]),
+                        )]),
+                    ),
                     ("minecraft:gameplay/respawn_anchor_works", Nbt::Byte(0)),
                     ("minecraft:visual/ambient_light_color", s("#3f473f")),
                     ("minecraft:visual/fog_color", s("#181318")),

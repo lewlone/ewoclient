@@ -6,6 +6,7 @@
 //! Prediction/physics land in M3; this is the read model.
 
 pub mod abilities;
+pub mod ambient;
 pub mod anvil;
 pub mod edit_box;
 pub mod merchant_screen;

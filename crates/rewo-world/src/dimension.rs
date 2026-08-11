@@ -308,6 +308,19 @@ pub struct DimensionTypeDef {
     pub cloud_color: i32,
     /// `minecraft:visual/cloud_height`, in blocks.
     pub cloud_height: f32,
+    /// `minecraft:audio/ambient_sounds` — the **base** a biome may replace.
+    ///
+    /// This layer is the whole reason an Overworld cave makes cave sounds:
+    /// `DimensionTypes.java:43` sets `AmbientSounds.LEGACY_CAVE_SETTINGS` here
+    /// for the Overworld (and for `overworld_caves` and `the_end`), while **no
+    /// vanilla Overworld or End biome sets the attribute at all**. Drop this
+    /// layer and those two dimensions go silent; hard-code it as a universal
+    /// default instead and `ambient.cave` starts playing in the Nether, whose
+    /// dimension type deliberately sets nothing.
+    ///
+    /// `None` = the dimension declares no base, which is
+    /// `AmbientSounds.EMPTY`'s meaning — the attribute's declared default.
+    pub ambient_sounds: Option<crate::ambient::AmbientSounds>,
 }
 
 impl DimensionTypeDef {
@@ -347,6 +360,10 @@ impl DimensionTypeDef {
             sky_light_factor: DEFAULT_SKY_LIGHT_FACTOR,
             cloud_color: DEFAULT_CLOUD_COLOR,
             cloud_height: DEFAULT_CLOUD_HEIGHT,
+            // The Overworld's base, to match every other field of this
+            // fallback — an unresolved holder should sound like the Overworld,
+            // not like a dimension that declared silence.
+            ambient_sounds: Some(crate::ambient::AmbientSounds::legacy_cave()),
         }
     }
 }

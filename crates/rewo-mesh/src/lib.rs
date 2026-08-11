@@ -1732,6 +1732,7 @@ fn oracle_biome_context() -> rewo_world::biome::BiomeContext {
         fog_color: None,
             has_precipitation: true,
         temperature_modifier: Default::default(),
+        ambient_sounds: None,
     };
     BiomeContext::new(
         std::sync::Arc::new(BiomeRegistry::new(vec![def])),
@@ -2745,6 +2746,7 @@ mod tests {
             fog_color: None,
                 has_precipitation: true,
         temperature_modifier: Default::default(),
+        ambient_sounds: None,
     };
         let ctx = BiomeContext::new(
             Arc::new(BiomeRegistry::new(vec![biome])),
@@ -2972,6 +2974,7 @@ mod tests {
             fog_color: None,
                 has_precipitation: true,
         temperature_modifier: Default::default(),
+        ambient_sounds: None,
     };
         let mut w = World::new(DimensionShape::OVERWORLD);
         w.ensure_column(0, 0);

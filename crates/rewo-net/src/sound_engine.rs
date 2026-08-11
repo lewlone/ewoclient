@@ -1369,6 +1369,9 @@ pub fn instance_from_event(
         SoundEvent::OnEntity(e) => instance_from_entity(e, registry, world),
         SoundEvent::Stop(_) => Err(NoInstance::IsStop),
         SoundEvent::Local(l) => Ok(instance_from_local(l)),
+        // Already an instance — the client built it itself, with whatever
+        // `relative`/`attenuation` its vanilla factory chose (M142b).
+        SoundEvent::Instance(i) => Ok(i.clone()),
         // A tickable carries a ramp as well as an instance, so it cannot be
         // reduced to one here — `instance_and_ramp` is its entry point and
         // this arm exists so a caller that only wants an instance says so.
@@ -1484,6 +1487,52 @@ pub fn instance_and_ramp(
                 ..SoundInstance::bare("minecraft:entity.sniffer.digging", SoundSource::Neutral)
             };
             Ok((inst, crate::tickable::Ramp::Sniffer { sniffer }))
+        }
+        crate::sounds::TickableSound::UnderwaterLoop { player } => {
+            // `UnderwaterAmbientSoundInstance`'s constructor: looping, delay 0,
+            // **volume 1.0**, `relative` — and attenuation left at the
+            // inherited LINEAR, which `relative` does NOT imply.
+            //
+            // The 1.0 is load-bearing rather than cosmetic. `SoundEngine.play`
+            // returns `NOT_STARTED` for a zero-volume instance unless
+            // `canStartSilent()`, and this class does not override it — so
+            // constructing it at 0.0 "because it fades in from silence" makes
+            // it never play at all, with only a debug log to say so. The first
+            // tick immediately rewrites the volume to 1/40.
+            let inst = SoundInstance {
+                looping: true,
+                delay: 0,
+                volume: 1.0,
+                relative: true,
+                ..SoundInstance::bare(
+                    crate::ambient_handlers::UNDERWATER_LOOP,
+                    SoundSource::Ambient,
+                )
+            };
+            Ok((
+                inst,
+                crate::tickable::Ramp::UnderwaterLoop(crate::tickable::UnderwaterRamp {
+                    player,
+                    fade: 0,
+                }),
+            ))
+        }
+        crate::sounds::TickableSound::UnderwaterSub { player, sound } => {
+            // `SubSound`'s constructor — the same shape but **not looping**,
+            // and its whole `tick()` is two stop conditions: it writes no
+            // volume, no pitch and no position, so surfacing CUTS an addition
+            // mid-sample rather than fading it.
+            let inst = SoundInstance {
+                looping: false,
+                delay: 0,
+                volume: 1.0,
+                relative: true,
+                ..SoundInstance::bare(sound, SoundSource::Ambient)
+            };
+            Ok((
+                inst,
+                crate::tickable::Ramp::UnderwaterSub { player },
+            ))
         }
         crate::sounds::TickableSound::Riding(r) => {
             // `RidingEntitySoundInstance`'s constructor: **`Attenuation.NONE`**,
@@ -1626,7 +1675,19 @@ pub struct LocalPlayerView {
     pub velocity: (f64, f64, f64),
     /// `isFallFlying()` — shared flag 7.
     pub fall_flying: bool,
-    /// `isUnderWater()` — `wasEyeInWater && isInWater()` (M141h).
+    /// `LocalPlayer.isUnderWater()` — `isEyeInFluid(FluidTags.WATER)`,
+    /// **one term** (M141h, corrected in M142b).
+    ///
+    /// The two-term `wasEyeInWater && isInWater()` this comment used to
+    /// cite is `Entity.isUnderWater()` (`Entity.java:1622-1624`), which
+    /// every other entity answers. `LocalPlayer` OVERRIDES it to return
+    /// `wasUnderwater` (`LocalPlayer.java:1172-1175`), and
+    /// `Player.updateIsUnderwater` writes that from the eye alone
+    /// (`Player.java:304-307`), once per tick at the TOP of
+    /// `Player.tick()`. The conjunct is redundant within one tracker
+    /// update, so nothing was audibly wrong — but this is the citation a
+    /// re-derivation follows, one line above the field that gates the
+    /// whole underwater feature.
     ///
     /// The local player's, because `RidingMinecartSoundInstance` overrides
     /// `shouldNotPlayUnderwaterSound()` to ask the **rider** rather than the
@@ -4501,6 +4562,80 @@ mod tests {
         let SoundEvent::Stop(s) = &ev else { unreachable!() };
         assert_eq!(stop_from_event(s), (None, Some(SoundSource::Records)));
     }
+    /// **A tickable ambient instance must be born at volume 1.0.**
+    ///
+    /// `SoundEngine.play` returns `NOT_STARTED` for a zero-volume instance
+    /// unless `canStartSilent()`, and neither underwater class overrides it —
+    /// only Bee, Minecart and RidingEntity do. So constructing the loop at 0.0
+    /// "because it fades in from silence" makes it never play at all, with a
+    /// debug log as the only trace. The first tick immediately rewrites the
+    /// volume to `fade/40`.
+    ///
+    /// Both are `relative` — head-locked at the origin — while the enter/exit
+    /// one-shots created in the same breath are positioned world sounds.
+    /// Neither sets `Attenuation::None`: `relative` does **not** imply it, and
+    /// these three classes are exactly what falsifies that pairing.
+    #[test]
+    fn the_underwater_instances_are_born_audible_and_head_locked() {
+        let world = EntityTableWorld {
+            table: &rewo_world::entities::EntityTable::default(),
+            local: Some(LocalPlayerView {
+                id: 1,
+                position: (0.0, 64.0, 0.0),
+                velocity: (0.0, 0.0, 0.0),
+                fall_flying: false,
+                underwater: true,
+            }),
+            game_time: 0,
+        };
+
+        let (loop_inst, loop_ramp) = instance_and_ramp(
+            crate::sounds::TickableSound::UnderwaterLoop { player: 1 },
+            &world,
+        )
+        .expect("the loop needs no world lookup");
+        assert_eq!(loop_inst.volume, 1.0, "born audible, or `play` refuses it");
+        assert!(loop_inst.looping, "it is the bed");
+        assert!(loop_inst.relative, "head-locked, not a world sound");
+        assert_eq!(loop_inst.delay, 0);
+        assert!(
+            !loop_inst.can_start_silent,
+            "it does NOT override canStartSilent — which is why the 1.0 matters"
+        );
+        assert_eq!(
+            loop_inst.attenuation,
+            Attenuation::Linear,
+            "`relative` does not imply NONE — the inherited LINEAR survives"
+        );
+        assert_eq!(loop_inst.source, SoundSource::Ambient);
+        assert!(matches!(
+            loop_ramp,
+            crate::tickable::Ramp::UnderwaterLoop(crate::tickable::UnderwaterRamp {
+                player: 1,
+                fade: 0
+            })
+        ));
+
+        let (sub, sub_ramp) = instance_and_ramp(
+            crate::sounds::TickableSound::UnderwaterSub {
+                player: 1,
+                sound: crate::ambient_handlers::UNDERWATER_ADDITIONS_RARE,
+            },
+            &world,
+        )
+        .expect("nor does the sub-sound");
+        assert_eq!(sub.volume, 1.0);
+        assert!(
+            !sub.looping,
+            "the SubSound is a ONE-SHOT — the loop beside it is the looping one"
+        );
+        assert!(sub.relative);
+        assert_eq!(sub.identifier, crate::ambient_handlers::UNDERWATER_ADDITIONS_RARE);
+        assert!(matches!(
+            sub_ramp,
+            crate::tickable::Ramp::UnderwaterSub { player: 1 }
+        ));
+    }
 }
 #[cfg(test)]
 mod listener_tests {
@@ -4660,4 +4795,6 @@ mod listener_tests {
             "the listener push must reach the device"
         );
     }
+
+
 }
