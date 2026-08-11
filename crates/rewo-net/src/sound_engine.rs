@@ -1421,12 +1421,44 @@ pub fn stop_from_event(stop: &StopSound) -> (Option<&str>, Option<SoundSource>) 
 /// which is what `entity.getX()` returns at tick time — not the synced target
 /// `x/y/z`, which is where the entity is heading. Using the target would put a
 /// moving mob's sound up to three ticks ahead of the mob.
-pub struct EntityTableWorld<'a>(pub &'a rewo_world::entities::EntityTable);
+pub struct EntityTableWorld<'a> {
+    pub table: &'a rewo_world::entities::EntityTable,
+    /// The local player, who is **not a row in the table** (M141d).
+    ///
+    /// `EntityTable` holds only entities the server sent an `add_entity` for,
+    /// and it never sends one for you — the same asymmetry M73 hit with
+    /// attributes. Every ramp but one reads a remote entity and does not care;
+    /// `ElytraOnPlayerSoundInstance` reads `player.getDeltaMovement()`, and
+    /// without this it would see a removed entity and stop itself on its first
+    /// tick, which is a silence that looks exactly like a correct one.
+    pub local: Option<LocalPlayerView>,
+}
+
+/// The local player's half of [`crate::tickable::RampWorld`].
+///
+/// Small and explicit rather than a handle to `PlayerState`, because only
+/// three of the sixteen queries have a local answer and naming them is what
+/// stops a fourth being silently wrong.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LocalPlayerView {
+    pub id: i32,
+    /// `getX/Y/Z()`. Feet position, as the wire carries it.
+    pub position: (f64, f64, f64),
+    /// `getDeltaMovement()` — **the physics velocity**, not a decayed packet
+    /// echo. The local player is `canSimulateMovement()`, so vanilla never
+    /// decays it either; the two agree by construction rather than by
+    /// coincidence.
+    pub velocity: (f64, f64, f64),
+    /// `isFallFlying()` — shared flag 7.
+    pub fall_flying: bool,
+}
 
 /// The half of [`crate::tickable::RampWorld`] an [`rewo_world::entities::EntityTable`]
 /// can answer, and an explicit account of the half it cannot.
 ///
-/// **Nine of the sixteen queries are real; seven are not, and each says so.**
+/// **Twelve of the sixteen queries are real; four are not, and each says so.**
+/// M141d closed the three speed queries, which were the ones that mattered:
+/// they gated four of the ten ramps.
 /// The rule applied to the seven is *make the ramp inert, never plausible*: a
 /// sound that stays at its minimum volume is a smaller lie than one that ramps
 /// on a number nobody derived, because silence is attributable and a wrong
@@ -1438,11 +1470,10 @@ pub struct EntityTableWorld<'a>(pub &'a rewo_world::entities::EntityTable);
 /// goals in `serverAiStep` and has no `EntityDataAccessor`, so no client ever
 /// sees one. It is listed here because it *looks* like a gap and is not.
 ///
-/// The genuine gaps, and what each costs:
+/// The genuine gaps that remain, and what each costs:
 ///
 /// | query | why | consequence |
 /// |---|---|---|
-/// | `horizontal_speed`, `speed`, `speed_sqr` | `EntityTable` stores an interpolation target, not a velocity | bee / minecart / riding / elytra sit at their minimum volume |
 /// | `angry` | `Bee.DATA_ANGER_END_TIME` is not decoded | a bee never switches to its aggressive loop |
 /// | `underwater` | needs the level's fluid at the entity, not the table | the dry half of the riding pair plays and the wet half mutes |
 /// | `attack_animation_scale` | `clientSideAttackTime` is a client counter Rewo does not run | a guardian's beam is silent at pitch 0.7 |
@@ -1459,24 +1490,54 @@ impl crate::tickable::RampWorld for EntityTableWorld<'_> {
     /// synced target `x/y/z`, which is where the entity is heading. Using the
     /// target would put a moving mob's sound up to three ticks ahead of it.
     fn position(&self, entity_id: i32) -> Option<(f64, f64, f64)> {
-        let e = self.0.get(entity_id)?;
+        if let Some(l) = self.local.filter(|l| l.id == entity_id) {
+            // Not in the table, and `None` here is `isRemoved()` — so without
+            // this branch the elytra ramp stops itself on its first tick.
+            return Some(l.position);
+        }
+        let e = self.table.get(entity_id)?;
         let p = e.render_pos(1.0);
         Some((p[0], p[1], p[2]))
     }
 
-    fn horizontal_speed(&self, _: i32) -> f64 {
-        0.0
+    /// `getDeltaMovement().horizontalDistance()` — real since M141d.
+    ///
+    /// **This is not how fast the entity is moving.** It is the decaying echo
+    /// of the last `set_entity_motion` packet, which is exactly what vanilla's
+    /// ramps read: a client never integrates a remote entity's velocity into
+    /// its position, so a bee gliding past with no motion packets has this
+    /// falling to zero while it is visibly moving, and its buzz fades with it.
+    /// A finite difference over the interpolated positions is the obvious
+    /// implementation, is more truthful about the bee, and is not what vanilla
+    /// sounds like.
+    fn horizontal_speed(&self, entity_id: i32) -> f64 {
+        if let Some(l) = self.local.filter(|l| l.id == entity_id) {
+            let (x, _, z) = l.velocity;
+            return (x * x + z * z).sqrt();
+        }
+        self.table.horizontal_speed(entity_id)
     }
-    fn speed(&self, _: i32) -> f64 {
-        0.0
+
+    /// `getDeltaMovement().length()`.
+    fn speed(&self, entity_id: i32) -> f64 {
+        if self.local.is_some_and(|l| l.id == entity_id) {
+            return self.speed_sqr(entity_id).sqrt();
+        }
+        self.table.speed(entity_id)
     }
-    fn speed_sqr(&self, _: i32) -> f64 {
-        0.0
+
+    /// `getDeltaMovement().lengthSqr()` — not rooted; the elytra quarters it.
+    fn speed_sqr(&self, entity_id: i32) -> f64 {
+        if let Some(l) = self.local.filter(|l| l.id == entity_id) {
+            let (x, y, z) = l.velocity;
+            return x * x + y * y + z * z;
+        }
+        self.table.speed_sqr(entity_id)
     }
 
     /// `entity.isBaby()` — decoded, and the bee's pitch band reads it.
     fn baby(&self, entity_id: i32) -> bool {
-        self.0.is_baby(entity_id)
+        self.table.is_baby(entity_id)
     }
 
     fn angry(&self, _: i32) -> bool {
@@ -1517,13 +1578,16 @@ impl crate::tickable::RampWorld for EntityTableWorld<'_> {
     /// `player.isFallFlying()` — `DATA_SHARED_FLAGS_ID` bit **7**, which the
     /// cape rig already reads.
     fn fall_flying(&self, entity_id: i32) -> bool {
-        self.0.shared_flag(entity_id, 7)
+        if let Some(l) = self.local.filter(|l| l.id == entity_id) {
+            return l.fall_flying;
+        }
+        self.table.shared_flag(entity_id, 7)
     }
 
     /// `player.getVehicle()` — M70's riding graph, and `None` is exactly
     /// `!isPassenger()`.
     fn vehicle_of(&self, entity_id: i32) -> Option<i32> {
-        self.0.vehicle_of(entity_id)
+        self.table.vehicle_of(entity_id)
     }
 
     fn camera_position(&self) -> (f64, f64, f64) {
@@ -1542,7 +1606,7 @@ impl SoundWorld for EntityTableWorld<'_> {
         // exact rather than a fallback: `Entity.java:322` seeds `DATA_SILENT`
         // to `false`, so an unknown entity and an un-silenced one really do
         // answer the same thing.
-        self.0.is_silent(entity_id)
+        self.table.is_silent(entity_id)
     }
 }
 
@@ -1669,8 +1733,16 @@ impl LiveSounds {
     /// is `Minecraft.tick`'s, `tickCount` is a tick counter, and
     /// `MIN_SOURCE_LIFETIME` is 20 of them. Driving it per frame would make a
     /// channel's grace period depend on the frame rate.
-    pub fn drive(&mut self, events: &[SoundEvent], entities: &rewo_world::entities::EntityTable) {
-        let world = EntityTableWorld(entities);
+    pub fn drive(
+        &mut self,
+        events: &[SoundEvent],
+        entities: &rewo_world::entities::EntityTable,
+        local: Option<LocalPlayerView>,
+    ) {
+        let world = EntityTableWorld {
+            table: entities,
+            local,
+        };
         let before = self.system.stats;
         self.system
             .accept(events, &self.registry, &world, &mut self.device);
@@ -2534,6 +2606,92 @@ mod tests {
         );
     }
 
+    // ---- M141d: the velocity input ---------------------------------------
+
+    /// **The local player's velocity reaches the ramps**, and it is not the
+    /// table's — the table has no row for the local player at all, so without
+    /// `LocalPlayerView` every one of these answers zero.
+    #[test]
+    fn the_local_players_velocity_and_position_reach_the_ramp_world() {
+        use crate::tickable::RampWorld;
+        let t = rewo_world::entities::EntityTable::default();
+        let w = EntityTableWorld {
+            table: &t,
+            local: Some(LocalPlayerView {
+                id: 42,
+                position: (1.5, 70.0, -2.5),
+                // 3/4/12 — a triple whose length is 13 and whose horizontal
+                // part is not its length, so a query reading the wrong
+                // reduction cannot agree by accident.
+                velocity: (3.0, 4.0, 12.0),
+                fall_flying: true,
+            }),
+        };
+        assert_eq!(w.position(42), Some((1.5, 70.0, -2.5)));
+        assert_eq!(w.speed_sqr(42), 169.0);
+        assert_eq!(w.speed(42), 13.0);
+        assert!((w.horizontal_speed(42) - 153.0_f64.sqrt()).abs() < 1e-12);
+        assert!(w.fall_flying(42));
+
+        // …and a DIFFERENT id still goes to the table, which knows nothing.
+        assert_eq!(w.position(43), None);
+        assert_eq!(w.speed_sqr(43), 0.0);
+        assert!(!w.fall_flying(43));
+    }
+
+    /// Without the local view the local player reads as **removed**, which is
+    /// what the elytra ramp would see: `position` returning `None` is
+    /// `isRemoved()`, so it stops itself on its first tick rather than playing
+    /// silently. Named because the two failures look identical from outside.
+    #[test]
+    fn with_no_local_view_the_local_player_reads_as_removed() {
+        use crate::tickable::RampWorld;
+        let t = rewo_world::entities::EntityTable::default();
+        let w = EntityTableWorld {
+            table: &t,
+            local: None,
+        };
+        assert_eq!(w.position(42), None);
+        let mut r = crate::tickable::Ramp::Elytra(crate::tickable::ElytraRamp {
+            player: 42,
+            time: 0,
+        });
+        let mut i = SoundInstance::bare("minecraft:item.elytra.flying", SoundSource::Players);
+        assert!(r.tick(&mut i, &w).stopped, "an absent local view is a removal");
+    }
+
+    /// **A remote entity's velocity reaches the ramps through the table**, and
+    /// it decays — the whole point of M141d being a stored echo rather than a
+    /// finite difference. Driven through the production `EntityTableWorld`
+    /// rather than a fake, so the wiring is what is graded.
+    #[test]
+    fn a_remote_entitys_decaying_velocity_reaches_the_ramp_world() {
+        use crate::tickable::RampWorld;
+        let mut t = rewo_world::entities::EntityTable::default();
+        t.add(
+            9,
+            rewo_world::entities::EntityState::new(0, 0, 0.0, 64.0, 0.0, 0.0, 0.0),
+        );
+        t.lerp_motion(9, [0.5, 0.0, 0.0], true, false);
+        {
+            let w = EntityTableWorld {
+                table: &t,
+                local: None,
+            };
+            assert_eq!(w.horizontal_speed(9), 0.5);
+        }
+        t.tick_lerp();
+        let w = EntityTableWorld {
+            table: &t,
+            local: None,
+        };
+        assert!(
+            (w.horizontal_speed(9) - 0.49).abs() < 1e-12,
+            "0.98 of 0.5, got {}",
+            w.horizontal_speed(9)
+        );
+    }
+
     // ---- M141c: the engine drives a ramp ---------------------------------
 
     /// **A ramp's volume reaches the device**, which is the whole point of
@@ -3234,7 +3392,7 @@ mod tests {
         let mut entities = EntityTable::default();
         entities.add(11, EntityState::new(0, 0, 5.0, 64.0, -5.0, 0.0, 0.0));
 
-        live.drive(&[positioned(3)], &entities);
+        live.drive(&[positioned(3)], &entities, None);
         assert_eq!(live.stats().started, 1);
         assert_eq!(live.system.engine.live_count(), 1);
 
@@ -3250,12 +3408,12 @@ mod tests {
             pitch: 1.0,
             seed: 0,
         });
-        live.drive(&[ev.clone()], &entities);
+        live.drive(&[ev.clone()], &entities, None);
         assert_eq!(live.stats().started, 2);
 
         // An entity the table does not have is dropped, not relocated.
         entities.remove(11);
-        live.drive(&[ev], &entities);
+        live.drive(&[ev], &entities, None);
         assert_eq!(live.stats().no_instance, 1);
         assert_eq!(live.stats().started, 2);
     }
@@ -3271,7 +3429,7 @@ mod tests {
         if let Some(e) = t.get_mut(5) {
             e.set_target(30.0, 64.0, 0.0);
         }
-        let w = EntityTableWorld(&t);
+        let w = EntityTableWorld { table: &t, local: None };
         let (x, _, _) = w.position(5).unwrap();
         assert_ne!(x, 30.0, "the target is not where the entity is yet");
         assert_eq!(w.position(6), None, "an untracked entity is gone");

@@ -3956,7 +3956,11 @@ fn run_headless(
         // them) and driving it per frame would tie a channel's grace period to
         // the frame rate.
         let queued = session.take_sound_events();
-        sounds.drive(&queued, &session.world.entities);
+        sounds.drive(
+            &queued,
+            &session.world.entities,
+            session.local_player_view(),
+        );
         if let Some(reason) = &session.disconnect {
             return Err(format!("disconnected: {reason}"));
         }
@@ -7751,7 +7755,11 @@ impl LiveApp {
             // `MIN_SOURCE_LIFETIME` is 20 ticks, so a per-frame drive would tie
             // a channel's grace period to the frame rate.
             let queued = session.take_sound_events();
-            self.sounds.drive(&queued, &session.world.entities);
+            self.sounds.drive(
+                &queued,
+                &session.world.entities,
+                session.local_player_view(),
+            );
             // M71 — a client-generated system message (currently only
             // `NO_RESPAWN_BLOCK_AVAILABLE`) is queued as a *translation key*,
             // because vanilla builds a `Component.translatable` and resolves

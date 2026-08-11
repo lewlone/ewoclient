@@ -3395,13 +3395,55 @@ impl PlaySession {
     /// in 26.2 is a bare `setDeltaMovement` — a **replace**, not a blend, and
     /// not an add (rule 4).
     ///
-    /// Only the local player's velocity is stored. Remote entities are
-    /// rendered from their server-sent positions with a 3-tick lerp and are
-    /// never integrated client-side, so there is nothing for their velocity to
-    /// drive; the count is still kept so the gate can see the traffic exists.
+    /// The local player's half of the sound world (M141d).
+    ///
+    /// One derivation with two callers — `run_headless` and `LiveApp::frame`,
+    /// the two composition roots the audio plan §0.3 records as unwitnessed.
+    /// Letting each build its own is how they come to disagree (M89, four
+    /// times now).
+    ///
+    /// **`fall_flying` is the one field Rewo cannot answer yet**, and it is
+    /// named here rather than defaulted quietly. The local player's
+    /// `DATA_SHARED_FLAGS_ID` does arrive — the server sends you your own
+    /// metadata — but `route_set_entity_data` writes into `EntityTable`, which
+    /// holds no row for you (M73's asymmetry, hit again). So it answers
+    /// `false`, and the cost is precise: `ElytraOnPlayerSoundInstance`'s guard
+    /// is `time <= 20 || isFallFlying()`, so an elytra sound would play for
+    /// exactly one second and stop. That is not a silence you would blame on
+    /// this function, which is why it is written down. It is also the elytra's
+    /// *trigger* (`onSyncedDataUpdated`'s rising edge), so one decode closes
+    /// both ends and it belongs with the trigger milestone.
+    pub fn local_player_view(&self) -> Option<crate::sound_engine::LocalPlayerView> {
+        Some(crate::sound_engine::LocalPlayerView {
+            id: self.player_id?,
+            position: (self.player.x, self.player.y, self.player.z),
+            velocity: (self.player.vx, self.player.vy, self.player.vz),
+            fall_flying: false,
+        })
+    }
+
+    /// **A remote entity's velocity is stored too, since M141d.** This used to
+    /// keep only the local player's, with a comment reasoning that remote
+    /// entities "are never integrated client-side, so there is nothing for
+    /// their velocity to drive". The first half is right and the second stopped
+    /// being true at M141: four of the ten tickable sound ramps read
+    /// `getDeltaMovement()` — the bee's buzz, the minecart's rumble, the riding
+    /// loops and the elytra — and none of them is a position.
+    ///
+    /// The velocity a remote entity carries is a decaying echo of these
+    /// packets and nothing else; see
+    /// [`rewo_world::entities::EntityState`]'s `delta_movement`.
     fn apply_set_entity_motion(&mut self, m: &crate::motion::EntityMotion) {
         self.motion_stats.entity_motions += 1;
         if Some(m.id) != self.player_id {
+            // `handleSetEntityMotion` → `entity.lerpMotion(...)`. The body is
+            // in `motion::apply_remote_motion` rather than here because this
+            // method is unreachable from any test — see that function's doc.
+            crate::motion::apply_remote_motion(
+                &mut self.world.entities,
+                self.entity_classes.as_deref(),
+                m,
+            );
             return;
         }
         self.motion_stats.local_motions += 1;

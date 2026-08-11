@@ -397,6 +397,37 @@ pub struct EntityState {
     /// swing amplitude. The server never sends limb angles; both are
     /// derived here from the entity's own motion, exactly as vanilla does.
     limb_amount: f32,
+    /// `Entity.deltaMovement` (M141d), for the sound ramps that read
+    /// `getDeltaMovement()`.
+    ///
+    /// **It is not a velocity derived from where the entity is going.** For a
+    /// remote entity a client never integrates it into a position — the
+    /// position comes from the server and is interpolated — so this is a
+    /// *decaying echo of the last `set_entity_motion` packet* and nothing
+    /// else. A bee gliding steadily across your view with no motion packets
+    /// has a `deltaMovement` falling to zero while it is visibly moving, and
+    /// its buzz fades with it. A finite difference over `cur` would be more
+    /// truthful about the entity and less faithful to vanilla, which is why
+    /// this is stored rather than computed.
+    delta_movement: [f64; 3],
+    /// `entity instanceof LivingEntity`, supplied by the caller from
+    /// `rewo_data::entity_types::EntityClasses::is_living` — the `ticks_swing`
+    /// precedent, because the class fact lives in a crate this one does not
+    /// want a registry handle from.
+    ///
+    /// It decides whether the decay runs **at all**: the 0.98 scale and the
+    /// deadband both live in `LivingEntity.aiStep`, so a minecart's velocity
+    /// is frozen between packets. Both minecart behaviours' client branches
+    /// (`OldMinecartBehavior.tick`'s else, `NewMinecartBehavior.tick`'s else)
+    /// touch position and rotation only.
+    ///
+    /// Defaulting to `false` before the first motion packet is exact rather
+    /// than convenient: the velocity is zero until then, and every rule below
+    /// maps zero to zero.
+    motion_living: bool,
+    /// `entity.is(EntityTypes.PLAYER)` — the deadband has **two forms** and
+    /// this picks between them. See [`Self::tick`].
+    motion_player: bool,
     /// The cape's lagging anchor (M60) — vanilla `ClientAvatarState`'s
     /// cloak position. Carried by every entity rather than only players
     /// because [`EntityState`] is one `Copy` struct and a side map keyed by
@@ -449,6 +480,9 @@ impl EntityState {
             prev: [x, y, z],
             limb_swing: 0.0,
             limb_amount: 0.0,
+            delta_movement: [0.0; 3],
+            motion_living: false,
+            motion_player: false,
             cloak: CloakAnchor::default(),
             fall_fly_ticks: 0,
         }
@@ -477,7 +511,70 @@ impl EntityState {
         self.pitch = pitch;
     }
 
-    fn tick(&mut self, fall_flying: bool) {
+    /// `LivingEntity.aiStep`'s velocity half — the 0.98 decay and the deadband
+    /// (`LivingEntity.java:3038-3073`), M141d.
+    ///
+    /// ```java
+    /// if (this.isInterpolating()) { this.getInterpolation().interpolate(); }
+    /// else if (!this.canSimulateMovement()) {
+    ///    this.setDeltaMovement(this.getDeltaMovement().scale(0.98));
+    /// }
+    /// ```
+    ///
+    /// **The decay is the `else` of the interpolation branch**, so a remote
+    /// entity that is still catching up to a synced position does not decay at
+    /// all — its velocity is frozen for those ticks and only starts falling
+    /// once it arrives. That is why this shares [`Self::tick`]'s branch rather
+    /// than running beside it.
+    ///
+    /// `authoritative` is `canSimulateMovement()`, which is
+    /// `isLocalInstanceAuthoritative()`, which on a client is
+    /// `isLocalClientAuthoritative()` — and `Player.isLocalClientAuthoritative`
+    /// is `isLocalPlayer()`, so the only source of authority is the local
+    /// player riding this entity. Rewo's local player is not in the table at
+    /// all, so for everything else it is false.
+    ///
+    /// **The deadband has two forms and they genuinely differ.** A player's is
+    /// joint (`horizontalDistanceSqr() < 9.0E-6`, so x and z fall together);
+    /// everything else's is per-axis (`|x| < 0.003`). At `(0.0025, 0.0025)`
+    /// the per-axis rule zeroes both and the joint rule keeps them, because
+    /// the magnitude is 0.00354. `physics.rs` already records this for the
+    /// local player from the other side.
+    fn tick_motion(&mut self, interpolating: bool, authoritative: bool) {
+        if !self.motion_living {
+            // `aiStep` is `LivingEntity`'s. A minecart holds its last packet.
+            return;
+        }
+        if !interpolating && !authoritative {
+            for c in &mut self.delta_movement {
+                *c *= 0.98;
+            }
+        }
+        // Runs every tick regardless of the branch above, and reads ONE
+        // snapshot: vanilla tests `movement.x` after having copied it, so an
+        // axis zeroed here cannot change another axis's verdict.
+        let [x, y, z] = self.delta_movement;
+        let (mut dx, mut dy, mut dz) = (x, y, z);
+        if self.motion_player {
+            if x * x + z * z < 9.0e-6 {
+                dx = 0.0;
+                dz = 0.0;
+            }
+        } else {
+            if x.abs() < 0.003 {
+                dx = 0.0;
+            }
+            if z.abs() < 0.003 {
+                dz = 0.0;
+            }
+        }
+        if y.abs() < 0.003 {
+            dy = 0.0;
+        }
+        self.delta_movement = [dx, dy, dz];
+    }
+
+    fn tick(&mut self, fall_flying: bool, authoritative: bool) {
         let before = self.cur;
         // `AbstractClientPlayer.tick` runs `clientAvatarState.tick(position(),
         // …)` **before** `super.tick()`, so the cloak chases the position the
@@ -491,6 +588,9 @@ impl EntityState {
             self.fall_fly_ticks = 0;
         }
         self.prev = self.cur;
+        // `aiStep`'s interpolate-or-decay branch: the velocity step shares
+        // this `if`, because in vanilla they ARE one if/else.
+        self.tick_motion(self.lerp_steps > 0, authoritative);
         if self.lerp_steps > 0 {
             let n = self.lerp_steps as f64;
             self.cur[0] += (self.x - self.cur[0]) / n;
@@ -705,6 +805,11 @@ pub struct EntityTable {
     /// between vehicles would leave the old one reading as still ridden, and
     /// that vehicle's label would stay suppressed forever.
     vehicle_of: HashMap<i32, i32>,
+    /// The local player's entity id, if the session has told us (M141d).
+    ///
+    /// The local player is not a row in this table; this exists only so
+    /// `Entity.canSimulateMovement()` can be answered for a vehicle it rides.
+    local_player: Option<i32>,
     /// Per-entity-type attachment points, when the caller has supplied them
     /// (M72). `None` keeps [`Self::tick_lerp`] at its pre-M72 behaviour, which
     /// is what every gate that builds a bare `EntityTable` relies on; the live
@@ -1416,6 +1521,75 @@ impl EntityTable {
         self.vehicle_of.get(&id).copied()
     }
 
+    /// Tell the table which entity id is the local player (M141d).
+    ///
+    /// The local player is **not** in this table — its state lives in
+    /// `rewo_world::physics` — so the id is here only to answer
+    /// `Entity.isLocalClientAuthoritative()` for a vehicle it is riding, which
+    /// is the one case where a remote entity's velocity does *not* decay.
+    /// Leaving it unset makes every entity non-authoritative, which is the
+    /// right answer for every entity the local player is not riding.
+    pub fn set_local_player(&mut self, id: i32) {
+        self.local_player = Some(id);
+    }
+
+    /// `entity.lerpMotion(movement)` — `handleSetEntityMotion`'s whole body
+    /// (M141d).
+    ///
+    /// In 26.2 `Entity.lerpMotion` is a bare `setDeltaMovement`, so this is a
+    /// **replace**, not a blend and not an add. `AbstractMinecart` overrides
+    /// it, but the override runs `behavior.lerpMotion` →
+    /// `MinecartBehavior.setDeltaMovement` → `minecart.setDeltaMovement`, so
+    /// the stored value is identical; only `OldMinecartBehavior`'s extra
+    /// `targetDeltaMovement` cache differs and nothing in the sound path reads
+    /// it.
+    ///
+    /// **A non-finite movement is ignored and the old value survives** —
+    /// `Entity.setDeltaMovement` is guarded by `deltaMovement.isFinite()`, so
+    /// this is a silent keep rather than a write of NaN.
+    ///
+    /// `living` and `player` are class facts the caller answers from
+    /// `rewo_data::entity_types::EntityClasses`; see [`EntityState`]'s fields.
+    pub fn lerp_motion(&mut self, id: i32, movement: [f64; 3], living: bool, player: bool) {
+        let Some(e) = self.map.get_mut(&id) else {
+            // `handleSetEntityMotion` is `if (entity != null)`, so an unknown
+            // id is inert rather than an error.
+            return;
+        };
+        e.motion_living = living;
+        e.motion_player = player;
+        if movement.iter().all(|c| c.is_finite()) {
+            e.delta_movement = movement;
+        }
+    }
+
+    /// `entity.getDeltaMovement()`.
+    ///
+    /// `None` for an entity this table has never seen. Callers that want a
+    /// speed should use [`Self::horizontal_speed`] / [`Self::speed`] /
+    /// [`Self::speed_sqr`], which name the three `Vec3` reductions the sound
+    /// ramps use so no call site does the arithmetic itself.
+    pub fn delta_movement(&self, id: i32) -> Option<[f64; 3]> {
+        self.map.get(&id).map(|e| e.delta_movement)
+    }
+
+    /// `getDeltaMovement().horizontalDistance()` — `sqrt(x² + z²)`.
+    pub fn horizontal_speed(&self, id: i32) -> f64 {
+        self.delta_movement(id)
+            .map_or(0.0, |v| (v[0] * v[0] + v[2] * v[2]).sqrt())
+    }
+
+    /// `getDeltaMovement().length()` — `sqrt(x² + y² + z²)`.
+    pub fn speed(&self, id: i32) -> f64 {
+        self.speed_sqr(id).sqrt()
+    }
+
+    /// `getDeltaMovement().lengthSqr()` — **not** rooted.
+    pub fn speed_sqr(&self, id: i32) -> f64 {
+        self.delta_movement(id)
+            .map_or(0.0, |v| v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+    }
+
     /// Apply `Avatar.DATA_PLAYER_MODE_CUSTOMISATION` (index 16, BYTE).
     /// Only the kind-aware router calls this, and only for a player.
     pub fn set_model_customisation(&mut self, id: i32, mask: u8) {
@@ -1952,11 +2126,23 @@ impl EntityTable {
     /// and the combat-swing clock.
     /// The `dances` map holds only Allays, so advancing all of them is exact.
     pub fn tick_lerp(&mut self) {
+        let local = self.local_player;
         for (id, e) in self.map.iter_mut() {
             // `LivingEntity.isFallFlying()` is `getSharedFlag(7)` — the cape's
             // `fallFlyingScale` needs the *count*, which only the client keeps.
             let fall_flying = self.shared_flags.get(id).copied().unwrap_or(0) & (1 << 7) != 0;
-            e.tick(fall_flying);
+            // `Entity.canSimulateMovement()` — see `EntityState::tick_motion`.
+            // `getControllingPassenger()` is overridden per class, but every
+            // override that matters here (minecart, boat, horse, happy ghast)
+            // returns the FIRST passenger, so the first entry is the answer.
+            let authoritative = local.is_some_and(|p| {
+                self.passengers
+                    .get(id)
+                    .and_then(|riders| riders.first())
+                    .copied()
+                    == Some(p)
+            });
+            e.tick(fall_flying, authoritative);
         }
         for d in self.dances.values_mut() {
             d.tick();
@@ -2460,13 +2646,13 @@ mod tests {
     fn three_step_lerp_converges_exactly() {
         let mut e = EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
         e.set_target(3.0, 0.0, 0.0);
-        e.tick(false); // (3-0)/3 → 1
+        e.tick(false, false); // (3-0)/3 → 1
         assert_eq!(e.render_pos(1.0)[0], 1.0);
         assert_eq!(e.render_pos(0.5)[0], 0.5, "partial tick blends prev→cur");
-        e.tick(false); // (3-1)/2 → 2
-        e.tick(false); // (3-2)/1 → 3 exact
+        e.tick(false, false); // (3-1)/2 → 2
+        e.tick(false, false); // (3-2)/1 → 3 exact
         assert_eq!(e.render_pos(1.0)[0], 3.0);
-        e.tick(false); // no steps left — stays put
+        e.tick(false, false); // no steps left — stays put
         assert_eq!(e.render_pos(0.0)[0], 3.0);
     }
 
@@ -2513,10 +2699,10 @@ mod tests {
     fn fall_fly_ticks_count_up_while_flying_and_reset_at_once() {
         let mut e = EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
         for _ in 0..3 {
-            e.tick(true);
+            e.tick(true, false);
         }
         assert_eq!(e.fall_fly_ticks(), 3);
-        e.tick(false);
+        e.tick(false, false);
         assert_eq!(e.fall_fly_ticks(), 0, "reset, not decayed");
     }
 
@@ -2527,7 +2713,7 @@ mod tests {
         e.nudge(0.5, 0.0, 0.0); // mid-lerp — target must not lose the first
         assert_eq!(e.x, 11.0);
         for _ in 0..3 {
-            e.tick(false);
+            e.tick(false, false);
         }
         assert_eq!(e.render_pos(1.0)[0], 11.0);
     }
@@ -2536,14 +2722,14 @@ mod tests {
     fn still_entity_has_no_limb_swing_but_walking_builds_it_up() {
         let mut e = EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
         for _ in 0..10 {
-            e.tick(false); // no target set → cur never moves
+            e.tick(false, false); // no target set → cur never moves
         }
         let (_, amt_still) = e.limb();
         assert!(amt_still < 1e-6, "still entity: amount {amt_still}");
         // Now walk ~0.2 blk/tick and let the smoother ramp.
         for _ in 0..20 {
             e.nudge(0.2, 0.0, 0.0);
-            e.tick(false);
+            e.tick(false, false);
         }
         let (swing, amt) = e.limb();
         assert!(amt > 0.5, "sustained walk drives amount up: {amt}");
@@ -3212,6 +3398,201 @@ mod m21_hurt_tests {
         assert!(t.death_state(1).is_dead_or_dying(), "`dead` is sticky");
     }
 
+    // ---- M141d: `getDeltaMovement()` for a remote entity ------------------
+
+    fn living(id: i32) -> EntityTable {
+        let mut t = EntityTable::default();
+        t.add(id, EntityState::new(0, 0, 0.0, 64.0, 0.0, 0.0, 0.0));
+        t
+    }
+
+    /// `lerpMotion` is a **replace**, and the three reductions are the ones
+    /// the ramps ask for.
+    #[test]
+    fn a_motion_packet_replaces_the_velocity() {
+        let mut t = living(1);
+        t.lerp_motion(1, [3.0, 4.0, 12.0], true, false);
+        assert_eq!(t.delta_movement(1), Some([3.0, 4.0, 12.0]));
+        assert_eq!(t.speed_sqr(1), 9.0 + 16.0 + 144.0);
+        assert_eq!(t.speed(1), 13.0);
+        // horizontal drops the Y term, which is what makes a falling minecart
+        // quiet: sqrt(9 + 144).
+        assert!((t.horizontal_speed(1) - 153.0_f64.sqrt()).abs() < 1e-12);
+
+        // …and a second packet replaces rather than accumulating.
+        t.lerp_motion(1, [1.0, 0.0, 0.0], true, false);
+        assert_eq!(t.delta_movement(1), Some([1.0, 0.0, 0.0]));
+    }
+
+    /// **A non-finite movement is ignored and the old value survives** —
+    /// `Entity.setDeltaMovement` is guarded by `isFinite()`, so this is a
+    /// silent keep. Storing the NaN would poison every later `sqrt` and the
+    /// symptom would surface as a silent sound, not as an error.
+    #[test]
+    fn a_non_finite_movement_keeps_the_previous_velocity() {
+        let mut t = living(1);
+        t.lerp_motion(1, [0.5, 0.0, 0.0], true, false);
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            t.lerp_motion(1, [bad, 0.0, 0.0], true, false);
+            assert_eq!(t.delta_movement(1), Some([0.5, 0.0, 0.0]), "{bad}");
+        }
+        // An unknown id is inert rather than an error — `handleSetEntityMotion`
+        // is `if (entity != null)`.
+        t.lerp_motion(999, [1.0, 1.0, 1.0], true, false);
+        assert_eq!(t.delta_movement(999), None);
+        assert_eq!(t.horizontal_speed(999), 0.0);
+    }
+
+    /// **A living entity's velocity decays by 0.98 a tick** once it has
+    /// stopped interpolating — `aiStep`'s `else if (!canSimulateMovement())`.
+    #[test]
+    fn a_living_entitys_velocity_decays_but_a_minecarts_does_not() {
+        let mut t = living(1);
+        t.lerp_motion(1, [1.0, 0.0, 0.0], true, false);
+        t.tick_lerp();
+        assert!(
+            (t.delta_movement(1).unwrap()[0] - 0.98).abs() < 1e-12,
+            "{:?}",
+            t.delta_movement(1)
+        );
+        t.tick_lerp();
+        assert!((t.delta_movement(1).unwrap()[0] - 0.9604).abs() < 1e-12);
+
+        // A minecart is not a LivingEntity, so `aiStep` never runs for it and
+        // both minecart behaviours' client branches touch position only. Its
+        // velocity is frozen until the next packet.
+        let mut t = living(2);
+        t.lerp_motion(2, [1.0, 0.0, 0.0], false, false);
+        for _ in 0..100 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.delta_movement(2), Some([1.0, 0.0, 0.0]), "frozen");
+    }
+
+    /// **The decay is the `else` of the interpolation branch**, so an entity
+    /// still catching up to a synced position does not decay at all.
+    ///
+    /// This is the shape a parallel implementation gets wrong: running the
+    /// decay beside the lerp rather than opposite it makes a briskly-updated
+    /// entity — one that is interpolating almost every tick — fade anyway.
+    #[test]
+    fn an_interpolating_entity_does_not_decay() {
+        let mut t = living(1);
+        t.lerp_motion(1, [1.0, 0.0, 0.0], true, false);
+        // A fresh target arms the 3-tick lerp.
+        t.get_mut(1).unwrap().set_target(10.0, 64.0, 0.0);
+        for _ in 0..3 {
+            t.tick_lerp();
+            assert_eq!(t.delta_movement(1), Some([1.0, 0.0, 0.0]), "held");
+        }
+        // The steps are spent; now it falls.
+        t.tick_lerp();
+        assert!((t.delta_movement(1).unwrap()[0] - 0.98).abs() < 1e-12);
+    }
+
+    /// **The deadband has two forms and they disagree at (0.0025, 0.0025)** —
+    /// per-axis zeroes both, joint keeps both, because the magnitude is
+    /// 0.00354. `physics.rs` records the same divergence from the player's
+    /// side; this is the non-player half.
+    #[test]
+    fn the_deadband_is_per_axis_for_a_mob_and_joint_for_a_player() {
+        // A mob: each axis below 0.003 is zeroed on its own.
+        let mut t = living(1);
+        t.lerp_motion(1, [0.0025, 0.0, 0.0025], true, false);
+        t.tick_lerp();
+        assert_eq!(t.delta_movement(1), Some([0.0, 0.0, 0.0]), "per-axis");
+
+        // A player: the same vector survives, because 0.0025² + 0.0025² is
+        // 1.25e-5 and the threshold is 9e-6.
+        let mut t = living(2);
+        t.lerp_motion(2, [0.0025, 0.0, 0.0025], true, true);
+        t.tick_lerp();
+        let v = t.delta_movement(2).unwrap();
+        assert!(v[0] > 0.0 && v[2] > 0.0, "joint rule keeps it: {v:?}");
+
+        // Y is per-axis for both — and the witness is TWO-SIDED, because a
+        // one-sided one cannot see the threshold move. `0.002` is below 0.003
+        // and below any larger wrong value, so on its own it passes against a
+        // deadband ten times too wide; `0.01` is the value that separates
+        // them. The battery found exactly that.
+        let mut t = living(3);
+        t.lerp_motion(3, [1.0, 0.002, 0.0], true, true);
+        t.tick_lerp();
+        assert_eq!(t.delta_movement(3).unwrap()[1], 0.0, "below the threshold");
+
+        let mut t = living(4);
+        t.lerp_motion(4, [1.0, 0.01, 0.0], true, true);
+        t.tick_lerp();
+        assert!(
+            t.delta_movement(4).unwrap()[1] > 0.0,
+            "0.01 decays to 0.0098, which is ABOVE 0.003 and must survive"
+        );
+    }
+
+    /// The decay terminates *at* zero rather than approaching it, because the
+    /// deadband catches the tail — so a bee's buzz reaches silence rather than
+    /// becoming quieter forever.
+    #[test]
+    fn the_decay_reaches_exactly_zero() {
+        let mut t = living(1);
+        t.lerp_motion(1, [1.0, 0.0, 0.0], true, false);
+        let mut ticks = 0;
+        while t.horizontal_speed(1) > 0.0 {
+            t.tick_lerp();
+            ticks += 1;
+            assert!(ticks < 1000, "the decay never landed on zero");
+        }
+        // 0.98^n < 0.003 → n > ln(0.003)/ln(0.98) ≈ 287.7, so 288.
+        assert_eq!(ticks, 288, "took {ticks} ticks");
+    }
+
+    /// **A vehicle the local player rides is locally authoritative, so its
+    /// velocity does NOT decay** — `isLocalClientAuthoritative()` is inherited
+    /// from the controlling passenger and `Player`'s is `isLocalPlayer()`.
+    #[test]
+    fn a_vehicle_the_local_player_rides_does_not_decay() {
+        let mut t = living(1);
+        t.lerp_motion(1, [1.0, 0.0, 0.0], true, false);
+        t.set_local_player(7);
+        t.set_passengers(1, vec![7]);
+        for _ in 0..10 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.delta_movement(1), Some([1.0, 0.0, 0.0]), "authoritative");
+
+        // A vehicle someone ELSE rides is not: authority comes from the local
+        // player specifically, not from having a rider.
+        let mut t = living(1);
+        t.lerp_motion(1, [1.0, 0.0, 0.0], true, false);
+        t.set_local_player(7);
+        t.set_passengers(1, vec![8]);
+        t.tick_lerp();
+        assert!((t.delta_movement(1).unwrap()[0] - 0.98).abs() < 1e-12);
+
+        // …and only the CONTROLLING (first) passenger confers it.
+        let mut t = living(1);
+        t.lerp_motion(1, [1.0, 0.0, 0.0], true, false);
+        t.set_local_player(7);
+        t.set_passengers(1, vec![8, 7]);
+        t.tick_lerp();
+        assert!(
+            (t.delta_movement(1).unwrap()[0] - 0.98).abs() < 1e-12,
+            "a back-seat local player is not the controller"
+        );
+    }
+
+    /// With no registry the class facts are `false`, which turns the decay
+    /// **off** rather than on — a held velocity rather than one that fades.
+    #[test]
+    fn without_the_class_facts_the_velocity_holds() {
+        let mut t = living(1);
+        t.lerp_motion(1, [1.0, 0.0, 0.0], false, false);
+        for _ in 0..50 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.delta_movement(1), Some([1.0, 0.0, 0.0]));
+    }
+
     #[test]
     fn walking_alone_never_reaches_the_clamp() {
         // The clamp added for the hurt kick must be a no-op for movement: the
@@ -3219,7 +3600,7 @@ mod m21_hurt_tests {
         let mut e = EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
         for i in 0..200 {
             e.set_target(i as f64 * 0.5, 0.0, 0.0);
-            e.tick(false);
+            e.tick(false, false);
             assert!(e.limb().1 <= 1.0);
         }
     }

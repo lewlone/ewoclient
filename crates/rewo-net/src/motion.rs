@@ -208,6 +208,64 @@ pub struct EntityMotion {
     pub movement: Vec3,
 }
 
+/// `handleSetEntityMotion`'s remote-entity half — the class lookup and the
+/// `lerpMotion` call (M141d).
+///
+/// **Extracted because `PlaySession` has no test module anywhere in the repo**
+/// (it owns a socket), so a mutation deleting this from `apply_set_entity_motion`
+/// survived the whole suite — M97's finding, applied for the fifth time. The
+/// rule is *move the logic somewhere a test can reach* rather than write a
+/// witness that cannot.
+///
+/// The class facts come from the caller's registry because `EntityTable`
+/// deliberately holds no handle to one (the `ticks_swing` precedent). With no
+/// registry both answer `false`, which turns the decay **off** — a velocity
+/// that holds rather than one that fades, so a registry-less session gets a
+/// sound that stays audible rather than one that silently dies.
+pub fn apply_remote_motion(
+    entities: &mut rewo_world::entities::EntityTable,
+    classes: Option<&rewo_data::entity_types::EntityClasses>,
+    m: &EntityMotion,
+) {
+    let type_id = entities.get(m.id).map(|e| e.type_id);
+    let (living, player) = motion_class_facts(
+        type_id,
+        |t| classes.is_some_and(|c| c.is_living(t)),
+        |t| classes.is_some_and(|c| c.is_player(t)),
+    );
+    entities.lerp_motion(
+        m.id,
+        [m.movement.x, m.movement.y, m.movement.z],
+        living,
+        player,
+    );
+}
+
+/// The two class facts `lerp_motion` needs, resolved from whatever the caller
+/// can answer.
+///
+/// **Split out because no test in this crate can build an `EntityClasses`** —
+/// `EntityClasses::resolve` hard-fails unless it is handed the full runtime
+/// registry, deliberately, so a fixture-sized one is not constructible and a
+/// test that self-skips on a bare machine proves nothing (the audio plan's
+/// §0.3 hazard). Taking the two predicates as closures moves the branch into
+/// something a test can drive, and leaves only the two method *names* at the
+/// call site above ungraded — which is one token each and visible.
+///
+/// An unknown entity is `(false, false)`, which turns the decay **off**: its
+/// velocity holds rather than fading, and a held velocity keeps a sound
+/// audible where a decayed one silently dies.
+pub fn motion_class_facts(
+    type_id: Option<i32>,
+    living: impl FnOnce(i32) -> bool,
+    player: impl FnOnce(i32) -> bool,
+) -> (bool, bool) {
+    match type_id {
+        Some(t) => (living(t), player(t)),
+        None => (false, false),
+    }
+}
+
 /// Decode a `set_entity_motion` body: VarInt id, then `Vec3.LP_STREAM_CODEC`.
 pub fn read_set_entity_motion(body: &[u8]) -> Result<EntityMotion> {
     let mut r = PacketReader::new(body);
@@ -987,5 +1045,89 @@ mod tests {
         assert!(Vec3::new(0.0, 0.0, 0.0).is_finite());
         assert!(!Vec3::new(f64::NAN, 0.0, 0.0).is_finite());
         assert!(!Vec3::new(0.0, f64::INFINITY, 0.0).is_finite());
+    }
+
+    // ── apply_remote_motion (M141d) ──────────────────────────────────────
+
+    /// **A remote entity's motion reaches the table.** The application used to
+    /// live in `PlaySession::apply_set_entity_motion`, where no test can reach
+    /// it — deleting it there survived the whole suite, which is how it got
+    /// moved here.
+    #[test]
+    fn a_remote_entitys_motion_reaches_the_table() {
+        use rewo_world::entities::{EntityState, EntityTable};
+        let mut t = EntityTable::default();
+        t.add(9, EntityState::new(0, 0, 0.0, 64.0, 0.0, 0.0, 0.0));
+        apply_remote_motion(
+            &mut t,
+            None,
+            &EntityMotion {
+                id: 9,
+                movement: Vec3::new(0.5, 0.0, 0.0),
+            },
+        );
+        assert_eq!(t.delta_movement(9), Some([0.5, 0.0, 0.0]));
+
+        // An id the table has never seen is inert — `handleSetEntityMotion` is
+        // `if (entity != null)`.
+        apply_remote_motion(
+            &mut t,
+            None,
+            &EntityMotion {
+                id: 404,
+                movement: Vec3::new(1.0, 1.0, 1.0),
+            },
+        );
+        assert_eq!(t.delta_movement(404), None);
+    }
+
+    /// The class-fact resolution, driven with closures because an
+    /// `EntityClasses` is not constructible here — see the function's doc.
+    ///
+    /// **The two predicates must not be swapped**, which a witness asserting
+    /// only "both are true for a player" cannot see: the fixture answers them
+    /// differently on purpose.
+    #[test]
+    fn the_class_facts_reach_their_own_slots() {
+        // A living non-player: living true, player false.
+        assert_eq!(
+            motion_class_facts(Some(7), |t| t == 7, |_| false),
+            (true, false)
+        );
+        // A player is both, so this pair alone cannot see a swap…
+        assert_eq!(motion_class_facts(Some(7), |_| true, |_| true), (true, true));
+        // …and this one can: the answers differ, so a swap flips the result.
+        assert_eq!(
+            motion_class_facts(Some(7), |_| false, |_| true),
+            (false, true)
+        );
+        // An unknown entity asks neither predicate.
+        assert_eq!(
+            motion_class_facts(None, |_| panic!("not asked"), |_| panic!("not asked")),
+            (false, false)
+        );
+    }
+
+    /// **With no registry the class facts are `false`, so the velocity holds
+    /// rather than decaying.** That direction is deliberate: a held velocity
+    /// keeps a sound audible where a decayed one silently dies, and a silence
+    /// is the harder failure to attribute.
+    #[test]
+    fn without_a_registry_the_velocity_does_not_decay() {
+        use rewo_world::entities::{EntityState, EntityTable};
+        let mut t = EntityTable::default();
+        t.add(9, EntityState::new(0, 0, 0.0, 64.0, 0.0, 0.0, 0.0));
+        apply_remote_motion(
+            &mut t,
+            None,
+            &EntityMotion {
+                id: 9,
+                movement: Vec3::new(0.5, 0.0, 0.0),
+            },
+        );
+        for _ in 0..50 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.delta_movement(9), Some([0.5, 0.0, 0.0]));
     }
 }
