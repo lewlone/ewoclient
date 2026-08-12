@@ -247,7 +247,12 @@ witnesses are mostly self-driven can look healthy against nothing.
 > Candidates for the next *code* milestone, none of them blocked:
 >
 > * **Streaming, and with it music.** M143 **declines** streamed attaches and
->   counts them, so there is no music and no jukebox — a stream is a different
+>   counts them, so there is no music and no jukebox — **and no Nether ambient
+>   bed and no underwater loop either**, which M143's own docs missed: measured
+>   against the real `sounds.json`, **344 of 8,024 variants are streamed and six
+>   of them are not music** (`ambient.{basalt_deltas,crimson_forest,
+>   nether_wastes,soul_sand_valley,warped_forest,underwater}.loop`), so M142's
+>   handlers resolve them and M143 drops them on the floor. A stream is a different
 >   mechanism (`LoopingAudioStream` restarts the decoder, which is why the
 >   engine tells a streamed source *not* to loop) and decoding a track inline
 >   would stall the client tick for seconds. This is a prerequisite of M139's
@@ -22028,7 +22033,13 @@ to `open` as the only untestable line (M97's lesson, applied same-session).
   each distinct sound is heard, so a sound's first play can cost a few
   milliseconds of tick and every later one a hash lookup. Bounded, because
   `SoundBufferLibrary` never evicts.
-* **Streams are declined and counted**, so there is no music. A stream is a
+* **Streams are declined and counted.** *(Corrected 2026-08-12, before M144:
+  this said "so there is no music", which is not the whole of it. Measured
+  against the real `sounds.json` — 344 streamed variants of 8,024 — **six are
+  not music**: the five Nether biome ambient beds and `ambient.underwater.loop`,
+  all of which M142's handlers resolve and M143 drops. And a full decode is not
+  the way out: `music.end` is 11.3 MB of ogg, about 806 s, which is **142 MB in
+  one PCM buffer**.)* A stream is a
   different mechanism (`LoopingAudioStream` restarts the decoder, which is why
   `SoundEngine.play` tells a streamed source *not* to loop) and decoding a track
   inline would stall the tick for seconds. **The rest of music therefore needs

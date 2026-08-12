@@ -1819,7 +1819,12 @@ overwritten a moment later by the `Play` that always follows it, and the
 declined-stream witness never asked `stopped()` — so a declined stream held its
 channel for the session, and the streaming pool is **five**. Streams are
 declined and counted, so **music needs the streaming path as well as its
-selection logic**, which M140's open half did not say. 3088 tests, 34 gates
+selection logic**, which M140's open half did not say — **and it is not only
+music**: measured against the real `sounds.json`, 344 of 8,024 variants are
+streamed and **six of them are ambient loops** (the five Nether beds and
+`ambient.underwater.loop`), which M142's handlers resolve and M143 drops. A
+full decode is not the escape either — `music.end` is 806 s, i.e. **142 MB in
+one PCM buffer**. 3088 tests, 34 gates
 green, demo PNG byte-identical. **Nobody has listened yet, and no number above
 is that claim.***
 
