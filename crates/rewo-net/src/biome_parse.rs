@@ -31,6 +31,7 @@
 
 use rewo_proto::nbt::Nbt;
 use rewo_world::ambient::{AmbientAddition, AmbientMood, AmbientSounds};
+use rewo_world::music::{BackgroundMusic, Music};
 use rewo_world::biome::{BiomeDef, GrassModifier};
 use rewo_world::weather::TemperatureModifier;
 
@@ -153,6 +154,7 @@ pub fn parse_biome(name: &str, nbt: &Nbt) -> BiomeDef {
 
     let (sky_color, fog_color) = attribute_sky_fog(nbt.get("attributes"));
     let ambient_sounds = attribute_ambient_sounds(nbt.get("attributes"));
+    let background_music = attribute_background_music(nbt.get("attributes"));
 
     BiomeDef {
         name: name.to_string(),
@@ -168,6 +170,7 @@ pub fn parse_biome(name: &str, nbt: &Nbt) -> BiomeDef {
         has_precipitation,
         temperature_modifier,
         ambient_sounds,
+        background_music,
     }
 }
 
@@ -257,6 +260,52 @@ pub fn attribute_ambient_sounds(attributes: Option<&Nbt>) -> Option<AmbientSound
         loop_sound: v.get("loop").and_then(parse_sound_ref),
         mood: v.get("mood").and_then(parse_mood),
         additions: parse_additions(v.get("additions")),
+    })
+}
+
+/// Extract the `audio/background_music` override from an `attributes` compound
+/// (biome **or** dimension type), the sibling of
+/// [`attribute_ambient_sounds`] (M145).
+///
+/// `None` means *inherit* and `Some(EMPTY)` means *silence*, which are
+/// different for the same reason they are on the ambient attribute — and here
+/// the difference is reachable in vanilla rather than hypothetical:
+/// `OverworldBiomes.java:596` sets `BackgroundMusic.EMPTY` on a biome
+/// explicitly, so collapsing the two gives that biome the Overworld's music.
+pub fn attribute_background_music(attributes: Option<&Nbt>) -> Option<BackgroundMusic> {
+    let v = attributes?.get("minecraft:audio/background_music")?;
+    // The bare-override form only, exactly as `attribute_ambient_sounds`: no
+    // vanilla biome or dimension writes a `{argument, modifier}` for this, and
+    // guessing at a modifier's semantics for a record type would be worse than
+    // inheriting.
+    if !matches!(v, Nbt::Compound(_)) || v.get("modifier").is_some() {
+        return None;
+    }
+    Some(BackgroundMusic {
+        default_music: v.get("default").and_then(parse_music),
+        creative_music: v.get("creative").and_then(parse_music),
+        underwater_music: v.get("underwater").and_then(parse_music),
+    })
+}
+
+/// One `Music` record — `sound`, `min_delay`, `max_delay`,
+/// `replace_current_music`.
+///
+/// **`replace_current_music` defaults to `false`** (`Music.CODEC` uses
+/// `optionalFieldOf("replace_current_music", false)`), and the delays are
+/// required. A record missing either delay is malformed rather than defaulted,
+/// so it yields `None` — inheriting is a better answer than inventing a window
+/// that decides how often the track plays.
+fn parse_music(v: &Nbt) -> Option<Music> {
+    let sound = parse_sound_ref(v.get("sound")?)?;
+    Some(Music {
+        sound,
+        min_delay: v.get("min_delay").and_then(Nbt::as_i64)? as i32,
+        max_delay: v.get("max_delay").and_then(Nbt::as_i64)? as i32,
+        replace_current_music: v
+            .get("replace_current_music")
+            .and_then(as_bool)
+            .unwrap_or(false),
     })
 }
 
