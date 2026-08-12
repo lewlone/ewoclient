@@ -1784,6 +1784,45 @@ surviving mutation was **proven equivalent** — the down branch's second disjun
 cannot fire, since the blend never crosses its target — so it is dead code in
 vanilla too, kept and recorded.*
 
+*Update (2026-08-12 session, Rewo): **M143 — `rewo live --audio`, and the one
+method that turns every sound into a click.** M138 built an audio stack and left
+it unreachable on purpose; this wires it in, behind a `rewo-app` feature that is
+**off by default** so a default build still links neither cpal nor symphonia
+(verified with `cargo tree`, not asserted) and the 34 gates are unchanged.
+**`LiveSounds.device`'s own doc invited a device milestone to swap the field,
+and that is wrong twice over.** The channel pools and the listener record are
+`Library`'s bookkeeping — identical behind any device — so `SilentDevice` keeps
+them, every witness reading it keeps working (r45 among them), and a backend
+implements a three-method `ChannelSink` instead. And `SilentDevice::stopped`
+answers `true` unconditionally, which is right for something that makes no noise
+and catastrophic for something that does: `schedule_tick` turns a `true`
+**straight** into `device.release(channel)` on the next tick —
+`MIN_SOURCE_LIFETIME` gates the *instance* reclaim, not the release — and
+vanilla's `release` destroys the source, so inheriting it makes **every sound a
+50 ms click**, with correct-looking code and a green suite. `stopped()` is
+therefore modelled from the buffer's own length on the producer side rather than
+asked of the mixer: the truthful alternative is a flag the callback publishes
+back, which would move the one method that decides whether the client plays
+sounds or clicks into the region **no gate can reach**. Four cases sit before
+the arithmetic and each inverts if guessed — a looping source never stops,
+acquired-but-unplayed and played-with-nothing-attached are both `AL_INITIAL`,
+and a failed attach is the module's one judgement (vanilla leaks that channel
+forever, which on a partial asset store means the 26th missing sound exhausts
+the pool and the client goes **permanently** silent). **r46 was deliberately not
+added** — it needs a device, so it can only self-skip on the machine where it
+matters, which is the trap `REWO_AUDIO_PLAN` §5 names; what shipped instead is
+r46's claim with the device removed, a test driving a decoded packet through the
+real engine, tee, sink, ring and mixer to non-zero samples, with exact silence
+asserted first. **Both mutation survivors were weak fixtures and both were
+hidden by the ordinary call sequence**: the attach's `AL_INITIAL` reset is
+overwritten a moment later by the `Play` that always follows it, and the
+declined-stream witness never asked `stopped()` — so a declined stream held its
+channel for the session, and the streaming pool is **five**. Streams are
+declined and counted, so **music needs the streaming path as well as its
+selection logic**, which M140's open half did not say. 3088 tests, 34 gates
+green, demo PNG byte-identical. **Nobody has listened yet, and no number above
+is that claim.***
+
 *Update (2026-08-10 session, Rewo): **M136 and M137 — two fixes recovered from
 worktrees that a handoff called litter.** The claim rested on their branches being
 0 commits off `main`, which was true; **`git branch --merged` says nothing about a
@@ -1919,13 +1958,19 @@ read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
 the headless verification toolkit, the load-bearing gotchas, and a categorized
 list of every known issue/gap/deviation, explicitly framed for critique).
 **[REWO_AUDIO_PLAN.md](REWO_AUDIO_PLAN.md) is the detail behind its audio
-item** — M138a–d, `level_event`'s sounds and the music fade have shipped, and
-**M141 took the tickable ramps** (ten of them, not the "~8" that plan says);
-**the listening pass is the outstanding work and it is the user's**, because no
-gate in this project opens an audio device.
-**Everything is shipped, gated and merged to `main`** as of 2026-08-11
-(M142d) — **3059 tests / 0 failures** (world 1166, net 1092, gpu 275, data 224,
-app 197, mesh 45, proto 16, **audio 44** — EIGHT crates now, read off the runner
+item** — M138a–d, `level_event`'s sounds, the music fade, **M141's ten tickable
+ramps** (ten, not the "~8" that plan says), M142's three ambient handlers and
+**M143's wire into the client** have all shipped, so `rewo live --audio` on a
+build with `--features audio` opens a device and plays what the engine
+resolves. **The listening pass is the outstanding work and it is the user's**,
+because no gate in this project opens an audio device — an absent, muted,
+exclusive-mode or unplugged one all look identical from inside the process, so
+everything a machine can check passes and that is *not* the same claim. The
+feature is **off by default**, so a default build links no audio stack and the
+34 gates are unchanged.
+**Everything is shipped, gated and merged to `main`** as of 2026-08-12
+(M143) — **3088 tests / 0 failures** (world 1166, net 1098, gpu 275, data 228,
+app 199, mesh 45, proto 16, **audio 61** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
