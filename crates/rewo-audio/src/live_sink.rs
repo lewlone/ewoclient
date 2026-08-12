@@ -628,19 +628,43 @@ mod tests {
             .any(|c| matches!(c, Command::Attach(3, _))));
     }
 
-    /// A stream is declined and counted rather than silently dropped.
+    /// A stream is declined, counted, **and gives its channel back**.
+    ///
+    /// The last part is the one a counting-only test misses, and a mutation
+    /// deleting it survived the first version of this. A declined stream is
+    /// never attached and never sounds, so with nothing marking it finished the
+    /// channel is held for the session — and the streaming pool is **five**
+    /// channels (`pool_sizes(30)`), so five music tracks or records would wedge
+    /// every streamed sound for the rest of the run. Declining a feature must
+    /// not cost the pool that serves it.
     #[test]
-    fn a_stream_is_declined_and_counted() {
+    fn a_stream_is_declined_counted_and_gives_its_channel_back() {
         let mut sink = sink_with_one_second();
-        sink.submit(
-            5,
-            &ChannelCall::AttachBufferStream("minecraft/sounds/music/calm1.ogg".into(), true),
-        );
+        // A stream arrives with the same eight-call shape; `SetLooping` is
+        // false because `SoundEngine.play` clears it for a streamed source.
+        for call in [
+            ChannelCall::SetPitch(1.0),
+            ChannelCall::SetLooping(false),
+            ChannelCall::AttachBufferStream("minecraft/sounds/music/calm1.ogg".into(), true),
+            ChannelCall::Play,
+        ] {
+            sink.submit(5, &call);
+        }
         assert_eq!(sink.diagnostics().declined_streams, 1);
         assert_eq!(sink.diagnostics().unresolved, 0, "declined is not unresolved");
         assert!(!drain(&sink)
             .iter()
             .any(|c| matches!(c, Command::Channel(_, ChannelCall::AttachBufferStream(_, _)))));
+        assert_eq!(
+            sink.stopped(5),
+            Some(true),
+            "a declined stream must not hold a channel for the session"
+        );
+        // The control: a channel playing a real sound at the same tick is not
+        // reported stopped, so the line above is about the decline rather than
+        // about `stopped()` answering true for everything.
+        play_sequence(&mut sink, 6, 1.0, false);
+        assert_eq!(sink.stopped(6), Some(false));
     }
 
     /// Release destroys the source, and forgets it.
@@ -656,20 +680,41 @@ mod tests {
         assert_eq!(sink.stopped(7), None, "the channel is forgotten");
     }
 
-    /// A re-attach restarts the clock, because the mixer's attach rewinds the
-    /// cursor. Without it a recycled channel would inherit the previous sound's
-    /// age and be reported finished on its first tick.
+    /// **An attach returns the source to `AL_INITIAL`** — the mixer's
+    /// `Command::Attach` rewinds the cursor, and OpenAL resets a source's state
+    /// when a buffer is bound to it.
+    ///
+    /// The obvious fixture for this is a whole second `play_sequence`, and it
+    /// **cannot see the bug**: the eight-call order puts `Play` after the
+    /// attach, and `Play` writes `played_at` unconditionally, so the reset is
+    /// overwritten a moment later and a sink that never reset would pass. A
+    /// mutation deleting the reset survived exactly that version of this test.
+    ///
+    /// Attaching *without* a following `Play` is what separates them, and it is
+    /// a real state rather than a contrivance: a source with a fresh buffer and
+    /// no play is `AL_INITIAL`, which is not `AL_STOPPED`.
     #[test]
-    fn re_attaching_restarts_the_lifetime() {
+    fn an_attach_returns_the_source_to_initial() {
         let mut sink = sink_with_one_second();
         play_sequence(&mut sink, 8, 1.0, false);
         for _ in 0..25 {
             sink.tick();
         }
-        assert_eq!(sink.stopped(8), Some(true));
-        // The same channel, played again without an intervening release.
+        assert_eq!(sink.stopped(8), Some(true), "the first sound finished");
+
+        // A bare re-attach. Without the reset this still reads as the finished
+        // sound's age (25 ticks against a 20-tick lifetime) and reports stopped.
+        sink.submit(8, &ChannelCall::AttachStaticBuffer(KEY.into()));
+        assert_eq!(
+            sink.stopped(8),
+            Some(false),
+            "a freshly attached buffer is AL_INITIAL, not AL_STOPPED"
+        );
+
+        // And the ordinary path still behaves: a full sequence on the same
+        // channel is a fresh sound rather than a stale age.
         play_sequence(&mut sink, 8, 1.0, false);
-        assert_eq!(sink.stopped(8), Some(false), "a fresh sound, not a stale age");
+        assert_eq!(sink.stopped(8), Some(false));
     }
 
     /// The listener rides the same ring as the channel calls, so the ears
