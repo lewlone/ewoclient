@@ -246,13 +246,17 @@ witnesses are mostly self-driven can look healthy against nothing.
 >
 > Candidates for the next *code* milestone, none of them blocked:
 >
-> * **Music selection.** M144 shipped the streaming path, so a streamed event
->   now plays — music, the jukebox, the five Nether ambient beds and the
->   underwater loop. What is still absent is deciding *which* track and *when*:
->   `MusicManager`'s selection and its `nextSongDelay` timers, which is M139/M140's
->   open half. Note the measurement M144 took: **344 of 8,024 variants are
->   streamed and six of them are not music**, so this was never a music-only
->   concern.
+> * **Wire M145's music model in.** M145 shipped `Music`/`Musics`/
+>   `BackgroundMusic`, the `audio/background_music` attribute parse and the whole
+>   of `MusicManager` — the tick, the timers, `MusicFrequency` — and **nothing
+>   calls any of it**, which is stated rather than implied. What is left is
+>   `getSituationalMusic`'s composition and the `PlaySession` tick site, and
+>   **every input but one already exists**: the camera's attribute probe over
+>   biome/dimension (M14's sampling, M142's layering), `isCreative` from M75's
+>   abilities, `isUnderWater` from M142's submersion, the End boss bar from M65.
+>   The exception is screen music, which Rewo's screens do not declare.
+>   M144 shipped the streaming path underneath all of it, so a streamed event
+>   already plays when the engine asks for one.
 > * **Decode on a worker.** Still inline on the client tick — one chunk per
 >   second of playback, four at the attach, plus one asset read of up to 11 MB
 >   when a track starts. A stated deviation from vanilla's `supplyAsync`.
