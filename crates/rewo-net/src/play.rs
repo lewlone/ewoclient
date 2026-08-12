@@ -3701,12 +3701,18 @@ impl PlaySession {
         use rewo_world::music::BackgroundMusic;
         self.player_id?;
         let in_the_end = self.active_dimension_key.as_deref() == Some("minecraft:the_end");
-        // **The base is EMPTY, measured rather than assumed**: grepping every
-        // writer of `BACKGROUND_MUSIC` in 26.2 finds only biome builders, so no
-        // vanilla dimension type declares it and the layer below the biome is
-        // the attribute's own default. A datapack that declared one would be
-        // inherited as empty here, which is recorded rather than handled.
-        let base = BackgroundMusic::empty();
+        // **The dimension type's own record is the base, and it is where the
+        // Overworld's music lives** (M147). `DimensionTypes.java:39` sets
+        // `BackgroundMusic.OVERWORLD` and `:124` sets `Musics.END`; an ordinary
+        // biome like plains declares nothing at all, so a client that took the
+        // attribute's default here plays no music anywhere in the Overworld —
+        // which is exactly what M146 shipped, because the grep behind its
+        // "only biome builders" claim had been truncated by `head -20`.
+        let base = self
+            .active_dimension_type
+            .as_ref()
+            .and_then(|d| d.background_music.clone())
+            .unwrap_or_else(BackgroundMusic::empty);
         let pos = [self.player.x, self.player.y, self.player.z];
         let bg = self.world.background_music_at(pos, &base);
         // `getAbilities().instabuild && getAbilities().mayfly` — **both**, so a

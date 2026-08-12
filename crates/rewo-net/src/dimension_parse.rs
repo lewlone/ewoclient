@@ -352,6 +352,9 @@ pub fn parse_dimension_type(name: &str, nbt: &Nbt) -> Result<DimensionTypeDef, D
     // the same reason `sky_color` is: absence means "declare nothing", which
     // for this attribute is what the Nether does.
     let ambient_sounds = crate::biome_parse::attribute_ambient_sounds(attributes);
+    // The layer below the biome's, and the one that actually carries the
+    // Overworld's and the End's music (M147).
+    let background_music = crate::biome_parse::attribute_background_music(attributes);
 
     Ok(DimensionTypeDef {
         name: name.to_string(),
@@ -371,6 +374,7 @@ pub fn parse_dimension_type(name: &str, nbt: &Nbt) -> Result<DimensionTypeDef, D
         cloud_color,
         cloud_height,
         ambient_sounds,
+        background_music,
     })
 }
 
@@ -504,6 +508,29 @@ pub mod builtin {
                 "attributes",
                 c(vec![
                     (
+                        // M147 — `DimensionTypes.java:39`. This is where the
+                        // Overworld's music lives; plains declares none.
+                        "minecraft:audio/background_music",
+                        c(vec![
+                            (
+                                "creative",
+                                c(vec![
+                                    ("max_delay", Nbt::Int(24000)),
+                                    ("min_delay", Nbt::Int(12000)),
+                                    ("sound", s("minecraft:music.creative")),
+                                ]),
+                            ),
+                            (
+                                "default",
+                                c(vec![
+                                    ("max_delay", Nbt::Int(24000)),
+                                    ("min_delay", Nbt::Int(12000)),
+                                    ("sound", s("minecraft:music.game")),
+                                ]),
+                            ),
+                        ]),
+                    ),
+                    (
                         "minecraft:audio/ambient_sounds",
                         c(vec![(
                             "mood",
@@ -610,6 +637,22 @@ pub mod builtin {
                                 ("offset", Nbt::Double(2.0)),
                                 ("sound", s("minecraft:ambient.cave")),
                                 ("tick_delay", Nbt::Int(6000)),
+                            ]),
+                        )]),
+                    ),
+                    (
+                        // M147 — `DimensionTypes.java:124`, `Musics.END`. The
+                        // only one of the four whose track sets
+                        // `replace_current_music`, which is why the flag is
+                        // written out here rather than left to its default.
+                        "minecraft:audio/background_music",
+                        c(vec![(
+                            "default",
+                            c(vec![
+                                ("max_delay", Nbt::Int(24000)),
+                                ("min_delay", Nbt::Int(6000)),
+                                ("replace_current_music", Nbt::Byte(1)),
+                                ("sound", s("minecraft:music.end")),
                             ]),
                         )]),
                     ),

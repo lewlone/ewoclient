@@ -321,6 +321,15 @@ pub struct DimensionTypeDef {
     /// `None` = the dimension declares no base, which is
     /// `AmbientSounds.EMPTY`'s meaning — the attribute's declared default.
     pub ambient_sounds: Option<crate::ambient::AmbientSounds>,
+    /// `audio/background_music` — the layer BELOW the biome's (M147).
+    ///
+    /// **This is where the Overworld's music actually lives.**
+    /// `DimensionTypes.java:39` sets `BackgroundMusic.OVERWORLD` here and
+    /// `:124` sets `Musics.END` on the End; an ordinary biome like plains
+    /// declares nothing, so with no dimension layer there is no music anywhere
+    /// in the Overworld. M146 assumed the base was empty and was wrong — see
+    /// `REWO_PLAN` §15's M147 entry.
+    pub background_music: Option<crate::music::BackgroundMusic>,
 }
 
 impl DimensionTypeDef {
@@ -364,6 +373,7 @@ impl DimensionTypeDef {
             // fallback — an unresolved holder should sound like the Overworld,
             // not like a dimension that declared silence.
             ambient_sounds: Some(crate::ambient::AmbientSounds::legacy_cave()),
+            background_music: None,
         }
     }
 }
