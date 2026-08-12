@@ -100,7 +100,16 @@ MUTATIONS = [
     (
         B,
         "a boxed source inherits the refusing default instead of forwarding",
-        "    fn open_stream(&mut self, key: &str, looping: bool) -> Result<Box<dyn PcmStream>, String> {\n        (**self).open_stream(key, looping)\n    }",
+        # **The doc comment goes with it.** Deleting the fn alone leaves an
+        # orphaned `///` and the file stops parsing, so the verdict is
+        # BUILD-FAIL — a harness artefact rather than an answer about the code.
+        # A mutation that cannot compile grades nothing.
+        "    /// Forwarded explicitly. Inheriting the trait's default here would make a\n"
+        "    /// boxed source silently refuse every stream while the source inside it\n"
+        "    /// supported them — the failure would present as \"music never plays\" with a\n"
+        "    /// perfectly good error message naming the wrong cause.\n"
+        "    fn open_stream(&mut self, key: &str, looping: bool) -> Result<Box<dyn PcmStream>, String> {\n"
+        "        (**self).open_stream(key, looping)\n    }",
         "",
         "KILLED",
     ),
@@ -136,8 +145,12 @@ MUTATIONS = [
     (
         M,
         "the first queued chunk is not promoted",
-        "                if v.pcm.samples.is_empty() {",
-        "                if false {",
+        # `if v.pcm.samples.is_empty()` also guards the render's underrun check,
+        # so the anchor carries the line above it. An anchor that matches twice
+        # is a mutation that NEVER RAN, which is not the same as one that
+        # survived — the harness prints the count for exactly this.
+        "                v.streaming = true;\n                if v.pcm.samples.is_empty() {",
+        "                v.streaming = true;\n                if false {",
         "KILLED",
     ),
     (
@@ -178,10 +191,17 @@ MUTATIONS = [
     ),
     (
         L,
-        "a stream is reported stopped the moment it runs out",
+        "EQUIVALENT: the !ended guard cannot fire under the pump's own invariant",
+        # `pump` refills whenever fewer than QUEUED_BUFFER_COUNT buffers remain
+        # unplayed, so while a stream is alive `pushed` is always at least three
+        # buffers ahead of `consumed` and the drain test below answers `false`
+        # anyway. Kept because it makes `stopped()` correct INDEPENDENTLY of
+        # whether the pump ran, which is what a future change to the pump's
+        # cadence would rely on — the same reasoning `decode.rs`'s unreachable
+        # `channels == 0` guard records.
         "            if !stream.ended {\n                return Some(false);\n            }",
         "",
-        "KILLED",
+        "SURVIVED",
     ),
     (
         L,
@@ -206,10 +226,16 @@ MUTATIONS = [
     ),
     (
         L,
-        "the processed count is not capped at what was queued",
+        "EQUIVALENT: the processed cap cannot fire; it guards a u64 underflow",
+        # Same invariant as above: `consumed` never runs past what was queued
+        # while the stream is alive, so `processed` never exceeds
+        # `pushed_buffers`. It stays because the very next line subtracts them as
+        # `u64` — if the invariant ever broke, the difference would wrap to an
+        # enormous number, the refill test would pass, and the stream would
+        # starve in silence rather than fail loudly.
         "        let processed = processed.min(stream.pushed_buffers);",
         "",
-        "KILLED",
+        "SURVIVED",
     ),
     (
         L,

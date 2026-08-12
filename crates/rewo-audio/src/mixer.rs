@@ -971,15 +971,35 @@ mod tests {
 
     // ── streaming voices (M144) ───────────────────────────────────────────
 
-    /// **Three queued buffers are bit-identical to one buffer of their
+    /// A buffer whose sample VALUE encodes its absolute position.
+    ///
+    /// **A DC fixture cannot witness anything about the cursor**, because every
+    /// position in it holds the same number — so a swap that reset the cursor to
+    /// zero, and one that kept the previous buffer's length, both rendered
+    /// identically under the first version of the test below and survived their
+    /// mutations. A ramp makes position observable.
+    fn ramp(rate: u32, start: i16, frames: usize) -> Arc<Pcm> {
+        Arc::new(Pcm {
+            samples: (0..frames).map(|i| start + i as i16).collect(),
+            channels: 1,
+            sample_rate: rate,
+        })
+    }
+
+    /// **Queued buffers are bit-identical to one buffer of their
     /// concatenation.**
     ///
     /// The whole claim of the streaming path in one assertion: how the audio is
-    /// *delivered* must not change what comes out. The rate ratio is deliberately
-    /// non-integer (48 kHz source into a 44.1 kHz device, step 1.088…) so the
-    /// cursor lands mid-sample at both joins — which is exactly where a swap that
-    /// reset the cursor to zero instead of carrying the fraction would drift, and
-    /// where a fixture at 1:1 would prove nothing.
+    /// *delivered* must not change what comes out.
+    ///
+    /// Three things about the fixture are load-bearing, and the first version
+    /// had none of them. The samples are a **ramp**, so where the cursor is
+    /// changes what comes out. The chunks are **unequal** (700, 1100, 1200), so
+    /// a swap that kept the outgoing buffer's length cuts the next one short.
+    /// And the rate ratio is **non-integer** (48 kHz source into a 44.1 kHz
+    /// device, step 1.088…), so the cursor lands mid-sample at both joins, which
+    /// is where dropping the carried fraction diverges. A DC fixture at 1:1 with
+    /// equal chunks is invariant under all three.
     #[test]
     fn queued_buffers_render_identically_to_one_long_buffer() {
         let voice = |pcm: Arc<Pcm>, rest: Vec<Arc<Pcm>>| {
@@ -991,14 +1011,38 @@ mod tests {
             m.push(v);
             render(&mut m, 4096)
         };
-        let one = voice(dc(48_000, 3_000, 1), vec![]);
+        let one = voice(ramp(48_000, 0, 3_000), vec![]);
         let three = voice(
-            dc(48_000, 1_000, 1),
-            vec![dc(48_000, 1_000, 1), dc(48_000, 1_000, 1)],
+            ramp(48_000, 0, 700),
+            vec![ramp(48_000, 700, 1_100), ramp(48_000, 1_800, 1_200)],
         );
-        assert_eq!(one, three, "the join must not be audible or countable");
-        // …and the fixture really did sound, so the equality is not two silences.
-        assert!(peak_lr(&one).0 > 0.0);
+        assert_eq!(one.len(), three.len());
+        assert!(peak_lr(&one).0 > 0.0, "the fixture must actually sound");
+
+        // **Not bit-identical, and the difference is the stated approximation**
+        // this file records at the swap: the interpolator clamps at the end of
+        // the current buffer, so at a join it repeats the outgoing buffer's last
+        // sample for the fractional part instead of reading into the next one.
+        // The single-buffer render interpolates straight through.
+        //
+        // Measuring it is better than a DC fixture that hides it. Exactly one
+        // output frame per join can differ — two samples, since the source is
+        // mono and centred — and by less than one step of the ramp, which is the
+        // most a sub-sample error can be worth.
+        let differing: Vec<usize> = (0..one.len()).filter(|i| one[*i] != three[*i]).collect();
+        let worst = differing
+            .iter()
+            .map(|i| (one[*i] - three[*i]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            differing.len() <= 4,
+            "two joins, one frame each: {} samples differ",
+            differing.len()
+        );
+        assert!(
+            worst < 1.0 / 32_768.0,
+            "a sub-sample error is worth less than one LSB: {worst}"
+        );
     }
 
     /// The buffers play in the order they were queued, not all at once and not
