@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-12 after M143:
-**3088 tests, 0 failures** (**world 1166, net 1098, gpu 275, data 228, app 199,
-mesh 45, proto 16, audio 61** — read off the runner per crate; they sum to 3088).
+Current measurement, taken 2026-08-12 after M144:
+**3113 tests, 0 failures** (**world 1166, net 1098, gpu 275, data 228, app 199,
+mesh 45, proto 16, audio 86** — read off the runner per crate; they sum to 3113).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -246,20 +246,16 @@ witnesses are mostly self-driven can look healthy against nothing.
 >
 > Candidates for the next *code* milestone, none of them blocked:
 >
-> * **Streaming, and with it music.** M143 **declines** streamed attaches and
->   counts them, so there is no music and no jukebox — **and no Nether ambient
->   bed and no underwater loop either**, which M143's own docs missed: measured
->   against the real `sounds.json`, **344 of 8,024 variants are streamed and six
->   of them are not music** (`ambient.{basalt_deltas,crimson_forest,
->   nether_wastes,soul_sand_valley,warped_forest,underwater}.loop`), so M142's
->   handlers resolve them and M143 drops them on the floor. A stream is a different
->   mechanism (`LoopingAudioStream` restarts the decoder, which is why the
->   engine tells a streamed source *not* to loop) and decoding a track inline
->   would stall the client tick for seconds. This is a prerequisite of M139's
->   music work that M140's open half did not name.
-> * **Decode on a worker.** M143 decodes inline on the client tick, the first
->   time each distinct sound is heard. Bounded (the buffer library never
->   evicts) and a stated deviation from vanilla's `supplyAsync`.
+> * **Music selection.** M144 shipped the streaming path, so a streamed event
+>   now plays — music, the jukebox, the five Nether ambient beds and the
+>   underwater loop. What is still absent is deciding *which* track and *when*:
+>   `MusicManager`'s selection and its `nextSongDelay` timers, which is M139/M140's
+>   open half. Note the measurement M144 took: **344 of 8,024 variants are
+>   streamed and six of them are not music**, so this was never a music-only
+>   concern.
+> * **Decode on a worker.** Still inline on the client tick — one chunk per
+>   second of playback, four at the attach, plus one asset read of up to 11 MB
+>   when a track starts. A stated deviation from vanilla's `supplyAsync`.
 > * **`EndFlashState`** — the last unconstructed ramp variant (`Directional`),
 >   which needs the flash schedule, `getDefaultClockTime`, `playDelayed`'s
 >   delay queue, and a camera on the tick clock.
@@ -22056,3 +22052,166 @@ app 199, mesh 45, proto 16, audio 61 — eight crates, `rewo-app` on `--bins`);
 34 serverless gates green with **0 validation errors**; `mobshot` 246/246,
 `containershot` 107/107, `inventoryshot` 158/158; demo PNG `2cc56b4acbfb92cb`,
 byte-identical since M15; both build configurations clean.
+
+---
+
+## M144 — streaming: music, the Nether beds, and a queue invariant that is not a duration (2026-08-12)
+
+M143 wired audio into the client and **declined** every streamed attach. This
+opens them. `crates/rewo-audio` gains an incremental Ogg reader, the mixer gains
+a buffer queue, and the producer keeps it fed on vanilla's own clock.
+
+### The measurement that shaped it, and the doc error it found
+
+Taken against the real 26.2 `sounds.json` before any design: **344 of 8,024
+variants carry `stream: true`, and six of them are not music** —
+`ambient.{basalt_deltas,crimson_forest,nether_wastes,soul_sand_valley,
+warped_forest,underwater}.loop`. M142 built the handlers that resolve exactly
+those, so M143 had not merely left the jukebox quiet; it had silenced every
+Nether ambient bed and the underwater loop. The docs said "so there is no music"
+and stopped there, which is the second time in two days a sentence beside a
+correct number was itself wrong.
+
+**And the tempting simplification is closed by arithmetic rather than by
+taste.** `music.end` is 11.3 MB of ogg, about 806 seconds, which is **142 MB in
+one PCM buffer**. Decoding a stream fully and letting the mixer's own loop flag
+stand in for `LoopingAudioStream` would be audibly identical and is unavailable
+on memory alone. Having that number before designing is what stopped the wrong
+thing being built.
+
+### The loop restarts one read late, and it is visible in the lengths
+
+`LoopingAudioStream.read` guards on the **inner** read coming back *empty*:
+
+```java
+ByteBuffer result = this.stream.read(expectedSize);
+if (!result.hasRemaining()) { … restart …; result = this.stream.read(expectedSize); }
+```
+
+A short non-empty read is the ordinary end of a file, so the restart happens on
+the *next* call. A looping stream therefore hands out one **short** buffer at
+the loop point and a full one after it, while the samples stay continuous.
+Splicing across the boundary to keep every buffer full would sound identical and
+would not be this — so the witness asserts **lengths**: against the real chicken
+step (1728 samples) at 1000 per read, the sequence is exactly
+`[1000, 728, 1000, 728, 1000]`.
+
+Three more that invert if guessed. The format must be readable **before** any
+audio is decoded, because `attachBufferStream` sizes its buffers from
+`getFormat()` and only then pumps — so it comes off `codec_params`, not off a
+decoded packet. `Some(empty)` from a packet is ordinary (Vorbis' first audio
+packets decode to nothing) and is **not** `None`; conflating them reports every
+stream exhausted before it starts. And a zero-sized read is empty by definition,
+so without an explicit guard it trips the restart and rewinds a playing track.
+
+The strongest decoder witness is the equivalence: reading a real file in
+**577-sample** chunks — a size dividing neither the file nor its packets —
+yields exactly what decoding it whole yields, sample for sample.
+
+### The queue invariant is a BUFFER count, not a duration
+
+The first cut of `pump` topped up to "at least four seconds queued". That is the
+obvious reading and it is **wrong**, behaviourally rather than by rounding.
+Vanilla holds four buffers and refills when one has been *fully* played
+(`removeProcessedBuffers` → `pumpBuffers(processed)`), so its queue oscillates
+between three and four seconds. Topping up by duration refills on the very first
+tick after playback starts and then holds four to five, because a one-second
+buffer is coarse against a fifty-millisecond tick. The witness caught it: it
+asserts nothing is queued for nineteen ticks and one buffer arrives on the
+twentieth, and the duration model pumped on tick one.
+
+`processed` is now `floor(consumed / buffer)` — `removeProcessedBuffers`'
+answer computed from the clock instead of asked of the device. **The queue depth
+is modelled for the same reason `stopped()` is** (M143): the truthful
+alternative is a feedback channel from the audio callback, which would move the
+logic into the region no gate can reach.
+
+The floor also made the arithmetic robust, which the *other* failing witness
+showed was needed: a pitched stream's boundary test tips on the last bit of an
+`f32`, since 1.6 is not exactly representable and at 44.1 kHz lands consumption
+exactly on a buffer boundary. The fixture uses **1.5** — still neither 1 nor a
+power of two, per §5, and exact.
+
+### `stopped()` for a stream is neither of the two cases beside it
+
+A stream is finished when it has **run out AND been drained**. Reporting it at
+exhaustion cuts the last four queued seconds off every track; never reporting it
+holds one of five streaming channels forever. `state.looping` is no help —
+`SoundEngine.play` writes `setLooping(isLooping && !isStreaming)`, so the
+channel flag is false even for a bed that loops forever. The loop lives in
+`LoopingAudioStream`, which never reports exhaustion, so `ended` stays false and
+an ambient bed stays alive with **no special case** on the producer's side.
+
+### An underrun is not a death
+
+A streaming voice that runs dry has not finished; the producer decides that. A
+mixer that marked it finished would kill a music track on the first hitch and
+`retire_finished` would drop it before the next chunk arrived. A static voice
+still finishes — that distinction is what the `streaming` flag is for, and the
+regression witness asserts a static voice is untouched.
+
+One stated approximation, recorded at the site: the interpolator clamps at the
+end of the current buffer, so at a join it repeats the outgoing buffer's last
+sample for the fractional part rather than reading into the next. With
+one-second buffers that is a sub-sample error once a second.
+
+### What the battery found: two DC fixtures that could not witness their subject
+
+25 mutations, **19/25 first time**, and the two important survivors were one
+mistake. `queued_buffers_render_identically_to_one_long_buffer` used constant
+buffers of equal length — and **every position in a DC buffer holds the same
+number**, so a swap that reset the cursor to zero rendered identically, and so
+did one that kept the outgoing buffer's length. The strongest-sounding witness
+in the milestone was invariant under both mutations it existed to catch.
+
+Three properties of the fixture are load-bearing and it had none: a **ramp**, so
+position is observable; **unequal** chunks (700, 1100, 1200), so a stale length
+truncates the next buffer; and a **non-integer** rate ratio, so the cursor lands
+mid-sample at both joins. Fixing it also made the test tell the truth — the two
+renders are *not* bit-identical, and the difference is exactly the documented
+join approximation, so the witness now **measures** it (at most one output frame
+per join, under one LSB) instead of a DC fixture hiding it.
+
+**Three survivors are genuinely equivalent and are kept with the proof in the
+battery.** `restart`'s `pending.clear()` (pending is always empty where it is
+called), `stopped()`'s `!ended` guard and `pump`'s `processed` cap (both behind
+the pump's own invariant, that a live stream is always at least three buffers
+ahead of consumption). The last two stay because one makes `stopped()` correct
+independently of whether the pump ran, and the other guards a `u64` subtraction
+that would otherwise wrap and starve the stream silently rather than fail loudly
+— the same reasoning `decode.rs`'s unreachable `channels == 0` guard records.
+
+Two harness defects were also fixed and are worth carrying: a mutation that
+orphaned a doc comment reported **BUILD-FAIL**, and a mutation that cannot
+compile grades nothing; and an anchor matching twice is a mutation that **never
+ran**, which is not the same as one that survived.
+
+### Found by writing the battery rather than by running it
+
+`Box<dyn PcmSource>` is how the client's source reaches the library — it wraps a
+closure over the asset index and has no nameable type — and no unit test went
+that way. Inheriting `open_stream`'s refusing default there would decline every
+stream while the source inside supported them: "music never plays", with a
+perfectly good error naming the wrong cause. Third time in two milestones that
+writing the battery found the gap.
+
+### Deviations and what is open
+
+* **The decode still runs on the client tick.** One chunk per second of
+  playback, plus four at the attach — a few milliseconds each, and one asset
+  read (up to 11 MB) when a track starts. Vanilla defers both to a worker.
+* **The whole compressed file is held in memory**, which is vanilla's shape for
+  the looping case (`LoopingAudioStream` marks its `BufferedInputStream` with
+  `Integer.MAX_VALUE`). Decoded PCM is not.
+* **Music selection is still absent.** M144 plays a streamed event when the
+  engine asks for one; deciding *which* track and *when* is `MusicManager`'s
+  selection and its `nextSongDelay` timers, which remain M139/M140's open half.
+* **Nobody has listened.** Every number below is green and none of it is that
+  claim.
+
+**Measured:** 3113 tests / 0 failures (world 1166, net 1098, gpu 275, data 228,
+app 199, mesh 45, proto 16, audio 86 — eight crates, `rewo-app` on `--bins`);
+34 serverless gates green with **0 validation errors**; `live --render-check`
+45/45 validation ON; demo PNG `2cc56b4acbfb92cb`, byte-identical since M15;
+mutation battery **25/25** with a surviving no-op control; both build
+configurations clean.

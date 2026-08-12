@@ -27,7 +27,7 @@ A custom Minecraft Java Edition launcher with a "Velvet & Pearl" boudoir aesthet
 
 ## What's next
 
-- **Audio is wired into the client and nobody has listened to it yet.** `crates/rewo-audio` carries the quantisation, the buffer library, the mixer, an SPSC command ring, a cpal sink and (M143) the backend the sound engine drives; `rewo-net` carries the listener transform, the music fade and the `ChannelSink` seam. **The listening pass is the outstanding work and it is a human's.** No gate in this project opens an audio device — an absent, muted, exclusive-mode or unplugged one all look identical from inside the process — so everything a machine can check passes, and that is *not* the same claim.
+- **Audio is wired into the client and nobody has listened to it yet.** `crates/rewo-audio` carries the quantisation, the buffer library, the mixer, an SPSC command ring, a cpal sink, (M143) the backend the sound engine drives and (M144) the incremental Ogg stream behind music and the ambient beds; `rewo-net` carries the listener transform, the music fade and the `ChannelSink` seam. **The listening pass is the outstanding work and it is a human's.** No gate in this project opens an audio device — an absent, muted, exclusive-mode or unplugged one all look identical from inside the process — so everything a machine can check passes, and that is *not* the same claim.
 
   ```
   cargo build -p rewo-app --features audio    # a default build links NO audio stack
