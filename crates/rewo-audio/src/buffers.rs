@@ -44,7 +44,78 @@ pub struct Pcm {
 /// a path would find nothing, on every sound, with a perfectly good error.
 pub trait PcmSource {
     fn open(&mut self, key: &str) -> Result<Pcm, String>;
+
+    /// `getStream` — the same asset, read incrementally (M144).
+    ///
+    /// **A default method, so every existing fake is unchanged.** The caching
+    /// rules above are graded against a source that counts its calls and never
+    /// touches a decoder, which is M138b's design point; making streams a
+    /// required method would have forced all of those to grow an ogg.
+    ///
+    /// `looping` selects `LoopingAudioStream` over a bare `JOrbisAudioStream`
+    /// and belongs *here* rather than on the channel — see [`StreamHandle`].
+    fn open_stream(
+        &mut self,
+        key: &str,
+        looping: bool,
+    ) -> Result<Box<dyn PcmStream>, String> {
+        let _ = looping;
+        Err(format!("{key}: this source cannot open streams"))
+    }
 }
+
+/// `AudioStream` — an asset read a chunk at a time instead of all at once.
+///
+/// **Streaming is not an optimisation here, it is the only option.** Measured
+/// against the real 26.2 store: `music.end` is 11.3 MB of ogg, roughly 806
+/// seconds, which is **142 MB in one PCM buffer** — and 344 of 8,024 variants
+/// are streamed. Decoding one fully and letting the mixer's own loop flag stand
+/// in for `LoopingAudioStream` is the simplification an implementer reaches for
+/// first, and the number above is why it is not available.
+pub trait PcmStream {
+    /// `AudioStream.getFormat()` — `(channels, sample_rate)`.
+    ///
+    /// **Available before the first read**, because `Channel.attachBufferStream`
+    /// sizes its buffers from the format *before* it pumps any
+    /// (`Channel.java:125-127`). A stream that only learned its format by
+    /// decoding could not answer this.
+    fn format(&self) -> (u16, u32);
+
+    /// `AudioStream.read(expectedSize)`, in **samples** rather than bytes.
+    ///
+    /// Returns up to `samples` interleaved `i16`s, already quantised. **An empty
+    /// result means exhausted** — that is the signal `LoopingAudioStream` reads
+    /// to restart, and the signal a non-looping caller reads to stop. A short
+    /// non-empty result is the ordinary end of a file and is *not* exhaustion.
+    fn read(&mut self, samples: usize) -> Result<Vec<i16>, String>;
+}
+
+/// `Channel.calculateBufferSize(format, seconds)` — one buffer, in **bytes**.
+///
+/// ```java
+/// return (int)(seconds * format.getSampleSizeInBits() / 8.0F * format.getChannels() * format.getSampleRate());
+/// ```
+/// (`Channel.java:130-132`.) `JOrbisAudioStream` builds its format as
+/// `new AudioFormat(rate, 16, channels, true, false)` (`:63`), so the sample
+/// size is **16 bits** and this is `2 * channels * rate` per second.
+///
+/// Kept in bytes rather than converted here, because that is what vanilla's
+/// `streamingBufferSize` is and the `/ 2` belongs at the one call site that
+/// needs samples. The float arithmetic is transcribed and then truncated; for
+/// every realistic rate the product is exactly representable in `f32`, so the
+/// truncation never actually rounds — which is worth knowing before someone
+/// "fixes" it into integer maths and changes nothing.
+pub fn calculate_buffer_size(channels: u16, sample_rate: u32, seconds: i32) -> usize {
+    let bits = 16i32;
+    let bytes = seconds as f32 * bits as f32 / 8.0 * channels as f32 * sample_rate as f32;
+    bytes.max(0.0) as usize
+}
+
+/// `Channel.QUEUED_BUFFER_COUNT` — how many buffers a stream keeps queued.
+pub const QUEUED_BUFFER_COUNT: usize = 4;
+
+/// `Channel.BUFFER_DURATION_SECONDS` — how much audio each one holds.
+pub const BUFFER_DURATION_SECONDS: i32 = 1;
 
 /// So a caller whose source is a closure can still name the library's type.
 ///
@@ -55,6 +126,13 @@ pub trait PcmSource {
 impl PcmSource for Box<dyn PcmSource> {
     fn open(&mut self, key: &str) -> Result<Pcm, String> {
         (**self).open(key)
+    }
+    /// Forwarded explicitly. Inheriting the trait's default here would make a
+    /// boxed source silently refuse every stream while the source inside it
+    /// supported them — the failure would present as "music never plays" with a
+    /// perfectly good error message naming the wrong cause.
+    fn open_stream(&mut self, key: &str, looping: bool) -> Result<Box<dyn PcmStream>, String> {
+        (**self).open_stream(key, looping)
     }
 }
 
@@ -119,17 +197,29 @@ impl<S: PcmSource> SoundBufferLibrary<S> {
         self.cache[key].clone()
     }
 
-    /// `getStream` — **never cached**, and the loop flag rides with it.
+    /// `getStream`'s **rule** — never cached, and the loop flag rides with it.
     ///
     /// There is no `computeIfAbsent` here and no map lookup at all: every call
     /// opens the resource again. That is not an oversight — a stream is stateful
     /// (it holds a decode position), so two sounds sharing one would fight over
     /// it, and the same track started twice must genuinely play twice.
+    ///
+    /// This states the decision without performing it, which is what lets it be
+    /// graded by a source that has no decoder in it at all.
+    /// [`Self::open_stream`] is the action.
     pub fn stream(&self, key: &str, looping: bool) -> StreamHandle {
         StreamHandle {
             key: key.to_string(),
             looping,
         }
+    }
+
+    /// `getStream`'s **action** — open one, honouring [`Self::stream`]'s rule.
+    ///
+    /// Goes straight to the source and never near `cache`, so a stream opened
+    /// twice really is two independent decode positions.
+    pub fn open_stream(&mut self, key: &str, looping: bool) -> Result<Box<dyn PcmStream>, String> {
+        self.source.open_stream(key, looping)
     }
 
     /// `clear()` — a resource reload. The only thing that empties the cache.
@@ -227,6 +317,46 @@ mod tests {
         assert!(lib.complete_buffer("missing.ogg").is_err());
         assert!(lib.complete_buffer("missing.ogg").is_err());
         assert_eq!(lib.source.opens.len(), 1, "not retried");
+    }
+
+    /// `Channel.calculateBufferSize` — one second, in bytes, at 16 bits.
+    ///
+    /// Literal values rather than the formula recomputed, because a witness that
+    /// re-derives its expectation agrees with any formula (§0.0 gotcha 0a). The
+    /// figure that matters is **176400**: one second of 44.1 kHz stereo, which
+    /// is what four queued buffers of it being ~705 KB rests on.
+    #[test]
+    fn a_stream_buffer_is_one_second_of_sixteen_bit_audio() {
+        assert_eq!(calculate_buffer_size(2, 44_100, 1), 176_400);
+        assert_eq!(calculate_buffer_size(1, 44_100, 1), 88_200);
+        assert_eq!(calculate_buffer_size(2, 48_000, 1), 192_000);
+        // The 16 is `JOrbisAudioStream`'s `new AudioFormat(rate, 16, ...)`, so
+        // the byte count is twice the sample count — the `/ 2` a caller needs to
+        // reach samples is the only conversion, and it is exact.
+        assert_eq!(calculate_buffer_size(2, 44_100, 1) / 2, 2 * 44_100);
+        // Degenerate inputs are zero rather than negative or huge: a format that
+        // reported no channels would otherwise size a buffer by wrapping.
+        assert_eq!(calculate_buffer_size(0, 44_100, 1), 0);
+        assert_eq!(calculate_buffer_size(2, 44_100, 0), 0);
+        assert_eq!(calculate_buffer_size(2, 44_100, -1), 0);
+        // The two constants are vanilla's, and four one-second buffers is the
+        // whole streaming invariant.
+        assert_eq!(QUEUED_BUFFER_COUNT, 4);
+        assert_eq!(BUFFER_DURATION_SECONDS, 1);
+    }
+
+    #[test]
+    fn a_source_that_cannot_stream_says_so_with_the_key() {
+        // The default method. A fake built for the caching tests has no decoder
+        // in it, and must refuse a stream rather than pretend to open one.
+        let mut lib = SoundBufferLibrary::new(Counting::default());
+        // Matched rather than `unwrap_err`: the `Ok` side is a trait object with
+        // no `Debug`, which is the shape of the seam rather than an obstacle.
+        match lib.open_stream("minecraft/sounds/music/calm1.ogg", true) {
+            Ok(_) => panic!("a decoderless source opened a stream"),
+            Err(e) => assert!(e.contains("calm1.ogg"), "got {e}"),
+        }
+        assert_eq!(lib.cached(), 0, "and a stream never touches the buffer cache");
     }
 
     #[test]

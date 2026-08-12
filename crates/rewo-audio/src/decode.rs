@@ -143,6 +143,217 @@ pub fn decode_ogg_vorbis(bytes: &[u8]) -> Result<Pcm, String> {
     })
 }
 
+/// One live Vorbis decode position — the state `JOrbisAudioStream` holds.
+///
+/// Separate from [`OggStream`] because `LoopingAudioStream` **throws its inner
+/// stream away and builds a new one** at the loop point rather than seeking
+/// (`LoopingAudioStream.java:31-33`), so "the decoder" has to be a thing that
+/// can be replaced without disturbing the bytes it reads or the format it
+/// reports.
+struct VorbisReader {
+    format: Box<dyn symphonia::core::formats::FormatReader>,
+    decoder: Box<dyn symphonia::core::codecs::Decoder>,
+    track_id: u32,
+    buf: Option<symphonia::core::audio::SampleBuffer<f32>>,
+}
+
+impl VorbisReader {
+    /// Open the container and the codec, and report the format the *header*
+    /// declares.
+    ///
+    /// **The format has to be known before any audio is decoded**, because
+    /// `Channel.attachBufferStream` sizes its buffers from `stream.getFormat()`
+    /// before it pumps anything (`Channel.java:125-127`). Vorbis carries both in
+    /// its identification header, so this reads them off `codec_params` rather
+    /// than inferring them from a decoded packet — a stream that could only
+    /// answer after decoding could not be attached at all.
+    fn open(bytes: std::sync::Arc<[u8]>) -> Result<(VorbisReader, u16, u32), String> {
+        use symphonia::core::codecs::DecoderOptions;
+        use symphonia::core::formats::FormatOptions;
+        use symphonia::core::io::MediaSourceStream;
+        use symphonia::core::meta::MetadataOptions;
+        use symphonia::core::probe::Hint;
+
+        let cursor = std::io::Cursor::new(bytes);
+        let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
+        let mut hint = Hint::new();
+        hint.with_extension("ogg");
+        let probed = symphonia::default::get_probe()
+            .format(
+                &hint,
+                mss,
+                &FormatOptions::default(),
+                &MetadataOptions::default(),
+            )
+            .map_err(|e| format!("not an ogg stream: {e}"))?;
+        let format = probed.format;
+        let track = format
+            .default_track()
+            .ok_or_else(|| "ogg stream has no default track".to_string())?;
+        let track_id = track.id;
+        let channels = track
+            .codec_params
+            .channels
+            .map(|c| c.count() as u16)
+            .ok_or_else(|| "ogg stream declares no channel layout".to_string())?;
+        let sample_rate = track
+            .codec_params
+            .sample_rate
+            .ok_or_else(|| "ogg stream declares no sample rate".to_string())?;
+        let decoder = symphonia::default::get_codecs()
+            .make(&track.codec_params, &DecoderOptions::default())
+            .map_err(|e| format!("no vorbis decoder for this track: {e}"))?;
+        Ok((
+            VorbisReader {
+                format,
+                decoder,
+                track_id,
+                buf: None,
+            },
+            channels,
+            sample_rate,
+        ))
+    }
+
+    /// One packet's samples, or `None` at end of stream.
+    ///
+    /// `Some(empty)` is a real and ordinary answer — Vorbis' first audio packets
+    /// decode to nothing — and is **not** the same as `None`. A caller that
+    /// treated them alike would report every stream exhausted before it started.
+    fn next(&mut self) -> Result<Option<Vec<i16>>, String> {
+        use symphonia::core::audio::SampleBuffer;
+        use symphonia::core::errors::Error;
+        loop {
+            let packet = match self.format.next_packet() {
+                Ok(p) => p,
+                Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return Ok(None)
+                }
+                Err(Error::ResetRequired) => {
+                    return Err("ogg stream requires a decoder reset (chained stream)".into())
+                }
+                Err(e) => return Err(format!("ogg read: {e}")),
+            };
+            if packet.track_id() != self.track_id {
+                continue;
+            }
+            match self.decoder.decode(&packet) {
+                Ok(audio) => {
+                    let spec = *audio.spec();
+                    let b = self
+                        .buf
+                        .get_or_insert_with(|| SampleBuffer::<f32>::new(audio.capacity() as u64, spec));
+                    b.copy_interleaved_ref(audio);
+                    return Ok(Some(b.samples().iter().copied().map(quantise).collect()));
+                }
+                Err(Error::DecodeError(_)) => continue,
+                Err(e) => return Err(format!("vorbis decode: {e}")),
+            }
+        }
+    }
+}
+
+/// `JOrbisAudioStream`, optionally wrapped in `LoopingAudioStream` (M144).
+///
+/// **The whole compressed file is held in memory, and that is vanilla's shape
+/// too** for the looping case: `LoopingAudioStream` marks its
+/// `BufferedInputStream` with `Integer.MAX_VALUE` and `reset()`s it at the loop
+/// point (`:18`, `:32`), which buffers the entire resource. What is *not* held
+/// is the decoded PCM — the largest streamed track is 142 MB of samples against
+/// 11.3 MB of ogg, and that ratio is the reason this type exists.
+pub struct OggStream {
+    /// Kept for the restart. This is `bufferedInputStream`'s mark.
+    bytes: std::sync::Arc<[u8]>,
+    reader: VorbisReader,
+    looping: bool,
+    channels: u16,
+    sample_rate: u32,
+    /// Decoded but not yet handed out. A packet does not divide evenly into a
+    /// requested size, so the surplus has to live somewhere.
+    pending: Vec<i16>,
+}
+
+impl OggStream {
+    pub fn open(bytes: std::sync::Arc<[u8]>, looping: bool) -> Result<OggStream, String> {
+        let (reader, channels, sample_rate) = VorbisReader::open(std::sync::Arc::clone(&bytes))?;
+        Ok(OggStream {
+            bytes,
+            reader,
+            looping,
+            channels,
+            sample_rate,
+            pending: Vec::new(),
+        })
+    }
+
+    /// `bufferedInputStream.reset()` + `provider.create(...)` — a fresh decoder
+    /// over the same bytes.
+    fn restart(&mut self) -> Result<(), String> {
+        let (reader, channels, sample_rate) =
+            VorbisReader::open(std::sync::Arc::clone(&self.bytes))?;
+        // The same bytes cannot describe a different format; asserting it would
+        // be asserting that `VorbisReader::open` is deterministic. What is worth
+        // keeping is that a restart does not silently change what the caller
+        // already sized its buffers against.
+        debug_assert_eq!((channels, sample_rate), (self.channels, self.sample_rate));
+        self.reader = reader;
+        self.pending.clear();
+        Ok(())
+    }
+
+    /// `JOrbisAudioStream.read` — up to `samples`, empty once exhausted.
+    fn inner_read(&mut self, samples: usize) -> Result<Vec<i16>, String> {
+        while self.pending.len() < samples {
+            match self.reader.next()? {
+                Some(s) => self.pending.extend(s),
+                None => break,
+            }
+        }
+        let take = samples.min(self.pending.len());
+        Ok(self.pending.drain(..take).collect())
+    }
+}
+
+impl crate::buffers::PcmStream for OggStream {
+    fn format(&self) -> (u16, u32) {
+        (self.channels, self.sample_rate)
+    }
+
+    /// `LoopingAudioStream.read`, transcribed including its shape.
+    ///
+    /// ```java
+    /// ByteBuffer result = this.stream.read(expectedSize);
+    /// if (!result.hasRemaining()) {
+    ///    this.stream.close();
+    ///    this.bufferedInputStream.reset();
+    ///    this.stream = this.provider.create(new NoCloseBuffer(this.bufferedInputStream));
+    ///    result = this.stream.read(expectedSize);
+    /// }
+    /// return result;
+    /// ```
+    ///
+    /// **The restart happens on the read AFTER the one that ran out**, not by
+    /// splicing across the boundary — the guard is on the inner read coming back
+    /// *empty*, and a short non-empty read is the ordinary end of a file. So a
+    /// looping stream hands out one **short** buffer at the loop point and a full
+    /// one after it, while the samples themselves are continuous. Splicing to
+    /// keep every buffer the same size would sound identical and would not be
+    /// this, and the difference is observable in the buffer lengths.
+    fn read(&mut self, samples: usize) -> Result<Vec<i16>, String> {
+        // A zero-sized read is empty by definition, and must not be mistaken for
+        // exhaustion — otherwise it would restart a looping stream from the top.
+        if samples == 0 {
+            return Ok(Vec::new());
+        }
+        let out = self.inner_read(samples)?;
+        if out.is_empty() && self.looping {
+            self.restart()?;
+            return self.inner_read(samples);
+        }
+        Ok(out)
+    }
+}
+
 /// A [`crate::buffers::PcmSource`] over raw bytes a caller has already fetched.
 ///
 /// The **store lookup is deliberately not here**. An asset key is
@@ -161,6 +372,15 @@ where
     fn open(&mut self, key: &str) -> Result<Pcm, String> {
         let bytes = (self.0)(key)?;
         decode_ogg_vorbis(&bytes)
+    }
+
+    fn open_stream(
+        &mut self,
+        key: &str,
+        looping: bool,
+    ) -> Result<Box<dyn crate::buffers::PcmStream>, String> {
+        let bytes = (self.0)(key)?;
+        Ok(Box::new(OggStream::open(bytes.into(), looping)?))
     }
 }
 
@@ -331,5 +551,158 @@ mod real_assets {
         // mixer's own witnesses are where that lands.
         assert_eq!(stereo.samples.len() % 2, 0);
         assert_eq!(stereo.samples.len(), 432000, "4.5 s at 48 kHz, two channels");
+    }
+    // ── the incremental stream (M144) ─────────────────────────────────────
+
+    use crate::buffers::PcmStream;
+
+    fn stream(a: (&str, &str), looping: bool) -> Option<super::OggStream> {
+        let bytes = asset(a.0, a.1)?;
+        Some(super::OggStream::open(bytes.into(), looping).expect("must open"))
+    }
+
+    /// **The format is known before a single sample is decoded.**
+    ///
+    /// `Channel.attachBufferStream` reads `stream.getFormat()` to size its
+    /// buffers and only then pumps (`Channel.java:125-127`), so a stream that
+    /// learned its format by decoding could not be attached at all. This comes
+    /// off the Vorbis identification header via `codec_params`.
+    #[test]
+    fn a_stream_reports_its_format_before_any_read() {
+        let Some(s) = stream(CHICKEN, false) else {
+            println!("SKIPPED: no unpacked asset store -- this witness proved nothing");
+            return;
+        };
+        assert_eq!(s.format(), (1, 44100));
+        let Some(h) = stream(HORN_STEREO, false) else { return };
+        assert_eq!(h.format(), (2, 48000), "and it is per-variant, not per-event");
+    }
+
+    /// **Reading a file in chunks gives exactly what reading it whole gives.**
+    ///
+    /// The claim that makes streaming safe to introduce at all: the two decode
+    /// paths must be the same audio, sample for sample, or a streamed sound is a
+    /// subtly different sound. Chunked at a size that does not divide the file,
+    /// so packet boundaries and read boundaries disagree throughout — which is
+    /// the case that catches a `pending` buffer that drops or duplicates a
+    /// remainder, and the reason not to pick a round number here.
+    #[test]
+    fn reading_a_stream_in_chunks_yields_exactly_the_whole_file() {
+        let Some(bytes) = asset(CHICKEN.0, CHICKEN.1) else {
+            println!("SKIPPED: no unpacked asset store -- this witness proved nothing");
+            return;
+        };
+        let whole = super::decode_ogg_vorbis(&bytes).expect("decode");
+        let mut s = super::OggStream::open(bytes.into(), false).expect("open");
+
+        let mut chunked: Vec<i16> = Vec::new();
+        let mut reads = 0;
+        loop {
+            let part = s.read(577).expect("read");
+            if part.is_empty() {
+                break;
+            }
+            assert!(part.len() <= 577, "a read must not overshoot what was asked");
+            chunked.extend(part);
+            reads += 1;
+            assert!(reads < 1000, "runaway: the stream never reported exhaustion");
+        }
+        assert!(reads > 1, "the fixture must actually take several reads");
+        assert_eq!(chunked.len(), whole.samples.len());
+        assert_eq!(chunked, whole.samples, "chunked and whole must be the same audio");
+    }
+
+    /// A non-looping stream stays exhausted rather than restarting by itself.
+    #[test]
+    fn a_non_looping_stream_stays_exhausted() {
+        let Some(mut s) = stream(CHICKEN, false) else {
+            println!("SKIPPED: no unpacked asset store -- this witness proved nothing");
+            return;
+        };
+        let mut total = 0;
+        while !s.read(1000).unwrap().is_empty() {
+            total += 1;
+            assert!(total < 1000, "runaway");
+        }
+        // Repeatedly, not once: the exhausted state has to be stable, because
+        // the producer polls it every tick for the rest of the sound's life.
+        for _ in 0..5 {
+            assert!(s.read(1000).unwrap().is_empty());
+        }
+    }
+
+    /// **The loop restarts on the read AFTER the one that ran out**, which is
+    /// visible in the buffer LENGTHS and not in the samples.
+    ///
+    /// `LoopingAudioStream.read` guards on the inner read coming back *empty*, so
+    /// the last partial buffer of a pass is handed out as-is and the restart
+    /// happens on the next call. The observable signature is therefore a short
+    /// buffer at the loop point followed by a full one — the audio is continuous
+    /// either way, so a version that spliced across the boundary to keep every
+    /// buffer full would sound identical and would not be this.
+    ///
+    /// The chicken is 1728 samples, so at 1000 the pattern is 1000, 728, 1000,
+    /// 728 … and the numbers are the fixture's rather than round by luck.
+    #[test]
+    fn a_looping_stream_restarts_with_a_short_buffer_at_the_boundary() {
+        let Some(mut s) = stream(CHICKEN, true) else {
+            println!("SKIPPED: no unpacked asset store -- this witness proved nothing");
+            return;
+        };
+        let lens: Vec<usize> = (0..5).map(|_| s.read(1000).unwrap().len()).collect();
+        assert_eq!(lens, vec![1000, 728, 1000, 728, 1000], "got {lens:?}");
+
+        // And the audio really is continuous: the samples after the restart are
+        // the start of the file again, not a gap and not a repeat of the tail.
+        let Some(bytes) = asset(CHICKEN.0, CHICKEN.1) else { return };
+        let whole = super::decode_ogg_vorbis(&bytes).unwrap();
+        let mut fresh = super::OggStream::open(bytes.into(), true).unwrap();
+        let mut seen: Vec<i16> = Vec::new();
+        for _ in 0..4 {
+            seen.extend(fresh.read(1000).unwrap());
+        }
+        assert_eq!(seen.len(), 1728 * 2, "two full passes");
+        assert_eq!(&seen[..1728], &whole.samples[..]);
+        assert_eq!(&seen[1728..], &whole.samples[..], "the second pass is the first");
+    }
+
+    /// **A zero-sized read must not restart a looping stream.**
+    ///
+    /// It is empty by definition, and the restart guard is "the inner read came
+    /// back empty" — so without the explicit guard a `read(0)` would rewind a
+    /// playing track to its beginning. Reachable in production if a format ever
+    /// reported zero channels, which `calculate_buffer_size` would turn into a
+    /// zero-sized buffer.
+    #[test]
+    fn a_zero_sized_read_does_not_restart_a_looping_stream() {
+        let Some(mut s) = stream(CHICKEN, true) else {
+            println!("SKIPPED: no unpacked asset store -- this witness proved nothing");
+            return;
+        };
+        let first = s.read(600).unwrap();
+        assert_eq!(first.len(), 600);
+        assert!(s.read(0).unwrap().is_empty());
+        // Still where it was: the next 600 are the file's SECOND 600, not its
+        // first. A restart here would make them the first.
+        let second = s.read(600).unwrap();
+        assert_eq!(second.len(), 600);
+        assert_ne!(first, second, "a rewind would make these equal");
+    }
+
+    /// Two streams of one asset are independent decode positions — `getStream`
+    /// has no cache, and a shared one would make two plays fight over a cursor.
+    #[test]
+    fn two_streams_of_one_asset_do_not_share_a_position() {
+        let Some(bytes) = asset(CHICKEN.0, CHICKEN.1) else {
+            println!("SKIPPED: no unpacked asset store -- this witness proved nothing");
+            return;
+        };
+        let b: std::sync::Arc<[u8]> = bytes.into();
+        let mut a = super::OggStream::open(std::sync::Arc::clone(&b), false).unwrap();
+        let mut c = super::OggStream::open(b, false).unwrap();
+        let from_a = a.read(400).unwrap();
+        let _ = a.read(400).unwrap();
+        let from_c = c.read(400).unwrap();
+        assert_eq!(from_a, from_c, "each starts at the beginning of the file");
     }
 }
