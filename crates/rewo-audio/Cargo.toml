@@ -30,3 +30,12 @@ cpal = "0.15"
 # counter alone ("15 unresolved") cannot say WHICH sound is missing, and on a
 # partial asset store that is the only question worth asking.
 log = { workspace = true }
+
+# **Dev only, and only for the end-to-end witness.** `LiveSounds::drive` takes
+# an `EntityTable` and a `SoundsIndex`, so proving that a decoded packet comes
+# out of the mixer as samples needs both crates. They are dev-dependencies
+# precisely so that claim can be made without any of it reaching a shipped
+# build — rewo-net already pulls them in, so this costs no extra compilation.
+[dev-dependencies]
+rewo-world = { workspace = true }
+rewo-data = { workspace = true }

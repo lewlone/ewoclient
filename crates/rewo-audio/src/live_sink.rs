@@ -316,7 +316,7 @@ mod tests {
 
     /// A source that hands back a buffer of a chosen length, so a *duration* is
     /// an input rather than a property of some real `.ogg`.
-    struct Fake {
+    pub(super) struct Fake {
         /// Frames, channels and rate per key. A key absent from here fails to
         /// decode, which is the missing-asset path.
         assets: HashMap<String, (usize, u16, u32)>,
@@ -351,6 +351,11 @@ mod tests {
                 sample_rate: rate,
             })
         }
+    }
+
+    /// One decodable asset of a chosen shape, for the end-to-end module.
+    pub(super) fn fake_source(key: &str, frames: usize, channels: u16, rate: u32) -> Fake {
+        Fake::new().with(key, frames, channels, rate)
     }
 
     /// One second of mono 44.1k under a plain key.
@@ -664,5 +669,139 @@ mod tests {
             sink.diagnostics().dropped > 0,
             "a full ring is a stalled device and must be visible"
         );
+    }
+}
+
+/// **The whole chain, with the device removed: a decoded packet in, audible
+/// samples out.**
+///
+/// This is `REWO_AUDIO_PLAN.md`'s r46 claim ("non-zero mixed samples") minus
+/// the one part no test can have. Everything between is production: the real
+/// `SoundEngine` through the real `LiveSounds` tee, into the real [`LiveSink`],
+/// across a real [`CommandRing`], into the real [`crate::mixer::Mixer`].
+///
+/// **It is still not evidence that this client makes a noise.** No device is
+/// opened here, and an absent, muted, exclusive-mode or unplugged one all look
+/// identical from inside the process. What it excludes is every way of being
+/// silent that is *not* the device — a sound that never resolved, an attach
+/// that never crossed the ring, a voice that never played, a mixer handed a
+/// key instead of samples. The listening pass remains a human's.
+#[cfg(test)]
+mod end_to_end {
+    use super::tests::*;
+    use crate::device::{Command, CommandRing, DEFAULT_RING_CAPACITY};
+    use crate::live_sink::LiveSink;
+    use crate::mixer::{Mixer, NullSink};
+    use rewo_data::sounds_json::{Sound, SoundEventRegistration, SoundFileSet, SoundsIndex};
+    use rewo_net::sound_engine::LiveSounds;
+    use rewo_net::sounds::{PositionedSound, SoundEvent, SoundRef, SoundSource};
+    use rewo_world::entities::EntityTable;
+    use std::sync::Arc;
+
+    const EVENT: &str = "minecraft:block.stone.break";
+
+    fn index() -> SoundsIndex {
+        let mut idx = SoundsIndex::new();
+        idx.handle_registration(
+            EVENT,
+            &SoundEventRegistration {
+                sounds: vec![Sound::file("minecraft:block/stone/break1")],
+                replace: false,
+                subtitle: None,
+            },
+            &SoundFileSet::All,
+        );
+        idx
+    }
+
+    /// The packet a block break arrives as. Positioned at the listener's own
+    /// spot, so the assertion is about the chain rather than about attenuation
+    /// — which `mixer.rs` grades on its own.
+    fn break_packet() -> SoundEvent {
+        SoundEvent::At(PositionedSound {
+            sound: SoundRef::Inline {
+                name: EVENT.into(),
+                fixed_range: None,
+            },
+            source: SoundSource::Blocks,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            volume: 1.0,
+            pitch: 1.0,
+            seed: 0,
+        })
+    }
+
+    #[test]
+    fn a_decoded_packet_reaches_the_mixer_as_audible_samples() {
+        let ring = CommandRing::with_capacity(DEFAULT_RING_CAPACITY);
+        let sink = LiveSink::new(
+            Arc::clone(&ring),
+            // The key the event resolves to, at half a second of mono 44.1k.
+            fake_source("minecraft/sounds/block/stone/break1.ogg", 22_050, 1, 44_100),
+        );
+        let mut live = LiveSounds::new(index(), rewo_data::sound_events::SoundEvents::default());
+        live.attach_sink(Box::new(sink));
+
+        let mut mixer = Mixer::new(44_100);
+        let mut out = NullSink::new();
+
+        // Nothing has happened yet: exact silence, so the assertion below is a
+        // change rather than a level.
+        out.pull(&mut mixer, 128);
+        assert_eq!(out.peak(), 0.0, "an idle client renders exact silence");
+
+        live.drive(&[break_packet()], &EntityTable::default(), None, 0);
+        assert_eq!(live.stats().started, 1, "the engine must have played it");
+
+        while let Some(cmd) = ring.pop() {
+            mixer.apply(&cmd);
+        }
+        assert_eq!(mixer.voice_count(), 1, "one voice reached the mixer");
+        assert_eq!(mixer.ignored, 0, "and it was handed samples, not a key");
+
+        out.pull(&mut mixer, 128);
+        assert!(out.peak() > 0.0, "the mixer rendered silence for a played sound");
+    }
+
+    /// The other end of the same chain: the sound finishes, the engine sees it,
+    /// and the channel comes back — through `stopped()` and nothing else.
+    ///
+    /// Two-sided on purpose. A client that never released would fall silent
+    /// after thirty sounds; one that released immediately would clip every
+    /// sound to a click (M143b). Only driving the real engine across the real
+    /// tee can show which of the two this is.
+    #[test]
+    fn the_channel_comes_back_when_the_sound_ends_and_not_before() {
+        let ring = CommandRing::with_capacity(DEFAULT_RING_CAPACITY);
+        let sink = LiveSink::new(
+            Arc::clone(&ring),
+            fake_source("minecraft/sounds/block/stone/break1.ogg", 22_050, 1, 44_100),
+        );
+        let mut live = LiveSounds::new(index(), rewo_data::sound_events::SoundEvents::default());
+        live.attach_sink(Box::new(sink));
+        let entities = EntityTable::default();
+
+        live.drive(&[break_packet()], &entities, None, 0);
+        let stops_after = |ring: &CommandRing| {
+            let mut n = 0;
+            while let Some(c) = ring.pop() {
+                if matches!(c, Command::Channel(_, rewo_net::sound_engine::ChannelCall::Stop)) {
+                    n += 1;
+                }
+            }
+            n
+        };
+        assert_eq!(stops_after(&ring), 0, "nothing was torn down on the play tick");
+
+        // Half a second is ten ticks. Nine of them must leave it alone.
+        for _ in 0..9 {
+            live.drive(&[], &entities, None, 0);
+        }
+        assert_eq!(stops_after(&ring), 0, "a sounding voice survives nine ticks");
+
+        live.drive(&[], &entities, None, 0);
+        assert_eq!(stops_after(&ring), 1, "and is released on the tenth");
     }
 }
