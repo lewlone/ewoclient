@@ -23,6 +23,7 @@
 //! (`:26-47`.)
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Decoded PCM, as a static buffer holds it.
 #[derive(Clone, Debug, PartialEq)]
@@ -45,6 +46,18 @@ pub trait PcmSource {
     fn open(&mut self, key: &str) -> Result<Pcm, String>;
 }
 
+/// So a caller whose source is a closure can still name the library's type.
+///
+/// [`crate::decode::BytesSource`] wraps an `FnMut`, and a closure's type cannot
+/// be written down — which matters because the backend that holds one has to be
+/// stored in a struct field. Boxing is the way out, and it needs this impl to
+/// satisfy `SoundBufferLibrary<S: PcmSource>`.
+impl PcmSource for Box<dyn PcmSource> {
+    fn open(&mut self, key: &str) -> Result<Pcm, String> {
+        (**self).open(key)
+    }
+}
+
 /// A stream handle. Streams carry their loop flag; static buffers do not.
 ///
 /// **Looping for a streamed sound lives HERE and not on the channel.**
@@ -61,9 +74,16 @@ pub struct StreamHandle {
 }
 
 /// `SoundBufferLibrary`.
+///
+/// **The cache holds `Arc<Pcm>`, not `Pcm`.** A buffer whose whole purpose is
+/// "decoded once for the life of the session" must be handed out as a shared
+/// handle: a step sound fires several times a second, and copying ~170 KB of
+/// samples per play would undo exactly the saving the cache exists for. It is
+/// also what `Command::Attach` wants, since the same buffer is read by the
+/// audio callback while the producer still holds it.
 pub struct SoundBufferLibrary<S: PcmSource> {
     source: S,
-    cache: HashMap<String, Result<Pcm, String>>,
+    cache: HashMap<String, Result<Arc<Pcm>, String>>,
 }
 
 impl<S: PcmSource> SoundBufferLibrary<S> {
@@ -85,12 +105,18 @@ impl<S: PcmSource> SoundBufferLibrary<S> {
     /// than a choice: the map stores the future, and a future that completed
     /// exceptionally is still in the map. Retrying every frame on a missing file
     /// would be the more obvious design and is not vanilla's.
-    pub fn complete_buffer(&mut self, key: &str) -> &Result<Pcm, String> {
+    /// Returned **by value**, which is an `Arc` clone on the hit path and a
+    /// `String` clone on the (cached, rare) failure path. A borrow of `self`
+    /// would be cheaper and would also stop the caller touching any other field
+    /// of the backend while it held the buffer — which is precisely what a
+    /// caller does next, since the point of the lookup is to push the result at
+    /// a ring that lives beside this library.
+    pub fn complete_buffer(&mut self, key: &str) -> Result<Arc<Pcm>, String> {
         if !self.cache.contains_key(key) {
-            let decoded = self.source.open(key);
+            let decoded = self.source.open(key).map(Arc::new);
             self.cache.insert(key.to_string(), decoded);
         }
-        &self.cache[key]
+        self.cache[key].clone()
     }
 
     /// `getStream` — **never cached**, and the loop flag rides with it.

@@ -470,11 +470,13 @@ mods-per-effort punishes by construction:**
   - **music control** has `MusicManager`'s gain ramp (M140b) and the sound
     registry (M64), but not the selection or the delay timers.
 
-  **What is still missing is the last hop, and it is one wire**: `rewo-app`
-  deliberately does not depend on `rewo-audio`, so `rewo live` opens no device
-  and is silent. Read `REWO_AUDIO_PLAN.md` before scheduling any of the three
-  — and note that **nobody has listened to any of it**, which no gate in this
-  project can change.
+  **The last hop is done (M143).** `rewo-app` depends on `rewo-audio` behind an
+  `audio` feature that is **off by default**, and `rewo live --audio` on a build
+  with `--features audio` opens a device and plays what the engine resolves. Read
+  `REWO_AUDIO_PLAN.md` before scheduling any of the three — and note that
+  **nobody has listened to any of it**, which no gate in this project can
+  change. Streams are declined, so *music control* additionally needs the
+  streaming path, not just its selection logic.
 - **Ambient particles** — 36 mods, **89M**, ranked apart as atmosphere. On raw
   demand it would sit around #4. M37 shipped the particle system, so the
   prerequisite is gone; the reason it is not in the QoL list is that it

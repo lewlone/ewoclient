@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-11 after M142d:
-**3059 tests, 0 failures** (**world 1166, net 1092, gpu 275, data 224, app 197,
-mesh 45, proto 16, audio 44** — read off the runner per crate; they sum to 3059).
+Current measurement, taken 2026-08-12 after M143:
+**3088 tests, 0 failures** (**world 1166, net 1098, gpu 275, data 228, app 199,
+mesh 45, proto 16, audio 61** — read off the runner per crate; they sum to 3088).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -217,37 +217,57 @@ injected**: the container, the book and the chat all drive themselves, so only
 r25 — which needs a real server to grant recipes — could tell. A gate whose
 witnesses are mostly self-driven can look healthy against nothing.
 
-### What to do next (updated 2026-08-11, after M142)
+### What to do next (updated 2026-08-12, after M143)
 
 > **Read this box first; the rest of the section is the 2026-08-10 rewrite and
-> its items have moved.** Since it was written, M141 took the ten tickable
-> ramps, M141d–h every ordinary trigger, and **M142 the three
-> `AmbientSoundHandler`s** — so item 4a below is **done**, and the sound model
-> is complete for everything vanilla plays without a screen.
+> its items have moved.** M141 took the ten tickable ramps, M141d–h every
+> ordinary trigger, **M142 the three `AmbientSoundHandler`s**, and **M143 the
+> wire into the client** — so item 4a below is done, and so is the "wire and a
+> human" item this box carried until today, on the wire half.
 >
-> **The single highest-value thing left in audio is not a milestone, it is a
-> wire and a human.** `rewo-app` deliberately does not depend on `rewo-audio`,
-> so `rewo live` opens no device and is silent; and **no gate in this project
-> can grade a sound**, because an absent, muted, exclusive-mode or unplugged
-> device all look identical from inside the process. Everything a machine can
-> check passes. `cargo run -p rewo-audio --example listen` is the only path to
-> a noise, and **the listening pass is the user's** — do not conflate it with
-> "the audio tests pass".
+> **THE OUTSTANDING WORK IS THE LISTENING PASS AND IT IS THE USER'S.** `rewo
+> live --audio`, on a build with `--features audio`, opens a device and plays
+> what the engine resolves. **No gate in this project can grade a sound** — an
+> absent, muted, exclusive-mode or unplugged device all look identical from
+> inside the process — so everything a machine can check passes and that is not
+> the claim. Do not report audio as working on the strength of a green suite.
+>
+> ```
+> cargo build -p rewo-app --features audio
+> rewo live --audio                             # or REWO_AUDIO=1
+> cargo run -p rewo-audio --example listen      # one sound, no server
+> ```
+>
+> `REWO_AUDIO_PLAN.md` §4 lists what to listen for. The four counters
+> `rewo live` logs when they move (unresolved / declined streams / dropped
+> commands / device errors) are the instrument: they separate "the sound never
+> resolved" from "the callback stopped" from "it all arrived and the output is
+> muted", which are indistinguishable to a listener.
 >
 > Candidates for the next *code* milestone, none of them blocked:
 >
-> * **Wire `rewo-audio` into `rewo live`** behind a flag. Small, and it is the
->   step that turns everything above into something audible. Note the
->   containment it breaks: today the binary and all 34 gates do not link an
->   audio stack, which is why they stay silent and fast.
+> * **Streaming, and with it music.** M143 **declines** streamed attaches and
+>   counts them, so there is no music and no jukebox — a stream is a different
+>   mechanism (`LoopingAudioStream` restarts the decoder, which is why the
+>   engine tells a streamed source *not* to loop) and decoding a track inline
+>   would stall the client tick for seconds. This is a prerequisite of M139's
+>   music work that M140's open half did not name.
+> * **Decode on a worker.** M143 decodes inline on the client tick, the first
+>   time each distinct sound is heard. Bounded (the buffer library never
+>   evicts) and a stated deviation from vanilla's `supplyAsync`.
 > * **`EndFlashState`** — the last unconstructed ramp variant (`Directional`),
 >   which needs the flash schedule, `getDefaultClockTime`, `playDelayed`'s
 >   delay queue, and a camera on the tick clock.
-> * **M139 / the rest of music** — selection and the `nextSongDelay` timers;
->   `MusicManager`'s gain ramp already shipped as M140b.
+> * **M139's loopback oracle** — now that there is something audible to grade,
+>   this is what turns the mixer's *stated approximations* (the pan law, the
+>   resampler) into a measured divergence in dB.
 > * **Anything from `REWO_FEATURE_SURVEY.md`**, whose audio note was corrected
->   on 2026-08-11 — it had said "Rewo has no audio at all", which stopped being
->   true at M138.
+>   on 2026-08-11 and again after M143. Audit any item against the crates
+>   before scheduling it; that table has already been wrong about five.
+>
+> **`package.ps1` deliberately still builds without the feature**, so the
+> packaged client the launcher spawns is silent. Turning that on is a one-word
+> change and the right order is: listen first.
 >
 > Packet coverage is **118 / 0 / 23** and machine-checked, with classes A and B
 > empty: picking work there means choosing a **subsystem**, not a packet.
@@ -21835,3 +21855,193 @@ the M134b lesson from the integration.
 **Measured after both:** 2853 tests / 0 failures (world 1147, net 949, gpu 275,
 data 224, app 197, mesh 45, proto 16), 34 gates green with 0 validation lines,
 demo PNG `2cc56b4acbfb92cb` byte-identical.
+
+---
+
+## M143 — `rewo live --audio`: the client wire, and the method that turns every sound into a click (2026-08-12)
+
+M138 built an audio stack and left it unreachable from the client on purpose:
+`rewo-app` did not depend on `rewo-audio`, so `rewo live` was silent and the 34
+gates linked no audio. This connects them. `cargo build -p rewo-app --features
+audio` then `rewo live --audio` (or `REWO_AUDIO=1`) opens a device and plays
+what the engine resolves. **The listening pass is still owed and is the user's**
+— nothing here changes what a machine can check.
+
+Four pieces: `rewo-data`'s **asset index** (M143a), `rewo-net`'s **`ChannelSink`
+seam** (M143b), `rewo-audio`'s **`LiveSink` + `CpalBackend`** (M143c/e), and the
+app's feature-gated **`audio_backend`** (M143e).
+
+### The finding: `stopped()`, and why swapping the device is wrong
+
+`LiveSounds.device`'s own doc invited this milestone to swap the field —
+*"Swapping this field is the visible one-line edit a device milestone makes."*
+Doing that is wrong twice over, and the second way is invisible to any test that
+avoids opening a device.
+
+**The channel pools are not a device's business.** `CountingChannelPool`, the
+refusal count and the listener record are `Library`'s bookkeeping — plain
+arithmetic that would be identical behind cpal, behind OpenAL and behind
+nothing. So `SilentDevice` keeps all of it, every witness written against it
+keeps reading the same place (`--render-check`'s r45 among them), and a backend
+implements a three-method `ChannelSink` instead: pass the call on, answer
+whether a channel has finished, say why it is quiet. A `Tee` built for the
+duration of one call joins the two.
+
+**And `SilentDevice::stopped` answers `true` unconditionally.** That is right
+for something that makes no noise and catastrophic for something that does.
+`SoundEngine.schedule_tick` (`sound_engine.rs:1199`) filters on
+`device.stopped(l.channel)` and calls `device.release(ch)` **immediately** —
+note what does *not* gate it: `MIN_SOURCE_LIFETIME` gates the *instance*
+reclaim further down, not the release — and vanilla's `release` destroys the AL
+source. A backend that honours `release` while inheriting that `true` tears
+down every voice about 50 ms after starting it: **every sound in the game
+becomes a click**, with correct-looking code, a green suite and no error
+anywhere. `Tee::stopped` therefore reads the sink alone and never the
+bookkeeping device, and the witness asserts the asymmetry from both sides — it
+checks `SilentDevice::stopped` really *is* `true` for the same channel, so the
+passing case cannot be passing by accident.
+
+### `stopped()` is modelled, not asked, and that is what keeps it gradeable
+
+The truthful implementation is a flag the audio callback publishes back. That
+would put the one method that decides whether this client plays sounds or
+clicks into the region **no gate in this project can reach**. The samples, the
+rate and the pitch are all known on the producer side, so `AL_STOPPED` for a
+non-looping source — the buffer has been consumed — is computable from
+`frames / (rate * pitch)` against a tick clock the seam advances. Computable
+means gradeable without a device, which is the ethos `cpal_sink.rs` already
+states: *everything beneath the binding is graded on its own, so the ungraded
+part is the thin binding rather than the behaviour.*
+
+Stated divergence: it is the **engine's** clock, not the device's, so a stalled
+or underrunning device is still playing a sound this reports finished, and the
+channel is reclaimed early. On a healthy device the two agree to within a tick.
+
+Four cases sit before the arithmetic and each inverts if guessed:
+
+* **A looping source never stops.** `AL_LOOPING` sources do not reach
+  `AL_STOPPED` at all. Derive "finished" from the buffer length and every
+  ambient bed plays once and vanishes.
+* **Acquired but never played is `AL_INITIAL`, not `AL_STOPPED`** — so `false`.
+  Answering `true` to avoid leaking the channel releases a sound before it
+  started.
+* **Played with nothing attached is equally initial**, because `alSourcePlay`
+  with no buffer is a no-op.
+* **A failed attach is the one judgement in the module.** Vanilla's
+  `getCompleteBuffer` future completes exceptionally, the `thenAccept` never
+  runs, the source stays `AL_INITIAL` and the channel is **never released** —
+  vanilla leaks it for the life of the session. On a partially unpacked store,
+  which is the ordinary state of a fresh checkout, that means the 26th missing
+  sound exhausts the static pool and the client goes **permanently** silent
+  including for every sound that works. `RELEASE_AFTER_A_FAILED_ATTACH` takes
+  the other trade and says so at its definition.
+
+### The containment, and how it was verified
+
+The feature is **off by default**. `rewo` is one binary and all 34 gates are
+subcommands of it, so a dependency of `rewo-app` is linked into every one of
+them. Verified mechanically rather than asserted: `cargo tree -p rewo-app -e
+normal` matches **zero** of cpal/symphonia/rewo-audio by default and all three
+under `--features audio`.
+
+The price is the **M86 hazard**: code behind a `#[cfg]` that is off by default
+is not type-checked by the build everyone runs, and M86 is this project's own
+record of nine shipped features that had never once rendered because their call
+site was unreachable and no gate could see it. Two things keep it small — the
+`#[cfg]` appears in **exactly one file** (`audio_backend.rs`), so every call
+site and everything downstream compiles in both configurations; and the two
+arms share a signature, so there is no second code path to keep in step. The
+disabled arm returns an `Err` naming the build command, and a test pins the
+*message*, because someone who passed `--audio` and heard nothing needs to be
+told this binary could never have made a sound — a different problem from a
+device that will not open. There is deliberately **no test of the enabled arm**:
+it opens a real device, and no test in this project does that.
+
+### r46 was not added, and what shipped instead
+
+`REWO_AUDIO_PLAN.md` §4 names r46 as "non-zero mixed samples on the windowed
+path". It needs a device, so on a machine without one it can only skip — and a
+witness that self-skips on the machine where it matters is the trap §5 names by
+name. Adding it conditionally is worse: `--render-check` ends
+`pass == rows.len()` with no declared count, so a row that appears only
+sometimes makes the fail-closed check meaningless.
+
+**What shipped is r46's claim with the device removed**, as a test in
+`rewo-audio`: a decoded packet through the real `SoundEngine`, the real
+`LiveSounds` tee, the real `LiveSink`, a real `CommandRing` and the real
+`Mixer`, asserted to render non-zero samples — with **exact silence asserted
+first**, so it is a change rather than a level. That excludes every way of being
+silent that is not the device: a sound that never resolved, an attach that never
+crossed the ring, a voice that never played, a mixer handed a key instead of
+samples. A second witness drives the same chain for eleven ticks and asserts a
+half-second sound is left alone for nine of them and released on the tenth,
+which is the `stopped()` finding observed end to end rather than at the seam.
+
+### The asset index, and two readers of one file
+
+`load_from_asset_store` already walks `indexes/<id>.json` and keeps the
+`sounds.json` documents plus a `HashSet` of every `.ogg` key for
+`validateSoundResource`. That set is the obvious thing for a device to reach for
+and **cannot work**: it answers *existence* and carries no hashes, so a backend
+holding one can tell that a variant is playable and still not find a byte of it.
+The two readers are not redundant — one is for the bake, one for playback.
+
+### What the batteries and the review found
+
+**30 mutations, 28 as expected first time; both survivors were weak fixtures,
+neither was an equivalent mutant**, and both were hidden by the same thing —
+the fixture drove the ordinary eight-call sequence, and the ordinary sequence is
+what hides them.
+
+* **The attach's `AL_INITIAL` reset.** `Play` follows the attach and writes
+  `played_at` unconditionally, so a second `play_sequence` overwrote the reset a
+  moment after the mutation removed it. A **bare re-attach** separates them, and
+  it is a real state rather than a contrivance: OpenAL returns a source to
+  `AL_INITIAL` when a buffer is bound to it.
+* **The declined stream.** Its witness counted the decline and checked nothing
+  had crossed the ring, and never asked `stopped()`. Without the `dead` flag the
+  channel is held for the session — and the streaming pool is **five** channels
+  (`pool_sizes(30)`), so five records would wedge every streamed sound for the
+  rest of the run. Declining a feature must not cost the pool that serves it.
+
+**Routing is the part of `tools/m143_mutate.py` worth copying.** The seam spans
+four crates and no single `cargo test` sees it: the tee is graded by rewo-net
+*and* by rewo-audio's end-to-end module, the backend only by rewo-audio, the
+asset index only by rewo-data, the wiring only by `rewo-app --bins`. A battery
+running one crate would have reported most of these SURVIVED and been wrong.
+
+**Two problems were found by writing the battery rather than by running it**,
+both in code written an hour earlier. The missing-asset witness read
+`RELEASE_AFTER_A_FAILED_ATTACH` to form its own expectation — §0.0 gotcha 0a
+exactly, since a `stopped()` that ignored `dead` entirely would have satisfied
+it; a healthy control channel in the same sink at the same tick fixes it, and
+the claim then holds whichever way the policy is set. And `build_sounds` could
+not have its interesting half tested at all, because whether `open` succeeds
+depends on a device; `attach_backend` takes the already-resolved `Result`, which
+moves the decision somewhere a fake backend can drive and leaves the single call
+to `open` as the only untestable line (M97's lesson, applied same-session).
+
+### Deviations and what is open
+
+* **The decode runs on the client tick**, not on a worker. Vanilla decodes
+  asynchronously and attaches on completion; this decodes inline the first time
+  each distinct sound is heard, so a sound's first play can cost a few
+  milliseconds of tick and every later one a hash lookup. Bounded, because
+  `SoundBufferLibrary` never evicts.
+* **Streams are declined and counted**, so there is no music. A stream is a
+  different mechanism (`LoopingAudioStream` restarts the decoder, which is why
+  `SoundEngine.play` tells a streamed source *not* to loop) and decoding a track
+  inline would stall the tick for seconds. **The rest of music therefore needs
+  the streaming path as well as its selection logic**, which M140's open half
+  did not say.
+* **`package.ps1` still builds without the feature**, so the packaged client the
+  launcher spawns is silent. Deliberate: shipping an unexercised device binding
+  before anyone has listened to it is the wrong order.
+* **Nobody has listened.** Every number below is green and none of it is that
+  claim.
+
+**Measured:** 3088 tests / 0 failures (world 1166, net 1098, gpu 275, data 228,
+app 199, mesh 45, proto 16, audio 61 — eight crates, `rewo-app` on `--bins`);
+34 serverless gates green with **0 validation errors**; `mobshot` 246/246,
+`containershot` 107/107, `inventoryshot` 158/158; demo PNG `2cc56b4acbfb92cb`,
+byte-identical since M15; both build configurations clean.

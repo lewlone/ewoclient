@@ -2532,6 +2532,7 @@ dependencies = [
  "log",
  "png",
  "raw-window-handle",
+ "rewo-audio",
  "rewo-data",
  "rewo-gpu",
  "rewo-mesh",
@@ -2550,7 +2551,10 @@ name = "rewo-audio"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "log",
+ "rewo-data",
  "rewo-net",
+ "rewo-world",
  "symphonia",
 ]
 

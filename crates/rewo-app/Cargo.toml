@@ -10,7 +10,27 @@ rust-version.workspace = true
 name = "rewo"
 path = "src/main.rs"
 
+[features]
+# **M143 — audio, off by default, and the default is the point.**
+#
+# `rewo` is one binary and all 34 gates are subcommands of it, so anything this
+# crate depends on is linked into every one of them. cpal and symphonia are an
+# audio stack none of those gates exercises and none of them can grade, so the
+# dependency is optional and a plain `cargo build -p rewo-app` pulls in neither.
+#
+#   cargo build -p rewo-app                     # gates: unchanged, no audio
+#   cargo build -p rewo-app --features audio    # links the stack
+#   rewo live --audio                           # opens a device
+#
+# The cost of the default being off is that `audio_backend.rs`'s enabled arm is
+# not type-checked by a default build, so that file is the ONLY one carrying a
+# `#[cfg]`: everything it calls compiles both ways, and its two arms have the
+# same signature so a caller cannot tell them apart.
+audio = ["dep:rewo-audio"]
+
 [dependencies]
+# Optional; see the `audio` feature above.
+rewo-audio = { workspace = true, optional = true }
 rewo-gpu = { workspace = true }
 rewo-net = { workspace = true }
 rewo-data = { workspace = true }

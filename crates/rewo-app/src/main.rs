@@ -8,6 +8,7 @@
 //! and writes a PNG — the self-check harness for machines/agents.
 
 mod abilityshot_cmd;
+mod audio_backend;
 mod bordershot_cmd;
 mod capture;
 mod captureshot_cmd;

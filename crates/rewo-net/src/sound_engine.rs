@@ -2135,24 +2135,159 @@ impl SoundSystem {
     }
 }
 
+/// A backend that can actually make a noise, bolted onto the silent path.
+///
+/// **This is not a second [`AudioDevice`].** The channel pools, the refusal
+/// count and the listener record are `Library`'s bookkeeping, not any device's
+/// — `CountingChannelPool` is plain arithmetic and would be identical behind
+/// cpal, behind OpenAL, and behind nothing at all. So [`SilentDevice`] keeps
+/// doing all of it, every existing witness keeps reading it, and a backend
+/// implements only the three things it can do that bookkeeping cannot: pass the
+/// call on, answer whether a channel has finished, and say why it is quiet.
+///
+/// It lives in this crate because it names nothing but [`ChannelCall`],
+/// [`ChannelId`] and [`ListenerTransform`]. **The implementor is in
+/// `rewo-audio` and the dependency runs one way only**: `rewo-audio` may depend
+/// on `rewo-net`, and `rewo-net` must never depend on `rewo-audio`, or every
+/// gate that decodes a packet links a codec and a device.
+pub trait ChannelSink {
+    /// One `handle.execute(channel -> …)` body, by reference — [`SilentDevice`]
+    /// consumes the same call for its counter, and cloning it for both would
+    /// copy `AttachStaticBuffer`'s `String` on the hot path.
+    fn submit(&mut self, channel: ChannelId, call: &ChannelCall);
+
+    /// `Library.releaseChannel` — vanilla **destroys the source**. A backend
+    /// that treats this as bookkeeping and leaves the voice sounding will run
+    /// out of voices; one that honours it while answering [`Self::stopped`]
+    /// carelessly will cut every sound short. See [`Self::stopped`].
+    fn release(&mut self, channel: ChannelId);
+
+    /// `Listener.setTransform` — pushed per frame, not per tick (M138a).
+    fn set_listener(&mut self, transform: ListenerTransform);
+
+    /// One engine tick, so a backend can model `AL_STOPPED` on the tick clock.
+    ///
+    /// Driven from [`LiveSounds::drive`], which is the same 20 Hz clock
+    /// `SoundEngine.tick` runs on. A backend wanting wall-clock time is free to
+    /// ignore it; one that uses it gets a `stopped()` that is deterministic and
+    /// therefore gradeable without a device, which is the whole reason this is
+    /// on the trait rather than an `Instant` inside an implementor.
+    fn tick(&mut self) {}
+
+    /// `Channel.stopped()` — `AL_SOURCE_STATE == AL_STOPPED`. `None` means "no
+    /// opinion", and the silent path's unconditional `true` stands.
+    ///
+    /// **This is the method a naive backend gets wrong, and it is inaudible in
+    /// every test that does not open a device.** `SoundEngine.schedule_tick`
+    /// turns a `true` here straight into `device.release(channel)` on the very
+    /// next tick — not after [`MIN_SOURCE_LIFETIME`], which gates the *instance*
+    /// reclaim and not the release — and a real `release` destroys the source.
+    /// Inherit [`SilentDevice`]'s unconditional `true` and **every sound becomes
+    /// a 50 ms blip**: correct-looking code, a green suite, and a client that
+    /// clicks instead of playing.
+    ///
+    /// A source that has been acquired but never played is `AL_INITIAL`, not
+    /// `AL_STOPPED`, so the answer there is `false` — vanilla leaks that channel
+    /// too, and reporting `true` to avoid the leak would cut a sound that had
+    /// not started yet.
+    fn stopped(&self, channel: ChannelId) -> Option<bool>;
+
+    /// Why it is quiet, for a caller with no sound and nothing to look at.
+    fn diagnostics(&self) -> SinkDiagnostics {
+        SinkDiagnostics::default()
+    }
+}
+
+/// A backend's own counters — the numbers that separate "resolved nothing"
+/// from "resolved everything and the device is dead".
+///
+/// Counters rather than logs, for the reason `CommandRing::dropped` gives: the
+/// interesting failures happen where a lock or an allocation is forbidden, and
+/// a number a caller reads afterwards is what makes them diagnosable at all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SinkDiagnostics {
+    /// Commands the backend could not hand on. **Non-zero means the consumer
+    /// stopped consuming**, i.e. a stalled device — not a busy engine.
+    pub dropped: u64,
+    /// Attaches whose asset could not be resolved or decoded. These are silent
+    /// channels that still hold a voice.
+    pub unresolved: u64,
+    /// Streamed attaches the backend declined to handle.
+    pub declined_streams: u64,
+    /// Distinct buffers decoded and held. Zero with a healthy device and a
+    /// healthy index means resolution is the thing that is broken.
+    pub cached_buffers: u64,
+    /// Errors the output stream itself reported. Read together with
+    /// [`Self::dropped`]: **errors with drops is a stalled device, drops alone
+    /// is a callback not keeping up**, and neither alongside silence means the
+    /// sound reached the backend and the backend is wrong.
+    pub device_errors: u64,
+}
+
+/// [`SilentDevice`]'s bookkeeping and a [`ChannelSink`]'s output, as one device.
+///
+/// Built for the duration of one call rather than stored, so `LiveSounds` keeps
+/// owning its two halves outright and neither is behind a trait object.
+struct Tee<'a> {
+    book: &'a mut SilentDevice,
+    sink: &'a mut dyn ChannelSink,
+}
+
+impl AudioDevice for Tee<'_> {
+    /// Bookkeeping only. A backend does not name channels — `CountingChannelPool`
+    /// does, and it is the same arithmetic with or without one.
+    fn acquire(&mut self, pool: Pool) -> Option<ChannelId> {
+        self.book.acquire(pool)
+    }
+
+    fn release(&mut self, channel: ChannelId) {
+        self.book.release(channel);
+        self.sink.release(channel);
+    }
+
+    fn submit(&mut self, channel: ChannelId, call: ChannelCall) {
+        self.sink.submit(channel, &call);
+        self.book.submit(channel, call);
+    }
+
+    /// **Deliberately does not consult `book`.** [`SilentDevice::stopped`] is
+    /// unconditionally `true`, which is right for a device that makes no noise
+    /// and catastrophic for one that does — see [`ChannelSink::stopped`]. The
+    /// fallback for a sink with no opinion is that same `true`, so a backend
+    /// that declines to answer degrades to the silent path's behaviour rather
+    /// than to a pool that never drains.
+    fn stopped(&self, channel: ChannelId) -> bool {
+        self.sink.stopped(channel).unwrap_or(true)
+    }
+
+    fn set_listener(&mut self, transform: ListenerTransform) {
+        self.book.set_listener(transform);
+        self.sink.set_listener(transform);
+    }
+}
+
 /// Everything a live client needs to drive the sound model, in one object.
 ///
-/// The device is a **concrete** [`SilentDevice`] rather than a
-/// `Box<dyn AudioDevice>`, deliberately: a boxed trait object here would read
-/// as "the backend is pluggable and one just has not been plugged in", and the
-/// honest statement is that **no backend exists**. Swapping this field is the
-/// visible one-line edit a device milestone makes, and until then the type
-/// says out loud what the client can do.
+/// The bookkeeping device is a **concrete** [`SilentDevice`] rather than a
+/// `Box<dyn AudioDevice>`, and stays so now that a backend exists: what a
+/// backend adds is [`ChannelSink`], which is three methods, and what it does
+/// *not* add is a second copy of the channel pools. Keeping `device` concrete
+/// is what lets every witness written against it — `--render-check`'s r45 among
+/// them — keep reading the counters at the same place, with or without a
+/// backend attached.
 ///
 /// It exists so the live wiring is one field and one call per tick site
 /// instead of five, and so the drain logic has a test module — `PlaySession`
 /// has none anywhere in the repo (it owns a socket), which is M71's finding
 /// and the reason nothing that matters should be written there.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct LiveSounds {
     pub system: SoundSystem,
     pub device: SilentDevice,
     pub registry: rewo_data::sound_events::SoundEvents,
+    /// M143 — the backend, when one has been opened. `None` is the silent
+    /// client, which is every gate and every default build.
+    sink: Option<Box<dyn ChannelSink>>,
 }
 
 impl LiveSounds {
@@ -2164,6 +2299,58 @@ impl LiveSounds {
             system: SoundSystem::new(sounds),
             device: SilentDevice::default(),
             registry,
+            sink: None,
+        }
+    }
+
+    /// Attach a backend. Until this is called the client is silent by
+    /// construction, which is what every gate and every default build runs.
+    pub fn attach_sink(&mut self, sink: Box<dyn ChannelSink>) {
+        self.sink = Some(sink);
+    }
+
+    /// Whether a backend is attached. **Not whether anything is audible** — a
+    /// sink whose device was opened against a muted endpoint reports `true`
+    /// here and produces silence, which is the gap no check in this project can
+    /// close.
+    pub fn has_sink(&self) -> bool {
+        self.sink.is_some()
+    }
+
+    /// The backend's counters, or all-zero when there is none.
+    pub fn sink_diagnostics(&self) -> SinkDiagnostics {
+        self.sink
+            .as_ref()
+            .map(|s| s.diagnostics())
+            .unwrap_or_default()
+    }
+
+    /// Run `f` against the bookkeeping device, teed into the backend if there
+    /// is one.
+    ///
+    /// One arm rather than two call paths: every caller here would otherwise
+    /// have to remember to build the [`Tee`], and a caller that forgot would
+    /// drive a perfectly correct silent engine while a device sat open and
+    /// heard nothing from it.
+    fn with_device<R>(
+        &mut self,
+        f: impl FnOnce(&mut SoundSystem, &rewo_data::sound_events::SoundEvents, &mut dyn AudioDevice) -> R,
+    ) -> R {
+        let LiveSounds {
+            system,
+            device,
+            registry,
+            sink,
+        } = self;
+        match sink {
+            Some(s) => {
+                let mut tee = Tee {
+                    book: device,
+                    sink: s.as_mut(),
+                };
+                f(system, registry, &mut tee)
+            }
+            None => f(system, registry, device),
         }
     }
 
@@ -2186,9 +2373,16 @@ impl LiveSounds {
             game_time,
         };
         let before = self.system.stats;
-        self.system
-            .accept(events, &self.registry, &world, &mut self.device);
-        self.system.tick(false, &world, &mut self.device);
+        // The backend's clock, advanced with the engine's rather than from an
+        // `Instant`: `stopped()` is then a pure function of tick counts, which
+        // is what makes it gradeable on a machine with no audio device.
+        if let Some(s) = self.sink.as_mut() {
+            s.tick();
+        }
+        self.with_device(|system, registry, device| {
+            system.accept(events, registry, &world, device);
+            system.tick(false, &world, device);
+        });
         if !events.is_empty() {
             let s = self.system.stats;
             log::debug!(
@@ -2227,11 +2421,15 @@ impl LiveSounds {
     /// the session is up.
     pub fn update_listener(&mut self, position: [f64; 3], yaw_deg: f32, pitch_deg: f32) {
         let (forward, up) = listener_basis(yaw_deg, pitch_deg);
-        self.device.set_listener(ListenerTransform {
+        let transform = ListenerTransform {
             position,
             forward,
             up,
-        });
+        };
+        // Through the tee, so the backend's ears move with the bookkeeping
+        // device's record. r45 reads that record and is unaffected by whether a
+        // backend exists — which is the point of leaving `device` concrete.
+        self.with_device(|_, _, device| device.set_listener(transform));
     }
 
     pub fn stats(&self) -> SoundStats {
@@ -4656,6 +4854,171 @@ mod tests {
         live.drive(&[ev], &entities, None, 0);
         assert_eq!(live.stats().no_instance, 1);
         assert_eq!(live.stats().started, 2);
+    }
+
+    // ── the backend seam (M143) ───────────────────────────────────────────
+
+    /// What a [`ChannelSink`] was asked to do, readable after it has been boxed.
+    #[derive(Default)]
+    struct SinkLog {
+        submits: Vec<(ChannelId, ChannelCall)>,
+        releases: Vec<ChannelId>,
+        listeners: u64,
+        ticks: u32,
+    }
+
+    struct FakeSink {
+        log: std::rc::Rc<std::cell::RefCell<SinkLog>>,
+        /// What this backend claims about every channel.
+        verdict: Option<bool>,
+    }
+
+    impl ChannelSink for FakeSink {
+        fn submit(&mut self, channel: ChannelId, call: &ChannelCall) {
+            self.log.borrow_mut().submits.push((channel, call.clone()));
+        }
+        fn release(&mut self, channel: ChannelId) {
+            self.log.borrow_mut().releases.push(channel);
+        }
+        fn set_listener(&mut self, _t: ListenerTransform) {
+            self.log.borrow_mut().listeners += 1;
+        }
+        fn tick(&mut self) {
+            self.log.borrow_mut().ticks += 1;
+        }
+        fn stopped(&self, _channel: ChannelId) -> Option<bool> {
+            self.verdict
+        }
+    }
+
+    fn live_with_sink(verdict: Option<bool>) -> (LiveSounds, std::rc::Rc<std::cell::RefCell<SinkLog>>) {
+        let log = std::rc::Rc::new(std::cell::RefCell::new(SinkLog::default()));
+        let mut live = LiveSounds::new(plain_index(), registry());
+        live.attach_sink(Box::new(FakeSink {
+            log: std::rc::Rc::clone(&log),
+            verdict,
+        }));
+        (live, log)
+    }
+
+    /// **The backend's `stopped()` decides the release, and the bookkeeping
+    /// device's unconditional `true` must not override it.**
+    ///
+    /// This is the one place a plausible backend is silently, audibly wrong.
+    /// `schedule_tick` turns `stopped()` straight into `release(channel)` on the
+    /// very next tick — `MIN_SOURCE_LIFETIME` gates the *instance* reclaim, not
+    /// the release — and a real `release` destroys the source. A `Tee` that
+    /// consulted `book` (or that just inherited `SilentDevice`'s answer) would
+    /// tear down every voice about 50 ms after starting it: every sound in the
+    /// game becomes a click, with a green suite and no error anywhere.
+    #[test]
+    fn the_backends_stopped_decides_the_release_not_the_bookkeeping_devices() {
+        use rewo_world::entities::EntityTable;
+        let entities = EntityTable::default();
+
+        // A sound that is still playing: the channel stays with it.
+        let (mut live, log) = live_with_sink(Some(false));
+        live.drive(&[positioned(3)], &entities, None, 0);
+        assert_eq!(live.stats().started, 1, "the fixture must actually play");
+        assert!(
+            log.borrow().releases.is_empty(),
+            "a sounding voice was torn down: {:?}",
+            log.borrow().releases
+        );
+
+        // The same drive with the backend reporting the sound finished.
+        let (mut live, log) = live_with_sink(Some(true));
+        live.drive(&[positioned(3)], &entities, None, 0);
+        assert_eq!(live.stats().started, 1);
+        assert_eq!(log.borrow().releases.len(), 1, "a finished voice is released");
+
+        // And the claim is about the tee rather than about the fixture: the
+        // bookkeeping device really does answer `true` for that same channel,
+        // so a tee reading it would have released in the first case too.
+        let ch = log.borrow().submits[0].0;
+        assert!(
+            AudioDevice::stopped(&SilentDevice::default(), ch),
+            "SilentDevice::stopped is the unconditional true this must not inherit"
+        );
+    }
+
+    /// A backend with no opinion degrades to the silent path, not to a pool that
+    /// never drains.
+    #[test]
+    fn a_backend_with_no_opinion_behaves_like_the_silent_path() {
+        use rewo_world::entities::EntityTable;
+        let (mut live, log) = live_with_sink(None);
+        live.drive(&[positioned(3)], &EntityTable::default(), None, 0);
+        assert_eq!(log.borrow().releases.len(), 1);
+    }
+
+    /// Every engine call reaches both halves, in the order `play` emits them.
+    #[test]
+    fn the_eight_calls_reach_the_backend_as_well_as_the_bookkeeping_device() {
+        use rewo_world::entities::EntityTable;
+        let (mut live, log) = live_with_sink(Some(false));
+        live.drive(&[positioned(3)], &EntityTable::default(), None, 0);
+
+        let log = log.borrow();
+        assert_eq!(log.submits.len(), 8, "SoundEngine.java:417-434 is eight calls");
+        // The order is the contract, not the set: a backend has to see the
+        // pitch and the loop flag BEFORE the attach, or it cannot know how long
+        // the sound will last (which is what `stopped()` needs).
+        assert!(matches!(log.submits[0].1, ChannelCall::SetPitch(_)));
+        assert!(matches!(log.submits[1].1, ChannelCall::SetVolume(_)));
+        assert!(matches!(log.submits[3].1, ChannelCall::SetLooping(_)));
+        assert!(matches!(
+            log.submits[6].1,
+            ChannelCall::AttachStaticBuffer(_) | ChannelCall::AttachBufferStream(_, _)
+        ));
+        assert!(matches!(log.submits[7].1, ChannelCall::Play), "play is last");
+        // …and the bookkeeping device counted the same calls, so attaching a
+        // backend neither steals them nor doubles them.
+        assert_eq!(live.device.calls_made, 8);
+    }
+
+    /// **r45 keeps reading the same place with a backend attached.**
+    ///
+    /// The listener counter lives on the bookkeeping device precisely so a
+    /// witness reads what the device was *handed* rather than recomputing it,
+    /// and leaving `device` concrete is what preserves that. A backend gets the
+    /// transform too, on the same call.
+    #[test]
+    fn the_listener_reaches_both_halves() {
+        let (mut live, log) = live_with_sink(Some(false));
+        assert_eq!(live.device.listener_pushes, 0);
+        live.update_listener([1.0, 2.0, 3.0], 90.0, 0.0);
+        assert_eq!(live.device.listener_pushes, 1, "r45's counter still moves");
+        assert_eq!(
+            live.device.last_listener.map(|t| t.position),
+            Some([1.0, 2.0, 3.0])
+        );
+        assert_eq!(log.borrow().listeners, 1, "and the backend heard it too");
+    }
+
+    /// The backend's clock runs with the engine's, once per drive.
+    #[test]
+    fn the_backend_is_ticked_once_per_drive() {
+        use rewo_world::entities::EntityTable;
+        let (mut live, log) = live_with_sink(Some(false));
+        let entities = EntityTable::default();
+        for _ in 0..5 {
+            live.drive(&[], &entities, None, 0);
+        }
+        assert_eq!(log.borrow().ticks, 5, "an empty drive is still a tick");
+    }
+
+    /// A client with no backend is untouched — which is every gate and every
+    /// default build.
+    #[test]
+    fn without_a_backend_nothing_changes() {
+        use rewo_world::entities::EntityTable;
+        let mut live = LiveSounds::new(plain_index(), registry());
+        assert!(!live.has_sink());
+        assert_eq!(live.sink_diagnostics(), SinkDiagnostics::default());
+        live.drive(&[positioned(3)], &EntityTable::default(), None, 0);
+        assert_eq!(live.stats().started, 1);
+        assert_eq!(live.device.calls_made, 8);
     }
 
     #[test]

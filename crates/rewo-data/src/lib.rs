@@ -8,6 +8,7 @@
 //! this crate consumes them. Wiring the generator run into the launcher's
 //! Native-instance setup is an M1-followon.
 
+pub mod asset_index;
 pub mod assets;
 pub mod attributes;
 pub mod be_transform;
