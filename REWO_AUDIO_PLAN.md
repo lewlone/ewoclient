@@ -272,6 +272,14 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 > client binary and all 34 gates do not link an audio stack for a subsystem none
 > of them exercises; and no test opens a device, so `cargo test` stays silent.
 >
+> **M143 kept both and moved the first one behind a feature.** `rewo-app` now
+> has an **optional** `rewo-audio` dependency under an `audio` feature that is
+> **off by default**, so a default build still links neither cpal nor symphonia
+> — verified with `cargo tree -p rewo-app -e normal`, which matches zero of
+> cpal/symphonia/rewo-audio by default and all three with the feature. No test
+> opens a device still holds, and `audio_backend`'s enabled arm has deliberately
+> no test at all for that reason.
+>
 > **One stated deviation.** `retire_finished` runs in the callback, so dropping a
 > finished voice's last `Arc<Pcm>` deallocates there — the plan's design returns
 > retired buffers to a worker over a second ring and this cut has none. The
@@ -301,6 +309,67 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 **Channel count: 30**, per §0.1 — which also makes the budget *bind*, so vanilla's drop-newest rule is reachable in ordinary play rather than needing a synthetic small count.
 
 **Gate:** `--render-check` **r46** (non-zero mixed samples on the windowed path) + **the human listening pass** (§4).
+
+> **r46 was NOT added, and the reason is this file's own rule.** It needs a
+> device, so on a machine without one it can only skip — and a witness that
+> self-skips on the machine where it matters is the trap §5 names by name
+> ("store-dependent tests self-skip on a bare machine, so a green run there
+> proves nothing"). Adding it conditionally is worse: `--render-check` ends
+> `pass == rows.len()` with no declared count, so a row that appears only
+> sometimes makes the total vary and the fail-closed check meaningless.
+>
+> **What shipped instead is r46's claim with the device removed**, as a test in
+> `rewo-audio`: a decoded packet through the real `SoundEngine`, the real
+> `LiveSounds` tee, the real `LiveSink`, a real `CommandRing` and the real
+> `Mixer`, asserted to render non-zero samples — and asserted to render *exact*
+> silence first, so it is a change rather than a level. That excludes every way
+> of being silent that is not the device. The device half stays where §4 puts
+> it: with a human.
+
+### M143 — the client wire
+
+> **SHIPPED 2026-08-12.** `rewo live --audio` on a build with `--features
+> audio`. Four pieces: `rewo-data`'s asset index (the key→hash map; the sound
+> bake's `SoundFileSet` answers *existence* and carries no hashes, so it cannot
+> serve playback), `rewo-net`'s `ChannelSink` seam, `rewo-audio`'s `LiveSink`
+> and `CpalBackend`, and the app's feature-gated `audio_backend`.
+>
+> **The finding is `stopped()`, and it belongs in §5's trap list.**
+> `LiveSounds.device`'s own doc invited a device milestone to swap the field,
+> and doing that is wrong twice over. The channel pools and the listener record
+> are `Library`'s bookkeeping and identical behind any device, so `SilentDevice`
+> keeps them and a backend implements three methods instead. And
+> `SilentDevice::stopped` answers `true` unconditionally — right for something
+> that makes no noise, catastrophic for something that does, because
+> `SoundEngine.schedule_tick` turns a `true` **straight** into
+> `device.release(channel)` on the next tick (`MIN_SOURCE_LIFETIME` gates the
+> instance reclaim, not the release) and vanilla's `release` destroys the
+> source. Inherit it and **every sound in the game becomes a 50 ms click**, with
+> correct-looking code and a green suite.
+>
+> `stopped()` is therefore modelled from the buffer's own length on the producer
+> side rather than asked of the mixer. The truthful alternative is a flag the
+> callback publishes back, which would move the one method that decides whether
+> the client plays sounds or clicks into the region no gate can reach. Stated
+> divergence: it is the engine's clock, not the device's, so a stalled device is
+> still playing a sound this reports finished. Four cases sit before the
+> arithmetic and each inverts if guessed — a looping source never stops,
+> acquired-but-unplayed and played-with-nothing-attached are both `AL_INITIAL`
+> rather than `AL_STOPPED`, and a failed attach is the one judgement in the
+> module (vanilla leaks that channel forever, which on a partial store means the
+> 26th missing sound exhausts the pool and the client goes permanently silent).
+>
+> **Streams are declined and counted.** A stream is a different mechanism, not a
+> longer static buffer, and decoding a music track inline would stall the client
+> tick for seconds. That makes the rest of music (M140's open half) need the
+> streaming path as well as its selection logic.
+>
+> **Both mutation survivors were weak fixtures and both were hidden by the
+> ordinary call sequence.** The attach's `AL_INITIAL` reset is overwritten a
+> moment later by the `Play` that always follows it, so only a bare re-attach
+> separates them; and the declined-stream witness never asked `stopped()`, so it
+> could not see that a declined stream held its channel for the session — five
+> records and the whole streaming pool is gone.
 
 ### M139 — the loopback oracle
 **Feasible, verified:** 26.2 pins `org.lwjgl:lwjgl-openal:3.4.1` **[read from `26.2.json`]** — and note both `3.3.3/` and `3.4.1/` are on disk **[read]**, which is how one survey graded the wrong jar. The 3.4.1 jar carries `SOFTLoopback`/`SOFTHRTF`/`SOFTOutputLimiter` and the shipped DLL is OpenAL Soft 1.25.1 exporting `alcLoopbackOpenDeviceSOFT` / `alcRenderSamplesSOFT` / `alcIsRenderFormatSupportedSOFT` **[concurring, two independent reads]**. A Java harness drives **vanilla's own** `Library`/`Listener`/`Channel` against a loopback device and dumps PCM — the M37 and M125 `tools/java_tostring_oracle/` precedent, checking in the **vectors** so no JVM is needed at gate time. It must pin `ALC_FORMAT_CHANNELS_SOFT`, `ALC_FORMAT_TYPE_SOFT`, frequency, `ALC_HRTF_SOFT`, `ALC_OUTPUT_LIMITER_SOFT` **and read `ALC_MONO_SOURCES` back** (the artefact that settles §0.1), or the vectors rot silently when the DLL's default output mode changes — and a checked-in vector file that stops matching looks like a Rewo regression.
