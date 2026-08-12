@@ -689,6 +689,44 @@ mod real_assets {
         assert_ne!(first, second, "a rewind would make these equal");
     }
 
+    /// **The adapter really opens a stream**, not just a static buffer.
+    ///
+    /// `BytesSource::open_stream` is one line, and it is the join between the
+    /// asset lookup the app owns and the decoder this crate owns — so it is
+    /// exactly the kind of line that is never exercised. Everything on either
+    /// side of it is tested; nothing was testing it. Driven through
+    /// `SoundBufferLibrary` rather than the adapter directly, because that is
+    /// the path production takes and it is where a library that forgot to
+    /// delegate would show up.
+    #[test]
+    fn the_bytes_adapter_opens_a_real_stream_through_the_library() {
+        use crate::buffers::SoundBufferLibrary;
+        let Some(bytes) = asset(CHICKEN.0, CHICKEN.1) else {
+            println!("SKIPPED: no unpacked asset store -- this witness proved nothing");
+            return;
+        };
+        let whole = super::decode_ogg_vorbis(&bytes).expect("decode");
+        let mut lib = SoundBufferLibrary::new(super::BytesSource(move |_: &str| Ok(bytes.clone())));
+
+        let mut s = lib
+            .open_stream("minecraft/sounds/mob/chicken/step1.ogg", false)
+            .expect("the adapter must open a stream");
+        assert_eq!(s.format(), (1, 44_100));
+        assert_eq!(s.read(1_000).unwrap().len(), 1_000);
+        assert_eq!(lib.cached(), 0, "and a stream never enters the buffer cache");
+
+        // A looping one from the same library is a separate position, and loops.
+        let mut l = lib
+            .open_stream("minecraft/sounds/mob/chicken/step1.ogg", true)
+            .expect("looping");
+        let mut all: Vec<i16> = Vec::new();
+        for _ in 0..3 {
+            all.extend(l.read(1_000).unwrap());
+        }
+        assert_eq!(all.len(), 2_728, "1000 + 728 + 1000 across the loop point");
+        assert_eq!(&all[..1_728], &whole.samples[..], "the first pass is the file");
+    }
+
     /// Two streams of one asset are independent decode positions — `getStream`
     /// has no cache, and a shared one would make two plays fight over a cursor.
     #[test]

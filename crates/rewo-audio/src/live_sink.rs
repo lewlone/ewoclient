@@ -537,7 +537,8 @@ mod tests {
         assets: HashMap<String, (usize, u16, u32)>,
         /// Streamable keys: channels, rate, finite length in frames (`None` is a
         /// looping stream, which never runs out), and a read counter.
-        streams: HashMap<String, (u16, u32, Option<usize>, std::rc::Rc<std::cell::Cell<u32>>)>,
+        pub(super) streams:
+            HashMap<String, (u16, u32, Option<usize>, std::rc::Rc<std::cell::Cell<u32>>)>,
         opens: u32,
     }
 
@@ -1327,6 +1328,112 @@ mod end_to_end {
 
         out.pull(&mut mixer, 128);
         assert!(out.peak() > 0.0, "the mixer rendered silence for a played sound");
+    }
+
+    /// **A streamed event reaches the mixer as audible samples too** (M144).
+    ///
+    /// The same chain as above with one bit flipped in `sounds.json` — and that
+    /// one bit is the whole difference between a static sound and a music track
+    /// or an ambient bed. Before M144 this rendered exact silence: the engine
+    /// resolved it, the backend declined the attach, and nothing crossed the
+    /// ring. The witness is written as a *pair* for that reason — a streamed and
+    /// a static event through the same code, both audible — because the failure
+    /// this guards against is one of them silently going quiet again.
+    #[test]
+    fn a_streamed_event_reaches_the_mixer_as_audible_samples() {
+        let ring = CommandRing::with_capacity(DEFAULT_RING_CAPACITY);
+        let mut source = fake_source("minecraft/sounds/block/stone/break1.ogg", 22_050, 1, 44_100);
+        // Ten seconds of mono 44.1 kHz behind the streamed key: long enough
+        // that the four primed buffers are a fraction of it.
+        source.streams.insert(
+            "minecraft/sounds/music/game/calm1.ogg".to_string(),
+            (1, 44_100, Some(441_000), std::rc::Rc::new(std::cell::Cell::new(0))),
+        );
+        let sink = LiveSink::new(Arc::clone(&ring), source);
+
+        let mut idx = SoundsIndex::new();
+        idx.handle_registration(
+            EVENT,
+            &SoundEventRegistration {
+                sounds: vec![Sound::file("minecraft:block/stone/break1")],
+                replace: false,
+                subtitle: None,
+            },
+            &SoundFileSet::All,
+        );
+        let mut music = Sound::file("minecraft:music/game/calm1");
+        music.stream = true;
+        idx.handle_registration(
+            "minecraft:music.game",
+            &SoundEventRegistration {
+                sounds: vec![music],
+                replace: false,
+                subtitle: None,
+            },
+            &SoundFileSet::All,
+        );
+
+        let mut live = LiveSounds::new(idx, rewo_data::sound_events::SoundEvents::default());
+        live.attach_sink(Box::new(sink));
+
+        let mut mixer = Mixer::new(44_100);
+        let mut out = NullSink::new();
+        out.pull(&mut mixer, 128);
+        assert_eq!(out.peak(), 0.0, "an idle client renders exact silence");
+
+        let streamed = SoundEvent::At(PositionedSound {
+            sound: SoundRef::Inline {
+                name: "minecraft:music.game".into(),
+                fixed_range: None,
+            },
+            source: SoundSource::Music,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            volume: 1.0,
+            pitch: 1.0,
+            seed: 0,
+        });
+        live.drive(&[streamed], &EntityTable::default(), None, 0);
+        assert_eq!(live.stats().started, 1, "the engine must have played it");
+        assert_eq!(
+            live.sink_diagnostics().streams_failed,
+            0,
+            "the stream must have opened"
+        );
+
+        let mut queued = 0;
+        while let Some(cmd) = ring.pop() {
+            if matches!(cmd, Command::Queue(_, _)) {
+                queued += 1;
+            }
+            mixer.apply(&cmd);
+        }
+        assert_eq!(queued, 4, "primed with QUEUED_BUFFER_COUNT buffers");
+        assert_eq!(mixer.voice_count(), 1);
+        assert_eq!(mixer.ignored, 0, "and it was handed samples, not a key");
+
+        out.pull(&mut mixer, 128);
+        assert!(out.peak() > 0.0, "the mixer rendered silence for a streamed sound");
+
+        // It keeps being fed as the client ticks, rather than stopping after the
+        // four it started with.
+        for _ in 0..60 {
+            live.drive(&[], &EntityTable::default(), None, 0);
+        }
+        let mut more = 0;
+        while let Some(cmd) = ring.pop() {
+            if matches!(cmd, Command::Queue(_, _)) {
+                more += 1;
+            }
+            mixer.apply(&cmd);
+        }
+        assert_eq!(more, 3, "three seconds of ticks, three more buffers");
+        assert_eq!(
+            live.system.engine.live_count(),
+            1,
+            "and the engine still holds the channel"
+        );
     }
 
     /// The other end of the same chain: the sound finishes, the engine sees it,
