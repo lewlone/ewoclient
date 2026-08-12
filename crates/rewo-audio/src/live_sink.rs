@@ -584,23 +584,48 @@ mod tests {
         assert_eq!(sink.diagnostics().cached_buffers, 1);
     }
 
-    /// A missing asset is counted, and its channel does not wedge the pool.
+    /// A missing asset is counted, and the failure reaches `stopped()`.
+    ///
+    /// **The expectation reads the policy constant, which on its own would be
+    /// self-calibrating** — a `stopped()` that ignored `dead` entirely and
+    /// returned the same answer for everything would satisfy it (§0.0 gotcha
+    /// 0a). The healthy control channel is what makes it a real claim: at the
+    /// same tick, with the same fixture, a channel whose asset *did* resolve
+    /// must answer differently. That holds whichever way the constant is set.
     #[test]
-    fn a_missing_asset_is_counted_and_released() {
-        let mut sink = LiveSink::new(CommandRing::with_capacity(64), Fake::new());
-        play_sequence(&mut sink, 3, 1.0, false);
+    fn a_missing_asset_is_counted_and_its_failure_reaches_stopped() {
+        let mut sink = LiveSink::new(
+            CommandRing::with_capacity(64),
+            Fake::new().with(KEY, 44_100, 1, 44_100),
+        );
+        // Channel 3 asks for a key the store does not have.
+        for call in [
+            ChannelCall::SetPitch(1.0),
+            ChannelCall::SetLooping(false),
+            ChannelCall::AttachStaticBuffer("minecraft/sounds/nope.ogg".into()),
+            ChannelCall::Play,
+        ] {
+            sink.submit(3, &call);
+        }
+        // Channel 4 is the control: same tick, same sink, an asset that works.
+        play_sequence(&mut sink, 4, 1.0, false);
+
         assert_eq!(sink.diagnostics().unresolved, 1);
         assert_eq!(
             sink.stopped(3),
             Some(RELEASE_AFTER_A_FAILED_ATTACH),
             "the policy in RELEASE_AFTER_A_FAILED_ATTACH, whichever way it is set"
         );
-        // Nothing was attached, so the mixer has nothing to play — the sound is
-        // silent either way; what the policy decides is whether the CHANNEL
-        // comes back.
+        assert_eq!(
+            sink.stopped(4),
+            Some(false),
+            "a healthy channel must answer differently, or the line above is vacuous"
+        );
+        // Nothing was attached for channel 3, so that sound is silent either
+        // way; what the policy decides is whether its CHANNEL comes back.
         assert!(!drain(&sink)
             .iter()
-            .any(|c| matches!(c, Command::Attach(_, _))));
+            .any(|c| matches!(c, Command::Attach(3, _))));
     }
 
     /// A stream is declined and counted rather than silently dropped.

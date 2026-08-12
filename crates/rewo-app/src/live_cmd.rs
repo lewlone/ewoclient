@@ -37,7 +37,7 @@ use rewo_gpu::world::{SkyMode, WorldLightmapState, WorldRenderer};
 use rewo_gpu::Gpu;
 use rewo_mesh::pool::{MeshPool, MeshTables};
 use rewo_net::play::PlaySession;
-use rewo_net::sound_engine::LiveSounds;
+use rewo_net::sound_engine::{ChannelSink, LiveSounds};
 use rewo_net::Connection;
 use rewo_world::dimension::{DimensionTypeDef, Skybox};
 use rewo_world::lightmap::{
@@ -3918,16 +3918,29 @@ fn build_sounds(
     };
     let mut live = LiveSounds::new(sounds, registry.clone());
     if audio {
-        match crate::audio_backend::open(version) {
-            Ok(sink) => live.attach_sink(sink),
-            // ERROR rather than warn: the user asked for audio by name, and a
-            // silent downgrade is exactly the "green but nothing happened"
-            // outcome this subsystem cannot afford — nothing downstream can
-            // tell a client with no backend from a device that is muted.
-            Err(e) => log::error!("audio: --audio was requested and no device was opened: {e}"),
-        }
+        attach_backend(&mut live, crate::audio_backend::open(version));
     }
     live
+}
+
+/// Attach an opened backend, or say why there is none.
+///
+/// **Split out from `build_sounds` so it has a seam.** Whether `open` succeeds
+/// depends on a real device, and no test in this project opens one — so a test
+/// can never reach the success path *through* `build_sounds`. Taking the
+/// already-resolved `Result` moves the only interesting decision (attach on
+/// `Ok`, complain on `Err`) into something a fake backend can drive, and leaves
+/// the untestable part as the single call to `open` above. M97's lesson: logic
+/// living where no test can reach it is untestable, so move the logic.
+fn attach_backend(live: &mut LiveSounds, opened: Result<Box<dyn ChannelSink>, String>) {
+    match opened {
+        Ok(sink) => live.attach_sink(sink),
+        // ERROR rather than warn: the user asked for audio by name, and a
+        // silent downgrade is exactly the "green but nothing happened" outcome
+        // this subsystem cannot afford — nothing downstream can tell a client
+        // with no backend from a device that is muted.
+        Err(e) => log::error!("audio: --audio was requested and no device was opened: {e}"),
+    }
 }
 
 /// Whether this run wants audio: the flag, or `REWO_AUDIO=1`.
@@ -22329,7 +22342,41 @@ mod m93m_beacon {
 /// M131 — the sound model's live constructor.
 #[cfg(test)]
 mod m131_sounds {
-    use super::build_sounds;
+    use super::{attach_backend, build_sounds};
+
+    /// A backend that does nothing, so the success path is reachable without a
+    /// device. Every method is a no-op; the claim is only that it lands.
+    struct Nothing;
+
+    impl rewo_net::sound_engine::ChannelSink for Nothing {
+        fn submit(&mut self, _: u32, _: &rewo_net::sound_engine::ChannelCall) {}
+        fn release(&mut self, _: u32) {}
+        fn set_listener(&mut self, _: rewo_net::sound_engine::ListenerTransform) {}
+        fn stopped(&self, _: u32) -> Option<bool> {
+            None
+        }
+    }
+
+    /// **M143 — an opened backend is attached, and a failed one is not.**
+    ///
+    /// The half `build_sounds` can never be tested on: whether `open` succeeds
+    /// depends on a real device and no test here opens one. Taking the resolved
+    /// `Result` is what makes the decision reachable, and both directions are
+    /// asserted because a function that attached unconditionally, or never,
+    /// would pass a one-sided version of this.
+    #[test]
+    fn an_opened_backend_is_attached_and_a_failed_one_leaves_the_client_silent() {
+        let registry = rewo_data::sound_events::SoundEvents::default();
+        let empty = rewo_data::sounds_json::SoundsIndex::new();
+
+        let mut live = rewo_net::sound_engine::LiveSounds::new(empty.clone(), registry.clone());
+        attach_backend(&mut live, Err("no device".into()));
+        assert!(!live.has_sink(), "a failed open must leave the client silent");
+
+        let mut live = rewo_net::sound_engine::LiveSounds::new(empty, registry);
+        attach_backend(&mut live, Ok(Box::new(Nothing)));
+        assert!(live.has_sink());
+    }
 
     /// The one thing about the live wiring a unit test can reach.
     ///
