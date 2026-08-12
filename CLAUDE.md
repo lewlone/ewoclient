@@ -1784,6 +1784,41 @@ surviving mutation was **proven equivalent** — the down branch's second disjun
 cannot fire, since the blend never crosses its target — so it is dead code in
 vanilla too, kept and recorded.*
 
+*Update (2026-08-12 session, Rewo): **M144 — streaming, so music and the Nether
+beds play.** M143 declined every streamed attach; this opens them, with an
+incremental Ogg reader, a buffer queue on the mixer's voices, and a producer
+that keeps it fed on `ChannelAccess.scheduleTick`'s clock. **The measurement
+came first and corrected the docs**: 344 of 8,024 variants are streamed and
+**six are not music** — the five Nether ambient beds and
+`ambient.underwater.loop`, which M142's handlers resolve — so M143 had silenced
+those too, and the doc that said "so there is no music" stopped short. It also
+closed the tempting shortcut by arithmetic: `music.end` is 806 s, i.e. **142 MB
+in one PCM buffer**, so decoding streams fully and reusing the mixer's own loop
+flag is unavailable on memory alone. **`LoopingAudioStream` restarts one read
+LATE** — its guard is on the inner read coming back *empty*, and a short
+non-empty read is the ordinary end of a file — so a looping stream hands out one
+short buffer at the loop point and a full one after it, which the witness pins
+as the exact sequence `[1000, 728, 1000, 728, 1000]` against a real asset.
+**The queue invariant is a BUFFER count and not a duration**: vanilla refills
+when one buffer is *fully* played, so its queue oscillates between three and
+four seconds, while "top up to four seconds" refills on the first tick after
+playback starts — the same slack, different behaviour, caught by a witness
+asserting nothing is queued for nineteen ticks. `stopped()` for a stream is
+neither of the cases beside it (run out **and** drained), and `state.looping` is
+no help because `setLooping(isLooping && !isStreaming)` leaves the channel flag
+false for a bed that loops forever. **An underrun is not a death** — the
+producer decides when a stream is over, or a music track dies on the first
+hitch. **The battery's two important survivors were one mistake**: the
+strongest-sounding witness used constant buffers of equal length, and every
+position in a DC buffer holds the same number, so a cursor that reset at a join
+and a swap that kept the old length both rendered identically. A ramp with
+unequal chunks kills both — and revealed that the two renders are *not*
+bit-identical, because of the join approximation the code already documented, so
+the witness now measures it instead of hiding it. Three survivors are proven
+equivalent and kept with the proof. 3113 tests, 34 gates green,
+`live --render-check` 45/45, demo PNG byte-identical, battery 25/25. **Music
+still needs its selection logic, and nobody has listened yet.***
+
 *Update (2026-08-12 session, Rewo): **M143 — `rewo live --audio`, and the one
 method that turns every sound into a click.** M138 built an audio stack and left
 it unreachable on purpose; this wires it in, behind a `rewo-app` feature that is
@@ -1818,8 +1853,12 @@ hidden by the ordinary call sequence**: the attach's `AL_INITIAL` reset is
 overwritten a moment later by the `Play` that always follows it, and the
 declined-stream witness never asked `stopped()` — so a declined stream held its
 channel for the session, and the streaming pool is **five**. Streams are
-declined and counted, so **music needs the streaming path as well as its
-selection logic**, which M140's open half did not say. 3088 tests, 34 gates
+declined and counted — **and it was not only music**: measured against the real
+`sounds.json`, 344 of 8,024 variants are streamed and **six of them are ambient
+loops** (the five Nether beds and `ambient.underwater.loop`), which M142's
+handlers resolve and M143 dropped. **M144 then shipped the streaming path**, so
+all of that plays; what music still needs is its selection logic. A full decode
+was never the escape — `music.end` is 806 s, i.e. **142 MB in one PCM buffer**. 3088 tests, 34 gates
 green, demo PNG byte-identical. **Nobody has listened yet, and no number above
 is that claim.***
 
@@ -1969,8 +2008,8 @@ everything a machine can check passes and that is *not* the same claim. The
 feature is **off by default**, so a default build links no audio stack and the
 34 gates are unchanged.
 **Everything is shipped, gated and merged to `main`** as of 2026-08-12
-(M143) — **3088 tests / 0 failures** (world 1166, net 1098, gpu 275, data 228,
-app 199, mesh 45, proto 16, **audio 61** — EIGHT crates now, read off the runner
+(M144) — **3113 tests / 0 failures** (world 1166, net 1098, gpu 275, data 228,
+app 199, mesh 45, proto 16, **audio 86** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,

@@ -60,6 +60,19 @@ pub enum Command {
     /// a continuation on `getCompleteBuffer(path).thenAccept(...)`
     /// (`SoundEngine.java:431-434`), not something the audio side waits for.
     Attach(ChannelId, Arc<crate::buffers::Pcm>),
+    /// `alSourceQueueBuffers` — one more chunk behind whatever is playing
+    /// (M144).
+    ///
+    /// **Distinct from [`Self::Attach`], which REPLACES.** A static sound gets
+    /// one buffer and is done; a stream is a procession of them, and an attach
+    /// per chunk would restart the sound every second. The first `Queue` on an
+    /// empty voice becomes the playing buffer, so a caller does not have to
+    /// special-case the head of the stream.
+    ///
+    /// Decoded on the producer's side for the same reason `Attach` is: turning
+    /// an asset key into samples is a syscall and a large allocation, and the
+    /// callback may do neither.
+    Queue(ChannelId, Arc<crate::buffers::Pcm>),
 }
 
 /// A bounded single-producer / single-consumer ring.

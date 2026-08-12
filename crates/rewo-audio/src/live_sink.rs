@@ -37,7 +37,7 @@
 //! one hitch per distinct sound per session, and it is bounded because
 //! `SoundBufferLibrary` never evicts.
 
-use crate::buffers::{PcmSource, SoundBufferLibrary};
+use crate::buffers::{PcmSource, PcmStream, SoundBufferLibrary, QUEUED_BUFFER_COUNT};
 use crate::device::{Command, CommandRing};
 use rewo_net::sound_engine::{
     ChannelCall, ChannelId, ChannelSink, ListenerTransform, SinkDiagnostics,
@@ -68,12 +68,49 @@ const TICKS_PER_SECOND: f64 = 20.0;
 /// this takes. Flip it to `false` for vanilla's leak.
 const RELEASE_AFTER_A_FAILED_ATTACH: bool = true;
 
+/// A streaming channel's decode position and how much has been handed over.
+///
+/// **The queue depth is MODELLED, not asked**, exactly as `stopped()` is and for
+/// the same reason: vanilla's `updateStream` calls `removeProcessedBuffers`,
+/// which asks the AL source how many buffers it finished, and the equivalent
+/// here would be a feedback channel from the audio callback. The producer
+/// already knows the play time, the rate and the pitch, so how much has been
+/// consumed is arithmetic — and arithmetic is gradeable on a machine with no
+/// sound card.
+///
+/// The invariant is vanilla's — `QUEUED_BUFFER_COUNT` buffers of
+/// `BUFFER_DURATION_SECONDS` each — and it is a **buffer count**, not a
+/// duration. See [`LiveSink::pump`] for why the difference is behavioural
+/// rather than a rounding detail.
+///
+/// Stated divergence: the model runs on the engine's clock and the device runs
+/// on its own, so they drift. Four seconds of slack against a drift of well
+/// under a percent is what absorbs it, and the failure mode if it ever did not
+/// is a brief underrun, which the mixer renders as silence rather than as the
+/// end of the sound.
+struct StreamState {
+    src: Box<dyn PcmStream>,
+    /// `Channel.streamingBufferSize`, in samples rather than bytes.
+    buffer_samples: usize,
+    /// Total samples handed to the mixer. Used by `stopped()`, which cares how
+    /// much audio exists rather than how many buffers carried it.
+    pushed_samples: u64,
+    /// Buffers handed over — `alSourceQueueBuffers` calls.
+    ///
+    /// Counted separately from the samples because the queue invariant is about
+    /// **buffers**, and the last one of a finite stream is short.
+    pushed_buffers: u64,
+    /// The stream reported exhaustion. **Never true for a looping stream**,
+    /// because `LoopingAudioStream` restarts instead of returning empty — which
+    /// is what keeps an ambient bed alive with no special case here.
+    ended: bool,
+}
+
 /// What this side remembers about one channel.
 ///
 /// Only what `stopped()` needs. The mixer holds the authoritative voice; this
 /// is a producer-side model of it, and the module doc says why that is the way
 /// round it is.
-#[derive(Clone, Debug)]
 struct ChannelState {
     /// `AL_PITCH`, which is a playback *rate* multiplier and therefore divides
     /// the sound's duration.
@@ -86,9 +123,28 @@ struct ChannelState {
     rate: u32,
     /// The tick `Play` was submitted on.
     played_at: Option<i64>,
+    /// Interleaved channel count of whatever is attached. Needed to turn a
+    /// sample count into a frame count, which is what the clock speaks.
+    channels: u16,
     /// The attach was attempted and failed. See
     /// [`RELEASE_AFTER_A_FAILED_ATTACH`].
     dead: bool,
+    /// Set when this channel is fed by a stream (M144).
+    stream: Option<StreamState>,
+}
+
+impl ChannelState {
+    /// Source frames the device has played since `Play`, from the tick clock.
+    ///
+    /// Pitch multiplies because `AL_PITCH` is a playback *rate*: a source at 1.5
+    /// eats its buffer half again as fast, so a stream feeding it has to keep up.
+    fn consumed_frames(&self, now: i64) -> f64 {
+        let Some(played_at) = self.played_at else {
+            return 0.0;
+        };
+        let seconds = (now - played_at).max(0) as f64 / TICKS_PER_SECOND;
+        seconds * self.rate as f64 * self.pitch.max(0.01) as f64
+    }
 }
 
 impl Default for ChannelState {
@@ -101,8 +157,10 @@ impl Default for ChannelState {
             looping: false,
             frames: None,
             rate: 44_100,
+            channels: 1,
             played_at: None,
             dead: false,
+            stream: None,
         }
     }
 }
@@ -116,7 +174,7 @@ pub struct LiveSink<S: PcmSource> {
     /// [`ChannelSink::tick`], never by a clock of its own.
     tick: i64,
     unresolved: u64,
-    declined_streams: u64,
+    streams_failed: u64,
 }
 
 impl<S: PcmSource> LiveSink<S> {
@@ -129,7 +187,7 @@ impl<S: PcmSource> LiveSink<S> {
             channels: HashMap::new(),
             tick: 0,
             unresolved: 0,
-            declined_streams: 0,
+            streams_failed: 0,
         }
     }
 
@@ -174,22 +232,151 @@ impl<S: PcmSource> LiveSink<S> {
         }
     }
 
-    /// `Channel.attachBufferStream` — declined, and counted.
+    /// `Channel.attachBufferStream` — open the stream and prime its queue.
     ///
-    /// **Streaming is a separate mechanism, not a longer static buffer.** A
-    /// stream is stateful (`LoopingAudioStream` restarts the decoder when a read
-    /// comes back empty, which is why `SoundEngine.play` tells a streamed source
-    /// *not* to loop), and decoding a whole music track inline would be tens of
-    /// megabytes and a multi-second stall on the client tick. Declining is a
-    /// scope boundary rather than a gap: music selection and its timers are
-    /// their own milestone, and this counts what it turned down so "no music"
-    /// is a number rather than a mystery.
-    fn decline_stream(&mut self, channel: ChannelId, key: &str, looping: bool) {
-        self.declined_streams += 1;
+    /// ```java
+    /// this.stream = stream;
+    /// AudioFormat format = stream.getFormat();
+    /// this.streamingBufferSize = calculateBufferSize(format, 1);
+    /// this.pumpBuffers(4);
+    /// ```
+    /// (`Channel.java:123-128`.)
+    ///
+    /// **The format is read before anything is pumped**, which is why
+    /// [`PcmStream::format`] has to answer without decoding.
+    fn attach_stream(&mut self, channel: ChannelId, key: &str, looping: bool) {
+        let opened = self.buffers.open_stream(key, looping);
         let state = self.channels.entry(channel).or_default();
-        state.frames = None;
-        state.dead = true;
-        log::debug!("audio: declined stream {key} (looping={looping}) on channel {channel}");
+        match opened {
+            Ok(src) => {
+                let (channels, rate) = src.format();
+                let bytes = crate::buffers::calculate_buffer_size(
+                    channels,
+                    rate,
+                    crate::buffers::BUFFER_DURATION_SECONDS,
+                );
+                state.channels = channels.max(1);
+                state.rate = rate.max(1);
+                state.frames = None;
+                state.dead = false;
+                state.played_at = None;
+                state.stream = Some(StreamState {
+                    src,
+                    // `streamingBufferSize` is in BYTES and this side counts
+                    // samples; at 16 bits the conversion is an exact halving.
+                    buffer_samples: bytes / 2,
+                    pushed_samples: 0,
+                    pushed_buffers: 0,
+                    ended: false,
+                });
+            }
+            Err(e) => {
+                state.stream = None;
+                state.frames = None;
+                state.dead = true;
+                self.streams_failed += 1;
+                log::warn!("audio: could not open stream {key}: {e}");
+            }
+        }
+        // `pumpBuffers(4)`, reached by the same top-up the tick uses — the
+        // invariant is "four seconds queued" either way, and one routine cannot
+        // drift from the other.
+        self.pump(channel);
+    }
+
+    /// `removeProcessedBuffers` + `pumpBuffers(processed)` — refill the queue.
+    ///
+    /// ```java
+    /// public void updateStream() {
+    ///    if (this.stream != null) {
+    ///       int processedBuffers = this.removeProcessedBuffers();
+    ///       this.pumpBuffers(processedBuffers);
+    ///    }
+    /// }
+    /// ```
+    /// (`Channel.java:151-156`.)
+    ///
+    /// **The invariant is a BUFFER count, not a duration**, and getting that
+    /// wrong is a real divergence rather than a rounding one. Vanilla holds four
+    /// buffers and refills when one has been *fully* played, so its queue
+    /// oscillates between three and four seconds of audio. Topping up to "at
+    /// least four seconds" instead — the obvious reading — refills on the very
+    /// first tick after playback starts and then holds four to five, because a
+    /// one-second buffer is coarse against a fifty-millisecond tick. Same slack,
+    /// different behaviour, and it shows up as a buffer pumped nineteen ticks
+    /// early.
+    ///
+    /// So `processed` is `floor(consumed / buffer)`, which is
+    /// `removeProcessedBuffers`' answer computed from the clock instead of asked
+    /// of the device. Flooring also makes the comparison robust: the pitch is an
+    /// `f32` and 1.6 is not exactly representable, so a boundary test on the raw
+    /// frame counts tips on the last bit.
+    fn pump(&mut self, channel: ChannelId) {
+        let now = self.tick;
+        // Destructured so the ring and the channel map are borrowed separately:
+        // calling `self.push()` while `self.channels` is borrowed would borrow
+        // all of `self` twice.
+        let LiveSink { ring, channels, .. } = self;
+        let Some(state) = channels.get_mut(&channel) else {
+            return;
+        };
+        let consumed = state.consumed_frames(now);
+        let per_frame = state.channels.max(1) as u64;
+        let (chans, rate) = (state.channels, state.rate);
+        let Some(stream) = state.stream.as_mut() else {
+            return;
+        };
+        let buffer_frames = (stream.buffer_samples as u64 / per_frame).max(1) as f64;
+        // Capped at what was actually queued: a source cannot have finished more
+        // buffers than it was given, and without the cap a stream whose clock
+        // ran on while its queue was empty would pump a burst to catch up.
+        let processed = (consumed / buffer_frames).floor().max(0.0) as u64;
+        let processed = processed.min(stream.pushed_buffers);
+        while !stream.ended {
+            if stream.pushed_buffers - processed >= QUEUED_BUFFER_COUNT as u64 {
+                break;
+            }
+            match stream.src.read(stream.buffer_samples) {
+                Ok(chunk) if chunk.is_empty() => {
+                    // Empty is exhaustion — and for a LOOPING stream it never
+                    // happens, because `LoopingAudioStream` restarts instead of
+                    // returning empty. That is what keeps an ambient bed alive
+                    // with no special case on this side.
+                    stream.ended = true;
+                }
+                Ok(chunk) => {
+                    stream.pushed_samples += chunk.len() as u64;
+                    stream.pushed_buffers += 1;
+                    let pcm = Arc::new(crate::buffers::Pcm {
+                        samples: chunk,
+                        channels: chans,
+                        sample_rate: rate,
+                    });
+                    let _ = ring.push(Command::Queue(channel, pcm));
+                }
+                Err(e) => {
+                    log::warn!("audio: stream read failed on channel {channel}: {e}");
+                    stream.ended = true;
+                }
+            }
+        }
+    }
+
+    /// `ChannelAccess.scheduleTick`'s `handle.channel.updateStream()`.
+    ///
+    /// Every streaming channel, once per engine tick — vanilla's own clock for
+    /// this, and the same one `stopped()` is consulted on a moment later
+    /// (`ChannelAccess.java:44-52`, where `updateStream` precedes `stopped`).
+    fn update_streams(&mut self) {
+        let streaming: Vec<ChannelId> = self
+            .channels
+            .iter()
+            .filter(|(_, s)| s.stream.as_ref().is_some_and(|st| !st.ended))
+            .map(|(id, _)| *id)
+            .collect();
+        for channel in streaming {
+            self.pump(channel);
+        }
     }
 }
 
@@ -206,7 +393,7 @@ impl<S: PcmSource> ChannelSink for LiveSink<S> {
             }
             ChannelCall::AttachBufferStream(key, looping) => {
                 let (key, looping) = (key.clone(), *looping);
-                self.decline_stream(channel, &key, looping);
+                self.attach_stream(channel, &key, looping);
                 return;
             }
             _ => {}
@@ -217,6 +404,9 @@ impl<S: PcmSource> ChannelSink for LiveSink<S> {
         match call {
             ChannelCall::SetPitch(p) => state.pitch = *p,
             ChannelCall::SetLooping(l) => state.looping = *l,
+            // **`Play` is where a stream's clock starts**, not the attach: the
+            // four primed buffers were queued before it, and consumption cannot
+            // begin until the source is playing.
             ChannelCall::Play => state.played_at = Some(tick),
             ChannelCall::Stop => *state = ChannelState::default(),
             // Volume, attenuation, position, relative, pause and unpause change
@@ -247,8 +437,15 @@ impl<S: PcmSource> ChannelSink for LiveSink<S> {
         self.push(Command::Listener(transform));
     }
 
+    /// One engine tick: advance the clock, then `updateStream` every stream.
+    ///
+    /// The order is vanilla's — `ChannelAccess.scheduleTick` calls
+    /// `updateStream()` and *then* asks `stopped()` (`:44-52`) — and it matters:
+    /// pumping first means a stream that has just been topped up is not reported
+    /// finished on the same tick.
     fn tick(&mut self) {
         self.tick += 1;
+        self.update_streams();
     }
 
     /// `Channel.stopped()`, modelled from the buffer's own length.
@@ -285,6 +482,20 @@ impl<S: PcmSource> ChannelSink for LiveSink<S> {
         if state.dead {
             return Some(RELEASE_AFTER_A_FAILED_ATTACH);
         }
+        // **A stream ends when it has run out AND been drained** (M144), which
+        // is neither of the two conditions below. `state.looping` is no help
+        // here: `SoundEngine.play` sets `setLooping(isLooping && !isStreaming)`,
+        // so the CHANNEL flag is false even for a bed that loops forever — the
+        // loop lives in `LoopingAudioStream`, which simply never reports
+        // exhaustion, so `ended` stays false and this stays `false` too.
+        if let Some(stream) = state.stream.as_ref() {
+            if !stream.ended {
+                return Some(false);
+            }
+            let per_frame = state.channels.max(1) as u64;
+            let pushed_frames = (stream.pushed_samples / per_frame) as f64;
+            return Some(state.consumed_frames(self.tick) >= pushed_frames);
+        }
         if state.looping {
             return Some(false);
         }
@@ -303,7 +514,7 @@ impl<S: PcmSource> ChannelSink for LiveSink<S> {
         SinkDiagnostics {
             dropped: self.ring.dropped(),
             unresolved: self.unresolved,
-            declined_streams: self.declined_streams,
+            streams_failed: self.streams_failed,
             cached_buffers: self.buffers.cached() as u64,
             // Not knowable here: this side holds a ring, not a device. The
             // pairing that owns both fills it in — see `CpalBackend`.
@@ -324,6 +535,10 @@ mod tests {
         /// Frames, channels and rate per key. A key absent from here fails to
         /// decode, which is the missing-asset path.
         assets: HashMap<String, (usize, u16, u32)>,
+        /// Streamable keys: channels, rate, finite length in frames (`None` is a
+        /// looping stream, which never runs out), and a read counter.
+        pub(super) streams:
+            HashMap<String, (u16, u32, Option<usize>, std::rc::Rc<std::cell::Cell<u32>>)>,
         opens: u32,
     }
 
@@ -331,6 +546,7 @@ mod tests {
         fn new() -> Fake {
             Fake {
                 assets: HashMap::new(),
+                streams: HashMap::new(),
                 opens: 0,
             }
         }
@@ -354,6 +570,27 @@ mod tests {
                 channels,
                 sample_rate: rate,
             })
+        }
+
+        fn open_stream(
+            &mut self,
+            key: &str,
+            _looping: bool,
+        ) -> Result<Box<dyn PcmStream>, String> {
+            // `looping` is ignored here on purpose: from the producer's side a
+            // looping stream is simply one that never returns empty, which the
+            // fixture expresses as `remaining_frames: None`.
+            let (channels, rate, frames, reads) = self
+                .streams
+                .get(key)
+                .ok_or_else(|| format!("no such stream: {key}"))?
+                .clone();
+            Ok(Box::new(FakeStream {
+                channels,
+                rate,
+                remaining_frames: frames,
+                reads,
+            }))
         }
     }
 
@@ -628,17 +865,22 @@ mod tests {
             .any(|c| matches!(c, Command::Attach(3, _))));
     }
 
-    /// A stream is declined, counted, **and gives its channel back**.
+    /// A stream that will not open is counted **and gives its channel back**.
     ///
     /// The last part is the one a counting-only test misses, and a mutation
-    /// deleting it survived the first version of this. A declined stream is
-    /// never attached and never sounds, so with nothing marking it finished the
+    /// deleting it survived the first version of this (M143). A stream that
+    /// never opened never sounds, so with nothing marking it finished the
     /// channel is held for the session — and the streaming pool is **five**
     /// channels (`pool_sizes(30)`), so five music tracks or records would wedge
-    /// every streamed sound for the rest of the run. Declining a feature must
-    /// not cost the pool that serves it.
+    /// every streamed sound for the rest of the run.
+    ///
+    /// The failure is counted separately from a static one, because a client
+    /// whose music is silent and whose sounds are fine is a different diagnosis
+    /// from the reverse.
     #[test]
-    fn a_stream_is_declined_counted_and_gives_its_channel_back() {
+    fn a_stream_that_will_not_open_is_counted_and_gives_its_channel_back() {
+        // `Fake` has no decoder, so it takes `PcmSource::open_stream`'s default
+        // and refuses — which is the production shape of a missing asset.
         let mut sink = sink_with_one_second();
         // A stream arrives with the same eight-call shape; `SetLooping` is
         // false because `SoundEngine.play` clears it for a streamed source.
@@ -650,18 +892,22 @@ mod tests {
         ] {
             sink.submit(5, &call);
         }
-        assert_eq!(sink.diagnostics().declined_streams, 1);
-        assert_eq!(sink.diagnostics().unresolved, 0, "declined is not unresolved");
+        assert_eq!(sink.diagnostics().streams_failed, 1);
+        assert_eq!(
+            sink.diagnostics().unresolved,
+            0,
+            "a stream failure is not a static one"
+        );
         assert!(!drain(&sink)
             .iter()
             .any(|c| matches!(c, Command::Channel(_, ChannelCall::AttachBufferStream(_, _)))));
         assert_eq!(
             sink.stopped(5),
             Some(true),
-            "a declined stream must not hold a channel for the session"
+            "a stream that never opened must not hold a channel for the session"
         );
         // The control: a channel playing a real sound at the same tick is not
-        // reported stopped, so the line above is about the decline rather than
+        // reported stopped, so the line above is about the failure rather than
         // about `stopped()` answering true for everything.
         play_sequence(&mut sink, 6, 1.0, false);
         assert_eq!(sink.stopped(6), Some(false));
@@ -727,6 +973,251 @@ mod tests {
         let cmds = drain(&sink);
         assert!(matches!(cmds[0], Command::Channel(0, ChannelCall::SetPitch(_))));
         assert!(matches!(cmds[1], Command::Listener(_)));
+    }
+
+    // ── streaming (M144) ──────────────────────────────────────────────────
+
+    /// A stream of a chosen format and length, so the producer's arithmetic is
+    /// gradeable without an ogg.
+    ///
+    /// `remaining: None` is a **looping** stream: `LoopingAudioStream` restarts
+    /// instead of returning empty, so from this side it is simply inexhaustible.
+    /// That is the whole of what looping means to the producer, and modelling it
+    /// as a flag here instead would be modelling it in the wrong place.
+    struct FakeStream {
+        channels: u16,
+        rate: u32,
+        remaining_frames: Option<usize>,
+        reads: std::rc::Rc<std::cell::Cell<u32>>,
+    }
+
+    impl PcmStream for FakeStream {
+        fn format(&self) -> (u16, u32) {
+            (self.channels, self.rate)
+        }
+        fn read(&mut self, samples: usize) -> Result<Vec<i16>, String> {
+            self.reads.set(self.reads.get() + 1);
+            let per_frame = self.channels.max(1) as usize;
+            let want = samples / per_frame;
+            let give = match self.remaining_frames {
+                None => want,
+                Some(r) => want.min(r),
+            };
+            if let Some(r) = self.remaining_frames.as_mut() {
+                *r -= give;
+            }
+            Ok(vec![4096; give * per_frame])
+        }
+    }
+
+    /// A sink whose one streamable key has the given shape.
+    fn sink_with_stream(
+        channels: u16,
+        rate: u32,
+        frames: Option<usize>,
+    ) -> (LiveSink<Fake>, std::rc::Rc<std::cell::Cell<u32>>) {
+        let reads = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut fake = Fake::new().with(KEY, 44_100, 1, 44_100);
+        fake.streams
+            .insert(MUSIC.to_string(), (channels, rate, frames, std::rc::Rc::clone(&reads)));
+        (
+            LiveSink::new(CommandRing::with_capacity(DEFAULT_RING_CAPACITY), fake),
+            reads,
+        )
+    }
+
+    const MUSIC: &str = "minecraft/sounds/music/game/calm1.ogg";
+
+    /// The eight calls a streamed `play` emits. `SetLooping` is **false** even
+    /// for a looping bed — `SoundEngine.play` writes
+    /// `setLooping(isLooping && !isStreaming)`, and the loop lives in the stream.
+    fn stream_sequence(sink: &mut LiveSink<Fake>, channel: ChannelId, looping: bool) {
+        for call in [
+            ChannelCall::SetPitch(1.0),
+            ChannelCall::SetVolume(1.0),
+            ChannelCall::DisableAttenuation,
+            ChannelCall::SetLooping(false),
+            ChannelCall::SetSelfPosition(0.0, 0.0, 0.0),
+            ChannelCall::SetRelative(true),
+            ChannelCall::AttachBufferStream(MUSIC.into(), looping),
+            ChannelCall::Play,
+        ] {
+            sink.submit(channel, &call);
+        }
+    }
+
+    fn queued(sink: &LiveSink<Fake>) -> Vec<usize> {
+        let mut out = Vec::new();
+        while let Some(c) = sink.ring.pop() {
+            if let Command::Queue(_, pcm) = c {
+                out.push(pcm.samples.len());
+            }
+        }
+        out
+    }
+
+    /// **The attach primes four one-second buffers** — `pumpBuffers(4)`, and the
+    /// size comes from the stream's own format.
+    ///
+    /// A 48 kHz stereo stream gets 96 000-sample chunks (48 000 frames), which is
+    /// `calculateBufferSize` at 16 bits divided by two. A producer that used the
+    /// device rate, or that forgot the channel count, lands on a different number
+    /// for every one of them.
+    #[test]
+    fn attaching_a_stream_primes_four_one_second_buffers() {
+        let (mut sink, _) = sink_with_stream(2, 48_000, None);
+        stream_sequence(&mut sink, 1, true);
+        let sizes = queued(&sink);
+        assert_eq!(sizes.len(), 4, "QUEUED_BUFFER_COUNT");
+        assert!(
+            sizes.iter().all(|s| *s == 96_000),
+            "one second of 48 kHz stereo is 96000 samples: {sizes:?}"
+        );
+        // …and a mono 44.1 kHz stream gets a different, equally exact size.
+        let (mut mono, _) = sink_with_stream(1, 44_100, None);
+        stream_sequence(&mut mono, 1, true);
+        assert_eq!(queued(&mono), vec![44_100; 4]);
+    }
+
+    /// **The queue is topped up once per second of playback, and not before.**
+    ///
+    /// `updateStream` runs every tick and pumps only what has been consumed, so
+    /// a stream that has just started needs nothing. The producer models
+    /// consumption from the tick clock rather than asking the device, so this is
+    /// arithmetic — which is what makes it gradeable here at all.
+    #[test]
+    fn the_queue_is_topped_up_as_playback_consumes_it() {
+        let (mut sink, _) = sink_with_stream(1, 44_100, None);
+        stream_sequence(&mut sink, 1, true);
+        assert_eq!(queued(&sink).len(), 4, "primed");
+
+        // Nineteen ticks is under a second: still four seconds ahead.
+        for _ in 0..19 {
+            sink.tick();
+        }
+        assert!(queued(&sink).is_empty(), "nothing consumed yet, nothing to add");
+
+        // The twentieth crosses one second of playback.
+        sink.tick();
+        assert_eq!(queued(&sink).len(), 1, "one second consumed, one buffer back");
+
+        // And it keeps pace rather than running away.
+        for _ in 0..60 {
+            sink.tick();
+        }
+        assert_eq!(queued(&sink).len(), 3, "three more seconds, three more buffers");
+    }
+
+    /// **A stream that has not been played consumes nothing**, however long the
+    /// client runs.
+    ///
+    /// `Play` starts the clock, not the attach — the four primed buffers are
+    /// queued before it. A producer that measured from the attach would pour
+    /// buffers into a source that had not started, and on a paused or
+    /// never-started sound that is unbounded.
+    #[test]
+    fn an_unplayed_stream_is_never_topped_up() {
+        let (mut sink, reads) = sink_with_stream(1, 44_100, None);
+        sink.submit(1, &ChannelCall::AttachBufferStream(MUSIC.into(), true));
+        assert_eq!(queued(&sink).len(), 4);
+        let after_prime = reads.get();
+        for _ in 0..200 {
+            sink.tick();
+        }
+        assert!(queued(&sink).is_empty(), "ten seconds of ticks, nothing queued");
+        assert_eq!(reads.get(), after_prime, "and the stream was never read again");
+    }
+
+    /// **A looping stream is never stopped**, because it never runs out.
+    ///
+    /// `LoopingAudioStream` restarts instead of returning empty, so `ended` stays
+    /// false for the life of an ambient bed. Note `SetLooping(false)` is on the
+    /// channel throughout — reading the loop off *that* flag would report every
+    /// bed finished after one buffer.
+    #[test]
+    fn a_looping_stream_is_never_reported_stopped() {
+        let (mut sink, _) = sink_with_stream(1, 44_100, None);
+        stream_sequence(&mut sink, 1, true);
+        for _ in 0..2_000 {
+            sink.tick();
+            assert_eq!(sink.stopped(1), Some(false));
+        }
+        // A hundred seconds of a bed that keeps feeding itself.
+        assert!(queued(&sink).len() > 90);
+    }
+
+    /// **A finite stream ends, and is stopped only once what was pushed has been
+    /// played.**
+    ///
+    /// Two-sided: reporting stopped when the stream runs out would cut the last
+    /// four seconds off every track (they are queued but not yet heard), and
+    /// never reporting it would hold one of five streaming channels forever.
+    #[test]
+    fn a_finite_stream_stops_only_after_its_queue_has_been_heard() {
+        // Two seconds of mono 44.1 kHz: the prime exhausts it immediately.
+        let (mut sink, _) = sink_with_stream(1, 44_100, Some(88_200));
+        stream_sequence(&mut sink, 1, true);
+        assert_eq!(queued(&sink), vec![44_100, 44_100], "two seconds, then empty");
+
+        // Thirty-nine ticks is under the two seconds that were queued.
+        for _ in 0..39 {
+            sink.tick();
+        }
+        assert_eq!(sink.stopped(1), Some(false), "the queue is still being heard");
+        sink.tick();
+        assert_eq!(sink.stopped(1), Some(true), "and now it has been");
+    }
+
+    /// Pitch feeds the stream faster, because `AL_PITCH` is a playback rate.
+    ///
+    /// 1.6 rather than 2.0, for the reason `REWO_AUDIO_PLAN` §5 names: a power of
+    /// two is where a dropped multiply and a halved one are hardest to tell
+    /// apart.
+    #[test]
+    fn a_pitched_up_stream_is_fed_faster() {
+        let mut at_pitch = |pitch: f32| {
+            let (mut sink, _) = sink_with_stream(1, 44_100, None);
+            for call in [
+                ChannelCall::SetPitch(pitch),
+                ChannelCall::AttachBufferStream(MUSIC.into(), true),
+                ChannelCall::Play,
+            ] {
+                sink.submit(1, &call);
+            }
+            let _ = queued(&sink);
+            for _ in 0..100 {
+                sink.tick();
+            }
+            queued(&sink).len()
+        };
+        // Five seconds of wall time. At 1.0 the source has eaten five buffers
+        // and five go back; at 1.5 it has eaten seven and a half, so seven are
+        // whole and seven go back.
+        //
+        // **1.5 rather than 1.6 on purpose.** The plan's rule is a pitch that is
+        // neither 1 nor a power of two, and 1.5 is both that and exactly
+        // representable — 1.6 as an `f32` is a shade above 1.6, which at this
+        // rate lands consumption exactly on a buffer boundary and makes the
+        // floor tip on the last bit.
+        assert_eq!(at_pitch(1.0), 5);
+        assert_eq!(at_pitch(1.5), 7);
+    }
+
+    /// Releasing a streaming channel drops its decode position.
+    ///
+    /// A stream held past its channel would keep a whole compressed track alive
+    /// and, worse, would be handed to whatever sound reused the id.
+    #[test]
+    fn releasing_a_streaming_channel_drops_the_stream() {
+        let (mut sink, reads) = sink_with_stream(1, 44_100, None);
+        stream_sequence(&mut sink, 1, true);
+        let after_prime = reads.get();
+        sink.release(1);
+        assert_eq!(sink.stopped(1), None, "the channel is forgotten");
+        for _ in 0..100 {
+            sink.tick();
+        }
+        assert_eq!(reads.get(), after_prime, "and nothing reads it any more");
     }
 
     /// A full ring drops and counts rather than blocking or losing the count.
@@ -837,6 +1328,112 @@ mod end_to_end {
 
         out.pull(&mut mixer, 128);
         assert!(out.peak() > 0.0, "the mixer rendered silence for a played sound");
+    }
+
+    /// **A streamed event reaches the mixer as audible samples too** (M144).
+    ///
+    /// The same chain as above with one bit flipped in `sounds.json` — and that
+    /// one bit is the whole difference between a static sound and a music track
+    /// or an ambient bed. Before M144 this rendered exact silence: the engine
+    /// resolved it, the backend declined the attach, and nothing crossed the
+    /// ring. The witness is written as a *pair* for that reason — a streamed and
+    /// a static event through the same code, both audible — because the failure
+    /// this guards against is one of them silently going quiet again.
+    #[test]
+    fn a_streamed_event_reaches_the_mixer_as_audible_samples() {
+        let ring = CommandRing::with_capacity(DEFAULT_RING_CAPACITY);
+        let mut source = fake_source("minecraft/sounds/block/stone/break1.ogg", 22_050, 1, 44_100);
+        // Ten seconds of mono 44.1 kHz behind the streamed key: long enough
+        // that the four primed buffers are a fraction of it.
+        source.streams.insert(
+            "minecraft/sounds/music/game/calm1.ogg".to_string(),
+            (1, 44_100, Some(441_000), std::rc::Rc::new(std::cell::Cell::new(0))),
+        );
+        let sink = LiveSink::new(Arc::clone(&ring), source);
+
+        let mut idx = SoundsIndex::new();
+        idx.handle_registration(
+            EVENT,
+            &SoundEventRegistration {
+                sounds: vec![Sound::file("minecraft:block/stone/break1")],
+                replace: false,
+                subtitle: None,
+            },
+            &SoundFileSet::All,
+        );
+        let mut music = Sound::file("minecraft:music/game/calm1");
+        music.stream = true;
+        idx.handle_registration(
+            "minecraft:music.game",
+            &SoundEventRegistration {
+                sounds: vec![music],
+                replace: false,
+                subtitle: None,
+            },
+            &SoundFileSet::All,
+        );
+
+        let mut live = LiveSounds::new(idx, rewo_data::sound_events::SoundEvents::default());
+        live.attach_sink(Box::new(sink));
+
+        let mut mixer = Mixer::new(44_100);
+        let mut out = NullSink::new();
+        out.pull(&mut mixer, 128);
+        assert_eq!(out.peak(), 0.0, "an idle client renders exact silence");
+
+        let streamed = SoundEvent::At(PositionedSound {
+            sound: SoundRef::Inline {
+                name: "minecraft:music.game".into(),
+                fixed_range: None,
+            },
+            source: SoundSource::Music,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            volume: 1.0,
+            pitch: 1.0,
+            seed: 0,
+        });
+        live.drive(&[streamed], &EntityTable::default(), None, 0);
+        assert_eq!(live.stats().started, 1, "the engine must have played it");
+        assert_eq!(
+            live.sink_diagnostics().streams_failed,
+            0,
+            "the stream must have opened"
+        );
+
+        let mut queued = 0;
+        while let Some(cmd) = ring.pop() {
+            if matches!(cmd, Command::Queue(_, _)) {
+                queued += 1;
+            }
+            mixer.apply(&cmd);
+        }
+        assert_eq!(queued, 4, "primed with QUEUED_BUFFER_COUNT buffers");
+        assert_eq!(mixer.voice_count(), 1);
+        assert_eq!(mixer.ignored, 0, "and it was handed samples, not a key");
+
+        out.pull(&mut mixer, 128);
+        assert!(out.peak() > 0.0, "the mixer rendered silence for a streamed sound");
+
+        // It keeps being fed as the client ticks, rather than stopping after the
+        // four it started with.
+        for _ in 0..60 {
+            live.drive(&[], &EntityTable::default(), None, 0);
+        }
+        let mut more = 0;
+        while let Some(cmd) = ring.pop() {
+            if matches!(cmd, Command::Queue(_, _)) {
+                more += 1;
+            }
+            mixer.apply(&cmd);
+        }
+        assert_eq!(more, 3, "three seconds of ticks, three more buffers");
+        assert_eq!(
+            live.system.engine.live_count(),
+            1,
+            "and the engine still holds the channel"
+        );
     }
 
     /// The other end of the same chain: the sound finishes, the engine sees it,
