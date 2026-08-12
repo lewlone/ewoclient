@@ -37,7 +37,7 @@
 //! one hitch per distinct sound per session, and it is bounded because
 //! `SoundBufferLibrary` never evicts.
 
-use crate::buffers::{Pcm, PcmSource, SoundBufferLibrary};
+use crate::buffers::{PcmSource, SoundBufferLibrary};
 use crate::device::{Command, CommandRing};
 use rewo_net::sound_engine::{
     ChannelCall, ChannelId, ChannelSink, ListenerTransform, SinkDiagnostics,
@@ -305,6 +305,9 @@ impl<S: PcmSource> ChannelSink for LiveSink<S> {
             unresolved: self.unresolved,
             declined_streams: self.declined_streams,
             cached_buffers: self.buffers.cached() as u64,
+            // Not knowable here: this side holds a ring, not a device. The
+            // pairing that owns both fills it in — see `CpalBackend`.
+            device_errors: 0,
         }
     }
 }
@@ -312,6 +315,7 @@ impl<S: PcmSource> ChannelSink for LiveSink<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buffers::Pcm;
     use crate::device::DEFAULT_RING_CAPACITY;
 
     /// A source that hands back a buffer of a chosen length, so a *duration* is

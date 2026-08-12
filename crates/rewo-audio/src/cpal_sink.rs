@@ -9,10 +9,13 @@
 //! decode, the quantisation, the listener basis — is graded on its own, so the
 //! ungraded part is the thin binding rather than the behaviour.
 //!
-//! **It is not wired into `rewo-app`, deliberately.** Pulling cpal into the
-//! client binary would link an audio stack into all 34 gates for a subsystem
-//! none of them exercises. Use `cargo run -p rewo-audio --example listen` to
-//! actually hear something; that is the listening pass, and it is a human's job.
+//! **It reaches `rewo-app` only under that crate's `audio` feature, which is
+//! off by default** (M143). A default build links no audio stack at all, so the
+//! 34 gates are unchanged and none of them can open a device by accident; a
+//! build with `--features audio` and a run with `rewo live --audio` is the only
+//! path from the client to a noise. `cargo run -p rewo-audio --example listen`
+//! is the other one. **Either way the listening pass is a human's job** — a
+//! green suite says nothing about this module, by construction.
 //!
 //! ## Real-time discipline, and the one place this first cut breaks it
 //!
@@ -29,9 +32,14 @@
 //! at the moment a sound ends — worth fixing before anyone calls the audio
 //! smooth, and not worth pretending is absent.
 
+use crate::buffers::PcmSource;
 use crate::device::{Command, CommandRing, DEFAULT_RING_CAPACITY};
+use crate::live_sink::LiveSink;
 use crate::mixer::Mixer;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use rewo_net::sound_engine::{
+    ChannelCall, ChannelId, ChannelSink, ListenerTransform, SinkDiagnostics,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -153,5 +161,68 @@ impl CpalSink {
         ok &= self.ring.push(Command::Attach(id, pcm));
         ok &= self.ring.push(Command::Channel(id, C::Play));
         ok
+    }
+}
+
+/// An open device and the engine's backend, as one [`ChannelSink`].
+///
+/// **The pairing exists so a `!Send` handle never has to be threaded through
+/// the client.** `cpal::Stream` stops the moment it is dropped and cannot be
+/// moved off the thread that built it, so something must hold it for the life
+/// of the session. Making that something the sink itself means the client
+/// stores one `Box<dyn ChannelSink>` and the device rides along inside it —
+/// rather than every function between `main` and the tick loop growing a
+/// keepalive parameter whose only job is not to be dropped.
+///
+/// Nothing here is checked by any gate and nothing can be; see this module's
+/// own doc, and [`crate::live_sink`] for the part that is.
+pub struct CpalBackend {
+    sink: LiveSink<Box<dyn PcmSource>>,
+    /// Held, not used. Dropping it stops the stream.
+    device: CpalSink,
+}
+
+impl CpalBackend {
+    /// Open the default output device and build a backend over it.
+    ///
+    /// `source` turns an asset key into samples. It is the caller's because the
+    /// store lookup needs `rewo-data`, and this crate does not depend on it —
+    /// see [`crate::decode::BytesSource`].
+    pub fn open(source: Box<dyn PcmSource>) -> Result<CpalBackend, String> {
+        let device = CpalSink::open()?;
+        let sink = LiveSink::new(Arc::clone(device.ring()), source);
+        Ok(CpalBackend { sink, device })
+    }
+
+    /// The device's sample rate — worth logging, because a device running at a
+    /// rate no source uses means the resampler is on every sound.
+    pub fn out_rate(&self) -> u32 {
+        self.device.out_rate()
+    }
+}
+
+impl ChannelSink for CpalBackend {
+    fn submit(&mut self, channel: ChannelId, call: &ChannelCall) {
+        self.sink.submit(channel, call);
+    }
+    fn release(&mut self, channel: ChannelId) {
+        self.sink.release(channel);
+    }
+    fn set_listener(&mut self, transform: ListenerTransform) {
+        self.sink.set_listener(transform);
+    }
+    fn tick(&mut self) {
+        self.sink.tick();
+    }
+    fn stopped(&self, channel: ChannelId) -> Option<bool> {
+        self.sink.stopped(channel)
+    }
+    fn diagnostics(&self) -> SinkDiagnostics {
+        SinkDiagnostics {
+            // The one number the sink cannot know: the stream's own error
+            // count lives on the device side of the pairing.
+            device_errors: self.device.errors(),
+            ..self.sink.diagnostics()
+        }
     }
 }

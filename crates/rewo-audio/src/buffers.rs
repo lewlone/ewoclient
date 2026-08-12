@@ -46,6 +46,18 @@ pub trait PcmSource {
     fn open(&mut self, key: &str) -> Result<Pcm, String>;
 }
 
+/// So a caller whose source is a closure can still name the library's type.
+///
+/// [`crate::decode::BytesSource`] wraps an `FnMut`, and a closure's type cannot
+/// be written down — which matters because the backend that holds one has to be
+/// stored in a struct field. Boxing is the way out, and it needs this impl to
+/// satisfy `SoundBufferLibrary<S: PcmSource>`.
+impl PcmSource for Box<dyn PcmSource> {
+    fn open(&mut self, key: &str) -> Result<Pcm, String> {
+        (**self).open(key)
+    }
+}
+
 /// A stream handle. Streams carry their loop flag; static buffers do not.
 ///
 /// **Looping for a streamed sound lives HERE and not on the channel.**

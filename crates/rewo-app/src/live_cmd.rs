@@ -99,6 +99,17 @@ pub struct LiveArgs {
     /// `REWO_WAVY_CAPE=1`.
     #[arg(long = "wavy-cape", default_value_t = false)]
     wavy_cape: bool,
+    /// Open an audio device and actually play sounds (M143). Off by default,
+    /// and a no-op unless the binary was built `--features audio` — a default
+    /// build links no audio stack at all, which is what keeps the 34 gates
+    /// free of one. Also read from `REWO_AUDIO=1`.
+    ///
+    /// **A successful open does not mean anything is audible.** Absent, muted,
+    /// exclusive-mode and unplugged devices are indistinguishable from inside
+    /// the process, so the listening pass is a human's — see
+    /// `REWO_AUDIO_PLAN.md` §4.
+    #[arg(long, default_value_t = false)]
+    audio: bool,
     #[arg(long, default_value_t = false)]
     no_validation: bool,
     /// M86's live gate. Runs the windowed client against a server, counts which
@@ -1305,13 +1316,23 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
                 args.pack.clone(),
                 args.gamma,
                 args.darkness_effect_scale,
-                build_sounds(&args.version, &data.sound_events, args.render_check),
+                build_sounds(
+                    &args.version,
+                    &data.sound_events,
+                    args.render_check,
+                    wants_audio(&args),
+                ),
             )
         }
         _ => {
             // Built before `args` moves into the call — `build_sounds` borrows
             // `args.version`, and arguments are evaluated left to right.
-            let sounds = build_sounds(&args.version, &data.sound_events, args.render_check);
+            let sounds = build_sounds(
+                &args.version,
+                &data.sound_events,
+                args.render_check,
+                wants_audio(&args),
+            );
             run_windowed(
                 session,
                 baked,
@@ -3851,12 +3872,19 @@ fn col_dist((cx, cz): (i32, i32), px: f32, pz: f32) -> f32 {
 
 /// M131 — the sound model, built from the asset store when it is unpacked.
 ///
-/// **No device is opened and nothing is heard.** `LiveSounds` carries a
-/// `SilentDevice`; what runs is vanilla's resolution, gain/pitch/attenuation
-/// arithmetic, channel budget and reclaim clock, so the pipeline M63/M64/M66
-/// built is exercised on the live path instead of only in tests. Before this,
-/// `PlaySession::take_sound_events` had **no caller anywhere** and the decoded
-/// queue filled to its cap and rotated forever.
+/// **No device is opened unless `audio` is set**, which needs both the
+/// `--audio` flag and a binary built `--features audio` (M143). Without one
+/// `LiveSounds` carries only its `SilentDevice`, and what runs is vanilla's
+/// resolution, gain/pitch/attenuation arithmetic, channel budget and reclaim
+/// clock — so the pipeline M63/M64/M66 built is exercised on the live path
+/// instead of only in tests. Before this, `PlaySession::take_sound_events` had
+/// **no caller anywhere** and the decoded queue filled to its cap and rotated
+/// forever.
+///
+/// **A failure to open is logged, not fatal.** A client whose speakers are
+/// unplugged is still a client, and every gate runs this path deliberately. The
+/// error carries whether the binary *could* have made a sound at all, which is
+/// a different problem from a device that will not open.
 ///
 /// A missing asset store is not an error **in an ordinary run**: an empty index
 /// makes every event resolve to `UnknownEvent`, which is silence, and a machine
@@ -3874,6 +3902,7 @@ fn build_sounds(
     version: &str,
     registry: &rewo_data::sound_events::SoundEvents,
     strict: bool,
+    audio: bool,
 ) -> LiveSounds {
     let sounds = match rewo_data::sounds_json::load_for_version(version) {
         Ok(idx) => idx,
@@ -3887,7 +3916,27 @@ fn build_sounds(
             rewo_data::sounds_json::SoundsIndex::new()
         }
     };
-    LiveSounds::new(sounds, registry.clone())
+    let mut live = LiveSounds::new(sounds, registry.clone());
+    if audio {
+        match crate::audio_backend::open(version) {
+            Ok(sink) => live.attach_sink(sink),
+            // ERROR rather than warn: the user asked for audio by name, and a
+            // silent downgrade is exactly the "green but nothing happened"
+            // outcome this subsystem cannot afford — nothing downstream can
+            // tell a client with no backend from a device that is muted.
+            Err(e) => log::error!("audio: --audio was requested and no device was opened: {e}"),
+        }
+    }
+    live
+}
+
+/// Whether this run wants audio: the flag, or `REWO_AUDIO=1`.
+///
+/// The env fallback follows `--wavy-cape`/`REWO_WAVY_CAPE`, and exists for the
+/// same reason: the launcher spawns `rewo` with a fixed argument list, so a
+/// per-session toggle has to arrive through the environment.
+fn wants_audio(args: &LiveArgs) -> bool {
+    args.audio || std::env::var("REWO_AUDIO").map(|v| v == "1").unwrap_or(false)
 }
 
 fn run_headless(
@@ -4856,11 +4905,21 @@ struct LiveApp {
     started: Instant,
     last_frame: Option<Instant>,
     tick_accum: f32,
-    /// M131 — vanilla's sound model, driven once per client tick. It opens no
-    /// device and makes no noise; what it does is resolve every sound the
-    /// server asks for, through the real registry, the real `sounds.json`
-    /// index and the real channel budget. `LiveSounds::stats` is the readout.
+    /// M131 — vanilla's sound model, driven once per client tick. Without
+    /// `--audio` it opens no device and makes no noise; what it does is resolve
+    /// every sound the server asks for, through the real registry, the real
+    /// `sounds.json` index and the real channel budget. `LiveSounds::stats` is
+    /// the readout, and `sink_diagnostics` is the backend's.
     sounds: LiveSounds,
+    /// M143 — the last backend counters logged, so a change is reported once
+    /// rather than every tick.
+    ///
+    /// **The instrument for a listening pass.** A device that will not open is
+    /// an error at startup; everything after that fails silently by nature, and
+    /// these four numbers are what separate "the sound never resolved" from
+    /// "the ring filled because the callback stopped" from "it all arrived and
+    /// the speakers are muted" — which are indistinguishable to a listener.
+    last_audio: rewo_net::sound_engine::SinkDiagnostics,
     logged_spawn: bool,
     uploaded_total: usize,
     flood_logged: bool,
@@ -7772,6 +7831,24 @@ impl LiveApp {
                 session.local_player_view(),
                 session.game_time(),
             );
+            // M143 — report the backend's counters when they MOVE, not on a
+            // timer. Every one of them is an event ("a sound could not be
+            // resolved", "the ring filled") rather than a level, so a change is
+            // exactly the thing worth a line, and a periodic dump of four
+            // unchanging zeroes trains a reader to ignore it.
+            let audio = self.sounds.sink_diagnostics();
+            if audio != self.last_audio {
+                log::warn!(
+                    "audio: {} unresolved, {} declined stream(s), {} command(s) dropped, \
+                     {} device error(s), {} buffer(s) cached",
+                    audio.unresolved,
+                    audio.declined_streams,
+                    audio.dropped,
+                    audio.device_errors,
+                    audio.cached_buffers,
+                );
+                self.last_audio = audio;
+            }
             // M71 — a client-generated system message (currently only
             // `NO_RESPAWN_BLOCK_AVAILABLE`) is queued as a *translation key*,
             // because vanilla builds a `Component.translatable` and resolves
@@ -9012,6 +9089,7 @@ fn run_windowed(
         last_frame: None,
         tick_accum: 0.0,
         sounds,
+        last_audio: rewo_net::sound_engine::SinkDiagnostics::default(),
         logged_spawn: false,
         uploaded_total: 0,
         flood_logged: false,
@@ -22272,7 +22350,13 @@ mod m131_sounds {
         }
         let registry =
             rewo_data::sound_events::SoundEvents::load(&paths.registries_json()).expect("registry");
-        let live = build_sounds("26.2", &registry, false);
+        let live = build_sounds("26.2", &registry, false, false);
+        // M143 — `audio: false` is the whole suite's path and every gate's, and
+        // it must attach no backend at all. Not merely "no device opened": a
+        // client with a sink but no device answers `stopped()` from the sink,
+        // which is a different reclaim clock, so the silent path has to be the
+        // silent path exactly.
+        assert!(!live.has_sink(), "the default path must open nothing");
         // The registry half: the id table came across intact, and id 0 is the
         // one that separates a `protocol_id` table from an alphabetised one.
         assert_eq!(

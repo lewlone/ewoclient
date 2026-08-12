@@ -116,6 +116,10 @@ rewo-data = { path = "crates/rewo-data" }
 rewo-net = { path = "crates/rewo-net" }
 rewo-world = { path = "crates/rewo-world" }
 rewo-mesh = { path = "crates/rewo-mesh" }
+# M143 — reached by rewo-app only under its OPTIONAL `audio` feature. Listing it
+# here does not link it: a default `cargo build` pulls in neither cpal nor
+# symphonia, which is what keeps the 34 gates free of an audio stack.
+rewo-audio = { path = "crates/rewo-audio" }
 
 # Platform: Windows
 [workspace.dependencies.windows]

@@ -2217,6 +2217,11 @@ pub struct SinkDiagnostics {
     /// Distinct buffers decoded and held. Zero with a healthy device and a
     /// healthy index means resolution is the thing that is broken.
     pub cached_buffers: u64,
+    /// Errors the output stream itself reported. Read together with
+    /// [`Self::dropped`]: **errors with drops is a stalled device, drops alone
+    /// is a callback not keeping up**, and neither alongside silence means the
+    /// sound reached the backend and the backend is wrong.
+    pub device_errors: u64,
 }
 
 /// [`SilentDevice`]'s bookkeeping and a [`ChannelSink`]'s output, as one device.
