@@ -7852,10 +7852,10 @@ impl LiveApp {
             let audio = self.sounds.sink_diagnostics();
             if audio != self.last_audio {
                 log::warn!(
-                    "audio: {} unresolved, {} declined stream(s), {} command(s) dropped, \
+                    "audio: {} unresolved, {} stream(s) failed, {} command(s) dropped, \
                      {} device error(s), {} buffer(s) cached",
                     audio.unresolved,
-                    audio.declined_streams,
+                    audio.streams_failed,
                     audio.dropped,
                     audio.device_errors,
                     audio.cached_buffers,

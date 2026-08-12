@@ -2209,11 +2209,19 @@ pub struct SinkDiagnostics {
     /// Commands the backend could not hand on. **Non-zero means the consumer
     /// stopped consuming**, i.e. a stalled device — not a busy engine.
     pub dropped: u64,
-    /// Attaches whose asset could not be resolved or decoded. These are silent
-    /// channels that still hold a voice.
+    /// Static attaches whose asset could not be resolved or decoded. These are
+    /// silent channels that still hold a voice.
     pub unresolved: u64,
-    /// Streamed attaches the backend declined to handle.
-    pub declined_streams: u64,
+    /// Streams that could not be opened (M144; before it, streams the backend
+    /// declined outright).
+    ///
+    /// **Separate from [`Self::unresolved`] on purpose**: a client whose music
+    /// and ambient beds are silent while its sounds are fine is a different
+    /// diagnosis from the reverse, and the two go through different code — one
+    /// decodes a whole asset and caches it, the other opens a decode position
+    /// and never caches. One counter for both would make the commonest audio
+    /// complaint ("no music") indistinguishable from the rarest.
+    pub streams_failed: u64,
     /// Distinct buffers decoded and held. Zero with a healthy device and a
     /// healthy index means resolution is the thing that is broken.
     pub cached_buffers: u64,
