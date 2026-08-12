@@ -423,6 +423,20 @@ pub enum SoundEvent {
     /// and a loop that has been playing for ten minutes re-enters with
     /// `fade == 12000` and then takes 12000 ticks to fade out.
     BiomeLoopTransition { current: Option<String> },
+    /// One `MusicManager.tick` — the situational music the client would hear
+    /// here, or `None` for "nothing on offer" (M146).
+    ///
+    /// **The same seam as `BiomeLoopTransition`, for the same reason.** The
+    /// selection needs the world (the biome's attribute, the player's
+    /// abilities, whether their eyes are under water, the boss bar, the
+    /// dimension) and the timers need `soundManager.isActive(currentMusic)` —
+    /// and no one object has both. `PlaySession` computes the situation and the
+    /// engine, which owns the instance, runs the state machine.
+    ///
+    /// Pushed **every tick**, not on a change: `MusicManager.tick` is a timer
+    /// as much as a selector, and a decrement that only happened when the
+    /// biome changed would never start a song in a world you stood still in.
+    Music { situational: Option<rewo_world::music::Music> },
 }
 
 /// Which `TickableSoundInstance` the client is starting, and what it follows.

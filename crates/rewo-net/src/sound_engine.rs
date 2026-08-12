@@ -1410,6 +1410,10 @@ pub enum NoInstance {
     /// The event is a [`SoundEvent::Tickable`] — it has a ramp as well as an
     /// instance, so [`instance_and_ramp`] is its entry point (M141e).
     IsTickable,
+    /// The event is a [`SoundEvent::Music`] — one `MusicManager.tick`, which
+    /// may start nothing, stop something, or both, so it has no single
+    /// instance (M146).
+    IsMusicTick,
 }
 
 /// Turn one decoded [`SoundEvent`] into the [`SoundInstance`] vanilla builds.
@@ -1445,6 +1449,9 @@ pub fn instance_from_event(
         SoundEvent::Tickable(_) => Err(NoInstance::IsTickable),
         // Not a sound at all: it mutates ramps the engine already owns.
         SoundEvent::BiomeLoopTransition { .. } => Err(NoInstance::IsBiomeTransition),
+        // Also not a sound: it drives a state machine that may or may not
+        // decide to start one.
+        SoundEvent::Music { .. } => Err(NoInstance::IsMusicTick),
     }
 }
 
@@ -2037,6 +2044,18 @@ pub struct SoundSystem {
     /// resource pack on disk is silent, not broken.
     pub sounds: SoundsIndex,
     pub stats: SoundStats,
+    /// `Minecraft.musicManager` (M146).
+    ///
+    /// **It lives here rather than in `PlaySession` because of one method.**
+    /// `MusicManager.tick` asks `soundManager.isActive(currentMusic)`, and only
+    /// the engine can answer that; the session, meanwhile, is the only thing
+    /// that knows the biome, the abilities and the boss bar. So the session
+    /// names the situation ([`SoundEvent::Music`]) and this side runs the
+    /// machine — the same split M142d used for the biome loop.
+    pub music: crate::music::MusicManager,
+    /// The instance the manager last started, so `isActive` has something to
+    /// ask about. `None` whenever the manager holds no track.
+    music_instance: Option<InstanceId>,
 }
 
 impl SoundSystem {
@@ -2045,6 +2064,14 @@ impl SoundSystem {
             engine: SoundEngine::new(),
             sounds,
             stats: SoundStats::default(),
+            // Vanilla seeds from `RandomSource.create()`, which is a unique
+            // seed per session; a fixed one here makes a run reproducible,
+            // which is what the witnesses need and what a player never notices.
+            music: crate::music::MusicManager::new(
+                0,
+                crate::music::MusicFrequency::Default,
+            ),
+            music_instance: None,
         }
     }
 
@@ -2072,6 +2099,14 @@ impl SoundSystem {
             // — and it may ask for exactly one new loop, which is then played
             // through the ordinary path below so it gets the same channel
             // budget and the same `NOT_STARTED` accounting as everything else.
+            // One `MusicManager.tick`. Like the transition above it decides
+            // rather than describes, and what it decides is applied through the
+            // ordinary `play` path so music gets the same channel budget and
+            // the same accounting as everything else.
+            if let SoundEvent::Music { situational } = ev {
+                self.tick_music(situational.as_ref(), world, device);
+                continue;
+            }
             if let SoundEvent::BiomeLoopTransition { current } = ev {
                 let needed = self.engine.apply_biome_loop_transition(current.as_deref());
                 self.stats.biome_transitions += 1;
@@ -2125,6 +2160,64 @@ impl SoundSystem {
                     }
                 }
                 Err(_) => self.stats.no_instance += 1,
+            }
+        }
+    }
+
+    /// `MusicManager.tick`, and the three things it can ask for (M146).
+    ///
+    /// `isActive` is asked of the engine here — that is the whole reason the
+    /// manager lives on this side. A stopped or reclaimed instance answers
+    /// false, which is what lets the manager notice a track has ended and
+    /// schedule the next one.
+    fn tick_music(
+        &mut self,
+        situational: Option<&rewo_world::music::Music>,
+        world: &dyn SoundWorld,
+        device: &mut dyn AudioDevice,
+    ) {
+        let is_active = self
+            .music_instance
+            .map(|id| self.engine.is_active(id))
+            .unwrap_or(false);
+        // `getMusicVolume()` is the `MUSIC_VOLUME` environment attribute, which
+        // Rewo does not sample — no biome or dimension in 26.2 declares it, so
+        // the probe's answer is its default of 1.0 everywhere. Passing the
+        // constant is therefore exact today and a stated assumption tomorrow.
+        let outcome = self.music.tick(1.0, situational, is_active, false);
+
+        if outcome.stop_current {
+            if let Some(id) = self.music_instance.take() {
+                self.engine.stop(id, device);
+                self.stats.stops += 1;
+            }
+        }
+        if let Some(gain) = outcome.category_volume {
+            // `updateCategoryVolume(MUSIC, gain)` — the crossfade's one writer
+            // (M140b), and not the options slider, which arrives a factor
+            // earlier.
+            self.engine.update_category_volume(SoundSource::Music, gain);
+        }
+        if let Some(music) = outcome.start {
+            let instance = SoundInstance::for_music(music.sound);
+            let (id, result) = self.engine.play(instance, &self.sounds, world, device);
+            match result {
+                PlayResult::Started | PlayResult::StartedSilently => {
+                    self.music_instance = Some(id);
+                    match result {
+                        PlayResult::Started => self.stats.started += 1,
+                        _ => self.stats.started_silently += 1,
+                    }
+                }
+                // **The channel budget can refuse music like anything else**,
+                // and when it does the manager must not go on believing a track
+                // is playing — otherwise it waits for a sound that never
+                // started, and the next song never comes.
+                PlayResult::NotStarted(_) => {
+                    self.stats.not_started += 1;
+                    self.music_instance = None;
+                    self.music.stop_playing(situational);
+                }
             }
         }
     }
@@ -4825,6 +4918,111 @@ mod tests {
         assert_eq!(sys.stats.started, 25);
         assert_eq!(sys.stats.not_started, 1);
         assert_eq!(dev.refusals(), 1);
+    }
+
+    // ── the music tick reaches the engine (M146) ──────────────────────────
+
+    /// A `sounds.json` index carrying one streamed music event.
+    fn music_index() -> SoundsIndex {
+        let mut idx = SoundsIndex::new();
+        let mut sound = Sound::file("minecraft:music/game/calm1");
+        sound.stream = true;
+        idx.handle_registration(
+            "minecraft:music.game",
+            &SoundEventRegistration {
+                sounds: vec![sound],
+                replace: false,
+                subtitle: None,
+            },
+            &SoundFileSet::All,
+        );
+        idx
+    }
+
+    /// **A music tick starts a track through the ordinary play path.**
+    ///
+    /// Drives `SoundSystem::accept` with `SoundEvent::Music` for as many ticks
+    /// as the starting delay, and asserts the engine ends up holding a channel
+    /// — so the manager, the engine, the index and the channel budget are all
+    /// on the same path a real session takes. Before M146 nothing called the
+    /// manager at all and this stayed at zero for ever.
+    #[test]
+    fn a_music_tick_eventually_starts_a_track_through_the_engine() {
+        let mut sys = SoundSystem::new(music_index());
+        let mut dev = RecordingDevice::default();
+        let reg = registry();
+        let ev = SoundEvent::Music {
+            situational: Some(rewo_world::music::musics::game()),
+        };
+        for _ in 0..crate::music::STARTING_DELAY {
+            sys.accept(&[ev.clone()], &reg, &EmptyWorld, &mut dev);
+        }
+        assert_eq!(sys.stats.started, 1, "one track started");
+        assert_eq!(sys.engine.live_count(), 1, "and it holds a channel");
+        // A streamed attach, because music is `stream: true` — the channel came
+        // from the streaming pool rather than the static one.
+        assert!(dev
+            .calls_to(0)
+            .iter()
+            .any(|c| matches!(c, ChannelCall::AttachBufferStream(_, _))));
+    }
+
+    /// **Nothing on offer starts nothing**, however long the client runs.
+    #[test]
+    fn a_music_tick_with_no_situational_track_starts_nothing() {
+        let mut sys = SoundSystem::new(music_index());
+        let mut dev = RecordingDevice::default();
+        let reg = registry();
+        for _ in 0..1_000 {
+            sys.accept(
+                &[SoundEvent::Music { situational: None }],
+                &reg,
+                &EmptyWorld,
+                &mut dev,
+            );
+        }
+        assert_eq!(sys.stats.started, 0);
+        assert_eq!(sys.engine.live_count(), 0);
+    }
+
+    /// A replacing track stops the one playing, through the engine.
+    #[test]
+    fn a_replacing_track_stops_the_current_one_through_the_engine() {
+        let mut idx = music_index();
+        let mut menu = Sound::file("minecraft:music/menu/menu1");
+        menu.stream = true;
+        idx.handle_registration(
+            "minecraft:music.menu",
+            &SoundEventRegistration {
+                sounds: vec![menu],
+                replace: false,
+                subtitle: None,
+            },
+            &SoundFileSet::All,
+        );
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let reg = registry();
+
+        let game = SoundEvent::Music {
+            situational: Some(rewo_world::music::musics::game()),
+        };
+        for _ in 0..crate::music::STARTING_DELAY {
+            sys.accept(&[game.clone()], &reg, &EmptyWorld, &mut dev);
+        }
+        assert_eq!(sys.stats.started, 1);
+        let stops_before = sys.stats.stops;
+
+        // The menu replaces, and is a different track.
+        sys.accept(
+            &[SoundEvent::Music {
+                situational: Some(rewo_world::music::musics::menu()),
+            }],
+            &reg,
+            &EmptyWorld,
+            &mut dev,
+        );
+        assert_eq!(sys.stats.stops, stops_before + 1, "the game track was stopped");
     }
 
     #[test]

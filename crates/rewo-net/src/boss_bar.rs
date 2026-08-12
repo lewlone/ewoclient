@@ -361,7 +361,12 @@ impl BossBars {
         self.bars.values().any(|b| b.properties.darken_screen)
     }
 
-    /// `shouldPlayMusic`.
+    /// `BossHealthOverlay.shouldPlayMusic()` — any bar asking for boss music.
+    ///
+    /// **Its one caller gates it on the dimension** (M146):
+    /// `getSituationalMusic` tests `dimension() == Level.END` *first*, so a
+    /// wither fought in the Overworld sets this flag and still does not get
+    /// `Musics.END_BOSS`.
     pub fn should_play_music(&self) -> bool {
         self.bars.values().any(|b| b.properties.play_music)
     }

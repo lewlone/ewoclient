@@ -412,6 +412,34 @@ impl World {
         crate::ambient::AmbientSounds::resolve(base, ctx.registry.biomes.get(id as usize))
     }
 
+    /// `BACKGROUND_MUSIC` at a position — the dimension's base, replaced by the
+    /// biome's if that biome declares one (M146).
+    ///
+    /// The exact twin of [`Self::ambient_sounds_at`], sampled at the same quart
+    /// and through the same registry, because the two attributes travel
+    /// together and a second sampling rule is how they would come to disagree.
+    pub fn background_music_at(
+        &self,
+        pos: [f64; 3],
+        base: &crate::music::BackgroundMusic,
+    ) -> crate::music::BackgroundMusic {
+        let Some(ctx) = self.biome.as_ref() else {
+            return base.clone();
+        };
+        let id = self.noise_biome_at_quart(
+            crate::ambient::quart_from_block_coord(pos[0]),
+            crate::ambient::quart_from_block_coord(pos[1]),
+            crate::ambient::quart_from_block_coord(pos[2]),
+        );
+        crate::music::BackgroundMusic::resolve(
+            base,
+            ctx.registry
+                .biomes
+                .get(id as usize)
+                .and_then(|b| b.background_music.as_ref()),
+        )
+    }
+
     /// `level.getBlockStatesIfLoaded(box).filter(is BUBBLE_COLUMN).findFirst()`
     /// — the scan `BubbleColumnAmbientSoundHandler` runs over the player's
     /// torso box (M142c). `Some(drag)` for the first bubble column found.

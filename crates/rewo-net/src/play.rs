@@ -1928,6 +1928,7 @@ impl PlaySession {
         // The ambient handlers, at the END of the player tick — vanilla's
         // order (`LocalPlayer.java:247-249`), after the movement send.
         self.tick_ambient_sounds();
+        self.tick_music();
         // Step other entities' 3-tick position lerps (vanilla cadence).
         self.world.entities.tick_lerp();
         // `ChestLidController.tickLid` — the client animates the ten ticks the
@@ -3673,6 +3674,72 @@ impl PlaySession {
     /// Vanilla ticks the handlers at the very end of `LocalPlayer.tick()` and
     /// **only inside `if (this.connection.hasClientLoaded())`** — the whole
     /// body is gated, so a client still loading ticks none of them.
+    /// `Minecraft.getSituationalMusic()` — which track this place offers (M146).
+    ///
+    /// ```java
+    /// Music screenMusic = Optionull.map(this.gui.screen(), Screen::getBackgroundMusic);
+    /// if (screenMusic != null) return screenMusic;
+    /// if (this.player != null) {
+    ///    if (playerLevel.dimension() == Level.END && bossOverlay.shouldPlayMusic()) return Musics.END_BOSS;
+    ///    BackgroundMusic bg = camera.attributeProbe().getValue(BACKGROUND_MUSIC, 1.0F);
+    ///    return bg.select(isCreative, isUnderwater).orElse(null);
+    /// } else return Musics.MENU;
+    /// ```
+    ///
+    /// **Two arms are deliberately absent, and neither is a gap in this
+    /// method.** The screen arm needs `Screen.getBackgroundMusic`, which none
+    /// of Rewo's screens declares — the ones that do in vanilla are the title
+    /// screen and the credits, and Rewo has neither. And the `player == null`
+    /// arm returns `Musics.MENU`, which is the *title screen's* music: a
+    /// `PlaySession` exists only after login, so that arm is unreachable here
+    /// rather than skipped, and playing menu music during a join would be a
+    /// bug rather than parity.
+    ///
+    /// **The End test comes before the boss bar**, which is what stops a wither
+    /// fought in the Overworld playing the dragon's music.
+    pub fn situational_music(&self) -> Option<rewo_world::music::Music> {
+        use rewo_world::music::BackgroundMusic;
+        self.player_id?;
+        let in_the_end = self.active_dimension_key.as_deref() == Some("minecraft:the_end");
+        // **The base is EMPTY, measured rather than assumed**: grepping every
+        // writer of `BACKGROUND_MUSIC` in 26.2 finds only biome builders, so no
+        // vanilla dimension type declares it and the layer below the biome is
+        // the attribute's own default. A datapack that declared one would be
+        // inherited as empty here, which is recorded rather than handled.
+        let base = BackgroundMusic::empty();
+        let pos = [self.player.x, self.player.y, self.player.z];
+        let bg = self.world.background_music_at(pos, &base);
+        // `getAbilities().instabuild && getAbilities().mayfly` — **both**, so a
+        // creative-mode player whose flight was revoked is not "creative" for
+        // music, and neither is a survival player given flight.
+        let is_creative = self.abilities.instabuild && self.abilities.mayfly;
+        // `LocalPlayer.isUnderWater()` — the eye test, the same one the
+        // underwater ambient handler uses.
+        let is_underwater = self.world.is_water_at_point(
+            self.player.x,
+            self.player.eye_y(),
+            self.player.z,
+            &self.water_states,
+        );
+        Some(situational_music_from(
+            in_the_end,
+            self.boss_bars.should_play_music(),
+            &bg,
+            is_creative,
+            is_underwater,
+        )?)
+    }
+
+    /// Push this tick's situation at the engine, which owns the state machine.
+    ///
+    /// Every tick, unconditionally — `MusicManager.tick` is a timer as much as
+    /// a selector, and an event pushed only on a change would never start a
+    /// song in a world the player stood still in.
+    fn tick_music(&mut self) {
+        let situational = self.situational_music();
+        self.push_sound_event(crate::sounds::SoundEvent::Music { situational });
+    }
+
     fn tick_ambient_sounds(&mut self) {
         let Some(player) = self.player_id else {
             return;
@@ -6882,5 +6949,81 @@ mod player_info_field_tests {
         assert!(res.is_err());
         assert_eq!(e[0].gamemode, Some(GameMode::Spectator));
         assert_eq!(e[0].tab_list_order, None);
+    }
+}
+
+/// The decision half of [`PlaySession::situational_music`], over plain values.
+///
+/// **Split out because `PlaySession` has no test module anywhere in the repo**
+/// — it owns a socket — so anything left inside it is untestable by
+/// construction (M71, and the same move M97 and M143f made). What stays in the
+/// method is gathering: the dimension key, the boss bars, the biome attribute,
+/// the abilities and the eye test. What moves here is every rule that decides.
+pub fn situational_music_from(
+    in_the_end: bool,
+    boss_music: bool,
+    background: &rewo_world::music::BackgroundMusic,
+    is_creative: bool,
+    is_underwater: bool,
+) -> Option<rewo_world::music::Music> {
+    // **The dimension test comes first.** A wither fought in the Overworld sets
+    // `shouldPlayMusic` and must not get the dragon's track.
+    if in_the_end && boss_music {
+        return Some(rewo_world::music::musics::end_boss());
+    }
+    background.select(is_creative, is_underwater).cloned()
+}
+
+#[cfg(test)]
+mod m146_music {
+    use super::situational_music_from;
+    use rewo_world::music::{musics, BackgroundMusic};
+
+    /// **The End boss beats the biome, and only in the End.**
+    #[test]
+    fn the_dragon_needs_both_the_dimension_and_the_bar() {
+        let bg = BackgroundMusic::of_sound("minecraft:music.game.end");
+        // Both: the dragon.
+        assert_eq!(
+            situational_music_from(true, true, &bg, false, false).unwrap().sound,
+            "minecraft:music.dragon"
+        );
+        // A boss bar elsewhere — a wither in the Overworld — is the biome's.
+        assert_eq!(
+            situational_music_from(false, true, &bg, false, false).unwrap().sound,
+            "minecraft:music.game.end"
+        );
+        // The End with no boss is also the biome's.
+        assert_eq!(
+            situational_music_from(true, false, &bg, false, false).unwrap().sound,
+            "minecraft:music.game.end"
+        );
+    }
+
+    /// The selection flags reach `select`, in its own priority order.
+    #[test]
+    fn creative_and_underwater_reach_the_selection() {
+        let bg = BackgroundMusic::overworld().with_underwater(musics::under_water());
+        let pick = |c, u| {
+            situational_music_from(false, false, &bg, c, u)
+                .unwrap()
+                .sound
+        };
+        assert_eq!(pick(false, false), "minecraft:music.game");
+        assert_eq!(pick(true, false), "minecraft:music.creative");
+        assert_eq!(pick(false, true), "minecraft:music.under_water");
+        assert_eq!(pick(true, true), "minecraft:music.under_water", "water wins");
+    }
+
+    /// A place that offers nothing offers nothing — **not** the game track.
+    ///
+    /// `orElse(null)` is the last word in vanilla's method, and an empty record
+    /// really is reachable: `OverworldBiomes.java:596` declares one.
+    #[test]
+    fn an_empty_record_is_silence_rather_than_a_default() {
+        assert!(situational_music_from(false, false, &BackgroundMusic::empty(), false, false).is_none());
+        // …and the dragon still overrides it, because that arm returns before
+        // the record is consulted at all.
+        assert!(situational_music_from(true, true, &BackgroundMusic::empty(), false, false).is_some());
     }
 }
