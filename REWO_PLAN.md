@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-12 after M144:
-**3113 tests, 0 failures** (**world 1166, net 1098, gpu 275, data 228, app 199,
-mesh 45, proto 16, audio 86** — read off the runner per crate; they sum to 3113).
+Current measurement, taken 2026-08-12 after M145:
+**3131 tests, 0 failures** (**world 1171, net 1111, gpu 275, data 228, app 199,
+mesh 45, proto 16, audio 86** — read off the runner per crate; they sum to 3131).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
