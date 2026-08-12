@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-12 after M145:
-**3131 tests, 0 failures** (**world 1171, net 1111, gpu 275, data 228, app 199,
-mesh 45, proto 16, audio 86** — read off the runner per crate; they sum to 3131).
+Current measurement, taken 2026-08-12 after M146:
+**3137 tests, 0 failures** (**world 1171, net 1117, gpu 275, data 228, app 199,
+mesh 45, proto 16, audio 86** — read off the runner per crate; they sum to 3137).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -246,17 +246,14 @@ witnesses are mostly self-driven can look healthy against nothing.
 >
 > Candidates for the next *code* milestone, none of them blocked:
 >
-> * **Wire M145's music model in.** M145 shipped `Music`/`Musics`/
->   `BackgroundMusic`, the `audio/background_music` attribute parse and the whole
->   of `MusicManager` — the tick, the timers, `MusicFrequency` — and **nothing
->   calls any of it**, which is stated rather than implied. What is left is
->   `getSituationalMusic`'s composition and the `PlaySession` tick site, and
->   **every input but one already exists**: the camera's attribute probe over
->   biome/dimension (M14's sampling, M142's layering), `isCreative` from M75's
->   abilities, `isUnderWater` from M142's submersion, the End boss bar from M65.
->   The exception is screen music, which Rewo's screens do not declare.
->   M144 shipped the streaming path underneath all of it, so a streamed event
->   already plays when the engine asks for one.
+> * **The listening pass** — see the box above. Music is now the most audible
+>   thing in the client that no gate can grade, and M144–M146 have all landed
+>   green without a human hearing any of it.
+> * **`MusicFrequency` and `getMusicVolume` are both pinned.** The frequency is
+>   fixed at `DEFAULT` because Rewo has no options screen (`set_frequency`
+>   exists and nothing calls it), and the volume is a constant 1.0 because no
+>   26.2 biome or dimension declares the `MUSIC_VOLUME` attribute — exact today,
+>   a stated assumption tomorrow. Neither is hard; both need a surface.
 > * **Decode on a worker.** Still inline on the client tick — one chunk per
 >   second of playback, four at the attach, plus one asset read of up to 11 MB
 >   when a track starts. A stated deviation from vanilla's `supplyAsync`.
@@ -22219,3 +22216,140 @@ app 199, mesh 45, proto 16, audio 86 — eight crates, `rewo-app` on `--bins`);
 45/45 validation ON; demo PNG `2cc56b4acbfb92cb`, byte-identical since M15;
 mutation battery **25/25** with a surviving no-op control; both build
 configurations clean.
+
+---
+
+## M145 + M146 — music: the records, `MusicManager`, and the ownership split wiring it forced (2026-08-12)
+
+M144 shipped the streaming path a track needs; these decide **which** track and
+**when**. M145 is the model, M146 is the wiring, and the interesting part of
+M146 is where the state machine had to live.
+
+### The records, and a selection rule that reads backwards twice
+
+`Music`, `Musics` and `BackgroundMusic` in `rewo-world::music` — the sibling of
+`ambient`, because both are environment attributes a biome or dimension type
+declares, both arrive in the same wire `attributes` compound, and both are
+**replaced** rather than merged when a biome declares one. The parse mirrors
+`attribute_ambient_sounds` exactly.
+
+`select(isCreative, isUnderwater)` inverts in two places. **Underwater wins
+over creative**, so a creative player swimming in an ocean gets the underwater
+track. And each arm falls through to `defaultMusic` only when its *own* slot is
+absent — a record with creative music and no default is silent for everyone
+else rather than falling back to the game track. The witness covers all four
+`(creative, underwater)` combinations *and* the creative-only record, because a
+fall-through-to-default reading passes three of the five.
+
+**Only four of the seven tracks replace** — menu, credits, end, end_boss do;
+game, creative and under_water do not — and which four is the whole reason
+walking between biomes does not cut off what you are already hearing.
+
+Absent and explicitly-empty stay distinct, and here that is reachable rather
+than hypothetical: `OverworldBiomes.java:596` sets `BackgroundMusic.EMPTY` on a
+biome, so collapsing the two gives that biome the Overworld's music.
+
+### `MusicManager`, and four things that invert if guessed
+
+**The stop and the clear happen on the SAME tick.** Vanilla's
+`soundManager.stop(currentMusic)` is synchronous, so the `!isActive` branch
+four lines below also fires — clearing `currentMusic` and drawing a **second**
+random number in the same pass. Modelling the stop as something the caller
+applies next tick delays every replacement by a tick and skips that draw, which
+changes the entire subsequent song sequence for a given seed.
+
+**`Mth.nextInt` is inclusive at both ends and does not draw at all when
+`min >= max`** — it returns `min` and leaves the generator un-advanced. That is
+reachable in ordinary play: `FREQUENT`'s 12 000-tick ceiling collapses game
+music's 12 000..24 000 window, so every refresh under that setting skips a draw
+and every later song shifts.
+
+**`getNextSongDelay` checks null BEFORE the `CONSTANT` case**, which inverts
+`CONSTANT`: with no music it returns its `maxFrequency`, which is **0**, not the
+100 the next line would give. Reordering the two reads more natural and makes
+`stopPlaying()` on a silent screen queue the next track five seconds out.
+
+**`nextSongDelay = min(delay, music.maxDelay())` sits OUTSIDE the
+`currentMusic != null` block**, and that placement is what makes
+`startPlaying`'s `Integer.MAX_VALUE` park safe — move it inside and the next
+song never comes. The decrement is a *pre*-decrement, so a delay of 100 starts
+on the hundredth tick; and `canReplace` compares identifiers, without which the
+menu music would stop and restart itself every tick.
+
+### The ownership split, which the wiring forced rather than chose
+
+**No one object has both halves of `MusicManager.tick`.** The selection needs
+the world — the biome's attribute, the abilities, whether the eyes are under
+water, the boss bars, the dimension key — and the timers need
+`soundManager.isActive(currentMusic)`, which only the engine can answer. So
+`PlaySession` names the situation through a new
+`SoundEvent::Music { situational }` and `SoundSystem` runs the machine. That is
+the same seam M142d built for the biome loop, reached independently by the same
+constraint, which is the strongest kind of evidence that the seam is in the
+right place.
+
+The event is pushed **every tick** rather than on a change, because
+`MusicManager.tick` is a timer as much as a selector: an event that only fired
+when the biome changed would never start a song in a world the player stood
+still in.
+
+### Two arms of `getSituationalMusic` are absent, and neither is a gap
+
+The **screen** arm needs `Screen.getBackgroundMusic`, which only the title
+screen and the credits declare — and Rewo has neither. The **`player == null`**
+arm returns `Musics.MENU`, which is the title screen's music; a `PlaySession`
+exists only after login, so that arm is unreachable here rather than skipped,
+and playing menu music during a join would be a bug rather than parity.
+
+**The End test comes before the boss bar**, which is what stops a wither fought
+in the Overworld playing the dragon's track. Its witness drives all three
+combinations, because a version testing only the bar passes two of them.
+`isCreative` is `instabuild && mayfly` — **both** — so a creative player whose
+flight was revoked is not creative for music, and neither is a survival player
+given flight.
+
+The dimension base is `EMPTY`, **measured rather than assumed**: grepping every
+writer of `BACKGROUND_MUSIC` in 26.2 finds only biome builders, so no vanilla
+dimension type declares it. A datapack that did would be inherited as empty,
+which is recorded rather than handled.
+
+One thing the engine side has to get right: **the channel budget can refuse
+music like anything else**, and when it does the manager must not go on
+believing a track is playing — otherwise it waits for a sound that never
+started and the next song never comes.
+
+### What the compiler and the runner caught
+
+Adding `background_music` to `BiomeDef` broke **eight** construction sites
+across four crates, which is the intended behaviour and why it was added rather
+than defaulted. It also reproduced this repo's own runner trap: `cargo build -p
+rewo-net` was completely clean while rewo-world, rewo-mesh and rewo-app all
+failed to compile their *tests*, because those sites live in test fixtures of
+crates rewo-net does not depend on. **Building one crate proves nothing about
+the others.**
+
+`BossBars::should_play_music` already existed, and the duplicate I wrote failed
+the build — the good outcome. Its one-line doc now records the dimension gate
+its only caller applies.
+
+And a doc-edit script asserted its second anchor *after* replacing the first,
+so it aborted and wrote nothing, leaving §0.0's measurement at M144's.
+Assert-before-write is the right design; it means re-reading rather than
+assuming the edit landed.
+
+### What is open
+
+* **Nobody has listened.** Every number below is green and none of it is that
+  claim — and music is now the most audible thing in the client that no gate
+  can grade.
+* **`MusicFrequency` is fixed at `DEFAULT`.** Vanilla reads it from the options
+  screen, which Rewo does not have; `set_frequency` exists and nothing calls it.
+* **`getMusicVolume()` is a constant 1.0.** It is the `MUSIC_VOLUME` environment
+  attribute, and no 26.2 biome or dimension declares one, so the probe's answer
+  is its default everywhere — exact today, a stated assumption tomorrow.
+* **The now-playing toast** is not modelled; Rewo has no toast system.
+
+**Measured:** 3137 tests / 0 failures (world 1171, net 1117, gpu 275, data 228,
+app 199, mesh 45, proto 16, audio 86 — eight crates, `rewo-app` on `--bins`);
+34 serverless gates green with **0 validation errors**; demo PNG
+`2cc56b4acbfb92cb`, byte-identical since M15; both build configurations clean.
