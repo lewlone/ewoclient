@@ -129,7 +129,7 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-12 after M146:
+Current measurement, taken 2026-08-12 after M147:
 **3137 tests, 0 failures** (**world 1171, net 1117, gpu 275, data 228, app 199,
 mesh 45, proto 16, audio 86** — read off the runner per crate; they sum to 3137).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
@@ -148,7 +148,7 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` 45/45 with validation ON and 0
+34/34, `mobshot` 246/246, **`live --render-check` **46/46** with validation ON and 0
 validation errors** — r45 arrived with M138a, and the whole thing reproduces with
 `python tools/render_check.py`, which stands up a fresh server and carries both
 caller requirements; demo PNG
@@ -22308,10 +22308,12 @@ combinations, because a version testing only the bar passes two of them.
 flight was revoked is not creative for music, and neither is a survival player
 given flight.
 
-The dimension base is `EMPTY`, **measured rather than assumed**: grepping every
+~~The dimension base is `EMPTY`, measured rather than assumed: grepping every
 writer of `BACKGROUND_MUSIC` in 26.2 finds only biome builders, so no vanilla
-dimension type declares it. A datapack that did would be inherited as empty,
-which is recorded rather than handled.
+dimension type declares it.~~ **WRONG, and corrected by M147 below** — the grep
+behind it was truncated by `head -20`, and the consequence was that no music
+played anywhere in the Overworld. A measurement reported as complete when it
+was truncated is worse than no measurement, because it is quoted.
 
 One thing the engine side has to get right: **the channel budget can refuse
 music like anything else**, and when it does the manager must not go on
@@ -22353,3 +22355,85 @@ assuming the edit landed.
 app 199, mesh 45, proto 16, audio 86 — eight crates, `rewo-app` on `--bins`);
 34 serverless gates green with **0 validation errors**; demo PNG
 `2cc56b4acbfb92cb`, byte-identical since M15; both build configurations clean.
+
+---
+
+## M147 — the Overworld's music lives on the dimension type, and `head -20` hid it (2026-08-12)
+
+M146 shipped music selection with every test green, 34 gates green and
+`--render-check` at 45/45. **It played no music anywhere in the Overworld**, and
+the thing that found it was running the client for real.
+
+### The bug
+
+`situational_music()` hard-coded `BackgroundMusic::empty()` as the layer below
+the biome, on the strength of a measurement in M146's own commit message:
+*"grepping every writer of `BACKGROUND_MUSIC` in 26.2 finds only biome
+builders"*. The grep was `... | head -20`. There are **32 writers across four
+files**, and the twentieth is still in `OverworldBiomes.java`;
+`DimensionTypes.java` never appeared.
+
+`DimensionTypes.java:39` sets `BackgroundMusic.OVERWORLD` on the overworld
+dimension type and `:124` sets `Musics.END` on the End. An ordinary biome —
+plains, forest, anything the generic `baseBiome` builds — declares **no**
+background music at all, so with an empty base `select()` returns `None` for
+almost every place a player stands. The five Nether biomes and the handful of
+Overworld ones that do declare a track would have worked; the Overworld's own
+music, which is most of it, could not.
+
+**The doc error and the bug are the same error.** The claim was not decoration
+next to the code — it *was* the code's justification, and it was quoted into
+four documents before anything ran.
+
+### What found it, and what could not
+
+3137 unit tests, 34 serverless gates and 45 `--render-check` witnesses were all
+green over it. What found it was `REWO_AUDIO=1 python tools/render_check.py`
+with `RUST_LOG=…sound_engine=debug` — **159 tick lines, every one `+0
+started`**. Not an error, not a warning: a number that should not have been
+zero.
+
+The audio counters could not see it either. `unresolved`, `streams_failed`,
+`dropped` and `device_errors` were all 0, and `cached_buffers` was 1 — a
+perfectly healthy-looking client that had decided to play nothing.
+
+### r46, and why it needs no device
+
+`--render-check` gains **r46: the client selected and started a music track**,
+and the useful property is that it is **not gated on the `audio` feature**.
+Music selection runs against whatever device is attached, so in the default
+build the silent device stands in and the witness still grades the attribute
+layering, the selection and the timers. The device is the only part it cannot
+see, and no check in this project can see that.
+
+It reports `minecraft:music.creative` on the standard run, which is a stronger
+result than "music started": the render-check bot is in creative mode, so the
+track it names is `select()`'s creative arm, reached through
+`instabuild && mayfly`. A client with the End's `Musics.END` wired to the wrong
+layer, or one that never decremented `nextSongDelay`, both score `None`.
+
+### The fix
+
+`DimensionTypeDef` gains `background_music`, `dimension_parse` reads it from the
+same `attributes` compound the biome parse reads, and `situational_music` takes
+it as the base. That is the layering M142 already built for `AmbientSounds` —
+which reads its dimension base correctly, and has since M142.
+
+### The lesson, which is not about music
+
+**A truncated grep reported as a measurement is worse than no measurement**,
+because a measurement gets quoted. This one reached a commit message, a merge
+commit, `REWO_PLAN` §15 and `CLAUDE.md` within an hour, and the code was built
+on it. `head` and `| wc -l` disagree silently; when a claim is "every X", count
+them.
+
+And the second-order one: **this repo's own rule is that a number with a test
+behind it stays true and the prose beside it does not** — but here the prose
+*was* load-bearing, because no test could reach the claim. The witness that
+would have caught it (r46) did not exist until after the bug did.
+
+**Measured:** 3137 tests / 0 failures; 34 serverless gates green with 0
+validation errors; `live --render-check` **46/46**; demo PNG
+`2cc56b4acbfb92cb`, byte-identical since M15; both build configurations clean.
+Live with `--features audio`: a device opened at 48 kHz, 0 unresolved, 0 streams
+failed, 0 commands dropped, 0 device errors.

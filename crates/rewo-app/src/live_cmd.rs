@@ -275,6 +275,14 @@ struct RenderCheck {
     /// tick count instead, which at any real frame rate is an order of
     /// magnitude smaller.
     listener_pushes: u64,
+    /// M147 — the sound event id `MusicManager` last started, if any.
+    ///
+    /// **Not gated on the `audio` feature**, and that is the point: music
+    /// selection runs against whatever device is attached, so this grades the
+    /// attribute layering, the selection and the timers in the DEFAULT build
+    /// where the silent device stands in. The device is the only part it cannot
+    /// see, and no check in this project can.
+    music_started: Option<String>,
     /// The forward vector the device last received, for a shape check.
     listener_forward: Option<[f32; 3]>,
     /// M111 — frames on which the chat SCROLLBAR was drawn.
@@ -1023,6 +1031,14 @@ impl RenderCheck {
             format!(
                 "{} pushes over {} frames (must be equal -- per tick would be                  roughly the tick count), last forward {:?} (must be a unit                  vector, which a default-constructed or zeroed transform is not)",
                 self.listener_pushes, self.frames, self.listener_forward
+            ),
+        );
+        row(
+            "r46 the client selected and started a music track",
+            self.music_started.is_some(),
+            format!(
+                "started {:?} (M147: the Overworld's BackgroundMusic lives on the                  DIMENSION TYPE and not on plains, so with an EMPTY base this                  is None and no music plays anywhere in the Overworld -- which                  is what M146 shipped. The run is 8 s = 160 ticks against a                  100-tick STARTING_DELAY, so a client that never decremented                  scores None too.)",
+                self.music_started
             ),
         );
         row(
@@ -8059,9 +8075,16 @@ impl LiveApp {
         // `update_listener`'s body would leave a call-site counter green.
         let pushes = self.sounds.device.listener_pushes;
         let fwd = self.sounds.device.last_listener.map(|t| t.forward);
+        // Read off the MANAGER, which is the engine's, rather than off anything
+        // this frame computed — the claim is that a track was actually started,
+        // not that a situation was named.
+        let music = self.sounds.system.music.current().map(str::to_string);
         if let Some(c) = self.check.as_mut() {
             c.listener_pushes = pushes;
             c.listener_forward = fwd;
+            if music.is_some() {
+                c.music_started = music;
+            }
         }
         // Before `set_entities`: the entity pass reads the eye as the CEM
         // `player_pos_*`, which FA aims mob eyes/heads with.

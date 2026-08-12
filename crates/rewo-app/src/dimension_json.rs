@@ -39,6 +39,7 @@ use serde_json::Value;
 /// imported: this oracle must be able to disagree with the production parser.
 const K_SKY_COLOR: &str = "minecraft:visual/sky_color";
 const K_AMBIENT_SOUNDS: &str = "minecraft:audio/ambient_sounds";
+const K_BACKGROUND_MUSIC: &str = "minecraft:audio/background_music";
 const K_FOG_COLOR: &str = "minecraft:visual/fog_color";
 const K_AMBIENT_LIGHT_COLOR: &str = "minecraft:visual/ambient_light_color";
 const K_SKY_LIGHT_COLOR: &str = "minecraft:visual/sky_light_color";
@@ -88,6 +89,10 @@ pub struct JsonDimension {
     /// `rewo_net::biome_parse`, so an agreement between the two is evidence
     /// rather than a tautology.
     pub ambient_sounds: Option<AmbientSounds>,
+    /// `audio/background_music` (M147). Parsed here from the JSON by hand, for
+    /// the same reason the ambient record is: this oracle must not share code
+    /// with the wire parser it grades.
+    pub background_music: Option<rewo_world::music::BackgroundMusic>,
     /// The raw `timelines` entries, exactly as the file spells them.
     pub timelines_raw: Vec<String>,
     /// Every timeline id the holder set resolves to, tags expanded, sorted.
@@ -125,6 +130,7 @@ impl JsonDimension {
             cloud_color: self.cloud_color,
             cloud_height: self.cloud_height,
             ambient_sounds: self.ambient_sounds.clone(),
+            background_music: self.background_music.clone(),
         }
     }
 
@@ -179,6 +185,7 @@ impl JsonDimension {
         );
         eq!("cloud_color", d.cloud_color, want.cloud_color);
         eq!("ambient_sounds", d.ambient_sounds, want.ambient_sounds);
+        eq!("background_music", d.background_music, want.background_music);
         eq!("cloud_height", d.cloud_height, want.cloud_height);
         eq!("sky_light_color", d.sky_light_color, want.sky_light_color);
         eq!(
@@ -360,6 +367,10 @@ fn load_one(data_root: &Path, name: &str, path: &Path) -> Result<JsonDimension, 
         defaulted.push("attributes.visual/fog_color (absent, NOT black)");
     }
     let ambient_sounds = json_ambient_sounds(attr(K_AMBIENT_SOUNDS)).map_err(|e| at(&e))?;
+    let background_music = json_background_music(attr(K_BACKGROUND_MUSIC)).map_err(|e| at(&e))?;
+    if background_music.is_none() {
+        defaulted.push("attributes.audio/background_music (absent = NO MUSIC; the Nether really does declare none, and its biomes carry their own)");
+    }
     if ambient_sounds.is_none() {
         defaulted.push("attributes.audio/ambient_sounds (absent = SILENT, and the Nether really does declare nothing)");
     }
@@ -471,6 +482,7 @@ fn load_one(data_root: &Path, name: &str, path: &Path) -> Result<JsonDimension, 
         cloud_color,
         cloud_height,
         ambient_sounds,
+        background_music,
         timelines_raw,
         timeline_ids,
         has_day_timeline,
@@ -894,5 +906,56 @@ fn json_ambient_sounds(v: Option<&Value>) -> Result<Option<AmbientSounds>, Strin
         loop_sound,
         mood,
         additions,
+    }))
+}
+
+/// `audio/background_music` out of a dimension-type JSON file (M147).
+///
+/// **By hand, and deliberately not through `biome_parse`.** This oracle exists
+/// to grade the wire parser from an independent direction; reusing its code
+/// would make the comparison an identity. The two read different formats
+/// anyway — this is `serde_json`, that is NBT.
+///
+/// The field that decides most of it is `replace_current_music`, which is
+/// **optional and defaults to false** (`Music.CODEC`'s
+/// `optionalFieldOf("replace_current_music", false)`): the End's entry sets it
+/// and the Overworld's two do not.
+fn json_background_music(
+    v: Option<&serde_json::Value>,
+) -> Result<Option<rewo_world::music::BackgroundMusic>, String> {
+    use rewo_world::music::{BackgroundMusic, Music};
+    let Some(v) = v else { return Ok(None) };
+    let obj = v
+        .as_object()
+        .ok_or_else(|| "audio/background_music is not an object".to_string())?;
+    let one = |key: &str| -> Result<Option<Music>, String> {
+        let Some(m) = obj.get(key) else { return Ok(None) };
+        let m = m
+            .as_object()
+            .ok_or_else(|| format!("background_music.{key} is not an object"))?;
+        let sound = m
+            .get("sound")
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| format!("background_music.{key} has no sound"))?;
+        let num = |k: &str| -> Result<i32, String> {
+            m.get(k)
+                .and_then(|n| n.as_i64())
+                .map(|n| n as i32)
+                .ok_or_else(|| format!("background_music.{key} has no {k}"))
+        };
+        Ok(Some(Music {
+            sound: sound.to_string(),
+            min_delay: num("min_delay")?,
+            max_delay: num("max_delay")?,
+            replace_current_music: m
+                .get("replace_current_music")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false),
+        }))
+    };
+    Ok(Some(BackgroundMusic {
+        default_music: one("default")?,
+        creative_music: one("creative")?,
+        underwater_music: one("underwater")?,
     }))
 }

@@ -813,6 +813,8 @@ mod tests {
             // all declare LEGACY_CAVE_SETTINGS here. A universal cave default
             // would play `ambient.cave` in the Nether.
             ambient_sounds: None,
+            // M147 — parsed and NOT yet graded here; see the note in REWO_PLAN.
+            background_music: None,
         }
     }
 
