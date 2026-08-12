@@ -27,5 +27,6 @@ pub mod buffers;
 pub mod cpal_sink;
 pub mod decode;
 pub mod device;
+pub mod live_sink;
 pub mod mixer;
 pub mod quantise;

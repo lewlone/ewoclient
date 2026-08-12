@@ -20,8 +20,13 @@ symphonia = { version = "0.5", default-features = false, features = ["ogg", "vor
 # never depend on this, or 34 gates link a codec to decode a packet.
 rewo-net = { path = "../rewo-net" }
 
-# **The device, and the only dependency that can make a noise.** Not pulled into
-# rewo-app: linking an audio stack into the client binary would put it in all 34
-# gates for a subsystem none of them exercises. Reach it through
-# `cargo run -p rewo-audio --example listen`.
+# **The device, and the only dependency that can make a noise.** Reached from
+# rewo-app only under its `audio` feature, which is off by default: a default
+# build links no audio stack, so all 34 gates are unchanged. See
+# `live_sink::LiveSink` and `rewo-app`'s `audio_backend`.
 cpal = "0.15"
+
+# M143 — `LiveSink` reports an unresolvable asset once per distinct key. A
+# counter alone ("15 unresolved") cannot say WHICH sound is missing, and on a
+# partial asset store that is the only question worth asking.
+log = { workspace = true }
