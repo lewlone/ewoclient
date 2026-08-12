@@ -1799,6 +1799,37 @@ surviving mutation was **proven equivalent** — the down branch's second disjun
 cannot fire, since the blend never crosses its target — so it is dead code in
 vanilla too, kept and recorded.*
 
+*Update (2026-08-12 session, Rewo): **M145 + M146 — music: which track, when,
+and the ownership split the wiring forced.** M145 is the model — `Music`,
+`Musics`, `BackgroundMusic`, the `audio/background_music` attribute (the
+sibling of M142's ambient one, same compound, same biome-replaces-dimension
+rule) and the whole of `MusicManager`. M146 calls it. **The interesting part is
+where the state machine had to live**: no one object has both halves of
+`MusicManager.tick` — the selection needs the world (biome attribute,
+abilities, eyes under water, boss bars, dimension key) and the timers need
+`soundManager.isActive(currentMusic)`, which only the engine can answer — so
+`PlaySession` names the situation through a new `SoundEvent::Music` and
+`SoundSystem` runs the machine. That is the seam M142d built for the biome
+loop, **reached independently by the same constraint**. Four transcriptions
+that invert: the stop and the clear happen on the **same** tick (vanilla's
+`stop()` is synchronous, so the replace path draws TWICE, and deferring it
+changes the whole song sequence for a seed); `Mth.nextInt` is inclusive at both
+ends and **does not draw** when `min >= max`, which `FREQUENT` reaches in
+ordinary play; `getNextSongDelay` checks null **before** the `CONSTANT` case,
+inverting `CONSTANT` to 0; and the `maxDelay` cap sits **outside** the
+`currentMusic` guard, which is what makes `startPlaying`'s `MAX_VALUE` park
+safe. `select()` inverts twice too — **underwater beats creative**, and each
+arm falls through to the default only on its own absence. Two arms of
+`getSituationalMusic` are absent and neither is a gap: the screen arm needs a
+title screen Rewo has not got, and the `player == null` arm is unreachable
+because a `PlaySession` exists only after login. **The End test comes before
+the boss bar**, which is what stops a wither in the Overworld playing the
+dragon's music. Adding the field to `BiomeDef` broke **eight** construction
+sites across four crates — intended — and reproduced the runner trap: `cargo
+build -p rewo-net` was clean while three other crates failed to compile their
+tests. 3137 tests, 34 gates green, `live --render-check` 45/45. **Nobody has
+listened, and music is now the most audible thing no gate can grade.***
+
 *Update (2026-08-12 session, Rewo): **M144 — streaming, so music and the Nether
 beds play.** M143 declined every streamed attach; this opens them, with an
 incremental Ogg reader, a buffer queue on the mixer's voices, and a producer
@@ -2023,7 +2054,7 @@ everything a machine can check passes and that is *not* the same claim. The
 feature is **off by default**, so a default build links no audio stack and the
 34 gates are unchanged.
 **Everything is shipped, gated and merged to `main`** as of 2026-08-12
-(M144) — **3113 tests / 0 failures** (world 1166, net 1098, gpu 275, data 228,
+(M146) — **3137 tests / 0 failures** (world 1171, net 1117, gpu 275, data 228,
 app 199, mesh 45, proto 16, **audio 86** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
