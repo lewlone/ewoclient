@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-12 after M144:
-**3113 tests, 0 failures** (**world 1166, net 1098, gpu 275, data 228, app 199,
-mesh 45, proto 16, audio 86** — read off the runner per crate; they sum to 3113).
+Current measurement, taken 2026-08-12 after M145:
+**3131 tests, 0 failures** (**world 1171, net 1111, gpu 275, data 228, app 199,
+mesh 45, proto 16, audio 86** — read off the runner per crate; they sum to 3131).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -246,13 +246,17 @@ witnesses are mostly self-driven can look healthy against nothing.
 >
 > Candidates for the next *code* milestone, none of them blocked:
 >
-> * **Music selection.** M144 shipped the streaming path, so a streamed event
->   now plays — music, the jukebox, the five Nether ambient beds and the
->   underwater loop. What is still absent is deciding *which* track and *when*:
->   `MusicManager`'s selection and its `nextSongDelay` timers, which is M139/M140's
->   open half. Note the measurement M144 took: **344 of 8,024 variants are
->   streamed and six of them are not music**, so this was never a music-only
->   concern.
+> * **Wire M145's music model in.** M145 shipped `Music`/`Musics`/
+>   `BackgroundMusic`, the `audio/background_music` attribute parse and the whole
+>   of `MusicManager` — the tick, the timers, `MusicFrequency` — and **nothing
+>   calls any of it**, which is stated rather than implied. What is left is
+>   `getSituationalMusic`'s composition and the `PlaySession` tick site, and
+>   **every input but one already exists**: the camera's attribute probe over
+>   biome/dimension (M14's sampling, M142's layering), `isCreative` from M75's
+>   abilities, `isUnderWater` from M142's submersion, the End boss bar from M65.
+>   The exception is screen music, which Rewo's screens do not declare.
+>   M144 shipped the streaming path underneath all of it, so a streamed event
+>   already plays when the engine asks for one.
 > * **Decode on a worker.** Still inline on the client tick — one chunk per
 >   second of playback, four at the attach, plus one asset read of up to 11 MB
 >   when a track starts. A stated deviation from vanilla's `supplyAsync`.

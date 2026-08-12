@@ -201,6 +201,10 @@ pub struct BiomeDef {
     /// mood and a biome that declared `EMPTY` rather than nothing would
     /// **silence its own caves**. See [`crate::ambient`].
     pub ambient_sounds: Option<crate::ambient::AmbientSounds>,
+    /// `audio/background_music` — which track this biome offers (M145). `None`
+    /// means *inherit the dimension's*; `Some(EMPTY)` means silence, and
+    /// `OverworldBiomes.java:596` really does declare one.
+    pub background_music: Option<crate::music::BackgroundMusic>,
 }
 
 impl BiomeDef {
@@ -627,6 +631,7 @@ mod tests {
             has_precipitation: true,
             temperature_modifier: crate::weather::TemperatureModifier::None,
             ambient_sounds: None,
+            background_music: None,
         }
     }
 

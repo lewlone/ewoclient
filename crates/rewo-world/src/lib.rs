@@ -7,6 +7,7 @@
 
 pub mod abilities;
 pub mod ambient;
+pub mod music;
 pub mod anvil;
 pub mod edit_box;
 pub mod merchant_screen;
@@ -818,6 +819,7 @@ mod ambient_sounds_at_tests {
             has_precipitation: true,
             temperature_modifier: Default::default(),
             ambient_sounds: ambient,
+            background_music: None,
         }
     }
 

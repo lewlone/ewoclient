@@ -760,6 +760,7 @@ mod extract_tests {
             has_precipitation: climate.has_precipitation,
             temperature_modifier: climate.temperature_modifier,
             ambient_sounds: None,
+            background_music: None,
         };
         let registry = Arc::new(crate::biome::BiomeRegistry::new(vec![def]));
         w.set_biome_context(Arc::new(crate::biome::BiomeContext::new(

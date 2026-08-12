@@ -270,6 +270,7 @@ mod tests {
             has_precipitation: true,
             temperature_modifier: crate::weather::TemperatureModifier::None,
             ambient_sounds: None,
+            background_music: None,
         }
     }
 }
