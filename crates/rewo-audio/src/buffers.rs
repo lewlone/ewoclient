@@ -345,6 +345,46 @@ mod tests {
         assert_eq!(BUFFER_DURATION_SECONDS, 1);
     }
 
+    /// **A boxed source still streams**, which is the shape the client uses.
+    ///
+    /// `rewo-app`'s source is a closure over the asset index and so has no
+    /// nameable type; it reaches the library as `Box<dyn PcmSource>`, and that
+    /// impl has to forward `open_stream` rather than inherit the trait's
+    /// refusing default. Inheriting it would make a boxed source decline every
+    /// stream while the source inside supported them — "music never plays", with
+    /// a perfectly good error naming the wrong cause, on the one path no unit
+    /// test here otherwise takes.
+    #[test]
+    fn a_boxed_source_forwards_open_stream_rather_than_refusing() {
+        struct Streamable;
+        struct Nothing;
+        impl PcmStream for Nothing {
+            fn format(&self) -> (u16, u32) {
+                (1, 44_100)
+            }
+            fn read(&mut self, samples: usize) -> Result<Vec<i16>, String> {
+                Ok(vec![7; samples])
+            }
+        }
+        impl PcmSource for Streamable {
+            fn open(&mut self, _key: &str) -> Result<Pcm, String> {
+                Err("static not supported".into())
+            }
+            fn open_stream(
+                &mut self,
+                _key: &str,
+                _looping: bool,
+            ) -> Result<Box<dyn PcmStream>, String> {
+                Ok(Box::new(Nothing))
+            }
+        }
+        let boxed: Box<dyn PcmSource> = Box::new(Streamable);
+        let mut lib = SoundBufferLibrary::new(boxed);
+        let mut s = lib.open_stream("anything.ogg", true).expect("must forward");
+        assert_eq!(s.format(), (1, 44_100));
+        assert_eq!(s.read(8).unwrap().len(), 8);
+    }
+
     #[test]
     fn a_source_that_cannot_stream_says_so_with_the_key() {
         // The default method. A fake built for the caching tests has no decoder
