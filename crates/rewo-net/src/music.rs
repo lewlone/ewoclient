@@ -238,6 +238,7 @@ pub struct MusicOutcome {
 /// last started on its behalf, and `is_active` is asked of the caller each
 /// tick, so the manager stays a pure state machine that a test can drive
 /// without an engine, a device or a clock.
+#[derive(Clone, Debug)]
 pub struct MusicManager {
     random: LegacyRandom,
     /// `currentMusic` — the sound event id of the playing track.
@@ -245,6 +246,15 @@ pub struct MusicManager {
     frequency: MusicFrequency,
     next_song_delay: i32,
     fade: MusicFade,
+}
+
+impl Default for MusicManager {
+    /// A fixed seed and `DEFAULT` frequency — vanilla's seed is unique per
+    /// session, so nothing here can be reproduced against it anyway, and a
+    /// deterministic default is what a witness can pin.
+    fn default() -> MusicManager {
+        MusicManager::new(0, MusicFrequency::Default)
+    }
 }
 
 impl MusicManager {
