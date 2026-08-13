@@ -53,6 +53,7 @@ mod stats;
 mod stats_view;
 mod statshot_cmd;
 mod swingshot_cmd;
+mod tab_list_view;
 mod view_cmd;
 mod hudshot_cmd;
 mod weathershot_cmd;

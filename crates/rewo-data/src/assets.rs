@@ -601,7 +601,33 @@ pub struct HudSprites {
     /// background, so a full bar overhangs its own frame by one pixel. The
     /// discrepancy is vanilla's and is transcribed rather than tidied.
     pub experience_bar_progress: HudSprite,
+    /// The tab list's six connection-strength icons (M151), in
+    /// [`crate::assets::PING_SPRITES`] order — `unknown` first, then one to
+    /// five bars.
+    ///
+    /// They live under `icon/`, not `hud/`, because `PlayerTabOverlay`
+    /// registers them as `icon/ping_*` — the only sprites this struct carries
+    /// from outside the HUD's own directory. All six are 10×8 in 26.2, which
+    /// the renderer does **not** assume: each keeps its own dimensions.
+    pub ping: [HudSprite; 6],
 }
+
+/// `PlayerTabOverlay`'s six `PING_*_SPRITE` identifiers, in the order
+/// `rewo_gpu::tab_list::PingIcon` enumerates them.
+///
+/// `ping_unknown` is first because it is `PingIcon::Unknown`, which the icon
+/// table reaches only for a **negative** latency. The other five run
+/// one-bar-to-five-bars, so the array index is the bar count and *not* the
+/// order `extractPingIcon`'s if-chain tests them in — that chain runs from the
+/// best connection down.
+pub const PING_SPRITES: [&str; 6] = [
+    "gui/sprites/icon/ping_unknown.png",
+    "gui/sprites/icon/ping_1.png",
+    "gui/sprites/icon/ping_2.png",
+    "gui/sprites/icon/ping_3.png",
+    "gui/sprites/icon/ping_4.png",
+    "gui/sprites/icon/ping_5.png",
+];
 
 /// One `assets/minecraft/waypoint_style/*.json` (M83).
 ///
@@ -2114,6 +2140,16 @@ fn bake_hud(jar: Jar) -> Option<HudSprites> {
         food_empty: get(jar, "gui/sprites/hud/food_empty.png")?,
         experience_bar_background: get(jar, "gui/sprites/hud/experience_bar_background.png")?,
         experience_bar_progress: get(jar, "gui/sprites/hud/experience_bar_progress.png")?,
+        // M151. `?` on each, so a jar missing one ping icon yields no HUD
+        // sprites at all rather than a tab list with a hole in it — the same
+        // fail-closed reading every other sprite here takes.
+        ping: {
+            let mut out: Vec<HudSprite> = Vec::with_capacity(PING_SPRITES.len());
+            for rel in PING_SPRITES {
+                out.push(get(jar, rel)?);
+            }
+            out.try_into().ok()?
+        },
     })
 }
 

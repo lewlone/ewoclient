@@ -621,6 +621,10 @@ pub struct WorldRenderer {
     /// own geometry — and because an empty slice is a meaningful value (no
     /// chat on screen) rather than an absent one.
     hud_fills: Vec<crate::hud::HudFill>,
+    /// M151 — this frame's caller-placed HUD sprites (the tab list's ping
+    /// icons). Separate from `hud_fills` because they name an atlas rect
+    /// rather than a colour.
+    hud_icons: Vec<crate::hud::HudBlit>,
     text: Option<TextPass>,
     /// The Velvet type stack (M52b) — real variable-font text, for the pieces
     /// that need per-run styling the bitmap pass cannot express (tooltips
@@ -1153,6 +1157,7 @@ impl WorldRenderer {
                 locator_state: None,
                 hud_state: None,
                 hud_fills: Vec::new(),
+                hud_icons: Vec::new(),
                 text: None,
                 text_lines: Vec::new(),
                 camera_eye: [0.0; 3],
@@ -2289,6 +2294,15 @@ impl WorldRenderer {
         self.hud_fills = rects;
     }
 
+    /// Set this frame's caller-placed HUD sprites (M151), in GUI pixels.
+    ///
+    /// **Replaces**, for [`Self::set_hud_fills`]'s reason: the tab list exists
+    /// only while its key is held, and a stale list would leave six ping icons
+    /// floating over the world the moment it is let go.
+    pub fn set_hud_icons(&mut self, icons: Vec<crate::hud::HudBlit>) {
+        self.hud_icons = icons;
+    }
+
     /// Attach the locator bar (M83). Independent of `init_hud` because its
     /// sprites bake separately — see `rewo_data::assets::LocatorSprites`.
     pub fn init_locator_bar(
@@ -2932,7 +2946,17 @@ impl WorldRenderer {
         }
         if let (Some(hud), Some((health, food, slot, gauges))) = (self.hud.as_mut(), self.hud_state)
         {
-            hud.draw(gpu, cb, extent, health, food, slot, gauges, &self.hud_fills);
+            hud.draw(
+                gpu,
+                cb,
+                extent,
+                health,
+                food,
+                slot,
+                gauges,
+                &self.hud_fills,
+                &self.hud_icons,
+            );
             if screen.is_none() {
                 // M83 — the contextual bar's slot, which is the XP bar's slot:
                 // `Hud.nextContextualInfoState` picks one of them and the

@@ -43,6 +43,44 @@ pub struct HudSpritesData<'a> {
     /// M79's XP gauge, 182×5 each.
     pub experience_bar_background: HudSpriteData<'a>,
     pub experience_bar_progress: HudSpriteData<'a>,
+    /// The tab list's six `icon/ping_*` sprites (M151), in
+    /// `rewo_data::assets::PING_SPRITES` order: unknown, then one to five bars.
+    pub ping: [HudSpriteData<'a>; 6],
+}
+
+/// A sprite the HUD pass blits at a position the caller chooses, in **GUI
+/// pixels** (M151).
+///
+/// Every sprite before this one had a position the pass computed itself, from
+/// the screen size and a hard-coded layout — a hotbar is centred, a heart is at
+/// `i * 8`. The tab list's ping icons are the first whose placement comes from
+/// a *model*: one per listed player, at a column the slot solve decided. So the
+/// list is an input, exactly as [`HudFill`] is.
+///
+/// The size is carried rather than taken from the sprite because
+/// `extractPingIcon`'s blit passes an explicit `10, 8`, which is the sprite's
+/// own size in 26.2 and is not required to be.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HudBlit {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub icon: HudIcon,
+}
+
+/// Which atlas sprite a [`HudBlit`] names.
+///
+/// An enum rather than an index into a public table: the atlas placement is
+/// private to [`HudPass`], and handing out raw UVs would let a caller name a
+/// rect that does not exist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HudIcon {
+    /// `icon/ping_*`, indexed as `rewo_data::assets::PING_SPRITES` — 0 is
+    /// `ping_unknown` and 1..=5 are the bar counts. Out of range draws
+    /// nothing, which is the reading that loses a row's icon rather than
+    /// sampling some other sprite over it.
+    Ping(u8),
 }
 
 /// This frame's M79 gauges, as the renderer needs them.
@@ -156,6 +194,8 @@ pub struct HudPass {
     cooldown_fill: Rect,
     /// An opaque white texel, for a tinted solid fill (M109).
     white_fill: Rect,
+    /// The six `icon/ping_*` placements (M151), in `PING_SPRITES` order.
+    ping: [Rect; 6],
 }
 
 impl HudPass {
@@ -196,6 +236,21 @@ impl HudPass {
         let food_empty = place(&mut atlas, &sprites.food_empty, 50, 32);
         let xp_background = place(&mut atlas, &sprites.experience_bar_background, 64, 32);
         let xp_progress = place(&mut atlas, &sprites.experience_bar_progress, 64, 40);
+        // M151 — the six ping icons, on the y=48 row to the right of the two
+        // synthesised patches below (which occupy x 0..4 and 8..12). Placed
+        // with a running cursor and a one-pixel gap rather than at
+        // `16 + i * 11`: `place` copies `s.w` per row, so a sprite wider than
+        // the stride would silently overwrite its neighbour's left edge, and
+        // nothing in this atlas is bounds-checked.
+        let ping: [Rect; 6] = {
+            let mut x = 16u32;
+            let mut out = [Rect::default(); 6];
+            for (slot, s) in out.iter_mut().zip(sprites.ping.iter()) {
+                *slot = place(&mut atlas, s, x, 48);
+                x += s.w + 1;
+            }
+            out
+        };
         // `GuiGraphicsExtractor.itemCooldown` fills with `Integer.MAX_VALUE`,
         // which as ARGB is a half-transparent white. Nothing in the jar carries
         // that texel, so it is written here — 4×4 so nearest sampling has room
@@ -370,6 +425,7 @@ impl HudPass {
                 xp_progress,
                 cooldown_fill,
                 white_fill,
+                ping,
             })
         }
     }
@@ -386,6 +442,7 @@ impl HudPass {
         slot: u8,
         gauges: HudGauges,
         chat: &[HudFill],
+        icons: &[HudBlit],
     ) {
         let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
         // Auto GUI scale (vanilla: largest integer fitting a ~320×240 base).
@@ -548,6 +605,32 @@ impl HudPass {
                 1.0,
                 [b.rgb[0], b.rgb[1], b.rgb[2], b.alpha],
             );
+        }
+
+        // M151 — the caller-placed sprites, after the fills, because the tab
+        // list's own order is `fill(row background)` then the ping blit and
+        // nothing on this list is ever a backdrop for anything else on it.
+        //
+        // **Rewo's TEXT is a separate pass drawn after this one**, so a name
+        // long enough to reach its row's ping icon would be drawn OVER it,
+        // where vanilla draws the icon last and wins. The two cannot meet at
+        // the unclamped width — a slot is `maxNameWidth + 13` wide and the
+        // icon starts at `slotWidth - 11`, leaving two pixels — so this shows
+        // only when `screenWidth - 50` clamps the slot narrower than the
+        // widest name. Recorded rather than worked around: reordering the two
+        // passes for this would put every chat glyph under its own backdrop.
+        for b in icons {
+            let r = match b.icon {
+                HudIcon::Ping(i) => match self.ping.get(i as usize) {
+                    Some(r) => *r,
+                    None => continue,
+                },
+            };
+            // `tinted_quad` with an identity colour rather than `sub_quad`:
+            // the chat loop above already borrowed `tinted_quad` directly, so
+            // `sub_quad` — which holds a mutable borrow of it — cannot be used
+            // after that point. The two are the same call.
+            tinted_quad(b.x, b.y, b.w, b.h, &r, 1.0, [1.0; 4]);
         }
 
         v.rotate_right(0);

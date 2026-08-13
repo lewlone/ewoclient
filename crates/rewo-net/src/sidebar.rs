@@ -112,6 +112,15 @@ pub const TEXT_COLOR: [f32; 3] = [1.0, 1.0, 1.0];
 /// swap and neither is white.
 pub const SIDEBAR_DEFAULT_RGB: u32 = 0xFF_5555;
 
+/// `StyledFormat.PLAYER_LIST_DEFAULT` — `Style.EMPTY.withColor(YELLOW)`,
+/// which is `TextColor.YELLOW`, `0xFFFF55` (M151).
+///
+/// The tab list's other half of the pair above. It lives here rather than in
+/// the tab-list module because it is the same two-line declaration in
+/// `StyledFormat.java` and keeping them apart is how one gets swapped for the
+/// other.
+pub const PLAYER_LIST_DEFAULT_RGB: u32 = 0xFF_FF55;
+
 /// The string whose width separates a name from its score when the score is
 /// non-empty: `font.width(": ")`.
 ///
@@ -425,6 +434,26 @@ pub fn format_value(
     base: ChatStyle,
     lang: Option<&Language>,
 ) -> ChatLine {
+    format_value_with_default(format, value, SIDEBAR_DEFAULT_RGB, base, lang)
+}
+
+/// `format_value` with the `numberFormatOrDefault` fallback named by the
+/// caller (M151).
+///
+/// The two callers pass different constants and neither is white:
+/// `displayScoreboardSidebar` uses `StyledFormat.SIDEBAR_DEFAULT`, which is
+/// **red**, and `PlayerTabOverlay.extractRenderState` uses
+/// `PLAYER_LIST_DEFAULT`, which is **yellow** (`StyledFormat.java:29-30`).
+/// One function with a parameter rather than two copies: everything else here
+/// — the blank case suppressing the spacer, the fixed case discarding the
+/// number — is identical, and a second copy is where those would drift.
+pub fn format_value_with_default(
+    format: Option<&NumberFormat>,
+    value: i32,
+    default_rgb: u32,
+    base: ChatStyle,
+    lang: Option<&Language>,
+) -> ChatLine {
     let digits = value.to_string();
     match format {
         // `StyledFormat.format` is `Component.literal(digits).withStyle(style)`,
@@ -432,7 +461,7 @@ pub fn format_value(
         // format's style over the digits.
         None => parse_component(
             &Nbt::String(digits),
-            ChatStyle { color: rgb_of(SIDEBAR_DEFAULT_RGB), ..base },
+            ChatStyle { color: rgb_of(default_rgb), ..base },
             lang,
         ),
         // `BlankFormat.format` returns `Component.empty()`. Zero spans, and

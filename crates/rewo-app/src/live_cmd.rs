@@ -3617,6 +3617,10 @@ pub(crate) fn hud_sprites(baked: &assets::BakedAssets) -> Option<rewo_gpu::hud::
         food_empty: hud_sprite(&h.food_empty),
         experience_bar_background: hud_sprite(&h.experience_bar_background),
         experience_bar_progress: hud_sprite(&h.experience_bar_progress),
+        // M151 — `std::array::from_fn` rather than a `Vec` collect, because the
+        // pass's own field is a `[Rect; 6]` and a length mismatch should be a
+        // compile error rather than a runtime one.
+        ping: std::array::from_fn(|i| hud_sprite(&h.ping[i])),
     })
 }
 
