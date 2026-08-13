@@ -2126,15 +2126,17 @@ exclusive-mode or unplugged one all look identical from inside the process, so
 everything a machine can check passes and that is *not* the same claim. The
 feature is **off by default**, so a default build links no audio stack and the
 34 gates are unchanged.
-**Everything is shipped, gated and merged to `main`** as of 2026-08-13
-(M149g) — **3172 tests / 0 failures** (world 1187, net 1133, gpu 275, data 228,
-app 202, mesh 45, proto 16, **audio 86** — EIGHT crates now, read off the runner
+**Everything is shipped and gated** as of 2026-08-14
+(M151) — **3200 tests / 0 failures** (world 1187, net 1142, gpu 275, data 228,
+app 221, mesh 45, proto 16, **audio 86** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
-`handshot` 34/34, `swingshot` 97/97, all **34** serverless gates green with 0
-validation errors, `live --render-check` **46/46** with validation ON and 0
-validation errors (r46 arrived with M147), demo PNG `2cc56b4acbfb92cb`.
+`handshot` 34/34, `swingshot` 97/97, `tablistshot` 26/26, all **35** serverless
+gates green with 0
+validation errors, `live --render-check` **47/47** with validation ON and 0
+validation errors (r46 arrived with M147, **r47 with M151**), demo PNG
+`2cc56b4acbfb92cb`.
 **The recipe book is closed** (M105–M107) and **M108–M111 shipped chat** —
 `ChatComponent`, the wrap under it, the `MessageSignatureCache` without which
 `delete_chat` cannot be read, the text, the backdrop fills (which took a colour
@@ -6591,3 +6593,53 @@ joint `< 9.0E-6`, everything else's per-axis `< 0.003`, disagreeing at
 only. `EntityTableWorld`'s doc carries the full table of what it can and cannot
 answer — and now says how to re-derive that count, having been wrong in both
 directions.
+
+*Update (2026-08-14 session, Rewo): **M151 — the tab list renders, and the
+M86 shape a second time.** `crates/rewo-gpu/src/tab_list.rs` was 1209 lines, 41
+passing tests and **zero consumers** — pressing Tab in `rewo live` showed
+nothing, and had since M52f. This file was already carrying the tell without
+drawing the conclusion: M136 corrected the spectator colour and noted that
+*"nothing consumed the constant, which is exactly why it survived"*. **Four
+inputs were crossing the wire into a discard**: `listed`, `show_hat`, the
+`UPDATE_DISPLAY_NAME` component, and `onlineMode`, whose only mention anywhere
+in the tree was a **test fixture writing it**. `listed` is a **SET and absence
+means excluded** — the only thing that ever adds to `listedPlayers` is
+`UPDATE_LISTED` with `true`, which is what lets a plugin keep a vanished player
+in `playerInfoMap` (skin and team still resolve) and off the list; a stored
+`bool` with a `true` default shows every one of them. `UPDATE_DISPLAY_NAME`
+needs an `Option<Option<Nbt>>` because present-with-null **clears**, and it is
+the one action in that packet with a variable-length payload, so the discard
+was load-bearing where the neighbouring ones were not. `showHat` **defaults to
+true**. And **`onlineMode` is a WIDTH input**, not a visibility one:
+`extractRenderState:145` reads it as `showHead` and it changes `slotWidth`, so
+an offline server's rows are nine pixels narrower and every name moves.
+Four more invert in the renderer — **the sort key and the drawn name are
+different strings** (the comparator's last key is the PROFILE name while every
+width measures the display override, indistinguishable on any server that sets
+no overrides); **only the fallback name is team-formatted**, so formatting
+unconditionally doubles a prefix on every renamed player; **the spectator
+treatment is an ALPHA** (`Font.getTextColor:336` keeps a styled span's RGB and
+takes the default's alpha, so a coloured display name is faded rather than
+recoloured); and **a row's background is per row** where the sidebar one class
+over fills one rect for all its rows. `KeyboardHandler.keyPress` is also
+**asymmetric about the key** — the press is gated on no screen being open and
+the release is unconditional — so handling both in one place leaves the list
+stuck behind an inventory. **Two gaps are stated rather than half-built**: the
+8x8 faces (`showHead` is honoured so the geometry is vanilla's, but Rewo has no
+GUI-side path that can sample a 64x64 skin at all — the pool is in the ENTITY
+atlas and the HUD atlas has no runtime upload) and `RenderType::HEARTS` (the
+90 px column is reserved because `widthForScore` moves every name; the hearts
+are not drawn). The numeric LIST objective IS drawn, in `PLAYER_LIST_DEFAULT`
+**yellow**. **The battery's four gaps were three-and-one**: "UPDATE_LISTED only
+ever ADDS", "player_info_remove leaves the departed player listed" and "showHat
+defaults to FALSE" all survived because the only tests of that arithmetic were
+COPIES of it — M45's `install_shapes` shape twice in one milestone, over state
+living in `PlaySession`, which has no test module anywhere in the repo (M71);
+the fix is M97's, a free `TabListPlayers` both former copies now call. The
+fourth was a gate fixture that could not express its claim. **And
+`tools/render_check.py` did not build** — it checked only that the binary
+existed, so the first attempt to prove r47 non-vacuous compiled nothing and
+read the unmutated number. It builds now, and r47 is verified three ways: the
+key ignored gives 7277 of 7277 frames, `listed` ignored gives 5 rows where 3 is
+correct, and no resolver at all gives 0. 3200 tests, 35 gates, `--render-check`
+47/47, demo PNG byte-identical.*
