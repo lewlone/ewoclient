@@ -1807,6 +1807,42 @@ reach — two call sites, one covered — closed by M97's fix and a named surviv
 for the composition root itself. 3172 tests, 34 gates, demo PNG
 byte-identical.*
 
+*Update (2026-08-13 session, Rewo): **`soundshot` — the audio gate the plan
+specified and nobody built.** `REWO_AUDIO_PLAN.md` §4 spells this gate out in
+full and M138c's own status block concedes it was never written, so audio —
+M138 through M149, ten milestones and the largest subsystem in Rewo — had **no
+dedicated serverless gate** and its ~86 `rewo-audio` tests plus the sound tests
+in `rewo-net` were crate-local units that could be deleted without anything
+objecting. `rewo soundshot --check` is the **35th** gate: 48 witnesses across
+the plan's five layers, mutation-verified **45/45**. It corrects three of §4's
+claims, all because §4 predates the code — **two locks rather than one** (M143
+made `rewo-app`'s audio dependency optional and off by default so a default
+build of the one `rewo` binary does not link cpal and symphonia into every
+gate, so the default lock is 28 and the audio one 48, with the stated cost that
+ordinary verification does not grade decode or the mixer); the counts; and an
+end-trim claim that belongs to **symphonia** rather than to Rewo. **Its two
+findings are both about witnesses, which is this project's most repeated
+lesson.** `s6` failed on its first run and the code was right: with a variant
+dropped the total weight is 4, a **power of two**, so `nextInt` takes its
+shortcut branch — the **top** bits of one draw — and `LegacyRandomSource`'s
+scramble leaves the top bits of the *first* draw of sequential seeds nearly
+constant; measured over seeds 0..199 at bound 4 it is **entirely** constant, so
+a sequential fixture reaches one variant whatever the weights are and cannot
+tell "the variant was dropped" from "the pick is broken". And two mixer
+witnesses demanded a zero f32 cannot produce: `f32::cos(FRAC_PI_2)` is
+**-4.371139e-8**, so hard LEFT is bit-silent on the far ear (`sin(0)` is exactly
+0) while hard RIGHT is only ~155 dB down — **the two extremes of one pan law are
+not symmetric in f32** — and the same constant makes the degenerate
+listener cross product 4.4e-8 rather than the algebraic zero. Then the battery
+found §5's self-skip trap **inverted**: a mutation disabling `build_sounds`'s
+fail-closed panic SURVIVED, because on a machine that HAS the asset store the
+error arm is never reached, so the fail-closed half of the claim is
+unobservable precisely on every machine where the gate is green. `s1b` closes it
+by asking for a version with no manifest. **A green `soundshot` is still not
+evidence that this client makes any sound**, and §4's paragraph saying so is in
+the gate's module doc verbatim — the listening pass remains the user's. 3172
+tests, 35 gates, demo PNG byte-identical.*
+
 *Update (2026-08-13 session, Rewo): **M149a/b — the End flash's schedule, and
 a fact that was right in one file and wrong in another.** §0.0 offered
 `EndFlashState` as the last unconstructed audio ramp; the decompile says it has
@@ -2125,14 +2161,21 @@ because no gate in this project opens an audio device — an absent, muted,
 exclusive-mode or unplugged one all look identical from inside the process, so
 everything a machine can check passes and that is *not* the same claim. The
 feature is **off by default**, so a default build links no audio stack and the
-34 gates are unchanged.
+other 34 gates are unchanged. **`soundshot` is the exception and it shipped
+2026-08-13** — the gate `REWO_AUDIO_PLAN.md` §4 specified and M138c recorded as
+unbuilt, leaving the largest subsystem in Rewo with only crate-local unit tests
+that could be deleted silently. It grades the wire, the resolution and the
+engine's arithmetic in a default build (**28** witnesses) and adds decode and
+the mixer under `--features audio` (**48**), fail-closing on whichever lock
+applies. **It does not close the listening pass** and its module doc says so
+verbatim.
 **Everything is shipped, gated and merged to `main`** as of 2026-08-13
 (M149g) — **3172 tests / 0 failures** (world 1187, net 1133, gpu 275, data 228,
 app 202, mesh 45, proto 16, **audio 86** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
-`handshot` 34/34, `swingshot` 97/97, all **34** serverless gates green with 0
+`handshot` 34/34, `swingshot` 97/97, all **35** serverless gates green with 0
 validation errors, `live --render-check` **46/46** with validation ON and 0
 validation errors (r46 arrived with M147), demo PNG `2cc56b4acbfb92cb`.
 **The recipe book is closed** (M105–M107) and **M108–M111 shipped chat** —

@@ -91,13 +91,24 @@
 //! own `real_assets` tests print `SKIPPED` and return, and say in their module
 //! doc that this is a real weakness. §5 names it: *"store-dependent tests
 //! self-skip on a bare machine, so a green run there proves nothing."* This gate
-//! is where that becomes fail-closed — `s1` and `d3`/`d4` report a failure when
-//! the store is absent, and the witness count check catches it either way.
+//! is where that becomes fail-closed — `s1`, `d3`, `d4` and `d7` report a
+//! failure when the store is absent, and the witness count check catches it
+//! either way.
+//!
+//! **And the hazard runs the other way too**, which is what `s1b` is for: on a
+//! machine that *has* the store, the fail-closed behaviour is never reached, so
+//! a mutation removing it survives every witness. `s1b` reaches the same error
+//! path without needing a bare machine.
 //!
 //! # Named gaps — things deliberately not witnessed here
 //!
 //! * **No witness opens an audio device**, per the paragraph above. `cpal_sink`
 //!   and `device::CpalBackend` are ungraded by this gate and by every other.
+//! * **The default lock's own arithmetic is not mutation-graded.**
+//!   `tools/soundshot_mutate.py` runs every mutation against the
+//!   `--features audio` build, because that lock is a strict superset — so a
+//!   break only the core layers see is still seen. What that leaves ungraded is
+//!   the `CORE + AUDIO` sum itself, which is a constant rather than a behaviour.
 //! * **The `.ogg` bytes are not graded sample-for-sample.** Vorbis I does not
 //!   mandate identical float output, so `d3` pins an *aggregate* (a sum, with
 //!   its tolerance in its own detail string) rather than a vector of samples.
