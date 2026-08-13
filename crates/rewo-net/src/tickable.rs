@@ -483,6 +483,15 @@ pub enum Ramp {
     BiomeLoop(BiomeLoopRamp),
     /// `DirectionalSoundInstance` — a fixed bearing from the camera, ten
     /// blocks out, repositioned every tick.
+    ///
+    /// **The only variant with no construction site.** Its one vanilla caller
+    /// is the End flash (`ClientLevel.java:307-324`), whose schedule shipped
+    /// as M149a in `rewo_world::end_flash`; what is still missing is the clock
+    /// map `getDefaultClockTime()` reads and `SoundEngine.playDelayed`'s delay
+    /// queue. Note that queue **ticks a tickable instance before playing it**
+    /// (`SoundEngine.java:290-297`), so this ramp's `setPosition()` runs again
+    /// at play time — the bearing is taken from the camera 30 ticks after the
+    /// flash, not from where the listener stood when it fired.
     Directional { x_angle: f32, y_angle: f32 },
 }
 

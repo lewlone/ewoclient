@@ -33,7 +33,12 @@
 //!
 //! **End flashes are explicitly out of scope** (`renderEndFlash`,
 //! `SkyRenderState.endFlashIntensity`) — `addSkyPass` draws them after this,
-//! and nothing here pretends otherwise.
+//! and nothing here pretends otherwise. **The schedule behind them shipped as
+//! M149a** and lives in `rewo_world::end_flash`, so what is missing is the
+//! pass rather than the numbers: `renderEndFlash` (`SkyRenderer.java:477-503`)
+//! is the same `buildCelestialQuad` the sun uses, at `T(0,100,0) ·
+//! scale(60,1,60)` after `Y(180 - yAngle) · X(-90 - xAngle)`, on the
+//! `CELESTIAL` pipeline with the intensity as a flat vertex colour.
 //!
 //! Colour space — **a Rewo attachment-conversion inference, not a decompiled
 //! fact.** The decompile gives the constant (`-14145496`) and the pipeline
