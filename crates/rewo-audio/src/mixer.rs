@@ -1195,4 +1195,894 @@ mod tests {
         assert_eq!(at(1.0), at(1000.0));
         assert!(at(1000.0) > 0.0);
     }
+
+    /// M139 — the loopback oracle's vectors, and what they say about this
+    /// mixer.
+    ///
+    /// The module doc at the top of this file declares the pan law and the
+    /// resampler to be **stated approximations**, because vanilla computes
+    /// neither: `Channel.java:88-121` sets seven source properties,
+    /// `Listener.java:14-15` sets two listener ones, and OpenAL Soft does all
+    /// the arithmetic inside a DLL no decompile here contains. Until M139 those
+    /// declarations were graded against themselves.
+    ///
+    /// `tools/openal_loopback_oracle/` drives **vanilla's own**
+    /// `Channel`/`Listener`/`SoundBuffer` against a real OpenAL Soft through an
+    /// `ALC_SOFT_loopback` device and captures the PCM. The vectors are checked
+    /// in, so nothing here needs a JVM.
+    ///
+    /// **These tests assert divergences, not equality.** Where Rewo and OpenAL
+    /// agree they say so exactly; where they do not, the assertion is a window
+    /// around the *measured* number with that number in the message. A test
+    /// demanding equality would fail on arrival and teach nobody anything.
+    ///
+    /// The windows are deliberately two-sided. Narrowing a divergence is a real
+    /// improvement and it is expected to fail these — at which point the new
+    /// number should be re-measured and recorded here, which is the whole point
+    /// of pinning a measurement rather than a bound.
+    ///
+    /// **What none of this grades**: it is a comparison of two renderers'
+    /// arithmetic. No test in this project opens an audio device, so nothing
+    /// here is evidence that the client makes a sound. See `REWO_AUDIO_PLAN.md`
+    /// s4 "What the gate does NOT assert", and the listening pass it requires.
+    mod oracle {
+        use super::*;
+        use rewo_net::sound_engine::listener_basis;
+
+        /// The capture. Regenerate with
+        /// `pwsh tools/openal_loopback_oracle/run.ps1`.
+        ///
+        /// Two independent captures on the same machine are **byte-identical**,
+        /// which is a property of having captured `ALC_FLOAT_SOFT`;
+        /// `ALC_SHORT_SOFT` is dithered and would put noise in this file.
+        const VECTORS: &str = include_str!("../../../tools/openal_loopback_oracle/vectors.tsv");
+
+        /// Must equal `LoopbackOracle.WARMUP_FRAMES`. OpenAL ramps a voice's
+        /// gain over its first mixing quantum, so its measured window starts
+        /// here; Rewo has no ramp, but the window is skipped on both sides so
+        /// the two are aligned rather than merely similar.
+        const WARMUP_FRAMES: usize = 4096;
+        /// Must equal `LoopbackOracle.MEASURE_FRAMES`.
+        const MEASURE_FRAMES: usize = 8200;
+        /// Must equal `LoopbackOracle.DFT_N`.
+        const DFT_N: usize = 2048;
+        /// Must equal `LoopbackOracle.FUND_HALFWIDTH`.
+        const FUND_HALFWIDTH: i64 = 6;
+        /// Must equal `LoopbackOracle.RATE`.
+        const RATE: u32 = 44100;
+
+        /// One captured experiment: the whole stimulus plus what OpenAL made of
+        /// it. The Java side emits every field, so this is the only description
+        /// of each experiment and there is no second transcription to drift.
+        #[derive(Clone, Debug)]
+        struct Row {
+            id: String,
+            srate: u32,
+            frames: usize,
+            chans: u16,
+            freq_l: f64,
+            amp_l: f64,
+            freq_r: f64,
+            amp_r: f64,
+            vol: f32,
+            pitch: f32,
+            rel: bool,
+            /// `-1` is `disableAttenuation()`.
+            maxd: f32,
+            src: [f64; 3],
+            lyaw: f32,
+            lpitch: f32,
+            lpos: [f64; 3],
+            voices: usize,
+            /// `AL_SOURCE_RESAMPLER_SOFT` forced to Linear, which is Rewo's own
+            /// algorithm.
+            res_lin: bool,
+            src_hash: u64,
+            rms_l: f64,
+            rms_r: f64,
+            peak_l: f64,
+            #[allow(dead_code)]
+            peak_r: f64,
+            /// `NaN` where the statistic is not meaningful for the row.
+            dsr_db: f64,
+            fund_hz: f64,
+        }
+
+        fn rows() -> Vec<Row> {
+            let mut out = Vec::new();
+            // `trim_start_matches('\u{feff}')` because a BOM is invisible in
+            // every viewer and turns the first comment line into a data row
+            // with one column. `run.ps1` writes without one; this is the belt
+            // to that brace, since the writer is a shell script and shells
+            // reintroduce BOMs.
+            for line in VECTORS.trim_start_matches('\u{feff}').lines() {
+                if line.starts_with('#') || line.trim().is_empty() {
+                    continue;
+                }
+                let f: Vec<&str> = line.split('\t').collect();
+                assert_eq!(
+                    f.len(),
+                    29,
+                    "vectors.tsv row has {} columns, expected 29: {line}",
+                    f.len()
+                );
+                let n = |i: usize| -> f64 { f[i].parse().unwrap() };
+                out.push(Row {
+                    id: f[0].to_string(),
+                    srate: n(1) as u32,
+                    frames: n(2) as usize,
+                    chans: n(3) as u16,
+                    freq_l: n(4),
+                    amp_l: n(5),
+                    freq_r: n(6),
+                    amp_r: n(7),
+                    vol: n(8) as f32,
+                    pitch: n(9) as f32,
+                    rel: n(10) != 0.0,
+                    maxd: n(11) as f32,
+                    src: [n(12), n(13), n(14)],
+                    lyaw: n(15) as f32,
+                    lpitch: n(16) as f32,
+                    lpos: [n(17), n(18), n(19)],
+                    voices: n(20) as usize,
+                    res_lin: n(21) != 0.0,
+                    // A Java `long`, so it can be negative; the bit pattern is
+                    // what matters.
+                    src_hash: f[22].parse::<i64>().unwrap() as u64,
+                    rms_l: n(23),
+                    rms_r: n(24),
+                    peak_l: n(25),
+                    peak_r: n(26),
+                    dsr_db: if f[27] == "nan" { f64::NAN } else { n(27) },
+                    fund_hz: n(28),
+                });
+            }
+            assert!(!out.is_empty(), "vectors.tsv carried no data rows");
+            out
+        }
+
+        fn row(id: &str) -> Row {
+            rows()
+                .into_iter()
+                .find(|r| r.id == id)
+                .unwrap_or_else(|| panic!("no vector row {id:?}"))
+        }
+
+        /// Regenerate the row's source PCM.
+        ///
+        /// **`LoopbackOracle.tone` verbatim**, and the FNV-1a check below is
+        /// why that can be claimed rather than hoped: `Math.sin` and
+        /// `f64::sin` are each specified to within an ULP and are not required
+        /// to agree, so a silent one-LSB disagreement would have the two sides
+        /// comparing renders of two different sounds.
+        fn stimulus(r: &Row) -> Arc<Pcm> {
+            let mut s = Vec::with_capacity(r.frames * r.chans as usize);
+            for i in 0..r.frames {
+                let t = i as f64;
+                let l = (r.amp_l * (2.0 * std::f64::consts::PI * r.freq_l * t / r.srate as f64).sin())
+                    .round() as i16;
+                s.push(l);
+                if r.chans == 2 {
+                    let rr = (r.amp_r
+                        * (2.0 * std::f64::consts::PI * r.freq_r * t / r.srate as f64).sin())
+                    .round() as i16;
+                    s.push(rr);
+                }
+            }
+            Arc::new(Pcm {
+                samples: s,
+                channels: r.chans,
+                sample_rate: r.srate,
+            })
+        }
+
+        /// `LoopbackOracle.fnv1a`, over the little-endian sample bytes.
+        fn fnv1a(pcm: &Pcm) -> u64 {
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            for v in &pcm.samples {
+                h = (h ^ (*v as u16 & 0xFF) as u64).wrapping_mul(0x0000_0100_0000_01b3);
+                h = (h ^ ((*v as u16 >> 8) & 0xFF) as u64).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            h
+        }
+
+        /// Drive the **production** [`Mixer`] with the row's stimulus and return
+        /// the same window OpenAL measured.
+        ///
+        /// Assertions read out of this, never out of `pan_gains` or
+        /// `openal::linear_gain` recomputed in the test — M88's `r20` lesson,
+        /// that a witness reading a value which merely *implies* the render is a
+        /// proxy that looks more rigorous than it is.
+        fn render_rewo(r: &Row) -> Vec<f32> {
+            let pcm = stimulus(r);
+            let mut m = Mixer::new(RATE);
+            let (forward, up) = listener_basis(r.lyaw, r.lpitch);
+            m.listener = ListenerTransform {
+                position: r.lpos,
+                forward,
+                up,
+            };
+            for _ in 0..r.voices {
+                let mut v = Voice::new(Arc::clone(&pcm));
+                v.gain = r.vol;
+                v.pitch = r.pitch;
+                v.relative = r.rel;
+                v.max_distance = if r.maxd < 0.0 { None } else { Some(r.maxd) };
+                v.position = [r.src[0] as f32, r.src[1] as f32, r.src[2] as f32];
+                v.looping = true;
+                m.push(v);
+            }
+            let mut sink = NullSink::new();
+            sink.pull(&mut m, WARMUP_FRAMES + MEASURE_FRAMES);
+            sink.rendered[WARMUP_FRAMES * 2..].to_vec()
+        }
+
+        fn rms(out: &[f32], ch: usize) -> f64 {
+            let n = out.len() / 2;
+            let acc: f64 = (0..n).map(|i| (out[i * 2 + ch] as f64).powi(2)).sum();
+            (acc / n as f64).sqrt()
+        }
+
+        fn peak(out: &[f32], ch: usize) -> f64 {
+            (0..out.len() / 2).fold(0.0f64, |a, i| a.max((out[i * 2 + ch] as f64).abs()))
+        }
+
+        /// `LoopbackOracle.distortionToSignalDb` verbatim: energy away from the
+        /// fundamental over energy at it, in dB.
+        ///
+        /// Delay-invariant, which is the whole reason it is a spectrum and not a
+        /// sample difference — OpenAL's higher-order resamplers delay the signal
+        /// and linear interpolation does not, so a direct difference would
+        /// measure the group delay rather than the filter.
+        fn distortion_to_signal_db(out: &[f32], fundamental_hz: f64) -> f64 {
+            let n = DFT_N;
+            let mut x = vec![0.0f64; n];
+            for (i, xi) in x.iter_mut().enumerate() {
+                // 4-term Blackman-Harris. Under Hann the fundamental's summed
+                // sidelobe leakage floors this near -46 dB, which is where the
+                // default resampler's rows land — so the window would be what
+                // was being measured.
+                let t = 2.0 * std::f64::consts::PI * i as f64 / n as f64;
+                let w = 0.35875 - 0.48829 * t.cos() + 0.14128 * (2.0 * t).cos()
+                    - 0.01168 * (3.0 * t).cos();
+                *xi = out[i * 2] as f64 * w;
+            }
+            let bin = fundamental_hz * n as f64 / RATE as f64;
+            let lo = (bin.floor() as i64 - FUND_HALFWIDTH).max(0);
+            let hi = (bin.ceil() as i64 + FUND_HALFWIDTH).min(n as i64 / 2 - 1);
+            let (mut fund, mut total) = (0.0f64, 0.0f64);
+            for k in 0..n / 2 {
+                let (mut sr, mut si) = (0.0f64, 0.0f64);
+                for (i, xi) in x.iter().enumerate() {
+                    let a = -2.0 * std::f64::consts::PI * k as f64 * i as f64 / n as f64;
+                    sr += xi * a.cos();
+                    si += xi * a.sin();
+                }
+                let m2 = sr * sr + si * si;
+                total += m2;
+                if k as i64 >= lo && k as i64 <= hi {
+                    fund += m2;
+                }
+            }
+            let rest = (total - fund).max(0.0);
+            if fund <= 0.0 {
+                return f64::NAN;
+            }
+            10.0 * (rest / fund + 1.0e-300).log10()
+        }
+
+        /// `b` relative to `a`, in dB. Positive means Rewo is louder.
+        fn db(rewo: f64, openal: f64) -> f64 {
+            20.0 * (rewo / openal).log10()
+        }
+
+        /// Assert a measured divergence sits in a window around the number this
+        /// milestone recorded, with the live value in the message.
+        fn pin(what: &str, measured: f64, recorded: f64, window: f64) {
+            assert!(
+                (measured - recorded).abs() <= window,
+                "{what}: measured {measured:+.4} dB, M139 recorded {recorded:+.4} dB \
+                 (window +-{window} dB). If the mixer was deliberately changed, \
+                 re-measure and record the new number here rather than widening the window."
+            );
+        }
+
+        // ------------------------------------------------------------ the file
+
+        /// Trap 4. Every row's stimulus is regenerated here and must be the one
+        /// the JVM rendered.
+        ///
+        /// Without this, a one-ULP `Math.sin` / `f64::sin` disagreement would
+        /// have both sides confidently comparing renders of different sounds,
+        /// and every divergence below would be partly an artefact of the input.
+        #[test]
+        fn every_regenerated_stimulus_is_the_one_the_jvm_rendered() {
+            for r in rows() {
+                let pcm = stimulus(&r);
+                assert_eq!(
+                    fnv1a(&pcm),
+                    r.src_hash,
+                    "stimulus for {} does not match the capture: Rust {:#x}, JVM {:#x}. \
+                     Math.sin and f64::sin have diverged, or the generator has.",
+                    r.id,
+                    fnv1a(&pcm),
+                    r.src_hash
+                );
+            }
+        }
+
+        /// The capture's own carryover control.
+        ///
+        /// The OpenAL context carries state between stimuli — the output
+        /// limiter's gain above all — so a row's value can depend on what ran
+        /// before it. `ctl.posx.first` and `ctl.posx.last` are the same stimulus
+        /// at opposite ends of the run with the 32-voice row between them. At
+        /// one second of settle they differed by 0.75 dB; the capture uses
+        /// sixty, where they are bit-identical.
+        ///
+        /// This grades the **capture**, not the mixer, and it is the reason the
+        /// other rows can be read as measurements at all.
+        #[test]
+        fn the_captures_carryover_control_pair_agrees_exactly() {
+            let first = row("ctl.posx.first");
+            let last = row("ctl.posx.last");
+            assert_eq!(
+                first.rms_l, last.rms_l,
+                "the capture drifted across the run: {} vs {}. Raise settle.frames \
+                 in LoopbackOracle and recapture.",
+                first.rms_l, last.rms_l
+            );
+            assert!(first.rms_l > 0.0);
+        }
+
+        // ------------------------------------------------- what MATCHES exactly
+
+        /// The attenuation curve is a **transcription**, and it is exact.
+        ///
+        /// `openal::linear_gain` is `1 - d/max` from the three properties
+        /// `Channel.linearAttenuation` writes (`Channel.java:108-113`), and the
+        /// capture reproduces it to the last digit at every distance — including
+        /// **exactly zero at the radius**, the property an inverse-square model
+        /// cannot have.
+        ///
+        /// Read as a ratio against `dist.d0p0`, so the pan divides out and this
+        /// is the curve alone.
+        #[test]
+        fn the_distance_curve_matches_openal_exactly() {
+            let d0 = row("dist.d0p0");
+            for (id, d) in [
+                ("dist.d1p0", 1.0f64),
+                ("dist.d4p0", 4.0),
+                ("dist.d8p0", 8.0),
+                ("dist.d15p0", 15.0),
+                ("dist.d16p0", 16.0),
+                ("dist.d64p0", 64.0),
+            ] {
+                let r = row(id);
+                let openal_ratio = r.rms_l / d0.rms_l;
+                let rewo = render_rewo(&r);
+                let rewo_ratio = rms(&rewo, 0) / rms(&render_rewo(&d0), 0);
+                let expected = (1.0 - d / 16.0).max(0.0);
+                assert!(
+                    (openal_ratio - expected).abs() < 1e-6,
+                    "{id}: OpenAL gave {openal_ratio}, 1 - d/max predicts {expected}"
+                );
+                assert!(
+                    (rewo_ratio - expected).abs() < 1e-6,
+                    "{id}: Rewo gave {rewo_ratio}, 1 - d/max predicts {expected}"
+                );
+            }
+        }
+
+        /// Hard left and hard right agree to better than a thousandth of a dB.
+        ///
+        /// This is the one bearing where equal power and whatever OpenAL does
+        /// must coincide: all the energy is in one channel, so there is no split
+        /// to disagree about. It is worth pinning anyway, because it is what
+        /// makes the front/back divergence below a statement about the *law*
+        /// rather than about a level error somewhere in the chain.
+        #[test]
+        fn hard_panning_matches_openal() {
+            for (id, ch) in [("pan.posx", 0usize), ("pan.negx", 1)] {
+                let r = row(id);
+                let openal = if ch == 0 { r.rms_l } else { r.rms_r };
+                let rewo = rms(&render_rewo(&r), ch);
+                pin(&format!("{id} loud channel"), db(rewo, openal), 0.0, 0.002);
+            }
+        }
+
+        /// A source directly to one side lands on the same side in both.
+        ///
+        /// **This is the assertion an earlier draft of the oracle got wrong**,
+        /// and the way it got it wrong is the trap: OpenAL's untouched listener
+        /// is `ListenerTransform::INITIAL`, facing **-Z**, while
+        /// `listener_basis(0, 0)` faces **+Z**. A capture that never wrote the
+        /// listener therefore compared two orientations a half turn apart and
+        /// reported a left/right inversion that did not exist. Every row now
+        /// writes the listener from the same formula, and the sides agree — at
+        /// yaw 0, at yaw 90/180/270, and at listener pitch +-90.
+        #[test]
+        fn the_left_right_axis_agrees_at_every_orientation() {
+            for id in [
+                "pan.posx",
+                "pan.negx",
+                "yaw90p0.posx",
+                "yaw180p0.posx",
+                "yaw270p0.posx",
+                "lpitch90p0.posx",
+                "lpitchneg90p0.posx",
+                "lpitch45p0.posx",
+            ] {
+                let r = row(id);
+                let rewo = render_rewo(&r);
+                let (rl, rr) = (rms(&rewo, 0), rms(&rewo, 1));
+                let openal_left_louder = r.rms_l > r.rms_r;
+                let rewo_left_louder = rl > rr;
+                let openal_centred = (r.rms_l - r.rms_r).abs() / r.rms_l.max(r.rms_r) < 1e-3;
+                let rewo_centred = (rl - rr).abs() / rl.max(rr) < 1e-3;
+                assert_eq!(
+                    openal_centred, rewo_centred,
+                    "{id}: OpenAL centred={openal_centred}, Rewo centred={rewo_centred} \
+                     (OpenAL {:.6}/{:.6}, Rewo {rl:.6}/{rr:.6})",
+                    r.rms_l, r.rms_r
+                );
+                if !openal_centred {
+                    assert_eq!(
+                        openal_left_louder, rewo_left_louder,
+                        "{id}: the image is on opposite sides. OpenAL {:.6}/{:.6}, \
+                         Rewo {rl:.6}/{rr:.6}",
+                        r.rms_l, r.rms_r
+                    );
+                }
+            }
+        }
+
+        /// The up vector reaches the decode, on both sides.
+        ///
+        /// `ListenerTransform::right()` is `forward x up`
+        /// (`ListenerTransform.java:8-10`) and this mixer's `right()` is the
+        /// same cross product, so pinning up to a constant `(0,1,0)` would make
+        /// it the **zero vector** at pitch +-90 and collapse the image to
+        /// centre. It does not: at both pitches a source to the side stays hard
+        /// to that side, in the capture and in Rewo.
+        #[test]
+        fn a_pitched_listener_keeps_its_stereo_image() {
+            for id in ["lpitch90p0.posx", "lpitchneg90p0.posx"] {
+                let r = row(id);
+                let rewo = render_rewo(&r);
+                let (rl, rr) = (rms(&rewo, 0), rms(&rewo, 1));
+                assert!(
+                    r.rms_l / r.rms_r > 1e6,
+                    "{id}: OpenAL did not keep the image hard over ({:.9}/{:.9})",
+                    r.rms_l,
+                    r.rms_r
+                );
+                assert!(
+                    rl / rr.max(1e-12) > 1e6,
+                    "{id}: Rewo collapsed the image at pitch — the up vector is not \
+                     reaching right() ({rl:.9}/{rr:.9})"
+                );
+            }
+        }
+
+        // ------------------------------------------------ what DIVERGES, and by
+        // ------------------------------------------------ how much
+
+        /// **The pan law diverges, and no tuning of this mixer can close it.**
+        ///
+        /// Measured against the hard-panned rows, which agree exactly, OpenAL
+        /// puts a source directly in front at 0.5957 of full and one directly
+        /// behind at 0.4043 — **summing to 1.0000**, the signature of a
+        /// directional decode rather than a pairwise pan. Rewo puts both at
+        /// `cos(pi/4)` = 0.7071, because its pan input is
+        /// `dot(direction, right)` and that is **zero for both bearings**.
+        ///
+        /// So this is structural, not a curve to fit: front and back are the
+        /// same number going into `pan_gains`, and no function of that number
+        /// can separate them. Closing it means a different pan input, which is
+        /// a different design and not a tuning pass.
+        #[test]
+        fn the_pan_law_diverges_in_front_and_behind() {
+            let hard = row("pan.posx");
+            let front = row("pan.posz");
+            let behind = row("pan.negz");
+
+            // Fractions of the hard-panned level, which is the common reference
+            // the two renderers agree on.
+            let f_openal = front.rms_l / hard.rms_l;
+            let b_openal = behind.rms_l / hard.rms_l;
+            assert!(
+                (f_openal + b_openal - 1.0).abs() < 1e-4,
+                "front {f_openal:.6} + behind {b_openal:.6} should sum to 1"
+            );
+
+            let hard_rewo = rms(&render_rewo(&hard), 0);
+            let f_rewo = rms(&render_rewo(&front), 0) / hard_rewo;
+            let b_rewo = rms(&render_rewo(&behind), 0) / hard_rewo;
+            assert!(
+                (f_rewo - b_rewo).abs() < 1e-9,
+                "Rewo distinguishes front from behind, which its pan input cannot do: \
+                 {f_rewo} vs {b_rewo}"
+            );
+
+            pin("front", db(f_rewo, f_openal), 1.4903, 0.02);
+            pin("behind", db(b_rewo, b_openal), 4.8546, 0.02);
+        }
+
+        /// Directly overhead, OpenAL gives exactly half the hard-panned level in
+        /// each channel and Rewo gives `cos(pi/4)`.
+        ///
+        /// Included because it is the bearing where the two laws are furthest
+        /// apart while both are *centred*, so it isolates the law's level from
+        /// its left/right behaviour entirely.
+        #[test]
+        fn overhead_diverges_by_three_db() {
+            let hard = row("pan.posx");
+            let up = row("pan.posy");
+            let openal = up.rms_l / hard.rms_l;
+            assert!(
+                (openal - 0.5).abs() < 1e-6,
+                "OpenAL overhead is {openal}, expected exactly 0.5 of hard-panned"
+            );
+            let rewo = rms(&render_rewo(&up), 0) / rms(&render_rewo(&hard), 0);
+            pin("overhead", db(rewo, openal), 3.0103, 0.02);
+        }
+
+        /// **The resampler costs about 23 dB of distortion, measured inside
+        /// OpenAL so nothing else can contaminate it.**
+        ///
+        /// The capture renders each pitch twice: once with the device default
+        /// (Cubic Spline on the capturing machine, witnessed in the file header)
+        /// and once with `AL_SOURCE_RESAMPLER_SOFT` forced to Linear, which is
+        /// this mixer's algorithm. Both are OpenAL renders of the same source
+        /// through the same everything, so the difference **is** the
+        /// interpolator's own contribution and needs no cross-implementation
+        /// alignment at all.
+        ///
+        /// `pitch.p2p0` is in the set and is **degenerate on purpose**: a step
+        /// of exactly two source frames lands every output sample on a source
+        /// sample, so no interpolator interpolates and the two agree to the bit.
+        /// A comparison drawn only from powers of two would measure zero and
+        /// conclude the algorithms agree. Its reading is also the measurement's
+        /// own noise floor, at -85.5 dB, which is what says the -55 dB and
+        /// -59 dB default rows are real numbers rather than the window.
+        #[test]
+        fn openals_default_resampler_beats_linear_by_about_23_db() {
+            for (id, recorded) in [
+                ("rate.48kto44k", 22.9005),
+                ("pitch.p0p5", 23.0237),
+                ("pitch.p0p7", 22.9307),
+                ("pitch.p1p3", 22.9324),
+                ("pitch.p1p5", 23.0248),
+            ] {
+                let default = row(id);
+                let linear = row(&format!("linres.{id}"));
+                // The pairing is the whole experiment, so it is asserted rather
+                // than assumed from the id prefix: a `linres.` row that was not
+                // actually captured with the resampler forced would make this
+                // test a comparison of a row with itself.
+                assert!(!default.res_lin, "{id} should be the device default");
+                assert!(linear.res_lin, "linres.{id} should have been forced to Linear");
+                let delta = linear.dsr_db - default.dsr_db;
+                assert!(
+                    (delta - recorded).abs() <= 0.05,
+                    "{id}: linear costs {delta:+.4} dB of distortion over the default \
+                     resampler, M139 recorded {recorded:+.4} dB"
+                );
+            }
+
+            let deg = row("pitch.p2p0");
+            let deg_lin = row("linres.pitch.p2p0");
+            assert_eq!(
+                deg.dsr_db, deg_lin.dsr_db,
+                "an integer resampling step must land on source samples, so the two \
+                 interpolators cannot differ there"
+            );
+            assert!(
+                deg.dsr_db < -80.0,
+                "the degenerate row is the measurement floor and it should be far below \
+                 anything measured: {}",
+                deg.dsr_db
+            );
+        }
+
+        /// This mixer's linear interpolation lands where OpenAL's does.
+        ///
+        /// The previous test measured what choosing linear costs *inside*
+        /// OpenAL. This one asks whether Rewo's linear is the same linear, by
+        /// running the identical stimulus through the production [`Mixer`] and
+        /// comparing the same statistic against the `linres.` rows. Agreement
+        /// here plus the gap above is what makes "Rewo's resampler is about
+        /// 23 dB noisier than vanilla's" a measurement rather than an inference.
+        #[test]
+        fn rewos_interpolation_matches_openals_linear() {
+            // Every row is measured before anything is asserted, so a failure
+            // reports the whole picture rather than the first row that trips.
+            let mut report = Vec::new();
+            let mut worst: f64 = 0.0;
+            for id in [
+                "linres.rate.48kto44k",
+                "linres.pitch.p0p5",
+                "linres.pitch.p0p7",
+                "linres.pitch.p1p3",
+                "linres.pitch.p1p5",
+            ] {
+                let r = row(id);
+                let rewo = distortion_to_signal_db(&render_rewo(&r), r.fund_hz);
+                let delta = rewo - r.dsr_db;
+                worst = worst.max(delta.abs());
+                report.push(format!("{id}: rewo {rewo:+.4} openal {:+.4} d {delta:+.4}", r.dsr_db));
+            }
+            // 0.35 dB, and the shape of the disagreement is the interesting
+            // part. Rate conversion agrees to 0.005 dB; the pitch rows are up
+            // to 0.30 dB apart. Both sides interpolate between the same two
+            // samples, so what differs is WHERE they land: this mixer
+            // accumulates a fractional cursor in f64
+            // (`cursor += step`, `sample_at`), and OpenAL Soft advances a
+            // fixed-point fractional counter whose increment is quantised.
+            // At a step of 48000/44100 the two happen to track; at 0.7 they
+            // drift by a fraction of a sample and the interpolation error
+            // differs slightly with them.
+            //
+            // The bound is deliberately tight enough that the consumer's DFT
+            // window stays load-bearing: at 3 dB it could drop to Hann, whose
+            // leakage floor near -46 dB would leave these -36 dB rows passing
+            // while every default-resampler row became unreadable. The
+            // mutation battery found exactly that.
+            assert!(
+                worst <= 0.35,
+                "Rewo's interpolation and OpenAL's Linear should agree closely; \
+                 worst gap {worst:+.4} dB.\n  {}",
+                report.join("\n  ")
+            );
+
+            // **At an integer step this mixer interpolates nothing either.**
+            // `step` is exactly 2.0, so `frac` is exactly 0 on every frame and
+            // `sample_at` returns the source sample untouched - the same reason
+            // OpenAL's two interpolators agree to the bit on that row. This is
+            // what makes the 23 dB above attributable to the interpolation
+            // rather than to something else in Rewo's path: with the
+            // interpolator out of the picture, Rewo sits at the measurement
+            // floor too.
+            //
+            // It is also the one assertion here that the DFT window has to be
+            // right for. The floor under Blackman-Harris is near -85 dB and
+            // under Hann near -46 dB, so this bound is what stops the consumer
+            // quietly reverting to a window that cannot read the default
+            // resampler's rows at all.
+            let deg = row("pitch.p2p0");
+            let deg_rewo = distortion_to_signal_db(&render_rewo(&deg), deg.fund_hz);
+            assert!(
+                deg_rewo < -70.0,
+                "at an integer resampling step Rewo should add no distortion, but it \
+                 measured {deg_rewo:+.4} dB against OpenAL's {:+.4} dB. If the mixer is \
+                 unchanged, check the DFT window: Hann floors this statistic near -46 dB.",
+                deg.dsr_db
+            );
+        }
+
+        /// **OpenAL does not spatialise a multi-channel buffer, and it does not
+        /// attenuate one either.** The second half is the part nothing in this
+        /// project had written down.
+        ///
+        /// `REWO_AUDIO_PLAN.md` s5 carries the first half as `[concurring]` and
+        /// unverified, and it matters because `item/goat_horn/call3.ogg` is the
+        /// one stereo variant of an otherwise mono event — so the same event
+        /// spatialises on seven rolls and not the eighth. The capture settles
+        /// it: `stereo.d1p0` and `stereo.d8p0` are **byte-identical** despite an
+        /// eightfold distance change, the channels keep the source's own exact
+        /// 2:1 ratio, and halving `AL_GAIN` halves the output.
+        ///
+        /// [`pan_gains`] already returns `(1.0, 1.0)` above one channel, so Rewo
+        /// matches on the panning. **It diverges on the attenuation**: `render`
+        /// applies `openal::linear_gain` before the pan regardless of channel
+        /// count, so Rewo fades a stereo source with distance where vanilla does
+        /// not. At the capture's 8 blocks of 16 that is a 6 dB divergence, and
+        /// it grows to silence at the radius where vanilla stays at full level.
+        #[test]
+        fn a_stereo_buffer_is_neither_panned_nor_attenuated_by_openal() {
+            let d1 = row("stereo.d1p0");
+            let d8 = row("stereo.d8p0");
+            let half = row("stereo.halfvol");
+
+            assert_eq!(
+                (d1.rms_l, d1.rms_r),
+                (d8.rms_l, d8.rms_r),
+                "distance changed a stereo source's level in OpenAL"
+            );
+            assert!(
+                (d1.rms_l / d1.rms_r - 2.0).abs() < 1e-4,
+                "the stereo channels did not pass through at the source's own 2:1 ratio: {}",
+                d1.rms_l / d1.rms_r
+            );
+            assert!(
+                (half.rms_l / d1.rms_l - 0.5).abs() < 1e-4,
+                "AL_GAIN is not applied to a stereo source: {}",
+                half.rms_l / d1.rms_l
+            );
+
+            // Rewo matches at d=1 (attenuation 0.9375 there is nearly unity is
+            // NOT the reason — 0.9375 is a real 0.56 dB, so this row is a
+            // genuine agreement check on the pan), and diverges at d=8.
+            let r1 = render_rewo(&d1);
+            assert!(
+                (rms(&r1, 0) / rms(&r1, 1) - 2.0).abs() < 1e-4,
+                "Rewo panned a stereo source: {}",
+                rms(&r1, 0) / rms(&r1, 1)
+            );
+
+            let r8 = render_rewo(&d8);
+            pin(
+                "stereo at 8 of 16 blocks",
+                db(rms(&r8, 0), d8.rms_l),
+                -6.0206,
+                0.02,
+            );
+            pin(
+                "stereo at 1 of 16 blocks",
+                db(rms(&r1, 0), d1.rms_l),
+                -0.5606,
+                0.02,
+            );
+        }
+
+        /// **The limiter is the largest divergence in this file**, and it is
+        /// exactly the dense-scene case `REWO_AUDIO_PLAN.md` s4 says no CPU-side
+        /// gate can see.
+        ///
+        /// Thirty-two coherent full-volume voices sum to about eight times full
+        /// scale. OpenAL's output limiter — whose *enable* is in Java
+        /// (`Library.java:131`) and whose *curve* is in the DLL — brings that to
+        /// exactly full scale with **no measurable added distortion**: the
+        /// 32-voice row's distortion statistic matches the single-voice row's to
+        /// three decimal places, both at the measurement floor. Rewo's single
+        /// hard `clamp(-1, 1)` instead squares the wave off.
+        ///
+        /// Both halves are asserted, because they say different things: the
+        /// level divergence is what a listener notices as loudness, and the
+        /// distortion divergence is what they notice as the sound breaking up.
+        #[test]
+        fn the_output_limiter_diverges_from_a_hard_clamp() {
+            let x32 = row("limiter.x32");
+            let x1 = row("limiter.x1");
+
+            assert!(
+                (x32.dsr_db - x1.dsr_db).abs() < 0.01,
+                "OpenAL's limiter added distortion: {} vs {} for one voice",
+                x32.dsr_db,
+                x1.dsr_db
+            );
+            assert!(
+                (x32.peak_l - 1.0).abs() < 1e-6,
+                "the limiter did not land on full scale: {}",
+                x32.peak_l
+            );
+
+            let rewo = render_rewo(&x32);
+            assert!(
+                (peak(&rewo, 0) - 1.0).abs() < 1e-6,
+                "the clamp should pin at exactly full scale: {}",
+                peak(&rewo, 0)
+            );
+            // +2.79 dB, not the +3.01 an ideal square wave over a sine would
+            // give: the sum is about eight times full scale, so the clipped
+            // wave is nearly but not quite square and its RMS falls a little
+            // short of 1.0. This number was PREDICTED as 3.01 and the test
+            // caught it — which is what pinning a measurement is for.
+            pin("32 coherent voices", db(rms(&rewo, 0), x32.rms_l), 2.7913, 0.02);
+
+            let rewo_dsr = distortion_to_signal_db(&rewo, x32.fund_hz);
+            let excess = rewo_dsr - x32.dsr_db;
+            assert!(
+                excess > 60.0,
+                "a hard clamp on 32 coherent voices should be vastly more distorted than \
+                 a limiter; measured {rewo_dsr:+.2} dB against OpenAL's {:+.2} dB \
+                 ({excess:+.2} dB)",
+                x32.dsr_db
+            );
+        }
+
+        /// **`AL_SOURCE_RELATIVE` uses a fixed listener-local frame in OpenAL,
+        /// and this mixer's current world-space right vector.** They agree only
+        /// when the listener faces the default direction.
+        ///
+        /// The capture is unambiguous: `relative.yaw0`, `relative.yaw90` and
+        /// `relative.walked` are **byte-identical**, so turning and walking the
+        /// listener move a relative source not at all in OpenAL. `render` instead
+        /// takes `rel = v.position` and then pans it with `right()`, which turns
+        /// with the listener — so a relative source off the centre line would
+        /// swing across the image as the player looks around, and sit on the
+        /// opposite side at yaw 0 (`pan.posx` and `relative.yaw0` are the same
+        /// magnitude in opposite channels).
+        ///
+        /// **It is unreachable in vanilla today**, which is why this is recorded
+        /// rather than filed as a live fault. Every relative instance in 26.2
+        /// sits at the origin: `SimpleSoundInstance`'s three relative factories
+        /// pass `0.0, 0.0, 0.0` (`SimpleSoundInstance.java:26-60`), and
+        /// `BiomeAmbientSoundsHandler.LoopSoundInstance` and the two
+        /// `UnderwaterAmbientSoundInstances` set `relative = true` without ever
+        /// writing a position. At the origin the divergence collapses into the
+        /// front-versus-centre one the pan test already measures. It becomes
+        /// reachable the moment anything gives a relative sound a bearing.
+        #[test]
+        fn a_relative_source_ignores_the_listener_in_openal_and_not_in_rewo() {
+            let y0 = row("relative.yaw0");
+            let y90 = row("relative.yaw90");
+            let walked = row("relative.walked");
+            assert_eq!(
+                (y0.rms_l, y0.rms_r),
+                (y90.rms_l, y90.rms_r),
+                "turning the listener moved a relative source in OpenAL"
+            );
+            assert_eq!(
+                (y0.rms_l, y0.rms_r),
+                (walked.rms_l, walked.rms_r),
+                "walking the listener moved a relative source in OpenAL"
+            );
+
+            let r0 = render_rewo(&y0);
+            let r90 = render_rewo(&y90);
+            let walked_rewo = render_rewo(&walked);
+
+            // **Rewo does skip the listener-position subtraction, and this is
+            // the only fixture that can see it.** `relative.yaw0` and
+            // `relative.yaw90` both put the listener at the ORIGIN, where
+            // subtracting its position changes nothing — so a mixer that had
+            // forgotten `v.relative` entirely would render them identically and
+            // every assertion below would still hold. `relative.walked` moves
+            // the listener 141 blocks away, which is what makes the claim
+            // checkable. The battery found this: deleting the `v.relative`
+            // branch survived until this row was rendered.
+            assert!(
+                (rms(&walked_rewo, 0) - rms(&r0, 0)).abs() < 1e-9
+                    && (rms(&walked_rewo, 1) - rms(&r0, 1)).abs() < 1e-9,
+                "Rewo moved a relative source when the listener walked: \
+                 {:.9}/{:.9} against {:.9}/{:.9} at the origin",
+                rms(&walked_rewo, 0),
+                rms(&walked_rewo, 1),
+                rms(&r0, 0),
+                rms(&r0, 1)
+            );
+
+            let side = |o: &[f32]| rms(o, 0) > rms(o, 1);
+            assert_ne!(
+                side(&r0),
+                side(&r90),
+                "Rewo is expected to swing a relative source with the listener's yaw; \
+                 if this now holds, the frame was fixed and this test should become an \
+                 agreement check"
+            );
+            assert_ne!(
+                side(&r0),
+                y0.rms_l > y0.rms_r,
+                "Rewo is expected to place a relative source on the opposite side at \
+                 yaw 0, because its right vector is the listener's and OpenAL's frame \
+                 is fixed"
+            );
+        }
+
+        /// `disableAttenuation` is full gain at any distance in both, so the
+        /// only divergence at 400 blocks is the pan law's.
+        ///
+        /// Worth its own row because it is the one place where a mixer that
+        /// implemented "no attenuation" as "a very large radius" would diverge
+        /// enormously and silently, and this one does not.
+        #[test]
+        fn an_unattenuated_source_is_full_gain_at_any_distance() {
+            let far = row("noatten.far");
+            let behind = row("pan.negz");
+            // Same bearing, 400 blocks against 1, and the only difference in the
+            // capture is the 0.8 volume against `pan.negz`'s attenuation at
+            // d=1. Compare Rewo against OpenAL directly instead.
+            let rewo = rms(&render_rewo(&far), 0);
+            pin("unattenuated at 400 blocks", db(rewo, far.rms_l), 4.8546, 0.02);
+            assert!(
+                far.rms_l > behind.rms_l,
+                "an unattenuated source 400 blocks away should be louder than an \
+                 attenuated one at 1 block: {} vs {}",
+                far.rms_l,
+                behind.rms_l
+            );
+        }
+    }
 }
