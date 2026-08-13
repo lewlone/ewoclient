@@ -1292,10 +1292,7 @@ impl WorldTransition<'_> {
         });
         // `new ClientLevel(...)` decides this from the NEW dimension type, so
         // it is created and destroyed with the level rather than carried.
-        *self.end_flash = def
-            .skybox
-            .has_end_flashes()
-            .then(rewo_world::end_flash::EndFlashState::default);
+        *self.end_flash = end_flash_for_dimension(&def);
         *self.active_type = Some(def);
         true
     }
@@ -4306,11 +4303,7 @@ impl PlaySession {
         // change — a respawn that names a different level — records one.
         self.active_dimension_key = Some(active.key);
         self.active_dimension_holder = Some(active.holder);
-        self.end_flash = active
-            .def
-            .skybox
-            .has_end_flashes()
-            .then(rewo_world::end_flash::EndFlashState::default);
+        self.end_flash = end_flash_for_dimension(&active.def);
         self.active_dimension_type = Some(active.def);
         Ok(())
     }
@@ -5625,6 +5618,20 @@ impl ClockManager {
     }
 }
 
+/// `ClientLevel.java:255` —
+/// `dimensionType.value().hasEndFlashes() ? new EndFlashState() : null`.
+///
+/// A free function because **both** places that build a level have to agree
+/// and only one of them was reachable from a test: the respawn transition has
+/// a harness, `apply_login_shape` does not (`PlaySession` owns a socket —
+/// M71's hazard). A mutation making every dimension flash survived the whole
+/// suite through the login site alone, which is what this closes.
+fn end_flash_for_dimension(def: &DimensionTypeDef) -> Option<rewo_world::end_flash::EndFlashState> {
+    def.skybox
+        .has_end_flashes()
+        .then(rewo_world::end_flash::EndFlashState::default)
+}
+
 /// `Level.getDefaultClockTime()`, as a free function so it can be witnessed:
 /// [`PlaySession`] owns a socket and has no test module anywhere in this repo
 /// (M71's hazard), so the three-way resolution below would otherwise be
@@ -6659,6 +6666,34 @@ mod clock_map_tests {
         assert!(m.is_empty(), "peeking created nothing");
         let _ = m.total_ticks(0);
         assert!(!m.is_empty(), "and total_ticks is what does create");
+    }
+
+    /// `ClientLevel.java:255`'s ternary, over the four vanilla skyboxes.
+    ///
+    /// The battery's argument for this existing: a mutation giving **every**
+    /// dimension a flash survived the whole suite, because the only witness
+    /// that could see it drove the respawn transition and the *login* path
+    /// builds its level somewhere no test can reach.
+    #[test]
+    fn only_an_end_skybox_gets_a_flash() {
+        use rewo_world::dimension::{DimensionTypeDef, Skybox};
+        let with = |s: Skybox| {
+            let mut d = DimensionTypeDef::unresolved_holder(0);
+            d.skybox = s;
+            super::end_flash_for_dimension(&d).is_some()
+        };
+        assert!(with(Skybox::End), "the End");
+        assert!(!with(Skybox::Overworld), "the Overworld and its caves");
+        assert!(!with(Skybox::None), "the Nether");
+        // And a fresh one really is fresh — `EndFlashState`'s zeroed default
+        // is what makes its first interval silent (M149a), so a flash handed
+        // a used state would flash immediately on arrival.
+        let mut d = DimensionTypeDef::unresolved_holder(0);
+        d.skybox = Skybox::End;
+        assert_eq!(
+            super::end_flash_for_dimension(&d),
+            Some(rewo_world::end_flash::EndFlashState::default())
+        );
     }
 
     /// The three outcomes of `getDefaultClockTime`, which look like one
