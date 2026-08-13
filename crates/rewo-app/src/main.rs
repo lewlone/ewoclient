@@ -49,6 +49,7 @@ mod portalshot_cmd;
 mod skin_fetch;
 mod uri_open;
 mod skyshot_cmd;
+mod soundshot_cmd;
 mod stats;
 mod stats_view;
 mod statshot_cmd;
@@ -308,6 +309,17 @@ enum Command {
     /// Java harness copied verbatim from the decompile (`--check`, no server,
     /// no GPU).
     Particleshot(particleshot_cmd::ParticleshotArgs),
+    /// The sound oracle (`REWO_AUDIO_PLAN.md` §4): drive raw sound and
+    /// `level_event` bodies through the production decoders, grade the seeded
+    /// variant pick and the redirect's asymmetric field mix against the LCG,
+    /// and assert `SoundEngine::play`'s exact eight-call sequence through a
+    /// `RecordingDevice` (`--check`, no server, no GPU, **no device**).
+    ///
+    /// Under `--features audio` it also grades the quantisation against literal
+    /// vectors, real Ogg Vorbis from the asset store, and the production `Mixer`
+    /// through a `NullSink`. **A green run is not evidence that this client
+    /// makes any sound** — see the module doc.
+    Soundshot(soundshot_cmd::SoundshotArgs),
     /// M51c screenshot-capture oracle: render through a **BGRA** `Offscreen` —
     /// the live swapchain's format, which no other gate exercises — and grade
     /// the saved PNG's channel order, opacity and row order, then drive
@@ -371,6 +383,7 @@ fn main() {
         Some(Command::Itemshot(item_args)) => itemshot_cmd::run(item_args),
         Some(Command::Swingshot(sw_args)) => swingshot_cmd::run(sw_args),
         Some(Command::Particleshot(pt_args)) => particleshot_cmd::run(pt_args),
+        Some(Command::Soundshot(snd_args)) => soundshot_cmd::run(snd_args),
         Some(Command::Captureshot(cap_args)) => captureshot_cmd::run(cap_args),
         Some(Command::Bordershot(b_args)) => bordershot_cmd::run(b_args),
         None => match args.headless {
