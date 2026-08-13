@@ -4985,6 +4985,86 @@ mod tests {
         assert_eq!(sys.engine.live_count(), 0);
     }
 
+    /// **A refused track must not leave the manager believing it is playing.**
+    ///
+    /// The channel budget can refuse music like anything else — the streaming
+    /// pool is small (`pool_sizes` clamps it to 2..8) and music competes with
+    /// the Nether beds and the underwater loop for it. If the manager kept
+    /// `currentMusic` after a refusal it would wait on `isActive` for a sound
+    /// that never started, and since `nextSongDelay` is parked at `MAX` by
+    /// `startPlaying`, **the next song would never come for the rest of the
+    /// session**.
+    ///
+    /// Found by a mutation surviving: nothing here drove the refusal path, so
+    /// deleting the `stop_playing` that recovers from it changed nothing.
+    #[test]
+    fn a_refused_music_track_does_not_wedge_the_manager() {
+        let mut idx = music_index();
+        // Two more streamed events, to fill a deliberately tiny streaming pool
+        // before the music asks for a channel.
+        for (i, name) in ["minecraft:ambient.a", "minecraft:ambient.b"].iter().enumerate() {
+            let mut snd = Sound::file(format!("minecraft:filler/{i}"));
+            snd.stream = true;
+            idx.handle_registration(
+                name,
+                &SoundEventRegistration {
+                    sounds: vec![snd],
+                    replace: false,
+                    subtitle: None,
+                },
+                &SoundFileSet::All,
+            );
+        }
+        let mut sys = SoundSystem::new(idx);
+        // `pool_sizes(4)` is 2 streaming and 8 static, so two streamed sounds
+        // exhaust the streaming pool exactly.
+        let mut dev = RecordingDevice::with_channel_count(4);
+        let reg = registry();
+        assert_eq!(dev.budget().limit(Pool::Streaming), 2);
+
+        for name in ["minecraft:ambient.a", "minecraft:ambient.b"] {
+            sys.accept(
+                &[SoundEvent::At(PositionedSound {
+                    sound: SoundRef::Inline {
+                        name: name.into(),
+                        fixed_range: None,
+                    },
+                    source: SoundSource::Ambient,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    volume: 1.0,
+                    pitch: 1.0,
+                    seed: 0,
+                })],
+                &reg,
+                &EmptyWorld,
+                &mut dev,
+            );
+        }
+        assert_eq!(sys.stats.started, 2, "the pool is full");
+
+        let ev = SoundEvent::Music {
+            situational: Some(rewo_world::music::musics::game()),
+        };
+        for _ in 0..crate::music::STARTING_DELAY {
+            sys.accept(&[ev.clone()], &reg, &EmptyWorld, &mut dev);
+        }
+        assert_eq!(sys.stats.not_started, 1, "the budget refused the track");
+        assert_eq!(
+            sys.music.current(),
+            None,
+            "the manager must not hold a track that never started"
+        );
+        // And it is not parked: `startPlaying` set MAX, and the recovery has to
+        // have replaced it with something reachable.
+        assert!(
+            sys.music.next_song_delay() < i32::MAX,
+            "delay {} is still parked; the next song would never come",
+            sys.music.next_song_delay()
+        );
+    }
+
     /// A replacing track stops the one playing, through the engine.
     #[test]
     fn a_replacing_track_stops_the_current_one_through_the_engine() {

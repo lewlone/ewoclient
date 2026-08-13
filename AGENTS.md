@@ -1799,6 +1799,39 @@ surviving mutation was **proven equivalent** — the down branch's second disjun
 cannot fire, since the blend never crosses its target — so it is dead code in
 vanilla too, kept and recorded.*
 
+*Update (2026-08-12 session, Rewo): **M147 + M148 — the Overworld played no
+music, and the battery that would have caught it.** M146 shipped music
+selection with 3137 tests, 34 gates and 45 render-check witnesses green, and it
+**played nothing anywhere in the Overworld**. `situational_music` hard-coded an
+EMPTY base below the biome, justified by a measurement in M146's own commit
+message — *"grepping every writer of `BACKGROUND_MUSIC` finds only biome
+builders"* — whose grep ended in **`head -20`**. There are 32 writers across
+four files; `DimensionTypes.java:39` sets `BackgroundMusic.OVERWORLD` on the
+overworld type and `:124` sets `Musics.END`, while an ordinary biome declares
+none. **The doc error and the bug were the same error**: the claim was not
+decoration beside the code, it was the code's justification, and it reached a
+commit message, a merge commit, REWO_PLAN §15 and this file before anything
+ran. **What found it was running the client** — `REWO_AUDIO=1 python
+tools/render_check.py` with sound debug on, showing 159 tick lines every one
+`+0 started`. Not an error: a number that should not have been zero. The audio
+counters read perfectly healthy throughout. **r46 locks it in and needs no
+device**, because music selection runs against whatever device is attached — in
+the default build the silent device stands in, and it names
+`minecraft:music.creative`, which is `select()`'s creative arm reached through
+`instabuild && mayfly`. `dimensioncheck` then demanded the rest, correctly, and
+all four of its independent inputs now carry `background_music` — including a
+captured wire registry that parses `music.game` + `music.creative` off a real
+server. **M148 then ran the battery M145–M147 never had** (26 mutations, 23/26
+first time) and found the witness that did not exist: a **budget-refused** music
+track had none, and since `startPlaying` parks the delay at `MAX`, a manager
+that kept believing it was playing would never start another song for the rest
+of the session. Two new harness hazards: a **gate-routed mutation leaves the
+mutant's BINARY on disk** (the restore does not rebuild, so the next gate grades
+a mutant against a clean tree), and **`git commit -m` in bash runs backticks as
+command substitution**. 3141 tests, 34 gates, `live --render-check` 46/46.
+**The lesson is not about music: a truncated grep reported as a measurement is
+worse than no measurement, because a measurement gets quoted.***
+
 *Update (2026-08-12 session, Rewo): **M145 + M146 — music: which track, when,
 and the ownership split the wiring forced.** M145 is the model — `Music`,
 `Musics`, `BackgroundMusic`, the `audio/background_music` attribute (the
@@ -2054,7 +2087,7 @@ everything a machine can check passes and that is *not* the same claim. The
 feature is **off by default**, so a default build links no audio stack and the
 34 gates are unchanged.
 **Everything is shipped, gated and merged to `main`** as of 2026-08-12
-(M146) — **3137 tests / 0 failures** (world 1171, net 1117, gpu 275, data 228,
+(M148) — **3141 tests / 0 failures** (world 1171, net 1121, gpu 275, data 228,
 app 199, mesh 45, proto 16, **audio 86** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,

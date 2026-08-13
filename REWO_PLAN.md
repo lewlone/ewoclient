@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-12 after M147:
-**3137 tests, 0 failures** (**world 1171, net 1117, gpu 275, data 228, app 199,
-mesh 45, proto 16, audio 86** — read off the runner per crate; they sum to 3137).
+Current measurement, taken 2026-08-12 after M148:
+**3141 tests, 0 failures** (**world 1171, net 1121, gpu 275, data 228, app 199,
+mesh 45, proto 16, audio 86** — read off the runner per crate; they sum to 3141).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -22437,3 +22437,75 @@ validation errors; `live --render-check` **46/46**; demo PNG
 `2cc56b4acbfb92cb`, byte-identical since M15; both build configurations clean.
 Live with `--features audio`: a device opened at 48 kHz, 0 unresolved, 0 streams
 failed, 0 commands dropped, 0 device errors.
+
+---
+
+## M148 — the mutation battery M145–M147 never had, and what it found (2026-08-12)
+
+Three music milestones shipped without one, which was a mistake with direct
+evidence behind it: **M147's bug was invisible to every music unit test**.
+`situational_music` returned `None` everywhere in the Overworld while 3137
+tests, 34 gates and 45 render-check witnesses passed over it. So this battery
+asked a specific question rather than a general one — *which of these witnesses
+would have noticed?* — and anything that survived is a witness that would not
+have.
+
+**26 mutations, 23/26 first time.** Two survivors, one bad anchor, and all
+three were mine.
+
+### The witness that did not exist
+
+**A refused music track had no witness at all.** The channel budget can refuse
+music like anything else — `pool_sizes` clamps the streaming pool to 2..8, and
+music competes with the five Nether beds and the underwater loop for it. If the
+manager kept `currentMusic` after a refusal it would wait on `isActive` for a
+sound that never started, and because `startPlaying` parks `nextSongDelay` at
+`i32::MAX`, **the next song would never come for the rest of the session**. The
+recovery was written in M146 and nothing drove it. The new witness fills a
+deliberately tiny pool first and asserts both halves: the manager holds nothing,
+and the delay is no longer parked.
+
+### The fixture masked by its own other field
+
+The malformed-track test dropped **both** delays, so either `?` alone satisfied
+it — and a mutation defaulting `min_delay` to 0 survived. Two one-field-short
+fixtures are what make each `?` load-bearing, plus a third missing the sound.
+This is the same shape as M144's DC buffers: *a fixture that omits two things at
+once cannot witness either.*
+
+### `attribute_background_music` had no unit test at all
+
+It was graded only indirectly, through `dimensioncheck`'s bundled body. M148a
+gives it one, and the fixture is the overworld **dimension**'s attributes
+compound rather than a biome's — which is the right one precisely because that
+is where the Overworld's music lives and M147 shipped a client that played none.
+Three answers must stay distinct: absent inherits, an explicitly empty record
+silences (a vanilla biome ships one), and a malformed track yields no track.
+
+### Two harness hazards, both new to this repo's list
+
+**A gate-routed mutation leaves the mutant's BINARY on disk.** `run_gate` builds
+`rewo-app` from the mutated source; the restore puts the source back and does
+not rebuild, so `target/debug/rewo.exe` is the last mutant. The next gate run
+then grades that mutant against a clean tree — which presents as a gate failing
+with `git status` clean, the most confusing possible shape. The harness now
+rebuilds before it reports.
+
+**`git commit -m "…"` in bash runs backticks as command substitution.** M148b's
+first message lost every `` `?` `` it had quoted. Write the message to a file
+and use `-F` — the same rule this repo already records for heredocs carrying
+escape-bearing text, one layer over.
+
+### The three deliberate survivors
+
+`isCreative` reduced to `instabuild` alone survives, because
+`situational_music_from` takes the flag already computed. The dimension base and
+the per-tick push are composition roots inside `PlaySession`, which has no test
+module anywhere in the repo — **and the first of those is M147's bug**, so the
+battery records that only `--render-check`'s r46 stands between it and a
+regression. That is worth knowing rather than hiding: the unit suite cannot see
+it, by construction.
+
+**Measured:** 3141 tests / 0 failures (world 1171, net 1121, gpu 275, data 228,
+app 199, mesh 45, proto 16, audio 86); 34 serverless gates green with **0
+validation errors**; battery **26/26** with a surviving no-op control.

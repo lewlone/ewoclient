@@ -463,6 +463,147 @@ mod ambient_tests {
         )])
     }
 
+    // ── audio/background_music (M148) ────────────────────────────────────
+
+    /// The overworld dimension type's own entry, byte for byte from
+    /// `data/minecraft/dimension_type/overworld.json`.
+    ///
+    /// **This is a DIMENSION's attributes compound, not a biome's**, and it is
+    /// the right fixture precisely because that is where the Overworld's music
+    /// lives — M147 shipped a client that played none anywhere because the
+    /// dimension layer was never read.
+    fn overworld_music_attributes() -> Nbt {
+        let track = |sound: &str, min: i32, max: i32| {
+            Nbt::Compound(vec![
+                ("max_delay".into(), Nbt::Int(max)),
+                ("min_delay".into(), Nbt::Int(min)),
+                ("sound".into(), s(sound)),
+            ])
+        };
+        Nbt::Compound(vec![(
+            "minecraft:audio/background_music".into(),
+            Nbt::Compound(vec![
+                (
+                    "creative".into(),
+                    track("minecraft:music.creative", 12_000, 24_000),
+                ),
+                ("default".into(), track("minecraft:music.game", 12_000, 24_000)),
+            ]),
+        )])
+    }
+
+    #[test]
+    fn the_overworlds_music_decodes_both_tracks() {
+        let attrs = overworld_music_attributes();
+        let m = attribute_background_music(Some(&attrs)).expect("present");
+        let d = m.default_music.as_ref().expect("default");
+        assert_eq!(d.sound, "minecraft:music.game");
+        assert_eq!((d.min_delay, d.max_delay), (12_000, 24_000));
+        let c = m.creative_music.as_ref().expect("creative");
+        assert_eq!(c.sound, "minecraft:music.creative");
+        assert!(m.underwater_music.is_none(), "the Overworld declares none");
+        // **`replace_current_music` is absent here and defaults to FALSE**
+        // (`Music.CODEC`'s `optionalFieldOf(..., false)`). Defaulting it true
+        // would make the Overworld's own track restart itself every tick, since
+        // `canReplace`'s identifier test is the only thing that would stop it.
+        assert!(!d.replace_current_music);
+        assert!(!c.replace_current_music);
+    }
+
+    /// The End's entry — the one vanilla record that sets the flag.
+    #[test]
+    fn the_ends_track_carries_replace_current_music() {
+        let attrs = Nbt::Compound(vec![(
+            "minecraft:audio/background_music".into(),
+            Nbt::Compound(vec![(
+                "default".into(),
+                Nbt::Compound(vec![
+                    ("max_delay".into(), Nbt::Int(24_000)),
+                    ("min_delay".into(), Nbt::Int(6_000)),
+                    ("replace_current_music".into(), Nbt::Byte(1)),
+                    ("sound".into(), s("minecraft:music.end")),
+                ]),
+            )]),
+        )]);
+        let m = attribute_background_music(Some(&attrs)).expect("present");
+        let d = m.default_music.as_ref().expect("default");
+        assert_eq!(d.sound, "minecraft:music.end");
+        assert_eq!((d.min_delay, d.max_delay), (6_000, 24_000));
+        assert!(d.replace_current_music, "the End's track interrupts");
+    }
+
+    /// **Absent, empty and malformed are three different answers.**
+    #[test]
+    fn absent_empty_and_malformed_background_music_differ() {
+        // Absent: inherit. `None`, not an empty record.
+        assert!(attribute_background_music(None).is_none());
+        assert!(attribute_background_music(Some(&Nbt::Compound(vec![]))).is_none());
+
+        // Declared but with no tracks: silence, which a biome really does ship
+        // (`OverworldBiomes.java:596`). Collapsing this into "absent" gives that
+        // biome the dimension's music.
+        let empty = Nbt::Compound(vec![(
+            "minecraft:audio/background_music".into(),
+            Nbt::Compound(vec![]),
+        )]);
+        let m = attribute_background_music(Some(&empty)).expect("declared");
+        assert!(m.is_empty(), "an explicit empty record is not absence");
+
+        // A track missing a required delay is malformed, and yields no track
+        // rather than one with an invented window — the window decides how
+        // often it plays.
+        //
+        // **Each delay is dropped SEPARATELY**, and that is not pedantry: a
+        // fixture missing both is satisfied by either `?` alone, so a mutation
+        // that defaulted `min_delay` to 0 survived the first version of this.
+        // Two one-field-short fixtures are what make each `?` load-bearing.
+        let missing = |present: &str, value: i32| {
+            Nbt::Compound(vec![(
+                "minecraft:audio/background_music".into(),
+                Nbt::Compound(vec![(
+                    "default".into(),
+                    Nbt::Compound(vec![
+                        ("sound".into(), s("minecraft:music.game")),
+                        (present.into(), Nbt::Int(value)),
+                    ]),
+                )]),
+            )])
+        };
+        for (present, value) in [("max_delay", 24_000), ("min_delay", 12_000)] {
+            let bad = missing(present, value);
+            assert!(
+                attribute_background_music(Some(&bad))
+                    .expect("declared")
+                    .default_music
+                    .is_none(),
+                "a track with only {present} must not decode"
+            );
+        }
+        // And a track missing the sound is equally no track.
+        let no_sound = Nbt::Compound(vec![(
+            "minecraft:audio/background_music".into(),
+            Nbt::Compound(vec![(
+                "default".into(),
+                Nbt::Compound(vec![
+                    ("min_delay".into(), Nbt::Int(12_000)),
+                    ("max_delay".into(), Nbt::Int(24_000)),
+                ]),
+            )]),
+        )]);
+        assert!(attribute_background_music(Some(&no_sound))
+            .expect("declared")
+            .default_music
+            .is_none());
+
+        // The `{argument, modifier}` form is not applied, for the same stated
+        // reason as the ambient record's.
+        let modifier = Nbt::Compound(vec![(
+            "minecraft:audio/background_music".into(),
+            Nbt::Compound(vec![("modifier".into(), s("whatever"))]),
+        )]);
+        assert!(attribute_background_music(Some(&modifier)).is_none());
+    }
+
     #[test]
     fn a_nether_biome_decodes_all_three_features() {
         let attrs = nether_wastes_attributes();
