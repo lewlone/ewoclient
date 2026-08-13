@@ -58,7 +58,10 @@
 //! 2. **(s) resolution** — the seeded variant pick, the redirect's second RNG
 //!    draw, the redirect's asymmetric field mix, and the missing-file weight
 //!    shift. `s1` builds its index with the **production loader**
-//!    (`live_cmd::build_sounds`), not a hand-assembled one.
+//!    (`live_cmd::build_sounds`), not a hand-assembled one, and `s1b` pins that
+//!    the same loader **fails closed** rather than degrading to an empty index
+//!    — the half of the claim a machine that *has* the store cannot otherwise
+//!    witness, and which a surviving mutation is what found.
 //! 3. **(a) arithmetic and sequence** — `SoundEngine::play` through
 //!    `RecordingDevice`: the exact eight-call order, master applied once, the
 //!    unclamped-for-range / clamped-for-gain split, the zero-volume drop and its
@@ -119,7 +122,7 @@ use rewo_net::sounds::{SoundEvent, SoundRef, SoundSource};
 use rewo_net::SoundPacketKind;
 
 /// The witnesses a **default** build runs — layers (w), (s) and (a).
-pub const EXPECTED_WITNESSES_CORE: usize = 27;
+pub const EXPECTED_WITNESSES_CORE: usize = 28;
 
 /// The extra witnesses an `--features audio` build runs — layers (d) and (m).
 ///
@@ -717,6 +720,45 @@ fn resolution_layer(c: &mut Checker, version: &str, registry: &SoundEvents) {
             );
         }
     }
+
+    // ---- s1b: ...and it FAILS CLOSED rather than degrading -----------------
+    //
+    // **The half of s1 that a machine WITH the store cannot otherwise
+    // witness**, and the mutation battery is what found that. `s1` asserts a
+    // real index came back, which is true whether or not the `strict` arm
+    // exists — so on every machine where this gate is green, disabling the
+    // fail-closed panic is invisible. The battery's `strict && false` mutation
+    // survived `s1` for exactly that reason.
+    //
+    // A version with no manifest reaches the same `Err` a missing store would,
+    // without needing a bare machine: `asset_index_id` finds no
+    // `shared/versions/<v>/<v>.json`, `load_for_version` errors, and `strict`
+    // must turn that into a panic rather than into an empty index behind a
+    // `log::info!` — which is behaviourally indistinguishable from totally
+    // broken resolution, and green because it asserts nothing.
+    //
+    // The panic hook is silenced across the call because this panic is the
+    // expected outcome; without that the gate prints a backtrace on its way to
+    // saying " ok ".
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let bogus = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::live_cmd::build_sounds("99.99-no-such-version", registry, true, false)
+            .system
+            .sounds
+            .len()
+    }));
+    std::panic::set_hook(previous_hook);
+    c.record(
+        "s1b.the_production_loader_fails_closed_on_a_version_it_cannot_load",
+        bogus.is_err(),
+        match &bogus {
+            Err(_) => "an unloadable version panics under `strict` rather than \
+                       degrading to an empty index"
+                .to_string(),
+            Ok(n) => format!("it returned an index of {n} events instead of failing"),
+        },
+    );
 
     let idx = synthetic_index();
 

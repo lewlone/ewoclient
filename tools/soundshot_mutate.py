@@ -336,7 +336,7 @@ MUTATIONS = [
         DEC,
         "d: a looping stream restarts on a SHORT read rather than an empty one",
         "        if out.is_empty() && self.looping {",
-        "        if out.len() < want && self.looping {",
+        "        if out.len() < samples && self.looping {",
         "KILLED",
     ),
     # ---- (m) the mixer ----------------------------------------------------
