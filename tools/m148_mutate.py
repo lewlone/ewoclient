@@ -234,14 +234,14 @@ MUTATIONS = [
         # The key appears TWICE — overworld and the_end — so the anchor carries
         # the creative track, which only the Overworld has. An anchor that
         # matches twice is a mutation that never ran.
-        '                        "minecraft:audio/background_music",
-                        c(vec![
-                            (
-                                "creative",',
-        '                        "minecraft:audio/background_music_DISABLED",
-                        c(vec![
-                            (
-                                "creative",',
+        '                        "minecraft:audio/background_music",\n'
+        "                        c(vec![\n"
+        "                            (\n"
+        '                                "creative",',
+        '                        "minecraft:audio/background_music_DISABLED",\n'
+        "                        c(vec![\n"
+        "                            (\n"
+        '                                "creative",',
         "KILLED",
     ),
 ]
