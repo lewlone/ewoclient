@@ -129,10 +129,8 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-13 after M149b (which is on
-`claude/rewo-m149-end-flash`, **not** on `main` — the first branch to hold a
-commit off `main` since 2026-07-27, and it should be merged or dropped rather
-than left):
+Current measurement, taken 2026-08-13 after M149b (merged to `main`; no branch
+or worktree holds a commit off it):
 **3157 tests, 0 failures** (**world 1187, net 1122, gpu 275, data 228, app 199,
 mesh 45, proto 16, audio 86** — read off the runner per crate; they sum to 3141).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
@@ -270,7 +268,7 @@ witnesses are mostly self-driven can look healthy against nothing.
 > * **Decode on a worker.** Still inline on the client tick — one chunk per
 >   second of playback, four at the attach, plus one asset read of up to 11 MB
 >   when a track starts. A stated deviation from vanilla's `supplyAsync`.
-> * **`EndFlashState` — STARTED (M149a/b, on a branch), and it is not only an
+> * **`EndFlashState` — STARTED (M149a/b, merged), and it is not only an
 >   audio item.** The schedule and `default_clock` are shipped and gated; the
 >   three consumers are not. It has **three**, and two are visual: the lightmap
 >   term (`LightmapRenderStateExtractor.java:57-65`), the sky quad

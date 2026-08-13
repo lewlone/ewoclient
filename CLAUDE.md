@@ -1811,9 +1811,8 @@ including the broken `grep -c $'$'` detector — while **CLAUDE.md carried the
 opposite**, and this session read the nearer one, "confirmed" it with exactly
 that detector, and turned a 50-line change into a 3,256-line diff. Measured by
 byte count: **378 all-LF, one all-CRLF, four mixed**. The same-fact-in-two-places
-hazard landing on the documentation of a hazard. 3157 tests. **M149a/b are on
-`claude/rewo-m149-end-flash`, not on `main`** — the clock map and all three
-consumers are named, not started.*
+hazard landing on the documentation of a hazard. 3157 tests, merged to `main` — the clock map and all
+three consumers are named, not started.*
 
 *Update (2026-08-12 session, Rewo): **M147 + M148 — the Overworld played no
 music, and the battery that would have caught it.** M146 shipped music
