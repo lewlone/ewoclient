@@ -1533,3 +1533,808 @@ fn arithmetic_layer(c: &mut Checker) {
         ),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Layer (d) — decode.   `--features audio` only.
+// ---------------------------------------------------------------------------
+
+/// Three real assets, by their content hashes in the store's object layout.
+///
+/// The vectors are here; the audio is not. The store is Mojang's and belongs in
+/// the user's own install, exactly as the decompile and the datagen reports do —
+/// this repo has never carried game assets. What is recorded is what was
+/// *measured* from three of them, which is `tools/java_tostring_oracle`'s shape:
+/// run the artefact once, commit the numbers.
+#[cfg(feature = "audio")]
+const CHICKEN: (&str, &str) = ("e1", "e16352150262ab49686f6c0aeaffa7532d3157ea");
+#[cfg(feature = "audio")]
+const HORN_MONO: (&str, &str) = ("ce", "ce8a2675cc2c9ac986851d2c5139d5c9ad3eeee1");
+#[cfg(feature = "audio")]
+const HORN_STEREO: (&str, &str) = ("16", "16c3be71d3e789ee539cd70819e526343ace5e84");
+
+/// Read one asset through the **production** store-path resolver.
+#[cfg(feature = "audio")]
+fn asset(a: (&str, &str)) -> Option<Vec<u8>> {
+    let root = rewo_data::sounds_json::shared_assets_dir()?;
+    std::fs::read(rewo_data::sounds_json::object_path(&root, a.1)).ok()
+}
+
+#[cfg(feature = "audio")]
+fn decode_layer(c: &mut Checker) {
+    use rewo_audio::buffers::{Pcm, PcmSource, PcmStream, SoundBufferLibrary};
+    use rewo_audio::decode::{decode_ogg_vorbis, OggStream};
+    use rewo_audio::quantise::quantise;
+
+    // ---- d1: the quantisation, against literal vectors ----------------------
+    //
+    // `ChunkedSampleByteBuf.java:28`, verbatim:
+    //   `int intVal = Mth.clamp((int)(sample * 32767.5F - 0.5F), -32768, 32767);`
+    //
+    // Three details, none audible as an obvious fault when wrong:
+    //  * **32767.5, not 32767** — the half is what lands 1.0 exactly on 32767
+    //    once the bias is off. A 32767 multiplier gives 32766.
+    //  * **the -0.5 bias is applied BEFORE the cast**, shifting the truncation
+    //    boundary by half a step. `2.0/32767.5` scales to exactly 2.0 and
+    //    quantises to **1** with the bias and 2 without.
+    //  * **the cast TRUNCATES toward zero, it does not floor.** Silence is the
+    //    case that shows it: `(int)(-0.5)` is 0, where a floor gives -1 — a
+    //    constant DC offset on every silent sample of every sound in the game.
+    let boundary = 2.0f32 / 32767.5;
+    let literals = [
+        (1.0f32, 32767i16),
+        (-1.0, -32768),
+        (0.0, 0),
+        (-0.5, -16384),
+        (0.5, 16383),
+        (boundary, 1),
+    ];
+    let bias_free = (boundary * 32767.5) as i32; // what dropping the bias gives
+    let floored = (-0.5f32).floor() as i32; // what a floor gives at silence
+    c.record(
+        "d1.the_quantisation_matches_its_literal_vectors",
+        literals.iter().all(|(s, want)| quantise(*s) == *want)
+            && bias_free == 2
+            && floored == -1,
+        format!(
+            "{literals:?}; the same boundary sample without the bias is {bias_free} \
+             (not 1), and a floor at silence gives {floored} (not 0)"
+        ),
+    );
+
+    // ---- d2: the clamp is on the RESULT, not on the input --------------------
+    c.record(
+        "d2.the_clamp_saturates_the_truncated_integer_rather_than_wrapping",
+        quantise(4.0) == 32767 && quantise(-4.0) == -32768 && quantise(f32::NAN) == 0,
+        format!(
+            "4.0 -> {}, -4.0 -> {}, NaN -> {} (Rust's `as i32` saturates rather \
+             than being UB, and the clamp masks it either way)",
+            quantise(4.0),
+            quantise(-4.0),
+            quantise(f32::NAN)
+        ),
+    );
+
+    // ---- d3: a real ogg, fail-closed ----------------------------------------
+    //
+    // **`rewo-audio`'s own version of this SKIPS when the store is missing**,
+    // and its module doc says that is a real weakness. This is where it stops
+    // being acceptable: a missing store is a FAILED witness, per §5's
+    // "store-dependent tests self-skip on a bare machine, so a green run there
+    // proves nothing".
+    match asset(CHICKEN) {
+        None => c.record(
+            "d3.a_real_ogg_decodes_to_its_exact_sample_count",
+            false,
+            "no unpacked asset store — the gate fails closed rather than skipping",
+        ),
+        Some(bytes) => {
+            let pcm = decode_ogg_vorbis(&bytes);
+            let ok = match &pcm {
+                Ok(p) => {
+                    // Exact, and it is the END TRIM that makes it so: a Vorbis
+                    // stream's final page carries a granule position below what
+                    // the last packet decodes to, and the surplus is discarded.
+                    // A decoder that ignored it returns MORE samples and sounds
+                    // almost right.
+                    p.channels == 1 && p.sample_rate == 44100 && p.samples.len() == 1728
+                }
+                Err(_) => false,
+            };
+            // **The SUM sees the quantisation and the peak does not.** Measured:
+            // -136 through `quantise`, and +676 with the bias dropped — a gap of
+            // 812 across 1728 samples. The peak moves by ONE over the same
+            // change (19988 against 19987), so a peak-only witness is blind.
+            //
+            // The tolerance is wide on purpose and the bound is stated here
+            // rather than in a comment elsewhere: an aggregate shifts by a few
+            // when a symphonia bump moves a handful of samples by an LSB, and by
+            // hundreds when the bias goes missing. Pinning the exact value would
+            // pin symphonia's version rather than Rewo's arithmetic, which
+            // Vorbis I explicitly does not promise.
+            let sum: i64 = pcm
+                .as_ref()
+                .map(|p| p.samples.iter().map(|s| *s as i64).sum())
+                .unwrap_or(i64::MAX);
+            let peak = pcm
+                .as_ref()
+                .map(|p| p.samples.iter().map(|s| (*s as i32).abs()).max().unwrap_or(0))
+                .unwrap_or(0);
+            c.record(
+                "d3.a_real_ogg_decodes_to_its_exact_sample_count",
+                ok && (sum - -136).abs() < 200 && peak > 8000 && peak < 32767,
+                format!(
+                    "1728 samples, 1ch, 44100 Hz; sum {sum} (expected -136 +/-200; \
+                     dropping the -0.5 bias gives +676), peak {peak}"
+                ),
+            );
+        }
+    }
+
+    // ---- d4: channels are per-VARIANT and the store is mixed-rate ------------
+    //
+    // Both are load-bearing for the mixer and both are easy to assume away.
+    // `call3` is the ONLY stereo goat-horn variant, so one event resolves to a
+    // 2-channel buffer on one roll and a 1-channel buffer on the next; OpenAL
+    // does not spatialise a multi-channel buffer at all, so vanilla plays that
+    // one non-positionally (see m11). And the store is not one rate — the
+    // chicken is 44100 while the horn is 48000 — which puts the resampler on the
+    // hot path for essentially every sound rather than on an edge case.
+    match (asset(HORN_MONO), asset(HORN_STEREO), asset(CHICKEN)) {
+        (Some(m), Some(s), Some(ch)) => {
+            let (m, s, ch) = (
+                decode_ogg_vorbis(&m),
+                decode_ogg_vorbis(&s),
+                decode_ogg_vorbis(&ch),
+            );
+            let ok = matches!((&m, &s, &ch), (Ok(m), Ok(s), Ok(ch))
+                if m.channels == 1
+                    && s.channels == 2
+                    && m.sample_rate == 48000
+                    && s.sample_rate == 48000
+                    && ch.sample_rate == 44100
+                    && s.samples.len() == 432_000);
+            c.record(
+                "d4.channels_are_per_variant_and_the_store_is_mixed_rate",
+                ok,
+                format!(
+                    "call0 {:?}, call3 {:?}, chicken {:?}",
+                    m.as_ref().map(|p| (p.channels, p.sample_rate)),
+                    s.as_ref().map(|p| (p.channels, p.sample_rate, p.samples.len())),
+                    ch.as_ref().map(|p| (p.channels, p.sample_rate)),
+                ),
+            );
+        }
+        _ => c.record(
+            "d4.channels_are_per_variant_and_the_store_is_mixed_rate",
+            false,
+            "no unpacked asset store — the gate fails closed rather than skipping",
+        ),
+    }
+
+    // ---- d5: garbage is an error, not silence, and the failure is CACHED ----
+    //
+    // A decoder that returned an empty buffer for unreadable input would make
+    // every missing or corrupt sound indistinguishable from a legitimately
+    // silent one, and the engine would dutifully play nothing with no error
+    // anywhere. And `computeIfAbsent` stores the *future*, so a future that
+    // completed exceptionally stays in the map — a missing file is **not**
+    // retried, which is the opposite of the obvious design.
+    struct Counting<'a>(&'a std::cell::Cell<usize>, Result<Pcm, String>);
+    impl PcmSource for Counting<'_> {
+        fn open(&mut self, _key: &str) -> Result<Pcm, String> {
+            self.0.set(self.0.get() + 1);
+            self.1.clone()
+        }
+    }
+    let opens = std::cell::Cell::new(0usize);
+    {
+        let mut lib = SoundBufferLibrary::new(Counting(&opens, Err("boom".into())));
+        let _ = lib.complete_buffer("a.ogg");
+        let _ = lib.complete_buffer("a.ogg");
+        let _ = lib.complete_buffer("a.ogg");
+    }
+    c.record(
+        "d5.garbage_is_an_error_and_a_failed_decode_is_cached_like_any_other",
+        decode_ogg_vorbis(b"this is not an ogg file at all").is_err()
+            && decode_ogg_vorbis(&[]).is_err()
+            && opens.get() == 1,
+        format!(
+            "unreadable input errors rather than decoding to silence; three lookups \
+             of a failing key opened the source {} time(s)",
+            opens.get()
+        ),
+    );
+
+    // ---- d6: statics cached permanently, streams NEVER cached ---------------
+    //
+    // `SoundBufferLibrary.getStream` has no `computeIfAbsent` and no map lookup
+    // at all: every call opens the resource again. Not an oversight — a stream
+    // holds a decode position, so two sounds sharing one would fight over it,
+    // and the same track started twice must genuinely play twice.
+    let s_opens = std::cell::Cell::new(0usize);
+    let cached_count;
+    {
+        let ok = Pcm {
+            samples: vec![1, 2, 3, 4],
+            channels: 1,
+            sample_rate: 44100,
+        };
+        let mut lib = SoundBufferLibrary::new(Counting(&s_opens, Ok(ok)));
+        for _ in 0..5 {
+            let _ = lib.complete_buffer("x.ogg");
+        }
+        let _ = lib.complete_buffer("y.ogg");
+        cached_count = lib.cached();
+        // The rule, stated without performing it — `stream()` is a decision and
+        // `open_stream()` is the action, which is what lets the caching claim be
+        // graded by a source with no decoder in it at all.
+        let h1 = lib.stream("music.ogg", true);
+        let h2 = lib.stream("music.ogg", true);
+        // Two handles, and the loop flag rides with them rather than with the
+        // channel.
+        assert_eq!(h1, h2);
+    }
+    c.record(
+        "d6.a_static_buffer_is_cached_permanently_and_a_stream_is_not_cached_at_all",
+        s_opens.get() == 2 && cached_count == 2,
+        format!(
+            "six lookups of two keys opened the source {} times and left {} cached",
+            s_opens.get(),
+            cached_count
+        ),
+    );
+
+    // ---- d7: a looping stream restarts one read LATE ------------------------
+    //
+    // `LoopingAudioStream.read` guards on the INNER read coming back *empty*
+    // (`LoopingAudioStream.java:28-38`), and a short non-empty read is the
+    // ordinary end of a file — so a looping stream hands out one short buffer at
+    // the loop point and a full one after it. The signature is in the buffer
+    // LENGTHS, not in the samples: a version that spliced across the boundary to
+    // keep every buffer full would sound identical and would not be this.
+    //
+    // The chicken is 1728 samples, so at 1000 the pattern is 1000, 728, 1000,
+    // 728 … — the fixture's own numbers rather than round by luck.
+    match asset(CHICKEN) {
+        None => c.record(
+            "d7.a_looping_stream_restarts_one_read_after_it_runs_out",
+            false,
+            "no unpacked asset store — the gate fails closed rather than skipping",
+        ),
+        Some(bytes) => {
+            let mut s = OggStream::open(bytes.clone().into(), true).expect("open looping");
+            let lens: Vec<usize> = (0..5).map(|_| s.read(1000).expect("read").len()).collect();
+            // ...and a NON-looping stream of the same asset stays exhausted,
+            // which is what makes the loop flag the thing being witnessed.
+            let mut once = OggStream::open(bytes.into(), false).expect("open once");
+            let mut once_lens = Vec::new();
+            for _ in 0..5 {
+                once_lens.push(once.read(1000).expect("read").len());
+            }
+            c.record(
+                "d7.a_looping_stream_restarts_one_read_after_it_runs_out",
+                lens == vec![1000, 728, 1000, 728, 1000] && once_lens == vec![1000, 728, 0, 0, 0],
+                format!("looping {lens:?} against non-looping {once_lens:?}"),
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Layer (m) — the mixer.   `--features audio` only.
+// ---------------------------------------------------------------------------
+
+/// The mixer's output rate for every witness here. 48 kHz so a 48 kHz fixture
+/// resamples 1:1 and the gain witnesses are not also measuring the resampler.
+#[cfg(feature = "audio")]
+const OUT_RATE: u32 = 48_000;
+
+/// A constant-amplitude mono buffer, so the output level is directly readable.
+#[cfg(feature = "audio")]
+fn dc(amplitude: i16, frames: usize) -> std::sync::Arc<rewo_audio::buffers::Pcm> {
+    std::sync::Arc::new(rewo_audio::buffers::Pcm {
+        samples: vec![amplitude; frames],
+        channels: 1,
+        sample_rate: OUT_RATE,
+    })
+}
+
+/// `(max |L|, max |R|)` over an interleaved stereo block — read **out of the
+/// rendered output**, which is the whole point of layer (m).
+#[cfg(feature = "audio")]
+fn peak_lr(out: &[f32]) -> (f32, f32) {
+    out.chunks_exact(2).fold((0.0f32, 0.0f32), |(l, r), s| {
+        (l.max(s[0].abs()), r.max(s[1].abs()))
+    })
+}
+
+#[cfg(feature = "audio")]
+fn mixer_layer(c: &mut Checker) {
+    use rewo_audio::device::Command;
+    use rewo_audio::mixer::{Mixer, NullSink, Voice};
+    use rewo_net::sound_engine::{ChannelCall as CC, ListenerTransform};
+
+    // §5's trap, in force everywhere below: **a fixture built from
+    // `Sound::file` has volume and pitch 1.0, which is exactly where
+    // `instance.volume * sound.volume` and a dropped multiplication agree.**
+    // Nothing here uses a gain of 0 or 1, and no pitch is 1 or a power of two.
+    const GAIN: f32 = 0.6;
+    const AMP: i16 = 20_000;
+
+    let render = |m: &mut Mixer, frames: usize| -> Vec<f32> {
+        let mut sink = NullSink::new();
+        sink.pull(m, frames).to_vec()
+    };
+
+    // ---- m1: the ramp is linear and reaches EXACTLY zero at max -------------
+    //
+    // The property inverse-square cannot have. `Channel.linearAttenuation`
+    // writes `AL_LINEAR_DISTANCE` with rolloff 1 and reference 0
+    // (`Channel.java:108-113`), so the OpenAL 1.1 curve is `1 - d/max`.
+    //
+    // **Read out of the output**, and the expected ratios are literals stated
+    // here from the specification rather than a call to `openal::linear_gain`,
+    // which would grade that function against itself (M88's r20).
+    //
+    // The source is LONGER than the render window on purpose: this measures a
+    // level, so the voice must not end inside it. (m4 needs the opposite, and
+    // says so there.)
+    let level_at = |distance: f32| -> f32 {
+        let mut m = Mixer::new(OUT_RATE);
+        let mut v = Voice::new(dc(AMP, 4096));
+        v.gain = GAIN;
+        v.max_distance = Some(16.0);
+        // Along the listener's forward axis (INITIAL faces -Z), so the pan is
+        // constant across every distance and only the attenuation moves.
+        v.position = [0.0, 0.0, -distance];
+        m.push(v);
+        let out = render(&mut m, 512);
+        peak_lr(&out).0
+    };
+    let base = level_at(0.0);
+    let ramp: Vec<f32> = [0.0f32, 4.0, 8.0, 12.0, 16.0]
+        .iter()
+        .map(|d| level_at(*d))
+        .collect();
+    let want = [1.0f32, 0.75, 0.5, 0.25, 0.0];
+    let ramp_ok = base > 0.0
+        && ramp
+            .iter()
+            .zip(want.iter())
+            .all(|(got, w)| (got / base - w).abs() < 1e-3)
+        // Exactly zero, not merely small: past `max` the unclamped linear model
+        // goes negative, and a clamp that stopped at some epsilon would leave a
+        // sound faintly audible outside its own radius.
+        && ramp[4] == 0.0;
+    c.record(
+        "m1.attenuation_is_linear_in_the_output_and_exactly_zero_at_max",
+        ramp_ok,
+        format!(
+            "levels {ramp:?} at d=0/4/8/12/16 over max 16 -> ratios {:?} against the \
+             spec's {want:?}; the last is exactly {}",
+            ramp.iter().map(|g| g / base).collect::<Vec<_>>(),
+            ramp[4]
+        ),
+    );
+
+    // ---- m2: hard left, hard right, front ------------------------------------
+    //
+    // `ListenerTransform::right()` is `forward.cross(up)` — forward × up, not
+    // up × forward; those differ by a sign, which is the difference between a
+    // stereo image and its mirror. With INITIAL (facing -Z, up +Y) that is +X,
+    // so a source at -X is on the LEFT.
+    let image_at = |pos: [f32; 3]| -> (f32, f32) {
+        let mut m = Mixer::new(OUT_RATE);
+        let mut v = Voice::new(dc(AMP, 4096));
+        v.gain = GAIN;
+        v.position = pos;
+        m.push(v);
+        let out = render(&mut m, 512);
+        peak_lr(&out)
+    };
+    let left = image_at([-10.0, 0.0, 0.0]);
+    let right = image_at([10.0, 0.0, 0.0]);
+    let front = image_at([0.0, 0.0, -10.0]);
+    // **The two extremes are not symmetric in f32, and the witness must not
+    // demand that they are.** `pan_gains` is `(cos a, sin a)` for
+    // `a = (pan + 1) * FRAC_PI_4`. Hard left is `pan = -1`, so `a = 0` and
+    // `sin(0)` is *exactly* 0 — the right ear is bit-silent. Hard right is
+    // `pan = +1`, so `a = FRAC_PI_2` and `f32::cos(FRAC_PI_2)` is
+    // **-4.371139e-8**, not zero: the left ear sits about 155 dB down instead of
+    // absent. A witness asserting `== 0.0` on both sides passes on one and fails
+    // on the other, which is how this one was written and what it measured.
+    //
+    // (Contrast m1, where `== 0.0` IS the right assertion: `linear_gain` clamps
+    // to 0.0 explicitly rather than arriving there by arithmetic.)
+    let far_side_down = |near: f32, far: f32| near > 0.0 && far < near * 1e-6;
+    c.record(
+        "m2.the_stereo_image_follows_the_source_and_is_not_mirrored",
+        far_side_down(left.0, left.1)
+            && far_side_down(right.1, right.0)
+            && (front.0 - front.1).abs() < 1e-6
+            && front.0 > 0.0,
+        format!(
+            "-X -> {left:?}, +X -> {right:?}, front -> {front:?}; the far ear is \
+             >120 dB down rather than exactly silent, because f32 cos(PI/2) is \
+             -4.371139e-8"
+        ),
+    );
+
+    // ---- m3: AL_SOURCE_RELATIVE keeps a UI sound put -------------------------
+    //
+    // `Channel.setRelative` (`Channel.java:115-117`). A relative source's
+    // position is relative to the listener rather than to the world, which is
+    // how a UI click stays centred while the player walks away — and the
+    // failure mode is a menu that gets quieter as you travel.
+    let ui_at = |listener: [f64; 3], relative: bool| -> (f32, f32) {
+        let mut m = Mixer::new(OUT_RATE);
+        m.listener = ListenerTransform {
+            position: listener,
+            ..ListenerTransform::INITIAL
+        };
+        let mut v = Voice::new(dc(AMP, 4096));
+        v.gain = GAIN;
+        v.relative = relative;
+        v.max_distance = Some(16.0);
+        v.position = [0.0, 0.0, -4.0];
+        m.push(v);
+        peak_lr(&render(&mut m, 512))
+    };
+    let near = ui_at([0.0, 0.0, 0.0], true);
+    let far = ui_at([1000.0, 0.0, 0.0], true);
+    // The control: a non-relative source at the same place is silenced by the
+    // walk, so this measures `relative` rather than a source that never moved.
+    let world_far = ui_at([1000.0, 0.0, 0.0], false);
+    c.record(
+        "m3.a_relative_source_is_unmoved_by_the_listener",
+        near == far && near.0 > 0.0 && world_far == (0.0, 0.0),
+        format!("relative near {near:?} == far {far:?}; a WORLD source at the same distance -> {world_far:?}"),
+    );
+
+    // ---- m4: pitch changes the LENGTH of a one-shot --------------------------
+    //
+    // `AL_PITCH` is a playback-rate multiplier, not a separate effect, so it
+    // multiplies into the rate conversion — a one-shot at pitch p occupies
+    // `frames / p` output frames.
+    //
+    // **The source must be SHORTER than the render window here**, which is the
+    // opposite of m1's requirement: §5 records that a rate witness whose
+    // sources outlast its window measures the window rather than the rate.
+    // 4800 frames at 48 kHz is 0.1 s inside a 0.5 s window.
+    //
+    // Pitches 1.25 and 0.8 rather than 0.5/2.0: a power of two can agree with a
+    // wrong implementation that shifted an exponent.
+    let sounding_frames = |pitch: f32| -> usize {
+        let mut m = Mixer::new(OUT_RATE);
+        let mut v = Voice::new(dc(AMP, 4800));
+        v.gain = GAIN;
+        v.pitch = pitch;
+        m.push(v);
+        let out = render(&mut m, 24_000);
+        out.chunks_exact(2).filter(|s| s[0] != 0.0).count()
+    };
+    let (fast, slow, unit_pitch) = (sounding_frames(1.25), sounding_frames(0.8), sounding_frames(1.0));
+    // 4800 / 1.25 = 3840, 4800 / 0.8 = 6000. +/-2 frames for where the cursor
+    // lands on the final step.
+    c.record(
+        "m4.pitch_changes_the_length_of_a_one_shot",
+        (fast as i64 - 3840).abs() <= 2
+            && (slow as i64 - 6000).abs() <= 2
+            && (unit_pitch as i64 - 4800).abs() <= 2,
+        format!(
+            "4800 source frames -> {fast} out at pitch 1.25 (want 3840), {slow} at \
+             0.8 (want 6000), {unit_pitch} at 1.0"
+        ),
+    );
+
+    // ---- m5: a PITCHED listener still has a stereo image ---------------------
+    //
+    // The witness the up vector exists for. `right = forward x up` is
+    // `(-cos yaw, 0, -sin yaw)` for EVERY pitch — pitching turns *about* the
+    // right axis and cannot move it — so almost every way of breaking the basis
+    // is invisible. The one that is not: pin `up` to the constant `(0,1,0)`, and
+    // at pitch 90 the forward vector is `(0,-1,0)`, making `forward x up` the
+    // **ZERO vector** and collapsing the stereo image to centre.
+    //
+    // So this is two-sided by construction: the real basis puts a source hard to
+    // one side while the pinned-up basis centres it.
+    let (fwd, up) = rewo_net::sound_engine::listener_basis(0.0, 90.0);
+    let looking_down = |up_vec: [f32; 3]| -> (f32, f32) {
+        let mut m = Mixer::new(OUT_RATE);
+        m.listener = ListenerTransform {
+            position: [0.0, 0.0, 0.0],
+            forward: fwd,
+            up: up_vec,
+        };
+        let mut v = Voice::new(dc(AMP, 4096));
+        v.gain = GAIN;
+        v.position = [-10.0, 0.0, 0.0];
+        m.push(v);
+        peak_lr(&render(&mut m, 512))
+    };
+    let real = looking_down(up);
+    let pinned = looking_down([0.0, 1.0, 0.0]);
+    let cross_pinned = ListenerTransform {
+        position: [0.0; 3],
+        forward: fwd,
+        up: [0.0, 1.0, 0.0],
+    }
+    .right();
+    // The magnitudes, not the components: `f32::cos(90f32.to_radians())` is
+    // -4.371139e-8 rather than 0 (see m2), so the degenerate cross product is a
+    // vector of length ~4e-8 rather than the exact zero the algebra gives. That
+    // is still 7 orders of magnitude below the real basis's unit-length right
+    // vector, and it is what collapses the image.
+    let mag = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    let cross_real = ListenerTransform {
+        position: [0.0; 3],
+        forward: fwd,
+        up,
+    }
+    .right();
+    c.record(
+        "m5.a_pitched_listener_still_has_a_stereo_image",
+        // Hard to one side with the real basis...
+        (real.0 + real.1) > 0.0
+            && real.0.min(real.1) < real.0.max(real.1) * 1e-6
+            // ...and centred with `up` pinned, which is what makes this measure
+            // the UP vector rather than the forward one.
+            && (pinned.0 - pinned.1).abs() < 1e-6
+            && pinned.0 > 0.0
+            && mag(cross_real) > 0.99
+            && mag(cross_pinned) < 1e-6,
+        format!(
+            "at pitch 90 forward={fwd:?} up={up:?} gives |right|={:.6} and a one-sided \
+             image {real:?}; with up pinned to (0,1,0) |right| collapses to {:e} \
+             ({cross_pinned:?}) and the image centres at {pinned:?}",
+            mag(cross_real),
+            mag(cross_pinned)
+        ),
+    );
+
+    // ---- m6: render OVERWRITES a dirty buffer --------------------------------
+    //
+    // §5: witnesses that render into a freshly-allocated (therefore zeroed)
+    // buffer cannot see a missing clear, which on a real device is unbounded
+    // accumulation — the callback hands the same buffer back every period.
+    let mut empty = Mixer::new(OUT_RATE);
+    let mut dirty = vec![0.5f32; 256];
+    empty.render(&mut dirty);
+    let dirty_ok = dirty.iter().all(|s| *s == 0.0);
+    c.record(
+        "m6.render_overwrites_a_dirty_buffer_rather_than_accumulating",
+        dirty_ok,
+        format!(
+            "a buffer pre-filled with 0.5 comes back {} — a fresh (zeroed) buffer \
+             could not have witnessed this",
+            if dirty_ok { "all zero" } else { "DIRTY" }
+        ),
+    );
+
+    // ---- m7: an empty mixer renders EXACT silence ----------------------------
+    //
+    // A level claim rather than a clear claim, and it needs to be exact: "very
+    // quiet" would admit a DC offset, which is what a quantisation that floored
+    // instead of truncating produces (see d1).
+    let mut silent = Mixer::new(OUT_RATE);
+    let out = render(&mut silent, 256);
+    c.record(
+        "m7.an_empty_mixer_renders_exact_silence",
+        out.iter().all(|s| *s == 0.0) && out.len() == 512,
+        format!("{} samples, all exactly 0.0", out.len()),
+    );
+
+    // ---- m8: a dense scene clamps rather than wrapping ------------------------
+    //
+    // The mix accumulates in f32 and clamps once at the end. The clamp is a hard
+    // limiter of last resort — matching OpenAL Soft's own look-ahead curve is
+    // explicitly out of scope (its parameters live in the DLL and are set
+    // nowhere in Java) — but a scene that WRAPPED would invert phase and be
+    // grossly audible, which is the failure this excludes.
+    let mut dense = Mixer::new(OUT_RATE);
+    for _ in 0..24 {
+        let mut v = Voice::new(dc(30_000, 4096));
+        v.gain = 0.9;
+        v.position = [0.0, 0.0, -1.0];
+        dense.push(v);
+    }
+    let loud = render(&mut dense, 256);
+    let peak = loud.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+    c.record(
+        "m8.a_dense_scene_clamps_instead_of_wrapping",
+        loud.iter().all(|s| (-1.0..=1.0).contains(s)) && peak > 0.9 && loud.iter().all(|s| *s >= 0.0),
+        format!(
+            "24 voices summing well past full scale peak at {peak}, stay inside \
+             [-1,1], and none went negative (a wrap would invert phase)"
+        ),
+    );
+
+    // ---- m9: an underrun is SILENCE, not death -------------------------------
+    //
+    // The producer decides when a stream is over. A mixer that called an empty
+    // queue `finished` would kill a music track on the first hitch, and the
+    // channel would be released before the next chunk arrived.
+    let mut stream = Mixer::new(OUT_RATE);
+    stream.apply(&Command::Queue(0, dc(AMP, 480)));
+    stream.apply(&Command::Channel(0, CC::SetVolume(GAIN)));
+    stream.apply(&Command::Channel(0, CC::Play));
+    let first = render(&mut stream, 960); // outlasts the 480-frame chunk
+    let starved = render(&mut stream, 480); // nothing queued
+    stream.apply(&Command::Queue(0, dc(AMP, 480)));
+    let resumed = render(&mut stream, 480);
+    let alive = stream.voice(0).map(|v| !v.finished);
+    c.record(
+        "m9.a_streaming_voice_underruns_into_silence_and_recovers",
+        peak_lr(&first).0 > 0.0
+            && starved.iter().all(|s| *s == 0.0)
+            && peak_lr(&resumed).0 > 0.0
+            && alive == Some(true),
+        format!(
+            "chunk plays, then {} frames of exact silence, then it resumes; \
+             finished={:?}",
+            starved.len() / 2,
+            alive.map(|a| !a)
+        ),
+    );
+
+    // ---- m10: the ENGINE's gain reaches the output ---------------------------
+    //
+    // The witness that crosses the crates: a real `SoundEngine::play` into a
+    // `RecordingDevice`, whose recorded `ChannelCall`s are replayed through the
+    // production `Mixer`, whose OUTPUT is then measured.
+    //
+    // **Non-circular by construction.** The measured quantity is the ratio of
+    // two renders that differ only in the gain the engine computed; the expected
+    // quantity is the `SetVolume` the device recorded. Neither is
+    // `openal::linear_gain` recomputed in the witness, and neither is read off
+    // the `Voice`.
+    //
+    // Nothing in the arithmetic is 0 or 1: master 0.5, blocks 0.8, instance
+    // volume 0.75, sound volume 0.5 -> 0.375 * 0.4 = **0.15**.
+    let mut idx = SoundsIndex::new();
+    idx.handle_registration(
+        "test:ev",
+        &SoundEventRegistration {
+            sounds: vec![Sound {
+                volume: 0.5,
+                pitch: 0.5,
+                ..Sound::file("test:file")
+            }],
+            replace: false,
+            subtitle: None,
+        },
+        &SoundFileSet::All,
+    );
+    let mut eng = SoundEngine::new();
+    eng.options.set_slider(SoundSource::Master, 0.5);
+    eng.options.set_slider(SoundSource::Blocks, 0.8);
+    let mut dev = RecordingDevice::default();
+    let (_, res) = eng.play(
+        SoundInstance {
+            volume: 0.75,
+            pitch: 1.5,
+            ..SoundInstance::bare("test:ev", SoundSource::Blocks)
+        },
+        &idx,
+        &EmptyWorld,
+        &mut dev,
+    );
+    let engine_gain = dev.calls_to(0).into_iter().find_map(|call| match call {
+        ChannelCall::SetVolume(v) => Some(v),
+        _ => None,
+    });
+    // Replay the recorded sequence, substituting the gain in the control.
+    let replay = |gain: f32| -> f32 {
+        let mut m = Mixer::new(OUT_RATE);
+        for call in dev.calls_to(0) {
+            let call = match call {
+                ChannelCall::SetVolume(_) => ChannelCall::SetVolume(gain),
+                // The engine positions this at the origin, where the listener
+                // is, so the attenuation is 1 and the level is purely the gain.
+                other => other,
+            };
+            m.apply(&Command::Channel(0, call));
+        }
+        m.apply(&Command::Attach(0, dc(AMP, 4096)));
+        m.apply(&Command::Channel(0, CC::Play));
+        peak_lr(&render(&mut m, 512)).0
+    };
+    let with_engine_gain = replay(engine_gain.unwrap_or(0.0));
+    let reference = replay(1.0);
+    let measured_ratio = if reference > 0.0 {
+        with_engine_gain / reference
+    } else {
+        f32::NAN
+    };
+    c.record(
+        "m10.the_engines_computed_gain_reaches_the_rendered_output",
+        res == PlayResult::Started
+            && engine_gain == Some(0.15)
+            && (measured_ratio - 0.15).abs() < 1e-3,
+        format!(
+            "master 0.5 x blocks 0.8 x (0.75 x 0.5) -> the device was handed \
+             SetVolume({engine_gain:?}), and the output falls to {measured_ratio} of \
+             an otherwise identical render at gain 1.0"
+        ),
+    );
+
+    // ---- m11: a multi-channel buffer is NOT spatialised ----------------------
+    //
+    // OpenAL's rule and therefore vanilla's. `item/goat_horn/call3.ogg` is the
+    // one stereo variant of an otherwise mono event (see d4), so the same event
+    // spatialises on seven rolls and not the eighth. A hand-written mixer
+    // naturally downmixes and spatialises uniformly, which is arguably better
+    // and is a **divergence** — so it is chosen explicitly and witnessed.
+    let stereo = std::sync::Arc::new(rewo_audio::buffers::Pcm {
+        // L = +AMP, R = -AMP/2, interleaved: the two channels are distinct, so
+        // a downmix would show as equal levels.
+        samples: (0..4096)
+            .flat_map(|_| [AMP, -AMP / 2])
+            .collect::<Vec<i16>>(),
+        channels: 2,
+        sample_rate: OUT_RATE,
+    });
+    let mut st = Mixer::new(OUT_RATE);
+    let mut v = Voice::new(stereo);
+    v.gain = GAIN;
+    v.position = [-10.0, 0.0, 0.0]; // hard left, and must be ignored
+    st.push(v);
+    let (sl, sr) = peak_lr(&render(&mut st, 512));
+    c.record(
+        "m11.a_stereo_source_plays_its_own_channels_and_ignores_its_position",
+        sr > 0.0 && (sl / sr - 2.0).abs() < 1e-3,
+        format!(
+            "a source at hard left renders L={sl} R={sr} (ratio {:.4}, the buffer's \
+             own 2:1) rather than silencing the right ear",
+            sl / sr
+        ),
+    );
+
+    // ---- m12: a voice built by COMMANDS is silent until its Play -------------
+    //
+    // Vanilla's order is properties, then attach, then play
+    // (`SoundEngine.java:417-434`), and `alSourcePlay` before an attach is a
+    // no-op. A voice that started sounding on its first `SetPitch` would play
+    // its opening milliseconds at whatever position and volume had arrived so
+    // far — which is why `Mixer::ensure` creates one silent and `Voice::new`
+    // (the direct, caller-says-play path) does not.
+    let mut seq = Mixer::new(OUT_RATE);
+    seq.apply(&Command::Channel(0, CC::SetPitch(1.25)));
+    seq.apply(&Command::Channel(0, CC::SetVolume(GAIN)));
+    seq.apply(&Command::Channel(0, CC::SetSelfPosition(0.0, 0.0, 0.0)));
+    seq.apply(&Command::Attach(0, dc(AMP, 4096)));
+    let before_play = render(&mut seq, 256);
+    seq.apply(&Command::Channel(0, CC::Play));
+    let after_play = render(&mut seq, 256);
+    c.record(
+        "m12.a_voice_built_by_commands_is_silent_until_its_play",
+        before_play.iter().all(|s| *s == 0.0) && peak_lr(&after_play).0 > 0.0,
+        format!(
+            "attached but unplayed renders exact silence; the same voice after Play \
+             peaks at {}",
+            peak_lr(&after_play).0
+        ),
+    );
+
+    // ---- m13: a path-carrying attach is COUNTED, not silently ignored --------
+    //
+    // `AttachStaticBuffer` and `AttachBufferStream` carry an asset *key*, and
+    // resolving one is a store lookup plus an ogg decode — neither of which may
+    // happen on an audio callback. The producer resolves the key and sends
+    // `Command::Attach` with the PCM in hand, which is what vanilla's
+    // `thenAccept` continuation does too. Seeing one here means the producer
+    // skipped that step, so it is counted where a silent ignore would hide it.
+    let mut leaked = Mixer::new(OUT_RATE);
+    leaked.apply(&Command::Channel(0, CC::AttachStaticBuffer("x.ogg".into())));
+    leaked.apply(&Command::Channel(0, CC::AttachBufferStream("y.ogg".into(), true)));
+    leaked.apply(&Command::Channel(0, CC::Play));
+    let after = render(&mut leaked, 256);
+    c.record(
+        "m13.an_unresolved_attach_is_counted_rather_than_silently_ignored",
+        leaked.ignored == 2 && after.iter().all(|s| *s == 0.0),
+        format!(
+            "two key-carrying attaches raised `ignored` to {} and produced no audio",
+            leaked.ignored
+        ),
+    );
+}
