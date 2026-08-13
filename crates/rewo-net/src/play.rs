@@ -804,12 +804,18 @@ pub struct PlaySession {
     /// effect.
     particle_types: rewo_data::particle_types::ParticleTypes,
     /// Sound requests decoded from `sound` / `sound_entity` / `stop_sound`
-    /// (M63). **Nothing drains this yet** — Rewo has no audio device, and
-    /// this milestone is the decode half only. One queue for all three so the
-    /// server's ordering survives: a `stop_sound` that overtook the sound it
-    /// cancels would leave that sound playing forever. It is capped rather
-    /// than unbounded precisely because no consumer exists; see
+    /// (M63). One queue for all three so the server's ordering survives: a
+    /// `stop_sound` that overtook the sound it cancels would leave that sound
+    /// playing forever. It is capped rather than unbounded; see
     /// [`Self::MAX_PENDING_SOUNDS`].
+    ///
+    /// **This doc said "Nothing drains this yet — Rewo has no audio device …
+    /// no consumer exists" until 2026-08-13, and both halves were stale.**
+    /// `take_sound_events` is called from `live_cmd.rs:4046` and `:7858`, and
+    /// M143 wired a real device behind `rewo-app`'s `audio` feature. The cap's
+    /// justification was the part that misled: it read as "unbounded growth is
+    /// impossible because nothing consumes", when the queue is drained every
+    /// tick and the cap is a guard against a burst instead.
     pub sound_events: Vec<crate::sounds::SoundEvent>,
     /// The ten non-weather `game_event` types (M71) — gamemode, the death-
     /// screen and limited-crafting flags, the win/demo/chunk-load markers.
