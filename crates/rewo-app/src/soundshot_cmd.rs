@@ -1631,11 +1631,16 @@ fn decode_layer(c: &mut Checker) {
             let pcm = decode_ogg_vorbis(&bytes);
             let ok = match &pcm {
                 Ok(p) => {
-                    // Exact, and it is the END TRIM that makes it so: a Vorbis
+                    // Exact, and it is the end trim that makes it so: a Vorbis
                     // stream's final page carries a granule position below what
                     // the last packet decodes to, and the surplus is discarded.
-                    // A decoder that ignored it returns MORE samples and sounds
-                    // almost right.
+                    //
+                    // **That trim is symphonia's, not Rewo's** (`decode.rs:19`
+                    // says so), so this half of the witness pins a dependency's
+                    // behaviour rather than a transcription — a symphonia that
+                    // stopped trimming would return MORE samples and sound
+                    // almost right, which is worth catching even though no
+                    // mutation of Rewo's own code can produce it.
                     p.channels == 1 && p.sample_rate == 44100 && p.samples.len() == 1728
                 }
                 Err(_) => false,
