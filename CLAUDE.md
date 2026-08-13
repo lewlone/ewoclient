@@ -2103,8 +2103,8 @@ exclusive-mode or unplugged one all look identical from inside the process, so
 everything a machine can check passes and that is *not* the same claim. The
 feature is **off by default**, so a default build links no audio stack and the
 34 gates are unchanged.
-**Everything is shipped, gated and merged to `main`** as of 2026-08-12
-(M148) — **3141 tests / 0 failures** (world 1171, net 1121, gpu 275, data 228,
+**Everything is shipped, gated and merged to `main`** as of 2026-08-13
+(M149b) — **3157 tests / 0 failures** (world 1187, net 1122, gpu 275, data 228,
 app 199, mesh 45, proto 16, **audio 86** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,

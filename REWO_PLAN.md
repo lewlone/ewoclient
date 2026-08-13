@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: shipped and headlessly verified through M140b (2026-08-10).** `main`
+**Status: shipped and headlessly verified through M149b (2026-08-13).** `main`
 carries all of it and no branch or worktree holds a commit off it; the
 long-standing branch risk (everything from M10 on living on one unmerged
 branch) closed on 2026-07-27 and has stayed closed. See §0.0 for the
@@ -19,7 +19,7 @@ trusting a paragraph.**
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-12 after M148)
+## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-13 after M149b)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -38,7 +38,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M148 shipped, all merged to `main`
+### Where it is: M0–M149b shipped, all merged to `main`
 
 **Update (2026-08-03, the M87–M93 container arc).** Seven milestones landed
 after the cold-start audit below, **all merged to `main`**: M87 the

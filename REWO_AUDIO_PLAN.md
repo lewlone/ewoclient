@@ -418,8 +418,27 @@ on the windowed path) + **the human listening pass** (§4).
 > the bubble column, and the biome loop with its additions and its mood. The
 > loop needed a new seam, `SoundEvent::BiomeLoopTransition`: vanilla's handler
 > holds its instances and fades them directly, while Rewo's engine owns the
-> ramps, so the handler names the outcome and the engine applies it. The **directional sound is not one of them** — it is the End
-> flash from `ClientLevel.tick` and needs `EndFlashState`.
+> ramps, so the handler names the outcome and the engine applies it. The
+> **directional sound is not one of them** — it is the End flash from
+> `ClientLevel.tick` and needs `EndFlashState`.
+>
+> **M149a/b (2026-08-13) started that last one, and it is not an audio
+> milestone.** `EndFlashState` has **three** consumers and two are visual: the
+> lightmap's `skyFactor += intensity`
+> (`LightmapRenderStateExtractor.java:57-65`), the sky's flash quad
+> (`SkyRenderer.java:477-503`), and only then the `DirectionalSoundInstance`.
+> The schedule ships in `crates/rewo-world/src/end_flash.rs` — a pure function
+> of one `long`, so it grades exactly — along with `default_clock`, the
+> dimension field it is ticked from. **Still open before a sound can be
+> queued**: the clock **map** (`ClientClockManager` holds one instance per
+> clock; Rewo tracks only the overworld's, so `getDefaultClockTime()` has a
+> field to read and no clock to read it from), and
+> `SoundEngine.playDelayed`'s delay queue — which **ticks a tickable instance
+> before playing it** (`SoundEngine.java:290-297`), so a
+> `DirectionalSoundInstance` re-runs `setPosition()` against the camera at
+> *play* time. The flash's bearing is relative to where you are 30 ticks
+> later, not to where you were when it flashed; capturing the position at
+> queue time is the natural implementation and is wrong.
 >
 > **M142 belongs in §5's trap list twice.** A tickable ambient instance must be
 > born at volume 1.0, because `SoundEngine.play` refuses a zero-volume one
