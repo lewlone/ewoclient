@@ -1922,12 +1922,14 @@ the arithmetic and each inverts if guessed — a looping source never stops,
 acquired-but-unplayed and played-with-nothing-attached are both `AL_INITIAL`,
 and a failed attach is the module's one judgement (vanilla leaks that channel
 forever, which on a partial asset store means the 26th missing sound exhausts
-the pool and the client goes **permanently** silent). **r46 was deliberately not
+the pool and the client goes **permanently** silent). **A device-dependent witness was deliberately not
 added** — it needs a device, so it can only self-skip on the machine where it
 matters, which is the trap `REWO_AUDIO_PLAN` §5 names; what shipped instead is
-r46's claim with the device removed, a test driving a decoded packet through the
+that claim with the device removed, a test driving a decoded packet through the
 real engine, tee, sink, ring and mixer to non-zero samples, with exact silence
-asserted first. **Both mutation survivors were weak fixtures and both were
+asserted first. (*That witness was reserved as `r46` and never built; **M147
+later spent the number on a different, deviceless claim** — see the M147 entry.
+`REWO_AUDIO_PLAN` §M138d carries the correction.*) **Both mutation survivors were weak fixtures and both were
 hidden by the ordinary call sequence**: the attach's `AL_INITIAL` reset is
 overwritten a moment later by the `Play` that always follows it, and the
 declined-stream witness never asked `stopped()` — so a declined stream held its
@@ -2093,8 +2095,8 @@ per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, all **34** serverless gates green with 0
-validation errors, `live --render-check` **45/45** with validation ON and 0
-validation errors, demo PNG `2cc56b4acbfb92cb`.
+validation errors, `live --render-check` **46/46** with validation ON and 0
+validation errors (r46 arrived with M147), demo PNG `2cc56b4acbfb92cb`.
 **The recipe book is closed** (M105–M107) and **M108–M111 shipped chat** —
 `ChatComponent`, the wrap under it, the `MessageSignatureCache` without which
 `delete_chat` cannot be read, the text, the backdrop fills (which took a colour

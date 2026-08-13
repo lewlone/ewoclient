@@ -19,7 +19,7 @@ trusting a paragraph.**
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-09 after the M127–M134 integration)
+## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-12 after M148)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -38,7 +38,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M125 shipped, all merged to `main`
+### Where it is: M0–M148 shipped, all merged to `main`
 
 **Update (2026-08-03, the M87–M93 container arc).** Seven milestones landed
 after the cold-start audit below, **all merged to `main`**: M87 the
@@ -217,13 +217,23 @@ injected**: the container, the book and the chat all drive themselves, so only
 r25 — which needs a real server to grant recipes — could tell. A gate whose
 witnesses are mostly self-driven can look healthy against nothing.
 
-### What to do next (updated 2026-08-12, after M143)
+### What to do next (updated 2026-08-12, after M148)
 
 > **Read this box first; the rest of the section is the 2026-08-10 rewrite and
 > its items have moved.** M141 took the ten tickable ramps, M141d–h every
-> ordinary trigger, **M142 the three `AmbientSoundHandler`s**, and **M143 the
-> wire into the client** — so item 4a below is done, and so is the "wire and a
-> human" item this box carried until today, on the wire half.
+> ordinary trigger, **M142 the three `AmbientSoundHandler`s**, **M143 the
+> wire into the client**, **M144 streaming**, **M145–M146 music** and **M147
+> the bug that shipped inside it** — so item 4a below is done, and so is the
+> "wire and a human" item this box carried, on the wire half.
+>
+> **M147 is the argument for the box below, not a footnote to it.** M146
+> shipped music selection with 3137 tests, 34 gates and 45 render-check
+> witnesses all green — and **no music played anywhere in the Overworld**,
+> because the Overworld's `BackgroundMusic` lives on the **dimension type** and
+> M146's own survey had read the writers with `head -20`. Nothing in the suite
+> could see it; **running the client for eight seconds could**, and did. Treat
+> that as the standing rule for this subsystem: *green means the transcription
+> agrees with itself.*
 >
 > **THE OUTSTANDING WORK IS THE LISTENING PASS AND IT IS THE USER'S.** `rewo
 > live --audio`, on a build with `--features audio`, opens a device and plays
@@ -21959,9 +21969,18 @@ told this binary could never have made a sound — a different problem from a
 device that will not open. There is deliberately **no test of the enabled arm**:
 it opens a real device, and no test in this project does that.
 
-### r46 was not added, and what shipped instead
+### The device-dependent witness was not added, and what shipped instead
 
-`REWO_AUDIO_PLAN.md` §4 names r46 as "non-zero mixed samples on the windowed
+> **⚠ Read this heading with M147.** The witness described below was *reserved*
+> as `r46` and never built. **M147 then spent that number on a different,
+> deviceless claim** ("the client selected and started a music track"), so a
+> reader citing "r46" from this section is citing something that does not exist.
+> The reasoning below still stands — no witness in this project opens a device —
+> but the label is taken. `REWO_AUDIO_PLAN` §M138d carries the full correction
+> and the rule it produced: **allocate the next witness number by grepping
+> `live_cmd.rs`, not by reading a plan's reservation.**
+
+`REWO_AUDIO_PLAN.md` §4 named r46 as "non-zero mixed samples on the windowed
 path". It needs a device, so on a machine without one it can only skip — and a
 witness that self-skips on the machine where it matters is the trap §5 names by
 name. Adding it conditionally is worse: `--render-check` ends

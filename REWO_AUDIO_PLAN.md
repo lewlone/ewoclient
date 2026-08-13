@@ -308,23 +308,40 @@ New crate `rewo-audio` (deps: `rewo-net`, `rewo-data`, `symphonia`). **cpal not 
 
 **Channel count: 30**, per §0.1 — which also makes the budget *bind*, so vanilla's drop-newest rule is reachable in ordinary play rather than needing a synthetic small count.
 
-**Gate:** `--render-check` **r46** (non-zero mixed samples on the windowed path) + **the human listening pass** (§4).
+**Gate:** originally reserved as `--render-check` **r46** (non-zero mixed samples
+on the windowed path) + **the human listening pass** (§4).
 
-> **r46 was NOT added, and the reason is this file's own rule.** It needs a
-> device, so on a machine without one it can only skip — and a witness that
-> self-skips on the machine where it matters is the trap §5 names by name
-> ("store-dependent tests self-skip on a bare machine, so a green run there
-> proves nothing"). Adding it conditionally is worse: `--render-check` ends
-> `pass == rows.len()` with no declared count, so a row that appears only
-> sometimes makes the total vary and the fail-closed check meaningless.
+> **⚠ The device-dependent witness this section reserved was never built, and
+> the NUMBER has since been spent on something else.** Read both halves before
+> citing r46.
 >
-> **What shipped instead is r46's claim with the device removed**, as a test in
+> **Why it was not built.** It needs a device, so on a machine without one it
+> can only skip — and a witness that self-skips on the machine where it matters
+> is the trap §5 names by name ("store-dependent tests self-skip on a bare
+> machine, so a green run there proves nothing"). Adding it conditionally is
+> worse: `--render-check` ends `pass == rows.len()` with no declared count, so a
+> row that appears only sometimes makes the total vary and the fail-closed check
+> meaningless. That reasoning still stands; there is still no witness anywhere
+> in this project that opens an audio device.
+>
+> **What shipped instead is that claim with the device removed**, as a test in
 > `rewo-audio`: a decoded packet through the real `SoundEngine`, the real
 > `LiveSounds` tee, the real `LiveSink`, a real `CommandRing` and the real
 > `Mixer`, asserted to render non-zero samples — and asserted to render *exact*
 > silence first, so it is a change rather than a level. That excludes every way
 > of being silent that is not the device. The device half stays where §4 puts
 > it: with a human.
+>
+> **And `r46` today is a different, deviceless claim** — M147's *"the client
+> selected and started a music track"*, which reads the manager's own state and
+> would pass on a machine with no sound card at all. **This is the witness-number
+> collision the M127–M134 integration recorded, recurring across time rather
+> than across branches**: there, three parallel branches each minted an `r42`;
+> here, a plan reserved a number for a witness that was never built and a later
+> milestone spent it. Same root cause both times — `--render-check` has no
+> declared count and no uniqueness check, so nothing objects. **Allocate the
+> next number by grepping `live_cmd.rs` for the highest `"r`, not by reading a
+> plan document's reservation.**
 
 ### M143 — the client wire
 

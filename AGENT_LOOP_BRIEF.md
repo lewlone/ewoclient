@@ -78,6 +78,19 @@ change:
   (they fail rather than silently skip when it is unavailable). A gate that
   cannot reach a call site does not test it; a gate that supplies an input
   production derives is testing itself.
+* **A whole-suite green means the transcription agrees with itself — it is not
+  evidence the feature works.** The sharpest instance is M147: M146 shipped
+  music selection with **3137 tests, 34 gates and 45 render-check witnesses all
+  green**, and no music played anywhere in the Overworld, because the
+  Overworld's `BackgroundMusic` lives on the **dimension type** and the survey
+  behind M146 had read the writers through `head -20`. Every test asserted
+  against the same wrong premise. **Running the client for eight seconds found
+  it.** So: when a milestone ships something a human could observe, observe it
+  — and when the subsystem is one no gate can grade at all (audio), say so
+  explicitly rather than reporting the suite. This is the same failure the
+  M86 entry records for `rewo live` and the M92 entry records for
+  gate-supplied inputs; it recurs because a green suite is genuinely
+  persuasive.
 * **Read a gate's EXIT CODE, never a substring of its output.** Different gates
   print different summary lines, and several are fail-closed on a *declared*
   witness count — so adding a witness without bumping the count turns the gate

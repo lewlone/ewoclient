@@ -11,12 +11,13 @@ document is stale.
 > type into, the scrollbar, the Brigadier command tree and a complete local
 > command line), translatable-component resolution, styled spans, the chat
 > decoration, clickable text and the scoreboard sidebar, after this snapshot was
-> taken, and **M138–M142 shipped an audio stack and the sound model on top of
-> it** — which matters here because three of the 75 items are listed as blocked
-> on audio. Re-read those three before assuming they still are (see §4's audio
-> note): the mixer, the sink and vanilla's whole tickable/ambient sound model
-> exist, and what is missing is the single wire from `rewo-app` to
-> `rewo-audio`, plus a human to listen. Those are *vanilla* features and the 75 here are *mod* features, so
+> taken, and **M138–M147 shipped an audio stack, the sound model on top of it,
+> and the wire into the running client** — which matters here because three of
+> the 75 items are listed as blocked on audio. **Those three are no longer
+> blocked on code.** Re-read them before scheduling anything (see §4's audio
+> note): the mixer, the sink, vanilla's whole tickable/ambient sound model, the
+> music selection and `rewo live --audio` all exist, and what remains is a human
+> to listen. Those are *vanilla* features and the 75 here are *mod* features, so
 > nothing is known to have moved into the `parity` bucket — but that is a
 > reasoned expectation, not a measurement, and §0's own rule applies to it:
 > **audit any feature against the crates before scheduling it.** This table was
@@ -347,13 +348,19 @@ large.
 
 ### Status, 2026-07-28
 
-**The audio cluster's decode half now exists.** M63 decoded `sound`,
-`sound_entity` and `stop_sound` — so the three audio features are no longer
-blocked on *nothing*, they are blocked on a device and a mixer, which is the
-part that needs a human to listen. What a playback layer still needs is
-recorded in that commit: a `sound_event` registry table, `sounds.json` + the
-OGG assets (that indirection is where the packet's `seed` is spent), and the
-`level_event` id→sound mapping.
+**The audio cluster is no longer blocked on code.** M63 decoded `sound`,
+`sound_entity` and `stop_sound`; M64 built the `sound_event` registry table and
+M66 the `sounds.json` variant index and the `level_event` id→sound mapping (the
+indirection where the packet's `seed` is spent). **M138 then built the stack
+itself** — quantisation, buffer library, mixer, SPSC command ring, cpal sink —
+**M141–M142** the tickable ramps and the three `AmbientSoundHandler`s, **M143**
+the wire into `rewo live`, **M144** streaming, and **M145–M147** music. So these
+three features now need a **human to listen**, not a subsystem to be written.
+
+**The caveat is the whole point of this cluster:** no gate in the project opens
+an audio device, because an absent, muted, exclusive-mode or unplugged one all
+look identical from inside the process. Everything a machine can check passes.
+M147 is what that costs when ignored — see `REWO_PLAN.md` §0.0.
 
 **M52a shipped four of the port bundle** — Zoom, Fullbright, FOV Control and
 Toggle Sprint/Sneak are in `crates/rewo-app/src/modules.rs`, reading the same
