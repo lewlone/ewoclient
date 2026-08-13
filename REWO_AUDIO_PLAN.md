@@ -422,8 +422,24 @@ on the windowed path) + **the human listening pass** (§4).
 > **directional sound is not one of them** — it is the End flash from
 > `ClientLevel.tick` and needs `EndFlashState`.
 >
-> **M149a/b (2026-08-13) started that last one, and it is not an audio
-> milestone.** `EndFlashState` has **three** consumers and two are visual: the
+> **M149 (2026-08-13) CLOSED that last one, so all ELEVEN ramp variants now
+> have a construction site.** `Directional` is built by `ClientLevel.tick`'s
+> end-flash block and handed to `playDelayed(.., 30)`, which needed two things
+> the engine did not have: a queue that carries a **ramp** (vanilla's instance
+> is its own ticker; Rewo splits the two, so a delayed tickable was
+> unrepresentable), and the `tickableSoundInstance.tick()` that runs **before**
+> `play` — for a `DirectionalSoundInstance` that re-runs `setPosition()`, so
+> the bearing is taken against the camera thirty ticks later rather than where
+> the listener stood when the flash fired. The delay lives at the call site
+> because `SoundInstance.getDelay()` is a *manual-looping* concern
+> (`SoundEngine.java:318-320`); routing it through the instance's field would
+> have changed how it loops. `SoundStats::queued_delayed` counts it apart from
+> `started`, since a queued sound is scheduled rather than playing and may
+> still be refused thirty ticks later.
+>
+> What follows is M149a/b's original note, kept for its findings.
+>
+> **M149a/b started it, and it is not an audio milestone.** `EndFlashState` has **three** consumers and two are visual: the
 > lightmap's `skyFactor += intensity`
 > (`LightmapRenderStateExtractor.java:57-65`), the sky's flash quad
 > (`SkyRenderer.java:477-503`), and only then the `DirectionalSoundInstance`.

@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: shipped and headlessly verified through M149b (2026-08-13).** `main`
+**Status: shipped and headlessly verified through M149g (2026-08-13).** `main`
 carries all of it and no branch or worktree holds a commit off it; the
 long-standing branch risk (everything from M10 on living on one unmerged
 branch) closed on 2026-07-27 and has stayed closed. See §0.0 for the
@@ -19,7 +19,7 @@ trusting a paragraph.**
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-13 after M149b)
+## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-13 after M149g)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
@@ -38,7 +38,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M149b shipped, all merged to `main`
+### Where it is: M0–M149g shipped, all merged to `main`
 
 **Update (2026-08-03, the M87–M93 container arc).** Seven milestones landed
 after the cold-start audit below, **all merged to `main`**: M87 the
@@ -129,9 +129,9 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-13 after M149b (merged to `main`; no branch
+Current measurement, taken 2026-08-13 after M149g (merged to `main`; no branch
 or worktree holds a commit off it):
-**3157 tests, 0 failures** (**world 1187, net 1122, gpu 275, data 228, app 199,
+**3172 tests, 0 failures** (**world 1187, net 1133, gpu 275, data 228, app 202,
 mesh 45, proto 16, audio 86** — read off the runner per crate; they sum to 3141).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
@@ -268,18 +268,13 @@ witnesses are mostly self-driven can look healthy against nothing.
 > * **Decode on a worker.** Still inline on the client tick — one chunk per
 >   second of playback, four at the attach, plus one asset read of up to 11 MB
 >   when a track starts. A stated deviation from vanilla's `supplyAsync`.
-> * **`EndFlashState` — STARTED (M149a/b, merged), and it is not only an
->   audio item.** The schedule and `default_clock` are shipped and gated; the
->   three consumers are not. It has **three**, and two are visual: the lightmap
->   term (`LightmapRenderStateExtractor.java:57-65`), the sky quad
->   (`SkyRenderer.java:477-503`), and the delayed `DirectionalSoundInstance`.
->   Still needed: the clock **map** (`ClientClockManager` holds one instance
->   per clock; Rewo tracks only the overworld's, so `getDefaultClockTime()`
->   now has a field to read and no clock to read it from), then the three
->   consumers, then `SoundEngine.playDelayed`'s delay queue. See §15's M149a/b
->   entry — in particular that `playDelayed` ticks a tickable **before**
->   playing it, so the flash's bearing is taken at play time, 30 ticks after
->   the flash.
+> * ~~**`EndFlashState`**~~ — **DONE (M149a–g), and it was never only an audio
+>   item.** All three consumers ship: the lightmap's `skyFactor += intensity`,
+>   the sky's flash quad, and the `DirectionalSoundInstance` queued 30 ticks
+>   behind. With it, **all eleven `TickableSoundInstance` ramp variants have a
+>   construction site** — `Directional` was the last. The clock map came with
+>   it (`ClientClockManager` is a map; Rewo tracked only the overworld's), and
+>   `playDelayed` learnt to carry a ramp. See §15's M149 entry.
 > * **M139's loopback oracle** — now that there is something audible to grade,
 >   this is what turns the mixer's *stated approximations* (the pan law, the
 >   resampler) into a measured divergence in dB.
@@ -3089,7 +3084,7 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
-### M149a/b — the End flash's schedule, and the clock it runs on (2026-08-13)
+### M149 — the End flash, end to end (2026-08-13)
 
 The last unconstructed ramp variant was `Directional`, and §0.0 named it as an
 *audio* item. It is not only that: `EndFlashState` has **three** consumers, and
@@ -3198,20 +3193,83 @@ by byte count on 2026-08-13: **378 all-LF, one all-CRLF
 says why the bullet is kept. The same-fact-in-two-places hazard, landing on the
 documentation of a hazard.
 
-**Not done, and named rather than half-started**: the clock *map*
-(`ClientClockManager` holds `Map<Holder<WorldClock>, ClockInstance>`; Rewo
-tracks only the overworld's, so `getDefaultClockTime()` has a field to read and
-no clock to read it from), and all three consumers — the lightmap term, the sky
-quad, and the delayed directional sound with `SoundEngine.playDelayed`'s queue.
-One detail already gathered for that queue: it calls
-`tickableSoundInstance.tick()` **before** `play()`
-(`SoundEngine.java:290-297`), so a `DirectionalSoundInstance` re-runs
-`setPosition()` against the camera at *play* time — the flash's bearing is
-relative to where you are 30 ticks later, not to where you were when it
-flashed.
+**M149c-g then finished it** — the clock map and all three consumers — so the
+whole feature ships and **all eleven `TickableSoundInstance` ramp variants now
+have a construction site**, `Directional` having been the last.
 
-3157 tests (16 + 1 new), 0 failures across all eight crates;
-`dimensioncheck --check` OK.
+**M149c, the clock map.** `ClientClockManager` is a
+`Map<Holder<WorldClock>, ClockInstance>`; M12 tracked the overworld's alone.
+`WorldClock::advance` is untouched — the map goes around M12's arithmetic
+rather than through it. Two things are observable and easy to miss.
+`lastTickGameTime` is the **manager's**, so a clock minted between two ticks
+receives the *whole* delta on the next one. And `getTotalTicks` is
+**`computeIfAbsent`**: the read *creates*, at `totalTicks = 0` and
+**`rate = 1.0`**, after which it counts. So `getDefaultClockTime()` has three
+outcomes that look like one number — no `default_clock` (the Nether, and only
+the Nether) is a permanent zero; an unknown name is also permanently zero and
+mints nothing; a real-but-unsent clock reads zero *once* and then advances.
+The first two are indistinguishable on any single read, which is why they are
+pinned against each other. For the flash the difference is total: a
+permanently-zero clock sits in interval 0, where M149a's schedule never
+flashes. `ClockManager::peek` is a non-minting read vanilla has no equivalent
+of, kept for exactly one caller — M12's day-tick fallback, which is a **stated
+Rewo deviation** (vanilla would mint and answer 0) recorded in `peek`'s own
+doc rather than changed.
+
+**M149d, the lightmap.** It is `skyFactor += intensity`, and the line directly
+above it in Rewo says *"the timeline tracks are multipliers over the
+dimension's base"*. Reading the flash as another multiplier is the natural
+mistake and it is fatal in exactly one dimension: `the_end.json` sets
+`sky_light_factor: 0.0`, so the End's own sky term is zero and the flash is
+**the only thing that lights its sky**. A multiply gives zero at every
+intensity — a feature that renders perfectly correctly and does nothing. The
+boss-fog arm **divides by three rather than suppressing**.
+`hideLightningFlash` is pinned `false` (no options screen; the same shape as
+the pinned `MusicFrequency`) and gates the *lightmap* only — the render half
+is not gated, because the option hides the world's brightening rather than the
+flash.
+
+**M149e, the sky quad.** It is the **sun's** quad with a different sprite:
+`buildEndFlashQuad` is literally `buildCelestialQuad(END_FLASH_SPRITE)`, so it
+joins the celestial atlas as a tenth cell and reuses the textured pipeline.
+Three differences, each inverting if assumed: **no sky base rotation** (the
+caller hands it a `new PoseStack()`, so the `Y(-90)` every other celestial
+inherits is absent), the angles are **subtracted** (`Y(180 - y)` then
+`X(-90 - x)`), and the tint is **`(i, i, i, i)`** rather than white-at-alpha,
+so the quad dims in colour as well as alpha. Scale 60 against the sun's 30, and
+the caller gates on `intensity > 1.0E-5F` — a threshold, not `> 0`, which is
+what keeps the ~1e-16 tail from costing a draw. Its three new `skyshot`
+witnesses **failed on their first run and were right to**: the fixture's
+`WorldRenderer` had never attached a celestial pass, so there was no flash to
+measure — M45's `install_shapes` lesson, and the fixture now fails closed
+instead. With the pass attached: none 33.1 → i=0.35 46.1 → i=1.0 110.0.
+
+**M149f, the delayed sound.** **`playDelayed` ticks a tickable instance BEFORE
+playing it** (`SoundEngine.java:292-296`), so a `DirectionalSoundInstance`
+re-runs `setPosition()` and is placed against the camera at *play* time —
+thirty ticks later. Capturing the position when it is queued is the natural
+implementation, gives a bearing stale by 1.5 s, and is invisible to any fixture
+whose camera does not move; the witness moves it a thousand blocks. The bearing
+is captured and the origin is not, which is the same asymmetry from both ends.
+The delay belongs to the **call site**: `SoundInstance.getDelay()` is a
+manual-looping concern, so routing it through the instance's field would have
+changed how it loops. One recorded divergence: vanilla suppresses the sound
+under the `WinScreen`, and Rewo has no screen there to suppress it with.
+
+**M149g, the battery — 17 mutations, 14 killed, 2 expected survivors, 1 named,
+control survived.** It found a real gap: a mutation giving *every* dimension a
+flash survived, because the transition path has a harness and the **login**
+path does not (`apply_login_shape`, on a socket-owning `PlaySession` — M71's
+hazard). M97's fix: one `end_flash_for_dimension` both sites call, witnessed
+over all four vanilla skyboxes. The login *call site* still survives and is
+**named rather than hidden** — a composition root with no seam, the situation
+M107 recorded for three others. The battery's own hazard fired twice: two
+anchors matched **0 times** after the extraction rewrote the lines they named,
+which it reports rather than passing.
+
+3172 tests, 0 failures across all eight crates; `dimensioncheck`,
+`lightmapshot` and `skyshot` green with validation on; demo PNG byte-identical
+at `2cc56b4acbfb92cb`.
 
 ### M125 — translatable components resolve, and an NBT list rule nobody had read (2026-08-08)
 

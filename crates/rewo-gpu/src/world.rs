@@ -525,6 +525,10 @@ pub struct WorldRenderer {
     celestial: Option<crate::celestial::CelestialPass>,
     /// Current clear-weather celestial state (set by `set_celestial`).
     celestial_state: crate::celestial::CelestialState,
+    /// `(intensity, xAngle, yAngle)` for the End flash, or `None` where the
+    /// level has no `EndFlashState` at all — which is every dimension whose
+    /// skybox is not END.
+    end_flash: Option<(f32, f32, f32)>,
     /// The End skybox pass (M16). `None` until `init_end_sky` supplies
     /// `textures/environment/end_sky.png` — a missing asset degrades to no sky
     /// contribution at all, never to an invented flat colour.
@@ -1119,6 +1123,7 @@ impl WorldRenderer {
                 entities: None,
                 celestial: None,
                 celestial_state: crate::celestial::CelestialState::default(),
+                end_flash: None,
                 end_sky: None,
                 end_portal: None,
                 end_portal_time: 0.0,
@@ -1342,6 +1347,12 @@ impl WorldRenderer {
     /// radians, sunrise colour linear rgb + straight alpha).
     pub fn set_celestial(&mut self, state: crate::celestial::CelestialState) {
         self.celestial_state = state;
+    }
+
+    /// `SkyRenderState.endFlash{Intensity,XAngle,YAngle}` — `None` when the
+    /// level has no flash state, which is every non-END skybox.
+    pub fn set_end_flash(&mut self, flash: Option<(f32, f32, f32)>) {
+        self.end_flash = flash;
     }
 
     /// The attached celestial pass, if any (`rewo skyshot` reports its
@@ -2784,6 +2795,17 @@ impl WorldRenderer {
             SkyMode::End => {
                 if let Some(end) = &self.end_sky {
                     end.draw(gpu, cb, sky_vp, extent);
+                }
+                // `addSkyPass`'s END arm: the sky cube, then the flash on top
+                // of it, gated on `endFlashIntensity > 1.0E-5F`
+                // (`LevelRenderer.java:333-338`) — a threshold rather than
+                // `> 0`, which is what keeps the flash's ~1e-16 tail from
+                // costing a draw. The sun, moon and stars are NOT in this arm:
+                // the End has none.
+                if let (Some(celestial), Some(flash)) = (&self.celestial, self.end_flash) {
+                    if flash.0 > 1.0e-5 {
+                        celestial.draw_end_flash(gpu, cb, sky_vp, extent, flash.0, flash.1, flash.2);
+                    }
                 }
             }
             SkyMode::Overworld => {

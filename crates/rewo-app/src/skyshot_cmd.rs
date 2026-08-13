@@ -978,6 +978,22 @@ fn run_sky_mode_cases(
         ),
         Some(img) => {
             let mut wr2 = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
+            // The flash quad lives in the CELESTIAL pass (`renderEndFlash`
+            // shares `buildCelestialQuad` and `RenderPipelines.CELESTIAL`
+            // with the sun), so a renderer that never attached one draws no
+            // flash — silently, and the M149e witnesses below measured
+            // exactly that on their first run. Production attaches it
+            // unconditionally in both paths (`init_celestial_if_present`);
+            // this fixture has to as well, or it is grading its own setup.
+            // M45's `install_shapes` lesson.
+            if let Some(cel) = &baked.celestial {
+                wr2.init_celestial(gpu, &to_gpu_textures(cel))?;
+            } else {
+                failures.push(
+                    "END flash: the jar bake has no celestial textures — the flash cannot be verified"
+                        .into(),
+                );
+            }
             wr2.set_camera([0.0, 0.0, 0.0]);
             wr2.init_end_sky(
                 gpu,
@@ -1075,6 +1091,72 @@ fn run_sky_mode_cases(
                     "END production: brightest rendered pixel {rendered_ceiling:.1} exceeds the scaled ceiling {scaled_ceiling:.1} (raw {raw_ceiling:.1}) — the -14145496 constant was dropped"
                 ));
             }
+            // ---- M149e: the End flash ------------------------------------
+            //
+            // The flash is the ONLY thing `addSkyPass` draws in the End beside
+            // the sky cube, so `frame` above is the exact no-flash control —
+            // no other term can move between these renders.
+            //
+            // The camera looks straight up (`up_view`), and the schedule's
+            // angles put the quad overhead at `xAngle = -90`: `X(-90 - -90)`
+            // is the identity, leaving `T(0,100,0)` directly above.
+            wr2.set_end_flash(Some((0.0, -90.0, 0.0)));
+            off.render(gpu, Some((&mut wr2, up)), draw, CLEAR)?;
+            let zero = off.read_rgba(gpu)?;
+            if max_channel_delta(&frame, &zero) != 0 {
+                failures.push(
+                    "END flash: intensity 0 changed the frame — the 1e-5 gate is not holding".into(),
+                );
+            }
+
+            // Just under the threshold: still nothing. `LevelRenderer.java:335`
+            // is `> 1.0E-5F`, not `> 0.0`.
+            wr2.set_end_flash(Some((9.0e-6, -90.0, 0.0)));
+            off.render(gpu, Some((&mut wr2, up)), draw, CLEAR)?;
+            let under = off.read_rgba(gpu)?;
+            if max_channel_delta(&frame, &under) != 0 {
+                failures.push("END flash: 9e-6 drew — the threshold is a literal 1e-5, not zero".into());
+            }
+
+            // A real flash brightens, and brightens MORE at a higher
+            // intensity: the tint is `(i,i,i,i)`, so the quad scales with it
+            // rather than merely fading in.
+            wr2.set_end_flash(Some((0.35, -90.0, 0.0)));
+            off.render(gpu, Some((&mut wr2, up)), draw, CLEAR)?;
+            let dim_flash = off.read_rgba(gpu)?;
+            wr2.set_end_flash(Some((1.0, -90.0, 0.0)));
+            off.render(gpu, Some((&mut wr2, up)), draw, CLEAR)?;
+            let full = off.read_rgba(gpu)?;
+            dump(args, off, gpu, "mode-end-flash");
+
+            let lit = |f: &[u8]| {
+                f.chunks(4)
+                    .map(|px| luma([px[0], px[1], px[2]]))
+                    .fold(0.0f32, f32::max)
+            };
+            let (base_l, dim_l, full_l) = (lit(&frame), lit(&dim_flash), lit(&full));
+            println!(
+                "[skyshot] END flash: brightest px none {base_l:.1} -> i=0.35 {dim_l:.1} -> i=1.0 {full_l:.1}"
+            );
+            if dim_l <= base_l {
+                failures.push("END flash: a flash at 0.35 did not brighten the sky at all".into());
+            }
+            if full_l <= dim_l {
+                failures.push(
+                    "END flash: intensity 1.0 is no brighter than 0.35 — the (i,i,i,i) tint is not reaching the quad".into(),
+                );
+            }
+
+            // `None` is not the same as zero: it is the level having no
+            // `EndFlashState`, and it must draw nothing whatever was set
+            // before it.
+            wr2.set_end_flash(None);
+            off.render(gpu, Some((&mut wr2, up)), draw, CLEAR)?;
+            let cleared = off.read_rgba(gpu)?;
+            if max_channel_delta(&frame, &cleared) != 0 {
+                failures.push("END flash: `None` still drew a flash".into());
+            }
+
             wr2.destroy(gpu);
         }
     }
@@ -1153,6 +1235,7 @@ fn to_gpu_textures(cel: &assets::CelestialTextures) -> CelestialTextures<'_> {
     CelestialTextures {
         sun: img(&cel.sun),
         moons: std::array::from_fn(|k| img(&cel.moons[k])),
+        end_flash: img(&cel.end_flash),
     }
 }
 
@@ -1434,6 +1517,14 @@ impl SyntheticCel {
                 w: self.moon_dims[i],
                 h: self.moon_dims[i],
             }),
+            // These fixtures grade the sun/moon/star/sunrise geometry; the
+            // flash shares their atlas and needs a cell, so it reuses the
+            // sun's pixels rather than adding a fixture nothing looks at.
+            end_flash: CelestialImage {
+                rgba: &self.sun,
+                w: self.dim,
+                h: self.dim,
+            },
         }
     }
 }
@@ -1772,6 +1863,11 @@ impl SolidBodies {
                 w: self.dim,
                 h: self.dim,
             }),
+            end_flash: CelestialImage {
+                rgba: &self.sun,
+                w: self.dim,
+                h: self.dim,
+            },
         }
     }
 }
@@ -1805,6 +1901,7 @@ impl HiddenCel {
         CelestialTextures {
             sun: img(),
             moons: std::array::from_fn(|_| img()),
+            end_flash: img(),
         }
     }
 }

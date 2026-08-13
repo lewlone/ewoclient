@@ -1784,6 +1784,29 @@ surviving mutation was **proven equivalent** — the down branch's second disjun
 cannot fire, since the blend never crosses its target — so it is dead code in
 vanilla too, kept and recorded.*
 
+*Update (2026-08-13 session, Rewo): **M149c–g — the End flash, finished.** The
+clock map and all three consumers, so **all eleven `TickableSoundInstance` ramp
+variants now have a construction site** (`Directional` was the last).
+**M149c** the clock map: `ClientClockManager` is a map, its `lastTickGameTime`
+is **shared** (a clock minted between ticks gets the whole delta), and
+`getTotalTicks` is **`computeIfAbsent`** — the read *creates*, at rate 1.0 — so
+`getDefaultClockTime()` has three outcomes that look like one number, of which
+two are indistinguishable on any single read and diverge forever after.
+**M149d** the lightmap, where the flash is **added** and the comment directly
+above it says "multipliers": a multiply is fatal in the one dimension that has
+a flash, because `the_end.json` sets `sky_light_factor: 0.0` and the flash is
+the only thing lighting its sky. **M149e** the quad — the sun's, with a
+different sprite, **no** base rotation, **subtracted** angles and an
+`(i,i,i,i)` tint — whose witnesses failed first because the fixture had never
+attached a celestial pass (M45 again). **M149f** the sound, where
+**`playDelayed` ticks a tickable BEFORE playing it**, so the bearing is taken
+against the camera thirty ticks later and capturing it at queue time is both
+natural and 1.5 s stale. **M149g** the battery (17: 14 killed, 2 expected
+survivors, 1 named) found the login path building its level where no test can
+reach — two call sites, one covered — closed by M97's fix and a named survivor
+for the composition root itself. 3172 tests, 34 gates, demo PNG
+byte-identical.*
+
 *Update (2026-08-13 session, Rewo): **M149a/b — the End flash's schedule, and
 a fact that was right in one file and wrong in another.** §0.0 offered
 `EndFlashState` as the last unconstructed audio ramp; the decompile says it has
@@ -1811,8 +1834,8 @@ including the broken `grep -c $'$'` detector — while **CLAUDE.md carried the
 opposite**, and this session read the nearer one, "confirmed" it with exactly
 that detector, and turned a 50-line change into a 3,256-line diff. Measured by
 byte count: **378 all-LF, one all-CRLF, four mixed**. The same-fact-in-two-places
-hazard landing on the documentation of a hazard. 3157 tests, merged to `main` — the clock map and all
-three consumers are named, not started.*
+hazard landing on the documentation of a hazard. 3157 tests at that point, merged to `main`; the clock
+map and all three consumers followed in M149c–g above.*
 
 *Update (2026-08-12 session, Rewo): **M147 + M148 — the Overworld played no
 music, and the battery that would have caught it.** M146 shipped music
@@ -2104,8 +2127,8 @@ everything a machine can check passes and that is *not* the same claim. The
 feature is **off by default**, so a default build links no audio stack and the
 34 gates are unchanged.
 **Everything is shipped, gated and merged to `main`** as of 2026-08-13
-(M149b) — **3157 tests / 0 failures** (world 1187, net 1122, gpu 275, data 228,
-app 199, mesh 45, proto 16, **audio 86** — EIGHT crates now, read off the runner
+(M149g) — **3172 tests / 0 failures** (world 1187, net 1133, gpu 275, data 228,
+app 202, mesh 45, proto 16, **audio 86** — EIGHT crates now, read off the runner
 per crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,

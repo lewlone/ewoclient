@@ -267,6 +267,16 @@ pub struct Connection<'a> {
     /// Registry id of the `minecraft:overworld` world clock (see
     /// `parse_registry_data`); `None` on a server that syncs no clocks.
     overworld_clock_id: Option<i32>,
+    /// The whole `minecraft:world_clock` registry **in raw wire order**, so
+    /// the index *is* the holder id a `set_time` entry carries.
+    ///
+    /// M12 captured only the overworld's id, which is all the day/night cycle
+    /// needs. M149c wants the rest because a dimension's `default_clock` names
+    /// its clock by **identifier**, and the two registries arrive in the same
+    /// `registry_data` batch with no ordering guarantee — so the name-to-id
+    /// step has to be a lookup at use time (M62's lazy two-step) rather than a
+    /// resolution at parse time.
+    world_clock_ids: Vec<String>,
     /// Raw `minecraft:mob_effect` registry ids for `night_vision` / `darkness`,
     /// so the M13 lightmap can match the effect packets.
     ///
@@ -333,6 +343,7 @@ impl<'a> Connection<'a> {
             recorder: None,
             dim_types: Vec::new(),
             overworld_clock_id: None,
+            world_clock_ids: Vec::new(),
             // M92c — from the report. `mob_effect` is a built-in registry, so
             // this is the authority and `registry_data` never carries it.
             night_vision_id: data.mob_effects.id_of("minecraft:night_vision"),
@@ -676,6 +687,9 @@ impl<'a> Connection<'a> {
         // clock, and `set_time` keys its clock map by raw registry id. The id
         // is capture-able here rather than assumed from bootstrap order.
         let is_clock = registry == "minecraft:world_clock";
+        if is_clock {
+            self.world_clock_ids.clear();
+        }
         // The M13 camera lightmap keys night-vision / darkness off their raw
         // `mob_effect` registry ids, captured here rather than assumed from
         // bootstrap order (exactly like the world clock above).
@@ -689,8 +703,14 @@ impl<'a> Connection<'a> {
             let Ok(entry_name) = r.identifier() else {
                 return Ok(());
             };
-            if is_clock && entry_name == "minecraft:overworld" {
-                self.overworld_clock_id = Some(idx as i32);
+            if is_clock {
+                if entry_name == "minecraft:overworld" {
+                    self.overworld_clock_id = Some(idx as i32);
+                }
+                // Pushed in iteration order, so the position is the id. Never
+                // sorted, and never derived from bootstrap order — M64's
+                // alphabetisation trap.
+                self.world_clock_ids.push(entry_name.clone());
             }
             if is_mob_effect {
                 match entry_name.as_str() {

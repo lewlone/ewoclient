@@ -562,6 +562,11 @@ pub struct DecodedImage {
 pub struct CelestialTextures {
     pub sun: DecodedImage,
     pub moons: [DecodedImage; 8],
+    /// `SkyRenderer.END_FLASH_SPRITE` — `environment/celestial/end_flash.png`,
+    /// the End's periodic flash (M149e). Loaded beside the sun because
+    /// `buildEndFlashQuad` is literally `buildCelestialQuad` with a different
+    /// sprite.
+    pub end_flash: DecodedImage,
 }
 
 /// Moon-phase texture basenames in `MoonPhase` declaration/index order
@@ -1373,7 +1378,12 @@ fn bake_celestial(jar: Jar) -> Option<CelestialTextures> {
         moons.push(load(jar, &format!("celestial/moon/{name}.png"))?);
     }
     let moons: [DecodedImage; 8] = moons.try_into().ok()?;
-    Some(CelestialTextures { sun, moons })
+    let end_flash = load(jar, "celestial/end_flash.png")?;
+    Some(CelestialTextures {
+        sun,
+        moons,
+        end_flash,
+    })
 }
 
 /// Extract an entity texture of a known size to flat RGBA (mob models).
