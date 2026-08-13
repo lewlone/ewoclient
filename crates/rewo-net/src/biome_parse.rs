@@ -550,16 +550,47 @@ mod ambient_tests {
         assert!(m.is_empty(), "an explicit empty record is not absence");
 
         // A track missing a required delay is malformed, and yields no track
-        // rather than a track with an invented window — the window decides how
+        // rather than one with an invented window — the window decides how
         // often it plays.
-        let bad = Nbt::Compound(vec![(
+        //
+        // **Each delay is dropped SEPARATELY**, and that is not pedantry: a
+        // fixture missing both is satisfied by either `?` alone, so a mutation
+        // that defaulted `min_delay` to 0 survived the first version of this.
+        // Two one-field-short fixtures are what make each `?` load-bearing.
+        let missing = |present: &str, value: i32| {
+            Nbt::Compound(vec![(
+                "minecraft:audio/background_music".into(),
+                Nbt::Compound(vec![(
+                    "default".into(),
+                    Nbt::Compound(vec![
+                        ("sound".into(), s("minecraft:music.game")),
+                        (present.into(), Nbt::Int(value)),
+                    ]),
+                )]),
+            )])
+        };
+        for (present, value) in [("max_delay", 24_000), ("min_delay", 12_000)] {
+            let bad = missing(present, value);
+            assert!(
+                attribute_background_music(Some(&bad))
+                    .expect("declared")
+                    .default_music
+                    .is_none(),
+                "a track with only {present} must not decode"
+            );
+        }
+        // And a track missing the sound is equally no track.
+        let no_sound = Nbt::Compound(vec![(
             "minecraft:audio/background_music".into(),
             Nbt::Compound(vec![(
                 "default".into(),
-                Nbt::Compound(vec![("sound".into(), s("minecraft:music.game"))]),
+                Nbt::Compound(vec![
+                    ("min_delay".into(), Nbt::Int(12_000)),
+                    ("max_delay".into(), Nbt::Int(24_000)),
+                ]),
             )]),
         )]);
-        assert!(attribute_background_music(Some(&bad))
+        assert!(attribute_background_music(Some(&no_sound))
             .expect("declared")
             .default_music
             .is_none());
