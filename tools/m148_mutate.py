@@ -343,6 +343,16 @@ def main():
             % (name[:66], verdict, want, "ok" if ok else "<<< UNEXPECTED")
         )
 
+    # **Rebuild before leaving.** A gate-routed mutation builds `rewo-app` from
+    # the mutated source and the restore puts the source back WITHOUT
+    # rebuilding, so `target/debug/rewo.exe` is left as the last mutant's
+    # binary — and the next gate run grades that mutant against a clean tree.
+    # It presents as a gate failing with `git status` clean, which is the most
+    # confusing possible shape. Found by exactly that.
+    if any(p in GATE_ONLY for p in paths):
+        print("rebuilding rewo-app (the last gate mutation left a mutant binary) ...")
+        subprocess.run(["cargo", "build", "-p", "rewo-app"], cwd=ROOT, capture_output=True)
+
     leftover = [
         p for p in paths if io.open(os.path.join(ROOT, p), "rb").read() != snapshots[p]
     ]
