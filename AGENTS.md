@@ -4989,11 +4989,26 @@ an item is in at most one tag and a shared bit would falsify the wrong
 predicate.
 
 **Seven of the eight single-input quick-moves are done**; nine of the 25 menus
-route a shift-click. **Only `smithing` remains**, blocked on
-`RecipePropertySet` off `update_recipes` (class C) — and note these sets are
-*not* jar-derivable the way M91's smelting ones were, because a smithing
-recipe's three ingredient slots are per-recipe rather than one flat
-`ingredient` field.
+route a shift-click. **Only `smithing` remains**, nominally blocked on
+`RecipePropertySet` off `update_recipes` (class C).
+
+> **⚠ CORRECTED 2026-08-13 — this paragraph used to say these sets are "*not*
+> jar-derivable the way M91's smelting ones were, because a smithing recipe's
+> three ingredient slots are per-recipe rather than one flat `ingredient`
+> field." That is wrong, and it is a **field-name** difference rather than a
+> structural one.** Measured against
+> `<D>/data/minecraft/recipe/*.json`: **30 smithing recipes — 12
+> `smithing_transform` and 18 `smithing_trim` — and all 30 carry all three of
+> `base`, `template` and `addition`.** The shape is perfectly uniform, and
+> `tools/recipe_ingredients.py` already does the recursive tag expansion the
+> values need (`#trimmable_armor` expands to 29, `#trim_materials` to 11,
+> `#netherite_tool_materials` to 1). So the last hard decline in the container
+> arc is roughly thirty generator lines, not a subsystem. This is the FIFTH
+> time a "class-C blocker" in this project turned out not to be one — after
+> M91's furnace recipes, M93's merchant quick-move, M93s's stonecutter list and
+> M93u's merchant offers — and the pattern is the same every time: **the data
+> was in the client jar rather than on the wire.** Check for it before
+> believing any such claim, including this file's.
 
 > **⚠ Do NOT use `ItemSlot::enchanted` for the grindstone.** Its doc comment
 > says `ItemStack.isEnchanted`; the assignment is `c.has_foil()`, and M43
