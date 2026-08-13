@@ -129,8 +129,11 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-12 after M148:
-**3141 tests, 0 failures** (**world 1171, net 1121, gpu 275, data 228, app 199,
+Current measurement, taken 2026-08-13 after M149b (which is on
+`claude/rewo-m149-end-flash`, **not** on `main` — the first branch to hold a
+commit off `main` since 2026-07-27, and it should be merged or dropped rather
+than left):
+**3157 tests, 0 failures** (**world 1187, net 1122, gpu 275, data 228, app 199,
 mesh 45, proto 16, audio 86** — read off the runner per crate; they sum to 3141).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
@@ -267,9 +270,18 @@ witnesses are mostly self-driven can look healthy against nothing.
 > * **Decode on a worker.** Still inline on the client tick — one chunk per
 >   second of playback, four at the attach, plus one asset read of up to 11 MB
 >   when a track starts. A stated deviation from vanilla's `supplyAsync`.
-> * **`EndFlashState`** — the last unconstructed ramp variant (`Directional`),
->   which needs the flash schedule, `getDefaultClockTime`, `playDelayed`'s
->   delay queue, and a camera on the tick clock.
+> * **`EndFlashState` — STARTED (M149a/b, on a branch), and it is not only an
+>   audio item.** The schedule and `default_clock` are shipped and gated; the
+>   three consumers are not. It has **three**, and two are visual: the lightmap
+>   term (`LightmapRenderStateExtractor.java:57-65`), the sky quad
+>   (`SkyRenderer.java:477-503`), and the delayed `DirectionalSoundInstance`.
+>   Still needed: the clock **map** (`ClientClockManager` holds one instance
+>   per clock; Rewo tracks only the overworld's, so `getDefaultClockTime()`
+>   now has a field to read and no clock to read it from), then the three
+>   consumers, then `SoundEngine.playDelayed`'s delay queue. See §15's M149a/b
+>   entry — in particular that `playDelayed` ticks a tickable **before**
+>   playing it, so the flash's bearing is taken at play time, 30 ticks after
+>   the flash.
 > * **M139's loopback oracle** — now that there is something audible to grade,
 >   this is what turns the mixer's *stated approximations* (the pan law, the
 >   resampler) into a measured divergence in dB.
@@ -3078,6 +3090,130 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M149a/b — the End flash's schedule, and the clock it runs on (2026-08-13)
+
+The last unconstructed ramp variant was `Directional`, and §0.0 named it as an
+*audio* item. It is not only that: `EndFlashState` has **three** consumers, and
+two are visual — the flash quad (`SkyRenderer.java:270-274, 477-503`), the
+lightmap term (`LightmapRenderStateExtractor.java:57-65`, `skyFactor +=
+intensity`, or `/3` under a boss fog), and only then the
+`DirectionalSoundInstance` queued 30 ticks behind (`ClientLevel.java:307-324`).
+
+**Two halves of the feature were already in the tree and neither reached any
+code.** `Skybox::has_end_flashes()` has been decoded and unit-tested since M16
+with zero production readers, and the bundled dimension transcription has
+spelled `("default_clock", s("minecraft:the_end"))` since M16 too
+(`dimension_parse.rs:668`) while the parser read past it. `end_sky.rs:34`
+records the flash as out of scope. That is the M135/M136 shape twice over.
+
+M149a is the schedule. It is a pure function of one `long` — no packet, no
+camera, no player state, seeded off `clockTime / 600` — so every value is
+independently computable, which is what a feature whose audible third no gate
+can grade wants. `RandomSource.createThreadLocalInstance` builds a
+`SingleThreadedRandomSource`, which is `BitRandomSource` with multiplier
+`25214903917`, increment `11` and a 48-bit mask: exactly
+`particles::LegacyRandom`, already graded bit-for-bit against a JVM.
+
+**The first interval of a clock never flashes.** `private long flashSeed;`
+(`EndFlashState.java:12`) has no initializer, so Java defaults it to 0, and
+`calculateFlashParameters` draws only on a change — for `clock_time` in
+`0..600` the new seed *is* 0, the guard holds, and offset/duration/both angles
+stay at their own zero defaults. Modelling the seed as "not yet computed" (an
+`Option`, or priming in a constructor) produces a flash vanilla does not have.
+At exactly tick 0 the window test `0 >= 0 && 0 <= 0 + 0` then passes on those
+zeros, so the intensity expression is `0.0 * PI / 0` — **NaN** — and comes out
+`0.0` only because `Mth.sin` (`Mth.java:50-52`) is a table lookup where
+`(long)(NaN * SIN_SCALE)` narrows to 0. Platform `sin` propagates it into the
+lightmap and the quad's vertex colour.
+
+Three more that invert. `EndFlashState.java:30` **discards** a `nextFloat()`
+before the four real draws. `Mth.randomBetweenInclusive` (`Mth.java:690`) has
+**no** `min >= max` guard, unlike `Mth.nextInt` twelve lines earlier which
+returns without drawing — M145 found the other one of that pair. And
+`flashStartedThisTick` fires **one tick after** `offset`, not on it: at
+`within == offset` the intensity is `Mth.sin(0)` = exactly 0.0 and the
+predicate is strict, so the sound it gates is queued at `offset + 1 + 30`.
+
+`Math.min(380, 600 - offset)` is **inert** — offset is drawn from `[0, 200]`,
+so the second argument is never below 400. Transcribed rather than folded, with
+the inertness proved exhaustively (M104's `centerY + 13` precedent). Its
+consequence, `offset + duration <= 580 < 600`, is what makes `tick`'s
+recalculate-before-capture ordering unobservable.
+
+M149b decodes `default_clock` — `Optional<Holder<WorldClock>>`
+(`DimensionType.java:45, 101`), a `Holder` serialised as an identifier string,
+the same shape the `timelines` holder set already uses, confirmed against the
+captured `m1-soak.rewo` registry rather than inferred. **Three vanilla answers,
+three clocks**: `minecraft:overworld`, `minecraft:the_end`, and **the Nether
+declares nothing** — the only one that does. Absence is not a fallback:
+`getClockTimeTicks` ends `.orElse(0L)`, a *permanent zero*, so substituting a
+default hands a caller a ticking clock where vanilla has a frozen one. Held as
+the id string, not a resolved index, because the `world_clock` and
+`dimension_type` registries arrive in one `registry_data` batch with no
+ordering guarantee (M62's lazy two-step). Threaded through all four of
+`dimensioncheck`'s independent inputs.
+
+**Five of my witnesses were wrong before any code was**, which is this
+project's documented dominant failure mode, and three of the five are worth
+keeping:
+
+* `intensity_is_a_half_sine` read the flash's tail through `getIntensity(1.0)`
+  and measured 0. **`Mth.lerp(1.0, a, b)` is `a + 1.0 * (b - a)`, not a
+  select**: at the tail `b` is `Mth.sin(PI)` ≈ `1.2e-16` against `a` ≈
+  `0.0101`, so the difference rounds to `-a` and the sum cancels to exactly
+  `0.0`. So `flashStartedThisTick` (the raw field) and any renderer (the lerp)
+  disagree about whether a flash exists on that tick. Vanilla has the same
+  split; at `1.2e-16` nothing can see it, and the reason to pin it is that
+  "`getIntensity(1.0)` is just this tick's value" is a false shortcut for every
+  future consumer.
+* The float grouping `(t * PI) / d` versus `t * (PI / d)` reaches a different
+  `Mth.sin` index in only **152 of 67721** reachable `(duration, tick)` pairs
+  (0.22%) — the table quantises the ulp away almost everywhere — and **never
+  once for the duration 311 that seed 1 draws**. Every schedule-based witness
+  was therefore structurally blind to it. `REWO_AUDIO_PLAN` §5's weak-fixture
+  trap in a new shape: the coincidence is not a value of 1.0, it is the
+  quantisation.
+* `flash_completes_within_its_interval` asserted `max(offset + duration) ==
+  580`, a **sample statistic** — 4000 seeds only reach 578.
+
+The battery is **22 mutations: 19 killed, 2 proven equivalent** (the window's
+lower bound, since `Mth.sin(0)` is 0 either way; and folding the inert clamp),
+control survived. Two survived first and both were real witness gaps:
+`600 -> 601` survived because every behavioural witness measures *in units of*
+the constant (the seed is `clock / interval`, the window `clock % interval`),
+so expectation and render moved together — M93r's self-calibrating sweep
+recurring, since the literal vectors pinned the *outputs* while the interval is
+an *input to the addressing*. And `% -> rem_euclid` survived because the only
+negative-clock fixture had zeroed parameters, where truncation's `-1` and
+Euclid's `599` both fall outside the window and both answer `0.0`.
+
+**One process finding, and it is about this file's siblings.** §0.0 gotcha 9
+has said since M126 that the tree is overwhelmingly LF, has named the five
+exceptions, and documents the `grep -c $'\r$'` detector that reports "every
+line ends in CR" for a pure-LF file. **CLAUDE.md carried the opposite** —
+"zero mixed files, every `.rs` all-CRLF" — and this session read that one, then
+"confirmed" it with exactly the broken detector gotcha 9 warns about, and
+normalised three LF files into a 3,256-line diff for a 50-line change. Measured
+by byte count on 2026-08-13: **378 all-LF, one all-CRLF
+(`rewo-gpu/src/cem.rs`), four mixed**. CLAUDE.md is corrected in place and now
+says why the bullet is kept. The same-fact-in-two-places hazard, landing on the
+documentation of a hazard.
+
+**Not done, and named rather than half-started**: the clock *map*
+(`ClientClockManager` holds `Map<Holder<WorldClock>, ClockInstance>`; Rewo
+tracks only the overworld's, so `getDefaultClockTime()` has a field to read and
+no clock to read it from), and all three consumers — the lightmap term, the sky
+quad, and the delayed directional sound with `SoundEngine.playDelayed`'s queue.
+One detail already gathered for that queue: it calls
+`tickableSoundInstance.tick()` **before** `play()`
+(`SoundEngine.java:290-297`), so a `DirectionalSoundInstance` re-runs
+`setPosition()` against the camera at *play* time — the flash's bearing is
+relative to where you are 30 ticks later, not to where you were when it
+flashed.
+
+3157 tests (16 + 1 new), 0 failures across all eight crates;
+`dimensioncheck --check` OK.
 
 ### M125 — translatable components resolve, and an NBT list rule nobody had read (2026-08-08)
 

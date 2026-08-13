@@ -1784,6 +1784,37 @@ surviving mutation was **proven equivalent** — the down branch's second disjun
 cannot fire, since the blend never crosses its target — so it is dead code in
 vanilla too, kept and recorded.*
 
+*Update (2026-08-13 session, Rewo): **M149a/b — the End flash's schedule, and
+a fact that was right in one file and wrong in another.** §0.0 offered
+`EndFlashState` as the last unconstructed audio ramp; the decompile says it has
+**three** consumers and two are visual (the lightmap's `skyFactor += intensity`,
+the sky's flash quad, and only then the sound). **Two halves of it were already
+in the tree, unread**: `Skybox::has_end_flashes()` decoded and tested since M16
+with zero production readers, and `default_clock` spelled in our own bundled
+fixtures since M16 while the parser read past it. The schedule is a pure
+function of one `long`, so it grades exactly — which matters for a feature whose
+audible third no gate can touch. Its findings: **the first 600 ticks of a clock
+never flash** (Java's `flashSeed` field default is 0 and the draw is guarded on
+a *change*, so an `Option`-shaped "not yet computed" invents a flash vanilla
+lacks), tick 0's intensity is genuinely `NaN` and survives only because
+`Mth.sin` is a table lookup, `flashStartedThisTick` fires **one tick after** the
+offset because `Mth.sin(0)` is exactly 0 against a strict `>`, and the Nether is
+the only vanilla dimension declaring **no** `default_clock` — which is a
+permanent zero, not a fallback. **`Mth.lerp(1.0, a, b)` is not a select**: at
+the flash tail it cancels `1.2e-16` against `0.0101` to exactly 0, so the raw
+field and every renderer disagree about whether a flash exists. 22 mutations,
+19 killed, 2 proven equivalent; two survived first and both were witness gaps —
+`600 -> 601` was invisible because every witness measures *in units of* the
+constant (M93r's sweep recurring). **The process finding is about these files:**
+§0.0 gotcha 9 has carried the correct line-ending measurement since M126 —
+including the broken `grep -c $'$'` detector — while **CLAUDE.md carried the
+opposite**, and this session read the nearer one, "confirmed" it with exactly
+that detector, and turned a 50-line change into a 3,256-line diff. Measured by
+byte count: **378 all-LF, one all-CRLF, four mixed**. The same-fact-in-two-places
+hazard landing on the documentation of a hazard. 3157 tests. **M149a/b are on
+`claude/rewo-m149-end-flash`, not on `main`** — the clock map and all three
+consumers are named, not started.*
+
 *Update (2026-08-12 session, Rewo): **M147 + M148 — the Overworld played no
 music, and the battery that would have caught it.** M146 shipped music
 selection with 3137 tests, 34 gates and 45 render-check witnesses green, and it
