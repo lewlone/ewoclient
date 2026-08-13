@@ -37,6 +37,7 @@ pub mod daylight;
 pub mod death_screen;
 pub mod destruction;
 pub mod dimension;
+pub mod end_flash;
 pub mod disconnect_screen;
 pub mod entities;
 pub mod entity_pick;
