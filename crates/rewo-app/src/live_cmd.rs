@@ -267,6 +267,31 @@ struct RenderCheck {
     /// reached the renderer. Three injected rows with a name and a number
     /// each, plus the title, is seven.
     sidebar_text_max: usize,
+    /// M151 — frames on which the TAB LIST was drawn in the windowed client.
+    ///
+    /// The M86 shape a second time: `rewo_gpu::tab_list` had 41 passing tests
+    /// and no caller at all, so every other witness in this file is satisfied
+    /// by a client whose Tab key does nothing. The gate holds the key down for
+    /// the second half of the run, so this must be non-zero and must be
+    /// **less** than `frames` — a client that drew the list unconditionally
+    /// would score every frame and is exactly as wrong as one that never drew
+    /// it.
+    tab_list_frames: u64,
+    /// The most rows the layout PLACED in any frame.
+    ///
+    /// Separate from the frame count because the bands are drawn as soon as a
+    /// view exists: this is what says the listed-player filter, the sort and
+    /// the column solve all produced slots. The run injects a set of players,
+    /// one of them unlisted, so the count is a claim about the filter and not
+    /// merely about arrival.
+    tab_list_rows_max: usize,
+    /// The most text lines the tab list emitted, and the most ping icons.
+    ///
+    /// Two separate counts because they come from two different lists —
+    /// `set_text` and `set_hud_icons` — and a break in either leaves the other
+    /// healthy. The icons are the first `HudBlit` anything produces.
+    tab_list_text_max: usize,
+    tab_list_icons_max: usize,
     /// M138a — listener transforms that reached the audio device.
     ///
     /// Compared against `frames`, not merely to zero: the interesting claim is
@@ -1039,6 +1064,44 @@ impl RenderCheck {
             format!(
                 "started {:?} (M147: the Overworld's BackgroundMusic lives on the                  DIMENSION TYPE and not on plains, so with an EMPTY base this                  is None and no music plays anywhere in the Overworld -- which                  is what M146 shipped. The run is 8 s = 160 ticks against a                  100-tick STARTING_DELAY, so a client that never decremented                  scores None too.)",
                 self.music_started
+            ),
+        );
+        // M151 — the tab list. The M86 shape a second time: `rewo_gpu::tab_list`
+        // shipped with 41 passing tests and no caller, so every other witness
+        // above is satisfied by a client whose Tab key does nothing at all.
+        //
+        // Four claims, and each fails differently:
+        //
+        // * `> 0` — the key, the resolver, the layout and the emitters were all
+        //   reached in the WINDOWED client, which is the only thing no
+        //   serverless gate can see.
+        // * `< frames` — and it is a HOLD. The key goes down at half the run,
+        //   so a client that drew the list unconditionally scores every frame
+        //   and is exactly as wrong as one that never drew it.
+        // * `rows == 3` — the local player plus the two the run injects as
+        //   `listed: true`. Two more are injected as `listed: false`, so a
+        //   client that ignored `getListedOnlinePlayers()` scores FIVE. That is
+        //   the whole reason `listed` had to stop being decoded-and-dropped.
+        // * `icons == rows` — one ping sprite per row, through `set_hud_icons`,
+        //   which is a different list from the text and breaks independently.
+        row(
+            "r47 the tab list was drawn in the windowed client, while its key was held",
+            self.tab_list_frames > 0
+                && self.tab_list_frames < self.frames
+                && self.tab_list_rows_max == 3
+                && self.tab_list_icons_max == 3
+                && self.tab_list_text_max == 3,
+            format!(
+                "{} of {} frames drew it (must be neither 0 nor all — the key \
+                 goes down at half the run), at most {} rows / {} ping icons / \
+                 {} text lines. Three is the local player plus the two injected \
+                 `listed: true` players; FIVE means the two `listed: false` ones \
+                 were shown, and one means the injection never landed.",
+                self.tab_list_frames,
+                self.frames,
+                self.tab_list_rows_max,
+                self.tab_list_icons_max,
+                self.tab_list_text_max
             ),
         );
         row(
@@ -4814,6 +4877,12 @@ struct Keys {
     jump: bool,
     sneak: bool,
     sprint: bool,
+    /// `Options.keyPlayerList` — GLFW **258**, Tab (`Options.java:671`).
+    ///
+    /// **A hold, not a toggle.** `Hud.extractTabList`'s gate is
+    /// `keyPlayerList.isDown()`, read fresh every frame, so the list is on
+    /// screen exactly while the key is down. Nothing latches it.
+    tab_list: bool,
 }
 
 impl Keys {
@@ -5005,6 +5074,8 @@ struct LiveApp {
     container_injected: bool,
     /// M132 — whether the scoreboard sidebar injection has happened.
     sidebar_injected: bool,
+    /// M151 — whether the tab-list player injection has happened.
+    tab_list_injected: bool,
     /// Whether `--render-check` has force-opened the chat screen yet (M110).
     chat_injected: bool,
     /// Whether it has typed a `/`-command yet (M116).
@@ -5234,6 +5305,25 @@ impl ApplicationHandler for LiveApp {
                 if matches!(event.physical_key, PhysicalKey::Code(KeyCode::AltLeft)) {
                     self.alt = p;
                 }
+                // M151 — the tab-list hold's RELEASE, ahead of both screen
+                // gates below, because `KeyboardHandler.keyPress` is
+                // asymmetric about exactly this:
+                //
+                //   if (action == 0)      KeyMapping.set(key, false);   // always
+                //   else if (handlesGameInput) KeyMapping.set(key, true);
+                //
+                // (`KeyboardHandler.java:519-552`.) The press is gated on there
+                // being no screen — so Tab with the inventory open does not
+                // open the list, which is why the press arm lives in the match
+                // below — while the release is unconditional. Without this,
+                // holding Tab, opening the inventory and letting go would leave
+                // the list on screen behind it with nothing able to take it
+                // down. The movement keys have the same asymmetry and Rewo does
+                // not reproduce it for them; that predates this and is not the
+                // subject here.
+                if !p && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Tab)) {
+                    self.keys.tab_list = false;
+                }
                 // M110 — the chat screen owns the keyboard entirely while it
                 // is open, and it goes ahead of every other screen because
                 // `Gui.screen` is ONE slot: with a chat screen in it there is
@@ -5428,6 +5518,11 @@ impl ApplicationHandler for LiveApp {
                     PhysicalKey::Code(KeyCode::KeyS) => self.keys.s = p,
                     PhysicalKey::Code(KeyCode::KeyD) => self.keys.d = p,
                     PhysicalKey::Code(KeyCode::Space) => self.keys.jump = p,
+                    // M151 — Tab holds the player list up. Only the press
+                    // reaches here (the release is handled above, before the
+                    // screen gates); assigning `p` rather than `true` is
+                    // harmless and keeps the arm reading like its neighbours.
+                    PhysicalKey::Code(KeyCode::Tab) => self.keys.tab_list = p,
                     // M52 Toggle Sneak: with the module on, Shift *flips*
                     // sneak instead of holding it. `!event.repeat` is load
                     // bearing -- the OS auto-repeats a held key, and without
@@ -7321,6 +7416,66 @@ impl LiveApp {
                     self.sidebar_injected = true;
                 }
             }
+            // M151 — four players onto the tab list, and hold Tab.
+            //
+            // Both halves are needed and neither exists in a windowed run: a
+            // fresh test server has exactly one player (this client), and
+            // there is no keyboard, so without this r47 would be a witness
+            // over a path the gate cannot reach — worse than no witness.
+            //
+            // **Two of the four are `listed: false`**, which is what makes the
+            // row count a claim about `getListedOnlinePlayers()` rather than
+            // about arrival: the list must come to THREE (the local player
+            // plus the two listed ones), where a client that ignored the flag
+            // scores five.
+            //
+            // The key goes down at half, not at the start, so
+            // `tab_list_frames` must be strictly less than `frames` — a client
+            // that drew the list unconditionally is exactly as wrong as one
+            // that never drew it, and a `> 0` threshold cannot tell them
+            // apart.
+            {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                let elapsed = self.started.elapsed().as_secs_f32();
+                if !self.tab_list_injected && elapsed >= limit * 0.45 {
+                    if let Some(session) = self.session.as_mut() {
+                        // ADD_PLAYER (0) | UPDATE_GAME_MODE (2) |
+                        // UPDATE_LISTED (3) | UPDATE_LATENCY (4).
+                        let mask = (1u8 << 0) | (1u8 << 2) | (1u8 << 3) | (1u8 << 4);
+                        let mut body: Vec<u8> = vec![mask];
+                        rewo_proto::varint::write_varint(&mut body, 4);
+                        // `(name, listed, gamemode, latency)`. The spectator is
+                        // named so that it would sort FIRST alphabetically and
+                        // must not: `PLAYER_COMPARATOR` puts spectators after
+                        // everyone else, one key ahead of the name.
+                        for (i, (name, listed, mode, ms)) in [
+                            ("RewoZulu", true, 0i32, 10i32),
+                            ("RewoAlpha", true, 3, 800),
+                            ("RewoHidden", false, 0, 50),
+                            ("RewoGhost", false, 3, 50),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            // A uuid far from any real profile's, so a
+                            // collision with the local player is impossible.
+                            let uuid = 0x5157_0000_0000_0000_0000_0000_0000_0000u128 + i as u128;
+                            body.extend_from_slice(&uuid.to_be_bytes());
+                            rewo_proto::varint::write_varint(&mut body, name.len() as i32);
+                            body.extend_from_slice(name.as_bytes());
+                            rewo_proto::varint::write_varint(&mut body, 0); // no properties
+                            rewo_proto::varint::write_varint(&mut body, mode);
+                            body.push(u8::from(listed));
+                            rewo_proto::varint::write_varint(&mut body, ms);
+                        }
+                        session.inject_packet(session.ids.cb_play_player_info_update, &body);
+                    }
+                    self.tab_list_injected = true;
+                }
+                // The hold. Assigned every frame rather than latched, so it is
+                // the same "read the key state fresh" the real gate does.
+                self.keys.tab_list = elapsed >= limit * 0.5;
+            }
             if !self.chat_injected {
                 let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
                 if self.started.elapsed().as_secs_f32() >= limit * 0.2 {
@@ -8628,7 +8783,39 @@ impl LiveApp {
                 c.chat_screen_frames += 1;
             }
         }
+        // M151 — the tab list, LAST on the fill list because
+        // `Hud.extractRenderState` calls `extractTabList` (line 237) after
+        // `extractChat` (236) and `extractTabList` opens its own
+        // `graphics.nextStratum()`. It really does cover the chat box: the
+        // panel is centred at the top and the chat sits at the bottom left, so
+        // the two only meet on a short window — which is exactly when the
+        // order shows.
+        let tab_list = resolve_tab_list(
+            session,
+            self.keys.tab_list,
+            self.hud_hidden,
+            (extent.width as f32 / px) as i32,
+            &self.lang,
+            state.world_renderer.font_advance().copied(),
+        );
+        let tab_layout = tab_list
+            .as_ref()
+            .map(|v| rewo_gpu::tab_list::layout(&v.input, &v.entries));
+        let mut tab_icons: Vec<rewo_gpu::hud::HudBlit> = Vec::new();
+        if let (Some(v), Some(l)) = (tab_list.as_ref(), tab_layout.as_ref()) {
+            backdrops.extend(crate::tab_list_view::fills(l));
+            tab_icons = crate::tab_list_view::icons(v, l);
+            if let Some(c) = self.check.as_mut() {
+                c.tab_list_frames += 1;
+                c.tab_list_rows_max = c.tab_list_rows_max.max(l.entries.len());
+                c.tab_list_icons_max = c.tab_list_icons_max.max(tab_icons.len());
+            }
+        }
         state.world_renderer.set_hud_fills(backdrops);
+        // Set every frame, including empty: the list exists only while its key
+        // is held, and a stale icon list would leave ping bars floating over
+        // the world the moment it is let go.
+        state.world_renderer.set_hud_icons(tab_icons);
         // The input bar goes on the same list, after the rows, so it sits over
         // them the way `ChatScreen.extractRenderState` draws its fill before
         // handing off to the chat component — one list, and the order in it is
@@ -8923,6 +9110,22 @@ impl LiveApp {
             }
             state.world_renderer.set_screen(chrome);
         }
+        // M151 — the tab list's glyphs go LAST, matching its fills. `chat_range`
+        // indexes into this vector and every screen builder above extends it,
+        // so appending is the one placement that cannot move an index anything
+        // else already holds.
+        if let (Some(v), Some(l)) = (tab_list.as_ref(), tab_layout.as_ref()) {
+            let advance = state.world_renderer.font_advance().copied();
+            let width_of = move |t: &str, style: rewo_world::chat_style::ChatStyle| match &advance {
+                Some(a) => rewo_gpu::text::width_styled(t, a, style.bold),
+                None => 0,
+            };
+            let lines = crate::tab_list_view::text(v, l, px, &width_of);
+            if let Some(c) = self.check.as_mut() {
+                c.tab_list_text_max = c.tab_list_text_max.max(lines.len());
+            }
+            text.extend(lines);
+        }
         state.world_renderer.set_text(text);
         if let Err(e) = state
             .world_renderer
@@ -9109,6 +9312,7 @@ fn run_windowed(
         literal_table_injected: false,
         bad_command_injected: false,
         sidebar_injected: false,
+        tab_list_injected: false,
         username,
         chat_parse: None,
         drag: DragState::default(),
@@ -10038,6 +10242,62 @@ pub(crate) fn sidebar_text(
         }
     }
     out
+}
+
+// ── The tab list (M151) ───────────────────────────────────────────────────
+
+/// Resolve the tab list for this frame, or `None` when the key is up or F1 has
+/// hidden the HUD.
+///
+/// The session half of M97's split: every lookup here is a `PlaySession`
+/// method, and every *decision* is in [`crate::tab_list_view::resolve`], which
+/// takes them as closures and is unit-tested. `PlaySession` owns a socket and
+/// has no test module anywhere in the repo, so a rule left in this function
+/// would be unreachable by every check but `--render-check`.
+pub(crate) fn resolve_tab_list(
+    session: &PlaySession,
+    key_down: bool,
+    hud_hidden: bool,
+    screen_width: i32,
+    lang: &rewo_data::lang::Language,
+    advance: Option<[u8; 256]>,
+) -> Option<crate::tab_list_view::TabListView> {
+    if !crate::tab_list_view::visible(key_down, hud_hidden) {
+        return None;
+    }
+    let listed = session.listed_players();
+    let width_of = move |t: &str, style: rewo_world::chat_style::ChatStyle| match &advance {
+        Some(a) => rewo_gpu::text::width_styled(t, a, style.bold),
+        None => 0,
+    };
+    let name_of = |u: u128| session.world.entities.name_of(u).map(str::to_string);
+    let ping_of = |u: u128| session.ping_ms(u);
+    // `getGameMode()` defaults to `SURVIVAL` on a fresh `PlayerInfo`, so an
+    // unsent mode is not a spectator — the map's `None` and vanilla's default
+    // agree here, which is why this collapses to a bool rather than carrying
+    // the `Option` through.
+    let spectator_of = |u: u128| session.game_mode(u).is_some_and(|m| m.is_spectator());
+    let order_of = |u: u128| session.tab_list_order(u).unwrap_or(0);
+    let team_of = |u: u128| session.team_of(u).map(str::to_string);
+    let display_name_of = |u: u128| session.tab_display_name(u).cloned();
+    Some(crate::tab_list_view::resolve(
+        &crate::tab_list_view::TabListLookups {
+            listed: &listed,
+            name_of: &name_of,
+            ping_of: &ping_of,
+            spectator_of: &spectator_of,
+            order_of: &order_of,
+            team_of: &team_of,
+            display_name_of: &display_name_of,
+            width_of: &width_of,
+            lang: Some(lang),
+            online_mode: session.online_mode,
+            screen_width,
+            header: session.tab_list_text.header.as_ref(),
+            footer: session.tab_list_text.footer.as_ref(),
+            scoreboard: Some(&session.scoreboard),
+        },
+    ))
 }
 
 /// A span's already-unpacked `[f32; 3]` (sRGB, `chat_style::rgb_f32`'s plain
