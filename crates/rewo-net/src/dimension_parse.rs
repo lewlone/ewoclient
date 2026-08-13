@@ -351,6 +351,15 @@ pub fn parse_dimension_type(name: &str, nbt: &Nbt) -> Result<DimensionTypeDef, D
     // biome replaces it, and neither reads the other's key. Kept `Option` for
     // the same reason `sky_color` is: absence means "declare nothing", which
     // for this attribute is what the Nether does.
+    // `WorldClock.CODEC.optionalFieldOf("default_clock")`
+    // (`DimensionType.java:101`). A `Holder` reference serialises to its
+    // identifier string, exactly as the `timelines` holder set above does, so
+    // the wire and the datapack JSON agree on the shape.
+    let default_clock = match nbt.get("default_clock") {
+        None => None,
+        Some(Nbt::String(s)) => Some(s.clone()),
+        Some(_) => return Err(DimensionTypeError::WrongType("default_clock")),
+    };
     let ambient_sounds = crate::biome_parse::attribute_ambient_sounds(attributes);
     // The layer below the biome's, and the one that actually carries the
     // Overworld's and the End's music (M147).
@@ -373,6 +382,7 @@ pub fn parse_dimension_type(name: &str, nbt: &Nbt) -> Result<DimensionTypeDef, D
         sky_light_factor,
         cloud_color,
         cloud_height,
+        default_clock,
         ambient_sounds,
         background_music,
     })
@@ -1064,6 +1074,42 @@ mod tests {
         assert_eq!(
             parse_dimension_type("x", &numeric_sky),
             Err(DimensionTypeError::WrongType("skybox"))
+        );
+    }
+
+    /// `default_clock` is `Optional<Holder<WorldClock>>`
+    /// (`DimensionType.java:101`), and the three vanilla answers are three
+    /// different clocks — not one clock and two aliases for it.
+    ///
+    /// The Nether's absence is the case worth pinning: `getClockTimeTicks`
+    /// answers `.orElse(0L)`, a **permanent zero**, so substituting the
+    /// Overworld's id would hand a caller a ticking clock where vanilla has a
+    /// frozen one. `dimensioncheck` grades all three from four independent
+    /// directions; what it cannot reach is the malformed case below.
+    #[test]
+    fn default_clock_is_read_and_absence_is_not_a_default() {
+        assert_eq!(
+            parse("minecraft:overworld", &overworld()).default_clock.as_deref(),
+            Some("minecraft:overworld")
+        );
+        assert_eq!(
+            parse("minecraft:the_end", &the_end()).default_clock.as_deref(),
+            Some("minecraft:the_end"),
+            "the End runs on its OWN clock, which is what the flash schedule reads"
+        );
+        assert_eq!(
+            parse("minecraft:the_nether", &the_nether()).default_clock,
+            None,
+            "the Nether declares none, and absence is a permanent zero"
+        );
+
+        // A `Holder` serialises to an identifier string; anything else is a
+        // decode error rather than a silent absence, which would read as the
+        // Nether's frozen clock.
+        let numeric = with(&the_end(), "default_clock", Nbt::Int(1));
+        assert_eq!(
+            parse_dimension_type("x", &numeric),
+            Err(DimensionTypeError::WrongType("default_clock"))
         );
     }
 

@@ -808,6 +808,11 @@ mod tests {
             // behaviour, and the transparent colour is why it has no clouds.
             cloud_color: DEFAULT_CLOUD_COLOR,
             cloud_height: DEFAULT_CLOUD_HEIGHT,
+            // The Nether declares no `default_clock` either — the only vanilla
+            // dimension that does not. `getClockTimeTicks`'s `.orElse(0L)`
+            // then makes `getDefaultClockTime()` a permanent zero there,
+            // rather than falling back to the Overworld's clock.
+            default_clock: None,
             // …and it sets no ambient sounds either, which is NOT a default
             // shared with the other three: the Overworld, its caves and the End
             // all declare LEGACY_CAVE_SETTINGS here. A universal cave default

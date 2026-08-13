@@ -111,6 +111,14 @@ pub struct Expect {
     /// The `timelines` holder set contains `minecraft:day`.
     pub has_day_timeline: bool,
     pub has_fixed_time: bool,
+    /// `default_clock`, as the identifier the file spells — `None` where the
+    /// dimension declares none, which is the Nether and only the Nether.
+    ///
+    /// It decides which clock `Level.getDefaultClockTime()` reads, and so
+    /// which clock the End's flash schedule runs on. `None` is not a stand-in
+    /// for the Overworld's: `getClockTimeTicks` answers `.orElse(0L)`, a
+    /// permanent zero.
+    pub default_clock: Option<&'static str>,
 }
 
 /// The four built-ins, in [`BUILTIN_ORDER`].
@@ -142,6 +150,7 @@ pub const EXPECT: [Expect; 4] = [
         sky_light_factor: 1.0,
         has_day_timeline: true,
         has_fixed_time: false,
+        default_clock: Some("minecraft:overworld"),
     },
     Expect {
         name: "minecraft:overworld_caves",
@@ -160,6 +169,7 @@ pub const EXPECT: [Expect; 4] = [
         sky_light_factor: 1.0,
         has_day_timeline: true,
         has_fixed_time: false,
+        default_clock: Some("minecraft:overworld"),
     },
     Expect {
         name: "minecraft:the_end",
@@ -179,6 +189,9 @@ pub const EXPECT: [Expect; 4] = [
         sky_light_factor: 0.0,
         has_day_timeline: false,
         has_fixed_time: true,
+        // A DIFFERENT clock from the Overworld's — a vanilla server sends both
+        // in every `set_time`, and the End's flash schedule runs on this one.
+        default_clock: Some("minecraft:the_end"),
     },
     Expect {
         name: "minecraft:the_nether",
@@ -199,6 +212,9 @@ pub const EXPECT: [Expect; 4] = [
         sky_light_factor: 0.0,
         has_day_timeline: false,
         has_fixed_time: true,
+        // The ONLY vanilla dimension that declares no clock, so
+        // `getDefaultClockTime()` here is a permanent zero.
+        default_clock: None,
     },
 ];
 
@@ -264,6 +280,11 @@ impl Expect {
             self.has_day_timeline
         );
         eq!("has_fixed_time", d.has_fixed_time, self.has_fixed_time);
+        eq!(
+            "default_clock",
+            d.default_clock.as_deref(),
+            self.default_clock
+        );
         Ok(())
     }
 }
