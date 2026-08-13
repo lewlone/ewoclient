@@ -31,14 +31,14 @@
 //! interaction, `BlendFunction.TRANSLUCENT`, model-view with the camera
 //! translation stripped.
 //!
-//! **End flashes are explicitly out of scope** (`renderEndFlash`,
-//! `SkyRenderState.endFlashIntensity`) — `addSkyPass` draws them after this,
-//! and nothing here pretends otherwise. **The schedule behind them shipped as
-//! M149a** and lives in `rewo_world::end_flash`, so what is missing is the
-//! pass rather than the numbers: `renderEndFlash` (`SkyRenderer.java:477-503`)
-//! is the same `buildCelestialQuad` the sun uses, at `T(0,100,0) ·
-//! scale(60,1,60)` after `Y(180 - yAngle) · X(-90 - xAngle)`, on the
-//! `CELESTIAL` pipeline with the intensity as a flat vertex colour.
+//! **End flashes are drawn by [`crate::celestial::CelestialPass`], not here**
+//! — `addSkyPass` draws them after this cube, and `renderEndFlash`
+//! (`SkyRenderer.java:477-503`) is the same `buildCelestialQuad` the sun uses,
+//! so M149e put it in the pass that already owns that quad and that atlas
+//! rather than giving it one of its own. `WorldRenderer`'s `SkyMode::End` arm
+//! calls both in vanilla's order. A renderer that never attached a celestial
+//! pass therefore draws this cube and no flash — silently, which is what
+//! M149e's first witness run measured.
 //!
 //! Colour space — **a Rewo attachment-conversion inference, not a decompiled
 //! fact.** The decompile gives the constant (`-14145496`) and the pipeline

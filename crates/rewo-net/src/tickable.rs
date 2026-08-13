@@ -484,14 +484,18 @@ pub enum Ramp {
     /// `DirectionalSoundInstance` — a fixed bearing from the camera, ten
     /// blocks out, repositioned every tick.
     ///
-    /// **The only variant with no construction site.** Its one vanilla caller
-    /// is the End flash (`ClientLevel.java:307-324`), whose schedule shipped
-    /// as M149a in `rewo_world::end_flash`; what is still missing is the clock
-    /// map `getDefaultClockTime()` reads and `SoundEngine.playDelayed`'s delay
-    /// queue. Note that queue **ticks a tickable instance before playing it**
-    /// (`SoundEngine.java:290-297`), so this ramp's `setPosition()` runs again
-    /// at play time — the bearing is taken from the camera 30 ticks after the
-    /// flash, not from where the listener stood when it fired.
+    /// Its one vanilla caller is the End flash
+    /// (`ClientLevel.java:307-324`), and it was the **last** of the eleven
+    /// variants to get a construction site — M149f built it, so every ramp
+    /// here is now reachable from a running client.
+    ///
+    /// It is also the only sound this client **queues** rather than plays:
+    /// `playDelayed(.., 30)`. That queue **ticks a tickable instance before
+    /// playing it** (`SoundEngine.java:292-296`), so this ramp's
+    /// `setPosition()` runs again at play time — the bearing is taken from the
+    /// camera 30 ticks *after* the flash, not from where the listener stood
+    /// when it fired. Capturing the position when it is queued is the natural
+    /// implementation and is 1.5 seconds stale.
     Directional { x_angle: f32, y_angle: f32 },
 }
 

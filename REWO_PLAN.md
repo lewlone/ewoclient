@@ -260,11 +260,15 @@ witnesses are mostly self-driven can look healthy against nothing.
 > * **The listening pass** — see the box above. Music is now the most audible
 >   thing in the client that no gate can grade, and M144–M146 have all landed
 >   green without a human hearing any of it.
-> * **`MusicFrequency` and `getMusicVolume` are both pinned.** The frequency is
->   fixed at `DEFAULT` because Rewo has no options screen (`set_frequency`
->   exists and nothing calls it), and the volume is a constant 1.0 because no
->   26.2 biome or dimension declares the `MUSIC_VOLUME` attribute — exact today,
->   a stated assumption tomorrow. Neither is hard; both need a surface.
+> * **Three options are pinned, and they now want ONE surface between them.**
+>   `MusicFrequency` is fixed at `DEFAULT` (`set_frequency` exists and nothing
+>   calls it), `getMusicVolume` is a constant 1.0 because no 26.2 biome or
+>   dimension declares `MUSIC_VOLUME`, and M149d added
+>   `HIDE_LIGHTNING_FLASH = false` — an accessibility option gating the End
+>   flash's *lightmap* term. Each is exact today and a stated assumption
+>   tomorrow, each is trivial on its own, and each is blocked on the same thing
+>   Rewo has never had: an options screen. Building one is the item; wiring any
+>   single option to a constant is not.
 > * **Decode on a worker.** Still inline on the client tick — one chunk per
 >   second of playback, four at the attach, plus one asset read of up to 11 MB
 >   when a track starts. A stated deviation from vanilla's `supplyAsync`.
@@ -314,7 +318,7 @@ own pitch ramp is dead code and the plausible transcription gives a twenty-secon
 glissando that vanilla does not have. It also fixed a live bug (the per-tick
 position was not narrowed through f32, with a comment *justifying* the omission)
 and retired `SoundWorld::entity_position` in favour of one name for one query.
-See §15. **M141d then fed them their velocity**, which was the input gating four of the ten — and found that a remote entity's `getDeltaMovement()` is a *decaying echo of the last motion packet*, not a velocity, so a bee visibly gliding past has its buzz fade to silence. **M141e then built the first trigger** — the elytra, whose `fall_flying` input gates the ramp at both ends, and which found that `canPlaySound()` is a per-CLASS override that six of the ten declare and four decline — and **M141f the bee and the minecart**, which are one vanilla method and whose anger input turned out to be a synced *deadline* at an index that needed counting twice. **M141g then took the guardian and the sniffer** — and found on the way that the sniffer's and armadillo's state enums had been decoding from the wrong INDEX since the gesture rigs shipped, invisible because those rigs inject the state rather than decode it. **M141h then closed the ordinary triggers with the riding pair**, whose mount plays **both** minecart instances at once and lets each mute itself, so the dry/wet choice is the ramp's and not the trigger's. **Seven of the ten are constructed**; the remaining three wanted an `AmbientSoundHandler` subsystem rather than another trigger, and **M142 built it** — the biome/dimension `AmbientSounds` attribute plus all three handlers, wired end to end (M142b underwater, M142c bubble column, M142d biome loop with its additions and its mood). Only the **directional sound** is left of the eleven ramp variants, and it is not an ambient handler at all: it is the End flash from `ClientLevel.tick`, needing `EndFlashState` and `playDelayed`.
+See §15. **M141d then fed them their velocity**, which was the input gating four of the ten — and found that a remote entity's `getDeltaMovement()` is a *decaying echo of the last motion packet*, not a velocity, so a bee visibly gliding past has its buzz fade to silence. **M141e then built the first trigger** — the elytra, whose `fall_flying` input gates the ramp at both ends, and which found that `canPlaySound()` is a per-CLASS override that six of the ten declare and four decline — and **M141f the bee and the minecart**, which are one vanilla method and whose anger input turned out to be a synced *deadline* at an index that needed counting twice. **M141g then took the guardian and the sniffer** — and found on the way that the sniffer's and armadillo's state enums had been decoding from the wrong INDEX since the gesture rigs shipped, invisible because those rigs inject the state rather than decode it. **M141h then closed the ordinary triggers with the riding pair**, whose mount plays **both** minecart instances at once and lets each mute itself, so the dry/wet choice is the ramp's and not the trigger's. **Seven of the ten are constructed**; the remaining three wanted an `AmbientSoundHandler` subsystem rather than another trigger, and **M142 built it** — the biome/dimension `AmbientSounds` attribute plus all three handlers, wired end to end (M142b underwater, M142c bubble column, M142d biome loop with its additions and its mood). That left the **directional sound**, the last of the eleven ramp variants, which is not an ambient handler at all: it is the End flash from `ClientLevel.tick`, needing `EndFlashState` and `playDelayed` — and **M149 built both, so all eleven variants now have a construction site**.
 
 **AUDIO IS NO LONGER THE TOP ITEM.** `crates/rewo-audio` exists with the
 quantisation, the buffer library, the mixer, the SPSC command ring and a cpal

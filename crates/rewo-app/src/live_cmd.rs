@@ -11992,7 +11992,6 @@ impl EndFlash {
 
     /// The option is on, so vanilla adds nothing at all — distinct from an
     /// intensity that happens to be 0, because it holds through the peak.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn hidden() -> Self {
         Self::default()
     }
