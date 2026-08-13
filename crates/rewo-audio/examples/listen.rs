@@ -353,8 +353,9 @@ const STAGES: &[Stage] = &[
     Stage {
         n: 3,
         name: "a stereo source",
-        grades: "the multi-channel path, and a stated divergence from vanilla",
-        fails: "one channel missing; the image collapsed to centre; a phasey swirl",
+        grades: "the multi-channel path, and a MEASURED divergence in level (M139)",
+        fails: "one channel missing; the image collapsed to centre; a phasey swirl.
+              Note the 8-block horn being quieter is EXPECTED and is the divergence",
         run: stage_stereo,
     },
     Stage {
@@ -514,10 +515,22 @@ fn stage_stereo(sink: &CpalSink, ids: &mut Ids) -> Result<(), String> {
     println!("    attenuation` (mixer.rs:298) applies to a stereo source like any other, so");
     println!("    Rewo spatialises it in LEVEL but not in DIRECTION.");
     println!();
-    println!("    Whether vanilla also attenuates one is marked [concurring] in the plan and");
-    println!("    is NOT verified — it is exactly what M139's stereo stimulus would settle.");
-    println!("    This stage plays it relative and unattenuated, so neither factor is in play:");
-    println!("    what you are grading is that both channels arrive and the image is coherent.");
+    println!("    AND THE LEVEL IS A MEASURED DIVERGENCE. M139's loopback oracle settled what");
+    println!("    the plan had only marked [concurring]: OpenAL does not ATTENUATE a");
+    println!("    multi-channel buffer either, not merely decline to pan it — its stereo.d1p0");
+    println!("    and stereo.d8p0 captures are BYTE-IDENTICAL across an eightfold distance");
+    println!("    change, while halving AL_GAIN halves the output. Rewo applies linear_gain");
+    println!("    regardless of channel count (mixer.rs:294-298 has no channel gate, unlike");
+    println!("    pan_gains), so Rewo fades a stereo source that vanilla holds at full level:");
+    println!("    -6.02 dB at 8 of 16 blocks, to silence at the radius.");
+    println!();
+    println!("    So this stage plays it BOTH ways. First relative and unattenuated, where");
+    println!("    neither factor is in play and you are grading only that both channels arrive");
+    println!("    coherently. Then positional at 0 and 8 blocks, where vanilla would give you");
+    println!("    two identical horns and Rewo gives you a quiet second one. That difference");
+    println!("    is real, it is recorded rather than fixed, and hearing it is the point.");
+    let d = seconds_of(&horn);
+    beat("relative + unattenuated — both channels, coherent image");
     Voice::new(sink, ids.next())
         .pitch(1.0)
         .volume(0.8)
@@ -526,7 +539,28 @@ fn stage_stereo(sink: &CpalSink, ids: &mut Ids) -> Result<(), String> {
         .at(0.0, 0.0, 0.0)
         .relative(true)
         .play(Arc::clone(&horn));
-    nap(seconds_of(&horn) + 0.5);
+    nap(d + 0.5);
+
+    look(sink, [0.0, 0.0, 0.0], 0.0, 0.0);
+    for step in [0.0f64, 8.0] {
+        beat(&format!(
+            "positional at {step:>4.1} blocks{}",
+            if step > 0.0 {
+                "   <- vanilla: unchanged. Rewo: -6.02 dB"
+            } else {
+                ""
+            }
+        ));
+        Voice::new(sink, ids.next())
+            .pitch(1.0)
+            .volume(1.0)
+            .attenuated(ATTEN)
+            .looping(false)
+            .at(0.0, 0.0, step)
+            .relative(false)
+            .play(Arc::clone(&horn));
+        nap(d + 0.4);
+    }
     Ok(())
 }
 
