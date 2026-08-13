@@ -4497,6 +4497,7 @@ fn run_headless(
     let mut cel = celestial_state_of(session.day_ticks);
     apply_weather_to_celestial(&mut cel, &session);
     world_renderer.set_celestial(cel);
+    world_renderer.set_end_flash(end_flash_render(&session, partial));
     apply_weather(
         &mut world_renderer,
         &mut gpu,
@@ -8205,6 +8206,9 @@ impl LiveApp {
                 apply_weather_to_celestial(&mut cel, session);
                 cel
             });
+        state
+            .world_renderer
+            .set_end_flash(end_flash_render(session, lightmap_partial));
         // M34/M35: the item icons, before the weather so the borrow of
         // `baked` is over by the time `apply_weather` takes its own. One pass
         // serves both the hotbar and the open screen — only the rectangles
@@ -12002,6 +12006,18 @@ impl EndFlash {
     }
 }
 
+/// `SkyRenderState.endFlash{Intensity,XAngle,YAngle}`
+/// (`SkyRenderer.java:270-274`) — the render half, which unlike the lightmap's
+/// is **not** gated on `hideLightningFlash`: that option hides the world's
+/// brightening, not the flash itself.
+fn end_flash_render(
+    session: &rewo_net::play::PlaySession,
+    partial: f32,
+) -> Option<(f32, f32, f32)> {
+    let s = session.end_flash()?;
+    Some((s.intensity(partial), s.x_angle(), s.y_angle()))
+}
+
 /// Resolve one frame's [`EndFlash`] from the session.
 ///
 /// The three gates are vanilla's, in vanilla's order: the level must *have* a
@@ -12258,6 +12274,7 @@ fn to_gpu_celestial(cel: &assets::CelestialTextures) -> CelestialTextures<'_> {
     CelestialTextures {
         sun: img(&cel.sun),
         moons: std::array::from_fn(|k| img(&cel.moons[k])),
+        end_flash: img(&cel.end_flash),
     }
 }
 

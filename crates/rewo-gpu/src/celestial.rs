@@ -284,6 +284,10 @@ pub struct CelestialImage<'a> {
 pub struct CelestialTextures<'a> {
     pub sun: CelestialImage<'a>,
     pub moons: [CelestialImage<'a>; 8],
+    /// `END_FLASH_SPRITE`. Its quad is built by the same
+    /// `buildCelestialQuad` the sun's is (`SkyRenderer.java:133-135`), so it
+    /// shares the atlas and the pipeline.
+    pub end_flash: CelestialImage<'a>,
 }
 
 /// Per-frame celestial state, in the renderer's units (angles already in
@@ -363,6 +367,7 @@ pub struct CelestialPass {
     atlas_view: vk::ImageView,
     sun_buf: Buf,
     moon_buf: Buf,
+    end_flash_buf: Buf,
 
     // Star pipeline (reuses the line shaders: mat4 + vec4 push, pos-only).
     star_pipeline: vk::Pipeline,
@@ -389,7 +394,9 @@ impl CelestialPass {
         for m in &tex.moons {
             cell = cell.max(m.w).max(m.h);
         }
-        let cols = 9u32;
+        cell = cell.max(tex.end_flash.w).max(tex.end_flash.h);
+        // Sun, 8 moons, end flash.
+        let cols = 10u32;
         let atlas_w = cols * cell;
         let atlas_h = cell;
         let mut atlas = vec![0u8; (atlas_w * atlas_h * 4) as usize];
@@ -418,6 +425,8 @@ impl CelestialPass {
             blit(&mut atlas, m, (i + 1) as u32);
             moon_uv[i] = uv_rect(m, (i + 1) as u32);
         }
+        blit(&mut atlas, &tex.end_flash, 9);
+        let end_flash_uv = uv_rect(&tex.end_flash, 9);
         let (atlas_image, atlas_alloc, atlas_view) = create_texture(gpu, &atlas, atlas_w, atlas_h)?;
 
         // ---- static geometry ----
@@ -430,6 +439,9 @@ impl CelestialPass {
             moon_verts.extend_from_slice(&tex_quad(*uv, true));
         }
         let moon_buf = upload_buffer(gpu, bytemuck::cast_slice(&moon_verts))?;
+        // Same winding as the sun — `buildCelestialQuad` is one function.
+        let end_flash_quad = tex_quad(end_flash_uv, false);
+        let end_flash_buf = upload_buffer(gpu, bytemuck::cast_slice(&end_flash_quad))?;
 
         // Stars (pos-only).
         let (star_positions, star_quad_count) = build_stars();
@@ -551,6 +563,7 @@ impl CelestialPass {
             atlas_view,
             sun_buf,
             moon_buf,
+            end_flash_buf,
             star_pipeline,
             star_layout,
             star_buf,
@@ -629,7 +642,7 @@ impl CelestialPass {
             &self.sun_buf,
             0,
             vp * sun_model,
-            state.rain_brightness,
+            [1.0, 1.0, 1.0, state.rain_brightness],
         );
 
         // --- moon (phase selects base vertex) ---
@@ -644,7 +657,7 @@ impl CelestialPass {
             &self.moon_buf,
             phase * 6,
             vp * moon_model,
-            state.rain_brightness,
+            [1.0, 1.0, 1.0, state.rain_brightness],
         );
 
         // --- stars ---
@@ -664,6 +677,59 @@ impl CelestialPass {
         }
     }
 
+    /// `SkyRenderer.renderEndFlash` (`SkyRenderer.java:477-503`).
+    ///
+    /// Three things separate it from the sun, which it otherwise shares a
+    /// quad builder, an atlas and a pipeline with:
+    ///
+    /// * **No sky base rotation.** `LevelRenderer.java:336` hands it a
+    ///   `new PoseStack()`, so the `Y(-90)` every other celestial inherits is
+    ///   absent and the chain starts at identity.
+    /// * **The angles come off the schedule, not the clock** —
+    ///   `Y(180 - yAngle)` then `X(-90 - xAngle)`, both in degrees, both
+    ///   *subtracted*.
+    /// * **The tint is `(i, i, i, i)`**, not white-at-alpha: `writeTransform`
+    ///   takes the intensity as all four components of the colour modulator,
+    ///   so the quad dims in colour as well as alpha.
+    ///
+    /// Scale is 60 against the sun's 30, and the caller gates on
+    /// `intensity > 1.0E-5` — a threshold, not `> 0`, which is what keeps the
+    /// flash's ~1e-16 tail from costing a draw.
+    pub fn draw_end_flash(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        sky_vp: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+        intensity: f32,
+        x_angle: f32,
+        y_angle: f32,
+    ) {
+        let device = &gpu.device;
+        unsafe {
+            let viewport = vk::Viewport::default()
+                .y(extent.height as f32)
+                .width(extent.width as f32)
+                .height(-(extent.height as f32))
+                .max_depth(1.0);
+            device.cmd_set_viewport(cb, 0, &[viewport]);
+            device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
+        }
+        let vp = Mat4::from_cols_array_2d(&sky_vp);
+        let model = Mat4::from_rotation_y((180.0 - y_angle).to_radians())
+            * Mat4::from_rotation_x((-90.0 - x_angle).to_radians())
+            * Mat4::from_translation(Vec3::new(0.0, 100.0, 0.0))
+            * Mat4::from_scale(Vec3::new(60.0, 1.0, 60.0));
+        self.draw_tex(
+            gpu,
+            cb,
+            &self.end_flash_buf,
+            0,
+            vp * model,
+            [intensity, intensity, intensity, intensity],
+        );
+    }
+
     fn draw_tex(
         &self,
         gpu: &Gpu,
@@ -671,12 +737,12 @@ impl CelestialPass {
         buf: &Buf,
         first_vertex: u32,
         mvp: Mat4,
-        rain_brightness: f32,
+        tint: [f32; 4],
     ) {
         let device = &gpu.device;
         let push = Push {
             mvp: mvp.to_cols_array_2d(),
-            tint: [1.0, 1.0, 1.0, rain_brightness],
+            tint,
         };
         unsafe {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.tex_pipeline);
@@ -711,6 +777,7 @@ impl CelestialPass {
             device.destroy_image(self.atlas_image, None);
             device.destroy_buffer(self.sun_buf.buffer, None);
             device.destroy_buffer(self.moon_buf.buffer, None);
+            device.destroy_buffer(self.end_flash_buf.buffer, None);
             device.destroy_buffer(self.star_buf.buffer, None);
             device.destroy_buffer(self.sunrise_buf.buffer, None);
         }
@@ -718,6 +785,7 @@ impl CelestialPass {
             self.atlas_alloc.take(),
             self.sun_buf.alloc.take(),
             self.moon_buf.alloc.take(),
+            self.end_flash_buf.alloc.take(),
             self.star_buf.alloc.take(),
             self.sunrise_buf.alloc.take(),
         ]
