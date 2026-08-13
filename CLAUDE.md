@@ -1988,8 +1988,8 @@ dirty working tree**, and two of the five still held uncommitted work. **M136**:
 spectator's tab-list name is `-1862270977` = `0x90FFFFFF`, **white at alpha 144**,
 where M52f wrote a grey `0x9099_9999` — and its doc comment restated the same
 wrong value, so code and prose agreed with each other and neither agreed with
-vanilla. Nothing consumed the constant (the tab list is still model-only), which
-is exactly why it survived — the same shape as M135 the same day. **M137**: a
+vanilla. Nothing consumed the constant (the tab list was still model-only until
+M151), which is exactly why it survived — the same shape as M135 the same day. **M137**: a
 mutation rendering a styled run style-blind survived `deathshot`'s m20, and it was
 a weak fixture, not an equivalent mutant — **nothing follows a last span**, so a
 styled span placed last has an advance that moves nothing, and bold is charged per
@@ -3851,6 +3851,8 @@ depth now. The 7 non-syncable components are **named in a test, not counted**,
 so a version that starts syncing one fails as a missing codec.
 
 **Tab list (`M52f`) and chunk cache (`M52g`).** Both model-only, nothing wired.
+*(The tab list stopped being model-only in **M151** — see the entry at the end
+of this section. The chunk cache is still unwired.)*
 The tab list transcribes `PlayerTabOverlay` — cap 80, `MAX_ROWS_PER_COL` 20,
 the four-key comparator (with `wrapping_neg`, because `-Integer.MIN_VALUE`
 wraps in Java), the column-search loop, and the ping buckets. The chunk cache
@@ -3862,9 +3864,12 @@ column missing the new state.
 
 **Known limits, all recorded:** none of the four subsystems is wired to
 anything; `ChunkCache` is not thread-safe and nothing decides when a cached
-column is stale; `TabEntry::team` is always `None` because Rewo does not decode
-the scoreboard-team packet; and `TOOLTIP_TEXT_GUI_PX = 9.0` is an unverified
-calibration guess awaiting one eyeball.
+column is stale; ~~`TabEntry::team` is always `None` because Rewo does not
+decode the scoreboard-team packet~~ — **wrong within days: M62 decoded
+`set_player_team` (`teams.rs:344`) and M151 populates the field**, and the
+sentence sat here uncorrected for four months because nothing consumed
+`TabEntry` at all; and `TOOLTIP_TEXT_GUI_PX = 9.0` is an unverified calibration
+guess awaiting one eyeball.
 
 ### Three headless wire subsystems (2026-07-28, second batch)
 

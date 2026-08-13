@@ -58,7 +58,7 @@ use crate::tab_list_view::{self, TabListLookups, TabListView};
 
 /// Total named properties this gate asserts. Locked so a skipped property fails
 /// the run even when nothing mismatched.
-const EXPECTED_WITNESSES: usize = 25;
+const EXPECTED_WITNESSES: usize = 26;
 
 const W: u32 = 640;
 const H: u32 = 480;
@@ -400,21 +400,27 @@ fn player_info_body(players: &[WirePlayer]) -> Vec<u8> {
 /// The session state a tab list resolves from, built by driving the production
 /// decoders with raw bodies.
 struct Wire {
-    listed: Vec<u128>,
+    /// **The production state type**, not a copy of its arithmetic
+    /// (`rewo_net::play::TabListPlayers`). The first cut of this gate
+    /// reimplemented the add/remove on `listed` inline, and M151's mutation
+    /// battery reported "UPDATE_LISTED only ever ADDS" as SURVIVED against it
+    /// — the gate was grading its own copy, which is M45's `install_shapes`
+    /// shape and the reason that arithmetic moved out of `PlaySession`.
+    players: rewo_net::play::TabListPlayers,
     names: std::collections::HashMap<u128, String>,
     pings: std::collections::HashMap<u128, i32>,
     spectators: std::collections::HashSet<u128>,
-    display: std::collections::HashMap<u128, Nbt>,
     text: rewo_net::tab_list_text::TabListText,
     scoreboard: rewo_net::scoreboard::Scoreboard,
 }
 
 impl Wire {
     /// Apply a `player_info_update` body exactly as `PlaySession` does — the
-    /// production `parse_player_info` plus the same set arithmetic.
+    /// production `parse_player_info` and the production `TabListPlayers`.
     fn apply(&mut self, body: &[u8]) -> bool {
         let (entries, res) = rewo_net::play::parse_player_info(body);
         for e in entries {
+            self.players.apply(&e);
             if let Some(n) = e.name {
                 self.names.insert(e.uuid, n);
             }
@@ -426,25 +432,6 @@ impl Wire {
                     self.spectators.insert(e.uuid);
                 } else {
                     self.spectators.remove(&e.uuid);
-                }
-            }
-            if let Some(l) = e.listed {
-                if l {
-                    if !self.listed.contains(&e.uuid) {
-                        self.listed.push(e.uuid);
-                    }
-                } else {
-                    self.listed.retain(|u| *u != e.uuid);
-                }
-            }
-            if let Some(d) = e.display_name {
-                match d {
-                    Some(c) => {
-                        self.display.insert(e.uuid, c);
-                    }
-                    None => {
-                        self.display.remove(&e.uuid);
-                    }
                 }
             }
         }
@@ -464,9 +451,10 @@ impl Wire {
             let n = name_of(u)?;
             self.scoreboard.teams.team_of_member(&n).map(str::to_string)
         };
-        let display_name_of = |u: u128| self.display.get(&u).cloned();
+        let display_name_of = |u: u128| self.players.display_name(u).cloned();
+        let listed = self.players.listed_players();
         tab_list_view::resolve(&TabListLookups {
-            listed: &self.listed,
+            listed: &listed,
             name_of: &name_of,
             ping_of: &ping_of,
             spectator_of: &spectator_of,
@@ -488,11 +476,10 @@ impl Wire {
 /// wire, two of them listed.
 fn scene() -> Wire {
     let mut w = Wire {
-        listed: Vec::new(),
+        players: rewo_net::play::TabListPlayers::default(),
         names: std::collections::HashMap::new(),
         pings: std::collections::HashMap::new(),
         spectators: std::collections::HashSet::new(),
-        display: std::collections::HashMap::new(),
         text: rewo_net::tab_list_text::TabListText::new(),
         scoreboard: rewo_net::scoreboard::Scoreboard::new(),
     };
@@ -507,7 +494,7 @@ fn scene() -> Wire {
             gamemode: 0,
             listed: true,
             latency: 10,
-            display: Some(format!("{MAGENTA_CODE}TabZulu")),
+            display: Some(format!("{MAGENTA_CODE}Aaa")),
         },
         WirePlayer {
             uuid: 2,
@@ -515,7 +502,7 @@ fn scene() -> Wire {
             gamemode: 3, // SPECTATOR
             listed: true,
             latency: 5000,
-            display: Some(format!("{MAGENTA_CODE}TabAlpha")),
+            display: Some(format!("{MAGENTA_CODE}Mmm")),
         },
         WirePlayer {
             uuid: 3,
@@ -523,7 +510,7 @@ fn scene() -> Wire {
             gamemode: 0,
             listed: true,
             latency: 200,
-            display: Some(format!("{MAGENTA_CODE}TabMid")),
+            display: Some(format!("{MAGENTA_CODE}Zzz")),
         },
         // Unlisted: in `playerInfoMap` with a name, a ping and a mode, and out
         // of `getListedOnlinePlayers()`.
@@ -533,7 +520,7 @@ fn scene() -> Wire {
             gamemode: 0,
             listed: false,
             latency: 20,
-            display: Some(format!("{MAGENTA_CODE}TabHidden")),
+            display: Some(format!("{MAGENTA_CODE}Hhh")),
         },
     ]));
     assert!(ok, "tablistshot: the scene's player_info body must decode");
@@ -544,17 +531,45 @@ fn check_wire(c: &mut Checker) {
     let w = scene();
     c.record(
         "w0.the_unlisted_player_is_decoded_and_not_listed",
-        w.listed.len() == 3
-            && !w.listed.contains(&4)
+        w.players.listed_players().len() == 3
+            && !w.players.listed.contains(&4)
             // …and everything else about them still resolved, which is what
             // makes this a LIST filter rather than a decode failure.
             && w.names.get(&4).map(String::as_str) == Some("TabHidden")
             && w.pings.get(&4) == Some(&20)
-            && w.display.contains_key(&4),
+            && w.players.display_name(4).is_some(),
         format!(
             "{} listed of 4 on the wire; the unlisted one keeps its name, ping \
              and display override",
-            w.listed.len()
+            w.players.listed_players().len()
+        ),
+    );
+
+    // The case M151's first mutation battery found NOTHING covered: a player
+    // who was listed and is then UNLISTED must leave. A client that only ever
+    // added keeps a vanished player on the list for the rest of the session,
+    // and every fixture up to here only ever sent `listed: false` for someone
+    // who had never been added — under which the two readings agree exactly.
+    let mut w3 = scene();
+    w3.apply(&player_info_body(&[WirePlayer {
+        uuid: 1,
+        name: "TabZulu",
+        gamemode: 0,
+        listed: false,
+        latency: 10,
+        display: None,
+    }]));
+    c.record(
+        "w3.a_player_unlisted_after_being_listed_leaves_the_list",
+        w.players.listed.contains(&1)
+            && !w3.players.listed.contains(&1)
+            && w3.players.listed_players().len() == 2
+            // …and they are still a known player, which is the whole point of
+            // the flag: a vanish plugin keeps the profile and drops the row.
+            && w3.names.get(&1).map(String::as_str) == Some("TabZulu"),
+        format!(
+            "{} listed after the unlist, from 3 — and the profile survives",
+            w3.players.listed_players().len()
         ),
     );
 
@@ -572,7 +587,7 @@ fn check_wire(c: &mut Checker) {
     }]));
     c.record(
         "w1.a_null_display_name_clears_the_override_rather_than_being_ignored",
-        w.display.contains_key(&1) && !w2.display.contains_key(&1),
+        w.players.display_name(1).is_some() && w2.players.display_name(1).is_none(),
         "the same action bit, a present component then a null one",
     );
 

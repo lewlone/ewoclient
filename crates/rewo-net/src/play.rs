@@ -285,6 +285,94 @@ fn read_player_info_entry(
     Ok(())
 }
 
+/// The tab list's slice of `PlayerInfo`, as `applyPlayerInfoUpdate` writes it
+/// (M151).
+///
+/// **A free type rather than three fields on `PlaySession`, and that is not
+/// tidiness.** `PlaySession` owns a socket and has no test module anywhere in
+/// the repo (M71), so state applied inside it is unreachable by every check but
+/// `--render-check`. M151's first mutation battery proved it: "UPDATE_LISTED
+/// only ever ADDS" and "player_info_remove leaves the departed player listed
+/// forever" both SURVIVED, because the only tests of that arithmetic were
+/// *copies* of it — one in this file's test module and one in `tablistshot`'s
+/// fixture, which is M45's `install_shapes` shape a second time. Both now call
+/// this.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct TabListPlayers {
+    /// `ClientPacketListener.listedPlayers` — see [`PlaySession::listed`]'s
+    /// doc for why membership, not a flag.
+    pub listed: std::collections::HashSet<u128>,
+    /// `PlayerInfo.showHat`, which **defaults to true** — see [`Self::show_hat`].
+    pub show_hats: std::collections::HashMap<u128, bool>,
+    /// `PlayerInfo.tabListDisplayName`, raw.
+    pub display_names: std::collections::HashMap<u128, rewo_proto::nbt::Nbt>,
+}
+
+impl TabListPlayers {
+    /// One entry's worth of `applyPlayerInfoUpdate`, for the three actions the
+    /// tab list reads.
+    ///
+    /// Each field writes only when its action bit was set, because the packet
+    /// is a delta and an absent action means "unchanged".
+    pub fn apply(&mut self, e: &PlayerInfoEntry) {
+        // `UPDATE_LISTED`'s arm is an add/remove on a SET, not a stored
+        // boolean — so a `false` for someone never added is a no-op, and a
+        // client that only ever added would keep a vanished player on the list
+        // forever.
+        if let Some(listed) = e.listed {
+            if listed {
+                self.listed.insert(e.uuid);
+            } else {
+                self.listed.remove(&e.uuid);
+            }
+        }
+        if let Some(hat) = e.show_hat {
+            self.show_hats.insert(e.uuid, hat);
+        }
+        // `setTabListDisplayName(null)` CLEARS. Storing the null instead would
+        // leave the override in place and the profile name unreachable.
+        if let Some(display) = e.display_name.as_ref() {
+            match display {
+                Some(c) => {
+                    self.display_names.insert(e.uuid, c.clone());
+                }
+                None => {
+                    self.display_names.remove(&e.uuid);
+                }
+            }
+        }
+    }
+
+    /// `handlePlayerInfoRemove` — the whole `PlayerInfo` goes, **and** the
+    /// entry comes out of `listedPlayers` (`ClientPacketListener.java:1995`).
+    /// Nothing else ever removes one, so leaving it would keep a departed
+    /// player on the tab list for the rest of the session.
+    pub fn forget(&mut self, uuid: u128) {
+        self.listed.remove(&uuid);
+        self.show_hats.remove(&uuid);
+        self.display_names.remove(&uuid);
+    }
+
+    /// `getListedOnlinePlayers()` — sorted by uuid; see
+    /// [`PlaySession::listed_players`] for why sorted where vanilla is not.
+    pub fn listed_players(&self) -> Vec<u128> {
+        let mut v: Vec<u128> = self.listed.iter().copied().collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// `PlayerInfo.showHat()`, **defaulting to `true`** — the field's own
+    /// initialiser (`PlayerInfo.java:21`), and the one absent value in this
+    /// type that does not mean "the server has not said".
+    pub fn show_hat(&self, uuid: u128) -> bool {
+        self.show_hats.get(&uuid).copied().unwrap_or(true)
+    }
+
+    pub fn display_name(&self, uuid: u128) -> Option<&rewo_proto::nbt::Nbt> {
+        self.display_names.get(&uuid)
+    }
+}
+
 /// Decode a `player_info_update` body: a 1-byte fixed bitset over the 8
 /// actions (LSB-first, ordinal order), then a var-int list of entries.
 ///
@@ -433,37 +521,14 @@ pub struct PlaySession {
     /// list's *first* sort key, negated so a higher value sorts first.
     /// Absent means the server never sent one, which vanilla renders as 0.
     pub tab_list_orders: std::collections::HashMap<u128, i32>,
-    /// `ClientPacketListener.listedPlayers` — who the tab list shows (M151).
+    /// The tab list's slice of `PlayerInfo` — who is listed, whose hat shows,
+    /// and the server's name overrides (M151).
     ///
-    /// **A set, not a flag, and membership is the whole gate.**
-    /// `PlayerTabOverlay.getPlayerInfos` iterates `getListedOnlinePlayers()`,
-    /// and the only thing that ever adds to it is `UPDATE_LISTED` with `true`
-    /// (`ClientPacketListener.java:2038`). So a player the server never sent
-    /// the action for is **not listed** — the default is exclusion, not
-    /// inclusion, which is what lets a plugin keep an NPC or a vanished
-    /// player in `playerInfoMap` (so their skin and team still resolve) and
-    /// out of the list.
-    ///
-    /// `listed` was decoded into [`PlayerInfoEntry::listed`] from M62 and
-    /// stored nowhere, so before M151 there was nothing to filter on.
-    pub listed: std::collections::HashSet<u128>,
-    /// `PlayerInfo.showHat` — whether the tab-list face draws the hat overlay
-    /// (`UPDATE_HAT`, action 7).
-    ///
-    /// **Vanilla's field defaults to `true`** (`PlayerInfo.java:21`), so an
-    /// absent entry here means *shown*, not hidden — the opposite of the
-    /// reading every other absent value in this struct takes. Read
-    /// `show_hat(uuid)` rather than the map so that default lives in one
-    /// place.
-    pub show_hats: std::collections::HashMap<u128, bool>,
-    /// `PlayerInfo.tabListDisplayName` — the server's name override, as the
-    /// raw component (M151).
-    ///
-    /// Absent is vanilla's `null`, which `getNameForDisplay` answers by
-    /// falling back to `PlayerTeam.formatNameForTeam(team, profile.name())`.
-    /// A component that arrives and is later cleared is *removed* from this
-    /// map rather than stored as an empty one — see `apply_player_info`.
-    pub tab_display_names: std::collections::HashMap<u128, rewo_proto::nbt::Nbt>,
+    /// **A separate type, so the arithmetic can be tested.** See
+    /// [`TabListPlayers`]: everything about it that reads backwards is
+    /// documented there, and it lives outside `PlaySession` because nothing
+    /// inside `PlaySession` is reachable from a test.
+    pub tab_players: TabListPlayers,
     /// `ClientPacketListener.onlineMode()` — the login packet's first trailing
     /// boolean (M151), and `PlayerTabOverlay`'s `showHead`.
     ///
@@ -1616,9 +1681,7 @@ impl<'a> Connection<'a> {
             latency: std::collections::HashMap::new(),
             gamemodes: std::collections::HashMap::new(),
             tab_list_orders: std::collections::HashMap::new(),
-            listed: std::collections::HashSet::new(),
-            show_hats: std::collections::HashMap::new(),
-            tab_display_names: std::collections::HashMap::new(),
+            tab_players: TabListPlayers::default(),
             online_mode: false,
             scoreboard: crate::scoreboard::Scoreboard::new(),
             boss_bars: crate::boss_bar::BossBars::new(),
@@ -3227,12 +3290,8 @@ impl PlaySession {
                         self.tab_list_orders.remove(&uuid);
                         // M151 — `handlePlayerInfoRemove` drops the whole
                         // `PlayerInfo` *and* removes it from `listedPlayers`
-                        // (`ClientPacketListener.java:1995`). Leaving the uuid
-                        // in the set would keep a departed player on the tab
-                        // list forever, since nothing else ever removes one.
-                        self.listed.remove(&uuid);
-                        self.show_hats.remove(&uuid);
-                        self.tab_display_names.remove(&uuid);
+                        // (`ClientPacketListener.java:1995`).
+                        self.tab_players.forget(uuid);
                     }
                 }
             }
@@ -4144,32 +4203,10 @@ impl PlaySession {
             if let Some(order) = e.tab_list_order {
                 self.tab_list_orders.insert(e.uuid, order);
             }
-            // M151. `UPDATE_LISTED`'s arm is an add/remove on a set, not a
-            // stored boolean — so a `false` for someone who was never in it is
-            // a no-op, and there is no third "unset" state to render.
-            if let Some(listed) = e.listed {
-                if listed {
-                    self.listed.insert(e.uuid);
-                } else {
-                    self.listed.remove(&e.uuid);
-                }
-            }
-            if let Some(hat) = e.show_hat {
-                self.show_hats.insert(e.uuid, hat);
-            }
-            // `setTabListDisplayName(null)` clears; storing the null instead
-            // would leave the override in place and the profile name
-            // unreachable.
-            if let Some(display) = e.display_name {
-                match display {
-                    Some(c) => {
-                        self.tab_display_names.insert(e.uuid, c);
-                    }
-                    None => {
-                        self.tab_display_names.remove(&e.uuid);
-                    }
-                }
-            }
+            // M151 — the three tab-list actions, in the one place they are
+            // applied. `TabListPlayers` rather than three maps here because
+            // this method is unreachable from a test.
+            self.tab_players.apply(&e);
             if let Some(name) = e.name {
                 self.world.entities.set_name(e.uuid, name);
             }
@@ -4260,9 +4297,7 @@ impl PlaySession {
     /// distinct profiles cannot be. Sorting makes this client's answer
     /// reproducible without narrowing what vanilla guarantees.
     pub fn listed_players(&self) -> Vec<u128> {
-        let mut v: Vec<u128> = self.listed.iter().copied().collect();
-        v.sort_unstable();
-        v
+        self.tab_players.listed_players()
     }
 
     /// `PlayerInfo.showHat()` — **defaulting to `true`**, which is the field's
@@ -4273,7 +4308,7 @@ impl PlaySession {
     /// "true", and the map's absent case is the one reading in this struct that
     /// is not "the server has not said".
     pub fn show_hat(&self, uuid: u128) -> bool {
-        self.show_hats.get(&uuid).copied().unwrap_or(true)
+        self.tab_players.show_hat(uuid)
     }
 
     /// `PlayerInfo.getTabListDisplayName()` — the server's name override, raw.
@@ -4281,7 +4316,7 @@ impl PlaySession {
     /// `None` is vanilla's `null`, at which point `getNameForDisplay` falls
     /// back to the team-formatted profile name.
     pub fn tab_display_name(&self, uuid: u128) -> Option<&rewo_proto::nbt::Nbt> {
-        self.tab_display_names.get(&uuid)
+        self.tab_players.display_name(uuid)
     }
 
     /// The team a player is on, by uuid (M62).
@@ -7683,41 +7718,91 @@ mod m151_tab_list_fields {
         );
     }
 
+    /// The production state application, driven by production-decoded bodies.
+    ///
+    /// **`TabListPlayers::apply`, not a copy of it.** The first cut of this
+    /// test reimplemented the set arithmetic inline, and M151's mutation
+    /// battery duly reported "UPDATE_LISTED only ever ADDS" as SURVIVED — the
+    /// test was grading its own copy while the client ran the other one, which
+    /// is M45's `install_shapes` shape. The arithmetic moved out of
+    /// `PlaySession` (unreachable from any test — M71) so this could call it.
+    fn apply_body(t: &mut TabListPlayers, body: &[u8]) {
+        for e in parse_player_info(body).0 {
+            t.apply(&e);
+        }
+    }
+
     /// `UPDATE_LISTED`'s arm is an add/remove on a set, so `false` for someone
     /// never added is a no-op and there is no stored third state.
-    ///
-    /// This drives the field decode plus the exact set arithmetic
-    /// `applyPlayerInfoUpdate` performs, without a session (which owns a
-    /// socket and cannot be built in a test — M71).
     #[test]
     fn listed_is_a_set_membership_and_defaults_to_absent() {
-        let mut listed: std::collections::HashSet<u128> = std::collections::HashSet::new();
-        let apply = |listed: &mut std::collections::HashSet<u128>, body: &[u8]| {
-            for e in parse_player_info(body).0 {
-                if let Some(l) = e.listed {
-                    if l {
-                        listed.insert(e.uuid);
-                    } else {
-                        listed.remove(&e.uuid);
-                    }
-                }
-            }
-        };
+        let mut t = TabListPlayers::default();
         // A player described by a latency-only update is NOT listed: the
         // default is exclusion, which is what keeps a vanished player off the
         // list while their skin and team still resolve.
         let mut f = Vec::new();
         varint(&mut f, 40);
-        apply(&mut listed, &one_entry(1 << 4, 7, &f));
-        assert!(!listed.contains(&7));
+        apply_body(&mut t, &one_entry(1 << 4, 7, &f));
+        assert!(!t.listed.contains(&7));
 
-        apply(&mut listed, &one_entry(1 << 3, 7, &[1]));
-        assert!(listed.contains(&7));
-        apply(&mut listed, &one_entry(1 << 3, 7, &[0]));
-        assert!(!listed.contains(&7));
+        apply_body(&mut t, &one_entry(1 << 3, 7, &[1]));
+        assert!(t.listed.contains(&7));
+        assert_eq!(t.listed_players(), [7]);
+        // …and a later `false` REMOVES. A client that only ever added would
+        // keep a vanished player on the list forever.
+        apply_body(&mut t, &one_entry(1 << 3, 7, &[0]));
+        assert!(!t.listed.contains(&7));
+        assert!(t.listed_players().is_empty());
         // A second `false` is inert rather than an error.
-        apply(&mut listed, &one_entry(1 << 3, 7, &[0]));
-        assert!(!listed.contains(&7));
+        apply_body(&mut t, &one_entry(1 << 3, 7, &[0]));
+        assert!(!t.listed.contains(&7));
+    }
+
+    /// `handlePlayerInfoRemove` takes the uuid out of `listedPlayers` as well
+    /// as out of `playerInfoMap`. Nothing else ever removes one.
+    #[test]
+    fn forgetting_a_player_takes_them_off_the_list() {
+        let mut t = TabListPlayers::default();
+        let mut f = vec![1u8]; // listed
+        f.push(1); // showHat
+        apply_body(&mut t, &one_entry((1 << 3) | (1 << 7), 7, &f));
+        assert_eq!(t.listed_players(), [7]);
+        t.forget(7);
+        assert!(t.listed_players().is_empty());
+        assert!(t.show_hats.is_empty());
+    }
+
+    /// `PlayerInfo.showHat` initialises to **true** (`PlayerInfo.java:21`).
+    ///
+    /// The one absent value in this type that does not mean "the server has
+    /// not said": there is no question a caller could ask that unsent answers
+    /// differently from shown, which is why the accessor owns the default
+    /// rather than the map.
+    #[test]
+    fn an_unsent_hat_reads_as_shown() {
+        let mut t = TabListPlayers::default();
+        assert!(t.show_hat(7), "a player nobody described wears their hat");
+        apply_body(&mut t, &one_entry(1 << 7, 7, &[0]));
+        assert!(!t.show_hat(7));
+        apply_body(&mut t, &one_entry(1 << 7, 7, &[1]));
+        assert!(t.show_hat(7));
+        // Still true for anyone else, which is what says the map is per-uuid
+        // and not a global flag.
+        assert!(t.show_hat(9));
+    }
+
+    /// A display override arrives, then a null one clears it.
+    #[test]
+    fn a_null_display_name_clears_through_the_production_apply() {
+        let mut t = TabListPlayers::default();
+        let mut f = vec![1u8];
+        f.push(8); // TAG_String
+        f.extend_from_slice(&4u16.to_be_bytes());
+        f.extend_from_slice(b"Boss");
+        apply_body(&mut t, &one_entry(1 << 5, 7, &f));
+        assert!(t.display_name(7).is_some());
+        apply_body(&mut t, &one_entry(1 << 5, 7, &[0]));
+        assert!(t.display_name(7).is_none());
     }
 }
 
