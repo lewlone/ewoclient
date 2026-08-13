@@ -172,7 +172,9 @@ rewo.exe --help | grep -E '^  [a-z]+shot|^  [a-z]+check'
 Their witness counts, re-measured by running all 34 on 2026-08-10 (M137).
 **Only two had drifted from the M124 list this replaced** — `titleshot` and
 `deathshot`, both moved by M130 and M137 — so the rest are unchanged rather than
-unchecked: `mobshot` 246, `blockentityshot` 172,
+unchecked: `mobshot` 246, `blockentityshot` **177** (was 172 on that date; M142c's
+bubble-column witnesses moved it, and this line was the only stale entry of the 29 —
+re-measured 2026-08-13 by running the gate, which reports 177/177),
 `inventoryshot` 158, `containershot` 107, `swingshot` 97, `itemshot` 75,
 `capeshot` 69, `titleshot` 58, `hurtshot` 56, `locatorshot` 49, `labelshot` 47,
 `statshot` 47, `rideshot` 45, `attributeshot` 43, `hudshot` 41, `deathshot` 43,

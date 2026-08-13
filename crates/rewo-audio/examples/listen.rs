@@ -507,11 +507,17 @@ fn stage_stereo(sink: &CpalSink, ids: &mut Ids) -> Result<(), String> {
     );
     println!("    is stereo on one roll in eight.");
     println!();
-    println!("    A DIVERGENCE, STATED (REWO_AUDIO_PLAN.md §5): OpenAL does not spatialise a");
-    println!("    multi-channel buffer, so vanilla plays this one NON-POSITIONALLY. Rewo's");
-    println!("    mixer is its own and treats it uniformly. Whatever you hear here is Rewo's");
-    println!("    answer, not vanilla's — the question is whether it is coherent, not whether");
-    println!("    it matches.");
+    println!("    WHAT REWO ACTUALLY DOES, read rather than assumed. `pan_gains`");
+    println!("    (mixer.rs:400-406) returns (1.0, 1.0) whenever channels >= 2, so a stereo");
+    println!("    source is NOT panned — which MATCHES OpenAL, since it does not spatialise a");
+    println!("    multi-channel buffer. The level is a separate factor: `gain = v.gain *");
+    println!("    attenuation` (mixer.rs:298) applies to a stereo source like any other, so");
+    println!("    Rewo spatialises it in LEVEL but not in DIRECTION.");
+    println!();
+    println!("    Whether vanilla also attenuates one is marked [concurring] in the plan and");
+    println!("    is NOT verified — it is exactly what M139's stereo stimulus would settle.");
+    println!("    This stage plays it relative and unattenuated, so neither factor is in play:");
+    println!("    what you are grading is that both channels arrive and the image is coherent.");
     Voice::new(sink, ids.next())
         .pitch(1.0)
         .volume(0.8)
