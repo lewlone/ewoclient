@@ -6670,6 +6670,54 @@ only. `EntityTableWorld`'s doc carries the full table of what it can and cannot
 answer — and now says how to re-derive that count, having been wrong in both
 directions.
 
+*Update (2026-08-14 session, Rewo): **M150 — the listening pass could reach two
+of the six things only a human can grade, and M139 measured the rest.** The
+handoff named the listening pass as the one outstanding item; the finding is
+that the only code path in Rewo that can make a noise could not reach most of
+what the pass is for. `CpalSink::play_once` pushes exactly one configuration
+(`cpal_sink.rs:152-164`) — centred, unattenuated, unpitched, relative — which is
+**the one configuration in which the pan law, the distance curve, the pitch
+resampler and the listener basis are all inert**, so of `REWO_AUDIO_PLAN.md`
+§4's six human-only properties it reached two. `examples/listen.rs` is now
+thirteen staged stages driving `ring().push(Command::…)` directly, each naming
+**what a failure sounds like**, with a preflight that decodes every clip before
+playing any of it. **Four of its errors were mine and all had one shape — a
+claim taken from the plan without opening the code beside it**: sources placed
+against −Z (`Camera.setRotation` opens `rotationYXZ(PI − yRot,…)`, so
+`listener_basis(0,0)` faces **+Z** while `ListenerTransform::INITIAL` faces −Z —
+both right, 180° apart, and a stage written against the wrong one is audible but
+backwards); "straight up" at pitch +90, which is straight **down**;
+`mob/chicken/step3.ogg`, which does not exist (the chicken has two step
+variants, and the pass aborted correctly but two minutes in); and "Rewo treats
+stereo uniformly", when `pan_gains` returns `(1.0,1.0)` for `channels >= 2` and
+so **matches** OpenAL. **M139 then shipped and settled the one question that
+stage had left open, and the answer was a real divergence**: OpenAL does not
+*attenuate* a multi-channel buffer either — its `stereo.d1p0` and `stereo.d8p0`
+captures are byte-identical across an eightfold distance change — while Rewo's
+`render()` applies `linear_gain` with no channel gate (`mixer.rs:294-298`,
+unlike `pan_gains` one function below), so **Rewo fades a stereo source vanilla
+holds at full level, −6.02 dB at 8 of 16 blocks, to silence at the radius.**
+Recorded, not fixed. M139's other numbers: the distance curve **exact** against
+the implementation rather than only against the OpenAL 1.1 spec; hard left/right
+exact; and a pan gap that is **structural** — OpenAL puts a front source at
+0.5957 and a rear one at 0.4043, summing to exactly 1.0000, where Rewo's pan
+input `dot(dir, right)` is **zero for both**, so no curve-fitting separates them
+(front +1.49 dB, behind +4.85 dB, overhead +3.01 dB). Its two hardest traps only
+appeared on running it: **`26.2.jar` is signed**, so the same-package trick
+`Channel.create()` seems to require dies in `ClassLoader.checkCerts` naming a
+*vanilla* class, and the first capture's distortion statistic was **reading its
+own instrument** (a Hann window floors it near −46 dB, exactly where the
+default-resampler rows landed). Also corrected: §4's "Catmull-Rom" (the
+resampler is two-point **linear**), §4's "the limiter is set nowhere in Java"
+(`Library.java:131` enables it unconditionally; only the *curve* is in the DLL),
+a `play.rs` doc claiming nothing drains `sound_events` when it has two call
+sites and a device, `REWO_PACKET_COVERAGE.md` using id **129 twice in one
+sentence** meaning two different things, and this file's claim that smithing's
+`RecipePropertySet`s are not jar-derivable — measured: **30 smithing recipes,
+all 30 carrying all three of `base`/`template`/`addition`**, the fifth "class-C
+blocker" in this project to turn out not to be one. **Nobody has listened yet,
+and no number above is that claim.***
+
 *Update (2026-08-14 session, Rewo): **M151 — the tab list renders, and the
 M86 shape a second time.** `crates/rewo-gpu/src/tab_list.rs` was 1209 lines, 41
 passing tests and **zero consumers** — pressing Tab in `rewo live` showed

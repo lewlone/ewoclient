@@ -276,10 +276,28 @@ witnesses are mostly self-driven can look healthy against nothing.
 > the claim. Do not report audio as working on the strength of a green suite.
 >
 > ```
+> cargo run -p rewo-audio --example listen            # THE PASS — 13 staged stages, ~3 min
+> cargo run -p rewo-audio --example listen -- --list  # what each stage grades
+> cargo run -p rewo-audio --example listen -- --stage 4
 > cargo build -p rewo-app --features audio
-> rewo live --audio                             # or REWO_AUDIO=1
-> cargo run -p rewo-audio --example listen      # one sound, no server
+> rewo live --audio                                   # or REWO_AUDIO=1
 > ```
+>
+> **`listen` is a staged pass as of M150, and that is not cosmetic.** It used to
+> play one clip three times through `CpalSink::play_once`, which pushes exactly
+> ONE configuration — centred, unattenuated, unpitched, relative — i.e. **the one
+> configuration in which the pan law, the distance curve, the pitch resampler and
+> the listener basis are all inert**. Of §4's six human-only properties the tool
+> built to grade them reached two. It now drives `ring().push(Command::…)`
+> directly: thirteen stages, each naming what it grades AND **what a failure
+> sounds like**, with a preflight that decodes every clip first (a first draft
+> named a clip that does not exist and died two minutes in, correctly).
+>
+> Stage 3 is worth knowing about before you run it: **the 8-block horn being
+> quieter than the 0-block one is EXPECTED and is a measured divergence**, not a
+> fault — M139 found OpenAL does not attenuate a multi-channel buffer at all
+> while Rewo does. A listener not told that will file the correct behaviour as
+> the bug.
 >
 > `REWO_AUDIO_PLAN.md` §4 lists what to listen for. The four counters
 > `rewo live` logs when they move (unresolved / declined streams / dropped
