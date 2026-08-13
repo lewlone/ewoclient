@@ -1,6 +1,6 @@
 # REWO_AUDIO_PLAN.md — the audio milestone
 
-**Status: MOSTLY SHIPPED (2026-08-11).** `crates/rewo-audio` exists — the
+**Status: MOSTLY SHIPPED (2026-08-13).** `crates/rewo-audio` exists — the
 quantisation, `SoundBufferLibrary`, the symphonia ogg decode, the `Mixer` and
 `NullSink`, the SPSC command ring and a cpal sink — and `rewo-net` carries the
 listener transform, the music fade, and vanilla's whole client-side sound
@@ -12,23 +12,30 @@ not started.** Each section below carries its own status block; trust those
 over any forward-looking sentence in the body, which was written before the
 code.
 
-**What is left is one wire and one human.** `rewo-app` deliberately does not
-depend on `rewo-audio`, so nothing in the shipping client opens a device and
-`rewo live` is silent; and no gate in this project can grade a sound, because
-an absent, muted, exclusive-mode or unplugged device all look identical from
-inside the process. `cargo run -p rewo-audio --example listen` is the only path
-to a noise, and the listening pass is the user's.
+**What is left is one human.** *(This sentence said "one wire and one human"
+until 2026-08-13; **M143 shipped the wire** — `rewo live --audio` on a build
+with `--features audio` opens a device and plays what the engine resolves — and
+the sentence had been contradicted by its own §M143 status block for a day.
+Same failure, one file, twice; see the note below.)*
 
-**Two things are true and easy to miss.** *(1)* **Nobody has listened to it.** No
-gate in this project opens an audio device, so everything a machine can check
-passes and that is **not** the same claim —
-`cargo run -p rewo-audio --example listen` is the outstanding work and it is a
-human's. *(2)* **`rewo live` is still silent**: `rewo-app` deliberately does not
-depend on `rewo-audio`, so the 34 gates do not link an audio stack for a
-subsystem none of them exercises.
+**Nobody has listened to it.** No gate in this project opens an audio device, so
+everything a machine can check passes and that is **not** the same claim — an
+absent, muted, exclusive-mode or unplugged device all look identical from inside
+the process. `rewo live --audio` and
+`cargo run -p rewo-audio --example listen` are the paths to a noise, and the
+listening pass is the user's.
 
-*(This line read "a PLAN, not shipped code — nothing in `crates/` implements any
-of it yet" until the header was updated to match its own body. It is the exact
+**The containment still holds, and it is not the same as "silent".**
+`rewo-app`'s dependency on `rewo-audio` is **optional and off by default**
+(M143), so a default build links neither cpal nor symphonia and the 35 gates do
+not carry an audio stack for a subsystem almost none of them exercises. The
+exception since 2026-08-13 is **`soundshot`**, which is a subcommand of the same
+binary and therefore has to live with that: it grades layers (w)(s)(a) in a
+default build and adds (d)(m) under `--features audio`. See §4.
+
+*(The status line above read "a PLAN, not shipped code — nothing in `crates/`
+implements any of it yet" until it was updated to match its own body, and then
+said "one wire and one human" for a day after the wire shipped. It is the exact
 failure this project keeps recording: a status line at the top of a file that its
 own sections had already contradicted.)*
 
@@ -601,6 +608,83 @@ on the windowed path) + **the human listening pass** (§4).
 ---
 
 ## 4. The gate
+
+> **SHIPPED 2026-08-13.** `crates/rewo-app/src/soundshot_cmd.rs`, **48
+> witnesses** — 8 wire, 9 resolution, 11 arithmetic, 7 decode, 13 mixer — with
+> the battery in `tools/soundshot_mutate.py` (45 mutations, **45/45**). It is
+> the **35th** serverless gate. The paragraph below headed *"What the gate does
+> NOT assert"* is in its module doc verbatim, as this section requires.
+>
+> **Three corrections to this section, all because it was written before the
+> code.**
+>
+> *(1) There are TWO locks, not one.* Layers (d) and (m) live in `rewo-audio`,
+> and M143 made `rewo-app`'s dependency on that crate optional and **off by
+> default** so a default build of the one `rewo` binary — which all 35 gates are
+> subcommands of — links neither cpal nor symphonia. Making `soundshot`
+> unconditional would undo that containment for every other gate. So a default
+> build runs and fail-closes on **28**, and an `--features audio` build on
+> **48**; neither configuration can silently lose a witness, and the run prints
+> which one it was. Verified rather than asserted: `cargo tree -p rewo-app -e
+> normal` matches zero of cpal/symphonia/rewo-audio by default and 15 lines with
+> the feature. **The cost is real and stated in the module doc**: the
+> configuration that runs in ordinary verification does not grade decode or the
+> mixer at all.
+>
+> *(2) The counts moved.* This section asks for 6/8/10/6/12 = ~42; the gate
+> ships 8/9/11/7/13 = 48. The extra wire witness is a truncation sweep over all
+> four packet bodies; the extra resolution one (`s1b`) is what the battery
+> forced — see below; the rest are splits.
+>
+> *(3) `d3`'s end-trim claim is a DEPENDENCY's behaviour, not a
+> transcription.* `decode.rs:19` says "The end trim is symphonia's, not ours",
+> so the exact 1728-sample count pins symphonia rather than Rewo. Worth having
+> and worth labelling — no mutation of Rewo's own code can produce the failure
+> it excludes.
+>
+> **What the battery found is a fixture blind to its own subject, and it is a
+> new shape of §5's first trap.** `s6` asserts that dropping a variant whose
+> file is missing changes the *distribution* over the survivors. It failed on
+> its first run, measuring one reachable variant where two were expected — and
+> the cause was not the code. With the variant gone the total weight is 4, a
+> **power of two**, so `nextInt` takes its shortcut branch, which is
+> `(bound * next(31)) >> 31` — the **top** bits of a single draw. And
+> `LegacyRandomSource`'s scramble leaves the top bits of the *first* draw of
+> sequential seeds nearly constant: measured over seeds 0..199 at bound 4 it is
+> **entirely** constant, all 200 giving index 2. A sequential fixture therefore
+> reaches one variant whatever the weights are, and cannot tell "the variant was
+> dropped" from "the pick is broken". The rejection branch takes the **low**
+> bits (`sample % bound`) and is uniform over the same seeds, which is why the
+> bound-6 fixtures in `s2`/`s3` are sound and why this was invisible until a
+> power-of-two total appeared. `s6` now spreads its seeds by a 64-bit stride.
+>
+> **And two mixer witnesses demanded an exact zero f32 cannot produce.**
+> `pan_gains` is `(cos a, sin a)` for `a = (pan + 1) * FRAC_PI_4`. Hard LEFT is
+> `pan = -1`, so `a = 0` and `sin(0)` is *exactly* 0 — the far ear is
+> bit-silent. Hard RIGHT is `pan = +1`, so `a = FRAC_PI_2` and
+> `f32::cos(FRAC_PI_2)` is **-4.371139e-8** — the far ear sits ~155 dB down
+> instead of absent. **The two extremes of one pan law are not symmetric in
+> f32**, and a witness asserting `== 0.0` on both passes on one and fails on the
+> other. The same constant broke the pitched-listener witness: at pitch 90 the
+> forward vector is `(0, -1, -4.371139e-8)`, so pinning `up` to `(0,1,0)` gives
+> a cross product of length 4.4e-8 rather than the algebraic zero — still seven
+> orders below the real basis's unit-length right vector, and still enough to
+> collapse the image, but not `== [0,0,0]`. Both now assert a dB-scale claim
+> with the constant named. `m1` keeps its `== 0.0`, and the contrast is the
+> point: `linear_gain` clamps to zero **explicitly** rather than arriving there
+> by arithmetic, so there the exact assertion is the right one.
+>
+> **And the battery's own finding is §5's self-skip trap from the other side.**
+> A mutation disabling `build_sounds`'s fail-closed panic — so a missing store
+> degrades to an empty index behind a `log::info!`, which is behaviourally
+> indistinguishable from totally broken resolution — **SURVIVED**, because on a
+> machine that HAS the store the `Err` arms are never reached and `s1`'s
+> "a real index came back" holds whether or not the strict arm exists. **The
+> fail-closed half of the claim is unobservable precisely on every machine where
+> the gate is green.** §5 says store-dependent tests self-skip on a bare machine
+> so a green run there proves nothing; this is the same hazard inverted. `s1b`
+> closes it without needing a bare machine, by asking `build_sounds` for a
+> version that has no manifest — the same `Err` a missing store reaches.
 
 **`rewo soundshot --check`** — serverless, CPU-only, fail-closed on an `EXPECTED_WITNESSES` lock, five layers mirroring `particleshot`. Every layer drives the production path; none rebuilds a slice of it.
 

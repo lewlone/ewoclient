@@ -3914,7 +3914,10 @@ fn col_dist((cx, cz): (i32, i32), px: f32, pz: f32) -> f32 {
 /// an empty index left a test green *because it merely SKIPped*. A gate that
 /// degrades to a no-op on the one machine where it matters is worse than no
 /// gate, so the strict path fails closed and says which file it wanted.
-fn build_sounds(
+/// `pub(crate)` so `soundshot` can drive the **production** loader rather than
+/// a hand-assembled index — M45's `install_shapes` rule, that a gate
+/// reimplementing a slice of the app's setup misses whatever the app adds to it.
+pub(crate) fn build_sounds(
     version: &str,
     registry: &rewo_data::sound_events::SoundEvents,
     strict: bool,
