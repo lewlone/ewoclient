@@ -4349,6 +4349,7 @@ fn run_headless(
         gamma,
         darkness_option,
         partial,
+        end_flash_for(&session, partial),
     );
     // Drained before `collect_entities` takes its long-lived borrow of the
     // session; the particle spawn happens further down, once the renderer is
@@ -8035,6 +8036,7 @@ impl LiveApp {
             },
             self.darkness_option,
             lightmap_partial,
+            end_flash_for(session, lightmap_partial),
         );
         let trim_slots = ensure_trims(
             session,
@@ -11953,6 +11955,71 @@ fn sky_mode_of(def: Option<&DimensionTypeDef>) -> SkyMode {
     }
 }
 
+/// **`hideLightningFlash` is pinned off**, i.e. the flash is shown.
+///
+/// It is an accessibility option (`Options.hideLightningFlash`) and Rewo has
+/// no options screen to set it from, so this is a stated assumption rather
+/// than a transcription — exact today because the vanilla default is `false`,
+/// and the same shape as the pinned `MusicFrequency`. The gate for it is the
+/// `EndFlash::hidden()` constructor, which exists so wiring an option later is
+/// a call-site change rather than a new branch.
+const HIDE_LIGHTNING_FLASH: bool = false;
+
+/// The End flash's contribution to one frame's lightmap
+/// (`LightmapRenderStateExtractor.java:57-65`).
+///
+/// Zero — [`EndFlash::none`] — covers every dimension that is not the End,
+/// which is why the neutral value is also the [`Default`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct EndFlash {
+    /// `EndFlashState.getIntensity(partialTicks)`.
+    intensity: f32,
+    /// `minecraft.gui.hud.getBossOverlay().shouldCreateWorldFog()` — a wither
+    /// or dragon bar with `FLAG_FOG` set. It **divides the flash by three**
+    /// rather than suppressing it.
+    boss_world_fog: bool,
+}
+
+impl EndFlash {
+    /// No flash: not the End, or no `EndFlashState` on the level.
+    fn none() -> Self {
+        Self::default()
+    }
+
+    /// The option is on, so vanilla adds nothing at all — distinct from an
+    /// intensity that happens to be 0, because it holds through the peak.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn hidden() -> Self {
+        Self::default()
+    }
+
+    fn sky_factor_bonus(self) -> f32 {
+        if self.boss_world_fog {
+            self.intensity / 3.0
+        } else {
+            self.intensity
+        }
+    }
+}
+
+/// Resolve one frame's [`EndFlash`] from the session.
+///
+/// The three gates are vanilla's, in vanilla's order: the level must *have* a
+/// flash state at all (only an END skybox does), the option must be off, and
+/// only then is the boss-fog divisor chosen.
+fn end_flash_for(session: &rewo_net::play::PlaySession, partial: f32) -> EndFlash {
+    let Some(state) = session.end_flash() else {
+        return EndFlash::none();
+    };
+    if HIDE_LIGHTNING_FLASH {
+        return EndFlash::hidden();
+    }
+    EndFlash {
+        intensity: state.intensity(partial),
+        boss_world_fog: session.boss_bars.should_create_world_fog(),
+    }
+}
+
 /// Resolve the full camera `LightmapState` for one frame (M13).
 ///
 /// The three independent clocks fold into one uniform: the day/night timeline
@@ -11968,6 +12035,7 @@ fn resolve_lightmap(
     gamma: f32,
     darkness_option: f32,
     partial: f32,
+    end_flash: EndFlash,
 ) -> LightmapState {
     let dim = dimension_light(dimension);
     let sky = dimension_timeline(day_ticks, &dim);
@@ -11982,8 +12050,11 @@ fn resolve_lightmap(
         partial,
     );
     LightmapState {
-        // The timeline tracks are multipliers over the dimension's base.
-        sky_factor: dim.sky_light_factor * sky.light_factor,
+        // The timeline tracks are multipliers over the dimension's base, and
+        // the End flash is **added on top** rather than folded into either
+        // (`LightmapRenderStateExtractor.java:57-65`) — so it brightens a
+        // dimension whose own `sky_light_factor` is 0, which the End's is.
+        sky_factor: dim.sky_light_factor * sky.light_factor + end_flash.sky_factor_bonus(),
         block_factor,
         sky_light_color: std::array::from_fn(|c| dim.sky_light_color[c] * sky.light_color[c]),
         ambient_color: dim.ambient_color,
@@ -14880,12 +14951,96 @@ mod tests {
         ]
     }
 
+    /// The flash is **added** to `skyFactor`
+    /// (`LightmapRenderStateExtractor.java:60-64`), and that matters most in
+    /// the one dimension that has it: `the_end.json` sets
+    /// `sky_light_factor: 0.0`, so the dimension's own sky term is zero and
+    /// the flash is the *only* thing lighting the sky there. A multiply — the
+    /// natural reading of "the timeline tracks are multipliers over the
+    /// dimension's base", which is the comment directly above the line — gives
+    /// zero at every intensity, and the End never brightens.
+    #[test]
+    fn the_flash_is_added_not_multiplied_which_is_the_whole_of_the_end() {
+        let mut end = DimensionTypeDef::unresolved_holder(0);
+        end.skybox = Skybox::End;
+        end.sky_light_factor = 0.0;
+        end.has_day_timeline = false;
+
+        let dark = resolve_lightmap(
+            None,
+            Some(&end),
+            1.4,
+            no_effects(0),
+            0.5,
+            1.0,
+            0.0,
+            EndFlash::none(),
+        );
+        assert_eq!(dark.sky_factor, 0.0, "the End's own sky term is zero");
+
+        let lit = resolve_lightmap(
+            None,
+            Some(&end),
+            1.4,
+            no_effects(0),
+            0.5,
+            1.0,
+            0.0,
+            EndFlash {
+                intensity: 0.75,
+                boss_world_fog: false,
+            },
+        );
+        assert_eq!(lit.sky_factor, 0.75, "so the flash is all of it");
+    }
+
+    /// The boss-fog arm **divides by three**; it does not suppress. A wither
+    /// or dragon bar carrying `FLAG_FOG` dims the flash and keeps it.
+    #[test]
+    fn boss_world_fog_thirds_the_flash_rather_than_hiding_it() {
+        let plain = EndFlash {
+            intensity: 0.9,
+            boss_world_fog: false,
+        };
+        let fogged = EndFlash {
+            intensity: 0.9,
+            boss_world_fog: true,
+        };
+        assert_eq!(plain.sky_factor_bonus(), 0.9);
+        assert!((fogged.sky_factor_bonus() - 0.3).abs() < 1e-6);
+        assert!(fogged.sky_factor_bonus() > 0.0, "dimmed, not suppressed");
+    }
+
+    /// The neutral value really is neutral, at every base factor — the
+    /// property every other lightmap fixture in this module now depends on.
+    #[test]
+    fn no_flash_changes_nothing() {
+        for base in [0.0f32, 0.24, 1.0] {
+            let mut dim = DimensionTypeDef::unresolved_holder(0);
+            dim.sky_light_factor = base;
+            dim.has_day_timeline = false;
+            let s = resolve_lightmap(
+                None,
+                Some(&dim),
+                1.4,
+                no_effects(0),
+                0.5,
+                1.0,
+                0.0,
+                EndFlash::none(),
+            );
+            assert_eq!(s.sky_factor, base, "base {base}");
+        }
+        assert_eq!(EndFlash::none().sky_factor_bonus(), 0.0);
+        assert_eq!(EndFlash::hidden().sky_factor_bonus(), 0.0);
+    }
+
     #[test]
     fn neutral_state_with_gamma_half() {
         // No day/night clock, resting flicker (1.4), no effects, gamma 0.5:
         // full daylight sky, gamma flows straight through to brightness, and
         // every effect term is off.
-        let s = resolve_lightmap(None, None, 1.4, no_effects(0), 0.5, 1.0, 0.0);
+        let s = resolve_lightmap(None, None, 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
         assert_eq!(s.sky_factor, 1.0);
         assert_eq!(s.block_factor, 1.4);
         assert_eq!(s.sky_light_color, [1.0, 1.0, 1.0]);
@@ -14898,7 +15053,7 @@ mod tests {
     fn night_vision_duration_drives_the_factor() {
         // Absent → 0.
         assert_eq!(
-            resolve_lightmap(None, None, 1.4, no_effects(0), 0.5, 1.0, 0.0).night_vision_factor,
+            resolve_lightmap(None, None, 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none()).night_vision_factor,
             0.0
         );
         // Infinite (`-1`) and > 200 ticks both pin to the full 1.0 seed.
@@ -14907,7 +15062,7 @@ mod tests {
             ..no_effects(0)
         };
         assert_eq!(
-            resolve_lightmap(None, None, 1.4, inf, 0.5, 1.0, 0.0).night_vision_factor,
+            resolve_lightmap(None, None, 1.4, inf, 0.5, 1.0, 0.0, EndFlash::none()).night_vision_factor,
             1.0
         );
         let long = VisualEffectSnapshot {
@@ -14915,7 +15070,7 @@ mod tests {
             ..no_effects(0)
         };
         assert_eq!(
-            resolve_lightmap(None, None, 1.4, long, 0.5, 1.0, 0.0).night_vision_factor,
+            resolve_lightmap(None, None, 1.4, long, 0.5, 1.0, 0.0, EndFlash::none()).night_vision_factor,
             1.0
         );
         // Within the last 200 ticks it pulses below 1.0 (the fade-out).
@@ -14923,7 +15078,7 @@ mod tests {
             night_vision_duration: Some(200),
             ..no_effects(0)
         };
-        let nv = resolve_lightmap(None, None, 1.4, ending, 0.5, 1.0, 0.0).night_vision_factor;
+        let nv = resolve_lightmap(None, None, 1.4, ending, 0.5, 1.0, 0.0, EndFlash::none()).night_vision_factor;
         assert!(
             nv > 0.0 && nv < 1.0,
             "expected a pulsing NV factor, got {nv}"
@@ -14938,7 +15093,7 @@ mod tests {
             darkness_blend_factor: 0.3,
             ..no_effects(0)
         };
-        let s = resolve_lightmap(None, None, 1.4, partial_dark, 0.5, 1.0, 0.0);
+        let s = resolve_lightmap(None, None, 1.4, partial_dark, 0.5, 1.0, 0.0, EndFlash::none());
         assert!(
             s.brightness_factor < 0.5,
             "brightness {} should dip below gamma",
@@ -14962,7 +15117,7 @@ mod tests {
             darkness_blend_factor: 1.0,
             ..no_effects(0)
         };
-        let s = resolve_lightmap(None, None, 1.4, full_dark, 0.5, 1.0, 0.0);
+        let s = resolve_lightmap(None, None, 1.4, full_dark, 0.5, 1.0, 0.0, EndFlash::none());
         assert_eq!(s.brightness_factor, 0.0);
         assert!(
             (s.darkness_scale - 0.45).abs() < 1e-4,
@@ -14976,7 +15131,7 @@ mod tests {
     fn day_ticks_drive_the_sky_half() {
         // Midnight (tick 18000) dims and blues the sky half, independent of
         // the block factor (a torch stays as bright).
-        let s = resolve_lightmap(Some(18000), None, 1.4, no_effects(0), 0.5, 1.0, 0.0);
+        let s = resolve_lightmap(Some(18000), None, 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
         assert_eq!(s.sky_factor, 0.24);
         assert_eq!(s.sky_light_color, [0.48, 0.48, 1.0]);
         assert_eq!(s.block_factor, 1.4);
@@ -14984,7 +15139,7 @@ mod tests {
 
     #[test]
     fn world_lightmap_conversion_is_field_for_field() {
-        let s = resolve_lightmap(Some(18000), None, 1.7, no_effects(0), 0.5, 1.0, 0.0);
+        let s = resolve_lightmap(Some(18000), None, 1.7, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
         let w = to_world_lightmap(&s);
         assert_eq!(w.sky_factor, s.sky_factor);
         assert_eq!(w.block_factor, s.block_factor);
@@ -15021,12 +15176,13 @@ mod tests {
                 0.5,
                 1.0,
                 0.0,
+                EndFlash::none(),
             ));
         }
 
         // 1. Each step matches the isolated computation for its own inputs.
         for (i, (t, d)) in ticks.iter().zip(seq).enumerate() {
-            let isolated = resolve_lightmap(Some(*t), d, 1.4, no_effects(0), 0.5, 1.0, 0.0);
+            let isolated = resolve_lightmap(Some(*t), d, 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
             assert_eq!(states[i], isolated, "step {i} depends on history");
         }
 
@@ -15054,7 +15210,7 @@ mod tests {
 
         // 3. Back in the Overworld at tick 23000 the timeline drives the sky
         //    again — the End's factor-0 must not have stuck.
-        let fresh = resolve_lightmap(Some(23000), Some(&ow), 1.4, no_effects(0), 0.5, 1.0, 0.0);
+        let fresh = resolve_lightmap(Some(23000), Some(&ow), 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
         assert_eq!(states[3], fresh);
         assert!(
             states[3].sky_factor > 0.0,
@@ -15089,7 +15245,7 @@ mod tests {
         assert!(d.day_timeline);
         assert_eq!(sky_mode_of(None), SkyMode::Overworld);
         // And the resolved lightmap is unchanged from the legacy call.
-        let s = resolve_lightmap(Some(18000), None, 1.4, no_effects(0), 0.5, 1.0, 0.0);
+        let s = resolve_lightmap(Some(18000), None, 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
         assert_eq!(s.sky_factor, 0.24);
         assert_eq!(s.sky_light_color, [0.48, 0.48, 1.0]);
         assert_eq!(s.ambient_color, [0.0, 0.0, 0.0]);
@@ -15107,11 +15263,11 @@ mod tests {
         assert_eq!(sky_mode_of(Some(&ow)), SkyMode::Overworld);
 
         // Noon: the timeline multiplier is 1.0 over the 1.0 base.
-        let noon = resolve_lightmap(Some(6000), Some(&ow), 1.4, no_effects(0), 0.5, 1.0, 0.0);
+        let noon = resolve_lightmap(Some(6000), Some(&ow), 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
         assert_eq!(noon.sky_factor, 1.0);
         assert_eq!(noon.sky_light_color, [1.0, 1.0, 1.0]);
         // Midnight: 1.0 * 0.24, white * (0.48, 0.48, 1.0) — the legacy values.
-        let mid = resolve_lightmap(Some(18000), Some(&ow), 1.4, no_effects(0), 0.5, 1.0, 0.0);
+        let mid = resolve_lightmap(Some(18000), Some(&ow), 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
         assert_eq!(mid.sky_factor, 0.24);
         assert_eq!(mid.sky_light_color, [0.48, 0.48, 1.0]);
         // Ambient is constant across the cycle (no timeline track keyframes it).
@@ -15153,7 +15309,7 @@ mod tests {
                 Some(18000),
                 Some(23999),
             ] {
-                let s = resolve_lightmap(t, Some(&def), 1.4, no_effects(0), 0.5, 1.0, 0.0);
+                let s = resolve_lightmap(t, Some(&def), 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
                 assert_eq!(s.sky_factor, 0.0, "{} sky factor at {t:?}", def.name);
                 assert_eq!(s.sky_light_color, sky, "{} sky colour at {t:?}", def.name);
                 assert_eq!(s.ambient_color, ambient, "{} ambient at {t:?}", def.name);
@@ -15175,8 +15331,8 @@ mod tests {
         const MIDNIGHT: Option<i64> = Some(18000);
         let ow = overworld();
         let nether = nether();
-        let before = resolve_lightmap(MIDNIGHT, Some(&ow), 1.4, no_effects(0), 0.5, 1.0, 0.0);
-        let after = resolve_lightmap(MIDNIGHT, Some(&nether), 1.4, no_effects(0), 0.5, 1.0, 0.0);
+        let before = resolve_lightmap(MIDNIGHT, Some(&ow), 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
+        let after = resolve_lightmap(MIDNIGHT, Some(&nether), 1.4, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
         assert_eq!(
             before.sky_light_color,
             [0.48, 0.48, 1.0],
@@ -15202,7 +15358,7 @@ mod tests {
     #[test]
     fn world_lightmap_conversion_carries_the_ambient() {
         let end = the_end();
-        let s = resolve_lightmap(Some(18000), Some(&end), 1.7, no_effects(0), 0.5, 1.0, 0.0);
+        let s = resolve_lightmap(Some(18000), Some(&end), 1.7, no_effects(0), 0.5, 1.0, 0.0, EndFlash::none());
         let w = to_world_lightmap(&s);
         assert_eq!(w.ambient_color, s.ambient_color);
         assert_eq!(w.ambient_color, [63.0 / 255.0, 71.0 / 255.0, 63.0 / 255.0]);
