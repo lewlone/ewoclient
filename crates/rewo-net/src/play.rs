@@ -655,6 +655,10 @@ pub struct PlaySession {
     /// Registry id of the overworld world clock — `set_time` keys its clock
     /// map by raw id, and the map also carries `the_end`'s clock.
     overworld_clock_id: Option<i32>,
+    /// The `minecraft:world_clock` registry in raw wire order — the index is
+    /// the holder id. Used to turn a dimension's `default_clock` identifier
+    /// into the id `set_time` keys its map by.
+    world_clock_ids: Vec<String>,
     pub spawned: bool,
     pub corrections: u32,
     pub teleports: u32,
@@ -769,7 +773,7 @@ pub struct PlaySession {
     /// day/night cycle smooth between the server's 20-tick syncs instead of
     /// jumping. `None` until the first explicit overworld clock state
     /// establishes it.
-    overworld_clock: Option<WorldClock>,
+    clocks: ClockManager,
     /// The client's authoritative game-time counter (`ClientLevel`'s
     /// `clientLevelData.getGameTime()`). `None` until the first `set_time`
     /// establishes it; a server sync resets it to the packet value and every
@@ -984,6 +988,15 @@ pub struct PlaySession {
     /// lighting contract and base sky/fog can be re-read (and compared against
     /// the next one) without re-indexing `dim_types`. `None` until login.
     pub active_dimension_type: Option<DimensionTypeDef>,
+    /// `ClientLevel.endFlashState` — `Some` exactly when the level's dimension
+    /// type has end flashes, per `ClientLevel.java:255`
+    /// (`dimensionType.value().hasEndFlashes() ? new EndFlashState() : null`).
+    ///
+    /// It is **`ClientLevel` state**, so it is rebuilt from scratch on a
+    /// dimension change and not carried across one: a fresh level means a
+    /// fresh schedule, which matters because `EndFlashState`'s zeroed default
+    /// is what makes its first interval silent.
+    end_flash: Option<rewo_world::end_flash::EndFlashState>,
     /// Bumped every time the active dimension actually changes. Anything that
     /// caches per-dimension state (meshes, light, column buffers) can compare
     /// against a stored generation to know its cache is from a stale world.
@@ -1134,7 +1147,7 @@ struct WorldTransition<'a> {
     /// *old* vertical shape.
     light: &'a mut rewo_world::light::LightEngine,
     day_ticks: &'a mut Option<i64>,
-    overworld_clock: &'a mut Option<WorldClock>,
+    clocks: &'a mut ClockManager,
     game_time: &'a mut Option<i64>,
     /// Rain and thunder are `ClientLevel` state too — a fresh level starts
     /// clear, and stays clear until the new dimension's server sends its own
@@ -1157,6 +1170,8 @@ struct WorldTransition<'a> {
     active_key: &'a mut Option<String>,
     active_holder: &'a mut Option<i32>,
     active_type: &'a mut Option<DimensionTypeDef>,
+    /// `ClientLevel.endFlashState`, rebuilt with the level (`ClientLevel.java:255`).
+    end_flash: &'a mut Option<rewo_world::end_flash::EndFlashState>,
     generation: &'a mut u64,
     transitions: &'a mut Vec<DimensionTransition>,
 }
@@ -1232,7 +1247,7 @@ impl WorldTransition<'_> {
         // return to their pre-`set_time` state and the renderer reads full
         // daylight until the next sync arrives.
         *self.day_ticks = None;
-        *self.overworld_clock = None;
+        self.clocks.clear();
         *self.game_time = None;
         self.weather.clear();
         *self.border = rewo_world::border::WorldBorder::default();
@@ -1272,9 +1287,15 @@ impl WorldTransition<'_> {
             new_world_columns: self.world.loaded_columns(),
             dirty_after: self.dirty.len(),
             clock_reset: self.day_ticks.is_none()
-                && self.overworld_clock.is_none()
+                && self.clocks.is_empty()
                 && self.game_time.is_none(),
         });
+        // `new ClientLevel(...)` decides this from the NEW dimension type, so
+        // it is created and destroyed with the level rather than carried.
+        *self.end_flash = def
+            .skybox
+            .has_end_flashes()
+            .then(rewo_world::end_flash::EndFlashState::default);
         *self.active_type = Some(def);
         true
     }
@@ -1486,6 +1507,7 @@ impl<'a> Connection<'a> {
         let world = World::new(DimensionShape::OVERWORLD);
         let dim_types = self.dim_types.clone();
         let overworld_clock_id = self.overworld_clock_id;
+        let world_clock_ids = std::mem::take(&mut self.world_clock_ids);
         let visual_effects =
             crate::effects::VisualEffects::new(self.night_vision_id, self.darkness_id);
         let swing_effect_ids = self.swing_effect_ids;
@@ -1608,6 +1630,7 @@ impl<'a> Connection<'a> {
             global_bits,
             dim_types,
             overworld_clock_id,
+            world_clock_ids,
             spawned: false,
             corrections: 0,
             teleports: 0,
@@ -1631,7 +1654,7 @@ impl<'a> Connection<'a> {
             component_names: None,
             stack_details: crate::item_stack::StackDetails::default(),
             player_id: None,
-            overworld_clock: None,
+            clocks: ClockManager::default(),
             game_time: None,
             dirty: std::collections::HashSet::new(),
             light: rewo_world::light::LightEngine::new(),
@@ -1688,6 +1711,7 @@ impl<'a> Connection<'a> {
             active_dimension_key: None,
             active_dimension_holder: None,
             active_dimension_type: None,
+            end_flash: None,
             dimension_generation: 0,
             dimension_transitions: Vec::new(),
             chunk_decode_failures: 0,
@@ -1862,6 +1886,40 @@ impl PlaySession {
         &self.dim_types
     }
 
+    /// `ClientLevel.endFlashState()` — `None` in every dimension whose skybox
+    /// is not `END`, which is what stops the renderer and the sound asking.
+    pub fn end_flash(&self) -> Option<&rewo_world::end_flash::EndFlashState> {
+        self.end_flash.as_ref()
+    }
+
+    /// `Level.getDefaultClockTime()` (`Level.java:889-891`) —
+    /// `clockManager().getTotalTicks(dimensionType().defaultClock())`.
+    ///
+    /// **Three outcomes, and collapsing any two of them is wrong.**
+    ///
+    /// * The dimension declares no `default_clock` (vanilla's Nether, and only
+    ///   the Nether): `getClockTimeTicks` ends `.orElse(0L)`, so this is a
+    ///   **permanent zero** — it never advances, however long you stand there.
+    /// * The dimension names a clock the registry does not contain: also 0,
+    ///   and also permanent, because there is no holder to mint an instance
+    ///   for.
+    /// * The dimension names a real clock the server has never sent state for:
+    ///   `getTotalTicks` is `computeIfAbsent`, so the instance is **created
+    ///   here**, at 0 and rate 1.0, and counts up from the next tick.
+    ///
+    /// The first two look identical on the tick you ask and diverge forever
+    /// after, which is why this takes `&mut` — the read is what creates the
+    /// clock. For the End flash the difference is total: a permanently-zero
+    /// clock sits in interval 0, and
+    /// [`rewo_world::end_flash::EndFlashState`] never flashes there at all.
+    pub fn default_clock_time(&mut self) -> i64 {
+        default_clock_time(
+            self.active_dimension_type.as_ref(),
+            &self.world_clock_ids,
+            &mut self.clocks,
+        )
+    }
+
     /// Drain the dropped-column list (renderer frees their buffers).
     pub fn take_removed(&mut self) -> Vec<(i32, i32)> {
         std::mem::take(&mut self.removed)
@@ -1891,9 +1949,21 @@ impl PlaySession {
         // spawn, exactly like vanilla's `ClientLevel.tick` after the level
         // exists. A sync processed above in `drain_inbound` already re-anchored
         // `game_time`, so this is the one and only local `+1` for the tick.
-        if let Some((game_time, day)) = local_tick_time(self.game_time, &mut self.overworld_clock) {
+        if let Some((game_time, day)) =
+            local_tick_time(self.game_time, &mut self.clocks, self.overworld_clock_id)
+        {
             self.game_time = Some(game_time);
             self.day_ticks = Some(day);
+        }
+        // `ClientLevel.tick`'s end-flash block (`ClientLevel.java:307-324`),
+        // which sits after `tickTime` and reads the DIMENSION's clock, not the
+        // overworld's. Unconditional on the tick-rate manager — vanilla guards
+        // `tickTime` with `runsNormally()` and leaves this outside it.
+        if self.end_flash.is_some() {
+            let clock = self.default_clock_time();
+            if let Some(f) = self.end_flash.as_mut() {
+                f.tick(clock);
+            }
         }
         // Advance the local player's visual effects once per client tick.
         // Vanilla increments the player's `tickCount` in
@@ -2432,19 +2502,16 @@ impl PlaySession {
                 // `last_game_time` via the advance below) the same client tick's
                 // local `+1` is not double-counted.
                 self.game_time = Some(game_time);
-                apply_set_time(
-                    &mut self.overworld_clock,
-                    self.overworld_clock_id,
-                    game_time,
-                    &entries,
-                );
+                self.clocks.handle_updates(game_time, &entries);
                 // Use the ported clock's total once it exists; before any real
                 // clock state, fall back to `gameTime` (best-effort for a
                 // server that never registers one).
-                self.day_ticks = Some(match &self.overworld_clock {
-                    Some(clock) => clock.total,
-                    None => game_time,
-                });
+                self.day_ticks = Some(
+                    match self.overworld_clock_id.and_then(|id| self.clocks.peek(id)) {
+                        Some(clock) => clock.total,
+                        None => game_time,
+                    },
+                );
                 log::debug!(
                     "net: set_time game={game_time} clocks={count} day_ticks={:?}",
                     self.day_ticks
@@ -4226,6 +4293,11 @@ impl PlaySession {
         // change — a respawn that names a different level — records one.
         self.active_dimension_key = Some(active.key);
         self.active_dimension_holder = Some(active.holder);
+        self.end_flash = active
+            .def
+            .skybox
+            .has_end_flashes()
+            .then(rewo_world::end_flash::EndFlashState::default);
         self.active_dimension_type = Some(active.def);
         Ok(())
     }
@@ -4258,7 +4330,7 @@ impl PlaySession {
             removed: &mut self.removed,
             light: &mut self.light,
             day_ticks: &mut self.day_ticks,
-            overworld_clock: &mut self.overworld_clock,
+            clocks: &mut self.clocks,
             game_time: &mut self.game_time,
             weather: &mut self.weather,
             border: &mut self.border,
@@ -4269,6 +4341,7 @@ impl PlaySession {
             active_key: &mut self.active_dimension_key,
             active_holder: &mut self.active_dimension_holder,
             active_type: &mut self.active_dimension_type,
+            end_flash: &mut self.end_flash,
             generation: &mut self.dimension_generation,
             transitions: &mut self.dimension_transitions,
         }
@@ -5441,26 +5514,123 @@ impl WorldClock {
     }
 }
 
-/// Apply one `set_time` to the overworld clock, in vanilla
-/// `ClientClockManager.handleUpdates` order: **advance** the stored clock by the
-/// game-time delta first (so an empty update still moves the day/night cycle),
-/// then let any explicit overworld clock state in the packet **overwrite** it.
-/// Matching this order is load-bearing: a packet that both syncs and re-sets the
-/// clock must land on the explicit value, not the advanced one.
-fn apply_set_time(
-    clock: &mut Option<WorldClock>,
-    overworld_id: Option<i32>,
-    game_time: i64,
-    entries: &[(i32, i64, f32, f32)],
-) {
-    if let Some(c) = clock.as_mut() {
-        c.advance(game_time);
+/// Vanilla `ClientClockManager` — every world clock the session knows, keyed by
+/// its raw registry id, plus the shared `lastTickGameTime`.
+///
+/// M12 tracked the **overworld** clock alone, which is all the day/night cycle
+/// needs. M149c generalises it because `Level.getDefaultClockTime()`
+/// (`Level.java:889-891`) reads whichever clock the *dimension* names, and the
+/// End names `minecraft:the_end` — a genuinely different clock that a vanilla
+/// server sends alongside the Overworld's in the same `set_time`.
+///
+/// **`lastTickGameTime` is shared, not per-clock** (`ClientClockManager.java:19-27`
+/// computes one `gameTimeDelta` and applies it to every instance), and that is
+/// observable: a clock minted between two ticks receives the *whole* delta on
+/// the next one. [`WorldClock`] keeps its own `last_game_time` because
+/// [`WorldClock::advance`] is M12's exact transcription and is left alone — so
+/// a minted clock is seeded with the manager's, which reproduces the shared
+/// behaviour without touching the tested arithmetic.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ClockManager {
+    /// `Map<Holder<WorldClock>, ClockInstance>`. A `Vec` because a session
+    /// holds two or three of these and the lookup is by a small integer.
+    clocks: Vec<(i32, WorldClock)>,
+    last_game_time: i64,
+}
+
+impl ClockManager {
+    fn is_empty(&self) -> bool {
+        self.clocks.is_empty()
     }
-    for &(holder, total, partial, rate) in entries {
-        if Some(holder) == overworld_id {
-            *clock = Some(WorldClock::from_state(game_time, total, partial, rate));
+
+    fn clear(&mut self) {
+        self.clocks.clear();
+        self.last_game_time = 0;
+    }
+
+    /// `ClientClockManager.tick` — one delta, applied to every instance.
+    fn tick(&mut self, game_time: i64) {
+        for (_, c) in self.clocks.iter_mut() {
+            c.advance(game_time);
+        }
+        self.last_game_time = game_time;
+    }
+
+    /// `ClientClockManager.handleUpdates` — **tick first, then overwrite**.
+    /// Matching that order is load-bearing: a packet that both syncs and
+    /// re-sets a clock must land on the explicit value, not the advanced one.
+    fn handle_updates(&mut self, game_time: i64, entries: &[(i32, i64, f32, f32)]) {
+        self.tick(game_time);
+        for &(holder, total, partial, rate) in entries {
+            let state = WorldClock::from_state(game_time, total, partial, rate);
+            match self.clocks.iter_mut().find(|(id, _)| *id == holder) {
+                Some((_, c)) => *c = state,
+                None => self.clocks.push((holder, state)),
+            }
         }
     }
+
+    /// `ClientClockManager.getTotalTicks` — and it is **`computeIfAbsent`**, so
+    /// asking about a clock the server has never sent *creates* it, at
+    /// `totalTicks = 0` and `rate = 1.0`, after which it advances on every
+    /// tick like any other. That is why this takes `&mut`: the read has a side
+    /// effect, and dropping it would leave such a clock pinned at 0 forever
+    /// instead of counting up — which for the End flash is the difference
+    /// between a schedule that runs and one stuck in interval 0, where
+    /// `EndFlashState` never flashes at all.
+    fn total_ticks(&mut self, id: i32) -> i64 {
+        if let Some(i) = self.clocks.iter().position(|(k, _)| *k == id) {
+            return self.clocks[i].1.total;
+        }
+        // A fresh `ClockInstance`: zeroed, rate 1.0, and seeded with the
+        // manager's shared last-tick time so its first advance sees the same
+        // delta vanilla's would.
+        self.clocks.push((
+            id,
+            WorldClock {
+                total: 0,
+                partial: 0.0,
+                rate: 1.0,
+                last_game_time: self.last_game_time,
+            },
+        ));
+        0
+    }
+
+    /// A **non-minting** read, which vanilla has no equivalent of.
+    ///
+    /// It exists for one caller: M12's day-tick fallback, which reads the
+    /// overworld clock and falls back to the raw game time when there is none
+    /// (`set_time`'s handler). Vanilla would mint there and answer 0, so that
+    /// fallback is a **stated Rewo deviation**, not a transcription — it is
+    /// reachable only before the first `set_time` carrying an overworld clock
+    /// state, it is pinned by M12's tests, and routing it through
+    /// [`ClockManager::total_ticks`] would both change it and destroy the
+    /// distinction it depends on.
+    fn peek(&self, id: i32) -> Option<&WorldClock> {
+        self.clocks.iter().find(|(k, _)| *k == id).map(|(_, c)| c)
+    }
+}
+
+/// `Level.getDefaultClockTime()`, as a free function so it can be witnessed:
+/// [`PlaySession`] owns a socket and has no test module anywhere in this repo
+/// (M71's hazard), so the three-way resolution below would otherwise be
+/// reachable only through a live session.
+fn default_clock_time(
+    active: Option<&DimensionTypeDef>,
+    world_clock_ids: &[String],
+    clocks: &mut ClockManager,
+) -> i64 {
+    // No `default_clock` on the dimension → `Optional.empty()` → `.orElse(0L)`.
+    let Some(name) = active.and_then(|d| d.default_clock.as_deref()) else {
+        return 0;
+    };
+    // Named, but the registry has no such holder. Also zero, and also
+    // permanent: there is nothing for `computeIfAbsent` to key on.
+    let Some(id) = world_clock_ids.iter().position(|n| n == name) else {
+        return 0;
+    };
+    clocks.total_ticks(id as i32)
 }
 
 /// One `ClientLevel.tickTime`, transcribed: read the stored game-time, bump it
@@ -5482,12 +5652,19 @@ fn apply_set_time(
 /// the clock by zero, leaving exactly this one local `+1`. If no explicit
 /// overworld clock exists yet, the day-tick falls back to the raw game time
 /// (best-effort), still advancing one per tick rather than only on packets.
-fn local_tick_time(game_time: Option<i64>, clock: &mut Option<WorldClock>) -> Option<(i64, i64)> {
+fn local_tick_time(
+    game_time: Option<i64>,
+    clocks: &mut ClockManager,
+    overworld_id: Option<i32>,
+) -> Option<(i64, i64)> {
     let next = game_time?.wrapping_add(1);
-    if let Some(c) = clock.as_mut() {
-        c.advance(next);
-    }
-    let day = clock.as_ref().map(|c| c.total).unwrap_or(next);
+    clocks.tick(next);
+    // `peek`, not `total_ticks`: see `ClockManager::peek` for why this one
+    // caller must not mint.
+    let day = overworld_id
+        .and_then(|id| clocks.peek(id))
+        .map(|c| c.total)
+        .unwrap_or(next);
     Some((next, day))
 }
 
@@ -5867,8 +6044,9 @@ mod respawn_tests {
         removed: Vec<(i32, i32)>,
         light: rewo_world::light::LightEngine,
         day_ticks: Option<i64>,
-        overworld_clock: Option<WorldClock>,
+        clocks: ClockManager,
         game_time: Option<i64>,
+        end_flash: Option<rewo_world::end_flash::EndFlashState>,
         weather: rewo_world::weather::WeatherState,
         border: rewo_world::border::WorldBorder,
         biome_zoom_seed: Option<i64>,
@@ -5902,8 +6080,18 @@ mod respawn_tests {
             removed: Vec::new(),
             light: rewo_world::light::LightEngine::new(),
             day_ticks: Some(189_121),
-            overworld_clock: Some(WorldClock::from_state(138_341, 189_121, 0.25, 1.0)),
+            clocks: {
+                let mut m = ClockManager::default();
+                m.last_game_time = 138_341;
+                m.clocks
+                    .push((0, WorldClock::from_state(138_341, 189_121, 0.25, 1.0)));
+                m
+            },
             game_time: Some(138_341),
+            // Deliberately a live flash on a dimension that has none: a
+            // transition that failed to rebuild it from the NEW dimension
+            // type would otherwise be invisible against a `None` harness.
+            end_flash: Some(rewo_world::end_flash::EndFlashState::default()),
             // Deliberately a storm: a transition that failed to clear it would
             // otherwise be invisible against a default-clear harness.
             weather: {
@@ -5941,7 +6129,7 @@ mod respawn_tests {
                 removed: &mut self.removed,
                 light: &mut self.light,
                 day_ticks: &mut self.day_ticks,
-                overworld_clock: &mut self.overworld_clock,
+                clocks: &mut self.clocks,
                 game_time: &mut self.game_time,
                 weather: &mut self.weather,
                 border: &mut self.border,
@@ -5952,6 +6140,7 @@ mod respawn_tests {
                 active_key: &mut self.key,
                 active_holder: &mut self.holder,
                 active_type: &mut self.ty,
+                end_flash: &mut self.end_flash,
                 generation: &mut self.generation,
                 transitions: &mut self.transitions,
             }
@@ -6003,7 +6192,16 @@ mod respawn_tests {
         // Per-level state cleared.
         assert!(s.dirty.is_empty(), "no stale column is queued for re-mesh");
         assert_eq!(s.day_ticks, None);
-        assert_eq!(s.overworld_clock, None);
+        assert!(s.clocks.is_empty(), "every clock, not only the overworld's");
+        // `ClientLevel.java:255` builds this from the NEW dimension type, and
+        // the Nether's skybox is `none` — so a level change destroys the
+        // flash rather than carrying it. The harness seeds a live one on
+        // purpose, or a transition that simply never touched the field would
+        // pass.
+        assert!(
+            s.end_flash.is_none(),
+            "the Nether has no end flashes, whatever the old level had"
+        );
         assert_eq!(s.game_time, None);
 
         // The new dimension, and the seed the biome layer fiddles with.
@@ -6094,7 +6292,7 @@ mod respawn_tests {
 
         assert_eq!(s.day_ticks, Some(189_121));
         assert_eq!(s.game_time, Some(138_341));
-        assert_eq!(s.overworld_clock.unwrap().total, 189_121);
+        assert_eq!(s.clocks.peek(0).unwrap().total, 189_121);
 
         assert_eq!(s.holder, Some(OVERWORLD_HOLDER), "type not re-applied");
         assert_eq!(
@@ -6350,11 +6548,235 @@ mod respawn_tests {
     }
 }
 
+/// The map half of M149c — what `clock_tests`' harness does for itself and so
+/// cannot witness.
+#[cfg(test)]
+mod clock_map_tests {
+    use super::{ClockManager, WorldClock};
+
+    /// A vanilla server sends the Overworld's clock **and** the End's in one
+    /// `set_time`. M12 kept the first and dropped the second; both are held
+    /// now, independently.
+    #[test]
+    fn two_clocks_are_held_and_advance_independently() {
+        let mut m = ClockManager::default();
+        m.handle_updates(1000, &[(0, 5_000, 0.0, 1.0), (1, 77, 0.0, 0.5)]);
+        assert_eq!(m.peek(0).unwrap().total, 5_000);
+        assert_eq!(m.peek(1).unwrap().total, 77);
+
+        // One shared delta, each clock scaling it by its own rate.
+        m.handle_updates(1100, &[]);
+        assert_eq!(m.peek(0).unwrap().total, 5_100, "rate 1 takes the whole delta");
+        assert_eq!(m.peek(1).unwrap().total, 127, "rate 0.5 takes half of it");
+    }
+
+    /// `getTotalTicks` is `computeIfAbsent` (`ClientClockManager.java:15-17,
+    /// 41-43`), so **asking creates**. The created instance is not inert: it
+    /// carries `rate = 1.0` and counts up from the next tick.
+    ///
+    /// Returning 0 without creating looks identical on the tick you ask and
+    /// diverges forever after — and for the End flash it is the difference
+    /// between a schedule that runs and one pinned in interval 0, where
+    /// `EndFlashState` never flashes.
+    #[test]
+    fn reading_an_unsent_clock_creates_it_and_it_then_advances() {
+        let mut m = ClockManager::default();
+        m.handle_updates(1000, &[(0, 5_000, 0.0, 1.0)]);
+        assert!(m.peek(7).is_none(), "not there before it is asked for");
+
+        assert_eq!(m.total_ticks(7), 0, "a fresh instance reads zero");
+        assert!(m.peek(7).is_some(), "and asking is what created it");
+
+        m.handle_updates(1050, &[]);
+        assert_eq!(m.peek(7).unwrap().total, 50, "rate 1.0, so it counts up");
+        assert_eq!(m.peek(0).unwrap().total, 5_050, "and the other is unaffected");
+    }
+
+    /// `lastTickGameTime` is the **manager's**, not the instance's
+    /// (`ClientClockManager.java:19-21`): a clock minted between two ticks
+    /// receives the whole delta on the next one, not just the part after it
+    /// appeared.
+    #[test]
+    fn a_minted_clock_inherits_the_managers_last_tick_time() {
+        let mut m = ClockManager::default();
+        m.handle_updates(1000, &[(0, 0, 0.0, 1.0)]);
+        // Minted at "1000" as far as the manager is concerned.
+        assert_eq!(m.total_ticks(3), 0);
+        m.handle_updates(1020, &[]);
+        assert_eq!(
+            m.peek(3).unwrap().total,
+            20,
+            "the whole 20-tick delta, because the manager's clock is shared"
+        );
+    }
+
+    /// The tick-then-overwrite order, at the map level: an entry in the same
+    /// packet lands on the explicit value, not the advanced one.
+    #[test]
+    fn an_explicit_entry_overwrites_the_advance_it_shares_a_packet_with() {
+        let mut m = ClockManager::default();
+        m.handle_updates(100, &[(0, 5_000, 0.0, 1.0)]);
+        m.handle_updates(120, &[(0, 0, 0.0, 1.0)]);
+        assert_eq!(m.peek(0).unwrap().total, 0, "/time set beats the +20 advance");
+    }
+
+    /// `clear` is the level boundary — every clock, not only the overworld's,
+    /// and the shared last-tick time with them.
+    #[test]
+    fn clear_drops_every_clock_and_the_shared_time() {
+        let mut m = ClockManager::default();
+        m.handle_updates(1000, &[(0, 1, 0.0, 1.0), (1, 2, 0.0, 1.0)]);
+        m.clear();
+        assert!(m.is_empty());
+        assert_eq!(m.last_game_time, 0);
+        // And a clock minted after the clear starts from the new baseline
+        // rather than inheriting the old level's game time.
+        m.tick(50);
+        assert_eq!(m.total_ticks(0), 0);
+        m.tick(60);
+        assert_eq!(m.peek(0).unwrap().total, 10);
+    }
+
+    /// `peek` must not mint — it is M12's day-tick fallback's only caller, and
+    /// that fallback is defined by the *absence* of a clock.
+    #[test]
+    fn peek_does_not_mint() {
+        let mut m = ClockManager::default();
+        assert!(m.peek(0).is_none());
+        assert!(m.is_empty(), "peeking created nothing");
+        let _ = m.total_ticks(0);
+        assert!(!m.is_empty(), "and total_ticks is what does create");
+    }
+
+    /// The three outcomes of `getDefaultClockTime`, which look like one
+    /// number and are not.
+    ///
+    /// A dimension declaring **no** clock and one naming an **unknown** clock
+    /// both read 0 forever; a dimension naming a real clock the server has
+    /// never sent reads 0 *once* and then counts. Collapsing any two of them
+    /// is invisible on the tick you look and permanent afterwards.
+    #[test]
+    fn default_clock_time_has_three_outcomes() {
+        use rewo_world::dimension::{DimensionTypeDef, Skybox};
+
+        let ids = vec!["minecraft:overworld".to_string(), "minecraft:the_end".to_string()];
+        let dim = |clock: Option<&str>| {
+            let mut d = DimensionTypeDef::unresolved_holder(0);
+            d.skybox = Skybox::End;
+            d.default_clock = clock.map(str::to_string);
+            d
+        };
+
+        // 1. No clock declared — the Nether's case. Permanent zero.
+        let mut m = ClockManager::default();
+        m.handle_updates(1000, &[(0, 5_000, 0.0, 1.0)]);
+        let nether = dim(None);
+        assert_eq!(super::default_clock_time(Some(&nether), &ids, &mut m), 0);
+        m.handle_updates(2000, &[]);
+        assert_eq!(
+            super::default_clock_time(Some(&nether), &ids, &mut m),
+            0,
+            "still zero a thousand ticks later"
+        );
+        assert_eq!(m.clocks.len(), 1, "and nothing was minted for it");
+
+        // 2. Named but absent from the registry. Also permanently zero.
+        let bogus = dim(Some("modded:elsewhere"));
+        assert_eq!(super::default_clock_time(Some(&bogus), &ids, &mut m), 0);
+        m.handle_updates(3000, &[]);
+        assert_eq!(super::default_clock_time(Some(&bogus), &ids, &mut m), 0);
+        assert_eq!(m.clocks.len(), 1, "an unknown name mints nothing");
+
+        // 3. Named, real, never sent. Zero once, then counting.
+        let end = dim(Some("minecraft:the_end"));
+        assert_eq!(
+            super::default_clock_time(Some(&end), &ids, &mut m),
+            0,
+            "the first read is what creates it"
+        );
+        m.handle_updates(3100, &[]);
+        assert_eq!(
+            super::default_clock_time(Some(&end), &ids, &mut m),
+            100,
+            "and from there it advances like any other clock"
+        );
+
+        // And the id really is the registry position, not a guess: the End's
+        // clock is index 1, so a server state for holder 1 lands on it.
+        m.handle_updates(3100, &[(1, 42_000, 0.0, 1.0)]);
+        assert_eq!(super::default_clock_time(Some(&end), &ids, &mut m), 42_000);
+        assert_eq!(
+            super::default_clock_time(None, &ids, &mut m),
+            0,
+            "no active dimension at all is the same permanent zero"
+        );
+    }
+
+    /// The `WorldClock` fields a minted instance carries, stated rather than
+    /// implied: vanilla's `ClockInstance` defaults are `totalTicks = 0`,
+    /// `partialTick = 0`, and **`rate = 1.0F`** — a zero rate would freeze it.
+    #[test]
+    fn a_minted_instance_has_rate_one() {
+        let mut m = ClockManager::default();
+        let _ = m.total_ticks(4);
+        assert_eq!(
+            *m.peek(4).unwrap(),
+            WorldClock {
+                total: 0,
+                partial: 0.0,
+                rate: 1.0,
+                last_game_time: 0,
+            }
+        );
+    }
+}
+
 #[cfg(test)]
 mod clock_tests {
-    use super::{apply_set_time, local_tick_time, WorldClock};
+    use super::{ClockManager, WorldClock};
 
     const OVERWORLD: Option<i32> = Some(0);
+
+    /// Seed a production [`ClockManager`] with the single clock these tests
+    /// were written against.
+    fn manager(clock: Option<WorldClock>, id: Option<i32>) -> ClockManager {
+        let mut m = ClockManager::default();
+        if let (Some(c), Some(id)) = (clock, id) {
+            m.last_game_time = c.last_game_time;
+            m.clocks.push((id, c));
+        }
+        m
+    }
+
+    /// The shape M12's tests were written against, now a **harness over the
+    /// production `ClockManager`** rather than a function of its own.
+    ///
+    /// Every claim below still lands on `ClockManager::handle_updates` — the
+    /// tick-then-overwrite order and all of `WorldClock::advance`'s
+    /// arithmetic. What this wrapper does itself is the map bookkeeping, which
+    /// is why that is graded separately by `clock_map_tests` rather than here:
+    /// a harness cannot witness itself.
+    fn apply_set_time(
+        clock: &mut Option<WorldClock>,
+        overworld_id: Option<i32>,
+        game_time: i64,
+        entries: &[(i32, i64, f32, f32)],
+    ) {
+        let mut m = manager(*clock, overworld_id);
+        m.handle_updates(game_time, entries);
+        *clock = overworld_id.and_then(|id| m.peek(id)).copied();
+    }
+
+    /// The same shape for the local `+1`, over the production function.
+    fn local_tick_time(
+        game_time: Option<i64>,
+        clock: &mut Option<WorldClock>,
+    ) -> Option<(i64, i64)> {
+        let mut m = manager(*clock, OVERWORLD);
+        let out = super::local_tick_time(game_time, &mut m, OVERWORLD);
+        *clock = OVERWORLD.and_then(|id| m.peek(id)).copied();
+        out
+    }
 
     /// The join packet establishes the clock from an explicit state — total and
     /// last-game-time come straight from the wire. (The real server session
