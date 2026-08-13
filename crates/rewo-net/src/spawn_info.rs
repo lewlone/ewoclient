@@ -188,6 +188,50 @@ pub(crate) struct LoginPrefix {
     pub show_death_screen: bool,
 }
 
+/// The two booleans `ClientboundLoginPacket` writes **after** its embedded
+/// `CommonPlayerSpawnInfo` (M151).
+///
+/// ```java
+/// // ClientboundLoginPacket.java:60-61
+/// output.writeBoolean(this.onlineMode);
+/// output.writeBoolean(this.enforcesSecureChat);
+/// ```
+///
+/// Both were unread anywhere in this client until the tab list needed the
+/// first. The only mention of either name in the tree was a **test fixture
+/// writing them** (`login_prefix_lands_exactly_on_the_spawn_info` below), which
+/// is the quietest form of the M52c / M67 / M82 shape: a walk that steps over a
+/// field it does not name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LoginTail {
+    /// `ClientPacketListener.onlineMode()` (`:2084`), assigned at `:551`.
+    ///
+    /// **This is `PlayerTabOverlay`'s `showHead`** — `extractRenderState`
+    /// (`:145`) reads it to decide whether each row reserves nine pixels for a
+    /// face, so it changes the *slot width* and not merely whether a face is
+    /// drawn. An offline server draws no faces and its rows are nine pixels
+    /// narrower.
+    pub online_mode: bool,
+    /// `ClientPacketListener.serverEnforcesSecureChat` (`:558`). Decoded so the
+    /// walk names every field rather than stopping mid-packet; read by nothing
+    /// yet — vanilla uses it only to seed a `SignedMessageValidator` and to
+    /// decide whether to show the insecure-chat warning toast.
+    pub enforces_secure_chat: bool,
+}
+
+/// Read the two trailing booleans, from a reader positioned immediately after
+/// the spawn info.
+///
+/// Separate from [`read_login_prefix`] rather than folded into it because the
+/// spawn info sits between them and is decoded by its own shared reader — one
+/// function spanning it would have to duplicate that call or take a closure.
+pub(crate) fn read_login_tail(r: &mut PacketReader<'_>) -> Result<LoginTail> {
+    Ok(LoginTail {
+        online_mode: r.bool()?,
+        enforces_secure_chat: r.bool()?,
+    })
+}
+
 /// Read the `ClientboundLoginPacket` fields that come *before* its embedded
 /// `CommonPlayerSpawnInfo`, leaving the reader on the spawn info's first byte.
 ///
@@ -495,6 +539,17 @@ mod tests {
         assert_eq!(got.dimension_type, 0);
         assert_eq!(got.seed, 0x1234_5678_9abc_def0);
         assert_eq!(r.remaining(), 2, "only the two trailing login flags left");
+        // M151 — and those two flags are now read rather than left as a
+        // comment. Both are `true` in this fixture, which cannot tell them
+        // apart; the asymmetric case is the test below.
+        assert_eq!(
+            read_login_tail(&mut r).unwrap(),
+            LoginTail {
+                online_mode: true,
+                enforces_secure_chat: true,
+            }
+        );
+        assert_eq!(r.remaining(), 0, "the login packet is fully consumed");
 
         // The holder-only path over the same bytes agrees, and holder 0 selects
         // the first synced registry entry rather than a default.
@@ -511,5 +566,38 @@ mod tests {
             crate::login_dimension_type(got.dimension_type, &defs).name,
             "minecraft:the_nether"
         );
+    }
+
+    /// The two trailing flags are read in `write` order and are not
+    /// interchangeable (M151).
+    ///
+    /// `onlineMode` first, `enforcesSecureChat` second
+    /// (`ClientboundLoginPacket.java:60-61`). They are written asymmetrically
+    /// here because the fixture above cannot tell a swap from a correct read —
+    /// both of its values are `true`. The one that matters is the first:
+    /// `PlayerTabOverlay.extractRenderState` reads it as `showHead`, so a swap
+    /// on a secure-chat-enforcing offline server reserves nine pixels per row
+    /// for a face that will never be drawn.
+    #[test]
+    fn the_login_tail_is_online_mode_then_enforces_secure_chat() {
+        for (online, secure) in [(false, true), (true, false), (false, false)] {
+            let mut w = PacketWriter::default();
+            w.bool(online);
+            w.bool(secure);
+            let mut r = PacketReader::new(&w.buf);
+            assert_eq!(
+                read_login_tail(&mut r).unwrap(),
+                LoginTail {
+                    online_mode: online,
+                    enforces_secure_chat: secure,
+                },
+                "({online}, {secure})"
+            );
+            assert_eq!(r.remaining(), 0);
+        }
+        // A truncated tail is an error rather than a default: `onlineMode`
+        // decides the row width, so guessing it silently mislays every name.
+        let mut r = PacketReader::new(&[1u8]);
+        assert!(read_login_tail(&mut r).is_err());
     }
 }
