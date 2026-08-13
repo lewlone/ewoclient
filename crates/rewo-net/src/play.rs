@@ -1961,8 +1961,21 @@ impl PlaySession {
         // `tickTime` with `runsNormally()` and leaves this outside it.
         if self.end_flash.is_some() {
             let clock = self.default_clock_time();
-            if let Some(f) = self.end_flash.as_mut() {
-                f.tick(clock);
+            let started = match self.end_flash.as_mut() {
+                Some(f) => {
+                    f.tick(clock);
+                    f.flash_started_this_tick().then(|| (f.x_angle(), f.y_angle()))
+                }
+                None => None,
+            };
+            // `ClientLevel.java:309-322`. Vanilla additionally suppresses this
+            // while the `WinScreen` (the end poem) is up; Rewo has no screen
+            // there to suppress it with, which is recorded rather than faked —
+            // the only divergence is a sound during the credits.
+            if let Some((x_angle, y_angle)) = started {
+                self.push_sound_event(crate::sounds::SoundEvent::Tickable(
+                    crate::sounds::TickableSound::EndFlash { x_angle, y_angle },
+                ));
             }
         }
         // Advance the local player's visual effects once per client tick.

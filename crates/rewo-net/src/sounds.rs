@@ -507,6 +507,21 @@ pub enum TickableSound {
     /// no-op and only the direction changes. Constructing it at
     /// `{ fade: 0, fade_direction: 1 }` is that pair, in one step.
     BiomeLoop { sound: String },
+    /// `new DirectionalSoundInstance(WEATHER_END_FLASH, WEATHER, random,
+    /// camera, xAngle, yAngle)` — `ClientLevel.tick`'s end-flash block
+    /// (`ClientLevel.java:309-322`), queued **30 ticks** behind the flash that
+    /// caused it (`EndFlashState.SOUND_DELAY_IN_TICKS`).
+    ///
+    /// It carries the two angles rather than "the flash", because the schedule
+    /// moves on: by the time this plays, 30 ticks later, `EndFlashState` may
+    /// already be in the next interval with different angles. Vanilla captures
+    /// them at construction for the same reason — the instance holds `xAngle`
+    /// and `yAngle` as finals.
+    ///
+    /// The **position** is not captured, and that is the opposite decision:
+    /// `tick()` recomputes it from the live camera, so the bearing is fixed
+    /// and the origin follows the listener.
+    EndFlash { x_angle: f32, y_angle: f32 },
 }
 
 /// Which of `startRiding`'s four instances this is (M141h).

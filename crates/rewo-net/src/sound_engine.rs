@@ -776,7 +776,11 @@ pub struct SoundEngine {
     live: Vec<Live>,
     /// `queuedSounds` — delayed and manually-relooped instances, with the tick
     /// they are due.
-    queued: Vec<(InstanceId, SoundInstance, i32)>,
+    /// `SoundEngine.queuedSounds` — `Map<SoundInstance, Integer>` plus, here,
+    /// the ramp a tickable needs. Vanilla stores none because its instance
+    /// *is* its own ticker; Rewo splits the two, so a delayed tickable has to
+    /// carry its ramp to the moment it plays.
+    queued: Vec<(InstanceId, SoundInstance, Option<crate::tickable::Ramp>, i32)>,
     /// `queuedTickableSounds`.
     queued_tickable: Vec<(SoundInstance, Option<crate::tickable::Ramp>)>,
     /// `gainBySource`, `defaultReturnValue(1.0F)`.
@@ -1088,9 +1092,21 @@ impl SoundEngine {
 
     /// `SoundEngine.playDelayed(instance, delay)`.
     pub fn play_delayed(&mut self, instance: SoundInstance, delay: i32) -> InstanceId {
+        self.play_delayed_ramped(instance, None, delay)
+    }
+
+    /// `playDelayed` for a `TickableSoundInstance`, which needs its ramp to
+    /// survive the wait — see the drain in [`SoundEngine::tick`] for the part
+    /// that is easy to miss.
+    pub fn play_delayed_ramped(
+        &mut self,
+        instance: SoundInstance,
+        ramp: Option<crate::tickable::Ramp>,
+        delay: i32,
+    ) -> InstanceId {
         let id = InstanceId(self.next_id);
         self.next_id += 1;
-        self.queued.push((id, instance, self.tick_count + delay));
+        self.queued.push((id, instance, ramp, self.tick_count + delay));
         id
     }
 
@@ -1315,24 +1331,30 @@ impl SoundEngine {
 
         // The reclaim loop: a stopped handle whose grace period has expired.
         let tick_count = self.tick_count;
-        let mut requeue: Vec<(InstanceId, SoundInstance, i32)> = Vec::new();
+        let mut requeue: Vec<(InstanceId, SoundInstance, Option<crate::tickable::Ramp>, i32)> =
+            Vec::new();
         self.live.retain(|l| {
             if !l.handle_stopped || l.delete_time > tick_count {
                 return true;
             }
             if l.instance.should_loop_manually() {
-                requeue.push((l.id, l.instance.clone(), tick_count + l.instance.delay));
+                requeue.push((
+                l.id,
+                l.instance.clone(),
+                l.ramp.clone(),
+                tick_count + l.instance.delay,
+            ));
             }
             false
         });
         self.queued.extend(requeue);
 
-        // The delayed queue.
-        let due: Vec<(InstanceId, SoundInstance)> = {
+        // The delayed queue (`SoundEngine.java:286-298`).
+        let due: Vec<(InstanceId, SoundInstance, Option<crate::tickable::Ramp>)> = {
             let mut due = Vec::new();
-            self.queued.retain(|(id, inst, at)| {
+            self.queued.retain(|(id, inst, ramp, at)| {
                 if tick_count >= *at {
-                    due.push((*id, inst.clone()));
+                    due.push((*id, inst.clone(), ramp.clone()));
                     false
                 } else {
                     true
@@ -1340,8 +1362,22 @@ impl SoundEngine {
             });
             due
         };
-        for (_, inst) in due {
-            self.play(inst, sounds, world, device);
+        for (_, mut inst, ramp) in due {
+            // **`tickableSoundInstance.tick()` runs BEFORE `play`**
+            // (`SoundEngine.java:292-296`), not after and not instead. For a
+            // `DirectionalSoundInstance` that re-runs `setPosition()` against
+            // the camera, so a flash queued 30 ticks ago is placed relative to
+            // where the listener is *now* — not where they stood when it
+            // fired. Capturing the position at queue time is the natural
+            // implementation and gives a bearing that is stale by 1.5s.
+            let ramp = match ramp {
+                Some(mut r) => {
+                    r.tick(&mut inst, world);
+                    Some(r)
+                }
+                None => None,
+            };
+            self.play_ramped(inst, ramp, sounds, world, device);
         }
     }
 
@@ -1519,6 +1555,33 @@ pub fn instance_and_ramp(
                     minecart,
                     shadowed_pitch: 0.0,
                 }),
+            ))
+        }
+        crate::sounds::TickableSound::EndFlash { x_angle, y_angle } => {
+            // `DirectionalSoundInstance` overrides **nothing** on
+            // `AbstractSoundInstance` except the position: volume and pitch
+            // stay 1.0, `looping` stays false — it is the one tickable here
+            // that is a plain one-shot whose `tick()` only repositions — and
+            // the constructor's `setPosition()` sets `Attenuation.NONE`.
+            //
+            // NONE is what makes it a *directional* sound rather than a
+            // distant one: the bearing decides which ear hears it, and the
+            // ten-block radius never attenuates.
+            let (cx, cy, cz) = world.camera_position();
+            let (dx, dy, dz) = crate::tickable::direction_from_rotation(x_angle, y_angle);
+            let inst = SoundInstance {
+                looping: false,
+                delay: 0,
+                attenuation: Attenuation::None,
+                x: cx + dx * 10.0,
+                y: cy + dy * 10.0,
+                z: cz + dz * 10.0,
+                // No entity to gate on, and no `canPlaySound()` override.
+                ..SoundInstance::bare("minecraft:weather.end_flash", SoundSource::Weather)
+            };
+            Ok((
+                inst,
+                crate::tickable::Ramp::Directional { x_angle, y_angle },
             ))
         }
         crate::sounds::TickableSound::GuardianAttack { guardian } => {
@@ -2022,6 +2085,12 @@ pub struct SoundStats {
     /// starting anything, so folding them into `started` would make the
     /// commonest case invisible.
     pub biome_transitions: u32,
+    /// Handed to `playDelayed` rather than played (M149f). Counted apart from
+    /// `started` because it is not one: the sound is *scheduled*, and whether
+    /// it starts is decided 30 ticks later by the same `play` guards as
+    /// everything else. Folding it into `started` would report a sound that
+    /// may yet be refused.
+    pub queued_delayed: u32,
 }
 
 impl SoundStats {
@@ -2150,6 +2219,27 @@ impl SoundSystem {
             };
             match built {
                 Ok((instance, ramp)) => {
+                    // The End flash is the ONE sound in the client that
+                    // vanilla queues rather than plays: `ClientLevel.java:311`
+                    // is `playDelayed(..., 30)`, so it lands 1.5 s after the
+                    // flash that caused it — thunder's delay, applied to
+                    // light you have already seen.
+                    //
+                    // The delay belongs to the call site, not to the instance:
+                    // `SoundInstance.getDelay()` is a **manual-looping**
+                    // concern (`SoundEngine.java:318-320`), so routing this
+                    // through the instance's `delay` field would also change
+                    // how it loops.
+                    if matches!(ev, SoundEvent::Tickable(crate::sounds::TickableSound::EndFlash { .. }))
+                    {
+                        self.engine.play_delayed_ramped(
+                            instance,
+                            ramp,
+                            rewo_world::end_flash::SOUND_DELAY_IN_TICKS,
+                        );
+                        self.stats.queued_delayed += 1;
+                        continue;
+                    }
                     let (_, result) =
                         self.engine
                             .play_ramped(instance, ramp, &self.sounds, world, device);
@@ -2594,6 +2684,9 @@ mod tests {
         /// M141c.
         horizontal_speed: HashMap<i32, f64>,
         angry: Vec<i32>,
+        /// Only M149f's witnesses move this; `Default` is the origin, so
+        /// every older fixture is unaffected.
+        camera: (f64, f64, f64),
     }
 
     impl SoundWorld for TestWorld {
@@ -2652,7 +2745,7 @@ mod tests {
             None
         }
         fn camera_position(&self) -> (f64, f64, f64) {
-            (0.0, 0.0, 0.0)
+            self.camera
         }
     }
 
@@ -3344,6 +3437,119 @@ mod tests {
                 .contains(&ChannelCall::SetSelfPosition(narrowed, 64.0, 0.0)),
             "expected the f32-narrowed x, got {:?}",
             dev.calls_to(0)
+        );
+    }
+
+    // ---- M149f: the End flash, the one sound the client QUEUES -----------
+
+    /// It does not play. `ClientLevel.java:311` is `playDelayed(..., 30)`, so
+    /// the flash's sound lands 1.5 seconds behind the light — and until then
+    /// nothing is live and nothing is counted as started.
+    #[test]
+    fn the_end_flash_is_queued_rather_than_played() {
+        let idx = index_of(&["minecraft:weather.end_flash"]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let world = TestWorld::default();
+
+        sys.accept(
+            &[SoundEvent::Tickable(
+                crate::sounds::TickableSound::EndFlash {
+                    x_angle: -30.0,
+                    y_angle: 90.0,
+                },
+            )],
+            &registry(),
+            &world,
+            &mut dev,
+        );
+        assert_eq!(sys.stats.queued_delayed, 1, "stats: {:?}", sys.stats);
+        assert_eq!(sys.stats.started, 0, "nothing is live yet");
+        assert!(sys.engine.live_identifiers().is_empty());
+
+        // 29 ticks: still nothing. The 30th is the one.
+        for _ in 0..29 {
+            sys.engine
+                .tick(false, &sys.sounds, &world, &mut dev);
+        }
+        assert!(
+            sys.engine.live_identifiers().is_empty(),
+            "29 ticks in and it has already played — the delay is 30"
+        );
+        sys.engine
+            .tick(false, &sys.sounds, &world, &mut dev);
+        assert_eq!(
+            sys.engine.live_identifiers(),
+            vec!["minecraft:weather.end_flash"]
+        );
+    }
+
+    /// **The tick-before-play, and the reason it exists.**
+    ///
+    /// `SoundEngine.java:292-296` ticks a queued `TickableSoundInstance`
+    /// *before* handing it to `play`, and for a `DirectionalSoundInstance`
+    /// that re-runs `setPosition()` — so the sound is placed against the
+    /// camera at PLAY time, thirty ticks after the flash. Capturing the
+    /// position when it is queued is the natural implementation, produces a
+    /// bearing 1.5 seconds stale, and is invisible to a fixture whose camera
+    /// never moves.
+    ///
+    /// The bearing itself is fixed: the flash sounds from the direction it
+    /// appeared in, and the origin follows the listener.
+    #[test]
+    fn a_queued_directional_sound_is_placed_against_the_camera_at_play_time() {
+        let idx = index_of(&["minecraft:weather.end_flash"]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        // Queued while the listener is at the origin.
+        let mut world = TestWorld::default();
+        sys.accept(
+            &[SoundEvent::Tickable(
+                crate::sounds::TickableSound::EndFlash {
+                    x_angle: 0.0,
+                    y_angle: 0.0,
+                },
+            )],
+            &registry(),
+            &world,
+            &mut dev,
+        );
+
+        // …and played after they have walked a thousand blocks.
+        world.camera = (1000.0, 64.0, -500.0);
+        for _ in 0..30 {
+            sys.engine.tick(false, &sys.sounds, &world, &mut dev);
+        }
+
+        let placed = dev
+            .calls
+            .iter()
+            .filter_map(|(_, c)| match c {
+                ChannelCall::SetSelfPosition(x, y, z) => Some((*x, *y, *z)),
+                _ => None,
+            })
+            .last()
+            .expect("the flash played");
+
+        // `direction_from_rotation(0, 0)` is (0, 0, 1) — the -Z... in vanilla's
+        // convention, +Z at yaw 0 — scaled by ten, so exactly ten blocks from
+        // wherever the listener now is.
+        let d = crate::tickable::direction_from_rotation(0.0, 0.0);
+        let want = (
+            1000.0 + d.0 * 10.0,
+            64.0 + d.1 * 10.0,
+            -500.0 + d.2 * 10.0,
+        );
+        assert!(
+            (placed.0 - want.0).abs() < 1e-6
+                && (placed.1 - want.1).abs() < 1e-6
+                && (placed.2 - want.2).abs() < 1e-6,
+            "placed {placed:?}, expected {want:?} — a position captured at QUEUE time would be within ten blocks of the origin"
+        );
+        // And it is nowhere near where it was queued, which is the whole claim.
+        assert!(
+            placed.0.abs() > 100.0,
+            "still at the origin: the queued instance was never re-ticked"
         );
     }
 
