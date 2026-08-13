@@ -424,8 +424,10 @@ F3 overlay and chat/coords text — nothing more.
 > (the language map underneath all of it), **M56** (the image pass) and **M58**
 > (the bundle grid's chrome). **4** closed as **M51**. Of **5**: health bars
 > shipped (**M53** spec → **M55** data → **M59** render), scoreboard / tab list
-> has its **data** half only (**M62**, **M65** — nothing renders it), and block
-> highlight configurability is untouched. **1 remains USER-GATED** (below).
+> is **both halves now** — the sidebar rendered in **M132** and the tab list in
+> **M151**, which found `rewo_gpu::tab_list` sitting on 41 passing tests with
+> ZERO consumers since M52f — and block highlight configurability is
+> untouched. **1 remains USER-GATED** (below).
 >
 > The wider point: this document ranks *features*, and the project has since
 > exhausted `REWO_PACKET_COVERAGE.md`'s actionable classes, so the live choice
@@ -443,9 +445,9 @@ F3 overlay and chat/coords text — nothing more.
 4. **Screenshot tooling** (#5). `rewo-gpu/src/offscreen.rs` already renders
    headless PNGs — the best demand-to-effort ratio not already covered.
 5. **Block highlight / outline** (#9) — the targeting outline already exists
-   from the M-series; configurability is the whole gap. Then **scoreboard /
-   tab list** (#10) and **player / mob health bars** (#13), reusing M27's
-   world-space and screen-space text.
+   from the M-series; configurability is the whole gap. ~~Then **scoreboard /
+   tab list** (#10) and **player / mob health bars** (#13)~~ — both shipped:
+   health bars M53/M55/M59, the sidebar M132 and the tab list M151.
 
 Deliberate deprioritisations under this policy, flagged so they read as
 decisions rather than oversights. Note they share a shape — **a low mod count

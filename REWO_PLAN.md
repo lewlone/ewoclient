@@ -143,10 +143,10 @@ not close the listening pass, and its module doc carries §4's "What the gate
 does NOT assert" paragraph verbatim** so a future session reading only the gate
 still learns that a green run is not evidence this client makes a sound.
 
-Current measurement, taken 2026-08-13 after M149g (merged to `main`; no branch
-or worktree holds a commit off it):
-**3172 tests, 0 failures** (**world 1187, net 1133, gpu 275, data 228, app 202,
-mesh 45, proto 16, audio 86** — read off the runner per crate; they sum to 3141).
+Current measurement, taken 2026-08-14 on the MERGED tree (soundshot + M139 +
+M151 all in; this is a branch, not `main`):
+**3214 tests, 0 failures** (**world 1187, net 1142, gpu 275, data 228, app 221,
+mesh 45, proto 16, audio 221U** — read off the runner per crate).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -163,9 +163,13 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` **46/46** with validation ON and 0
-validation errors** — r45 arrived with M138a, and the whole thing reproduces with
-`python tools/render_check.py`, which stands up a fresh server and carries both
+34/34, `mobshot` 246/246, `sidebarshot` 17/17, **`tablistshot` 26/26** (new,
+M151), **`live --render-check` **47/47** with validation ON and 0
+validation errors** — r46 arrived with M147 and **r47 with M151**, and the whole
+thing reproduces with `python tools/render_check.py`, which stands up a fresh
+server, **builds first** (it used only to check the binary existed, so a source
+change not followed by a manual `cargo build` was graded against the previous
+compile — M151 lost a mutation verification to exactly that) and carries both
 caller requirements; demo PNG
 `2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C
 **12** — M96–M107 consume packets M93y already decoded, M108 resolved
@@ -175,8 +179,11 @@ caller requirements; demo PNG
 this file say** — those sentences are historical records of the count *at the
 time* and are correct as such. Re-measured from a cold start on 2026-08-08 by
 running every one, and again after M125, M126 and the M127–M134 integration:
-all green, **0 validation errors**. `soundshot` (2026-08-13) is the newest,
-and `sidebarshot` (17) came from M132. Enumerate them rather
+all green, **0 validation errors**; re-measured again on 2026-08-14, when the
+count reached **275ATES** — `sidebarshot` (17) came from M132, **`soundshot`**
+(28 default / 48 under `--features audio`) and **`tablistshot`** (26) are the
+two newest, and `blockentityshot` reads **177** rather than the 172 the list
+below records. Enumerate them rather
 than trusting a list, since the list is what rots:
 
 ```
@@ -22892,3 +22899,127 @@ it, by construction.
 **Measured:** 3141 tests / 0 failures (world 1171, net 1121, gpu 275, data 228,
 app 199, mesh 45, proto 16, audio 86); 34 serverless gates green with **0
 validation errors**; battery **26/26** with a surviving no-op control.
+
+### M151 — the tab list renders (2026-08-14)
+
+`crates/rewo-gpu/src/tab_list.rs` was 1209 lines, 41 passing tests and **zero
+consumers**. The only references to it anywhere under `crates/` were its own
+`pub mod` line and an unrelated string in a `containershot` witness name.
+Pressing Tab in `rewo live` showed nothing, and had shown nothing since M52f
+first landed the module in July. This is the M86 shape a second time — a
+feature fully built, fully tested and completely absent from the product — and
+CLAUDE.md was already carrying the tell without drawing the conclusion: M136's
+correction of the spectator colour noted that *"nothing consumed the constant …
+which is exactly why it survived"*.
+
+**Four inputs were already crossing the wire into a discard.** `listed`
+(decoded since M62, stored nowhere), `show_hat` (the same), the
+`UPDATE_DISPLAY_NAME` component (`let _ = r.nbt()?`), and `onlineMode` — the
+login packet's first trailing boolean, whose only mention in the whole tree was
+a **test fixture writing it**.
+
+`listed` is the one that matters most and reads backwards: it is a **set**, and
+absence means excluded. `PlayerTabOverlay.getPlayerInfos` iterates
+`getListedOnlinePlayers()`, and the only thing that ever adds to that set is
+`UPDATE_LISTED` with `true` (`ClientPacketListener.java:2038`), so a player the
+server never sent the action for is not listed. That is what lets a plugin keep
+an NPC or a vanished player in `playerInfoMap`, where their skin and team still
+resolve, and out of the list. A stored `bool` with a `true` default shows every
+one of them.
+
+`UPDATE_DISPLAY_NAME` needs an `Option<Option<Nbt>>` and all three states are
+real: the action bit absent is "unchanged", present-with-null is "clear"
+(`applyPlayerInfoUpdate`'s arm is an unconditional
+`setTabListDisplayName(entry.displayName())`), and present-with-a-component is
+the override. It is also the one action in this packet with a variable-length
+payload, so the old discard was load-bearing in a way the neighbouring ones
+were not.
+
+`showHat` **defaults to true** (`PlayerInfo.java:21`) — the one absent value in
+that state that does not mean "the server has not said".
+
+`onlineMode` is a **width** input, not a visibility one:
+`extractRenderState:145` reads it as `showHead` and it changes `slotWidth`, so
+an offline server's rows are nine pixels narrower and every name moves.
+
+**Four more that invert, in the renderer.**
+
+1. **The sort key and the drawn name are different strings.**
+   `PLAYER_COMPARATOR`'s last key is `p.getProfile().name()`, while
+   `maxNameWidth` and every row measure `getNameForDisplay(info)`, which
+   prefers the server's override. A server that renames everyone to `[VIP] x`
+   still sorts them by their real names — and the two readings are
+   indistinguishable on any server that sets no overrides, which is most of
+   them.
+2. **Only the fallback name is team-formatted.** Vanilla's ternary puts
+   `formatNameForTeam` on the else branch alone, so formatting unconditionally
+   doubles a team prefix on every renamed player.
+3. **The spectator treatment is an ALPHA.** `-1862270977` is `0x90FFFFFF`, and
+   `Font.getTextColor:336` keeps a styled span's own RGB while taking the
+   default argument's alpha — so a spectator with a coloured display name is
+   faded, not recoloured. Folding it into the base colour looks equivalent and
+   is not. (M136 corrected M52f's grey; this is the half a renderer needs.)
+4. **A row's background is per row.** `PlayerTabOverlay` fills once per slot
+   where `displayScoreboardSidebar` one class over fills one rect for all its
+   rows — M132's `p13` pins the sidebar's shape and this is the other one.
+
+**`KeyboardHandler.keyPress` is asymmetric about the key.** The press is gated
+on `handlesGameInput` (no screen open) and the release is unconditional
+(`:519-552`), so Tab with an inventory up does not open the list while a
+release always takes it down. Handling both in one place leaves the list on
+screen behind an inventory with nothing able to dismiss it: hold Tab, press E,
+let go.
+
+**`HudBlit` is the first HUD sprite the pass does not place itself.** Every
+sprite before it took a position computed from the screen size and a hard-coded
+layout; a ping icon's column comes from the slot solve, so the list is an input
+exactly as `HudFill` is. It is emitted after every fill, because a row's icon
+sits inside that row's own background.
+
+**Where the join lives, and why not beside the sidebar's.** `TabEntry` and the
+layout are in `rewo-gpu`, the session is in `rewo-net`, and neither crate
+depends on the other — so unlike `resolve_sidebar`, which is a five-line
+adapter over a same-crate model, the tab list has to meet in `rewo-app`. Split
+M97's way: `tab_list_view::resolve` takes closures and is unit-tested, and the
+session lookups stay in `live_cmd`'s adapter.
+
+**Two gaps, stated rather than half-built.** The 8x8 faces: `showHead` is
+honoured so the geometry is vanilla's, but Rewo has no GUI-side path that can
+sample a 64x64 skin at all — the skin pool is in the ENTITY atlas, the HUD
+atlas is built once in `HudPass::new` with no runtime upload entry point, and
+the fetched RGBA is dropped after `SkinLoader::poll_uploads`. That is a
+dynamic-texture pool, not a sprite. And `RenderType::HEARTS`: the 90-pixel
+column is reserved, because `widthForScore` moves every name, and the hearts
+are not drawn (`extractTablistHearts` needs eight more sprites and a per-uuid
+`HealthState` blink clock). The numeric LIST objective IS drawn, right-aligned,
+in `PLAYER_LIST_DEFAULT` **yellow** — which is not the sidebar's red and not
+white.
+
+**The battery's finding is about instruments, and three of its four gaps were
+one gap.** "UPDATE_LISTED only ever ADDS", "player_info_remove leaves the
+departed player listed forever" and "showHat defaults to FALSE" all SURVIVED
+the first run, because the only tests of that arithmetic were COPIES of it —
+one in `play.rs`'s own test module and one in `tablistshot`'s fixture, which is
+M45's `install_shapes` shape twice in one milestone. `PlaySession` owns a
+socket and has no test module anywhere in the repo (M71), so anything decided
+inside it is untestable by construction. The three fields became
+`TabListPlayers`, a free type both former copies now call; `PlaySession` keeps
+one delegating line per accessor, and the battery still names the remaining
+call site as a SURVIVOR rather than pretending otherwise. The fourth gap was a
+gate fixture that could not express its claim: `tablistshot`'s display
+overrides were the colour code plus each player's own profile name, so the
+flattened override IS the profile name and both sort readings agree.
+
+**And `tools/render_check.py` did not build.** It checked only that the binary
+existed, so M151's first attempt to prove r47 non-vacuous compiled nothing and
+read the unmutated number — the leftover-mutant-binary hazard running the other
+way round. It builds now.
+
+**Measured (2026-08-14):** 3200 tests / 0 failures (world 1187, net 1142, gpu
+275, data 228, app 221, mesh 45, proto 16, audio 86); **35** serverless gates
+green with **0 validation errors**, `tablistshot` 26/26 being the new one;
+`live --render-check` **47/47** with validation ON and 0 validation errors;
+demo PNG `2cc56b4acbfb92cb`, byte-identical; battery **25/25** with a surviving
+no-op control and one named survivor. r47 verified non-vacuous three ways
+against a real server: the key ignored gives 7277 of 7277 frames, `listed`
+ignored gives 5 rows where 3 is correct, and no resolver at all gives 0.

@@ -54,6 +54,8 @@ mod stats;
 mod stats_view;
 mod statshot_cmd;
 mod swingshot_cmd;
+mod tab_list_view;
+mod tablistshot_cmd;
 mod view_cmd;
 mod hudshot_cmd;
 mod weathershot_cmd;
@@ -203,6 +205,8 @@ enum Command {
     /// assert the geometry against literals transcribed from
     /// `displayScoreboardSidebar` with `--check` (no server; Vulkan required).
     Sidebarshot(sidebarshot_cmd::SidebarshotArgs),
+    /// M151 tab-list oracle: rows, bands, ping icons, header/footer, score column.
+    Tablistshot(tablistshot_cmd::TablistshotArgs),
     /// M83's locator-bar oracle: the `waypoint` packet and the HUD strip.
     Locatorshot(locatorshot_cmd::LocatorshotArgs),
     /// M82 screen-framework + death-screen oracle: drive a raw
@@ -361,6 +365,7 @@ fn main() {
         Some(Command::Abilityshot(ab_args)) => abilityshot_cmd::run(ab_args),
         Some(Command::Titleshot(t_args)) => titleshot_cmd::run(t_args),
         Some(Command::Sidebarshot(sb_args)) => sidebarshot_cmd::run(sb_args),
+        Some(Command::Tablistshot(tl_args)) => tablistshot_cmd::run(tl_args),
         Some(Command::Locatorshot(l_args)) => locatorshot_cmd::run(l_args),
         Some(Command::Deathshot(d_args)) => deathshot_cmd::run(d_args),
         Some(Command::Statshot(s_args)) => statshot_cmd::run(s_args),
