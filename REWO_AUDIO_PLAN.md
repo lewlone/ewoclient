@@ -389,6 +389,95 @@ on the windowed path) + **the human listening pass** (§4).
 > records and the whole streaming pool is gone.
 
 ### M139 — the loopback oracle
+
+> **SHIPPED 2026-08-13.** `tools/openal_loopback_oracle/` drives vanilla's own
+> `Channel`/`Listener`/`SoundBuffer`/`OpenAlUtil` against the real OpenAL Soft
+> 1.25.1 through an `ALC_SOFT_loopback` device; `vectors.tsv` is the checked-in
+> capture and fourteen tests in `crates/rewo-audio/src/mixer.rs` consume it. No
+> JVM at gate time. **17/17 mutations as expected**, one deliberate survivor.
+> **The product is the table below, and every row of it is a divergence rather
+> than a target.**
+>
+> | what | Rewo vs OpenAL |
+> |---|---|
+> | distance curve | **exact**, every distance, and exactly 0 at the radius |
+> | hard left / hard right | **exact** (< 0.002 dB) |
+> | left/right axis at any yaw or listener pitch | **agrees** |
+> | source in front | **+1.4903 dB** (Rewo louder) |
+> | source behind | **+4.8546 dB** |
+> | source overhead | **+3.0103 dB** |
+> | resampler | **~23 dB** more distortion, measured inside OpenAL |
+> | stereo buffer at 8/16 blocks | **-6.0206 dB** (Rewo attenuates, vanilla does not) |
+> | 32 coherent voices | **+2.7913 dB**, and ~74 dB more distortion |
+>
+> **The pan divergence is structural, not a curve to fit.** OpenAL puts a
+> source in front at 0.5957 of the hard-panned level and one behind at 0.4043,
+> **summing to 1.0000** — a directional decode. Rewo's pan input is
+> `dot(direction, right)`, which is **zero for both bearings**, so no function
+> of it can separate them. Closing this means a different pan input, i.e. a
+> different design.
+>
+> **Two findings this section did not predict.** (1) OpenAL does not
+> **attenuate** a multi-channel buffer either, not just not pan it — `stereo.d1`
+> and `stereo.d8` are byte-identical — while Rewo applies `linear_gain`
+> regardless of channel count, so it fades a stereo source vanilla holds at full
+> level. That settles §5's `[concurring]` goat-horn claim and adds a half to it.
+> (2) `AL_SOURCE_RELATIVE` uses a **fixed listener-local frame**: yaw-0, yaw-90
+> and walked-listener rows are byte-identical, where Rewo pans with the
+> listener's current `right()`. **Unreachable in vanilla today** — every relative
+> instance in 26.2 sits at the origin (`SimpleSoundInstance.java:26-60`'s three
+> relative factories pass `0,0,0`; `BiomeAmbientSoundsHandler.LoopSoundInstance`
+> and both `UnderwaterAmbientSoundInstances` never write a position) — so it is
+> recorded, not filed as a fault.
+>
+> **This section's claim that a harness can drive `Library` is wrong.**
+> `Library.init` has one entry point and opens the device *inside itself*
+> (`Library.java:63` → `:231` `alcOpenDevice`), with no overload, setter or
+> seam, and it is monolithic so there is no "rest of init" to run after a
+> reflective poke. The harness re-implements `init`'s body
+> (`Library.java:61-120`) with `alcLoopbackOpenDeviceSOFT` substituted for that
+> one call; everything downstream is vanilla's own class. That is the only place
+> it is not vanilla's code, and it says so in its own doc.
+>
+> **And §4's "Catmull-Rom resampling" is wrong** — `sample_at`
+> (`mixer.rs:412-432`) is two-point **linear** interpolation, as its own module
+> doc has always said. Corrected here rather than in §4 to avoid colliding with
+> concurrent work in that section.
+>
+> **Six traps, five measured and one inherited.** Capture `ALC_FLOAT_SOFT`, not
+> `ALC_SHORT_SOFT`: the short path is dithered (~23% of bytes differ between
+> identical renders) and would put noise in a checked-in file, where float is
+> bit-exact — two independent captures here are byte-identical. Discard the
+> first chunk after every `alSourcePlay`. Build the classpath from `26.2.json`,
+> never a jar glob. Hash the stimulus into every row, so a one-ULP `Math.sin` /
+> `f64::sin` disagreement fails loudly instead of comparing two different
+> sounds. **Write the listener in every stimulus** — OpenAL's untouched listener
+> is `INITIAL` facing -Z and `listener_basis(0,0)` faces +Z, a half turn apart,
+> and the first draft of the capture omitted it and "found" a left/right
+> inversion that did not exist. And **the context carries state between
+> stimuli**: the 32-voice row leaves the output limiter disturbed for far longer
+> than a second, which showed up as two byte-identical stimuli differing by
+> 3.2%. Settle is 60 s of rendered silence, and it is not trusted but witnessed
+> — `ctl.posx.first` / `ctl.posx.last` bracket the run and the consumer asserts
+> they agree.
+>
+> **Two traps the feasibility pass missed, both found by running it.**
+> `26.2.jar` is **signed** (`META-INF/MOJANGCS.*`), so an unsigned class in
+> `com.mojang.blaze3d.audio` is refused by `ClassLoader.checkCerts` — checking
+> for sealing and `module-info` does not cover it, and the error names a
+> *vanilla* class, so it reads like a corrupt jar. The harness therefore lives
+> outside the package and reaches `Channel.create()` by reflection, which loads
+> every vanilla class unchanged and still signed. And the first capture's
+> distortion statistic was **reading its own instrument**: under a Hann window
+> the fundamental's summed sidelobe leakage floors it near -46 dB, which is
+> exactly where the default resampler's rows landed, so the resampler gaps were
+> lower bounds without saying so. Blackman-Harris drops the floor to -85.5 dB,
+> read directly off the degenerate pitch-2.0 row where no interpolation happens.
+>
+> **What it does not close.** Nothing here opens an audio device, so none of it
+> is evidence that the client makes a sound; §4's "What the gate does NOT
+> assert" stands unchanged and the listening pass is still owed.
+
 **Feasible, verified:** 26.2 pins `org.lwjgl:lwjgl-openal:3.4.1` **[read from `26.2.json`]** — and note both `3.3.3/` and `3.4.1/` are on disk **[read]**, which is how one survey graded the wrong jar. The 3.4.1 jar carries `SOFTLoopback`/`SOFTHRTF`/`SOFTOutputLimiter` and the shipped DLL is OpenAL Soft 1.25.1 exporting `alcLoopbackOpenDeviceSOFT` / `alcRenderSamplesSOFT` / `alcIsRenderFormatSupportedSOFT` **[concurring, two independent reads]**. A Java harness drives **vanilla's own** `Library`/`Listener`/`Channel` against a loopback device and dumps PCM — the M37 and M125 `tools/java_tostring_oracle/` precedent, checking in the **vectors** so no JVM is needed at gate time. It must pin `ALC_FORMAT_CHANNELS_SOFT`, `ALC_FORMAT_TYPE_SOFT`, frequency, `ALC_HRTF_SOFT`, `ALC_OUTPUT_LIMITER_SOFT` **and read `ALC_MONO_SOURCES` back** (the artefact that settles §0.1), or the vectors rot silently when the DLL's default output mode changes — and a checked-in vector file that stops matching looks like a Rewo regression.
 
 ### M140 — breadth
