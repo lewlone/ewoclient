@@ -6189,13 +6189,23 @@ actively false. What it found is more useful than the diffs:
   **M73 built that raycast** and the clause resolves from it. Corrected in
   place rather than rewritten, because the reasoning for suppressing was sound.
 - **The mixed-CRLF file list had drifted in BOTH directions**, was measured to
-  exactly four on 2026-08-07 — and **is now empty**. A second measurement the
-  same day, after M113, found **zero mixed files** under `crates/rewo-*`: every
-  `.rs` is all-CRLF, `core.autocrlf` is false and there is no `.gitattributes`,
-  so the working tree is exactly what is stored. The hazard has inverted — the
-  documented failure needed a *mixed* file to normalise, and the remaining risk
-  is a tool that writes LF into a CRLF file. `REWO_PLAN.md` §0.0 gotcha 9
-  carries the current form. **Re-measure rather than trust any of this.**
+  exactly four on 2026-08-07 — and the "second measurement the same day" this
+  bullet used to report, which found *zero* mixed files and *every* `.rs`
+  all-CRLF, **was produced by a broken detector and is the exact opposite of
+  the truth.** `core.autocrlf` is false and there is no `.gitattributes`, so
+  the working tree is what is stored — and reading every `.rs` under `crates/`
+  as **bytes** on 2026-08-13 gives **378 all-LF, one all-CRLF
+  (`rewo-gpu/src/cem.rs`), four mixed** (`rewo-app/src/mobshot_cmd.rs`,
+  `rewo-gpu/src/vanilla_hier.rs`, `rewo-world/src/chunk.rs`,
+  `rewo-world/src/light.rs`). The tree is overwhelmingly LF and the hazard has
+  **not** inverted: it is still a scripted edit normalising one of those five.
+  `REWO_PLAN.md` §0.0 gotcha 9 has carried the corrected form since M126 —
+  including the `grep -c $'\r$'` failure that produced the wrong version — and
+  is the one to read. **This bullet is left here rather than deleted because
+  M149b was misled by it**: the corrected fact and the broken one lived in two
+  files, a session read the nearer one, normalised three LF files, and turned a
+  50-line change into a 3,256-line diff. **Re-measure with a byte count; never
+  with a shell pattern containing a raw CR.**
 - `README.md`'s "What's next" offered two items that had both shipped (merging
   the Rewo branch; an inventory model), and its gate count said fourteen where
   there are **33**.

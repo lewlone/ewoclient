@@ -308,6 +308,27 @@ pub struct DimensionTypeDef {
     pub cloud_color: i32,
     /// `minecraft:visual/cloud_height`, in blocks.
     pub cloud_height: f32,
+    /// `default_clock` — `Optional<Holder<WorldClock>>`
+    /// (`DimensionType.java:45, 101`), as its registry id.
+    ///
+    /// The clock a dimension reads when it asks for "the time" without naming
+    /// one: `Level.getDefaultClockTime()` (`Level.java:889-891`) is
+    /// `clockManager().getTotalTicks(dimensionType().defaultClock())`. The
+    /// Overworld's is `minecraft:overworld` and **the End's is
+    /// `minecraft:the_end`** — a genuinely different clock, which a vanilla
+    /// server sends alongside the Overworld's in every `set_time`.
+    ///
+    /// `None` is a real state and not a stand-in for the Overworld's:
+    /// `the_nether.json` declares no `default_clock` at all, and
+    /// `getClockTimeTicks`'s `.orElse(0L)` makes that a **permanent zero**
+    /// rather than a clock that advances. Substituting a default here would
+    /// hand a caller a ticking clock where vanilla has a frozen one.
+    ///
+    /// Held as the id string rather than a resolved index because the
+    /// `minecraft:world_clock` registry and this one arrive in the same
+    /// `registry_data` batch with no ordering guarantee between them —
+    /// M62's lazy two-step lookup, for the same reason.
+    pub default_clock: Option<String>,
     /// `minecraft:audio/ambient_sounds` — the **base** a biome may replace.
     ///
     /// This layer is the whole reason an Overworld cave makes cave sounds:
@@ -369,6 +390,11 @@ impl DimensionTypeDef {
             sky_light_factor: DEFAULT_SKY_LIGHT_FACTOR,
             cloud_color: DEFAULT_CLOUD_COLOR,
             cloud_height: DEFAULT_CLOUD_HEIGHT,
+            // The Overworld's clock, for the same reason as the fields above:
+            // an unresolved holder should keep time like the Overworld. `None`
+            // is available and would be worse — it means a *permanent zero*,
+            // not "fall back to the default clock".
+            default_clock: Some("minecraft:overworld".to_string()),
             // The Overworld's base, to match every other field of this
             // fallback — an unresolved holder should sound like the Overworld,
             // not like a dimension that declared silence.

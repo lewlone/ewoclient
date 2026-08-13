@@ -84,6 +84,11 @@ pub struct JsonDimension {
     /// defaulted so the gate can actually catch a wrong cloud colour.
     pub cloud_color: i32,
     pub cloud_height: f32,
+    /// `default_clock` — the raw identifier string, read straight off the
+    /// file. Absent is a real state (`the_nether.json` declares none), and
+    /// `getClockTimeTicks`'s `.orElse(0L)` makes it a permanent zero rather
+    /// than the Overworld's clock.
+    pub default_clock: Option<String>,
     /// `audio/ambient_sounds`. Parsed HERE, from the JSON, by hand — this
     /// module is the M16 gate's independent oracle and shares no code with
     /// `rewo_net::biome_parse`, so an agreement between the two is evidence
@@ -129,6 +134,7 @@ impl JsonDimension {
             sky_light_factor: self.sky_light_factor,
             cloud_color: self.cloud_color,
             cloud_height: self.cloud_height,
+            default_clock: self.default_clock.clone(),
             ambient_sounds: self.ambient_sounds.clone(),
             background_music: self.background_music.clone(),
         }
@@ -187,6 +193,7 @@ impl JsonDimension {
         eq!("ambient_sounds", d.ambient_sounds, want.ambient_sounds);
         eq!("background_music", d.background_music, want.background_music);
         eq!("cloud_height", d.cloud_height, want.cloud_height);
+        eq!("default_clock", d.default_clock, want.default_clock);
         eq!("sky_light_color", d.sky_light_color, want.sky_light_color);
         eq!(
             "sky_light_factor",
@@ -414,6 +421,16 @@ fn load_one(data_root: &Path, name: &str, path: &Path) -> Result<JsonDimension, 
             .ok_or_else(|| at(&format!("attribute `{K_CLOUD_HEIGHT}` is not a number")))?
             as f32,
     };
+    // `default_clock` is a top-level field, not an attribute — a bare
+    // identifier string, or absent.
+    let default_clock = match root.get("default_clock") {
+        None => {
+            defaulted.push("default_clock (absent = a PERMANENT zero, not the overworld clock)");
+            None
+        }
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(_) => return Err(at("`default_clock` is not a string")),
+    };
     let sky_light_factor = match attr(K_SKY_LIGHT_FACTOR) {
         None => {
             defaulted.push("attributes.visual/sky_light_factor");
@@ -481,6 +498,7 @@ fn load_one(data_root: &Path, name: &str, path: &Path) -> Result<JsonDimension, 
         sky_light_factor,
         cloud_color,
         cloud_height,
+        default_clock,
         ambient_sounds,
         background_music,
         timelines_raw,
