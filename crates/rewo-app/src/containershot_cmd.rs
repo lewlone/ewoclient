@@ -51,6 +51,8 @@ pub struct ContainershotArgs {
 struct Checker {
     witnessed: usize,
     failures: Vec<String>,
+    /// Every witness id already recorded, so a collision fails loud (M152).
+    seen: std::collections::HashSet<String>,
 }
 
 impl Checker {
@@ -58,10 +60,37 @@ impl Checker {
         Self {
             witnessed: 0,
             failures: Vec::new(),
+            seen: std::collections::HashSet::new(),
         }
     }
 
     fn record(&mut self, name: &str, pass: bool, detail: impl std::fmt::Display) {
+        // A witness id must be unique, and nothing used to check (M152).
+        //
+        // This gate reports `observed: N / N` and a count cannot see a
+        // collision, so two witnesses could share an id indefinitely — which is
+        // exactly what had happened: M92's brewing/beacon set and M104's
+        // recipe-book overlay set both ran as `o1`..`o7`, fourteen witnesses
+        // under seven names. Nothing was untested, but a FAIL naming `o3` did
+        // not identify which one, and that is the same drift the M127–M134
+        // integration hit when three branches each minted an `r42` and git
+        // merged all three silently.
+        //
+        // Cheap, and it fails loud at the moment the id is minted rather than
+        // at review time.
+        // Key on the ID PREFIX, not the whole name. The first cut of this
+        // check keyed on the full string and passed — because the two sets'
+        // suffixes differ (`o1.the_bubbles_bottom_edge…` against
+        // `o1.the_overlay_covers_the_cell…`), so nothing collided. It measured
+        // something adjacent to its claim while the collision it was written
+        // for sat in front of it. The prefix is what a FAIL line names and so
+        // the only part that has to be unique.
+        let id = name.split('.').next().unwrap_or(name);
+        if !self.seen.insert(id.to_string()) {
+            self.failures.push(format!("{name} (DUPLICATE witness id `{id}`)"));
+            println!("[containershot] FAIL  {name}: witness id `{id}` already ran");
+            return;
+        }
         let status = if pass { " ok " } else { "FAIL" };
         println!("[containershot] {status}  {name}: {detail}");
         if pass {
@@ -223,11 +252,11 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
         let iron = id_of("minecraft:iron_ingot")?;
         let stick = id_of("minecraft:stick")?;
         let andesite = id_of("minecraft:andesite")?;
-        let iron_p = crate::live_cmd::item_props(&items, iron)
+        let iron_p = crate::live_cmd::item_props(&items, iron, None)
             .ok_or("containershot: item_props declined a real id")?;
-        let stick_p = crate::live_cmd::item_props(&items, stick)
+        let stick_p = crate::live_cmd::item_props(&items, stick, None)
             .ok_or("containershot: item_props declined a real id")?;
-        let andesite_p = crate::live_cmd::item_props(&items, andesite)
+        let andesite_p = crate::live_cmd::item_props(&items, andesite, None)
             .ok_or("containershot: item_props declined a real id")?;
         c.record(
             "d1.the_live_client_resolves_the_beacon_payment_tag",
@@ -261,13 +290,77 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
                 andesite_p.stonecuttable, stick_p.stonecuttable, iron_p.stonecuttable
             ),
         );
+        // M152 — the smithing table's three sets, and the ONLY wire-derived
+        // predicates `item_props` produces. Same reason as d1/d3: every
+        // smithing unit test hand-builds its `ItemProps`, so without this the
+        // three lookups could be crossed or wired to nothing and stay green.
+        //
+        // The crossing is the mutation that matters. Three separate sets going
+        // into three separate fields is exactly the shape where a copy-paste
+        // swap survives everything that does not resolve real ids.
+        {
+            use rewo_net::recipe_book::SmithingSets;
+            let tmpl = id_of("minecraft:netherite_upgrade_smithing_template")?;
+            let base = id_of("minecraft:diamond_chestplate")?;
+            let addition = id_of("minecraft:netherite_ingot")?;
+            let sets = SmithingSets {
+                template: vec![tmpl],
+                base: vec![base],
+                addition: vec![addition],
+            };
+            let p = |id: i32| {
+                crate::live_cmd::item_props(&items, id, Some(&sets))
+                    .ok_or("containershot: item_props declined a real id")
+            };
+            let (tp, bp, ap) = (p(tmpl)?, p(base)?, p(addition)?);
+            c.record(
+                "d13.the_live_client_maps_each_smithing_set_to_its_own_slot",
+                tp.smithing_template
+                    && !tp.smithing_base
+                    && !tp.smithing_addition
+                    && bp.smithing_base
+                    && !bp.smithing_template
+                    && !bp.smithing_addition
+                    && ap.smithing_addition
+                    && !ap.smithing_template
+                    && !ap.smithing_base,
+                format!(
+                    "production item_props against a real SmithingSets: template(id {tmpl}) \
+                     t/b/a={}/{}/{}, base(id {base}) t/b/a={}/{}/{}, addition(id {addition}) \
+                     t/b/a={}/{}/{} — any two of the three crossed and this fails",
+                    tp.smithing_template,
+                    tp.smithing_base,
+                    tp.smithing_addition,
+                    bp.smithing_template,
+                    bp.smithing_base,
+                    bp.smithing_addition,
+                    ap.smithing_template,
+                    ap.smithing_base,
+                    ap.smithing_addition,
+                ),
+            );
+            // And with no packet the same call must refuse everything, which is
+            // vanilla's `getOrDefault(id, RecipePropertySet.EMPTY)`. Without
+            // this half, a resolver that answered `true` unconditionally would
+            // satisfy d4's positive terms.
+            let none = crate::live_cmd::item_props(&items, base, None)
+                .ok_or("containershot: item_props declined a real id")?;
+            c.record(
+                "d14.before_update_recipes_a_smithing_table_refuses_everything",
+                !none.smithing_template && !none.smithing_base && !none.smithing_addition,
+                format!(
+                    "with no packet: t/b/a={}/{}/{} — EMPTY refuses every item",
+                    none.smithing_template, none.smithing_base, none.smithing_addition
+                ),
+            );
+        }
         // M93e — the grindstone's PROTOTYPE half. `isDamageableItem` needs
         // `has(MAX_DAMAGE) && has(DAMAGE)`, and for every vanilla item both
         // come from the prototype, so if this resolver returned false the
         // grindstone would refuse every tool while all six unit witnesses —
         // which hand-build the props — stayed green.
         let sword = id_of("minecraft:diamond_sword")?;
-        let sword_p = crate::live_cmd::item_props(&items, sword)
+        let sword_p = crate::live_cmd::item_props(&items, sword, None)
             .ok_or("containershot: item_props declined a real id")?;
         c.record(
             "d5.the_live_client_resolves_the_damageable_prototype_components",
@@ -291,7 +384,7 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
         let map = id_of("minecraft:map")?;
         let pane = id_of("minecraft:glass_pane")?;
         let filled = id_of("minecraft:filled_map")?;
-        let props_of = |id: i32| crate::live_cmd::item_props(&items, id);
+        let props_of = |id: i32| crate::live_cmd::item_props(&items, id, None);
         let three = [paper, map, pane]
             .iter()
             .all(|&i| props_of(i).is_some_and(|p| p.cartography_additional));
@@ -454,7 +547,7 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
         // Stone is stonecuttable and NOT smeltable; iron ore is the reverse.
         // Wiring both fields to one table would leave d3 green.
         let iron_ore = id_of("minecraft:iron_ore")?;
-        let ore_p = crate::live_cmd::item_props(&items, iron_ore)
+        let ore_p = crate::live_cmd::item_props(&items, iron_ore, None)
             .ok_or("containershot: item_props declined a real id")?;
         c.record(
             "d4.the_stonecutter_and_furnace_sets_are_different_data",
@@ -2681,7 +2774,7 @@ fn overlays(
         // arranged to avoid.
         let (ov1x, ov1y) = btn(1, 2, 12, 12);
         c.record(
-            "o1.the_overlay_covers_the_cell_that_opened_it",
+            "o28.the_overlay_covers_the_cell_that_opened_it",
             at_book(&ov, ov1x, ov1y) == [147, 107, 107]
                 && at_book(&open, ov1x, ov1y) != [147, 107, 107],
             format!(
@@ -2695,7 +2788,7 @@ fn overlays(
         // craftable one is the plain sprite rather than the panel showing
         // through.
         c.record(
-            "o2.a_craftable_button_and_an_uncraftable_one_differ",
+            "o22.a_craftable_button_and_an_uncraftable_one_differ",
             at_book(&ov, ov0x, ov0y) == [139, 139, 139]
                 && at_book(&ov, ov1x, ov1y) == [147, 107, 107],
             format!(
@@ -2711,7 +2804,7 @@ fn overlays(
         // 198, not the page underneath.
         let (gutter_x, _) = ro::button_origin((ox, oy), 0, 2);
         c.record(
-            "o3.the_panel_shows_through_the_gutter_between_buttons",
+            "o23.the_panel_shows_through_the_gutter_between_buttons",
             at_book(&ov, gutter_x + ro::BUTTON_SIZE, ov0y) == [198, 198, 198],
             format!(
                 "the column at x+{} reads {:?} - `overlay_recipe`'s interior, which is what a 24-wide button on a 25 pitch leaves",
@@ -2722,7 +2815,7 @@ fn overlays(
 
         // o4 - hover reads the cursor, and lights exactly one button.
         c.record(
-            "o4.hover_lights_the_button_under_the_cursor_and_no_other",
+            "o24.hover_lights_the_button_under_the_cursor_and_no_other",
             at_book(&hov, ov0x, ov0y) == [136, 146, 201]
                 && at_book(&hov, ov1x, ov1y) == at_book(&ov, ov1x, ov1y),
             format!(
@@ -2741,7 +2834,7 @@ fn overlays(
         // the centre would pass with the two families swapped.
         let (dx, dy) = btn(0, 2, 8, 2);
         c.record(
-            "o5.the_furnace_family_is_told_apart_where_the_two_sprites_differ",
+            "o25.the_furnace_family_is_told_apart_where_the_two_sprites_differ",
             at_book(&ov, dx, dy) == [55, 55, 55]
                 && at_book(&fur, dx, dy) == [139, 139, 139]
                 && at_book(&ov, ov0x, ov0y) == at_book(&fur, ov0x, ov0y),
@@ -2763,7 +2856,7 @@ fn overlays(
         // (`slot_craftable` is 139 at the matching texel). The first cut used
         // the centre and could not tell the button from the cell beneath it.
         c.record(
-            "o6.a_wider_overlay_draws_the_buttons_a_narrow_one_does_not",
+            "o26.a_wider_overlay_draws_the_buttons_a_narrow_one_does_not",
             at_book(&wide, b4x + 8, b4y + 2) == [55, 55, 55]
                 && at_book(&ov, b4x + 8, b4y + 2) != [55, 55, 55],
             format!(
@@ -2783,7 +2876,7 @@ fn overlays(
         // BELOW is the reachable second layer here.
         let (s5x, s5y) = rb::grid_slot(5);
         c.record(
-            "o7.the_overlay_is_a_stratum_over_the_page_not_a_peer",
+            "o27.the_overlay_is_a_stratum_over_the_page_not_a_peer",
             // Eight buttons is two rows of four, so the second row lands on
             // the cells of page row 1.
             at_book(&deep, s5x + 12, s5y + 12) != at_book(&open, s5x + 12, s5y + 12),

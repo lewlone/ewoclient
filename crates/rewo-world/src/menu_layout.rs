@@ -712,12 +712,61 @@ pub enum QuickMove {
     ///
     /// Only the **anvil** maps here. It inherits the `true` guard and both its
     /// input slots accept anything (`withSlot(0, .., itemStack -> true)`), so
-    /// the transcription is exact with nothing looked up. `SmithingMenu`
-    /// overrides `canMoveIntoInputSlots` with three recipe-derived item tests
-    /// and so stays [`QuickMove::Unimplemented`] — `result_slot` is carried
-    /// anyway because it is the only thing that differs between the two, and
-    /// a guard this menu cannot evaluate is the only reason smithing is out.
+    /// the transcription is exact with nothing looked up.
+    ///
+    /// **`SmithingMenu` is [`QuickMove::Smithing`] rather than this variant
+    /// with a different `result_slot`** (M152), and the reason is not that its
+    /// guard needs data — it is that a guard which can FAIL changes which arms
+    /// run. See that variant.
     ItemCombiner { result_slot: usize },
+    /// `SmithingMenu` — template 0, base 1, addition 2, result 3, then the
+    /// player's 36 (M152).
+    ///
+    /// # Why not `ItemCombiner { result_slot: 3 }`
+    ///
+    /// Because **smithing is the only `ItemCombiner` in the game whose
+    /// cross-move arms execute at all.** `ItemCombinerMenu.quickMoveStack` has
+    /// five arms; arms 4 and 5 are the ordinary main<->hotbar cross-move and
+    /// they sit *below* arm 3, whose condition is
+    ///
+    /// ```java
+    /// } else if (canMoveIntoInputSlots(stack) && slotIndex >= invStart && slotIndex < useRowEnd) {
+    /// ```
+    ///
+    /// Arms 1 and 2 already consume every index below `invStart`, so that range
+    /// test is redundant and **the guard is arm 3's only live condition**. For
+    /// the anvil the guard is the inherited `true`, so arm 3 always wins and
+    /// arms 4/5 are dead — which is exactly what [`QuickMove::ItemCombiner`]
+    /// encodes, and correctly. `SmithingMenu` overrides the guard
+    /// (`SmithingMenu.java:134-140`), so it can fail, and then the two
+    /// cross-move arms become reachable.
+    ///
+    /// Adding a guard to the combiner arm and returning its single branch
+    /// would therefore be wrong in a way that only shows on this one menu: a
+    /// shift-click the smithing table refuses would move **nothing**, where
+    /// vanilla moves it between your main inventory and hotbar.
+    ///
+    /// # The guard is not a pure item predicate
+    ///
+    /// Each disjunct is conjoined with its target slot being **empty**:
+    ///
+    /// ```java
+    /// if (templateItemTest.test(stack) && !getSlot(0).hasItem()) return true;
+    /// else return baseItemTest.test(stack) && !getSlot(1).hasItem() ? true
+    ///          : additionItemTest.test(stack) && !getSlot(2).hasItem();
+    /// ```
+    ///
+    /// so it reads the menu's occupancy, not just the item — a second netherite
+    /// ingot is refused while the first is still in the addition slot, and
+    /// cross-moves instead.
+    ///
+    /// # The sets are wire-derived
+    ///
+    /// Unlike the beacon's tag or the stonecutter's jar table, the three
+    /// `RecipePropertySet`s arrive on `update_recipes` (M152). Before it lands
+    /// all three refuse everything, which is also what vanilla does —
+    /// `getOrDefault(id, RecipePropertySet.EMPTY)`.
+    Smithing,
     /// `BeaconMenu` — one payment slot, then the player's 36.
     ///
     /// Its guard is three conditions and only one of them is about the item:
@@ -854,6 +903,20 @@ impl MenuLayout {
             // every input slot before it carries the definition's own
             // predicate, which for the anvil (the only menu mapped here) is
             // `itemStack -> true`, i.e. exactly `Plain`.
+            // M152. Three distinct input kinds, because each slot enforces its
+            // own `RecipePropertySet::test` (`SmithingMenu.java:57-61`) and the
+            // three sets are disjoint over vanilla data. One shared kind would
+            // let a netherite ingot into the template slot on a plain click.
+            //
+            // Slot 3 is `withResultSlot`, which refuses placement. The player's
+            // 36 are `Plain`, matching every other container arm here.
+            QuickMove::Smithing => Some(match slot {
+                0 => crate::inventory::SlotKind::SmithingTemplate,
+                1 => crate::inventory::SlotKind::SmithingBase,
+                2 => crate::inventory::SlotKind::SmithingAddition,
+                3 => crate::inventory::SlotKind::Result,
+                _ => crate::inventory::SlotKind::Plain,
+            }),
             QuickMove::ItemCombiner { result_slot } => Some(if slot == result_slot {
                 crate::inventory::SlotKind::Result
             } else {
@@ -928,10 +991,11 @@ impl MenuLayout {
             // M93 — the single-input family.
             //
             // anvil: the ItemCombinerMenu shape, `withResultSlot(2, ...)`.
-            // Smithing (21) is the same shape at result 3 and is NOT here:
-            // it overrides `canMoveIntoInputSlots` with three recipe-derived
-            // item tests, which is a `RecipePropertySet` off `update_recipes`.
             8 => QuickMove::ItemCombiner { result_slot: 2 },
+            // smithing (M152) — the same class at result 3, but NOT the same
+            // arm: its overridden guard can fail, which makes the cross-move
+            // arms live. See `QuickMove::Smithing`.
+            21 => QuickMove::Smithing,
             9 => QuickMove::Beacon,
             19 => QuickMove::Merchant,
             // stonecutter (M93b) — the jar-derived accepted-input set.

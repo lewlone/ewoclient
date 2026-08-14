@@ -3184,6 +3184,90 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M152 — `update_recipes`, and the one `ItemCombiner` whose cross-move arms run (2026-08-14)
+
+Closes **the last quick-move decline in the container arc**. M93 took seven of
+the eight single-input menus and left smithing, correctly, because its guard is
+three `RecipePropertySet`s off a packet Rewo did not decode. Coverage
+**118 / 0 / 23 → 119 / 0 / 22**, class C **12 → 11**.
+
+**The handoff's framing was half right and the wrong half mattered.** It called
+this "roughly thirty generator lines, not a subsystem", on the measurement that
+all 30 smithing recipes carry `base`/`template`/`addition` — which is true, I
+recounted it. But `SmithingRecipe`'s signature is asymmetric (`baseIngredient()`
+is a bare `Ingredient`; template and addition are `Optional`), and
+`Ingredient.testOptionalIngredient` is
+`map(v -> v.test(stack)).orElseGet(stack::isEmpty)` — **an absent ingredient
+requires an EMPTY stack, not "matches anything"**. Vanilla data cannot
+distinguish those; a datapack can.
+
+**The design finding, and it is the one that would have shipped a bug.**
+`SmithingMenu` is **the only `ItemCombiner` in the game whose cross-move arms
+execute at all.** `quickMoveStack` has five arms; arms 4 and 5 are the ordinary
+main<->hotbar move and they sit below arm 3, whose only live condition is
+`canMoveIntoInputSlots` (arms 1 and 2 already consume every index below
+`invStart`, so its range test is redundant). For the anvil that guard is the
+inherited `true`, so arm 3 always wins and 4/5 are dead — which is exactly what
+`QuickMove::ItemCombiner` encodes. Smithing **overrides** the guard, so it can
+fail. Adding a guard to the existing arm and returning its single branch —
+the obvious move, and what "smithing is the anvil with one more slot" invites —
+would make a refused shift-click move **nothing**, where vanilla cross-moves it.
+Correct-looking, and wrong only on the one menu being added. Hence
+`QuickMove::Smithing` rather than `ItemCombiner { result_slot: 3 }`.
+
+**Two item-collection encodings in one packet, one field apart.**
+`RecipePropertySet` is `Item.STREAM_CODEC.apply(list())` — a count then that
+many **raw 0-based** ids, since `Item.STREAM_CODEC` is `holderRegistry`
+(`Item.java:103`, the **sixth** sighting of that trap after M16/M21/M55/M92d/
+M93u). The stonecutter's `Ingredient` is a `holderSet`: `count + 1`, with a
+literal **0 meaning a tag name follows**. Neither mistake errors; each consumes
+the wrong number of bytes and turns the rest of the packet into plausible
+garbage. And `SelectableRecipe.noRecipeCodec()` is a **one**-field composite —
+the `Optional<RecipeHolder>` beside the `SlotDisplay` is filled in by the
+constructor and never crosses the wire, so a reader expecting it desyncs every
+following entry.
+
+**Almost every primitive already existed**, which is the arc paying off: M93y's
+`SlotDisplay` reader, M96's capturing `holderSet` decode (extracted out of
+`entry()` rather than copied — M100's rule), `IngredientSet::resolve` against
+M69's `update_tags`, and `ItemProps`/`SlotKind` as the seam for a per-item menu
+predicate. What is new is the packet, `SmithingSets`, and one `QuickMove` arm.
+
+**A catch-all silently granted permission.** `may_place` ends `_ => true` — it
+exists for the genuinely permissive kinds (`Craft`, `Main`, `Hotbar`,
+`Offhand`, `Plain`), so every restrictive kind since has had to be listed by
+hand, and the compiler cannot see a missing one. The three new smithing kinds
+fell straight through it. Left that way the shift-click stays exact while a
+**plain** click predicts a placement the server rejects, costing a full
+state-id resync — the failure `SlotKind::BeaconPayment`'s own doc describes.
+
+**A stale doc, falsified by this milestone.** `ItemProps::stonecuttable` read
+*"`update_recipes` is the authoritative source and Rewo does not decode it"*.
+Rewo decodes it now, and the packet carries the stonecutter's set as its second
+field, so that caveat is no longer forced — it is a **choice not yet
+revisited**, and the doc says so. Switching sources is deliberately not part of
+this milestone: the wire set arrives only after the packet, so a
+straight swap would make a stonecutter refuse everything for the first few
+hundred milliseconds of every session.
+
+**The gate found two witness-id collisions, including one of mine.**
+`containershot` reports `observed: N / N`, and **a count cannot see a
+collision** — so M92's brewing/beacon set and M104's recipe-book overlay set
+had both been running as `o1`..`o7`, fourteen witnesses under seven names, with
+nothing objecting. `Checker::record` now rejects a duplicate id. **Its first
+cut passed while the collision sat in front of it**, because it keyed on the
+full name and the suffixes differ — a check written for this project's
+most-repeated lesson, failing it. Keyed on the prefix it immediately caught the
+real pair *and* my own renumbering landing on M93q's existing `o21`.
+
+**Measured.** 3214 -> **3225 tests** (rewo-net +11 decode, rewo-world +5
+routing, both crates' fixtures updated); `containershot` 107 -> **109**, the two
+new ones grading the **production** `item_props` against a real `SmithingSets`
+rather than a hand-built fixture (M92's rule — every smithing unit test
+hand-builds its props, so without them the three lookups could be crossed and
+stay green). Mutation battery `tools/m152_mutate.py`: **8/8 killed with the
+no-op control SURVIVING**, which is what makes the 8 non-vacuous.
+
 ### M153 — the stereo-attenuation divergence becomes an owned decision (2026-08-14)
 
 **`REWO_AUDIO_PLAN.md` §5 asked for this call in as many words and it had never

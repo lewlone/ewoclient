@@ -685,6 +685,28 @@ pub enum SlotKind {
     /// itself — but would let a **plain click** drop a stick into it locally,
     /// which the server rejects and pays for with a full state-id resync.
     BeaconPayment,
+    /// `SmithingMenu`'s template slot 0 (M152): `templateItemTest::test`.
+    SmithingTemplate,
+    /// `SmithingMenu`'s base slot 1 (M152): `baseItemTest::test`.
+    SmithingBase,
+    /// `SmithingMenu`'s addition slot 2 (M152): `additionItemTest::test`.
+    ///
+    /// Three kinds for the same reason the loom has three
+    /// ([`SlotKind::LoomBanner`]) — `createInputSlotDefinitions`
+    /// (`SmithingMenu.java:53-63`) gives each slot its **own**
+    /// `RecipePropertySet::test`, and the three sets are disjoint over vanilla
+    /// data (measured on `data/minecraft/recipe/*.json`: base 37, template 19,
+    /// addition 11, every pairwise intersection empty). One shared kind would
+    /// let a netherite ingot into the template slot.
+    ///
+    /// Unlike every other kind here, these are **wire-derived**: the sets
+    /// arrive on `update_recipes` rather than coming from the jar, so before
+    /// that packet lands all three refuse everything. That is the safe
+    /// direction and it is what vanilla does too —
+    /// `ClientRecipeContainer.propertySet` is
+    /// `getOrDefault(id, RecipePropertySet.EMPTY)`, and `EMPTY.test` is false
+    /// for every item.
+    SmithingAddition,
 }
 
 /// The four `ArmorSlot`s, in menu order (`SLOT_IDS` is head-first).
@@ -801,10 +823,33 @@ pub struct ItemProps {
     /// no error anywhere.
     pub beacon_payment: bool,
     /// `stonecutterRecipes().acceptsInput` (M93b) — the stonecutter's input
-    /// slot. Jar-derived from the stonecutting recipes, with M91's caveat:
-    /// `update_recipes` is the authoritative source and Rewo does not decode
-    /// it, so a datapack recipe change makes this wrong silently.
+    /// slot. Jar-derived from the stonecutting recipes, with M91's caveat: a
+    /// datapack recipe change makes this wrong silently.
+    ///
+    /// **M152 correction.** This doc used to end "`update_recipes` is the
+    /// authoritative source and Rewo does not decode it". Rewo decodes it now,
+    /// and the packet carries the stonecutter's set as its second field — so
+    /// the caveat is no longer *forced*, it is a **choice not yet revisited**.
+    /// It is left jar-derived deliberately for one milestone: the wire set
+    /// arrives only after `update_recipes`, so switching sources would make a
+    /// stonecutter refuse everything for the first few hundred milliseconds of
+    /// every session, and the honest fix is wire-when-present / jar-otherwise
+    /// with its own witnesses. M152 uses the wire copy as an **oracle** for
+    /// this table instead — see `containershot`.
     pub stonecuttable: bool,
+    /// `templateItemTest.test` — `RecipePropertySet.SMITHING_TEMPLATE` (M152).
+    ///
+    /// **Wire-derived, unlike every other predicate on this struct.** The three
+    /// smithing sets come from `update_recipes` rather than the jar, so all
+    /// three are `false` until that packet arrives. Vanilla behaves the same
+    /// way for the same reason: `ClientRecipeContainer.propertySet` is
+    /// `getOrDefault(id, RecipePropertySet.EMPTY)` and `EMPTY` refuses
+    /// everything.
+    pub smithing_template: bool,
+    /// `baseItemTest.test` — `RecipePropertySet.SMITHING_BASE` (M152).
+    pub smithing_base: bool,
+    /// `additionItemTest.test` — `RecipePropertySet.SMITHING_ADDITION` (M152).
+    pub smithing_addition: bool,
     /// `getItem() instanceof BannerItem` (M93g), from `#minecraft:banners`.
     ///
     /// **Not** the `minecraft:banner_patterns` prototype component, which the
@@ -935,6 +980,21 @@ impl Inventory {
             }
             SlotKind::CartographyMap => stack.has_map_id,
             SlotKind::CartographyAdditional => props.cartography_additional,
+            // M152 — the smithing table's three, each its own
+            // `RecipePropertySet::test` from `createInputSlotDefinitions`.
+            //
+            // **These MUST be listed even though the quick-move already tests
+            // them**, because the arm below is `_ => true` and a new
+            // restrictive kind is silently granted permission by it. The
+            // compiler cannot catch that: the catch-all exists for the genuinely
+            // permissive kinds (`Craft`, `Main`, `Hotbar`, `Offhand`, `Plain`),
+            // so every restrictive kind since has had to be added by hand. Left
+            // out, the shift-click stays exact and a PLAIN click predicts a
+            // placement the server rejects, costing a full state-id resync —
+            // which is the failure `SlotKind::BeaconPayment`'s doc describes.
+            SlotKind::SmithingTemplate => props.smithing_template,
+            SlotKind::SmithingBase => props.smithing_base,
+            SlotKind::SmithingAddition => props.smithing_addition,
             _ => true,
         }
     }
@@ -1348,6 +1408,43 @@ impl Inventory {
                     (0..result_slot, false)
                 }]);
             }
+            QuickMove::Smithing => {
+                // SmithingMenu (M152). Same class as the anvil, and NOT the
+                // same routing — see `QuickMove::Smithing`'s docs. The ranges
+                // are `ItemCombinerMenu`'s, derived from `getResultSlot() = 3`.
+                let (result_slot, player) = (3usize, 4usize);
+                let hotbar = player + 27;
+                let end = hotbar + 9;
+
+                if slot == result_slot {
+                    return Some(vec![(player..end, true)]);
+                }
+                if slot < result_slot {
+                    return Some(vec![(player..end, false)]);
+                }
+
+                // `canMoveIntoInputSlots` — each disjunct conjoined with its
+                // own slot being EMPTY, so this reads occupancy and not just
+                // the item. A second netherite ingot is refused while the
+                // first still sits in the addition slot.
+                let accepted = (p.smithing_template && slots[0].is_none())
+                    || (p.smithing_base && slots[1].is_none())
+                    || (p.smithing_addition && slots[2].is_none());
+                if accepted {
+                    return Some(vec![(0..result_slot, false)]);
+                }
+
+                // THE arms that make this menu different. For the anvil the
+                // guard is the inherited `true`, so control never reaches
+                // here and `QuickMove::ItemCombiner` rightly omits them. A
+                // smithing table refusing your stack cross-moves it instead of
+                // doing nothing.
+                return Some(vec![if slot < hotbar {
+                    (hotbar..end, false)
+                } else {
+                    (player..hotbar, false)
+                }]);
+            }
             QuickMove::Beacon => {
                 // BeaconMenu: payment 0, player 1..37.
                 let (player, hotbar, end) = (1usize, 28usize, 37usize);
@@ -1708,6 +1805,9 @@ mod tests {
 
     fn plain_props(_id: i32) -> Option<ItemProps> {
         Some(ItemProps {
+            smithing_template: false,
+            smithing_base: false,
+            smithing_addition: false,
             max_stack: 64,
             equips: None,
             is_fuel: false,
@@ -1726,6 +1826,9 @@ mod tests {
     /// An item that is BOTH fuel and smeltable, which is what a log is.
     fn log_props(_id: i32) -> Option<ItemProps> {
         Some(ItemProps {
+            smithing_template: false,
+            smithing_base: false,
+            smithing_addition: false,
             max_stack: 64,
             equips: None,
             is_fuel: true,
@@ -1744,6 +1847,9 @@ mod tests {
     /// Fuel that is not smeltable, which is what coal is.
     fn coal_props(_id: i32) -> Option<ItemProps> {
         Some(ItemProps {
+            smithing_template: false,
+            smithing_base: false,
+            smithing_addition: false,
             max_stack: 64,
             equips: None,
             is_fuel: true,
@@ -2125,6 +2231,174 @@ mod tests {
             beacon_payment: true,
             ..plain_props(0).unwrap()
         })
+    }
+
+    // ------------------------------------------------- M152: smithing table
+
+    /// A smithing table (menu 21) with `item` at menu index `slot`.
+    fn smithing_menu(slot: usize, item: Option<ItemSlot>) -> Inventory {
+        let mut m = Inventory::with_layout(crate::menu_layout::layout_of(21).unwrap());
+        let mut v = vec![None; m.slot_count()];
+        v[slot] = item;
+        assert!(m.set_content(1, &v, None));
+        m
+    }
+
+    /// An item the smithing table accepts into the slot named by the flag.
+    fn smith_props(template: bool, base: bool, addition: bool) -> ItemProps {
+        ItemProps {
+            smithing_template: template,
+            smithing_base: base,
+            smithing_addition: addition,
+            ..plain_props(0).unwrap()
+        }
+    }
+
+    /// **THE M152 finding.** Smithing is the only `ItemCombiner` whose
+    /// cross-move arms are reachable, because it is the only one that overrides
+    /// `canMoveIntoInputSlots` — so the guard can FAIL, and arms 4 and 5 run.
+    ///
+    /// The anvil's pair of tests above assert the opposite for the same class,
+    /// which is what makes this a claim about the override and not about the
+    /// ranges. A regression that routed smithing through
+    /// `QuickMove::ItemCombiner { result_slot: 3 }` would move **nothing**
+    /// here — correct-looking, and wrong only on this one menu.
+    #[test]
+    fn a_smithing_table_cross_moves_what_it_refuses() {
+        // Main inventory (menu index 4 + 9 = 13), item accepted by nothing.
+        let m = smithing_menu(13, stack(1, 5));
+        let refused = |_id: i32| Some(smith_props(false, false, false));
+        let p = m
+            .click_quick_move(13, &refused)
+            .expect("a refused stack must still cross-move, not vanish");
+        let touched: Vec<u16> = p.changed.iter().map(|(i, _)| *i).collect();
+        assert!(
+            touched.iter().any(|&i| (31..40).contains(&i)),
+            "main -> hotbar is arm 4 and it must run; touched {touched:?}"
+        );
+        assert!(
+            !touched.iter().any(|&i| i < 4),
+            "a refused stack must not reach an input slot; touched {touched:?}"
+        );
+    }
+
+    /// The accepted case: the guard wins and consumes, exactly as the anvil's
+    /// does. Paired with the test above, this is what proves the guard is
+    /// *evaluated* rather than pinned to one answer — a routing hard-coded to
+    /// either branch passes one of the two and fails the other.
+    #[test]
+    fn a_smithing_table_claims_what_it_accepts() {
+        let m = smithing_menu(13, stack(1, 5));
+        let accepted = |_id: i32| Some(smith_props(false, true, false));
+        let p = m.click_quick_move(13, &accepted).expect("predictable");
+        let touched: Vec<u16> = p.changed.iter().map(|(i, _)| *i).collect();
+        assert!(
+            touched.iter().any(|&i| i < 4),
+            "an accepted stack must reach an input slot; touched {touched:?}"
+        );
+        assert!(
+            !touched.iter().any(|&i| (31..40).contains(&i)),
+            "the guard consumes, so the cross-move must NOT also run; touched {touched:?}"
+        );
+    }
+
+    /// The guard reads the menu's OCCUPANCY, not just the item: each disjunct
+    /// is conjoined with `!getSlot(n).hasItem()`.
+    ///
+    /// So the same item, with the same props, routes two different ways
+    /// depending on whether its target slot is already taken — which a pure
+    /// item predicate cannot express. This is the second netherite ingot.
+    #[test]
+    fn a_smithing_guard_is_refused_once_its_own_slot_is_full() {
+        let accepted = |_id: i32| Some(smith_props(false, true, false));
+
+        let mut m = Inventory::with_layout(crate::menu_layout::layout_of(21).unwrap());
+        let mut v = vec![None; m.slot_count()];
+        // Slot 1 is the BASE slot, and it is taken by a different id so the
+        // merge pass cannot top it up either.
+        v[1] = stack(9, 1);
+        v[13] = stack(1, 5);
+        assert!(m.set_content(1, &v, None));
+
+        let p = m
+            .click_quick_move(13, &accepted)
+            .expect("a refused stack still cross-moves");
+        let touched: Vec<u16> = p.changed.iter().map(|(i, _)| *i).collect();
+        assert!(
+            touched.iter().any(|&i| (31..40).contains(&i)),
+            "a full base slot must send this to the hotbar; touched {touched:?}"
+        );
+    }
+
+    /// The result slot empties toward the player REVERSED, and the three input
+    /// slots forward — `ItemCombinerMenu`'s arms 1 and 2, which smithing
+    /// inherits unchanged. Reversed means it fills from the hotbar's
+    /// right-hand end, because `addStandardInventorySlots` appends the hotbar
+    /// last.
+    #[test]
+    fn a_smithing_result_empties_backwards_and_an_input_forwards() {
+        let refused = |_id: i32| Some(smith_props(false, false, false));
+
+        let from_result = smithing_menu(3, stack(1, 1));
+        let r: Vec<u16> = from_result
+            .click_quick_move(3, &refused)
+            .expect("result is always predictable")
+            .changed
+            .iter()
+            .map(|(i, _)| *i)
+            .collect();
+        assert!(
+            r.iter().any(|&i| (31..40).contains(&i)),
+            "the result slot fills the hotbar's far end first; touched {r:?}"
+        );
+
+        let from_input = smithing_menu(1, stack(1, 1));
+        let i: Vec<u16> = from_input
+            .click_quick_move(1, &refused)
+            .expect("input is always predictable")
+            .changed
+            .iter()
+            .map(|(i, _)| *i)
+            .collect();
+        assert!(
+            i.iter().any(|&s| (4..31).contains(&s)),
+            "an input slot empties into the main inventory first; touched {i:?}"
+        );
+    }
+
+    /// The three slots enforce three DIFFERENT predicates, so a plain click is
+    /// refused by the two slots the item does not belong to.
+    ///
+    /// This grades `may_place`, not the quick-move — and it is the half a
+    /// catch-all `_ => true` silently breaks, since the compiler cannot see a
+    /// missing arm. Without it the shift-click stays exact while an ordinary
+    /// click predicts a placement the server rejects.
+    #[test]
+    fn the_three_smithing_slots_do_not_share_a_predicate() {
+        use crate::menu_layout::layout_of;
+        let l = layout_of(21).unwrap();
+        assert_eq!(l.slot_kind(0), Some(SlotKind::SmithingTemplate));
+        assert_eq!(l.slot_kind(1), Some(SlotKind::SmithingBase));
+        assert_eq!(l.slot_kind(2), Some(SlotKind::SmithingAddition));
+        assert_eq!(l.slot_kind(3), Some(SlotKind::Result));
+
+        // A base item is accepted by slot 1 and refused by 0 and 2.
+        let base_only = smith_props(false, true, false);
+        let s = stack(1, 1).unwrap();
+        assert!(!Inventory::may_place(SlotKind::SmithingTemplate, s, base_only));
+        assert!(Inventory::may_place(SlotKind::SmithingBase, s, base_only));
+        assert!(!Inventory::may_place(SlotKind::SmithingAddition, s, base_only));
+
+        // And with no wire sets at all, every one refuses — which is vanilla
+        // before `update_recipes`, via `getOrDefault(id, EMPTY)`.
+        let none = smith_props(false, false, false);
+        for k in [
+            SlotKind::SmithingTemplate,
+            SlotKind::SmithingBase,
+            SlotKind::SmithingAddition,
+        ] {
+            assert!(!Inventory::may_place(k, s, none), "{k:?} accepted with no sets");
+        }
     }
 
     #[test]

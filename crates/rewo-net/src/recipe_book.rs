@@ -304,6 +304,42 @@ fn display(r: &mut PacketReader, ids: &RecipeDisplayIds) -> Result<RecipeDisplay
 }
 
 /// `RecipeDisplayEntry`, then `ClientboundRecipeBookAddPacket.Entry`'s flags.
+/// One `Ingredient.CONTENTS_STREAM_CODEC` — `ByteBufCodecs.holderSet(ITEM)`
+/// (`Ingredient.java:26`).
+///
+/// **The var-int is `count + 1`, and a literal 0 means a TAG NAME follows**
+/// rather than an empty set (M41). Both readings consume different numbers of
+/// bytes, so getting it wrong desyncs the rest of the packet rather than
+/// mislabelling one field.
+///
+/// Extracted by M152 rather than copied. It had been inline in [`entry`], and
+/// `update_recipes` needs the identical read for the stonecutter set — a second
+/// copy is how the two come to disagree (M89's finding, on its fifth
+/// occurrence; M100 extracted the anvil's caret arithmetic for the same
+/// reason). The extraction is provably inert: `entry`'s call site is the only
+/// former reader and the body moved unchanged.
+///
+/// **Note this is NOT the encoding `RecipePropertySet` uses**, one field away
+/// in the same packet. That is `Item.STREAM_CODEC.apply(list())`
+/// (`RecipePropertySet.java:28-30`) — a plain list of raw 0-based holder ids
+/// with no `+ 1` and no tag form. Two item-collection encodings in one packet;
+/// see [`read_update_recipes`].
+fn ingredient_set(r: &mut PacketReader) -> Result<IngredientSet, ()> {
+    Ok(match r.varint().map_err(|_| ())? {
+        0 => IngredientSet::Tag(r.string(32767).map_err(|_| ())?),
+        c => {
+            if !(1..=65536).contains(&c) {
+                return Err(());
+            }
+            let mut ids = Vec::with_capacity((c - 1).min(64) as usize);
+            for _ in 0..(c - 1) {
+                ids.push(r.varint().map_err(|_| ())?);
+            }
+            IngredientSet::Ids(ids)
+        }
+    })
+}
+
 fn entry(r: &mut PacketReader, ids: &RecipeDisplayIds) -> Result<Entry, ()> {
     let id = r.varint().map_err(|_| ())?;
     let display = display(r, ids)?;
@@ -320,18 +356,7 @@ fn entry(r: &mut PacketReader, ids: &RecipeDisplayIds) -> Result<Entry, ()> {
         }
         let mut out = Vec::with_capacity(n.min(64) as usize);
         for _ in 0..n {
-            // `holderSet`: the var-int is `count + 1`, and a literal **0**
-            // means a TAG NAME follows rather than an empty set (M41).
-            out.push(match r.varint().map_err(|_| ())? {
-                0 => IngredientSet::Tag(r.string(32767).map_err(|_| ())?),
-                c => {
-                    let mut ids = Vec::with_capacity((c - 1).min(64) as usize);
-                    for _ in 0..(c - 1) {
-                        ids.push(r.varint().map_err(|_| ())?);
-                    }
-                    IngredientSet::Ids(ids)
-                }
-            });
+            out.push(ingredient_set(r)?);
         }
         Some(out)
     } else {
@@ -346,6 +371,206 @@ fn entry(r: &mut PacketReader, ids: &RecipeDisplayIds) -> Result<Entry, ()> {
         requirements,
         notification: flags & 1 != 0,
         highlight: flags & 2 != 0,
+    })
+}
+
+/// One `SelectableRecipe.SingleInputEntry` (M152).
+///
+/// `SelectableRecipe.java:19-27` — an `Ingredient.CONTENTS_STREAM_CODEC` then a
+/// `SelectableRecipe`, and `noRecipeCodec` makes that second field **just a
+/// `SlotDisplay`**: the `Optional<RecipeHolder>` beside it is filled with
+/// `Optional.empty()` by the constructor lambda and never crosses the wire
+/// (`:14`). A reader expecting an optional-recipe field there reads one byte
+/// too many and desyncs every following entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StonecutterEntry {
+    /// What the stonecutter accepts for this row.
+    pub input: IngredientSet,
+    /// What the row shows. The recipe itself is server-side.
+    pub display: SlotDisplay,
+}
+
+/// `ClientboundUpdateRecipesPacket` (M152) — protocol id **133**.
+///
+/// Two collections that have nothing to do with each other beyond sharing a
+/// packet: the `RecipePropertySet` map, which is what makes a smithing table's
+/// shift-click evaluable, and the stonecutter's selectable-recipe list.
+///
+/// # Two item-collection encodings, one packet
+///
+/// This is the trap. [`Self::property_sets`] holds
+/// `Item.STREAM_CODEC.apply(ByteBufCodecs.list())`
+/// (`RecipePropertySet.java:28-30`) — a var-int count then that many **raw
+/// 0-based** holder ids, because `Item.STREAM_CODEC` is
+/// `ByteBufCodecs.holderRegistry` (`Item.java:103`) and *not* `holder`'s
+/// `id + 1` / `0 = inline` form. [`StonecutterEntry::input`] holds a
+/// `holderSet`, whose var-int is `count + 1` with `0` meaning a tag name.
+///
+/// So the same packet counts items two different ways one field apart, and
+/// **neither mistake errors** — each just consumes the wrong number of bytes
+/// and turns the rest of the packet into plausible garbage. `holderRegistry`
+/// read as `holder` is the sixth occurrence of that specific trap in this
+/// project (M16 dimensions, M21 damage types, M55 attributes, M92d effects,
+/// M93u the merchant, here).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UpdateRecipes {
+    /// `Map<ResourceKey<RecipePropertySet>, RecipePropertySet>`, kept as pairs
+    /// in wire order.
+    ///
+    /// The key is a `ResourceKey`, which `ResourceKey.streamCodec`
+    /// (`ResourceKey.java:22-24`) writes as a bare `Identifier` — a namespaced
+    /// string, with the registry it belongs to implied by the field. The value
+    /// is the item id list described on the type.
+    ///
+    /// **Kept as a `Vec` rather than a map on purpose.** Vanilla decodes into a
+    /// `HashMap` (`ClientboundUpdateRecipesPacket.java:19`), so the wire order
+    /// carries no meaning and a duplicate key would be last-wins there. A `Vec`
+    /// preserves what arrived, and [`Self::property_set`] applies last-wins
+    /// explicitly rather than by container accident.
+    pub property_sets: Vec<(String, Vec<i32>)>,
+    /// `SelectableRecipe.SingleInputSet<StonecutterRecipe>`.
+    ///
+    /// Rewo already derives the stonecutter's accepted inputs from the jar
+    /// (M93s, `rewo-data::stonecutter_table`), so this is a second, independent
+    /// source for the same fact — which makes it an ORACLE rather than a
+    /// duplicate. See `crates/rewo-app/src/containershot_cmd.rs`.
+    pub stonecutter: Vec<StonecutterEntry>,
+}
+
+impl UpdateRecipes {
+    /// The item ids of one property set by its registry name, or `None`.
+    ///
+    /// **`None` and `Some(&[])` are different and both are reachable.** A
+    /// server that sends no `smithing_base` key at all leaves the menu with no
+    /// opinion; one that sends an empty list is saying *nothing is a valid
+    /// base*, which is what a datapack removing every smithing recipe produces.
+    /// Vanilla's own fallback is `RecipePropertySet.EMPTY` (`:31`), whose
+    /// `test` is `Set.of().contains(..)` — false for everything — so the two
+    /// agree on the *answer* here. They are still kept apart, because they do
+    /// not agree on whether the server told us anything.
+    ///
+    /// Last-wins on a duplicate key, matching the `HashMap` vanilla decodes
+    /// into.
+    pub fn property_set(&self, key: &str) -> Option<&[i32]> {
+        self.property_sets
+            .iter()
+            .rev()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_slice())
+    }
+}
+
+/// The three sets `SmithingMenu` tests, snapshotted out of [`UpdateRecipes`].
+///
+/// # Why this exists rather than passing the packet
+///
+/// Two reasons, and the second is the load-bearing one.
+///
+/// It is **small**. `UpdateRecipes` also carries the stonecutter's list — 319
+/// entries on vanilla data, each with a `SlotDisplay` — and the click path
+/// needs a value it can own, so cloning the packet would copy all of that on
+/// every click. These three are 37 + 19 + 11 ids.
+///
+/// It **breaks a borrow conflict that would otherwise force a bad shape.** The
+/// click sites hold `&mut PlaySession`, and a closure capturing
+/// `session.recipes.as_ref()` cannot coexist with `session.shown_menu_mut()`.
+/// The alternatives were to clone the whole packet per click or to thread the
+/// sets through `ItemProps`' six existing jar-derived predicates; an owned
+/// snapshot of exactly what is needed is neither.
+///
+/// It also gives a gate something it can construct directly, so the smithing
+/// path can be driven without a session — which is what M92's rule asks for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SmithingSets {
+    pub template: Vec<i32>,
+    pub base: Vec<i32>,
+    pub addition: Vec<i32>,
+}
+
+impl SmithingSets {
+    /// **An absent key and an empty one collapse to the same thing here, and
+    /// that is correct** — unlike in [`UpdateRecipes::property_set`], where
+    /// they are deliberately kept apart.
+    ///
+    /// The distinction matters for *"did the server tell us anything"*; it does
+    /// not matter for *"does this menu accept this item"*, because vanilla's
+    /// own fallback is `getOrDefault(id, RecipePropertySet.EMPTY)` and `EMPTY`
+    /// refuses every item. So both answer no, by two routes that agree.
+    ///
+    /// On a real server the absent case never arises anyway:
+    /// `RecipeManager.finalizeRecipeLoading` collects over all seven
+    /// `RECIPE_PROPERTY_SETS` entries, so **all seven keys are always present**
+    /// even when a set is empty.
+    pub fn from_packet(u: &UpdateRecipes) -> Self {
+        let get = |k: &str| u.property_set(k).unwrap_or(&[]).to_vec();
+        Self {
+            template: get("minecraft:smithing_template"),
+            base: get("minecraft:smithing_base"),
+            addition: get("minecraft:smithing_addition"),
+        }
+    }
+}
+
+/// `ClientboundUpdateRecipesPacket` (M152).
+pub fn parse_update_recipes(
+    body: &[u8],
+    ids: &RecipeDisplayIds,
+) -> Result<UpdateRecipes, String> {
+    let mut r = PacketReader::new(body);
+
+    // `ByteBufCodecs.map` is `readCount` then that many key/value pairs
+    // (`ByteBufCodecs.java:472-476`), with no size limit on this field
+    // (`:457` passes `Integer.MAX_VALUE`). The bound below is Rewo's, not
+    // vanilla's, and exists so a corrupt length cannot make us allocate.
+    let n = r
+        .varint()
+        .map_err(|e| format!("update_recipes: set count: {e:?}"))?;
+    if !(0..=1024).contains(&n) {
+        return Err(format!("update_recipes: {n} property sets"));
+    }
+    let mut property_sets = Vec::with_capacity(n.min(16) as usize);
+    for i in 0..n {
+        let key = r
+            .string(32767)
+            .map_err(|e| format!("update_recipes: set {i} key: {e:?}"))?;
+        let m = r
+            .varint()
+            .map_err(|e| format!("update_recipes: set {i} len: {e:?}"))?;
+        if !(0..=65536).contains(&m) {
+            return Err(format!("update_recipes: set {i} has {m} items"));
+        }
+        let mut items = Vec::with_capacity(m.min(1024) as usize);
+        for j in 0..m {
+            // `Item.STREAM_CODEC` = `holderRegistry` — a RAW 0-based id. No
+            // `+ 1`, no inline form. See the type's docs.
+            items.push(
+                r.varint()
+                    .map_err(|e| format!("update_recipes: set {i} item {j}: {e:?}"))?,
+            );
+        }
+        property_sets.push((key, items));
+    }
+
+    let k = r
+        .varint()
+        .map_err(|e| format!("update_recipes: stonecutter count: {e:?}"))?;
+    if !(0..=8192).contains(&k) {
+        return Err(format!("update_recipes: {k} stonecutter entries"));
+    }
+    let mut stonecutter = Vec::with_capacity(k.min(512) as usize);
+    for i in 0..k {
+        let input =
+            ingredient_set(&mut r).map_err(|_| format!("update_recipes: cutter {i} input"))?;
+        // Depth 0: the budget counts UP toward `MAX_DEPTH`, and every other
+        // top-level `SlotDisplay` in this file enters the same way.
+        let display =
+            slot(&mut r, ids, 0).map_err(|_| format!("update_recipes: cutter {i} display"))?;
+        stonecutter.push(StonecutterEntry { input, display });
+    }
+
+    Ok(UpdateRecipes {
+        property_sets,
+        stonecutter,
     })
 }
 
@@ -897,5 +1122,178 @@ mod tests {
         assert_eq!(parse_remove(&[3, 1, 2, 3]).expect("remove"), vec![1, 2, 3]);
         assert_eq!(parse_remove(&[0]).expect("empty"), Vec::<i32>::new());
         assert!(parse_remove(&[3, 1]).is_err(), "short");
+    }
+
+    // -------------------------------------------------- M152: update_recipes
+
+    /// A `update_recipes` body with no stonecutter entries.
+    ///
+    /// `sets` is `(key, item ids)`. The item ids go out as **raw var-ints**,
+    /// which is the encoding under test.
+    fn recipes_body(sets: &[(&str, &[i32])], cutter_count: u8) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.push(sets.len() as u8);
+        for (k, items) in sets {
+            b.push(k.len() as u8);
+            b.extend_from_slice(k.as_bytes());
+            b.push(items.len() as u8);
+            for i in *items {
+                b.push(*i as u8);
+            }
+        }
+        b.push(cutter_count);
+        b
+    }
+
+    /// These tests pass `RecipeDisplayIds::default()` **on purpose**, and it is
+    /// not laziness.
+    ///
+    /// The registries are only consulted by the stonecutter half's
+    /// `SlotDisplay`s, so a body declaring zero of those never touches them —
+    /// which means the property-set claims below run on **any** machine rather
+    /// than self-skipping when the datagen store is absent. The rest of this
+    /// file's tests use `let Some(i) = ids() else { return }`, and a self-
+    /// skipping test proves nothing precisely on the machine where the data is
+    /// missing (`REWO_AUDIO_PLAN.md` §5's trap, and `soundshot`'s s1b). Where a
+    /// claim genuinely needs the registries, the test below says so and skips.
+    fn no_ids() -> RecipeDisplayIds {
+        RecipeDisplayIds::default()
+    }
+
+    /// **The headline trap: two item-collection encodings, one packet.**
+    ///
+    /// `RecipePropertySet` is `Item.STREAM_CODEC.apply(list())` — a count then
+    /// that many RAW ids. The stonecutter's `Ingredient` is a `holderSet` —
+    /// `count + 1`, with `0` meaning a tag name. This fixture is built so the
+    /// two readings **disagree about the answer**, not merely about the bytes:
+    /// three items `[7, 8, 9]` read as a holder set would yield the two items
+    /// `[8, 9]` and leave a byte unconsumed.
+    ///
+    /// Asserting the trailing count is consumed exactly is what makes this a
+    /// desync test rather than a value test — a reader off by one byte here
+    /// still produces a plausible property set and then misreads everything
+    /// after it.
+    #[test]
+    fn a_property_set_is_a_raw_list_and_not_a_holder_set() {
+        let u = parse_update_recipes(
+            &recipes_body(&[("minecraft:smithing_base", &[7, 8, 9])], 0),
+            &no_ids(),
+        )
+        .expect("parse");
+
+        assert_eq!(
+            u.property_set("minecraft:smithing_base"),
+            Some([7, 8, 9].as_slice()),
+            "read as a holderSet this would drop the first id and desync"
+        );
+        // The whole body was consumed: the trailing stonecutter count landed
+        // where it should, so nothing was over- or under-read.
+        assert!(u.stonecutter.is_empty());
+    }
+
+    /// **An absent key and an empty one are different, and both are
+    /// reachable.**
+    ///
+    /// A server that never sends `smithing_base` has told us nothing; one that
+    /// sends it empty is saying *nothing is a valid base*, which is what a
+    /// datapack stripping every smithing recipe produces. Vanilla's fallback is
+    /// `RecipePropertySet.EMPTY`, whose `test` is false for everything, so the
+    /// two agree on the ANSWER — they are kept apart because they disagree on
+    /// whether the server spoke.
+    #[test]
+    fn an_absent_property_set_is_not_an_empty_one() {
+        let u = parse_update_recipes(&recipes_body(&[("a", &[])], 0), &no_ids()).expect("parse");
+        assert_eq!(u.property_set("a"), Some([].as_slice()), "sent, and empty");
+        assert_eq!(u.property_set("b"), None, "never sent at all");
+    }
+
+    /// Vanilla decodes into a `HashMap`, so a duplicate key is last-wins and
+    /// the wire order carries no meaning. Rewo keeps a `Vec` to preserve what
+    /// arrived and applies last-wins explicitly, rather than inheriting it from
+    /// whichever container it happened to pick.
+    #[test]
+    fn a_duplicate_property_set_key_is_last_wins() {
+        let u = parse_update_recipes(
+            &recipes_body(&[("k", &[1]), ("k", &[2, 3])], 0),
+            &no_ids(),
+        )
+        .expect("parse");
+        assert_eq!(u.property_sets.len(), 2, "both kept as they arrived");
+        assert_eq!(u.property_set("k"), Some([2, 3].as_slice()));
+    }
+
+    /// A short body is an error rather than a partial set. The packet has no
+    /// per-field length prefix, so a truncated read cannot be recovered from —
+    /// M41's rule, and the reason a partial apply would be worse than none.
+    #[test]
+    fn a_truncated_update_recipes_is_an_error() {
+        let full = recipes_body(&[("minecraft:smithing_base", &[7, 8, 9])], 0);
+        for cut in 1..full.len() {
+            assert!(
+                parse_update_recipes(&full[..cut], &no_ids()).is_err(),
+                "truncating to {cut} of {} bytes parsed anyway",
+                full.len()
+            );
+        }
+        assert!(parse_update_recipes(&full, &no_ids()).is_ok(), "control");
+    }
+
+    /// The stonecutter half, which needs the real registries for its
+    /// `SlotDisplay`s and so self-skips without them.
+    ///
+    /// The claim is that the entry is `Ingredient` then a **bare
+    /// `SlotDisplay`** — `noRecipeCodec` fills the `Optional<RecipeHolder>`
+    /// beside it in the constructor and never writes it
+    /// (`SelectableRecipe.java:14`). A reader expecting an optional-recipe byte
+    /// there consumes one too many and desyncs every following entry, so the
+    /// two-entry fixture is load-bearing: a one-entry one cannot see it.
+    #[test]
+    fn a_stonecutter_entry_is_an_ingredient_then_a_bare_slot_display() {
+        let Some(i) = ids() else { return };
+        let item = i
+            .slot_display
+            .id("minecraft:item")
+            .expect("slot_display: item");
+
+        let mut b = recipes_body(&[], 2);
+        for (input, result) in [(vec![5i32], 264i32), (vec![6], 9)] {
+            b.push((input.len() + 1) as u8); // holderSet: count + 1
+            for x in &input {
+                b.push(*x as u8);
+            }
+            b.push(item as u8);
+            if result < 128 {
+                b.push(result as u8);
+            } else {
+                b.extend_from_slice(&[(result as u8 & 0x7f) | 0x80, (result >> 7) as u8]);
+            }
+        }
+
+        let u = parse_update_recipes(&b, &i).expect("parse");
+        assert_eq!(u.stonecutter.len(), 2, "the second entry proves no desync");
+        assert_eq!(u.stonecutter[0].input, IngredientSet::Ids(vec![5]));
+        assert_eq!(u.stonecutter[0].display, SlotDisplay::Item(264));
+        assert_eq!(u.stonecutter[1].input, IngredientSet::Ids(vec![6]));
+        assert_eq!(u.stonecutter[1].display, SlotDisplay::Item(9));
+    }
+
+    /// The tag form of an ingredient survives into the stonecutter set — the
+    /// `0` sentinel, which is the half of `holderSet` that a plain count
+    /// reading gets wrong.
+    #[test]
+    fn a_stonecutter_ingredient_can_be_a_tag_name() {
+        let Some(i) = ids() else { return };
+        let item = i.slot_display.id("minecraft:item").expect("item");
+
+        let mut b = recipes_body(&[], 1);
+        b.push(0); // holderSet sentinel: a TAG NAME follows
+        let tag = "minecraft:stone_crafting_materials";
+        b.push(tag.len() as u8);
+        b.extend_from_slice(tag.as_bytes());
+        b.push(item as u8);
+        b.push(9);
+
+        let u = parse_update_recipes(&b, &i).expect("parse");
+        assert_eq!(u.stonecutter[0].input, IngredientSet::Tag(tag.into()));
     }
 }

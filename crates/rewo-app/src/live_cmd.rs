@@ -4227,7 +4227,14 @@ fn run_headless(
                         .split(',')
                         .filter_map(|v| v.trim().parse::<usize>().ok())
                         .collect();
-                    let props = |id: i32| item_props(&items, id);
+                    // M152: snapshot the three wire-derived smithing sets before the
+                    // mutable borrows below. Owned, because a closure holding
+                    // `session.recipes.as_ref()` cannot coexist with `shown_menu_mut()`.
+                    let smithing = session
+                        .recipes
+                        .as_ref()
+                        .map(rewo_net::recipe_book::SmithingSets::from_packet);
+                    let props = |id: i32| item_props(&items, id, smithing.as_ref());
                     let accepted = session.inventory.quick_craft_accepts(&touched, kind, &props);
                     match session.shown_menu_mut().click_quick_craft(&accepted, kind, &props) {
                         Some(end) => {
@@ -4272,7 +4279,14 @@ fn run_headless(
                 let mut parts = spec.split(',');
                 let slot: i32 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(-1);
                 let button: i8 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
-                let props = |id: i32| item_props(&items, id);
+                // M152: snapshot the three wire-derived smithing sets before the
+                // mutable borrows below. Owned, because a closure holding
+                // `session.recipes.as_ref()` cannot coexist with `shown_menu_mut()`.
+                let smithing = session
+                    .recipes
+                    .as_ref()
+                    .map(rewo_net::recipe_book::SmithingSets::from_packet);
+                let props = |id: i32| item_props(&items, id, smithing.as_ref());
                 // `REWO_CLICK=<slot>,<button>[,<kind>]`, where `kind` selects
                 // the `ContainerInput`: `q` quick-move, `s` swap (the button
                 // is then an inventory index), `t` throw, `a` pickup-all.
@@ -8436,7 +8450,7 @@ impl LiveApp {
                         // through the SAME production resolver every other
                         // consumer uses (M93b's rule).
                         let props =
-                            |id: i32| item_props(&items, id).map_or(64, |p| p.max_stack);
+                            |id: i32| item_props(&items, id, None).map_or(64, |p| p.max_stack);
                         merchant_view(&mut self.screen, m, offers, &props)
                     });
                 let (labels, velvet) = apply_screen(
@@ -22231,15 +22245,34 @@ fn carried_icon(
 /// supplied the ids themselves. Every unit test of the quick-move hand-builds
 /// an `ItemProps`, so without a witness on this function the table lookups
 /// below could all return the wrong thing in the live client and stay green.
+/// `recipes` is the last `update_recipes` (M152), or `None` before one has
+/// arrived. It supplies the **only wire-derived predicates on this struct** —
+/// the three smithing sets — and every other field is jar-derived, so a caller
+/// that has no session (a gate, a unit test) passes `None` and gets a smithing
+/// table that refuses everything. That is not a degraded mode: it is what
+/// vanilla does before the packet lands, because
+/// `ClientRecipeContainer.propertySet` is
+/// `getOrDefault(id, RecipePropertySet.EMPTY)`.
 pub(crate) fn item_props(
     items: &rewo_data::items::Items,
     id: i32,
+    smithing: Option<&rewo_net::recipe_book::SmithingSets>,
 ) -> Option<rewo_world::inventory::ItemProps> {
     use rewo_data::item_props_table::{equip_slot, max_stack_size, EquipSlot};
     use rewo_world::inventory::ArmorPiece;
     let name = items.name(id)?;
+    // The property sets carry RAW item ids (`holderRegistry`), which is the id
+    // this function was handed — so this is a direct membership test with no
+    // name round-trip, unlike every jar table above.
+    let in_set = |pick: fn(&rewo_net::recipe_book::SmithingSets) -> &Vec<i32>| {
+        smithing.is_some_and(|s| pick(s).contains(&id))
+    };
     Some(rewo_world::inventory::ItemProps {
         max_stack: max_stack_size(name),
+        // M152 — the smithing table's three input tests.
+        smithing_template: in_set(|s| &s.template),
+        smithing_base: in_set(|s| &s.base),
+        smithing_addition: in_set(|s| &s.addition),
         // M91 — the furnace quick-move's two predicates, resolved here because
         // this is where the numeric id becomes a name.
         is_fuel: rewo_data::fuel_table::is_fuel(name),
@@ -22411,7 +22444,14 @@ fn finish_drag(
     if touched.is_empty() || session.inventory.carried().is_none() {
         return;
     }
-    let props = |id: i32| item_props(items, id);
+    // M152: snapshot the three wire-derived smithing sets before the
+    // mutable borrows below. Owned, because a closure holding
+    // `session.recipes.as_ref()` cannot coexist with `shown_menu_mut()`.
+    let smithing = session
+        .recipes
+        .as_ref()
+        .map(rewo_net::recipe_book::SmithingSets::from_packet);
+    let props = |id: i32| item_props(items, id, smithing.as_ref());
     let accepted = session.inventory.quick_craft_accepts(&touched, kind, &props);
     if accepted.is_empty() {
         return;
@@ -22506,7 +22546,14 @@ fn click_screen(
             session.ghost_recipe = None;
         }
     }
-    let props = |id: i32| item_props(items, id);
+    // M152: snapshot the three wire-derived smithing sets before the
+    // mutable borrows below. Owned, because a closure holding
+    // `session.recipes.as_ref()` cannot coexist with `shown_menu_mut()`.
+    let smithing = session
+        .recipes
+        .as_ref()
+        .map(rewo_net::recipe_book::SmithingSets::from_packet);
+    let props = |id: i32| item_props(items, id, smithing.as_ref());
     use rewo_world::inventory as inv;
     let slot = slot as i32;
     let (input, button, predicted) = match action {
