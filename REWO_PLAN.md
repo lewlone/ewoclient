@@ -38,7 +38,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M149g shipped, all merged to `main`
+### Where it is: M0–M154 shipped, all merged to `main`
 
 **Update (2026-08-03, the M87–M93 container arc).** Seven milestones landed
 after the cold-start audit below, **all merged to `main`**: M87 the
@@ -145,8 +145,9 @@ still learns that a green run is not evidence this client makes a sound.
 
 Current measurement, taken 2026-08-14 on `main` at `c538afd`, after the
 audio-verification landing (M150, `soundshot`, M139 and M151 all merged):
-**3214 tests, 0 failures** (**world 1187, net 1142, gpu 275, data 228, app 221,
-mesh 45, proto 16, audio 100** — read off the runner per crate).
+**3232 tests, 0 failures** (**world 1193, net 1154, gpu 275, data 228, app 221,
+mesh 45, proto 16, audio 100** — read off the runner per crate; measured
+2026-08-14 after M152/M153/M154).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -161,7 +162,7 @@ beside them; the totals were always a real sum, so only the splits were wrong.
 Read them off `cargo test`'s own per-binary lines rather than apportioning a
 total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
-three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
+three occurrences of the same habit. `containershot` **109/109**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
 34/34, `mobshot` 246/246, `sidebarshot` 17/17, **`tablistshot` 26/26** (new,
 M151), **`live --render-check` **47/47** with validation ON and 0
@@ -171,8 +172,8 @@ server, **builds first** (it used only to check the binary existed, so a source
 change not followed by a manual `cargo build` was graded against the previous
 compile — M151 lost a mutation verification to exactly that) and carries both
 caller requirements; demo PNG
-`2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C
-**12** — M96–M107 consume packets M93y already decoded, M108 resolved
+`2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at **119 / 0 / 22**, class C
+**11** (M152 took `update_recipes`) — M96–M107 consume packets M93y already decoded, M108 resolved
 `delete_chat`, M113 the Brigadier tree and M114 the two suggestion packets.
 
 **There are 36 serverless gate commands, not the "fourteen" older paragraphs in
@@ -318,23 +319,112 @@ witnesses are mostly self-driven can look healthy against nothing.
 > mixer, and **run it with `--features audio`** or the last two are not graded
 > at all.
 >
+> **Three milestones landed 2026-08-14 and this box has been corrected for
+> them.** **M152** decoded `update_recipes` and closed the smithing quick-move,
+> the last decline in the container arc (coverage 119/0/22). **M153** made the
+> stereo-attenuation divergence an owned decision — `REWO_AUDIO_PLAN.md` §5 had
+> asked for that call explicitly and nobody had made it. **M154** fixed the
+> Pale Garden bug the third bullet below used to assert did not exist.
+>
 > Candidates for the next *code* milestone, none of them blocked:
+>
+> * **The tab list's two gaps, and the "structural" claim about the faces does
+>   NOT survive reading the code.** M151's module doc gives a reason for each
+>   and only one holds. **Hearts is pure transcription** over data Rewo already
+>   decodes end to end: `RenderType::Hearts` is parsed, the score is in
+>   `Scoreboard::score`, the 90 px column is reserved, three of the eight
+>   sprites are already in the HUD atlas and the five missing ones are static
+>   9x9 PNGs that fit existing free space with **no resize**. What is missing is
+>   `PlayerTabOverlay.HealthState`'s blink clock, one `i32` on `ResolvedRow` and
+>   an emitter. **The faces need no dynamic-texture subsystem either** — the
+>   requirement is not "sample a 64x64 skin", it is **two 8x8 crops the CPU can
+>   cut before upload**, and `create_texture` already sets `TRANSFER_DST` on the
+>   HUD atlas (`entities.rs:5551`) with `upload_region` already present. Take
+>   hearts first; it touches no GPU lifetime.
+>
+>   Four transcription traps, all measured: the hat overlay's source u is
+>   **40**, not 32 (32 is the hat box's side face); `flip` moves the **source**
+>   v to 16 and makes the source height **negative**, leaving the destination
+>   untouched; `fullHearts` **ceils** while `heartsToRender` **floors**, so at
+>   an odd score `fullHearts` can exceed it and the container-only loop runs
+>   zero times; and the text readout replaces the hearts by **high health**
+>   (score >= 44), never by a narrow window, because the column is a constant
+>   90 px. At ordinary health the pitch is **8 px with 9 px sprites**, so every
+>   heart overlaps its neighbour by a column.
+>
+>   **One integration hazard neither gap's own tests can see**: `live
+>   --render-check`'s r47 asserts `tab_list_icons_max == 3` off
+>   `tab_list_view::icons(..).len()`, so any new blit on that path moves it.
 >
 > * **The listening pass** — see the box above. Music is now the most audible
 >   thing in the client that no gate can grade, and M144–M146 have all landed
 >   green without a human hearing any of it.
-> * **Three options are pinned, and they now want ONE surface between them.**
->   `MusicFrequency` is fixed at `DEFAULT` (`set_frequency` exists and nothing
->   calls it), `getMusicVolume` is a constant 1.0 because no 26.2 biome or
->   dimension declares `MUSIC_VOLUME`, and M149d added
->   `HIDE_LIGHTNING_FLASH = false` — an accessibility option gating the End
->   flash's *lightmap* term. Each is exact today and a stated assumption
->   tomorrow, each is trivial on its own, and each is blocked on the same thing
->   Rewo has never had: an options screen. Building one is the item; wiring any
->   single option to a constant is not.
-> * **Decode on a worker.** Still inline on the client tick — one chunk per
->   second of playback, four at the attach, plus one asset read of up to 11 MB
->   when a track starts. A stated deviation from vanilla's `supplyAsync`.
+> * **TWO options are pinned, not three, and the third was a BUG.** This bullet
+>   used to name `getMusicVolume` alongside the other two. It is **not an
+>   option at all** — `Minecraft.java:2623` is a screen check followed by the
+>   `MUSIC_VOLUME` attribute probe, with no options entry anywhere in its path,
+>   so an options screen would not have unblocked it. Worse, the claim it
+>   rested on ("no 26.2 biome or dimension declares `MUSIC_VOLUME`") was false:
+>   `worldgen/biome/pale_garden.json:4` declares **0.0**. **M154 fixed it** —
+>   see §15.
+>
+>   What remains is genuinely two, and both really are `OptionInstance`s on
+>   `Options.java` persisted to `options.txt`: `MusicFrequency` (961, fixed at
+>   `DEFAULT`; `set_frequency` exists and nothing calls it) and
+>   `hideLightningFlashes` (93, which M149d pinned to `false` — and which has
+>   **two** consumers, not one: `ClientLevel.getSkyFlashTime()` feeds both the
+>   SKY_COLOR blend and SKY_LIGHT_FACTOR). The minimum surface is one sub-screen
+>   each (`SoundOptionsScreen`, `AccessibilityOptionsScreen`), a `CycleButton`,
+>   an `options.txt` codec, and one push-callback wire each — roughly 1,500
+>   lines with its gate. Rewo already has the screen framework, the layout
+>   classes, nine-slice and `Button.Plain`; what is missing is `CycleButton`,
+>   `AbstractSliderButton`, the `OptionsList` two-column entry and the file
+>   format. The pause screen's OPTIONS button already exists and is inert
+>   (`live_cmd.rs:6901`).
+>
+>   Three traps found while scoping it, none of them obvious:
+>   `MusicFrequency.getSerializedName()` is the **UPPERCASE** first constructor
+>   argument, not the lowercase translation key beside it; an option's
+>   `onValueUpdate` does **not** fire at load (`OptionInstance.set` skips the
+>   callback while `!isRunning()`, which is exactly why `MusicManager`'s
+>   constructor pulls the value itself); and the three save paths **disagree** —
+>   a `CycleButton` saves on every click, a slider never does, and
+>   `AccessibilityOptionsScreen`'s Done button bypasses `onClose()` entirely.
+> * **Decode on a worker — and "vanilla's `supplyAsync`" describes only HALF of
+>   what vanilla does.** `supplyAsync(.., Util.nonCriticalIoPool())` covers the
+>   full decode of a **static** sound and the *opening* of a stream (a file open
+>   and three Ogg header packets). Every streaming audio packet is decoded in
+>   `Channel.pumpBuffers`, reachable only from `ChannelHandle.execute` and
+>   `ChannelAccess.scheduleTick`, **both of which post to a SINGLE daemon
+>   thread**. So vanilla has two executors of different shapes and the streaming
+>   one is not a pool; a single unified worker pool gets the static side right
+>   and spreads streaming across N threads where vanilla serialises it on one.
+>
+>   Four more, each of which inverts: `nonCriticalIoPool()` is **not**
+>   `ioPool()` — it is `DOWNLOAD_POOL`, an **unbounded** cached pool of daemon
+>   threads that `shutdownExecutors` deliberately does not await.
+>   `SoundBufferLibrary`'s cache holds **futures, not buffers**, so vanilla
+>   dedupes *in-flight* decodes and not merely completed ones — invisible today
+>   because a synchronous decode makes the two identical. `scheduleTick()`
+>   **schedules**; its whole body is `executor.execute(..)`, so Rewo's inline
+>   `update_streams` is the deviation rather than the transcription. And channel
+>   acquisition **blocks** (`createHandle(pool).join()`): vanilla is
+>   deliberately synchronous where the *answer* is needed and asynchronous where
+>   the *work* is.
+>
+>   **Two hazards this creates in Rewo specifically.** `attach_static` sets
+>   `played_at = None` ("an attach rewinds"), which is correct only while the
+>   order is attach-then-play; a deferred attach inverts that to play-then-attach
+>   and the line WIPES the play timestamp, after which `stopped()` answers false
+>   forever and every sound holds its channel permanently. And vanilla does
+>   **not** cancel an in-flight decode on stop — but Rewo cannot copy that,
+>   because `Stop` DELETES the voice while a later `Attach` calls `ensure()` and
+>   creates a fresh silent one.
+>
+>   **Nobody has measured the cost this removes.** The "11 MB" is the ogg size
+>   of `music.end`, which is *streamed*, so its inline cost is an open plus four
+>   1 s chunks rather than 11 MB of decode. The largest static decode is
+>   unmeasured, and without a number the milestone has no before/after.
 > * ~~**`EndFlashState`**~~ — **DONE (M149a–g), and it was never only an audio
 >   item.** All three consumers ship: the lightmap's `skyFactor += intensity`,
 >   the sky's flash quad, and the `DirectionalSoundInstance` queued 30 ticks
@@ -353,7 +443,7 @@ witnesses are mostly self-driven can look healthy against nothing.
 > packaged client the launcher spawns is silent. Turning that on is a one-word
 > change and the right order is: listen first.
 >
-> Packet coverage is **118 / 0 / 23** and machine-checked, with classes A and B
+> Packet coverage is **119 / 0 / 22** and machine-checked, with classes A and B
 > empty: picking work there means choosing a **subsystem**, not a packet.
 
 
