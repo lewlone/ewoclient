@@ -38,7 +38,7 @@ as a future `Native` instance kind. The four **fixed product decisions**
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M154 shipped, all merged to `main`
+### Where it is: M0–M157 shipped, all merged to `main`
 
 **Update (2026-08-03, the M87–M93 container arc).** Seven milestones landed
 after the cold-start audit below, **all merged to `main`**: M87 the
@@ -145,9 +145,9 @@ still learns that a green run is not evidence this client makes a sound.
 
 Current measurement, taken 2026-08-14 on `main` at `c538afd`, after the
 audio-verification landing (M150, `soundshot`, M139 and M151 all merged):
-**3232 tests, 0 failures** (**world 1193, net 1154, gpu 275, data 228, app 221,
-mesh 45, proto 16, audio 100** — read off the runner per crate; measured
-2026-08-14 after M152/M153/M154).
+**3272 tests, 0 failures** (**world 1198, net 1162, gpu 290, data 228, app 222,
+mesh 45, proto 16, audio 112** — read off the runner per crate; measured
+2026-08-14 after M152–M157).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -164,8 +164,8 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **109/109**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, `sidebarshot` 17/17, **`tablistshot` 26/26** (new,
-M151), **`live --render-check` **47/47** with validation ON and 0
+34/34, `mobshot` 246/246, `sidebarshot` 17/17, **`tablistshot` 34/34** (M151,
+raised by M155), **`live --render-check` **47/47** with validation ON and 0
 validation errors** — r46 arrived with M147 and **r47 with M151**, and the whole
 thing reproduces with `python tools/render_check.py`, which stands up a fresh
 server, **builds first** (it used only to check the binary existed, so a source
@@ -182,7 +182,7 @@ time* and are correct as such. Re-measured from a cold start on 2026-08-08 by
 running every one, and again after M125, M126 and the M127–M134 integration:
 all green, **0 validation errors**; re-measured again on 2026-08-14, when the
 count reached **36** — `sidebarshot` (17) came from M132, **`soundshot`**
-(28 default / 48 under `--features audio`) and **`tablistshot`** (26) are the
+(28 default / 48 under `--features audio`) and **`tablistshot`** (34, raised by M155) are the
 two newest, and `blockentityshot` reads **177** rather than the 172 the list
 below records. Enumerate them rather
 than trusting a list, since the list is what rots:
@@ -192,7 +192,7 @@ rewo.exe --help | grep -E '^  [a-z]+shot|^  [a-z]+check'
 ```
 
 Their witness counts. The 2026-08-14 run added the two newest — **`soundshot`**
-(28 in a default build / 48 under `--features audio`) and **`tablistshot`** (26)
+(28 in a default build / 48 under `--features audio`) and **`tablistshot`** (34)
 — to the list re-measured by running all 34 on 2026-08-10 (M137).
 **Only two had drifted from the M124 list this replaced** — `titleshot` and
 `deathshot`, both moved by M130 and M137 — so the rest are unchanged rather than
@@ -326,7 +326,35 @@ witnesses are mostly self-driven can look healthy against nothing.
 > asked for that call explicitly and nobody had made it. **M154** fixed the
 > Pale Garden bug the third bullet below used to assert did not exist.
 >
+> **M155–M157 also landed 2026-08-14, closing three more of the items below.**
+> M155 took the tab list's hearts and faces (and found the "structural" claim
+> about the faces does not survive the code), M156 the static decode worker
+> (measured at **20.1 ms** for the largest static asset, against a 50 ms tick),
+> and M157 the two real options — the third having turned out not to be an
+> option at all. **Every item this box listed on 2026-08-13 is now done**; what
+> follows is what remains.
+>
 > Candidates for the next *code* milestone, none of them blocked:
+>
+> * **THE LISTENING PASS. It is still the user's and it is still the only
+>   outstanding item no machine can do.** M156 changed *when* audio decodes and
+>   M157 changed *how often* music starts; neither has been heard. Everything a
+>   gate can check about audio passes and that is not the same claim.
+> * **The streaming decode.** M156 moved the static half deliberately, because
+>   vanilla's streaming decode is a **single daemon thread** rather than a pool
+>   and a unified pool would diverge. Moving it means modelling
+>   `ChannelAccess`'s one-thread discipline, and its hazards are ordering
+>   against `stop_sound` rather than the two M156 hit.
+> * **The rest of the options.** Two are real now; vanilla has roughly eighty.
+>   The next natural group is `Options.soundSourceVolumes`, which Rewo already
+>   models as `CategoryVolumes` and does not surface — and which needs the
+>   slider widget M157 deliberately did not build, since neither of its two
+>   options is one.
+> * **The tab list's hearts have no PIXEL witness.** M155's eight are model-
+>   level, driving the production emitters; nothing reads back a rendered
+>   heart. `tablistshot` already builds a real `Gpu` with validation on, so the
+>   harness is there.
+>
 >
 > * **The tab list's two gaps, and the "structural" claim about the faces does
 >   NOT survive reading the code.** M151's module doc gives a reason for each
@@ -3273,6 +3301,86 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M155–M157 — the tab list's gaps, the decode worker, and the two real options (2026-08-14)
+
+Three milestones, each closing an item §0.0 listed, and **each correcting the
+description it was listed under**.
+
+**M155 — the tab list's hearts and faces.** M151 left two named gaps with a
+reason for each, and only one of the reasons survives reading the code. **The
+faces needed no new subsystem**: the requirement is not "sample a 64x64 skin",
+it is **two 8x8 crops the CPU can cut before upload**, and `create_texture`
+already sets `TRANSFER_DST` on every texture including the HUD atlas while
+`upload_region` already exists as a free function over a raw `vk::Image`. The
+pool costs 512 bytes a player rather than 16 KB. Raising `ATLAS_H` is safe
+because every `Rect` divides by that constant and every placement is an
+absolute pixel position, so a taller atlas re-normalises each existing UV onto
+the same texels.
+
+The hearts were pure transcription and that is where the findings are. **The
+two heart counts round in OPPOSITE directions** — `fullHearts` ceils,
+`heartsToRender` floors — so at an odd score `fullHearts` can EXCEED
+`heartsToRender` (21 gives 11 against 10) and the container-only loop runs zero
+times. **The blink phase is measured from the END of the blink**, so the two
+durations land on opposite phases: a decrease arms `tick + 20` and `20 % 6 == 2`,
+so damage starts DARK, while an increase arms `tick + 10` and `10 % 6 == 4`, so
+a heal starts LIT. **The absorption sprite is a `*_blinking` asset that is not
+the blink layer** — vanilla ships no non-blinking absorbing heart, so
+transcribing by name loses gold hearts entirely. And the text readout is
+reached by **high health** (score >= 44), never by a narrow window, because the
+column is a constant 90.
+
+`tablistshot` 26 -> **34**. Battery 9/10 with one proven equivalent: vanilla's
+`update` has two halves that provably cannot both fire on one tick, because the
+first sets `last_update_tick = tick` and the second then reads `0 > 20`.
+
+**M156 — the static decode on a worker.** **Measured first**, because the brief
+had no number and its own research said so: the largest static decode is
+`mob/enderdragon/end.ogg` at **20.1 ms**, against a 50 ms tick — 40% of one
+tick on the thread that also runs physics and the render loop. The "11 MB" in
+the brief is `music.end`, which is **streamed**; only 41 of 578
+`minecraft/sounds/` variants are.
+
+**"vanilla's `supplyAsync`" describes half of what vanilla does.**
+`getCompleteBuffer` wraps the whole decode of a STATIC sound; `getStream` wraps
+only the *opening* of a stream, and every streaming packet after that is
+decoded on a **single daemon thread**. So a unified worker pool would get the
+static side right and spread streaming across N threads where vanilla
+serialises it on one — this moves the static half only. `nonCriticalIoPool()`
+is also not `ioPool()`: it is an **unbounded** cached pool that
+`shutdownExecutors` deliberately does not await.
+
+**Two hazards the deferred order creates**, both caught by witnesses:
+`attach_static` clearing `played_at` is right while the order is
+attach-then-play and **wipes an already-set stamp** once it inverts, after
+which `stopped()` answers false forever and the channel pool runs dry; and a
+landing filtered on "pending is some" passes the release test and still hands
+one key's buffer to a channel waiting on another. The worker is **optional**, so
+every gate and every existing test still decode inline. Battery **7/7**, two of
+them only after the mutations showed the tests could not see them.
+
+**M157 — the two real options.** §0.0 listed three and **`getMusicVolume` was
+never one**: `Minecraft.java:2623` has no options entry in its path, so no
+screen could have unblocked it, and the claim under it was false (M154).
+`musicFrequency` and `hideLightningFlash` are both real `OptionInstance`s.
+
+Three traps: `getSerializedName()` is the **UPPERCASE** first constructor
+argument rather than the lowercase translation key beside it on the same line;
+the option is seeded by a **PULL** because `OptionInstance.set` skips its
+callback while `!isRunning()`, so loading the file fires none; and
+`Splitter.on(':').limit(2)` means only the first colon separates. One
+deliberate divergence: Rewo **merges** where vanilla rewrites, because vanilla
+owns all ~80 entries and Rewo models two — a wholesale rewrite of a shared game
+directory would discard keybinds, volumes and render distance.
+
+The screen deliberately does **not** use Rewo's layout system: `OptionsList`
+positions its own widgets from literals, and its column pitch (160) is not half
+its band (310), so deriving one from the other puts every right-hand widget
+five pixels out. Battery **9/9** — one of them only after the split rule was
+extracted into a named function, because neither of Rewo's option *values* can
+contain a colon and no fixture built from them could tell `split_once` from
+`split`.
 
 ### M154 — the Pale Garden's silence, and a comment that was the justification (2026-08-14)
 
