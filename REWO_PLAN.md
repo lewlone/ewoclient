@@ -3184,6 +3184,53 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M153 — the stereo-attenuation divergence becomes an owned decision (2026-08-14)
+
+**`REWO_AUDIO_PLAN.md` §5 asked for this call in as many words and it had never
+been made**: *"A hand-written mixer naturally downmixes and spatializes
+uniformly, which is arguably better and is a divergence. **Choose explicitly and
+write it down**, rather than discovering it later as a mismatch."* M139 then
+measured the divergence and pinned it at **-6.0206 dB**, so the number was exact
+while the sentence beside it still read as an open defect. The user chose on
+2026-08-14: **Rewo keeps the fade.**
+
+**The finding is not the number — it is that the production site said nothing.**
+`pan_gains` gates on channel count and `render`'s attenuation does not, one
+function apart, and **only the pan carried a reason**. So the asymmetry read as
+an oversight rather than a decision, which is exactly the shape a later cleanup
+pass "fixes" — the hazard §5 records one paragraph over about the `32767.5`
+quantisation, now realised in a second place.
+
+**Two things settled from source rather than from the plan.** Vanilla's side is
+**not a mixer rule at all**: `calculateVolume` is
+`clamp(volume) * clamp(sliderVolume) * gainBySource` with **no distance term**
+(`SoundEngine.java:467-469`), so all distance lives in
+`Channel.linearAttenuation`'s `AL_LINEAR_DISTANCE` (`Channel.java:108-112`),
+which OpenAL applies to **mono only**. And **the reach is far narrower than it
+reads**, which is what makes the choice defensible rather than merely permitted:
+`SimpleSoundInstance.forMusic` is `Attenuation.NONE`
+(`SimpleSoundInstance.java:32-36`), so `max_distance` is `None` and **all music
+is untouched** — the case one would most expect to be affected, since every
+music track is stereo. What the divergence actually reaches is `forJukeboxSong`
+(`Attenuation.LINEAR`, positioned, `:38-41`) with its stereo discs, plus the one
+stereo goat-horn variant. **The audible consequence is a distant jukebox fading
+in Rewo and not in vanilla.**
+
+**Pinned in three places so it cannot be reverted by accident**: a note at the
+`let gain` site — the place someone would make the change, and the place that
+now explains why `pan_gains` gates one function below while it does not; a named
+assertion whose failure message says the change is a **REVERSAL rather than a
+refinement**, because `pin`'s generic *"re-measure and record the new number"*
+advice is precisely wrong for a row that is a decision; and §5 itself.
+
+**The assertion was verified non-decorative**, which matters because a warning
+nothing can trigger is worse than none: gating `render`'s attenuation on
+`channels >= 2` fails it at **exit 101** reporting `+0.0000 dB`. The mutation was
+then removed and the file confirmed restored **by byte comparison, not by
+`git diff`**, which cannot tell a leftover mutation from uncommitted work — and
+the test was separately confirmed to **RUN rather than self-skip**, since
+store-dependent tests in this crate can. `rewo-audio` 100/100, exit 0.
+
 ### `soundshot` — the audio gate `REWO_AUDIO_PLAN.md` §4 specified and nobody built (2026-08-13)
 
 **The gap.** §4 specifies this gate in full, and M138c's own status block
