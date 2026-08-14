@@ -626,6 +626,25 @@ pub trait SoundWorld: crate::tickable::RampWorld {
     /// decoded flag and says so at its own definition; this one is where a
     /// reader looks first, so it is the one that matters.
     fn entity_silent(&self, entity_id: i32) -> bool;
+
+    /// `Minecraft.getMusicVolume()` — the `MUSIC_VOLUME` environment attribute
+    /// probed at the camera (M154).
+    ///
+    /// **This exists because the claim that it was always 1.0 was wrong.** The
+    /// call site used to pass a literal, justified by a comment reading "no
+    /// biome or dimension in 26.2 declares it". Exactly one does:
+    /// `worldgen/biome/pale_garden.json:4` sets it to **0.0**, from
+    /// `OverworldBiomes.java:597`, one line below the `background_music` the
+    /// biome parser was already reading. Music is silent in the Pale Garden and
+    /// Rewo played it at full level.
+    ///
+    /// Vanilla's first arm — `screen != null && screen.getBackgroundMusic() !=
+    /// null ? 1.0F` (`Minecraft.java:2623`) — is **unreachable here** for the
+    /// same reason M146's screen arm is: Rewo has no title screen to carry its
+    /// own music. So this is the probe alone.
+    fn music_volume(&self) -> f32 {
+        1.0
+    }
 }
 
 /// A [`SoundWorld`] with nothing in it — every entity is gone.
@@ -1804,6 +1823,12 @@ pub fn stop_from_event(stop: &StopSound) -> (Option<&str>, Option<SoundSource>) 
 /// moving mob's sound up to three ticks ahead of the mob.
 pub struct EntityTableWorld<'a> {
     pub table: &'a rewo_world::entities::EntityTable,
+    /// `Minecraft.getMusicVolume()`, sampled by the caller (M154).
+    ///
+    /// Carried rather than computed here because this struct holds the
+    /// entity table and the biome registry is the world's. 1.0 everywhere
+    /// but the Pale Garden, which declares 0.0.
+    pub music_volume: f32,
     /// The local player, who is **not a row in the table** (M141d).
     ///
     /// `EntityTable` holds only entities the server sent an `add_entity` for,
@@ -2053,6 +2078,10 @@ impl crate::tickable::RampWorld for EntityTableWorld<'_> {
 }
 
 impl SoundWorld for EntityTableWorld<'_> {
+    fn music_volume(&self) -> f32 {
+        self.music_volume
+    }
+
     fn entity_silent(&self, entity_id: i32) -> bool {
         // `Entity.isSilent()` — metadata index 4, decoded since M138a. This was
         // a hardcoded `false` with a comment saying so, which is the honest
@@ -2270,11 +2299,13 @@ impl SoundSystem {
             .music_instance
             .map(|id| self.engine.is_active(id))
             .unwrap_or(false);
-        // `getMusicVolume()` is the `MUSIC_VOLUME` environment attribute, which
-        // Rewo does not sample — no biome or dimension in 26.2 declares it, so
-        // the probe's answer is its default of 1.0 everywhere. Passing the
-        // constant is therefore exact today and a stated assumption tomorrow.
-        let outcome = self.music.tick(1.0, situational, is_active, false);
+        // `getMusicVolume()`, sampled rather than assumed (M154). The comment
+        // that used to sit here said "no biome or dimension in 26.2 declares
+        // it, so the probe's answer is its default of 1.0 everywhere" and was
+        // wrong: `pale_garden` declares 0.0, so music is silent there.
+        let outcome = self
+            .music
+            .tick(world.music_volume(), situational, is_active, false);
 
         if outcome.stop_current {
             if let Some(id) = self.music_instance.take() {
@@ -2557,11 +2588,13 @@ impl LiveSounds {
         entities: &rewo_world::entities::EntityTable,
         local: Option<LocalPlayerView>,
         game_time: i64,
+        music_volume: f32,
     ) {
         let world = EntityTableWorld {
             table: entities,
             local,
             game_time,
+            music_volume,
         };
         let before = self.system.stats;
         // The backend's clock, advanced with the engine's rather than from an
@@ -2675,8 +2708,11 @@ mod tests {
         )
     }
 
-    #[derive(Default)]
     struct TestWorld {
+        /// `MUSIC_VOLUME` (M154). **`Default` is 1.0, not `f32::default()`** —
+        /// which is why this struct has a hand-written `Default` now. A derived
+        /// zero would silence music in every older fixture.
+        music_volume: f32,
         positions: HashMap<i32, (f64, f64, f64)>,
         silent: Vec<i32>,
         /// Only the ramp-driving tests set these; everything else leaves them
@@ -2689,7 +2725,24 @@ mod tests {
         camera: (f64, f64, f64),
     }
 
+    impl Default for TestWorld {
+        fn default() -> Self {
+            Self {
+                music_volume: 1.0,
+                positions: HashMap::new(),
+                silent: Vec::new(),
+                horizontal_speed: HashMap::new(),
+                angry: Vec::new(),
+                camera: (0.0, 0.0, 0.0),
+            }
+        }
+    }
+
     impl SoundWorld for TestWorld {
+        fn music_volume(&self) -> f32 {
+            self.music_volume
+        }
+
         fn entity_silent(&self, entity_id: i32) -> bool {
             self.silent.contains(&entity_id)
         }
@@ -3565,6 +3618,7 @@ mod tests {
         let mut dev = RecordingDevice::default();
         let t = rewo_world::entities::EntityTable::default();
         let world = EntityTableWorld {
+            music_volume: 1.0,
             table: &t,
             local: Some(LocalPlayerView {
                 id: 42,
@@ -3609,6 +3663,7 @@ mod tests {
         // speed must push the ramp's volume, which the fade puts at
         // `clamp(speed_sqr/4) * 1.0` once `time >= 40`.
         let world = EntityTableWorld {
+            music_volume: 1.0,
             table: &t,
             local: Some(LocalPlayerView {
                 id: 42,
@@ -3638,6 +3693,7 @@ mod tests {
         let mut dev = RecordingDevice::default();
         let t = rewo_world::entities::EntityTable::default();
         let grounded = EntityTableWorld {
+            music_volume: 1.0,
             table: &t,
             local: Some(LocalPlayerView {
                 id: 42,
@@ -3757,6 +3813,7 @@ mod tests {
         let mut dev = RecordingDevice::default();
         let t = rewo_world::entities::EntityTable::default();
         let world = EntityTableWorld {
+            music_volume: 1.0,
             table: &t,
             local: None,
             game_time: 0,
@@ -3839,6 +3896,7 @@ mod tests {
         // Both loops read the RIDER's submersion, not the cart's — that is
         // `RidingMinecartSoundInstance`'s override.
         let dry = EntityTableWorld {
+            music_volume: 1.0,
             table: &table,
             local: Some(LocalPlayerView {
                 id: 1,
@@ -3913,6 +3971,7 @@ mod tests {
         );
         table.set_passengers(2, vec![1]);
         let world = EntityTableWorld {
+            music_volume: 1.0,
             table: &table,
             local: Some(LocalPlayerView {
                 id: 1,
@@ -4016,6 +4075,7 @@ mod tests {
         use crate::tickable::RampWorld;
         let t = rewo_world::entities::EntityTable::default();
         let w = EntityTableWorld {
+            music_volume: 1.0,
             table: &t,
             local: Some(LocalPlayerView {
                 id: 1,
@@ -4050,6 +4110,7 @@ mod tests {
         }
         let w = |t: &rewo_world::entities::EntityTable| {
             EntityTableWorld {
+                music_volume: 1.0,
                 table: t,
                 local: None,
                 game_time: 0,
@@ -4087,6 +4148,7 @@ mod tests {
             t.tick_lerp();
         }
         let w = EntityTableWorld {
+            music_volume: 1.0,
             table: &t,
             local: None,
             game_time: 0,
@@ -4106,6 +4168,7 @@ mod tests {
         );
         let w = |t: &rewo_world::entities::EntityTable| {
             EntityTableWorld {
+                music_volume: 1.0,
                 table: t,
                 local: None,
                 game_time: 0,
@@ -4136,6 +4199,7 @@ mod tests {
             table.tick_lerp(); // scale 40/80 = 0.5
         }
         let world = EntityTableWorld {
+            music_volume: 1.0,
             table: &table,
             local: None,
             game_time: 0,
@@ -4182,6 +4246,7 @@ mod tests {
         table.set_gesture_state(4, 5); // DIGGING
         fn world(t: &rewo_world::entities::EntityTable) -> EntityTableWorld<'_> {
             EntityTableWorld {
+                music_volume: 1.0,
                 table: t,
                 local: None,
                 game_time: 0,
@@ -4226,6 +4291,7 @@ mod tests {
         );
         t.set_anger_end_time(9, 100);
         let angry = EntityTableWorld {
+            music_volume: 1.0,
             table: &t,
             local: None,
             game_time: 99,
@@ -4234,6 +4300,7 @@ mod tests {
         // One tick later the deadline has passed — same table, same entity, no
         // packet in between.
         let calm = EntityTableWorld {
+            music_volume: 1.0,
             table: &t,
             local: None,
             game_time: 100,
@@ -4356,6 +4423,7 @@ mod tests {
         use crate::tickable::RampWorld;
         let t = rewo_world::entities::EntityTable::default();
         let w = EntityTableWorld {
+            music_volume: 1.0,
             table: &t,
             local: Some(LocalPlayerView {
                 id: 42,
@@ -4390,6 +4458,7 @@ mod tests {
         use crate::tickable::RampWorld;
         let t = rewo_world::entities::EntityTable::default();
         let w = EntityTableWorld {
+            music_volume: 1.0,
             table: &t,
             local: None,
             game_time: 0,
@@ -4418,6 +4487,7 @@ mod tests {
         t.lerp_motion(9, [0.5, 0.0, 0.0], true, false);
         {
             let w = EntityTableWorld {
+                music_volume: 1.0,
                 table: &t,
                 local: None,
                 game_time: 0,
@@ -4426,6 +4496,7 @@ mod tests {
         }
         t.tick_lerp();
         let w = EntityTableWorld {
+            music_volume: 1.0,
             table: &t,
             local: None,
             game_time: 0,
@@ -5173,6 +5244,51 @@ mod tests {
             .any(|c| matches!(c, ChannelCall::AttachBufferStream(_, _))));
     }
 
+    /// M154 — the engine actually ASKS the world for `getMusicVolume()`.
+    ///
+    /// **This exists because a mutation replacing `world.music_volume()` with a
+    /// literal `1.0` survived the whole suite.** The parse was tested, the
+    /// biome resolution was tested, and nothing checked that the two reached
+    /// the mixer — which is precisely the pre-M154 bug in a new place, and
+    /// M97's lesson (a rule living where no test can reach it) for the fifth
+    /// time in this project.
+    ///
+    /// A world reporting 0.0 is the Pale Garden. The track still STARTS —
+    /// `MusicManager` schedules on its own clock and does not consult the gain
+    /// to decide whether to play — but the gain it asks the device for must
+    /// follow the attribute down rather than sitting at full.
+    #[test]
+    fn the_music_gain_follows_the_worlds_music_volume() {
+        let reg = registry();
+        let ev = SoundEvent::Music {
+            situational: Some(rewo_world::music::musics::game()),
+        };
+
+        let gain_after = |world: &dyn SoundWorld| {
+            let mut sys = SoundSystem::new(music_index());
+            let mut dev = RecordingDevice::default();
+            for _ in 0..crate::music::STARTING_DELAY + 40 {
+                sys.accept(&[ev.clone()], &reg, world, &mut dev);
+            }
+            assert_eq!(sys.stats.started, 1, "the track must actually start");
+            // `updateCategoryVolume(MUSIC, gain)` — the crossfade's one writer,
+            // and NOT a per-channel `SetVolume`. Reading the channel call was
+            // the first draft of this witness and it measured 1.0 for both
+            // worlds, because the music gain never travels that way.
+            sys.engine.category_gain(SoundSource::Music)
+        };
+
+        let loud = gain_after(&TestWorld::default());
+        let quiet = gain_after(&TestWorld {
+            music_volume: 0.0,
+            ..Default::default()
+        });
+        assert!(
+            quiet < loud,
+            "a 0.0 MUSIC_VOLUME must pull the music category gain below a 1.0              one (got {quiet} against {loud}) — equal means the probe is not              reaching `MusicManager::tick` at all, which is what shipped"
+        );
+    }
+
     /// **Nothing on offer starts nothing**, however long the client runs.
     #[test]
     fn a_music_tick_with_no_situational_track_starts_nothing() {
@@ -5322,7 +5438,7 @@ mod tests {
         let mut entities = EntityTable::default();
         entities.add(11, EntityState::new(0, 0, 5.0, 64.0, -5.0, 0.0, 0.0));
 
-        live.drive(&[positioned(3)], &entities, None, 0);
+        live.drive(&[positioned(3)], &entities, None, 0, 1.0);
         assert_eq!(live.stats().started, 1);
         assert_eq!(live.system.engine.live_count(), 1);
 
@@ -5338,12 +5454,12 @@ mod tests {
             pitch: 1.0,
             seed: 0,
         });
-        live.drive(&[ev.clone()], &entities, None, 0);
+        live.drive(&[ev.clone()], &entities, None, 0, 1.0);
         assert_eq!(live.stats().started, 2);
 
         // An entity the table does not have is dropped, not relocated.
         entities.remove(11);
-        live.drive(&[ev], &entities, None, 0);
+        live.drive(&[ev], &entities, None, 0, 1.0);
         assert_eq!(live.stats().no_instance, 1);
         assert_eq!(live.stats().started, 2);
     }
@@ -5410,7 +5526,7 @@ mod tests {
 
         // A sound that is still playing: the channel stays with it.
         let (mut live, log) = live_with_sink(Some(false));
-        live.drive(&[positioned(3)], &entities, None, 0);
+        live.drive(&[positioned(3)], &entities, None, 0, 1.0);
         assert_eq!(live.stats().started, 1, "the fixture must actually play");
         assert!(
             log.borrow().releases.is_empty(),
@@ -5420,7 +5536,7 @@ mod tests {
 
         // The same drive with the backend reporting the sound finished.
         let (mut live, log) = live_with_sink(Some(true));
-        live.drive(&[positioned(3)], &entities, None, 0);
+        live.drive(&[positioned(3)], &entities, None, 0, 1.0);
         assert_eq!(live.stats().started, 1);
         assert_eq!(log.borrow().releases.len(), 1, "a finished voice is released");
 
@@ -5440,7 +5556,7 @@ mod tests {
     fn a_backend_with_no_opinion_behaves_like_the_silent_path() {
         use rewo_world::entities::EntityTable;
         let (mut live, log) = live_with_sink(None);
-        live.drive(&[positioned(3)], &EntityTable::default(), None, 0);
+        live.drive(&[positioned(3)], &EntityTable::default(), None, 0, 1.0);
         assert_eq!(log.borrow().releases.len(), 1);
     }
 
@@ -5449,7 +5565,7 @@ mod tests {
     fn the_eight_calls_reach_the_backend_as_well_as_the_bookkeeping_device() {
         use rewo_world::entities::EntityTable;
         let (mut live, log) = live_with_sink(Some(false));
-        live.drive(&[positioned(3)], &EntityTable::default(), None, 0);
+        live.drive(&[positioned(3)], &EntityTable::default(), None, 0, 1.0);
 
         let log = log.borrow();
         assert_eq!(log.submits.len(), 8, "SoundEngine.java:417-434 is eight calls");
@@ -5495,7 +5611,7 @@ mod tests {
         let (mut live, log) = live_with_sink(Some(false));
         let entities = EntityTable::default();
         for _ in 0..5 {
-            live.drive(&[], &entities, None, 0);
+            live.drive(&[], &entities, None, 0, 1.0);
         }
         assert_eq!(log.borrow().ticks, 5, "an empty drive is still a tick");
     }
@@ -5508,7 +5624,7 @@ mod tests {
         let mut live = LiveSounds::new(plain_index(), registry());
         assert!(!live.has_sink());
         assert_eq!(live.sink_diagnostics(), SinkDiagnostics::default());
-        live.drive(&[positioned(3)], &EntityTable::default(), None, 0);
+        live.drive(&[positioned(3)], &EntityTable::default(), None, 0, 1.0);
         assert_eq!(live.stats().started, 1);
         assert_eq!(live.device.calls_made, 8);
     }
@@ -5524,7 +5640,7 @@ mod tests {
         if let Some(e) = t.get_mut(5) {
             e.set_target(30.0, 64.0, 0.0);
         }
-        let w = EntityTableWorld { table: &t, local: None, game_time: 0 };
+        let w = EntityTableWorld { table: &t, local: None, game_time: 0, music_volume: 1.0 };
         let (x, _, _) = w.position(5).unwrap();
         assert_ne!(x, 30.0, "the target is not where the entity is yet");
         assert_eq!(w.position(6), None, "an untracked entity is gone");
@@ -5561,6 +5677,7 @@ mod tests {
     #[test]
     fn the_underwater_instances_are_born_audible_and_head_locked() {
         let world = EntityTableWorld {
+            music_volume: 1.0,
             table: &rewo_world::entities::EntityTable::default(),
             local: Some(LocalPlayerView {
                 id: 1,
@@ -5634,6 +5751,7 @@ mod tests {
         let mut dev = RecordingDevice::default();
         let table = rewo_world::entities::EntityTable::default();
         let world = EntityTableWorld {
+            music_volume: 1.0,
             table: &table,
             local: None,
             game_time: 0,
@@ -5706,6 +5824,7 @@ mod tests {
         let mut dev = RecordingDevice::default();
         let table = rewo_world::entities::EntityTable::default();
         let world = EntityTableWorld {
+            music_volume: 1.0,
             table: &table,
             local: None,
             game_time: 0,
@@ -5737,6 +5856,7 @@ mod tests {
         let mut dev = RecordingDevice::default();
         let table = rewo_world::entities::EntityTable::default();
         let world = EntityTableWorld {
+            music_volume: 1.0,
             table: &table,
             local: None,
             game_time: 0,
@@ -5799,6 +5919,7 @@ mod tests {
         let mut dev = RecordingDevice::default();
         let table = rewo_world::entities::EntityTable::default();
         let world = EntityTableWorld {
+            music_volume: 1.0,
             table: &table,
             local: None,
             game_time: 0,

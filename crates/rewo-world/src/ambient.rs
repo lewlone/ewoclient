@@ -257,6 +257,7 @@ mod tests {
 
     fn biome_def() -> BiomeDef {
         BiomeDef {
+            music_volume: None,
             name: "test:biome".into(),
             temperature: 0.8,
             downfall: 0.4,

@@ -205,6 +205,15 @@ pub struct BiomeDef {
     /// means *inherit the dimension's*; `Some(EMPTY)` means silence, and
     /// `OverworldBiomes.java:596` really does declare one.
     pub background_music: Option<crate::music::BackgroundMusic>,
+    /// `audio/music_volume` — the gain `Minecraft.getMusicVolume()` probes
+    /// (M154). `None` means *inherit*, matching every sibling here.
+    ///
+    /// **Exactly one vanilla biome declares it**, and Rewo's sound engine used
+    /// to assert that none did: `pale_garden` sets it to **0.0**, so music is
+    /// silent there. A `Some(0.0)` and a `None` are therefore not
+    /// interchangeable — the first is silence, the second is the dimension's
+    /// value (default 1.0).
+    pub music_volume: Option<f32>,
 }
 
 impl BiomeDef {
@@ -618,6 +627,7 @@ mod tests {
 
     fn plains() -> BiomeDef {
         BiomeDef {
+            music_volume: None,
             name: "minecraft:plains".into(),
             temperature: 0.8,
             downfall: 0.4,

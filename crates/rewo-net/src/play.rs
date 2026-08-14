@@ -3860,6 +3860,35 @@ impl PlaySession {
     ///
     /// The body is `ClientboundEntityEventPacket`'s: a **fixed big-endian i32**
     /// entity id and a signed byte event id, neither a VarInt (M17).
+
+    /// `Minecraft.getMusicVolume()` — the `MUSIC_VOLUME` attribute at the
+    /// camera (M154).
+    ///
+    /// **The base is a hard 1.0, and that is a measured gap rather than a
+    /// transcription.** The attribute is inheritable at the dimension level
+    /// like its two siblings, and `DimensionTypeDef` does not carry it — so a
+    /// datapack that set `audio/music_volume` on a *dimension type* would be
+    /// ignored here.
+    ///
+    /// It is left that way deliberately for one milestone. Measured against the
+    /// whole 26.2 datapack, `music_volume` appears in **exactly one file**
+    /// (`worldgen/biome/pale_garden.json`) and **no** `dimension_type` declares
+    /// it, so the base is 1.0 for every vanilla dimension and this is exact
+    /// today. Closing it means a fifth field on `DimensionTypeDef`, which
+    /// `dimensioncheck` grades against **four independent inputs** (a captured
+    /// wire packet, the bundled transcription, the real datagen JSON and a
+    /// hand-written EXPECT table) — a milestone's worth of work for a case no
+    /// vanilla data reaches, and one that should be taken with the two other
+    /// dimension-level audio attributes rather than alone.
+    ///
+    /// Sampled at the player rather than at the render camera, matching
+    /// `background_music_at` one function up. The two disagree only in third
+    /// person, by a few blocks — and only across a biome boundary.
+    pub fn music_volume(&self) -> f32 {
+        self.world
+            .music_volume_at([self.player.x, self.player.y, self.player.z], 1.0)
+    }
+
     fn entity_event_sound(&mut self, body: &[u8]) {
         let mut r = PacketReader::new(body);
         let (Ok(eid), Ok(event)) = (r.i32(), r.i8()) else {

@@ -1317,7 +1317,7 @@ mod end_to_end {
         out.pull(&mut mixer, 128);
         assert_eq!(out.peak(), 0.0, "an idle client renders exact silence");
 
-        live.drive(&[break_packet()], &EntityTable::default(), None, 0);
+        live.drive(&[break_packet()], &EntityTable::default(), None, 0, 1.0);
         assert_eq!(live.stats().started, 1, "the engine must have played it");
 
         while let Some(cmd) = ring.pop() {
@@ -1394,7 +1394,7 @@ mod end_to_end {
             pitch: 1.0,
             seed: 0,
         });
-        live.drive(&[streamed], &EntityTable::default(), None, 0);
+        live.drive(&[streamed], &EntityTable::default(), None, 0, 1.0);
         assert_eq!(live.stats().started, 1, "the engine must have played it");
         assert_eq!(
             live.sink_diagnostics().streams_failed,
@@ -1419,7 +1419,7 @@ mod end_to_end {
         // It keeps being fed as the client ticks, rather than stopping after the
         // four it started with.
         for _ in 0..60 {
-            live.drive(&[], &EntityTable::default(), None, 0);
+            live.drive(&[], &EntityTable::default(), None, 0, 1.0);
         }
         let mut more = 0;
         while let Some(cmd) = ring.pop() {
@@ -1454,7 +1454,7 @@ mod end_to_end {
         live.attach_sink(Box::new(sink));
         let entities = EntityTable::default();
 
-        live.drive(&[break_packet()], &entities, None, 0);
+        live.drive(&[break_packet()], &entities, None, 0, 1.0);
         let stops_after = |ring: &CommandRing| {
             let mut n = 0;
             while let Some(c) = ring.pop() {
@@ -1468,11 +1468,11 @@ mod end_to_end {
 
         // Half a second is ten ticks. Nine of them must leave it alone.
         for _ in 0..9 {
-            live.drive(&[], &entities, None, 0);
+            live.drive(&[], &entities, None, 0, 1.0);
         }
         assert_eq!(stops_after(&ring), 0, "a sounding voice survives nine ticks");
 
-        live.drive(&[], &entities, None, 0);
+        live.drive(&[], &entities, None, 0, 1.0);
         assert_eq!(stops_after(&ring), 1, "and is released on the tenth");
     }
 }
