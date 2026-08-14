@@ -418,7 +418,7 @@ on the windowed path) + **the human listening pass** (§4).
 > | source behind | **+4.8546 dB** |
 > | source overhead | **+3.0103 dB** |
 > | resampler | **~23 dB** more distortion, measured inside OpenAL |
-> | stereo buffer at 8/16 blocks | **-6.0206 dB** (Rewo attenuates, vanilla does not) |
+> | stereo buffer at 8/16 blocks | **-6.0206 dB** (Rewo attenuates, vanilla does not) — **kept deliberately, 2026-08-14; see §5** |
 > | 32 coherent voices | **+2.7913 dB**, and ~74 dB more distortion |
 >
 > **The pan divergence is structural, not a curve to fit.** OpenAL puts a
@@ -719,6 +719,42 @@ Plus `--render-check` r45/r46, and a mutation battery **with a no-op control tha
 **A comment describing what the code does not do.** Six documented instances (M93t's `setCanLoseFocus`, M96's fill note, `any_enchantments`' doc, M102, …). Two live in this subsystem right now: `entity_silent`'s doc is honest but its `false` is wrong-by-omission, and `sound_engine.rs:1204` **[concurring]** says three items "had zero production callers between them" when M131 wired two — half-stale, and it should be split rather than left to mislead.
 
 **Two more, specific to audio.** Someone will "fix" the `32767.5` quantisation as a pointless precision loss in an f32 mixer; it needs a comment saying it is deliberate and a witness with literal vectors, or it will not survive the first cleanup pass. And **stereo is a per-variant decision, not per-event** — `item/goat_horn/call3.ogg` is 2ch while `call0-2` and `call4-7` are 1ch **[concurring]**, so a horn spatializes on seven rolls and not the eighth; OpenAL does not spatialize multi-channel buffers, so vanilla plays those non-positionally. A hand-written mixer naturally downmixes and spatializes uniformly, which is arguably *better* and is a divergence. **Choose explicitly and write it down**, rather than discovering it later as a mismatch. The store is also mixed-rate (44100 and 48000 inside one event family **[concurring]**), so the resampler is on the hot path for essentially every sound, not an edge case.
+
+> **THE CHOICE ASKED FOR ABOVE WAS MADE ON 2026-08-14: Rewo keeps the fade.**
+> A positioned stereo source attenuates with distance in Rewo and does not in
+> vanilla. This is now an owned deviation rather than an unexamined one, and the
+> paragraph above is left standing because it is what asked for the decision.
+>
+> M139 turned the `[concurring]` half into a measurement and found a second half
+> nobody had written down: OpenAL does not **attenuate** a multi-channel buffer
+> either, not merely decline to pan it — `stereo.d1p0` and `stereo.d8p0` are
+> byte-identical across an eightfold distance change. Vanilla's side is not a
+> mixer rule at all: `calculateVolume` is
+> `clamp(volume) * clamp(sliderVolume) * gainBySource` with **no distance term**
+> (`<D>/net/minecraft/client/sounds/SoundEngine.java:467-469` **[read]**), so all
+> distance lives in `Channel.linearAttenuation`'s `AL_LINEAR_DISTANCE`
+> (`<D>/com/mojang/blaze3d/audio/Channel.java:108-112` **[read]**) — which OpenAL
+> applies to mono sources only.
+>
+> **What decided it is how narrow the reach turned out to be.**
+> `SimpleSoundInstance.forMusic` is `Attenuation.NONE`
+> (`<D>/net/minecraft/client/resources/sounds/SimpleSoundInstance.java:32-36`
+> **[read]**), so `max_distance` is `None`, Rewo's gain is already 1.0, and **all
+> music is untouched** — which is the case one would most expect to be affected,
+> since every music track is stereo. What the divergence actually reaches is
+> `forJukeboxSong`, which is `Attenuation.LINEAR` at the jukebox's position
+> (`:38-41` **[read]**) with stereo music discs, plus the one stereo goat-horn
+> variant. So the audible consequence is a distant jukebox fading in Rewo and
+> not in vanilla — physically sensible, and not what vanilla does.
+>
+> It is pinned in three places so it cannot be reverted by accident: a note at
+> the `let gain` site in `crates/rewo-audio/src/mixer.rs` (the place someone
+> would make the change, and the place that explains why `pan_gains` gates on
+> channel count one function below while this does not), a named assertion in
+> `a_stereo_buffer_is_neither_panned_nor_attenuated_by_openal` whose failure
+> message says the change is a reversal rather than a refinement, and this
+> paragraph. **§4's divergence table row is a recorded decision, not an open
+> defect.**
 
 ---
 

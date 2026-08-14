@@ -295,6 +295,38 @@ impl Mixer {
                 Some(max) => openal::linear_gain(distance, max),
                 None => 1.0,
             };
+            // DELIBERATE DIVERGENCE, and the asymmetry with `pan_gains` below is
+            // the decision rather than an oversight. `pan_gains` returns
+            // `(1.0, 1.0)` above one channel because OpenAL does not *spatialise*
+            // a multi-channel buffer; this line has no such gate because Rewo
+            // chooses to attenuate one where OpenAL does not *attenuate* it
+            // either. M139 measured both halves against real OpenAL Soft 1.25.1:
+            // `stereo.d1p0` and `stereo.d8p0` are byte-identical across an
+            // eightfold distance change, so vanilla holds a positioned stereo
+            // source at full level and Rewo is -6.02 dB at 8 blocks of 16,
+            // reaching silence at the radius where vanilla stays at full.
+            //
+            // Vanilla's side is not a mixer rule at all — `calculateVolume` is
+            // `clamp(volume) * clamp(sliderVolume) * gainBySource` with **no
+            // distance term** (`SoundEngine.java:467-469`), so distance lives
+            // entirely in `Channel.linearAttenuation`'s `AL_LINEAR_DISTANCE`
+            // (`Channel.java:108-112`), and OpenAL applies that only to mono.
+            //
+            // The reach is narrow, which is why the choice is defensible:
+            // `SimpleSoundInstance.forMusic` is `Attenuation.NONE`
+            // (`SimpleSoundInstance.java:32-36`), so `max_distance` is `None` and
+            // ALL music is untouched by this line. What it reaches is
+            // `forJukeboxSong` — `Attenuation.LINEAR` at the jukebox's position
+            // (`:38-41`), and music discs are stereo — plus the stereo goat-horn
+            // variant. So the audible consequence is that a distant jukebox
+            // fades in Rewo and does not in vanilla.
+            //
+            // `REWO_AUDIO_PLAN.md` §5 asked for exactly this call to be made
+            // explicitly rather than discovered later as a mismatch; the user
+            // made it on 2026-08-14, choosing the fade. **Do not "fix" the
+            // asymmetry by adding a `channels >= 2` gate here** — that reverts an
+            // owned decision, and `a_stereo_buffer_is_neither_panned_nor_attenuated_by_openal`
+            // fails with a message saying so.
             let gain = v.gain * attenuation;
 
             // Equal-power pan from the component of the source direction along
@@ -1912,12 +1944,29 @@ mod tests {
             );
 
             let r8 = render_rewo(&d8);
-            pin(
-                "stereo at 8 of 16 blocks",
-                db(rms(&r8, 0), d8.rms_l),
-                -6.0206,
-                0.02,
+
+            // These two numbers are an OWNED DECISION as of 2026-08-14, not only
+            // a measurement, and that changes what to do when they fail.
+            // `REWO_AUDIO_PLAN.md` §5 asked for this call to be made explicitly
+            // ("A hand-written mixer naturally downmixes and spatializes
+            // uniformly, which is arguably *better* and is a divergence. Choose
+            // explicitly and write it down"); the user chose the fade. So a
+            // change that gates `render`'s attenuation on channel count is a
+            // REVERSAL, not a refinement, and `pin`'s generic "re-measure and
+            // record the new number" advice does not apply to these two rows.
+            // The production site carries the same note at the `let gain` line.
+            let measured_8 = db(rms(&r8, 0), d8.rms_l);
+            assert!(
+                measured_8 < -1.0,
+                "Rewo stopped attenuating a positioned stereo source ({measured_8:+.4} dB at 8 of \
+                 16 blocks, expected about -6.02). That matches vanilla, and it REVERSES a \
+                 deliberate choice recorded on 2026-08-14: Rewo fades a distant jukebox where \
+                 vanilla holds it at full level. If the reversal is intended, change the decision \
+                 in REWO_AUDIO_PLAN.md §5 and the note at mixer.rs's `let gain` site first -- \
+                 do not just update this number."
             );
+
+            pin("stereo at 8 of 16 blocks", measured_8, -6.0206, 0.02);
             pin(
                 "stereo at 1 of 16 blocks",
                 db(rms(&r1, 0), d1.rms_l),
