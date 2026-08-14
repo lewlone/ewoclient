@@ -747,6 +747,7 @@ mod extract_tests {
     fn with_plains(w: &mut crate::World, climate: BiomeClimate) {
         use std::sync::Arc;
         let def = crate::biome::BiomeDef {
+            music_volume: None,
             name: "test:plains".into(),
             temperature: climate.temperature,
             downfall: 0.4,

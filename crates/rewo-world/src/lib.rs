@@ -441,6 +441,40 @@ impl World {
         )
     }
 
+    /// `MUSIC_VOLUME` at a position — the gain `Minecraft.getMusicVolume()`
+    /// probes (M154).
+    ///
+    /// Sampled at the same quart and through the same registry as
+    /// [`Self::background_music_at`], because the two attributes travel
+    /// together in the same compound and a second sampling rule is how they
+    /// would come to disagree.
+    ///
+    /// **`base` is 1.0 for every vanilla dimension.** Measured: `music_volume`
+    /// appears in exactly ONE file in the whole datapack
+    /// (`worldgen/biome/pale_garden.json`), and no `dimension_type` declares
+    /// it. The parameter exists anyway because the attribute is inheritable
+    /// like its siblings and a datapack can set it at either level; hard-coding
+    /// the base would silently ignore one of the two places it can live.
+    ///
+    /// A biome **replaces** rather than scales — these are attribute overrides,
+    /// not modifiers — so `pale_garden`'s 0.0 is silence and not "1.0 times
+    /// zero by luck".
+    pub fn music_volume_at(&self, pos: [f64; 3], base: f32) -> f32 {
+        let Some(ctx) = self.biome.as_ref() else {
+            return base;
+        };
+        let id = self.noise_biome_at_quart(
+            crate::ambient::quart_from_block_coord(pos[0]),
+            crate::ambient::quart_from_block_coord(pos[1]),
+            crate::ambient::quart_from_block_coord(pos[2]),
+        );
+        ctx.registry
+            .biomes
+            .get(id as usize)
+            .and_then(|b| b.music_volume)
+            .unwrap_or(base)
+    }
+
     /// `level.getBlockStatesIfLoaded(box).filter(is BUBBLE_COLUMN).findFirst()`
     /// — the scan `BubbleColumnAmbientSoundHandler` runs over the player's
     /// torso box (M142c). `Some(drag)` for the first bubble column found.
@@ -835,6 +869,7 @@ mod ambient_sounds_at_tests {
 
     fn biome(name: &str, ambient: Option<AmbientSounds>) -> crate::biome::BiomeDef {
         crate::biome::BiomeDef {
+            music_volume: None,
             name: name.into(),
             temperature: 0.8,
             downfall: 0.4,
@@ -878,6 +913,56 @@ mod ambient_sounds_at_tests {
             0,
         )));
         w
+    }
+
+    /// M154 — `MUSIC_VOLUME` resolves through the same sampler.
+    ///
+    /// Biome 1 stands in for `pale_garden`: it declares 0.0, so the music that
+    /// plays there is silent. Biome 0 declares nothing and inherits.
+    ///
+    /// **The pair is the witness.** Either half alone passes against a
+    /// resolver pinned to one answer — a hard `base` satisfies the inherit
+    /// case, a hard 0.0 satisfies the override case — so only asking both of
+    /// the SAME world distinguishes a resolver from a constant.
+    #[test]
+    fn a_biome_replaces_the_music_volume_base_and_absence_inherits() {
+        let mut w = world_with_two_biomes();
+        // Give biome 1 the Pale Garden's declaration.
+        let defs = vec![
+            biome("test:plains", None),
+            {
+                let mut b = biome("test:pale_garden", None);
+                b.music_volume = Some(0.0);
+                b
+            },
+        ];
+        w.set_biome_context(std::sync::Arc::new(crate::biome::BiomeContext::new(
+            std::sync::Arc::new(crate::biome::BiomeRegistry::new(defs)),
+            crate::biome::Colormaps::neutral(),
+            0,
+        )));
+
+        assert_eq!(
+            w.music_volume_at([-4.5, 64.5, 4.5], 1.0),
+            1.0,
+            "biome 0 declares nothing, so the base stands"
+        );
+
+        // Put biome 1 under chunk (0,0), the same way the ambient test above
+        // moves its own sample.
+        let sections = w.shape.section_count();
+        w.apply_chunks_biomes(
+            0,
+            0,
+            (0..sections)
+                .map(|_| crate::palette::Container::single(1))
+                .collect(),
+        );
+        assert_eq!(
+            w.music_volume_at([4.5, 64.5, 4.5], 1.0),
+            0.0,
+            "a biome that declares 0.0 REPLACES the base — this is silence,              and a resolver that scaled instead would also give 0.0 here,              which is why the inherit half above is asserted too"
+        );
     }
 
     /// The dimension's base is what an unopinionated biome hears — which is

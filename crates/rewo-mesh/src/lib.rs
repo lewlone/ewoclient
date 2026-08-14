@@ -1720,6 +1720,7 @@ fn oracle_table() -> Vec<RenderKind> {
 fn oracle_biome_context() -> rewo_world::biome::BiomeContext {
     use rewo_world::biome::{BiomeContext, BiomeDef, BiomeRegistry, Colormaps, GrassModifier};
     let def = BiomeDef {
+        music_volume: None,
         name: "rewo:oracle".into(),
         temperature: 0.5,
         downfall: 0.5,
@@ -2735,6 +2736,7 @@ mod tests {
         // Biome path: attach a registry whose water_color = (100, 0, 0). The
         // empty column's single-value biome container = index 0.
         let biome = BiomeDef {
+            music_volume: None,
             name: "x".into(),
             temperature: 0.5,
             downfall: 0.5,
@@ -2964,6 +2966,7 @@ mod tests {
         // distinct values, not just distinct keys).
         let argb = |rgb: u32| (0xFFu32 << 24 | rgb) as i32;
         let biome = BiomeDef {
+            music_volume: None,
             name: "x".into(),
             temperature: 0.5,
             downfall: 0.5,

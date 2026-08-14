@@ -3184,6 +3184,64 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M154 — the Pale Garden's silence, and a comment that was the justification (2026-08-14)
+
+**A live bug, found while scoping the options screen rather than by a gate.**
+`sound_engine.rs` passed a literal `1.0` for `Minecraft.getMusicVolume()` under
+a comment reading *"no biome or dimension in 26.2 declares it, so the probe's
+answer is its default of 1.0 everywhere. Passing the constant is therefore exact
+today."* Measured against the whole datapack, `music_volume` appears in
+**exactly one file** — `data/minecraft/worldgen/biome/pale_garden.json:4`, which
+sets it to **0.0**, from `OverworldBiomes.java:597`. **Music is silent in the
+Pale Garden and Rewo played it at full level.**
+
+**The comment was not decoration beside the code, it was the code's
+justification** — the same shape as M147, where a `head -20`-truncated grep
+became the argument for an empty base and shipped a client that played no music
+anywhere in the Overworld. Both times the wrong claim reached a doc comment and
+nothing ran against it.
+
+**It was one line below something already being read.** `attribute_ambient_sounds`
+and `attribute_background_music` both parse out of the same `attributes`
+compound, and `music_volume` sits between them in `EnvironmentAttributes.java`
+(`:97-99`). The parser walked past it.
+
+Three things differ from the two siblings and each would be wrong if assumed:
+it is a **bare FLOAT** rather than a compound, so it parses like `sky_color`;
+its `UNIT_FLOAT` range is vanilla's *declaration* rather than a guarantee about
+what arrives, so it is **clamped rather than trusted** (a negative gain inverts
+the mix, one above 1.0 drives the limiter); and `None` versus `Some(0.0)` are
+**inherit** versus **silence**, whose two failure modes are opposite — mapping
+absence to 0.0 mutes music everywhere, mapping 0.0 to absence plays it in the
+Pale Garden — and both are quiet about themselves.
+
+**A stated, measured gap rather than a silent one.** The dimension-level half is
+NOT wired: `PlaySession::music_volume` passes a hard 1.0 base, so a datapack
+setting the attribute on a *dimension type* is ignored. That is exact for every
+vanilla dimension (no `dimension_type` declares it) and it is written into the
+function's doc, because closing it means a fifth field on `DimensionTypeDef`,
+which `dimensioncheck` grades against **four independent inputs** — a
+milestone's worth of work for a case no vanilla data reaches, better taken with
+the other dimension-level audio attributes than alone.
+
+**The battery's second survivor was the finding.** A mutation replacing
+`world.music_volume()` with a literal `1.0` at the engine survived the whole
+suite: the parse was tested, the biome resolution was tested, and **nothing
+checked the two reached the mixer** — the pre-M154 bug in a new place, and
+M97's lesson for the fifth time. `the_music_gain_follows_the_worlds_music_volume`
+closes it, and its own first draft read a per-channel `SetVolume` and measured
+1.0 for both worlds, because the music gain travels as
+`updateCategoryVolume(MUSIC, gain)` and never that way. The other survivor is
+**proven equivalent and kept with the proof**: a `{argument, modifier}` value is
+a `Compound` that the `Float`/`Double` match rejects anyway, so the guard is
+dead code for this attribute — and load-bearing on the two compound-valued
+siblings, which is why it is written the same way.
+
+**Measured.** 3225 -> **3232 tests**; 36 gates green, `soundshot` 48/48 under
+`--features audio`; battery `tools/m154_mutate.py` **4/5 killed, 1 proven
+equivalent, control SURVIVED**. **Nobody has heard this** — it is an audio
+change, and no gate in this project opens a device.
+
 ### M152 — `update_recipes`, and the one `ItemCombiner` whose cross-move arms run (2026-08-14)
 
 Closes **the last quick-move decline in the container arc**. M93 took seven of

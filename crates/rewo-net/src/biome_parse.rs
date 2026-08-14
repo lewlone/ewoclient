@@ -155,6 +155,7 @@ pub fn parse_biome(name: &str, nbt: &Nbt) -> BiomeDef {
     let (sky_color, fog_color) = attribute_sky_fog(nbt.get("attributes"));
     let ambient_sounds = attribute_ambient_sounds(nbt.get("attributes"));
     let background_music = attribute_background_music(nbt.get("attributes"));
+    let music_volume = attribute_music_volume(nbt.get("attributes"));
 
     BiomeDef {
         name: name.to_string(),
@@ -171,6 +172,7 @@ pub fn parse_biome(name: &str, nbt: &Nbt) -> BiomeDef {
         temperature_modifier,
         ambient_sounds,
         background_music,
+        music_volume,
     }
 }
 
@@ -311,6 +313,54 @@ fn parse_music(v: &Nbt) -> Option<Music> {
 
 /// Extract `visual/sky_color` + `visual/fog_color` overrides from an
 /// `attributes` compound (biome or dimension). Returns `(sky, fog)`.
+/// Extract the `audio/music_volume` override from an `attributes` compound
+/// (M154).
+///
+/// **It is declared, and Rewo's own comment said it was not.**
+/// `sound_engine.rs` asserted "no biome or dimension in 26.2 declares it, so
+/// the probe's answer is its default of 1.0 everywhere" and passed the constant
+/// through. `data/minecraft/worldgen/biome/pale_garden.json:4` sets it to
+/// **0.0** — one line below the `background_music` this file already reads —
+/// from `OverworldBiomes.java:597`. Exactly one biome, and the audible
+/// consequence is that music should be **silent in the Pale Garden**.
+///
+/// Unlike its two audio siblings this is a bare FLOAT rather than a compound
+/// (`EnvironmentAttributes.java:97-99`: `AttributeTypes.FLOAT`, default 1.0,
+/// `AttributeRange.UNIT_FLOAT`, syncable), so it parses like `sky_color` and
+/// not like `background_music`.
+///
+/// The range is clamped rather than trusted. `UNIT_FLOAT` is vanilla's own
+/// declaration, a datapack can write anything, and a negative gain would
+/// invert the mix while one above 1.0 would push it into the limiter.
+pub fn attribute_music_volume(attributes: Option<&Nbt>) -> Option<f32> {
+    let v = attributes?.get("minecraft:audio/music_volume")?;
+    // A modifier form would mean "adjust the inherited value", which is not
+    // what a replace does — inherit rather than guess, as the siblings do.
+    //
+    // **This guard is PROVABLY INERT here and is kept deliberately.** A
+    // mutation replacing its condition with `false` survives the battery, and
+    // that is correct rather than a missing witness: a `{argument, modifier}`
+    // value is an `Nbt::Compound`, and the type match below accepts only
+    // `Float` and `Double`, so the compound is rejected either way. It is
+    // load-bearing on the two SIBLING attributes — `background_music` and
+    // `ambient_sounds` are compound-valued, so there the guard is the only
+    // thing separating a modifier from a replacement — and it is written the
+    // same way here so the three read alike and a future value type cannot
+    // quietly acquire modifier semantics.
+    //
+    // `a_modifier_form_music_volume_inherits` pins the OUTCOME rather than the
+    // route, which is why it passes under the mutation too.
+    if v.get("modifier").is_some() {
+        return None;
+    }
+    let f = match v {
+        Nbt::Float(f) => *f as f64,
+        Nbt::Double(d) => *d,
+        _ => return None,
+    };
+    Some((f as f32).clamp(0.0, 1.0))
+}
+
 pub fn attribute_sky_fog(attributes: Option<&Nbt>) -> (Option<i32>, Option<i32>) {
     let Some(attrs) = attributes else {
         return (None, None);
@@ -461,6 +511,93 @@ mod ambient_tests {
                 ),
             ]),
         )])
+    }
+
+    // ── audio/music_volume (M154) ────────────────────────────────────────
+
+    /// **The bug this milestone exists for.** `sound_engine.rs` asserted that
+    /// "no biome or dimension in 26.2 declares it" and passed a literal 1.0
+    /// through; `pale_garden` declares **0.0**.
+    ///
+    /// The fixture is that biome's attributes compound as the wire carries it,
+    /// so this grades the parse against the shape vanilla actually sends rather
+    /// than one convenient to the reader.
+    #[test]
+    fn pale_gardens_music_volume_is_zero_and_not_absent() {
+        let attrs = Nbt::Compound(vec![
+            // The two audio attributes are SIBLINGS in one compound, and this
+            // is the whole reason the bug survived: the parser was reading the
+            // line above and skipping the line below it.
+            (
+                "minecraft:audio/background_music".into(),
+                Nbt::Compound(vec![]),
+            ),
+            ("minecraft:audio/music_volume".into(), Nbt::Float(0.0)),
+        ]);
+        assert_eq!(attribute_music_volume(Some(&attrs)), Some(0.0));
+        // And the sibling still parses, so this is a real compound rather than
+        // one that happens to satisfy the new reader alone.
+        assert!(attribute_background_music(Some(&attrs)).is_some());
+    }
+
+    /// **`None` and `Some(0.0)` are different and the difference is audible.**
+    /// Absent means *inherit* (1.0 for every vanilla dimension); 0.0 means
+    /// silence. A parser that mapped absence to 0.0 would mute music
+    /// everywhere, and one that mapped 0.0 to `None` would play it in the Pale
+    /// Garden — the two failure modes are opposite and both are silent about
+    /// themselves.
+    #[test]
+    fn an_absent_music_volume_is_inherit_and_not_silence() {
+        assert_eq!(attribute_music_volume(None), None);
+        assert_eq!(
+            attribute_music_volume(Some(&Nbt::Compound(vec![]))),
+            None,
+            "an attributes compound that simply omits it"
+        );
+    }
+
+    /// `AttributeRange.UNIT_FLOAT` is vanilla's declaration, not a guarantee
+    /// about what arrives — a datapack can write anything. A negative gain
+    /// would invert the mix and one above 1.0 would push it into the limiter,
+    /// so the range is clamped rather than trusted.
+    #[test]
+    fn a_music_volume_outside_the_unit_range_is_clamped() {
+        let at = |v: f32| {
+            attribute_music_volume(Some(&Nbt::Compound(vec![(
+                "minecraft:audio/music_volume".into(),
+                Nbt::Float(v),
+            )])))
+        };
+        assert_eq!(at(-0.5), Some(0.0));
+        assert_eq!(at(4.0), Some(1.0));
+        assert_eq!(at(0.25), Some(0.25), "an in-range value is untouched");
+    }
+
+    /// A `{argument, modifier}` form means "adjust the inherited value", which
+    /// is not what a replace does — so it inherits rather than guessing at the
+    /// modifier's semantics. The same choice both siblings make.
+    #[test]
+    fn a_modifier_form_music_volume_inherits() {
+        let attrs = Nbt::Compound(vec![(
+            "minecraft:audio/music_volume".into(),
+            Nbt::Compound(vec![
+                ("argument".into(), Nbt::Float(0.5)),
+                ("modifier".into(), Nbt::String("multiply".into())),
+            ]),
+        )]);
+        assert_eq!(attribute_music_volume(Some(&attrs)), None);
+    }
+
+    /// A `Double` is accepted alongside a `Float`. The codec writes a float, so
+    /// this is liberality of the same kind `as_f32` already has one screen up
+    /// rather than a claim about the wire.
+    #[test]
+    fn a_double_music_volume_is_read() {
+        let attrs = Nbt::Compound(vec![(
+            "minecraft:audio/music_volume".into(),
+            Nbt::Double(0.5),
+        )]);
+        assert_eq!(attribute_music_volume(Some(&attrs)), Some(0.5));
     }
 
     // ── audio/background_music (M148) ────────────────────────────────────

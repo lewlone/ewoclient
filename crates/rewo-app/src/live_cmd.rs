@@ -4119,6 +4119,7 @@ fn run_headless(
             &session.world.entities,
             session.local_player_view(),
             session.game_time(),
+            session.music_volume(),
         );
         if let Some(reason) = &session.disconnect {
             return Err(format!("disconnected: {reason}"));
@@ -8037,6 +8038,7 @@ impl LiveApp {
                 &session.world.entities,
                 session.local_player_view(),
                 session.game_time(),
+                session.music_volume(),
             );
             // M143 — report the backend's counters when they MOVE, not on a
             // timer. Every one of them is an event ("a sound could not be

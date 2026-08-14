@@ -233,6 +233,7 @@ fn shape() -> DimensionShape {
 /// (colormap path), + the dimension base sky/fog.
 fn registry() -> BiomeRegistry {
     let a = BiomeDef {
+        music_volume: None,
         name: "test:a".into(),
         temperature: 0.5,
         downfall: 0.5,
@@ -597,6 +598,7 @@ fn install_single_biome(world: &mut World, cx: i32, cz: i32) {
 /// which would be [255,0,0]) fails.
 fn check_dark_forest(failures: &mut Vec<String>, baked: &BakedAssets, st: &States) {
     let def = BiomeDef {
+        music_volume: None,
         name: "test:dark_forest".into(),
         temperature: 0.5,
         downfall: 0.5,
@@ -628,6 +630,7 @@ fn check_dark_forest(failures: &mut Vec<String>, baked: &BakedAssets, st: &State
 /// threshold, noise, or seed shifts the branch counts and the mean.
 fn check_swamp(failures: &mut Vec<String>, baked: &BakedAssets, st: &States) {
     let def = BiomeDef {
+        music_volume: None,
         name: "test:swamp".into(),
         temperature: 0.5,
         downfall: 0.5,
