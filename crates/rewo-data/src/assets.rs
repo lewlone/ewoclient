@@ -590,6 +590,14 @@ pub struct HudSprites {
     pub heart_full: HudSprite,
     pub heart_half: HudSprite,
     pub heart_container: HudSprite,
+    /// M155 — the tab list's five extra heart sprites. Two of them are NOT
+    /// blink layers: vanilla ships no non-blinking absorbing heart, so
+    /// `absorbing_*_blinking` is the ordinary look of a gold heart.
+    pub heart_container_blinking: HudSprite,
+    pub heart_full_blinking: HudSprite,
+    pub heart_half_blinking: HudSprite,
+    pub heart_absorbing_full: HudSprite,
+    pub heart_absorbing_half: HudSprite,
     pub food_full: HudSprite,
     pub food_half: HudSprite,
     pub food_empty: HudSprite,
@@ -2135,6 +2143,14 @@ fn bake_hud(jar: Jar) -> Option<HudSprites> {
         heart_full: get(jar, "gui/sprites/hud/heart/full.png")?,
         heart_half: get(jar, "gui/sprites/hud/heart/half.png")?,
         heart_container: get(jar, "gui/sprites/hud/heart/container.png")?,
+        // M155. `?` on each, fail-closed like the ping icons above: a jar
+        // missing one yields no HUD sprites at all rather than a tab list with
+        // a hole in it.
+        heart_container_blinking: get(jar, "gui/sprites/hud/heart/container_blinking.png")?,
+        heart_full_blinking: get(jar, "gui/sprites/hud/heart/full_blinking.png")?,
+        heart_half_blinking: get(jar, "gui/sprites/hud/heart/half_blinking.png")?,
+        heart_absorbing_full: get(jar, "gui/sprites/hud/heart/absorbing_full_blinking.png")?,
+        heart_absorbing_half: get(jar, "gui/sprites/hud/heart/absorbing_half_blinking.png")?,
         food_full: get(jar, "gui/sprites/hud/food_full.png")?,
         food_half: get(jar, "gui/sprites/hud/food_half.png")?,
         food_empty: get(jar, "gui/sprites/hud/food_empty.png")?,

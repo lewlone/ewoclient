@@ -58,7 +58,7 @@ use crate::tab_list_view::{self, TabListLookups, TabListView};
 
 /// Total named properties this gate asserts. Locked so a skipped property fails
 /// the run even when nothing mismatched.
-const EXPECTED_WITNESSES: usize = 26;
+const EXPECTED_WITNESSES: usize = 34;
 
 const W: u32 = 640;
 const H: u32 = 480;
@@ -603,7 +603,132 @@ fn check_wire(c: &mut Checker) {
         t.header.is_some() && t.footer.is_none(),
         "a header and a component that renders as no characters",
     );
+
+    // ── M155: the health column and the faces ───────────────────────────────
+    //
+    // These grade the PRODUCTION emitters, not a re-derivation: `hearts` and
+    // `faces` are the same functions the frame loop calls, so a regression in
+    // either reaches this gate rather than only the unit tests one crate down.
+    use rewo_gpu::tab_list::{heart_blits, heart_counts, HealthState, HeartSprite};
+
+    // h0 — the two counts round in OPPOSITE directions, swept against
+    // literals re-declared from PlayerTabOverlay:274-275.
+    let mut counts_agree = true;
+    let mut saw_full_exceed = false;
+    for score in 0..=60 {
+        for displayed in 0..=60 {
+            let (full, render) = heart_counts(score, displayed);
+            if full != -(-(score.max(displayed))).div_euclid(2)
+                || render != score.max(displayed.max(20)) / 2
+            {
+                counts_agree = false;
+            }
+            if full > render {
+                saw_full_exceed = true;
+            }
+        }
+    }
+    c.record(
+        "h0.the_two_heart_counts_round_two_different_ways",
+        counts_agree && saw_full_exceed,
+        format!(
+            "swept 61x61 (score, displayed); fullHearts CEILS and heartsToRender \
+             FLOORS, and the sweep reached the case where full exceeds render \
+             (e.g. 21 -> {:?}) — at which point the container-only loop runs zero times",
+            heart_counts(21, 21)
+        ),
+    );
+
+    // h1 — the text readout is reached by HIGH HEALTH, never by a narrow
+    // window, because the column is a constant 90.
+    let at = |s: i32| heart_blits(s, HealthState::new(s), 0, 0, rewo_gpu::tab_list::HEARTS_WIDTH);
+    c.record(
+        "h1.the_text_readout_is_reached_by_high_health_not_a_narrow_window",
+        !at(42).is_empty() && at(44).is_empty(),
+        format!(
+            "score 42 emits {} heart blits and score 44 emits {} — the column is a \
+             constant {}px, so heartsToRender is the only free variable",
+            at(42).len(),
+            at(44).len(),
+            rewo_gpu::tab_list::HEARTS_WIDTH
+        ),
+    );
+
+    // h2 — a filled heart is TWO layers, container then fill, in that order.
+    let full20 = at(20);
+    let first_two: Vec<HeartSprite> =
+        full20.iter().filter(|b| b.dx == 0).map(|b| b.sprite).collect();
+    c.record(
+        "h2.a_filled_heart_sits_on_its_own_container",
+        first_two == vec![HeartSprite::Container, HeartSprite::Full],
+        format!("the blits at dx=0 are {first_two:?} — the order IS the draw order"),
+    );
+
+    // h3 — the ghost layer is the OLD value. Drives the real clock.
+    let mut hurt = HealthState::new(20);
+    hurt.update(10, 0);
+    let ghosts = heart_blits(10, hurt, 3, 0, rewo_gpu::tab_list::HEARTS_WIDTH)
+        .iter()
+        .filter(|b| b.sprite == HeartSprite::FullBlinking)
+        .count();
+    c.record(
+        "h3.the_blink_ghost_is_drawn_from_the_displayed_value",
+        hurt.is_blinking(3) && ghosts == 10,
+        format!(
+            "after 20 -> 10 the ghost spans {ghosts} hearts (the OLD value), while the \
+             live fill is five — and tick 3 is the FIRST lit tick, because the square \
+             wave is measured from the END of the blink"
+        ),
+    );
+
+    // h4 — a damage blink starts DARK and a heal blink starts LIT. The two
+    // durations land on opposite phases of the six-tick cycle.
+    let mut down = HealthState::new(20);
+    down.update(19, 100);
+    let mut up = HealthState::new(20);
+    up.update(21, 100);
+    c.record(
+        "h4.a_damage_blink_starts_dark_and_a_heal_blink_starts_lit",
+        !down.is_blinking(100) && up.is_blinking(100),
+        "20 % 6 == 2 (below the 3 threshold) against 10 % 6 == 4 — an implementation \
+         measuring from the START of the blink gets both backwards",
+    );
+
+    // h5 — zero health draws nothing rather than ten empty containers.
+    c.record(
+        "h5.zero_health_draws_nothing_rather_than_ten_containers",
+        at(0).is_empty() && !at(1).is_empty(),
+        "the whole body is gated on fullHearts > 0",
+    );
+
+    // h6 — the eleventh heart is absorption, and its sprite is a *_blinking
+    // asset that is NOT the blink layer.
+    let h22 = HealthState::new(22);
+    let per = rewo_gpu::tab_list::width_per_heart(0, rewo_gpu::tab_list::HEARTS_WIDTH, 11);
+    let blits22 = heart_blits(22, h22, 0, 0, rewo_gpu::tab_list::HEARTS_WIDTH);
+    let tenth_is_gold = blits22
+        .iter()
+        .any(|b| b.dx == 10 * per && b.sprite == HeartSprite::AbsorbingFull);
+    c.record(
+        "h6.the_eleventh_heart_is_absorption_while_nothing_is_blinking",
+        tenth_is_gold && !h22.is_blinking(0) && per == 7,
+        format!(
+            "at 22 health the pitch is {per} (11 hearts, not 10) and index 10 is \
+             AbsorbingFull with no blink in flight — vanilla ships no non-blinking \
+             absorbing sprite, so the *_blinking asset IS the ordinary gold heart"
+        ),
+    );
+
+    // f0 — the flip is case sensitive and needs the player LOADED.
+    c.record(
+        "f0.only_two_exact_names_are_upside_down",
+        tab_list_view::is_upside_down_name("Dinnerbone")
+            && tab_list_view::is_upside_down_name("Grumm")
+            && !tab_list_view::is_upside_down_name("dinnerbone"),
+        "exact String.equals against two literals — lower case is not flipped",
+    );
 }
+
 
 // ---------------------------------------------------------------------------
 // Pixels.

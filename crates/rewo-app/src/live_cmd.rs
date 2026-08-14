@@ -1477,6 +1477,8 @@ pub(crate) struct PlayerSkin {
     slim: bool,
     /// Atlas origin of this player's cape slot, if one was uploaded.
     cape: Option<(u32, u32)>,
+    /// This player's tab-list face slot, if one was uploaded (M155).
+    face: Option<u8>,
 }
 
 pub(crate) type SkinRegistry = std::collections::HashMap<u128, PlayerSkin>;
@@ -1560,6 +1562,26 @@ impl SkinLoader {
         while let Ok((uuid, kind, slim, rgba)) = self.res_rx.try_recv() {
             match kind {
                 TexKind::Skin => {
+                    // M155 — crop the tab-list face while the full sheet is in
+                    // hand. This is the ONE place it is free: the 64x64 is
+                    // already decoded here and is dropped at the end of the
+                    // arm, so a later face would have to re-fetch it.
+                    //
+                    // 8x8 head at (8,8) beside 8x8 hat at (40,8). **The hat's u
+                    // is 40, not 32** — 32 is the hat cube's side face.
+                    if rgba.len() >= 64 * 64 * 4 {
+                        let mut strip = vec![0u8; 16 * 8 * 4];
+                        for row in 0..8usize {
+                            for (col_off, src_x) in [(0usize, 8usize), (8, 40)] {
+                                let src = ((8 + row) * 64 + src_x) * 4;
+                                let dst = (row * 16 + col_off) * 4;
+                                strip[dst..dst + 32].copy_from_slice(&rgba[src..src + 32]);
+                            }
+                        }
+                        if let Some(slot) = wr.upload_tab_face(gpu, &strip) {
+                            self.registry.entry(uuid).or_default().face = Some(slot);
+                        }
+                    }
                     if let Some(uv) = wr.upload_player_skin(gpu, &rgba) {
                         let e = self.registry.entry(uuid).or_default();
                         e.uv = uv;
@@ -3675,6 +3697,17 @@ pub(crate) fn hud_sprites(baked: &assets::BakedAssets) -> Option<rewo_gpu::hud::
         heart_full: hud_sprite(&h.heart_full),
         heart_half: hud_sprite(&h.heart_half),
         heart_container: hud_sprite(&h.heart_container),
+        // M155, in `HeartSprite` order. The array is what keeps the two
+        // crates' orderings from drifting: they are written in crates that
+        // do not depend on each other, so this is the one place the mapping
+        // is spelled out.
+        heart_extra: [
+            hud_sprite(&h.heart_container_blinking),
+            hud_sprite(&h.heart_full_blinking),
+            hud_sprite(&h.heart_half_blinking),
+            hud_sprite(&h.heart_absorbing_full),
+            hud_sprite(&h.heart_absorbing_half),
+        ],
         food_full: hud_sprite(&h.food_full),
         food_half: hud_sprite(&h.food_half),
         food_empty: hud_sprite(&h.food_empty),
@@ -5070,6 +5103,16 @@ struct LiveApp {
     /// hiding Rewo's hotbar/hearts/F3 block is a separate concern this
     /// milestone deliberately leaves alone, and is recorded as open.
     hud_hidden: bool,
+    /// `PlayerTabOverlay.healthStates` — the per-profile blink clock (M155).
+    ///
+    /// **On the app rather than the view**, because a `HealthState` is
+    /// meaningful only across frames: a fresh one is seeded with its own value
+    /// and has nothing to catch up to, so a map rebuilt each frame would never
+    /// blink at all.
+    ///
+    /// Cleared when the list is hidden, which is `reset()` — and is why a
+    /// blink does not survive closing and reopening the tab list.
+    tab_health: std::collections::HashMap<u128, rewo_gpu::tab_list::HealthState>,
     /// F3 is held — the `keyDebugModifier` half (M66).
     f3_down: bool,
     /// `usedDebugKeyAsModifier` — a chord fired while F3 was down, so its
@@ -8827,8 +8870,45 @@ impl LiveApp {
             if let Some(c) = self.check.as_mut() {
                 c.tab_list_frames += 1;
                 c.tab_list_rows_max = c.tab_list_rows_max.max(l.entries.len());
+                // Recorded BEFORE the hearts are appended (M155). r47 asserts
+                // this is exactly 3, and it is a claim about the PING icons —
+                // folding hearts into the same count would move a number a
+                // gate asserts without changing what it means to assert.
                 c.tab_list_icons_max = c.tab_list_icons_max.max(tab_icons.len());
             }
+            // M155 — the faces, then the health column, both appended after
+            // the ping icons so each draws over its own row background.
+            // Separate lists from `icons` because one needs the skin registry
+            // and the other a mutable blink clock.
+            //
+            // `loaded_of` is `level.getPlayerByUUID(id) != null` — the flip
+            // needs the player actually in the world, not merely listed, so a
+            // Dinnerbone out of render distance is the right way up.
+            {
+                let reg = &self.skins.registry;
+                let loaded: std::collections::HashSet<u128> =
+                    session.world.entities.iter().map(|(_, e)| e.uuid).collect();
+                tab_icons.extend(crate::tab_list_view::faces(
+                    v,
+                    l,
+                    &|u| reg.get(&u).and_then(|p| p.face),
+                    &|u| session.show_hat(u),
+                    &|u| loaded.contains(&u),
+                ));
+            }
+            // M155 — the health column, appended after the ping icons so a
+            // heart draws over its own row background. `hearts` is separate
+            // from `icons` because it needs the mutable blink clock.
+            tab_icons.extend(crate::tab_list_view::hearts(
+                v,
+                l,
+                &mut self.tab_health,
+                session.ticks as i64,
+            ));
+        } else {
+            // `PlayerTabOverlay.reset()` — the list is not being drawn, so
+            // every blink is forgotten rather than resumed where it left off.
+            self.tab_health.clear();
         }
         state.world_renderer.set_hud_fills(backdrops);
         // Set every frame, including empty: the list exists only while its key
@@ -9295,6 +9375,7 @@ fn run_windowed(
         models: baked.models.clone(),
     })?;
     let mut app = LiveApp {
+        tab_health: std::collections::HashMap::new(),
         blocks,
         capture_pending: false,
         particles: None,

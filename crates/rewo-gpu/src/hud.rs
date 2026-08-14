@@ -20,7 +20,24 @@ const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
 const MAX_VERTS: usize = 4096;
 const RING: usize = 2;
 const ATLAS_W: u32 = 256;
-const ATLAS_H: u32 = 64;
+/// M155 raised this from 64 to make room for the tab list's face pool at
+/// y=64..80. **Safe because every `Rect` divides by this constant** and every
+/// placement is an absolute pixel position, so a taller atlas re-normalises
+/// each existing UV onto the same texels rather than moving them.
+const ATLAS_H: u32 = 80;
+
+/// Where the face pool starts, and how big it is (M155).
+///
+/// Each slot is 16x8: the 8x8 base beside the 8x8 hat, so one upload writes
+/// both layers and the draw picks between them with a sub-rect. Two rows of
+/// sixteen fills `ATLAS_W` exactly.
+const FACE_ATLAS_Y: u32 = 64;
+const FACE_SLOT_W: u32 = 16;
+const FACE_SLOT_H: u32 = 8;
+const FACE_COLS: u32 = ATLAS_W / FACE_SLOT_W;
+/// Round-robin, no eviction bookkeeping — the same shape as the four dynamic
+/// pools in `entities.rs`.
+pub const FACE_SLOTS: u32 = FACE_COLS * 2;
 
 /// Borrowed view of `rewo_data::assets::HudSprites` (keeps rewo-gpu free of
 /// a rewo-data dependency — same pattern as the font/skin slices).
@@ -37,6 +54,10 @@ pub struct HudSpritesData<'a> {
     pub heart_full: HudSpriteData<'a>,
     pub heart_half: HudSpriteData<'a>,
     pub heart_container: HudSpriteData<'a>,
+    /// M155 — the tab list's five extra hearts, in [`HeartSprite`] order:
+    /// container_blinking, full_blinking, half_blinking, absorbing_full,
+    /// absorbing_half.
+    pub heart_extra: [HudSpriteData<'a>; 5],
     pub food_full: HudSpriteData<'a>,
     pub food_half: HudSpriteData<'a>,
     pub food_empty: HudSpriteData<'a>,
@@ -81,6 +102,17 @@ pub enum HudIcon {
     /// nothing, which is the reading that loses a row's icon rather than
     /// sampling some other sprite over it.
     Ping(u8),
+    /// One layer of a tab-list player face (M155).
+    ///
+    /// `slot` indexes the face pool; `hat` picks the 8-px-right half of that
+    /// slot rather than a different slot. `flip` is `isPlayerUpsideDown` and
+    /// inverts the **source** v — vanilla passes a negative source height, so
+    /// the destination rect is untouched and only the sampling flips.
+    Face { slot: u8, hat: bool, flip: bool },
+    /// One of the eight `hud/heart/*` sprites (M155). The tab list's health
+    /// column emits these in draw order, and the order of the `icons` slice IS
+    /// the draw order — which is what the container-then-fill layering needs.
+    Heart(crate::tab_list::HeartSprite),
 }
 
 /// This frame's M79 gauges, as the renderer needs them.
@@ -183,6 +215,8 @@ pub struct HudPass {
     heart_full: Rect,
     heart_half: Rect,
     heart_container: Rect,
+    /// M155's five, in [`HeartSprite`] order.
+    heart_extra: [Rect; 5],
     food_full: Rect,
     food_half: Rect,
     food_empty: Rect,
@@ -196,6 +230,12 @@ pub struct HudPass {
     white_fill: Rect,
     /// The six `icon/ping_*` placements (M151), in `PING_SPRITES` order.
     ping: [Rect; 6],
+    /// Next face slot to hand out (M155). Round-robin with no eviction
+    /// bookkeeping, exactly like the four dynamic pools in `entities.rs`: a
+    /// wrapped slot is silently reused, which shows as a stale face rather
+    /// than a crash and is what vanilla's own texture cache does under
+    /// pressure.
+    face_next: u32,
 }
 
 impl HudPass {
@@ -246,6 +286,22 @@ impl HudPass {
             let mut x = 16u32;
             let mut out = [Rect::default(); 6];
             for (slot, s) in out.iter_mut().zip(sprites.ping.iter()) {
+                *slot = place(&mut atlas, s, x, 48);
+                x += s.w + 1;
+            }
+            out
+        };
+        // M155 — the five extra hearts, on the y=48 row CLEAR of the ping
+        // icons. Those run from x=16 with a one-pixel gap and are 10 wide, so
+        // they end at 81; starting at 84 leaves a margin and still fits five
+        // 9px sprites inside ATLAS_W. Same running-cursor discipline as the
+        // ping row, and for the same reason: `place` copies `s.w` per row, so
+        // a fixed stride narrower than a sprite would overwrite its
+        // neighbour's left edge and nothing here is bounds-checked.
+        let heart_extra: [Rect; 5] = {
+            let mut x = 84u32;
+            let mut out = [Rect::default(); 5];
+            for (slot, s) in out.iter_mut().zip(sprites.heart_extra.iter()) {
                 *slot = place(&mut atlas, s, x, 48);
                 x += s.w + 1;
             }
@@ -418,6 +474,8 @@ impl HudPass {
                 heart_full,
                 heart_half,
                 heart_container,
+                heart_extra,
+                face_next: 0,
                 food_full,
                 food_half,
                 food_empty,
@@ -432,6 +490,34 @@ impl HudPass {
 
     /// Rebuild the HUD quads for this frame's health/food/selected slot and
     /// draw them. `health`/`food` are 0..20; `slot` is 0..8.
+    /// Claim a face slot and upload one player's 16x8 face strip (M155).
+    ///
+    /// `rgba` is **already cropped** by the caller: the 8x8 head at source
+    /// (8,8) beside the 8x8 hat at source (40,8), in that order. The crop is
+    /// the caller's because the full 64x64 skin is already in its hand at the
+    /// one place a face is free — and because this way the pool costs 512
+    /// bytes a player rather than 16 KB.
+    ///
+    /// **The hat's u is 40, not 32.** 32 is the hat cube's side face; 40 is its
+    /// front, the one that lines up with the head's front at u=8. A crop from
+    /// 32 produces a plausible-looking face wearing the side of its own hat.
+    pub fn upload_face(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Result<u8, String> {
+        if rgba.len() != (FACE_SLOT_W * FACE_SLOT_H * 4) as usize {
+            return Err(format!(
+                "hud: a face strip must be {}x{} RGBA, got {} bytes",
+                FACE_SLOT_W,
+                FACE_SLOT_H,
+                rgba.len()
+            ));
+        }
+        let slot = self.face_next % FACE_SLOTS;
+        self.face_next = self.face_next.wrapping_add(1);
+        let x = (slot % FACE_COLS) * FACE_SLOT_W;
+        let y = FACE_ATLAS_Y + (slot / FACE_COLS) * FACE_SLOT_H;
+        crate::entities::upload_region(gpu, self.image, rgba, x, y, FACE_SLOT_W, FACE_SLOT_H)?;
+        Ok(slot as u8)
+    }
+
     pub fn draw(
         &mut self,
         gpu: &Gpu,
@@ -625,6 +711,45 @@ impl HudPass {
                     Some(r) => *r,
                     None => continue,
                 },
+                HudIcon::Face { slot, hat, flip } => {
+                    if u32::from(slot) >= FACE_SLOTS {
+                        continue;
+                    }
+                    let col = u32::from(slot) % FACE_COLS;
+                    let row = u32::from(slot) / FACE_COLS;
+                    let x = col * FACE_SLOT_W + if hat { 8 } else { 0 };
+                    let y = FACE_ATLAS_Y + row * FACE_SLOT_H;
+                    let (v0, v1) = if flip {
+                        // The SOURCE v inverts and the destination does not.
+                        (
+                            (y + 8) as f32 / ATLAS_H as f32,
+                            y as f32 / ATLAS_H as f32,
+                        )
+                    } else {
+                        (y as f32 / ATLAS_H as f32, (y + 8) as f32 / ATLAS_H as f32)
+                    };
+                    Rect {
+                        u0: x as f32 / ATLAS_W as f32,
+                        v0,
+                        u1: (x + 8) as f32 / ATLAS_W as f32,
+                        v1,
+                        w: 8.0,
+                        h: 8.0,
+                    }
+                }
+                HudIcon::Heart(h) => {
+                    use crate::tab_list::HeartSprite as H;
+                    match h {
+                        H::Full => self.heart_full,
+                        H::Half => self.heart_half,
+                        H::Container => self.heart_container,
+                        H::ContainerBlinking => self.heart_extra[0],
+                        H::FullBlinking => self.heart_extra[1],
+                        H::HalfBlinking => self.heart_extra[2],
+                        H::AbsorbingFull => self.heart_extra[3],
+                        H::AbsorbingHalf => self.heart_extra[4],
+                    }
+                }
             };
             // `tinted_quad` with an identity colour rather than `sub_quad`:
             // the chat loop above already borrowed `tinted_quad` directly, so
