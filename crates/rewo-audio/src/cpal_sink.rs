@@ -188,6 +188,24 @@ impl CpalBackend {
     /// `source` turns an asset key into samples. It is the caller's because the
     /// store lookup needs `rewo-data`, and this crate does not depend on it —
     /// see [`crate::decode::BytesSource`].
+    /// `worker_source` moves every future STATIC decode onto a worker thread
+    /// (M156). `None` keeps the synchronous path, which is what every gate and
+    /// every unit test uses.
+    ///
+    /// A second source rather than a shared one because the worker owns its on
+    /// another thread, and because streams are deliberately not moved — see
+    /// [`crate::decode_worker`].
+    pub fn open_with_worker(
+        source: Box<dyn PcmSource>,
+        worker_source: Option<Box<dyn PcmSource + Send>>,
+    ) -> Result<CpalBackend, String> {
+        let mut b = Self::open(source)?;
+        if let Some(w) = worker_source {
+            b.sink.buffers_mut().with_worker(w);
+        }
+        Ok(b)
+    }
+
     pub fn open(source: Box<dyn PcmSource>) -> Result<CpalBackend, String> {
         let device = CpalSink::open()?;
         let sink = LiveSink::new(Arc::clone(device.ring()), source);

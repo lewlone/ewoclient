@@ -54,9 +54,16 @@ pub fn open(version: &str) -> Result<Box<dyn ChannelSink>, String> {
 
     // The store lookup lives on this side of `PcmSource` because it needs
     // `rewo-data`, which `rewo-audio` deliberately does not depend on.
+    // TWO sources (M156). One stays here for streams and the synchronous
+    // fallback; the other is moved onto the decode worker, which owns it. They
+    // are independent readers of the same immutable store, so nothing is
+    // shared and nothing needs a lock.
+    let (root2, index2) = (root.clone(), index.clone());
     let source: Box<dyn PcmSource> = Box::new(BytesSource(move |key: &str| index.read(&root, key)));
+    let worker_source: Box<dyn PcmSource + Send> =
+        Box::new(BytesSource(move |key: &str| index2.read(&root2, key)));
 
-    let backend = CpalBackend::open(source)?;
+    let backend = CpalBackend::open_with_worker(source, Some(worker_source))?;
     log::info!(
         "audio: device open at {} Hz. This says a stream was accepted; it does \
          not say anything is audible.",
