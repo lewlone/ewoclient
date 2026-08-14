@@ -743,4 +743,5 @@ mod real_assets {
         let from_c = c.read(400).unwrap();
         assert_eq!(from_a, from_c, "each starts at the beginning of the file");
     }
+
 }

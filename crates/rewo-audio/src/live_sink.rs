@@ -131,6 +131,15 @@ struct ChannelState {
     dead: bool,
     /// Set when this channel is fed by a stream (M144).
     stream: Option<StreamState>,
+    /// The asset key this channel is waiting on, while a worker decodes it
+    /// (M156). `None` when nothing is outstanding.
+    ///
+    /// **No epoch is needed alongside it**, and that is a property of
+    /// `release`: it *removes* the whole state, so a re-acquired channel starts
+    /// with `pending: None` and a late landing finds either no channel or a
+    /// different key. The one case where a stale landing does attach is a
+    /// channel re-acquired for the SAME key, which wants that buffer anyway.
+    pending: Option<String>,
 }
 
 impl ChannelState {
@@ -150,6 +159,7 @@ impl ChannelState {
 impl Default for ChannelState {
     fn default() -> ChannelState {
         ChannelState {
+            pending: None,
             // 1.0, not 0.0: pitch divides the duration, and a zero default
             // would make every sound that somehow reached `stopped()` before
             // its `SetPitch` last forever.
@@ -178,6 +188,11 @@ pub struct LiveSink<S: PcmSource> {
 }
 
 impl<S: PcmSource> LiveSink<S> {
+    /// The buffer library, so a caller can attach a decode worker (M156).
+    pub fn buffers_mut(&mut self) -> &mut crate::buffers::SoundBufferLibrary<S> {
+        &mut self.buffers
+    }
+
     /// `ring` is the producer end of whatever is consuming commands — a real
     /// device in the client, and a hand-popped ring in every witness here.
     pub fn new(ring: Arc<CommandRing>, source: S) -> LiveSink<S> {
@@ -206,8 +221,35 @@ impl<S: PcmSource> LiveSink<S> {
 
     /// `Channel.attachStaticBuffer` — resolve the key and send the samples.
     fn attach_static(&mut self, channel: ChannelId, key: &str) {
-        let decoded = self.buffers.complete_buffer(key);
+        match self.buffers.request(key) {
+            crate::buffers::BufferState::Ready(decoded) => {
+                self.apply_static(channel, key, decoded, false)
+            }
+            crate::buffers::BufferState::Pending => {
+                // M156 — the decode is on the worker. Park the key; the attach
+                // completes in `poll_decodes` when it lands.
+                let state = self.channels.entry(channel).or_default();
+                state.pending = Some(key.to_string());
+                state.dead = false;
+            }
+        }
+    }
+
+    /// Finish a static attach, however the buffer arrived (M156).
+    ///
+    /// `deferred` says the decode came back off the worker rather than out of
+    /// the cache, and it changes exactly one thing — see the `played_at`
+    /// handling, which is the hazard this milestone had to be careful about.
+    fn apply_static(
+        &mut self,
+        channel: ChannelId,
+        key: &str,
+        decoded: Result<Arc<crate::buffers::Pcm>, String>,
+        deferred: bool,
+    ) {
+        let now = self.tick;
         let state = self.channels.entry(channel).or_default();
+        state.pending = None;
         match decoded {
             Ok(pcm) => {
                 let channels = pcm.channels.max(1) as u64;
@@ -217,7 +259,25 @@ impl<S: PcmSource> LiveSink<S> {
                 // An attach rewinds: the mixer's `Command::Attach` resets the
                 // cursor, so this side's clock has to restart with it or a
                 // re-used channel would inherit the previous sound's age.
-                state.played_at = None;
+                //
+                // **A DEFERRED attach must not do that** (M156). Synchronously
+                // the order is always attach-then-play, so clearing the stamp
+                // is right; with a worker the order inverts to play-then-attach
+                // and clearing it WIPES a stamp that has already been set —
+                // after which `stopped()` takes its `let else` and answers
+                // false forever, so the channel is never reclaimed and the
+                // pool (8-255 static) runs dry after a few hundred sounds.
+                //
+                // The sound genuinely starts when its samples arrive, so a
+                // deferred attach onto an already-playing channel re-stamps to
+                // NOW rather than clearing. This case does not exist in vanilla
+                // — its attach is synchronous — so it is a deviation forced by
+                // the worker rather than a transcription.
+                state.played_at = if deferred && state.played_at.is_some() {
+                    Some(now)
+                } else {
+                    None
+                };
                 self.push(Command::Attach(channel, pcm));
             }
             Err(e) => {
@@ -228,6 +288,28 @@ impl<S: PcmSource> LiveSink<S> {
                 // because `SoundBufferLibrary` caches the failure too — which
                 // is `computeIfAbsent`'s doing, not a choice here.
                 log::warn!("audio: could not resolve {key}: {e}");
+            }
+        }
+    }
+
+    /// Complete every attach whose decode has landed (M156).
+    fn poll_decodes(&mut self) {
+        for key in self.buffers.poll_decodes() {
+            // Every channel parked on this key. More than one is ordinary: the
+            // in-flight dedup means N plays of a first-time sound share one
+            // decode, and all N are waiting on it.
+            let waiting: Vec<ChannelId> = self
+                .channels
+                .iter()
+                .filter(|(_, s)| s.pending.as_deref() == Some(key.as_str()))
+                .map(|(id, _)| *id)
+                .collect();
+            if waiting.is_empty() {
+                continue;
+            }
+            let decoded = self.buffers.complete_buffer(&key);
+            for ch in waiting {
+                self.apply_static(ch, &key, decoded.clone(), true);
             }
         }
     }
@@ -445,6 +527,9 @@ impl<S: PcmSource> ChannelSink for LiveSink<S> {
     /// finished on the same tick.
     fn tick(&mut self) {
         self.tick += 1;
+        // M156 — before the streams, so a decode that landed this tick is
+        // audible from this tick rather than the next.
+        self.poll_decodes();
         self.update_streams();
     }
 
@@ -1235,6 +1320,265 @@ mod tests {
             "a full ring is a stalled device and must be visible"
         );
     }
+    /// A sink whose Fake knows one key, for the M156 deferred-attach tests.
+    fn worker_sink() -> LiveSink<Fake> {
+        LiveSink::new(
+            CommandRing::with_capacity(DEFAULT_RING_CAPACITY),
+            Fake::new().with(KEY, 44_100, 1, 44_100),
+        )
+    }
+
+    // ── M156: the static decode on a worker ─────────────────────────────────
+
+    /// A source the test can hold mid-decode, so "in flight" is a real state
+    /// rather than a race the test hopes to win.
+    struct Held {
+        gate: std::sync::Arc<std::sync::Mutex<()>>,
+        frames: usize,
+    }
+
+    impl crate::buffers::PcmSource for Held {
+        fn open(&mut self, key: &str) -> Result<Pcm, String> {
+            let _g = self.gate.lock().unwrap();
+            if key == "missing" {
+                return Err("no such asset".into());
+            }
+            Ok(Pcm {
+                samples: vec![0i16; self.frames],
+                channels: 1,
+                sample_rate: 44100,
+            })
+        }
+    }
+
+    /// Drive `tick` until the channel has frames, or give up.
+    fn tick_until_attached(sink: &mut LiveSink<Fake>, ch: ChannelId, limit: u32) -> bool {
+        for _ in 0..limit {
+            sink.tick();
+            if sink.channels.get(&ch).and_then(|s| s.frames).is_some() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        false
+    }
+
+    /// **The milestone's claim**: with a worker attached, an attach does not
+    /// decode on the calling thread — it parks, and completes on a later tick.
+    #[test]
+    fn a_worker_defers_the_attach_rather_than_decoding_inline() {
+        let mut sink = worker_sink();
+        let gate = std::sync::Arc::new(std::sync::Mutex::new(()));
+        sink.buffers.with_worker(Held {
+            gate: gate.clone(),
+            frames: 64,
+        });
+
+        let held = gate.lock().unwrap();
+        sink.attach_static(1, "a");
+        // Held mid-decode: nothing is attached and the channel is PARKED, not
+        // failed. A `dead` channel here would be the wrong answer — it is the
+        // state a missing asset produces.
+        assert!(sink.channels[&1].frames.is_none());
+        assert_eq!(sink.channels[&1].pending.as_deref(), Some("a"));
+        assert!(!sink.channels[&1].dead);
+        drop(held);
+
+        assert!(
+            tick_until_attached(&mut sink, 1, 2000),
+            "the decode never landed"
+        );
+        assert_eq!(sink.channels[&1].frames, Some(64));
+        assert_eq!(sink.channels[&1].pending, None);
+    }
+
+    /// **HAZARD ONE, and it would have leaked every channel.**
+    ///
+    /// `attach_static` clears `played_at` because "an attach rewinds", which is
+    /// right while the order is attach-then-play. A deferred attach inverts it
+    /// to play-then-attach, and clearing the stamp there makes `stopped()` take
+    /// its `let else` and answer false forever — so nothing is ever reclaimed
+    /// and the static pool runs dry.
+    #[test]
+    fn a_deferred_attach_onto_a_playing_channel_does_not_wipe_the_play_stamp() {
+        let mut sink = worker_sink();
+        let gate = std::sync::Arc::new(std::sync::Mutex::new(()));
+        sink.buffers.with_worker(Held {
+            gate: gate.clone(),
+            frames: 64,
+        });
+
+        let held = gate.lock().unwrap();
+        sink.attach_static(1, "a");
+        // Play arrives FIRST, which is the ordering the worker creates.
+        sink.submit(1, &ChannelCall::Play);
+        assert!(sink.channels[&1].played_at.is_some());
+        drop(held);
+
+        assert!(tick_until_attached(&mut sink, 1, 2000));
+        assert!(
+            sink.channels[&1].played_at.is_some(),
+            "the deferred attach wiped the play stamp — stopped() would answer \
+             false forever and the channel would never be reclaimed"
+        );
+        // And it re-stamps to NOW rather than keeping the old one: the sound
+        // genuinely starts when its samples arrive.
+        assert_eq!(sink.channels[&1].played_at, Some(sink.tick));
+    }
+
+    /// The synchronous case still clears the stamp, which is vanilla's rule —
+    /// so the fix above is scoped to the deferred path and has not quietly
+    /// changed the behaviour every existing test grades.
+    #[test]
+    fn a_synchronous_attach_still_rewinds_the_play_stamp() {
+        let mut sink = worker_sink();
+        sink.submit(1, &ChannelCall::Play);
+        assert!(sink.channels[&1].played_at.is_some());
+        sink.attach_static(1, KEY);
+        assert_eq!(
+            sink.channels[&1].played_at, None,
+            "with no worker an attach rewinds, exactly as before"
+        );
+    }
+
+    /// **HAZARD TWO**: a channel released while its decode is in flight must
+    /// not be resurrected by the landing.
+    ///
+    /// `release` removes the whole state, so the landing finds no channel —
+    /// which is why no epoch is needed. Without the pending check it would
+    /// `entry(..).or_default()` a fresh state and attach a buffer to a channel
+    /// the engine has already given away.
+    #[test]
+    fn a_release_while_decoding_is_not_undone_when_the_decode_lands() {
+        let mut sink = worker_sink();
+        let gate = std::sync::Arc::new(std::sync::Mutex::new(()));
+        sink.buffers.with_worker(Held {
+            gate: gate.clone(),
+            frames: 64,
+        });
+
+        let held = gate.lock().unwrap();
+        sink.attach_static(1, "a");
+        sink.release(1);
+        assert!(!sink.channels.contains_key(&1));
+        drop(held);
+
+        for _ in 0..200 {
+            sink.tick();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(
+            !sink.channels.contains_key(&1),
+            "a released channel was recreated by a late decode"
+        );
+    }
+
+    /// One decode serves every channel parked on it — the in-flight dedup seen
+    /// from the consumer's side.
+    #[test]
+    fn several_channels_waiting_on_one_key_all_attach_from_one_decode() {
+        let mut sink = worker_sink();
+        let gate = std::sync::Arc::new(std::sync::Mutex::new(()));
+        sink.buffers.with_worker(Held {
+            gate: gate.clone(),
+            frames: 64,
+        });
+
+        let held = gate.lock().unwrap();
+        for ch in 1..=4 {
+            sink.attach_static(ch, "a");
+        }
+        assert_eq!(sink.buffers.decodes_pending(), 1, "one decode, not four");
+        drop(held);
+
+        assert!(tick_until_attached(&mut sink, 1, 2000));
+        for ch in 1..=4 {
+            assert_eq!(
+                sink.channels[&ch].frames,
+                Some(64),
+                "channel {ch} did not attach from the shared decode"
+            );
+        }
+    }
+
+    /// **A landing attaches only the channels parked on THAT key.**
+    ///
+    /// The mutation this exists for is `pending.is_some()` — which passes the
+    /// release test above, because a released channel has no state at all, and
+    /// then hands one key's buffer to a channel waiting on a different sound.
+    /// Two channels on two keys is the fixture that can tell them apart.
+    #[test]
+    fn a_landing_does_not_attach_a_channel_waiting_on_a_different_key() {
+        let mut sink = worker_sink();
+        let gate = std::sync::Arc::new(std::sync::Mutex::new(()));
+        sink.buffers.with_worker(TwoKeys {
+            gate: gate.clone(),
+        });
+
+        let held = gate.lock().unwrap();
+        sink.attach_static(1, "short");
+        sink.attach_static(2, "long");
+        drop(held);
+
+        for _ in 0..2000 {
+            sink.tick();
+            if sink.channels[&1].frames.is_some() && sink.channels[&2].frames.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(
+            sink.channels[&1].frames,
+            Some(16),
+            "channel 1 must get SHORT, not whichever landed first"
+        );
+        assert_eq!(sink.channels[&2].frames, Some(256), "and channel 2 LONG");
+    }
+
+    /// Two keys of different lengths, so a cross-attach is visible as a frame
+    /// count rather than needing byte comparison.
+    struct TwoKeys {
+        gate: std::sync::Arc<std::sync::Mutex<()>>,
+    }
+
+    impl crate::buffers::PcmSource for TwoKeys {
+        fn open(&mut self, key: &str) -> Result<Pcm, String> {
+            let _g = self.gate.lock().unwrap();
+            let n = match key {
+                "short" => 16,
+                "long" => 256,
+                _ => return Err("no such asset".into()),
+            };
+            Ok(Pcm {
+                samples: vec![0i16; n],
+                channels: 1,
+                sample_rate: 44100,
+            })
+        }
+    }
+
+    /// A failed decode comes back as a failure — the channel goes `dead` and is
+    /// counted, exactly as the synchronous path does.
+    #[test]
+    fn a_deferred_failure_marks_the_channel_dead_rather_than_hanging() {
+        let mut sink = worker_sink();
+        sink.buffers.with_worker(Held {
+            gate: std::sync::Arc::new(std::sync::Mutex::new(())),
+            frames: 64,
+        });
+        sink.attach_static(1, "missing");
+        for _ in 0..2000 {
+            sink.tick();
+            if sink.channels[&1].dead {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(sink.channels[&1].dead, "a missing asset must not park forever");
+        assert_eq!(sink.channels[&1].pending, None);
+        assert_eq!(sink.unresolved, 1);
+    }
+
 }
 
 /// **The whole chain, with the device removed: a decoded packet in, audible

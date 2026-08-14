@@ -136,6 +136,23 @@ impl PcmSource for Box<dyn PcmSource> {
     }
 }
 
+/// The `Send` twin (M156), for a source handed to the decode worker.
+///
+/// A separate impl rather than widening the one above: `Box<dyn PcmSource>` is
+/// what the sink stores and must stay usable by a non-`Send` source, while the
+/// worker owns its on another thread and cannot. Both forward `open_stream`
+/// explicitly for the reason the first one records — inheriting the default
+/// would make a boxed source refuse every stream while the source inside it
+/// supported them.
+impl PcmSource for Box<dyn PcmSource + Send> {
+    fn open(&mut self, key: &str) -> Result<Pcm, String> {
+        (**self).open(key)
+    }
+    fn open_stream(&mut self, key: &str, looping: bool) -> Result<Box<dyn PcmStream>, String> {
+        (**self).open_stream(key, looping)
+    }
+}
+
 /// A stream handle. Streams carry their loop flag; static buffers do not.
 ///
 /// **Looping for a streamed sound lives HERE and not on the channel.**
@@ -162,6 +179,24 @@ pub struct StreamHandle {
 pub struct SoundBufferLibrary<S: PcmSource> {
     source: S,
     cache: HashMap<String, Result<Arc<Pcm>, String>>,
+    /// The static-decode worker, when one has been attached (M156).
+    ///
+    /// **Optional so the synchronous path is unchanged.** Every existing test,
+    /// every gate and `soundshot`'s whole (d) layer drive this library with no
+    /// worker and decode inline exactly as before — which is what makes the
+    /// worker an addition rather than a rewrite, and is the shape M156's
+    /// scoping asked for.
+    worker: Option<crate::decode_worker::DecodeWorker>,
+}
+
+/// What [`SoundBufferLibrary::request`] can answer (M156).
+#[derive(Debug, Clone, PartialEq)]
+pub enum BufferState {
+    /// Decoded (or failed) and cached. The synchronous answer.
+    Ready(Result<Arc<Pcm>, String>),
+    /// A decode is in flight on the worker. **Not an error and not silence** —
+    /// the caller records the request and attaches when it lands.
+    Pending,
 }
 
 impl<S: PcmSource> SoundBufferLibrary<S> {
@@ -169,7 +204,64 @@ impl<S: PcmSource> SoundBufferLibrary<S> {
         SoundBufferLibrary {
             source,
             cache: HashMap::new(),
+            worker: None,
         }
+    }
+
+    /// Attach a decode worker, moving every future *static* decode off the
+    /// calling thread (M156).
+    ///
+    /// The worker needs its own [`PcmSource`] because it owns one on another
+    /// thread; the library keeps its own for the synchronous fallback and for
+    /// streams, which are **not** moved — see [`crate::decode_worker`].
+    pub fn with_worker<W>(&mut self, worker_source: W)
+    where
+        W: PcmSource + Send + 'static,
+    {
+        self.worker = Some(crate::decode_worker::DecodeWorker::spawn(worker_source));
+    }
+
+    /// Ask for a buffer without blocking (M156).
+    ///
+    /// With no worker this is [`Self::complete_buffer`] and always answers
+    /// `Ready`. With one, a cache miss is submitted and answers `Pending`.
+    ///
+    /// **A cached FAILURE is still `Ready`**, because vanilla caches the failed
+    /// future too (see [`Self::complete_buffer`]) — retrying a missing asset
+    /// every play is the more obvious design and is not vanilla's.
+    pub fn request(&mut self, key: &str) -> BufferState {
+        if let Some(hit) = self.cache.get(key) {
+            return BufferState::Ready(hit.clone());
+        }
+        match self.worker.as_mut() {
+            Some(w) => {
+                w.request(key);
+                BufferState::Pending
+            }
+            None => BufferState::Ready(self.complete_buffer(key)),
+        }
+    }
+
+    /// Move finished decodes into the cache and report them.
+    ///
+    /// Called once per tick. Returns the keys that landed so the caller can
+    /// complete whatever it parked on them.
+    pub fn poll_decodes(&mut self) -> Vec<String> {
+        let Some(w) = self.worker.as_mut() else {
+            return Vec::new();
+        };
+        let done = w.drain();
+        let mut keys = Vec::with_capacity(done.len());
+        for (key, result) in done {
+            self.cache.insert(key.clone(), result);
+            keys.push(key);
+        }
+        keys
+    }
+
+    /// Static decodes outstanding on the worker — a diagnostic counter.
+    pub fn decodes_pending(&self) -> usize {
+        self.worker.as_ref().map_or(0, |w| w.inflight_count())
     }
 
     /// `getCompleteBuffer` — **cached permanently by path**.
