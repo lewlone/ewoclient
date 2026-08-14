@@ -11,6 +11,7 @@
 //! soak/replay tools it runs on its own driver.
 
 pub mod music;
+pub mod options;
 pub mod abilities;
 pub mod ambient_handlers;
 pub mod attributes;
