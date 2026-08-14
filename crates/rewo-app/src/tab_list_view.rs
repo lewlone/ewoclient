@@ -110,6 +110,15 @@ pub struct ResolvedRow {
     pub score: ChatLine,
     /// `entry.scoreWidth`, which the draw right-aligns against.
     pub score_width: i32,
+    /// `ScoreDisplayEntry.score` — the RAW integer (M155).
+    ///
+    /// Carried separately from [`Self::score`] because vanilla's record holds
+    /// **both** in both modes: the formatted component is `null` under HEARTS,
+    /// and the integer is what `extractTablistHearts` reads. `None` means this
+    /// holder has no score for the objective, which is different from a score
+    /// of zero — zero is a dead player and draws nothing, while absence means
+    /// the column does not apply to this row at all.
+    pub score_value: Option<i32>,
 }
 
 /// The whole tab list for one frame, resolved but not yet placed.
@@ -320,6 +329,13 @@ pub fn resolve(l: &TabListLookups<'_>) -> TabListView {
         // also the key `set_score` files a player's score under.
         let mut score: ChatLine = Vec::new();
         let mut score_width = 0i32;
+        // M155 — the raw integer, read whether or not the objective is HEARTS.
+        // The formatted half below stays gated on `!hearts`, because vanilla
+        // leaves `formattedScore` null in that mode; this one it always fills.
+        let score_value = match (objective, l.scoreboard) {
+            (Some(obj), Some(sb)) => sb.score(&e.name, &obj.name).map(|s| s.value),
+            _ => None,
+        };
         if let (Some(obj), Some(sb), false) = (objective, l.scoreboard, hearts) {
             if let Some(s) = sb.score(&e.name, &obj.name) {
                 let format = s.number_format.as_ref().or(obj.number_format.as_ref());
@@ -346,6 +362,7 @@ pub fn resolve(l: &TabListLookups<'_>) -> TabListView {
             ping: e.ping_icon(),
             score,
             score_width,
+            score_value,
         });
     }
 
@@ -426,6 +443,115 @@ pub fn icons(view: &TabListView, layout: &tab_list::TabListLayout) -> Vec<rewo_g
             })
         })
         .collect()
+}
+
+/// `AvatarRenderer.isPlayerUpsideDown` — `"Dinnerbone".equals(name) ||
+/// "Grumm".equals(name)` (M155).
+///
+/// **Exact string equality, so it is case sensitive**: "dinnerbone" is not
+/// flipped.
+pub fn is_upside_down_name(name: &str) -> bool {
+    name == "Dinnerbone" || name == "Grumm"
+}
+
+/// The tab list's 8x8 player faces (M155).
+///
+/// Separate from [`icons`] for the same reason [`hearts`] is: r47 counts
+/// `icons(..).len()`, and this list is per-row-with-a-skin rather than
+/// per-row.
+///
+/// `face_of` answers a player's atlas slot, or `None` while their skin is
+/// still in flight — which is the ordinary state for the first frames after a
+/// join and draws no face rather than someone else's.
+///
+/// **The flip needs the player to be LOADED, not merely listed.** Vanilla's
+/// `level.getPlayerByUUID(id)` returns null for a player outside render
+/// distance, and `flip` is `player != null && isPlayerUpsideDown(player)` — so
+/// a Dinnerbone across the map is on the tab list the right way up. Reading
+/// the name alone flips them everywhere, which looks more "correct" and is
+/// not what vanilla does.
+pub fn faces(
+    view: &TabListView,
+    layout: &tab_list::TabListLayout,
+    face_of: &dyn Fn(u128) -> Option<u8>,
+    show_hat_of: &dyn Fn(u128) -> bool,
+    loaded_of: &dyn Fn(u128) -> bool,
+) -> Vec<rewo_gpu::hud::HudBlit> {
+    let mut out = Vec::new();
+    for slot in &layout.entries {
+        let Some(rect) = slot.face else { continue };
+        let Some(e) = view.entries.get(slot.index) else {
+            continue;
+        };
+        let Some(face) = face_of(e.uuid) else { continue };
+        let flip = loaded_of(e.uuid) && is_upside_down_name(&e.name);
+        let blit = |hat: bool| rewo_gpu::hud::HudBlit {
+            x: rect.x as f32,
+            y: rect.y as f32,
+            w: rect.w as f32,
+            h: rect.h as f32,
+            icon: rewo_gpu::hud::HudIcon::Face { slot: face, hat, flip },
+        };
+        out.push(blit(false));
+        // `if (hat) extractHat(..)` — a second blit over the first, never a
+        // different sprite.
+        if show_hat_of(e.uuid) {
+            out.push(blit(true));
+        }
+    }
+    out
+}
+
+/// The health column's heart sprites, when the objective renders as HEARTS
+/// (M155).
+///
+/// Separate from [`icons`] rather than folded into it for two reasons. It needs
+/// per-player mutable state — the blink clock — which `icons` does not have and
+/// should not grow; and `live --render-check`'s r47 counts `icons(..).len()`,
+/// so putting hearts there would silently move a number a gate asserts.
+///
+/// `states` is keyed by profile id and **mutated**: vanilla's
+/// `healthStates.computeIfAbsent(profileId, …)` then `health.update(score,
+/// tick)` runs once per rendered row per frame, which is what advances the
+/// blink. A caller that rebuilt the map each frame would never blink at all,
+/// because a fresh `HealthState` is seeded with its own value and has nothing
+/// to catch up to.
+pub fn hearts(
+    view: &TabListView,
+    layout: &tab_list::TabListLayout,
+    states: &mut std::collections::HashMap<u128, tab_list::HealthState>,
+    gui_tick: i64,
+) -> Vec<rewo_gpu::hud::HudBlit> {
+    let mut out = Vec::new();
+    for slot in &layout.entries {
+        let Some(row) = view.rows.get(slot.index) else {
+            continue;
+        };
+        // `score_span` is already `None` for a spectator, which is vanilla's
+        // rule that a spectator's score is not drawn at all.
+        let (Some((left, right)), Some(score)) = (slot.score_span, row.score_value) else {
+            continue;
+        };
+        // `entries` is parallel to `rows` and carries the profile id, which
+        // is the key vanilla files its `healthStates` map under.
+        let Some(uuid) = view.entries.get(slot.index).map(|e| e.uuid) else {
+            continue;
+        };
+        let health = states
+            .entry(uuid)
+            .or_insert_with(|| tab_list::HealthState::new(score));
+        health.update(score, gui_tick);
+        for b in tab_list::heart_blits(score, *health, gui_tick, left, right) {
+            out.push(rewo_gpu::hud::HudBlit {
+                x: (left + b.dx) as f32,
+                y: slot.name.1 as f32,
+                w: tab_list::HEART_SPRITE_SIZE as f32,
+                h: tab_list::HEART_SPRITE_SIZE as f32,
+                icon: rewo_gpu::hud::HudIcon::Heart(b.sprite),
+            });
+        }
+    }
+    out
 }
 
 /// [`PingIcon`] into the index `rewo_data::assets::PING_SPRITES` uses.
@@ -1026,5 +1152,20 @@ mod tests {
         let v = f.resolve();
         assert_eq!(v.input.score, ScoreColumn::None);
         assert!(v.rows[0].score.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod face_tests {
+    use super::*;
+
+    /// **Exact string equality, and it is case sensitive.**
+    #[test]
+    fn only_two_names_are_upside_down_and_the_case_matters() {
+        assert!(is_upside_down_name("Dinnerbone"));
+        assert!(is_upside_down_name("Grumm"));
+        assert!(!is_upside_down_name("dinnerbone"), "case sensitive");
+        assert!(!is_upside_down_name("Dinnerbone2"));
+        assert!(!is_upside_down_name("Notch"));
     }
 }

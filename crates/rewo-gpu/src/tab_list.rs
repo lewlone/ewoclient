@@ -73,6 +73,10 @@ pub const SCREEN_MARGIN: i32 = 50;
 /// `widthForScore` when the objective renders as HEARTS.
 pub const HEARTS_WIDTH: i32 = 90;
 
+/// The heart sprite is blitted 9x9 (M155) -- on an 8-px pitch at the
+/// default column, so neighbours overlap by a column.
+pub const HEART_SPRITE_SIZE: i32 = 9;
+
 /// The score is drawn only `if (right - left > 5)`. Strictly greater.
 pub const SCORE_MIN_SPAN: i32 = 5;
 
@@ -657,6 +661,253 @@ pub fn layout(input: &TabListInput, entries: &[TabEntry]) -> TabListLayout {
     }
 }
 
+// ───────────────────────────────────────────────── M155: RenderType::HEARTS
+
+/// One heart position's sprite, in draw order (M155).
+///
+/// Every position draws a **container** first and then at most one fill over
+/// it, because `extractTablistHearts`'s second loop opens with the same
+/// unconditional `blitSprite(sprite, …)` the first loop uses. A filled heart is
+/// therefore two layers, not one, and an emitter that drew only the fill would
+/// leave the empty half of a half-heart transparent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeartSprite {
+    Container,
+    ContainerBlinking,
+    Full,
+    Half,
+    /// The blink ghost, drawn from `displayedValue` rather than the live score.
+    FullBlinking,
+    HalfBlinking,
+    /// Hearts at index >= 10 — absorption.
+    ///
+    /// **These are the `*_blinking` assets and they are NOT the blink layer.**
+    /// Vanilla ships no non-blinking absorbing sprite, so
+    /// `HEART_ABSORBING_FULL_BLINKING_SPRITE` is the ordinary appearance of a
+    /// gold heart. Transcribing by name — "a blinking sprite is drawn only
+    /// while blinking" — loses gold hearts entirely.
+    AbsorbingFull,
+    AbsorbingHalf,
+}
+
+/// `PlayerTabOverlay.HealthState` — the per-player blink clock (M155).
+///
+/// Vanilla keeps one of these per profile id in a map that is **cleared when
+/// the list is hidden** (`reset()`), which is why a blink does not survive
+/// closing and reopening the tab list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HealthState {
+    last_value: i32,
+    displayed_value: i32,
+    last_update_tick: i64,
+    blink_until_tick: i64,
+}
+
+/// `DISPLAY_UPDATE_DELAY`.
+pub const HEALTH_DISPLAY_UPDATE_DELAY: i64 = 20;
+/// `DECREASE_BLINK_DURATION` — losing health blinks for twice as long as
+/// gaining it.
+pub const HEALTH_DECREASE_BLINK: i64 = 20;
+/// `INCREASE_BLINK_DURATION`.
+pub const HEALTH_INCREASE_BLINK: i64 = 10;
+
+impl HealthState {
+    /// `new HealthState(value)` — both fields seeded, so a player first seen at
+    /// any health is **not** blinking and has nothing stale to catch up to.
+    pub fn new(value: i32) -> Self {
+        Self {
+            last_value: value,
+            displayed_value: value,
+            last_update_tick: 0,
+            blink_until_tick: 0,
+        }
+    }
+
+    /// `update(value, tick)`.
+    ///
+    /// Two independent halves, and the second is **not** in an `else`: a change
+    /// arms the blink, and separately the displayed value catches up once
+    /// twenty ticks have passed since the last change. So a second change
+    /// **restarts the catch-up clock**, and a value that flickers keeps
+    /// `displayedValue` stale indefinitely.
+    pub fn update(&mut self, value: i32, tick: i64) {
+        if value != self.last_value {
+            // A DECREASE blinks 20 and an increase 10 — losing health is
+            // twice as loud as gaining it.
+            self.blink_until_tick = tick
+                + if value < self.last_value {
+                    HEALTH_DECREASE_BLINK
+                } else {
+                    HEALTH_INCREASE_BLINK
+                };
+            self.last_value = value;
+            self.last_update_tick = tick;
+        }
+        // Strictly greater — at exactly 20 ticks it has NOT caught up yet.
+        //
+        // **The two halves cannot both fire on one tick, and that is a
+        // coincidence of vanilla's own control flow rather than a rule stated
+        // anywhere.** The branch above sets `last_update_tick = tick`, so this
+        // test reads `0 > 20` whenever the value changed. Writing the two as
+        // an `if`/`else` is therefore EQUIVALENT — a mutation adding an early
+        // return here survives the battery, correctly. It is left as two
+        // statements because that is what the decompile says, and the
+        // coincidence is pinned by
+        // `a_change_never_catches_up_on_the_same_tick` so a later reader who
+        // does collapse them can see it was already known.
+        if tick - self.last_update_tick > HEALTH_DISPLAY_UPDATE_DELAY {
+            self.displayed_value = value;
+        }
+    }
+
+    pub fn displayed_value(self) -> i32 {
+        self.displayed_value
+    }
+
+    /// `isBlinking(tick)` — `blinkUntil > tick && (blinkUntil - tick) % 6 >= 3`.
+    ///
+    /// **A six-tick square wave measured from the END of the blink, not the
+    /// start**, which inverts the phase against the obvious reading. A decrease
+    /// arms `tick + 20`, and `20 % 6 == 2`, so the heart is DARK on the tick
+    /// the damage lands; an increase arms `tick + 10`, and `10 % 6 == 4`, so
+    /// that one is LIT immediately. The two directions start on opposite
+    /// phases and neither starts at the beginning of a cycle.
+    pub fn is_blinking(self, tick: i64) -> bool {
+        self.blink_until_tick > tick && (self.blink_until_tick - tick).rem_euclid(6) >= 3
+    }
+}
+
+/// `Mth.positiveCeilDiv(input, divisor)` — `-floorDiv(-input, divisor)`.
+fn positive_ceil_div(input: i32, divisor: i32) -> i32 {
+    -(-input).div_euclid(divisor)
+}
+
+/// The two heart counts, which round in **opposite directions** (M155).
+///
+/// `fullHearts` CEILS and `heartsToRender` FLOORS, so at an odd value they
+/// disagree — and `fullHearts` can **exceed** `heartsToRender` (score 21 gives
+/// 11 against 10), at which point the container-only loop
+/// `for heart in full..render` runs zero times. Reading them as one number,
+/// or as ceil/ceil, silently drops the empty containers past the fill.
+pub fn heart_counts(score: i32, displayed: i32) -> (i32, i32) {
+    let full_hearts = positive_ceil_div(score.max(displayed), 2);
+    let hearts_to_render = score.max(displayed.max(20)) / 2;
+    (full_hearts, hearts_to_render)
+}
+
+/// `widthPerHeart` — `floor(min((right - left - 4) / heartsToRender, 9))`.
+///
+/// **At the default column this is 8, with 9-px sprites**, so every heart
+/// overlaps its neighbour by a column. The `9.0` cap is unreachable at
+/// [`HEARTS_WIDTH`]: `floor(min(86 / 10, 9)) == 8`. It exists for a
+/// hypothetically wider column and is transcribed rather than dropped.
+pub fn width_per_heart(left: i32, right: i32, hearts_to_render: i32) -> i32 {
+    if hearts_to_render <= 0 {
+        return 0;
+    }
+    let per = (right - left - 4) as f32 / hearts_to_render as f32;
+    per.min(9.0).floor() as i32
+}
+
+/// One heart blit: an x offset from `left`, and its sprite.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeartBlit {
+    pub dx: i32,
+    pub sprite: HeartSprite,
+}
+
+/// `extractTablistHearts`'s sprite half, in draw order (M155).
+///
+/// Returns an empty vec when the column is too narrow — that is the **text
+/// readout** case, which the caller renders instead; see
+/// [`hearts_text_readout`].
+///
+/// The whole body is gated on `fullHearts > 0`, so a dead player (score 0 with
+/// a caught-up display) draws **nothing at all** rather than ten empty
+/// containers.
+pub fn heart_blits(score: i32, health: HealthState, tick: i64, left: i32, right: i32) -> Vec<HeartBlit> {
+    let displayed = health.displayed_value();
+    let (full_hearts, hearts_to_render) = heart_counts(score, displayed);
+    if full_hearts <= 0 {
+        return Vec::new();
+    }
+    let per = width_per_heart(left, right, hearts_to_render);
+    if per <= 3 {
+        return Vec::new();
+    }
+    let blink = health.is_blinking(tick);
+    let container = if blink {
+        HeartSprite::ContainerBlinking
+    } else {
+        HeartSprite::Container
+    };
+    let mut out = Vec::new();
+
+    // The containers PAST the fill. Runs zero times when `fullHearts` exceeds
+    // `heartsToRender`, which an odd score reaches.
+    for heart in full_hearts..hearts_to_render {
+        out.push(HeartBlit { dx: heart * per, sprite: container });
+    }
+    for heart in 0..full_hearts {
+        // Every filled position gets its container too — the second loop opens
+        // with the same unconditional blit.
+        out.push(HeartBlit { dx: heart * per, sprite: container });
+        if blink {
+            // The GHOST layer, driven by `displayedValue` rather than the live
+            // score — which is what makes a drop show where the health *was*.
+            if heart * 2 + 1 < displayed {
+                out.push(HeartBlit { dx: heart * per, sprite: HeartSprite::FullBlinking });
+            }
+            if heart * 2 + 1 == displayed {
+                out.push(HeartBlit { dx: heart * per, sprite: HeartSprite::HalfBlinking });
+            }
+        }
+        if heart * 2 + 1 < score {
+            out.push(HeartBlit {
+                dx: heart * per,
+                sprite: if heart >= 10 {
+                    HeartSprite::AbsorbingFull
+                } else {
+                    HeartSprite::Full
+                },
+            });
+        }
+        if heart * 2 + 1 == score {
+            out.push(HeartBlit {
+                dx: heart * per,
+                sprite: if heart >= 10 {
+                    HeartSprite::AbsorbingHalf
+                } else {
+                    HeartSprite::Half
+                },
+            });
+        }
+    }
+    out
+}
+
+/// The `widthPerHeart <= 3` text readout — its string and its colour (M155).
+///
+/// **Reached by HIGH HEALTH, never by a narrow window.** The column is a
+/// constant [`HEARTS_WIDTH`] (90), so `right - left` never varies and the only
+/// free variable is `heartsToRender`: `floor(86 / n) <= 3` iff `n >= 22`, i.e.
+/// `max(score, max(displayed, 20)) >= 44`. A reader who assumes this is the
+/// narrow-window fallback will look for it at small window sizes and never
+/// find it.
+///
+/// The colour ramps red to green over `score / 20` and is **opaque black in
+/// the blue channel** — `(1-pct)*255 << 16 | pct*255 << 8` has no blue term at
+/// all, so full health is pure `0x00FF00` rather than a white-ish green.
+pub fn hearts_text_readout(score: i32) -> Option<(f32, i32)> {
+    let hearts_to_render = score.max(20) / 2;
+    if width_per_heart(0, HEARTS_WIDTH, hearts_to_render) > 3 {
+        return None;
+    }
+    let pct = (score as f32 / 20.0).clamp(0.0, 1.0);
+    let color = (((1.0 - pct) * 255.0) as i32) << 16 | ((pct * 255.0) as i32) << 8;
+    Some((score as f32 / 2.0, color))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1204,6 +1455,277 @@ mod tests {
             assert!(s.row < l.rows);
             assert!(s.col < l.columns);
             assert!(s.ping_icon.right() <= s.background.right());
+        }
+    }
+}
+
+#[cfg(test)]
+mod hearts_tests {
+    use super::*;
+
+    /// **The two counts round in OPPOSITE directions**, and the consequence is
+    /// that `fullHearts` can exceed `heartsToRender`.
+    ///
+    /// Swept rather than spot-checked, against literals re-declared from
+    /// `PlayerTabOverlay:274-275` — so this grades the transcription and not
+    /// itself.
+    #[test]
+    fn the_two_heart_counts_round_two_different_ways() {
+        let mut seen_full_exceeds_render = false;
+        for score in 0..=60 {
+            for displayed in 0..=60 {
+                let (full, render) = heart_counts(score, displayed);
+                assert_eq!(
+                    full,
+                    -(-(score.max(displayed))).div_euclid(2),
+                    "fullHearts CEILS: score {score} displayed {displayed}"
+                );
+                assert_eq!(
+                    render,
+                    score.max(displayed.max(20)) / 2,
+                    "heartsToRender FLOORS: score {score} displayed {displayed}"
+                );
+                if full > render {
+                    seen_full_exceeds_render = true;
+                }
+            }
+        }
+        assert!(
+            seen_full_exceeds_render,
+            "the sweep never reached the case the two roundings exist to create"
+        );
+        // The named example, so a future reader has one without re-running it.
+        assert_eq!(heart_counts(21, 21), (11, 10));
+    }
+
+    /// At the default column the pitch is 8 with 9-px sprites, so hearts
+    /// overlap — and the 9.0 cap is unreachable there.
+    #[test]
+    fn the_pitch_is_eight_and_the_hearts_overlap() {
+        assert_eq!(width_per_heart(0, HEARTS_WIDTH, 10), 8);
+        assert!(
+            width_per_heart(0, HEARTS_WIDTH, 10) < 9,
+            "the sprite is 9 wide on an 8 pitch: every heart overlaps its neighbour"
+        );
+        // The cap IS reachable on a wider column, which is why it is kept.
+        assert_eq!(width_per_heart(0, 200, 10), 9);
+    }
+
+    /// **The text readout is reached by HIGH HEALTH, not by a narrow window.**
+    ///
+    /// The column is a constant 90, so `right - left` never varies: the only
+    /// way to `widthPerHeart <= 3` is a score at or above 44.
+    #[test]
+    fn the_text_readout_is_reached_by_high_health() {
+        assert!(hearts_text_readout(42).is_none(), "42 still draws sprites");
+        assert!(hearts_text_readout(44).is_some(), "44 crosses to text");
+        // And at 44 the emitter really does produce nothing to blit.
+        assert!(heart_blits(44, HealthState::new(44), 0, 0, HEARTS_WIDTH).is_empty());
+        // A SEPARATE state — reusing the 44 one leaves `displayed` at 44, which
+        // pushes `heartsToRender` to 22 and crosses the threshold anyway. The
+        // first draft of this witness did exactly that and "passed its claim"
+        // for the wrong reason.
+        assert!(!heart_blits(42, HealthState::new(42), 0, 0, HEARTS_WIDTH).is_empty());
+    }
+
+    /// Full health is PURE GREEN: the colour expression has no blue term.
+    #[test]
+    fn the_readout_colour_has_no_blue_channel() {
+        let (hearts, color) = hearts_text_readout(44).expect("text at 44");
+        assert_eq!(hearts, 22.0, "the readout is in HEARTS, not points");
+        assert_eq!(color & 0xFF, 0, "no blue term exists in the expression");
+        // A clamped pct of 1.0 gives 0x00FF00 exactly.
+        assert_eq!(color, 0x00FF00);
+    }
+
+    /// Zero health draws NOTHING — the whole body is gated on `fullHearts > 0`.
+    #[test]
+    fn zero_health_draws_nothing_rather_than_ten_containers() {
+        let h = HealthState::new(0);
+        assert!(heart_blits(0, h, 0, 0, HEARTS_WIDTH).is_empty());
+        // ...and one point of health draws a half heart over a container.
+        assert!(!heart_blits(1, HealthState::new(1), 0, 0, HEARTS_WIDTH).is_empty());
+    }
+
+    /// **A damage blink starts DARK and a heal blink starts LIT.**
+    ///
+    /// `isBlinking` measures the square wave from the END of the blink, so the
+    /// two durations (20 and 10) land on opposite phases of the six-tick cycle
+    /// — `20 % 6 == 2` (below the 3 threshold) against `10 % 6 == 4`. Any
+    /// implementation measuring from the START gets both of these backwards.
+    #[test]
+    fn a_damage_blink_starts_dark_and_a_heal_blink_starts_lit() {
+        let mut hurt = HealthState::new(20);
+        hurt.update(19, 100);
+        assert!(!hurt.is_blinking(100), "a decrease is DARK on the tick it lands");
+
+        let mut healed = HealthState::new(20);
+        healed.update(21, 100);
+        assert!(healed.is_blinking(100), "an increase is LIT on the tick it lands");
+    }
+
+    /// The blink ends, and it is a square wave rather than a fade.
+    #[test]
+    fn the_blink_is_a_six_tick_square_wave_that_terminates() {
+        let mut h = HealthState::new(20);
+        h.update(10, 0);
+        let on: Vec<i64> = (0..25).filter(|t| h.is_blinking(*t)).collect();
+        // Measured from the END, so the first LIT tick is 3 rather than 0 —
+        // and the last is 17, three short of the 20 the blink is armed to.
+        assert_eq!(on, vec![3, 4, 5, 9, 10, 11, 15, 16, 17]);
+        assert!(
+            !h.is_blinking(20),
+            "strictly greater: it is over at the end tick"
+        );
+    }
+
+    /// **A second change SHORTENS the blink rather than extending it**, because
+    /// the field is assigned rather than maxed.
+    #[test]
+    fn a_second_change_shortens_the_blink() {
+        let mut h = HealthState::new(20);
+        h.update(10, 0); // decrease: blink until 20
+        h.update(11, 1); // increase one tick later: blink until 11, not 20
+        assert!(h.is_blinking(8), "still blinking inside the shorter window");
+        assert!(!h.is_blinking(9), "and 9 is a DARK phase of that window, not its end");
+        assert!(
+            !h.is_blinking(12),
+            "and over well before the decrease's 20"
+        );
+    }
+
+    /// The displayed value catches up **only after** the delay, and the test
+    /// is STRICTLY greater — at exactly 20 it has not caught up.
+    #[test]
+    fn the_displayed_value_catches_up_only_after_the_last_change() {
+        let mut h = HealthState::new(20);
+        h.update(10, 0);
+        assert_eq!(h.displayed_value(), 20, "still showing the old value");
+        h.update(10, 20);
+        assert_eq!(h.displayed_value(), 20, "20 is NOT yet past the delay");
+        h.update(10, 21);
+        assert_eq!(h.displayed_value(), 10, "and 21 is");
+    }
+
+    /// **A flickering value keeps the display stale indefinitely**, because a
+    /// change restarts the catch-up clock and the two halves of `update` are
+    /// independent rather than an if/else.
+    #[test]
+    fn a_flickering_value_never_catches_up() {
+        let mut h = HealthState::new(20);
+        for t in 0..200 {
+            h.update(if t % 2 == 0 { 10 } else { 11 }, t);
+        }
+        assert_eq!(
+            h.displayed_value(),
+            20,
+            "every tick changed the value, so the delay never elapsed"
+        );
+    }
+
+    /// **The ghost layer is the OLD value, not the new one** — which is what
+    /// makes a drop show where the health used to be.
+    #[test]
+    fn the_ghost_layer_is_drawn_from_the_displayed_value() {
+        let mut h = HealthState::new(20);
+        h.update(10, 0);
+        // Tick 3 is the FIRST lit tick (see the square-wave test) — tick 1 is
+        // dark, because the phase is measured from the end of the blink.
+        assert!(h.is_blinking(3));
+        let blits = heart_blits(10, h, 3, 0, HEARTS_WIDTH);
+        let ghosts: Vec<i32> = blits
+            .iter()
+            .filter(|b| b.sprite == HeartSprite::FullBlinking)
+            .map(|b| b.dx / 8)
+            .collect();
+        assert_eq!(
+            ghosts,
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+            "the ghost spans the OLD 20 health, past the live 10"
+        );
+        let live: Vec<i32> = blits
+            .iter()
+            .filter(|b| b.sprite == HeartSprite::Full)
+            .map(|b| b.dx / 8)
+            .collect();
+        assert_eq!(live, vec![0, 1, 2, 3, 4], "and the live fill is only five");
+    }
+
+    /// A filled heart is TWO layers: its own container, then the fill.
+    #[test]
+    fn a_filled_heart_sits_on_its_own_container() {
+        let h = HealthState::new(20);
+        let blits = heart_blits(20, h, 0, 0, HEARTS_WIDTH);
+        let at_zero: Vec<HeartSprite> =
+            blits.iter().filter(|b| b.dx == 0).map(|b| b.sprite).collect();
+        assert_eq!(
+            at_zero,
+            vec![HeartSprite::Container, HeartSprite::Full],
+            "container first, then the fill over it — and in that order"
+        );
+    }
+
+    /// **The eleventh heart is gold, and its sprite is a `*_blinking` asset
+    /// that is not the blink layer.** Vanilla ships no non-blinking absorbing
+    /// sprite.
+    #[test]
+    fn the_eleventh_heart_is_absorption_and_is_not_blinking() {
+        let h = HealthState::new(22);
+        let blits = heart_blits(22, h, 0, 0, HEARTS_WIDTH);
+        assert!(!h.is_blinking(0), "nothing is blinking in this fixture");
+        // The pitch here is SEVEN, not eight: 22 health renders 11 hearts, and
+        // `floor(86 / 11)` is 7. Assuming the 20-health pitch of 8 looks in
+        // the wrong place and finds nothing.
+        let per = width_per_heart(0, HEARTS_WIDTH, 11);
+        assert_eq!(per, 7, "11 hearts pack tighter than 10");
+        let tenth: Vec<HeartSprite> = blits
+            .iter()
+            .filter(|b| b.dx == 10 * per)
+            .map(|b| b.sprite)
+            .collect();
+        assert!(
+            tenth.contains(&HeartSprite::AbsorbingFull),
+            "heart index 10 is absorption: {tenth:?}"
+        );
+        let ninth: Vec<HeartSprite> = blits
+            .iter()
+            .filter(|b| b.dx == 9 * per)
+            .map(|b| b.sprite)
+            .collect();
+        assert!(ninth.contains(&HeartSprite::Full), "and index 9 is ordinary");
+    }
+
+    /// **The two halves of `update` provably cannot both fire on one tick**,
+    /// because the first sets `last_update_tick = tick` and the second then
+    /// reads `0 > 20`.
+    ///
+    /// This pins the coincidence rather than the code: it is why an `if`/`else`
+    /// is equivalent to vanilla's two statements, and why a mutation adding an
+    /// early return survives the battery.
+    #[test]
+    fn a_change_never_catches_up_on_the_same_tick() {
+        for delay in [0i64, 1, 20, 21, 1000] {
+            let mut h = HealthState::new(20);
+            // Let the clock run well past the delay first, so the ONLY reason
+            // the catch-up does not fire is the reset in the change branch.
+            h.update(20, delay);
+            h.update(10, delay);
+            assert_eq!(
+                h.displayed_value(),
+                20,
+                "a tick that changed the value must not also catch up (delay {delay})"
+            );
+        }
+    }
+
+    /// A fresh state is not blinking and has nothing to catch up to, whatever
+    /// the health — which is what stops every player flashing on join.
+    #[test]
+    fn a_newly_seen_player_does_not_blink() {
+        for v in [0, 1, 20, 40] {
+            let h = HealthState::new(v);
+            assert!(!h.is_blinking(0));
+            assert_eq!(h.displayed_value(), v);
         }
     }
 }

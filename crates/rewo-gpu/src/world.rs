@@ -2240,6 +2240,19 @@ impl WorldRenderer {
         }
     }
 
+    /// Claim a tab-list face slot and upload one player's 16x8 face strip
+    /// (M155). `None` when there is no HUD pass, matching the four uploads
+    /// around it.
+    pub fn upload_tab_face(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<u8> {
+        match self.hud.as_mut()?.upload_face(gpu, rgba) {
+            Ok(slot) => Some(slot),
+            Err(e) => {
+                log::warn!("hud: tab face upload failed: {e}");
+                None
+            }
+        }
+    }
+
     /// Claim a cape slot and upload one player's cape sheet (M60). Returns
     /// the slot's atlas origin in texels — see `EntityPass::upload_cape` for
     /// why this is an origin and not a UV delta.

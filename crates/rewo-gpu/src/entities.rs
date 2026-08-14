@@ -5355,7 +5355,7 @@ fn blit_tex(atlas: &mut [u8], tex: Option<&[u8]>, x: u32, y: u32, w: u32, h: u32
 /// sampled atlas `image` at offset (x, y): SHADER_READ_ONLY → TRANSFER_DST
 /// → SHADER_READ_ONLY, fence-waited. `wait_idle` first so no in-flight
 /// frame samples the atlas mid-write (rare call — see `upload_skin`).
-fn upload_region(
+pub(crate) fn upload_region(
     gpu: &mut Gpu,
     image: vk::Image,
     rgba: &[u8],
