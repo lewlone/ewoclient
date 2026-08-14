@@ -146,7 +146,7 @@ still learns that a green run is not evidence this client makes a sound.
 Current measurement, taken 2026-08-14 on the MERGED tree (soundshot + M139 +
 M151 all in; this is a branch, not `main`):
 **3214 tests, 0 failures** (**world 1187, net 1142, gpu 275, data 228, app 221,
-mesh 45, proto 16, audio 221U** — read off the runner per crate).
+mesh 45, proto 16, audio 100** — read off the runner per crate).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -175,12 +175,12 @@ caller requirements; demo PNG
 **12** — M96–M107 consume packets M93y already decoded, M108 resolved
 `delete_chat`, M113 the Brigadier tree and M114 the two suggestion packets.
 
-**There are 35 serverless gate commands, not the "fourteen" older paragraphs in
+**There are 36 serverless gate commands, not the "fourteen" older paragraphs in
 this file say** — those sentences are historical records of the count *at the
 time* and are correct as such. Re-measured from a cold start on 2026-08-08 by
 running every one, and again after M125, M126 and the M127–M134 integration:
 all green, **0 validation errors**; re-measured again on 2026-08-14, when the
-count reached **275ATES** — `sidebarshot` (17) came from M132, **`soundshot`**
+count reached **36** — `sidebarshot` (17) came from M132, **`soundshot`**
 (28 default / 48 under `--features audio`) and **`tablistshot`** (26) are the
 two newest, and `blockentityshot` reads **177** rather than the 172 the list
 below records. Enumerate them rather
@@ -190,7 +190,9 @@ than trusting a list, since the list is what rots:
 rewo.exe --help | grep -E '^  [a-z]+shot|^  [a-z]+check'
 ```
 
-Their witness counts, re-measured by running all 34 on 2026-08-10 (M137).
+Their witness counts. The 2026-08-14 run added the two newest — **`soundshot`**
+(28 in a default build / 48 under `--features audio`) and **`tablistshot`** (26)
+— to the list re-measured by running all 34 on 2026-08-10 (M137).
 **Only two had drifted from the M124 list this replaced** — `titleshot` and
 `deathshot`, both moved by M130 and M137 — so the rest are unchanged rather than
 unchecked: `mobshot` 246, `blockentityshot` **177** (was 172 on that date; M142c's
@@ -208,7 +210,7 @@ the six that print a prose summary rather than a count (`skyshot`,
 **`soundshot` is the one gate whose count depends on how the binary was
 built** (2026-08-13): **28** by default and **48** with `--features audio`,
 because layers (d) and (m) live in `rewo-audio` and M143 made that dependency
-optional and off by default so the one `rewo` binary all 35 gates are
+optional and off by default so the one `rewo` binary all 36 gates are
 subcommands of does not link cpal and symphonia. It fail-closes on whichever
 lock applies and prints which configuration it ran, so neither can lose a
 witness silently — but **a default-build green run does not grade decode or
@@ -396,19 +398,20 @@ sink; `rewo-net` carries the listener transform and the music fade.
    before M139**, whose whole job is measuring a divergence from vanilla — there
    is no sense grading a divergence before anyone has confirmed there is a
    signal.
-2. **Wire `rewo-audio` into the client.** Nothing in `rewo-app` depends on it
-   yet: that containment was deliberate, so 34 gates would not link an audio
-   stack for a subsystem none of them exercises, and it is also why no sound
-   plays in `rewo live` today. Undoing it is a decision to take on purpose
-   rather than by drift — the ring's producer end has to resolve asset keys to
-   PCM off the tick thread, which is M138b's `SoundBufferLibrary` and a worker,
-   not a call from `LiveSounds::drive`.
-3. **M139 — the loopback oracle**, once (1) is done. A Java harness driving
-   vanilla's own `Library`/`Listener`/`Channel` against an OpenAL Soft loopback
-   device, dumping PCM, with the **vectors** checked in so no JVM is needed at
-   gate time (the `tools/java_tostring_oracle` precedent). It is what turns the
-   mixer's stated approximations — the equal-power pan, the linear resampler —
-   from declarations into a measured divergence in dB.
+2. ~~**Wire `rewo-audio` into the client.**~~ **DONE — M143.** `rewo live
+   --audio`, on a build with `--features audio`, opens a device. The
+   containment survived: a DEFAULT build still links **0** audio-stack crates
+   (measured with `cargo tree`, not asserted), so the other gates are
+   unchanged.
+3. ~~**M139 — the loopback oracle.**~~ **DONE — 2026-08-13.**
+   `tools/openal_loopback_oracle/` drives vanilla's own
+   `Channel`/`Listener`/`SoundBuffer` against OpenAL Soft 1.25.1 through an
+   `ALC_SOFT_loopback` device; 48 vectors checked in, 14 consuming tests, no
+   JVM at gate time. **The plan's claim that a harness can drive `Library` is
+   wrong** — `init` opens the device inside itself with no seam — and the
+   harness re-implements that one method, saying so. It found a real
+   divergence beyond the approximations it went looking for: OpenAL does not
+   *attenuate* a multi-channel buffer, and Rewo does.
 4. **M140's remainder, minus what M141 took.** The ramps are done (ten of them,
    not ~8) and the rest is:
    - **4a — the triggers. DONE as of 2026-08-11 (M141e–h, M142).** Every
@@ -1765,6 +1768,15 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    * **Python multi-line `str.replace` anchors silently no-op against CRLF
      text** — a replacement that reports success and changes nothing is this,
      not a missing string. Read as bytes, or anchor on single lines.
+   * **A placeholder that is a PREFIX of another placeholder corrupts the
+     longer one.** 2026-08-14 filled measured numbers into the docs with a
+     `for k,v in vals.items(): s=s.replace(k,v)` loop whose keys included both
+     `NNG` and `NNGATES`, and both `NNA` and `NNAU`. Dict order put the short
+     ones first, so the file ended up reading `**275ATES** serverless gates`
+     and `**audio 221U**` — plausible-looking mojibake that a spot check of
+     "did the numbers land" passes, because the numbers *did* land, into the
+     wrong tokens. Use placeholders that cannot prefix one another (wrap them:
+     `{{GATES}}`), or replace longest-key-first, and grep for the leftovers.
    * **The Write/Edit tools emit CRLF on this machine, and the tree is LF**, so
      a *new* file created with them arrives CRLF and needs converting before it
      is committed. That is not a hypothetical: M114's `suggestions.rs` was

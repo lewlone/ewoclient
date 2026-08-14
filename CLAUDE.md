@@ -2173,12 +2173,12 @@ does not close the listening pass** — its module doc says so verbatim.
 invisible: see the M151 entry.
 **Everything is shipped and gated** as of 2026-08-14 (M151) —
 **3214 tests / 0 failures** (world 1187, net 1142, gpu 275, data 228, app 221,
-mesh 45, proto 16, **audio 221U** — EIGHT crates now, read off the runner per
+mesh 45, proto 16, **audio 100** — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **107/107**, `inventoryshot` **158/158**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, `tablistshot` 26/26, `soundshot` 28/48,
-all **275ATES** serverless gates green with 0
+all **36** serverless gates green with 0
 validation errors, `live --render-check` **47/47** with validation ON and 0
 validation errors (r46 arrived with M147, **r47 with M151**), demo PNG
 `2cc56b4acbfb92cb`.

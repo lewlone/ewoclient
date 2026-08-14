@@ -7,8 +7,12 @@ listener transform, the music fade, and vanilla's whole client-side sound
 model. **M138a–d are done; M140's `level_event` sounds and music fade shipped,
 its ramps shipped as M141 (there are ten of them, not the "~8" §M140 says),
 every ordinary trigger shipped as M141e–h, and M142 shipped the three
-`AmbientSoundHandler`s with the `AmbientSounds` attribute they read. M139 has
-not started.** Each section below carries its own status block; trust those
+`AmbientSoundHandler`s with the `AmbientSounds` attribute they read. **M139
+shipped 2026-08-13** — `tools/openal_loopback_oracle/` plus 14 consuming tests,
+see its own block. *(This line said "M139 has not started" for a day after it
+had; that is the THIRD time this file's header has contradicted its own body,
+after the "a PLAN, not shipped code" line and the "one wire and one human" one.
+Trust the per-section status blocks over anything up here.)* Each section below carries its own status block; trust those
 over any forward-looking sentence in the body, which was written before the
 code.
 
@@ -27,7 +31,7 @@ listening pass is the user's.
 
 **The containment still holds, and it is not the same as "silent".**
 `rewo-app`'s dependency on `rewo-audio` is **optional and off by default**
-(M143), so a default build links neither cpal nor symphonia and the 35 gates do
+(M143), so a default build links neither cpal nor symphonia and the other 35 gates do
 not carry an audio stack for a subsystem almost none of them exercises. The
 exception since 2026-08-13 is **`soundshot`**, which is a subcommand of the same
 binary and therefore has to live with that: it grades layers (w)(s)(a) in a
@@ -620,7 +624,7 @@ on the windowed path) + **the human listening pass** (§4).
 >
 > *(1) There are TWO locks, not one.* Layers (d) and (m) live in `rewo-audio`,
 > and M143 made `rewo-app`'s dependency on that crate optional and **off by
-> default** so a default build of the one `rewo` binary — which all 35 gates are
+> default** so a default build of the one `rewo` binary — which all 36 gates are
 > subcommands of — links neither cpal nor symphonia. Making `soundshot`
 > unconditional would undo that containment for every other gate. So a default
 > build runs and fail-closes on **28**, and an `--features audio` build on
