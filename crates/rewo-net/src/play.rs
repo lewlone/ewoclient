@@ -20,7 +20,7 @@ use rewo_world::physics::{self, PlayerState, TickInput};
 use rewo_world::World;
 
 use crate::ids::Ids;
-use crate::spawn_info::{read_login_prefix, CommonPlayerSpawnInfo, RespawnInfo};
+use crate::spawn_info::{read_login_prefix, read_login_tail, CommonPlayerSpawnInfo, RespawnInfo};
 use crate::Connection;
 
 /// `GameType`, from `player_info_update`'s `UPDATE_GAME_MODE` (M62).
@@ -202,6 +202,21 @@ pub struct PlayerInfoEntry {
     /// `UPDATE_LATENCY` (action 4), in milliseconds. May be negative — see
     /// `PlaySession::latency`.
     pub latency: Option<i32>,
+    /// `UPDATE_DISPLAY_NAME` (action 5) — the tab-list name override (M151).
+    ///
+    /// **A double `Option`, and both halves are load-bearing.** The outer one
+    /// is this packet's delta rule (the action bit was not set, so nothing
+    /// changed); the inner one is the *field*, which is
+    /// `ByteBufCodecs.optional(ComponentSerialization.TRUSTED_STREAM_CODEC)`
+    /// and so carries a real null. `applyPlayerInfoUpdate`'s arm is
+    /// `info.setTabListDisplayName(entry.displayName())` — unconditional — so
+    /// `Some(None)` **clears** a name an earlier packet set. Collapsing the two
+    /// into one `Option` makes a server unable to take a custom name down.
+    ///
+    /// Carried as the raw component rather than flattened here, per M125: a
+    /// `translate` component has to reach a language table, which the decode
+    /// layer does not have.
+    pub display_name: Option<Option<rewo_proto::nbt::Nbt>>,
     /// `UPDATE_LIST_ORDER` (action 6).
     pub tab_list_order: Option<i32>,
     /// `UPDATE_HAT` (action 7).
@@ -256,10 +271,10 @@ fn read_player_info_entry(
         e.latency = Some(r.varint()?);
     }
     if has(5) {
-        // UPDATE_DISPLAY_NAME: nullable NBT text component.
-        if r.bool()? {
-            let _ = r.nbt()?;
-        }
+        // UPDATE_DISPLAY_NAME: nullable NBT text component. Captured as of
+        // M151 — see [`PlayerInfoEntry::display_name`] for why the absent
+        // *action* and the present-but-null *field* stay distinct.
+        e.display_name = Some(if r.bool()? { Some(r.nbt()?) } else { None });
     }
     if has(6) {
         e.tab_list_order = Some(r.varint()?);
@@ -268,6 +283,94 @@ fn read_player_info_entry(
         e.show_hat = Some(r.bool()?);
     }
     Ok(())
+}
+
+/// The tab list's slice of `PlayerInfo`, as `applyPlayerInfoUpdate` writes it
+/// (M151).
+///
+/// **A free type rather than three fields on `PlaySession`, and that is not
+/// tidiness.** `PlaySession` owns a socket and has no test module anywhere in
+/// the repo (M71), so state applied inside it is unreachable by every check but
+/// `--render-check`. M151's first mutation battery proved it: "UPDATE_LISTED
+/// only ever ADDS" and "player_info_remove leaves the departed player listed
+/// forever" both SURVIVED, because the only tests of that arithmetic were
+/// *copies* of it — one in this file's test module and one in `tablistshot`'s
+/// fixture, which is M45's `install_shapes` shape a second time. Both now call
+/// this.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct TabListPlayers {
+    /// `ClientPacketListener.listedPlayers` — see [`PlaySession::listed`]'s
+    /// doc for why membership, not a flag.
+    pub listed: std::collections::HashSet<u128>,
+    /// `PlayerInfo.showHat`, which **defaults to true** — see [`Self::show_hat`].
+    pub show_hats: std::collections::HashMap<u128, bool>,
+    /// `PlayerInfo.tabListDisplayName`, raw.
+    pub display_names: std::collections::HashMap<u128, rewo_proto::nbt::Nbt>,
+}
+
+impl TabListPlayers {
+    /// One entry's worth of `applyPlayerInfoUpdate`, for the three actions the
+    /// tab list reads.
+    ///
+    /// Each field writes only when its action bit was set, because the packet
+    /// is a delta and an absent action means "unchanged".
+    pub fn apply(&mut self, e: &PlayerInfoEntry) {
+        // `UPDATE_LISTED`'s arm is an add/remove on a SET, not a stored
+        // boolean — so a `false` for someone never added is a no-op, and a
+        // client that only ever added would keep a vanished player on the list
+        // forever.
+        if let Some(listed) = e.listed {
+            if listed {
+                self.listed.insert(e.uuid);
+            } else {
+                self.listed.remove(&e.uuid);
+            }
+        }
+        if let Some(hat) = e.show_hat {
+            self.show_hats.insert(e.uuid, hat);
+        }
+        // `setTabListDisplayName(null)` CLEARS. Storing the null instead would
+        // leave the override in place and the profile name unreachable.
+        if let Some(display) = e.display_name.as_ref() {
+            match display {
+                Some(c) => {
+                    self.display_names.insert(e.uuid, c.clone());
+                }
+                None => {
+                    self.display_names.remove(&e.uuid);
+                }
+            }
+        }
+    }
+
+    /// `handlePlayerInfoRemove` — the whole `PlayerInfo` goes, **and** the
+    /// entry comes out of `listedPlayers` (`ClientPacketListener.java:1995`).
+    /// Nothing else ever removes one, so leaving it would keep a departed
+    /// player on the tab list for the rest of the session.
+    pub fn forget(&mut self, uuid: u128) {
+        self.listed.remove(&uuid);
+        self.show_hats.remove(&uuid);
+        self.display_names.remove(&uuid);
+    }
+
+    /// `getListedOnlinePlayers()` — sorted by uuid; see
+    /// [`PlaySession::listed_players`] for why sorted where vanilla is not.
+    pub fn listed_players(&self) -> Vec<u128> {
+        let mut v: Vec<u128> = self.listed.iter().copied().collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// `PlayerInfo.showHat()`, **defaulting to `true`** — the field's own
+    /// initialiser (`PlayerInfo.java:21`), and the one absent value in this
+    /// type that does not mean "the server has not said".
+    pub fn show_hat(&self, uuid: u128) -> bool {
+        self.show_hats.get(&uuid).copied().unwrap_or(true)
+    }
+
+    pub fn display_name(&self, uuid: u128) -> Option<&rewo_proto::nbt::Nbt> {
+        self.display_names.get(&uuid)
+    }
 }
 
 /// Decode a `player_info_update` body: a 1-byte fixed bitset over the 8
@@ -418,6 +521,22 @@ pub struct PlaySession {
     /// list's *first* sort key, negated so a higher value sorts first.
     /// Absent means the server never sent one, which vanilla renders as 0.
     pub tab_list_orders: std::collections::HashMap<u128, i32>,
+    /// The tab list's slice of `PlayerInfo` — who is listed, whose hat shows,
+    /// and the server's name overrides (M151).
+    ///
+    /// **A separate type, so the arithmetic can be tested.** See
+    /// [`TabListPlayers`]: everything about it that reads backwards is
+    /// documented there, and it lives outside `PlaySession` because nothing
+    /// inside `PlaySession` is reachable from a test.
+    pub tab_players: TabListPlayers,
+    /// `ClientPacketListener.onlineMode()` — the login packet's first trailing
+    /// boolean (M151), and `PlayerTabOverlay`'s `showHead`.
+    ///
+    /// `false` until a login packet arrives, which is also the state a client
+    /// that never joined is in. It is a *width* input as much as a visibility
+    /// one: an offline server's rows are nine pixels narrower because they
+    /// reserve no face.
+    pub online_mode: bool,
     /// The client-side scoreboard: M62's teams (the tab list's third sort key,
     /// keyed by member **name** rather than uuid) plus M65's objectives,
     /// scores and display slots. One struct because vanilla's `Scoreboard` is
@@ -804,12 +923,18 @@ pub struct PlaySession {
     /// effect.
     particle_types: rewo_data::particle_types::ParticleTypes,
     /// Sound requests decoded from `sound` / `sound_entity` / `stop_sound`
-    /// (M63). **Nothing drains this yet** — Rewo has no audio device, and
-    /// this milestone is the decode half only. One queue for all three so the
-    /// server's ordering survives: a `stop_sound` that overtook the sound it
-    /// cancels would leave that sound playing forever. It is capped rather
-    /// than unbounded precisely because no consumer exists; see
+    /// (M63). One queue for all three so the server's ordering survives: a
+    /// `stop_sound` that overtook the sound it cancels would leave that sound
+    /// playing forever. It is capped rather than unbounded; see
     /// [`Self::MAX_PENDING_SOUNDS`].
+    ///
+    /// **This doc said "Nothing drains this yet — Rewo has no audio device …
+    /// no consumer exists" until 2026-08-13, and both halves were stale.**
+    /// `take_sound_events` is called from `live_cmd.rs:4046` and `:7858`, and
+    /// M143 wired a real device behind `rewo-app`'s `audio` feature. The cap's
+    /// justification was the part that misled: it read as "unbounded growth is
+    /// impossible because nothing consumes", when the queue is drained every
+    /// tick and the cap is a guard against a burst instead.
     pub sound_events: Vec<crate::sounds::SoundEvent>,
     /// The ten non-weather `game_event` types (M71) — gamemode, the death-
     /// screen and limited-crafting flags, the win/demo/chunk-load markers.
@@ -1562,6 +1687,8 @@ impl<'a> Connection<'a> {
             latency: std::collections::HashMap::new(),
             gamemodes: std::collections::HashMap::new(),
             tab_list_orders: std::collections::HashMap::new(),
+            tab_players: TabListPlayers::default(),
+            online_mode: false,
             scoreboard: crate::scoreboard::Scoreboard::new(),
             boss_bars: crate::boss_bar::BossBars::new(),
             tab_list_text: crate::tab_list_text::TabListText::new(),
@@ -3167,6 +3294,10 @@ impl PlaySession {
                         self.latency.remove(&uuid);
                         self.gamemodes.remove(&uuid);
                         self.tab_list_orders.remove(&uuid);
+                        // M151 — `handlePlayerInfoRemove` drops the whole
+                        // `PlayerInfo` *and* removes it from `listedPlayers`
+                        // (`ClientPacketListener.java:1995`).
+                        self.tab_players.forget(uuid);
                     }
                 }
             }
@@ -4078,6 +4209,10 @@ impl PlaySession {
             if let Some(order) = e.tab_list_order {
                 self.tab_list_orders.insert(e.uuid, order);
             }
+            // M151 — the three tab-list actions, in the one place they are
+            // applied. `TabListPlayers` rather than three maps here because
+            // this method is unreachable from a test.
+            self.tab_players.apply(&e);
             if let Some(name) = e.name {
                 self.world.entities.set_name(e.uuid, name);
             }
@@ -4157,6 +4292,37 @@ impl PlaySession {
     /// `Some(0)` for the same reason as `ping_ms`.
     pub fn tab_list_order(&self, uuid: u128) -> Option<i32> {
         self.tab_list_orders.get(&uuid).copied()
+    }
+
+    /// `getListedOnlinePlayers()` — the uuids the tab list draws (M151).
+    ///
+    /// **Sorted by uuid**, which vanilla is not: `listedPlayers` is a
+    /// `ReferenceOpenHashSet` and its iteration order is arbitrary. The four
+    /// comparator keys settle every ordinary case, so the difference shows only
+    /// for two entries equal on *all four* — including the name, which two
+    /// distinct profiles cannot be. Sorting makes this client's answer
+    /// reproducible without narrowing what vanilla guarantees.
+    pub fn listed_players(&self) -> Vec<u128> {
+        self.tab_players.listed_players()
+    }
+
+    /// `PlayerInfo.showHat()` — **defaulting to `true`**, which is the field's
+    /// own initialiser (`PlayerInfo.java:21`).
+    ///
+    /// Deliberately not `Option<bool>`: unlike ping or game mode there is no
+    /// question a caller could ask that "unsent" answers differently from
+    /// "true", and the map's absent case is the one reading in this struct that
+    /// is not "the server has not said".
+    pub fn show_hat(&self, uuid: u128) -> bool {
+        self.tab_players.show_hat(uuid)
+    }
+
+    /// `PlayerInfo.getTabListDisplayName()` — the server's name override, raw.
+    ///
+    /// `None` is vanilla's `null`, at which point `getNameForDisplay` falls
+    /// back to the team-formatted profile name.
+    pub fn tab_display_name(&self, uuid: u128) -> Option<&rewo_proto::nbt::Nbt> {
+        self.tab_players.display_name(uuid)
     }
 
     /// The team a player is on, by uuid (M62).
@@ -4268,6 +4434,20 @@ impl PlaySession {
         // `biomeZoomSeed`.
         let spawn = CommonPlayerSpawnInfo::read(&mut r)
             .map_err(|e| format!("play login: spawn info: {e}"))?;
+        // M151 — the two booleans after the spawn info, the fourth time this
+        // one packet turned out to be carrying something nothing consumed.
+        // `onlineMode` is `PlayerTabOverlay`'s `showHead` and decides the tab
+        // list's slot *width*, so it is not an optional nicety: without it
+        // every row on an online server is nine pixels too narrow.
+        //
+        // A tail that fails to decode is not fatal — the level is already
+        // built and the rest of the session works — so it logs and leaves
+        // `online_mode` at its `false` default (no faces, which is the reading
+        // that draws nothing rather than reserving space for nothing).
+        match read_login_tail(&mut r) {
+            Ok(tail) => self.online_mode = tail.online_mode,
+            Err(e) => log::debug!("play login: tail: {e}"),
+        }
         self.visual_effects.set_player_id(player_id);
         self.player_id = Some(player_id);
         // M75. `handleLogin` ends with `setLocalMode(gameType, previousGameType)`.
@@ -7425,6 +7605,210 @@ mod player_info_field_tests {
         assert!(res.is_err());
         assert_eq!(e[0].gamemode, Some(GameMode::Spectator));
         assert_eq!(e[0].tab_list_order, None);
+    }
+}
+
+#[cfg(test)]
+mod m151_tab_list_fields {
+    //! M151 — the three `player_info_update` actions the tab list needs and
+    //! M62 left decoded-and-dropped: `UPDATE_LISTED` (3), `UPDATE_DISPLAY_NAME`
+    //! (5) and `UPDATE_HAT` (7).
+    //!
+    //! Every body is built by hand and run through the production
+    //! `parse_player_info`, so the bitmask and the entry walk are the subject —
+    //! and `UPDATE_DISPLAY_NAME` is the one action in this packet whose payload
+    //! is a variable-length component, so a walk that read it wrongly would
+    //! desynchronise everything after it rather than merely mis-report a field.
+
+    use super::*;
+    use rewo_proto::nbt::Nbt;
+
+    fn varint(out: &mut Vec<u8>, mut v: i32) {
+        loop {
+            let mut b = (v & 0x7F) as u8;
+            v = ((v as u32) >> 7) as i32;
+            if v != 0 {
+                b |= 0x80;
+            }
+            out.push(b);
+            if v == 0 {
+                break;
+            }
+        }
+    }
+
+    fn one_entry(mask: u8, uuid: u128, fields: &[u8]) -> Vec<u8> {
+        let mut b = vec![mask];
+        varint(&mut b, 1);
+        b.extend_from_slice(&uuid.to_be_bytes());
+        b.extend_from_slice(fields);
+        b
+    }
+
+    /// A network-NBT bare `TAG_String` — the shape a trusted component takes
+    /// on the wire.
+    fn nbt_string_bytes(s: &str) -> Vec<u8> {
+        let mut b = vec![8u8];
+        b.extend_from_slice(&(s.len() as u16).to_be_bytes());
+        b.extend_from_slice(s.as_bytes());
+        b
+    }
+
+    #[test]
+    fn the_listed_action_is_kept_rather_than_discarded() {
+        let (e, res) = parse_player_info(&one_entry(1 << 3, 7, &[1]));
+        assert!(res.is_ok());
+        assert_eq!(e[0].listed, Some(true));
+        let (e, res) = parse_player_info(&one_entry(1 << 3, 7, &[0]));
+        assert!(res.is_ok());
+        assert_eq!(e[0].listed, Some(false));
+    }
+
+    #[test]
+    fn the_hat_action_is_kept_rather_than_discarded() {
+        let (e, res) = parse_player_info(&one_entry(1 << 7, 7, &[0]));
+        assert!(res.is_ok());
+        assert_eq!(e[0].show_hat, Some(false));
+    }
+
+    /// The double `Option`, both halves.
+    ///
+    /// The field is `optional(TRUSTED_STREAM_CODEC)`, so a present action can
+    /// still carry a null — and `applyPlayerInfoUpdate` assigns it
+    /// unconditionally, which is how a server takes a custom name back down.
+    #[test]
+    fn a_present_display_name_action_can_still_carry_a_null() {
+        let mut f = vec![1u8];
+        f.extend_from_slice(&nbt_string_bytes("Boss"));
+        let (e, res) = parse_player_info(&one_entry(1 << 5, 7, &f));
+        assert!(res.is_ok());
+        assert_eq!(e[0].display_name, Some(Some(Nbt::String("Boss".into()))));
+
+        // Present action, null field: "clear it".
+        let (e, res) = parse_player_info(&one_entry(1 << 5, 7, &[0]));
+        assert!(res.is_ok());
+        assert_eq!(e[0].display_name, Some(None));
+
+        // Absent action: "unchanged". Three states, and collapsing any two of
+        // them loses a behaviour a real server uses.
+        let (e, _) = parse_player_info(&one_entry(1 << 3, 7, &[1]));
+        assert_eq!(e[0].display_name, None);
+    }
+
+    /// The desynchronising case: a display name is variable-length, so an
+    /// action after it reads garbage if the component is not fully walked.
+    ///
+    /// LIST_ORDER (6) follows DISPLAY_NAME (5). A walk that skipped the
+    /// component's body would read the NBT tag byte 8 as the order — a
+    /// plausible number nothing downstream can reject.
+    #[test]
+    fn an_action_after_the_display_name_needs_the_component_fully_walked() {
+        let mut f = vec![1u8];
+        f.extend_from_slice(&nbt_string_bytes("Boss"));
+        varint(&mut f, 77);
+        let (e, res) = parse_player_info(&one_entry((1 << 5) | (1 << 6), 7, &f));
+        assert!(res.is_ok());
+        assert_eq!(e[0].tab_list_order, Some(77));
+
+        // The skipping walk, over the same bytes: it lands on the tag byte.
+        let body = one_entry((1 << 5) | (1 << 6), 7, &f);
+        let mut r = PacketReader::new(&body);
+        let _ = r.u8().unwrap();
+        let _ = r.count("player info entries", 16).unwrap();
+        let _ = r.uuid().unwrap();
+        let _ = r.bool().unwrap();
+        assert_eq!(
+            r.varint().unwrap(),
+            8,
+            "a walk that stopped at the presence byte reports the NBT tag as the order"
+        );
+    }
+
+    /// The production state application, driven by production-decoded bodies.
+    ///
+    /// **`TabListPlayers::apply`, not a copy of it.** The first cut of this
+    /// test reimplemented the set arithmetic inline, and M151's mutation
+    /// battery duly reported "UPDATE_LISTED only ever ADDS" as SURVIVED — the
+    /// test was grading its own copy while the client ran the other one, which
+    /// is M45's `install_shapes` shape. The arithmetic moved out of
+    /// `PlaySession` (unreachable from any test — M71) so this could call it.
+    fn apply_body(t: &mut TabListPlayers, body: &[u8]) {
+        for e in parse_player_info(body).0 {
+            t.apply(&e);
+        }
+    }
+
+    /// `UPDATE_LISTED`'s arm is an add/remove on a set, so `false` for someone
+    /// never added is a no-op and there is no stored third state.
+    #[test]
+    fn listed_is_a_set_membership_and_defaults_to_absent() {
+        let mut t = TabListPlayers::default();
+        // A player described by a latency-only update is NOT listed: the
+        // default is exclusion, which is what keeps a vanished player off the
+        // list while their skin and team still resolve.
+        let mut f = Vec::new();
+        varint(&mut f, 40);
+        apply_body(&mut t, &one_entry(1 << 4, 7, &f));
+        assert!(!t.listed.contains(&7));
+
+        apply_body(&mut t, &one_entry(1 << 3, 7, &[1]));
+        assert!(t.listed.contains(&7));
+        assert_eq!(t.listed_players(), [7]);
+        // …and a later `false` REMOVES. A client that only ever added would
+        // keep a vanished player on the list forever.
+        apply_body(&mut t, &one_entry(1 << 3, 7, &[0]));
+        assert!(!t.listed.contains(&7));
+        assert!(t.listed_players().is_empty());
+        // A second `false` is inert rather than an error.
+        apply_body(&mut t, &one_entry(1 << 3, 7, &[0]));
+        assert!(!t.listed.contains(&7));
+    }
+
+    /// `handlePlayerInfoRemove` takes the uuid out of `listedPlayers` as well
+    /// as out of `playerInfoMap`. Nothing else ever removes one.
+    #[test]
+    fn forgetting_a_player_takes_them_off_the_list() {
+        let mut t = TabListPlayers::default();
+        let mut f = vec![1u8]; // listed
+        f.push(1); // showHat
+        apply_body(&mut t, &one_entry((1 << 3) | (1 << 7), 7, &f));
+        assert_eq!(t.listed_players(), [7]);
+        t.forget(7);
+        assert!(t.listed_players().is_empty());
+        assert!(t.show_hats.is_empty());
+    }
+
+    /// `PlayerInfo.showHat` initialises to **true** (`PlayerInfo.java:21`).
+    ///
+    /// The one absent value in this type that does not mean "the server has
+    /// not said": there is no question a caller could ask that unsent answers
+    /// differently from shown, which is why the accessor owns the default
+    /// rather than the map.
+    #[test]
+    fn an_unsent_hat_reads_as_shown() {
+        let mut t = TabListPlayers::default();
+        assert!(t.show_hat(7), "a player nobody described wears their hat");
+        apply_body(&mut t, &one_entry(1 << 7, 7, &[0]));
+        assert!(!t.show_hat(7));
+        apply_body(&mut t, &one_entry(1 << 7, 7, &[1]));
+        assert!(t.show_hat(7));
+        // Still true for anyone else, which is what says the map is per-uuid
+        // and not a global flag.
+        assert!(t.show_hat(9));
+    }
+
+    /// A display override arrives, then a null one clears it.
+    #[test]
+    fn a_null_display_name_clears_through_the_production_apply() {
+        let mut t = TabListPlayers::default();
+        let mut f = vec![1u8];
+        f.push(8); // TAG_String
+        f.extend_from_slice(&4u16.to_be_bytes());
+        f.extend_from_slice(b"Boss");
+        apply_body(&mut t, &one_entry(1 << 5, 7, &f));
+        assert!(t.display_name(7).is_some());
+        apply_body(&mut t, &one_entry(1 << 5, 7, &[0]));
+        assert!(t.display_name(7).is_none());
     }
 }
 

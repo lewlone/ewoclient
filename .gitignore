@@ -34,3 +34,10 @@ __pycache__/
 
 # Java oracle build output (tools/*_oracle/) — the .java is the artefact.
 tools/**/*.class
+
+# log4j's output, written relative to the CWD by anything that loads Minecraft's
+# classes — which `tools/openal_loopback_oracle/` does, so re-running the M139
+# capture leaves an (empty) logs/latest.log behind. Ignored because an untracked
+# file makes a tree read as dirty, and several checks here treat "clean" as
+# meaning "no leftover mutation".
+/logs/

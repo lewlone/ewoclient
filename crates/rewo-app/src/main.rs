@@ -49,10 +49,13 @@ mod portalshot_cmd;
 mod skin_fetch;
 mod uri_open;
 mod skyshot_cmd;
+mod soundshot_cmd;
 mod stats;
 mod stats_view;
 mod statshot_cmd;
 mod swingshot_cmd;
+mod tab_list_view;
+mod tablistshot_cmd;
 mod view_cmd;
 mod hudshot_cmd;
 mod weathershot_cmd;
@@ -202,6 +205,8 @@ enum Command {
     /// assert the geometry against literals transcribed from
     /// `displayScoreboardSidebar` with `--check` (no server; Vulkan required).
     Sidebarshot(sidebarshot_cmd::SidebarshotArgs),
+    /// M151 tab-list oracle: rows, bands, ping icons, header/footer, score column.
+    Tablistshot(tablistshot_cmd::TablistshotArgs),
     /// M83's locator-bar oracle: the `waypoint` packet and the HUD strip.
     Locatorshot(locatorshot_cmd::LocatorshotArgs),
     /// M82 screen-framework + death-screen oracle: drive a raw
@@ -308,6 +313,17 @@ enum Command {
     /// Java harness copied verbatim from the decompile (`--check`, no server,
     /// no GPU).
     Particleshot(particleshot_cmd::ParticleshotArgs),
+    /// The sound oracle (`REWO_AUDIO_PLAN.md` §4): drive raw sound and
+    /// `level_event` bodies through the production decoders, grade the seeded
+    /// variant pick and the redirect's asymmetric field mix against the LCG,
+    /// and assert `SoundEngine::play`'s exact eight-call sequence through a
+    /// `RecordingDevice` (`--check`, no server, no GPU, **no device**).
+    ///
+    /// Under `--features audio` it also grades the quantisation against literal
+    /// vectors, real Ogg Vorbis from the asset store, and the production `Mixer`
+    /// through a `NullSink`. **A green run is not evidence that this client
+    /// makes any sound** — see the module doc.
+    Soundshot(soundshot_cmd::SoundshotArgs),
     /// M51c screenshot-capture oracle: render through a **BGRA** `Offscreen` —
     /// the live swapchain's format, which no other gate exercises — and grade
     /// the saved PNG's channel order, opacity and row order, then drive
@@ -349,6 +365,7 @@ fn main() {
         Some(Command::Abilityshot(ab_args)) => abilityshot_cmd::run(ab_args),
         Some(Command::Titleshot(t_args)) => titleshot_cmd::run(t_args),
         Some(Command::Sidebarshot(sb_args)) => sidebarshot_cmd::run(sb_args),
+        Some(Command::Tablistshot(tl_args)) => tablistshot_cmd::run(tl_args),
         Some(Command::Locatorshot(l_args)) => locatorshot_cmd::run(l_args),
         Some(Command::Deathshot(d_args)) => deathshot_cmd::run(d_args),
         Some(Command::Statshot(s_args)) => statshot_cmd::run(s_args),
@@ -371,6 +388,7 @@ fn main() {
         Some(Command::Itemshot(item_args)) => itemshot_cmd::run(item_args),
         Some(Command::Swingshot(sw_args)) => swingshot_cmd::run(sw_args),
         Some(Command::Particleshot(pt_args)) => particleshot_cmd::run(pt_args),
+        Some(Command::Soundshot(snd_args)) => soundshot_cmd::run(snd_args),
         Some(Command::Captureshot(cap_args)) => captureshot_cmd::run(cap_args),
         Some(Command::Bordershot(b_args)) => bordershot_cmd::run(b_args),
         None => match args.headless {

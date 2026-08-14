@@ -129,10 +129,24 @@ signedness), and **M124** the **literal tables** — eight of them, three of whi
 had been accepting text the server rejects. **Every `minecraft:` argument type
 now parses and, where vanilla has a literal list, suggests.**
 
-Current measurement, taken 2026-08-13 after M149g (merged to `main`; no branch
-or worktree holds a commit off it):
-**3172 tests, 0 failures** (**world 1187, net 1133, gpu 275, data 228, app 202,
-mesh 45, proto 16, audio 86** — read off the runner per crate; they sum to 3141).
+**Update (2026-08-13, `soundshot`).** `REWO_AUDIO_PLAN.md` §4 specified a sound
+gate and it was never built: M138c's own status block concedes it. So audio —
+M138 through M149, the largest subsystem in Rewo — had **no dedicated
+serverless gate**, and its ~86 `rewo-audio` tests plus the sound tests in
+`rewo-net` lived as crate-local units that could be deleted silently.
+`rewo soundshot --check` closes that with 48 witnesses across the plan's five
+layers, and is the **35th** gate. It corrects three of §4's claims (two locks
+rather than one, because M143 made `rewo-app`'s audio dependency optional; the
+counts; and an end-trim claim that belongs to symphonia rather than to Rewo),
+and its battery found a fixture blind to its own subject — see §15. **It does
+not close the listening pass, and its module doc carries §4's "What the gate
+does NOT assert" paragraph verbatim** so a future session reading only the gate
+still learns that a green run is not evidence this client makes a sound.
+
+Current measurement, taken 2026-08-14 on the MERGED tree (soundshot + M139 +
+M151 all in; this is a branch, not `main`):
+**3214 tests, 0 failures** (**world 1187, net 1142, gpu 275, data 228, app 221,
+mesh 45, proto 16, audio 100** — read off the runner per crate).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -149,30 +163,41 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **107/107**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, **`live --render-check` **46/46** with validation ON and 0
-validation errors** — r45 arrived with M138a, and the whole thing reproduces with
-`python tools/render_check.py`, which stands up a fresh server and carries both
+34/34, `mobshot` 246/246, `sidebarshot` 17/17, **`tablistshot` 26/26** (new,
+M151), **`live --render-check` **47/47** with validation ON and 0
+validation errors** — r46 arrived with M147 and **r47 with M151**, and the whole
+thing reproduces with `python tools/render_check.py`, which stands up a fresh
+server, **builds first** (it used only to check the binary existed, so a source
+change not followed by a manual `cargo build` was graded against the previous
+compile — M151 lost a mutation verification to exactly that) and carries both
 caller requirements; demo PNG
 `2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at **118 / 0 / 23**, class C
 **12** — M96–M107 consume packets M93y already decoded, M108 resolved
 `delete_chat`, M113 the Brigadier tree and M114 the two suggestion packets.
 
-**There are 34 serverless gate commands, not the "fourteen" older paragraphs in
+**There are 36 serverless gate commands, not the "fourteen" older paragraphs in
 this file say** — those sentences are historical records of the count *at the
 time* and are correct as such. Re-measured from a cold start on 2026-08-08 by
 running every one, and again after M125, M126 and the M127–M134 integration:
-all 34 green, **0 validation errors**. `sidebarshot` (17) is the new one, from
-M132. Enumerate them rather
+all green, **0 validation errors**; re-measured again on 2026-08-14, when the
+count reached **36** — `sidebarshot` (17) came from M132, **`soundshot`**
+(28 default / 48 under `--features audio`) and **`tablistshot`** (26) are the
+two newest, and `blockentityshot` reads **177** rather than the 172 the list
+below records. Enumerate them rather
 than trusting a list, since the list is what rots:
 
 ```
 rewo.exe --help | grep -E '^  [a-z]+shot|^  [a-z]+check'
 ```
 
-Their witness counts, re-measured by running all 34 on 2026-08-10 (M137).
+Their witness counts. The 2026-08-14 run added the two newest — **`soundshot`**
+(28 in a default build / 48 under `--features audio`) and **`tablistshot`** (26)
+— to the list re-measured by running all 34 on 2026-08-10 (M137).
 **Only two had drifted from the M124 list this replaced** — `titleshot` and
 `deathshot`, both moved by M130 and M137 — so the rest are unchanged rather than
-unchecked: `mobshot` 246, `blockentityshot` 172,
+unchecked: `mobshot` 246, `blockentityshot` **177** (was 172 on that date; M142c's
+bubble-column witnesses moved it, and this line was the only stale entry of the 29 —
+re-measured 2026-08-13 by running the gate, which reports 177/177),
 `inventoryshot` 158, `containershot` 107, `swingshot` 97, `itemshot` 75,
 `capeshot` 69, `titleshot` 58, `hurtshot` 56, `locatorshot` 49, `labelshot` 47,
 `statshot` 47, `rideshot` 45, `attributeshot` 43, `hudshot` 41, `deathshot` 43,
@@ -181,6 +206,15 @@ unchecked: `mobshot` 246, `blockentityshot` 172,
 `breakshot` 22, `captureshot` 17, `portalshot` 12, plus `abilityshot` 96/96 and
 the six that print a prose summary rather than a count (`skyshot`,
 `lightmapshot`, `tintshot`, `meshshot`, `dimensioncheck`).
+
+**`soundshot` is the one gate whose count depends on how the binary was
+built** (2026-08-13): **28** by default and **48** with `--features audio`,
+because layers (d) and (m) live in `rewo-audio` and M143 made that dependency
+optional and off by default so the one `rewo` binary all 36 gates are
+subcommands of does not link cpal and symphonia. It fail-closes on whichever
+lock applies and prints which configuration it ran, so neither can lose a
+witness silently — but **a default-build green run does not grade decode or
+the mixer at all**, which is what the ordinary sweep above measures.
 
 **`live --render-check` now has TWO caller requirements, not one.** r14 needs
 items in the hotbar and **r25 needs a MULTI-PAGE recipe book**, so the staged
@@ -244,16 +278,45 @@ witnesses are mostly self-driven can look healthy against nothing.
 > the claim. Do not report audio as working on the strength of a green suite.
 >
 > ```
+> cargo run -p rewo-audio --example listen            # THE PASS — 13 staged stages, ~3 min
+> cargo run -p rewo-audio --example listen -- --list  # what each stage grades
+> cargo run -p rewo-audio --example listen -- --stage 4
 > cargo build -p rewo-app --features audio
-> rewo live --audio                             # or REWO_AUDIO=1
-> cargo run -p rewo-audio --example listen      # one sound, no server
+> rewo live --audio                                   # or REWO_AUDIO=1
 > ```
+>
+> **`listen` is a staged pass as of M150, and that is not cosmetic.** It used to
+> play one clip three times through `CpalSink::play_once`, which pushes exactly
+> ONE configuration — centred, unattenuated, unpitched, relative — i.e. **the one
+> configuration in which the pan law, the distance curve, the pitch resampler and
+> the listener basis are all inert**. Of §4's six human-only properties the tool
+> built to grade them reached two. It now drives `ring().push(Command::…)`
+> directly: thirteen stages, each naming what it grades AND **what a failure
+> sounds like**, with a preflight that decodes every clip first (a first draft
+> named a clip that does not exist and died two minutes in, correctly).
+>
+> Stage 3 is worth knowing about before you run it: **the 8-block horn being
+> quieter than the 0-block one is EXPECTED and is a measured divergence**, not a
+> fault — M139 found OpenAL does not attenuate a multi-channel buffer at all
+> while Rewo does. A listener not told that will file the correct behaviour as
+> the bug.
 >
 > `REWO_AUDIO_PLAN.md` §4 lists what to listen for. The four counters
 > `rewo live` logs when they move (unresolved / declined streams / dropped
 > commands / device errors) are the instrument: they separate "the sound never
 > resolved" from "the callback stopped" from "it all arrived and the output is
 > muted", which are indistinguishable to a listener.
+>
+> **`rewo soundshot --check` now exists (2026-08-13) and changes none of the
+> above.** Audio was ~10 milestones and the largest subsystem in Rewo with no
+> dedicated gate — its witnesses lived as crate-local unit tests that could be
+> deleted silently — and the gate closes that. It does **not** close the
+> listening pass, and its own module doc says so verbatim: nothing in it opens
+> a device, `NullSink` renders to memory, and a client that mixes perfectly
+> into a stream nobody opened passes all 48 witnesses. Run it after any change
+> to the wire, the resolution, the engine's arithmetic, the decode or the
+> mixer, and **run it with `--features audio`** or the last two are not graded
+> at all.
 >
 > Candidates for the next *code* milestone, none of them blocked:
 >
@@ -335,19 +398,20 @@ sink; `rewo-net` carries the listener transform and the music fade.
    before M139**, whose whole job is measuring a divergence from vanilla — there
    is no sense grading a divergence before anyone has confirmed there is a
    signal.
-2. **Wire `rewo-audio` into the client.** Nothing in `rewo-app` depends on it
-   yet: that containment was deliberate, so 34 gates would not link an audio
-   stack for a subsystem none of them exercises, and it is also why no sound
-   plays in `rewo live` today. Undoing it is a decision to take on purpose
-   rather than by drift — the ring's producer end has to resolve asset keys to
-   PCM off the tick thread, which is M138b's `SoundBufferLibrary` and a worker,
-   not a call from `LiveSounds::drive`.
-3. **M139 — the loopback oracle**, once (1) is done. A Java harness driving
-   vanilla's own `Library`/`Listener`/`Channel` against an OpenAL Soft loopback
-   device, dumping PCM, with the **vectors** checked in so no JVM is needed at
-   gate time (the `tools/java_tostring_oracle` precedent). It is what turns the
-   mixer's stated approximations — the equal-power pan, the linear resampler —
-   from declarations into a measured divergence in dB.
+2. ~~**Wire `rewo-audio` into the client.**~~ **DONE — M143.** `rewo live
+   --audio`, on a build with `--features audio`, opens a device. The
+   containment survived: a DEFAULT build still links **0** audio-stack crates
+   (measured with `cargo tree`, not asserted), so the other gates are
+   unchanged.
+3. ~~**M139 — the loopback oracle.**~~ **DONE — 2026-08-13.**
+   `tools/openal_loopback_oracle/` drives vanilla's own
+   `Channel`/`Listener`/`SoundBuffer` against OpenAL Soft 1.25.1 through an
+   `ALC_SOFT_loopback` device; 48 vectors checked in, 14 consuming tests, no
+   JVM at gate time. **The plan's claim that a harness can drive `Library` is
+   wrong** — `init` opens the device inside itself with no seam — and the
+   harness re-implements that one method, saying so. It found a real
+   divergence beyond the approximations it went looking for: OpenAL does not
+   *attenuate* a multi-channel buffer, and Rewo does.
 4. **M140's remainder, minus what M141 took.** The ramps are done (ten of them,
    not ~8) and the rest is:
    - **4a — the triggers. DONE as of 2026-08-11 (M141e–h, M142).** Every
@@ -1382,6 +1446,29 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   one that caught `+ 0.1` where vanilla writes `+ 0.1F`. Mutation-tested against
   five deliberate breakages. It does **not** grade pixels: a particle quad is a
   camera-facing billboard the existing passes already cover.
+- `rewo soundshot --check` — **the sound gate** (2026-08-13, serverless,
+  CPU-only, **no device**), and the only one whose count depends on the build:
+  **28** by default, **48** with `--features audio`, each its own fail-closed
+  lock. Five layers. (w) drives the three sound packets plus `level_event` as
+  hand-assembled bodies through the production decoders, with `w3` driving a
+  **numeric** registry id and asserting the resolved **name** — the only shape
+  that can see M64's alphabetisation trap, pinned two-sided against the real
+  report (id 0 is `entity.allay.ambient_with_item` and id 8 is
+  `ambient.basalt_deltas.additions`, which is *alphabetical index 0*). (s)
+  grades the seeded pick against an independently-driven `LegacyRandom48`, the
+  redirect's second RNG draw and four-way field mix, and the missing-file
+  weight shift, building its index with the **production** `build_sounds`.
+  (a) asserts `SoundEngine::play`'s exact eight-call order through a
+  `RecordingDevice`, master applied once, the unclamped-for-range /
+  clamped-for-gain split, `MIN_SOURCE_LIFETIME` from both sides, and budget
+  exhaustion dropping the newest. (d) pins the quantisation against literal
+  vectors and real Ogg Vorbis; (m) renders the production `Mixer` through
+  `NullSink` with every assertion read **out of the output**, never from
+  `openal::linear_gain` recomputed in the witness. **A missing asset store
+  FAILS rather than skipping**, which is the §5 trap `rewo-audio`'s own
+  `real_assets` tests still carry. **A green run is not evidence that this
+  client makes any sound** — no gate here opens a device; the module doc says so
+  at length and the listening pass is the user's.
 - `rewo weathershot --check` — **the weather + cloud gate** (M33, fail-closed
   **27/27**, validation required, 0 VUIDs). Three layers: the `game_event` wire
   driven through `route_game_event` (including that **`START_RAINING` sets the
@@ -1681,6 +1768,15 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    * **Python multi-line `str.replace` anchors silently no-op against CRLF
      text** — a replacement that reports success and changes nothing is this,
      not a missing string. Read as bytes, or anchor on single lines.
+   * **A placeholder that is a PREFIX of another placeholder corrupts the
+     longer one.** 2026-08-14 filled measured numbers into the docs with a
+     `for k,v in vals.items(): s=s.replace(k,v)` loop whose keys included both
+     `NNG` and `NNGATES`, and both `NNA` and `NNAU`. Dict order put the short
+     ones first, so the file ended up reading `**275ATES** serverless gates`
+     and `**audio 221U**` — plausible-looking mojibake that a spot check of
+     "did the numbers land" passes, because the numbers *did* land, into the
+     wrong tokens. Use placeholders that cannot prefix one another (wrap them:
+     `{{GATES}}`), or replace longest-key-first, and grep for the leftovers.
    * **The Write/Edit tools emit CRLF on this machine, and the tree is LF**, so
      a *new* file created with them arrives CRLF and needs converting before it
      is committed. That is not a hypothetical: M114's `suggestions.rs` was
@@ -3087,6 +3183,115 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### `soundshot` — the audio gate `REWO_AUDIO_PLAN.md` §4 specified and nobody built (2026-08-13)
+
+**The gap.** §4 specifies this gate in full, and M138c's own status block
+concedes it was never built: *"the `soundshot` command that would gather
+(w)(s)(a)(d)(m) under one `EXPECTED_WITNESSES` lock is still to build."* So
+audio — M138 through M149, about ten milestones and the largest subsystem in
+Rewo — had **no dedicated serverless gate**. Its ~86 `rewo-audio` tests and the
+sound tests in `rewo-net` were crate-local units that could be deleted without
+anything objecting. `rewo soundshot --check` is the **35th** gate: **48
+witnesses**, 8 wire + 9 resolution + 11 arithmetic + 7 decode + 13 mixer, with
+the battery in `tools/soundshot_mutate.py`.
+
+**Three corrections to §4, all because it was written before the code.**
+
+*(1) Two locks, not one.* Layers (d) and (m) live in `rewo-audio`, and M143 made
+`rewo-app`'s dependency on that crate optional and **off by default** so that a
+default build of the one `rewo` binary — which every gate is a subcommand of —
+links neither cpal nor symphonia. Making `soundshot` unconditional would undo
+that containment for all 34 others. So a default build runs and fail-closes on
+**28**, an `--features audio` build on **48**, and the run prints which. Verified
+rather than asserted: `cargo tree -p rewo-app -e normal` matches zero of
+cpal/symphonia/rewo-audio by default and 15 lines with the feature. **The cost is
+real and is in the module doc**: the configuration that runs in ordinary
+verification does not grade decode or the mixer at all.
+
+*(2) The counts moved* — §4 asks for ~42 and the gate ships 48.
+
+*(3) `d3`'s end-trim claim belongs to a dependency.* `decode.rs:19` says "The end
+trim is symphonia's, not ours", so the exact 1728-sample count pins symphonia
+rather than a transcription. Worth having and worth labelling; no mutation of
+Rewo's own code can produce the failure it excludes.
+
+**What the gate is built around.** `w3` drives a **numeric** registry id through
+the production decode and asserts the resolved **name** — the only shape that can
+see M64's alphabetisation trap, where a positional table gives a different wrong
+name for each of 1,968 events with full round-trip success and no decode error
+anywhere. It is pinned two-sided against the real report: id 0 is
+`entity.allay.ambient_with_item` and id **8** is
+`ambient.basalt_deltas.additions`, which is *alphabetical index 0*, so a
+positional table gets both wrong and swapping them is exactly the failure. `s1`
+builds its index with the **production** `build_sounds` rather than a
+hand-assembled one (M45's `install_shapes` rule). `m10` crosses the crates: a
+real `SoundEngine::play` into a `RecordingDevice`, whose recorded `ChannelCall`s
+are replayed through the production `Mixer`, whose **output** is measured — and
+non-circular by construction, since the measured quantity is the ratio of two
+renders differing only in the engine's gain and the expected quantity is the
+`SetVolume` the device recorded. Neither is `openal::linear_gain` recomputed in
+the witness (M88's `r20`).
+
+**A missing asset store FAILS rather than skipping.** `rewo-audio`'s own
+`real_assets` tests print `SKIPPED` and return, and their module doc says that is
+a real weakness; §5 names it. Three decode witnesses report a FAILED witness
+instead, and `s1` drives the strict arm so the fail-closed path is what runs.
+
+**The finding: a fixture blind to its own subject, and it is a new shape of §5's
+first trap.** `s6` asserts that dropping a variant whose file is missing changes
+the *distribution* over the survivors — the claim an implementation that kept the
+variant and skipped it at play time would fail, since it would have the same
+survivors, the wrong rates and a third of its rolls silent. It failed on its
+first run, measuring one reachable variant where two were expected, and **the
+code was right**. With the variant gone the total weight is 4, a **power of
+two**, so `nextInt` takes its shortcut branch — `(bound * next(31)) >> 31`, the
+**top** bits of a single draw — and `LegacyRandomSource`'s scramble leaves the
+top bits of the *first* draw of sequential seeds nearly constant. Measured over
+seeds 0..199 at bound 4 it is **entirely** constant: all 200 give index 2, and
+even over 5,000 seeds index 1 never occurs at all. A sequential fixture therefore
+reaches one variant whatever the weights are, and cannot tell "the variant was
+dropped" from "the pick is broken". The rejection branch takes the **low** bits
+(`sample % bound`) and is uniform over the same seeds, which is why `s2`/`s3`'s
+bound-6 fixtures are sound and why this stayed invisible until a power-of-two
+total appeared. `s6` now spreads its seeds by a 64-bit stride and asserts the
+share of the heavy variant rising 300/600 → 459/600 (1/2 → 3/4).
+
+**Two more witnesses demanded an exact zero that f32 cannot produce.**
+`pan_gains` is `(cos a, sin a)` for `a = (pan + 1) * FRAC_PI_4`. Hard LEFT is
+`pan = -1`, so `a = 0` and `sin(0)` is *exactly* 0 — the far ear is bit-silent.
+Hard RIGHT is `pan = +1`, so `a = FRAC_PI_2` and `f32::cos(FRAC_PI_2)` is
+**-4.371139e-8** — the far ear sits ~155 dB down instead of absent. **The two
+extremes of one pan law are not symmetric in f32**, and a witness asserting
+`== 0.0` on both passes on one and fails on the other, which is what it did. The
+same constant broke the pitched-listener witness: at pitch 90 the forward vector
+is `(0, -1, -4.371139e-8)`, so pinning `up` to `(0,1,0)` gives a cross product of
+length 4.4e-8 rather than the algebraic zero — still seven orders below the real
+basis's unit-length right vector, still enough to collapse the stereo image to
+centre, but not `== [0,0,0]`. Both now assert a dB-scale claim with the constant
+named. **`m1` keeps its `== 0.0`, and the contrast is the point**:
+`openal::linear_gain` clamps to zero *explicitly* rather than arriving there by
+arithmetic, so there the exact assertion is the right one.
+
+**The battery's own finding is the mirror image of §5's self-skip trap.** 43/45
+first time. One was a stale anchor (a mutation naming a parameter `want` where
+`OggStream::read` calls it `samples`, so it BUILD-FAILed — an anchor that does
+not compile is a mutation that never ran). The other was real and is the
+instructive one: a mutation disabling `build_sounds`'s fail-closed panic
+**SURVIVED**, because on a machine that HAS the store the `Err` arms are never
+reached, so `s1`'s `len > 1000` holds whether or not the strict arm exists.
+**The fail-closed half of the claim is unobservable precisely on every machine
+where the gate is green.** §5 says store-dependent tests self-skip on a bare
+machine so a green run there proves nothing; this is the same hazard from the
+other side. `s1b` closes it without needing a bare machine — `build_sounds` is
+asked for a version that has no manifest, which reaches the same `Err` a missing
+store would — and the mutation now dies. **45/45.**
+
+Measured: 3172 tests across eight crates with every crate exiting 0, all 35
+gates green (`mobshot` 246/246, `containershot` 107, `inventoryshot` 158,
+`itemshot` 75, `handshot` 34, `swingshot` 97), demo PNG still
+`2cc56b4acbfb92cb`. **Nothing here is evidence that this client makes a sound**,
+and the module doc carries §4's paragraph saying so verbatim.
 
 ### M149 — the End flash, end to end (2026-08-13)
 
@@ -22724,3 +22929,127 @@ it, by construction.
 **Measured:** 3141 tests / 0 failures (world 1171, net 1121, gpu 275, data 228,
 app 199, mesh 45, proto 16, audio 86); 34 serverless gates green with **0
 validation errors**; battery **26/26** with a surviving no-op control.
+
+### M151 — the tab list renders (2026-08-14)
+
+`crates/rewo-gpu/src/tab_list.rs` was 1209 lines, 41 passing tests and **zero
+consumers**. The only references to it anywhere under `crates/` were its own
+`pub mod` line and an unrelated string in a `containershot` witness name.
+Pressing Tab in `rewo live` showed nothing, and had shown nothing since M52f
+first landed the module in July. This is the M86 shape a second time — a
+feature fully built, fully tested and completely absent from the product — and
+CLAUDE.md was already carrying the tell without drawing the conclusion: M136's
+correction of the spectator colour noted that *"nothing consumed the constant …
+which is exactly why it survived"*.
+
+**Four inputs were already crossing the wire into a discard.** `listed`
+(decoded since M62, stored nowhere), `show_hat` (the same), the
+`UPDATE_DISPLAY_NAME` component (`let _ = r.nbt()?`), and `onlineMode` — the
+login packet's first trailing boolean, whose only mention in the whole tree was
+a **test fixture writing it**.
+
+`listed` is the one that matters most and reads backwards: it is a **set**, and
+absence means excluded. `PlayerTabOverlay.getPlayerInfos` iterates
+`getListedOnlinePlayers()`, and the only thing that ever adds to that set is
+`UPDATE_LISTED` with `true` (`ClientPacketListener.java:2038`), so a player the
+server never sent the action for is not listed. That is what lets a plugin keep
+an NPC or a vanished player in `playerInfoMap`, where their skin and team still
+resolve, and out of the list. A stored `bool` with a `true` default shows every
+one of them.
+
+`UPDATE_DISPLAY_NAME` needs an `Option<Option<Nbt>>` and all three states are
+real: the action bit absent is "unchanged", present-with-null is "clear"
+(`applyPlayerInfoUpdate`'s arm is an unconditional
+`setTabListDisplayName(entry.displayName())`), and present-with-a-component is
+the override. It is also the one action in this packet with a variable-length
+payload, so the old discard was load-bearing in a way the neighbouring ones
+were not.
+
+`showHat` **defaults to true** (`PlayerInfo.java:21`) — the one absent value in
+that state that does not mean "the server has not said".
+
+`onlineMode` is a **width** input, not a visibility one:
+`extractRenderState:145` reads it as `showHead` and it changes `slotWidth`, so
+an offline server's rows are nine pixels narrower and every name moves.
+
+**Four more that invert, in the renderer.**
+
+1. **The sort key and the drawn name are different strings.**
+   `PLAYER_COMPARATOR`'s last key is `p.getProfile().name()`, while
+   `maxNameWidth` and every row measure `getNameForDisplay(info)`, which
+   prefers the server's override. A server that renames everyone to `[VIP] x`
+   still sorts them by their real names — and the two readings are
+   indistinguishable on any server that sets no overrides, which is most of
+   them.
+2. **Only the fallback name is team-formatted.** Vanilla's ternary puts
+   `formatNameForTeam` on the else branch alone, so formatting unconditionally
+   doubles a team prefix on every renamed player.
+3. **The spectator treatment is an ALPHA.** `-1862270977` is `0x90FFFFFF`, and
+   `Font.getTextColor:336` keeps a styled span's own RGB while taking the
+   default argument's alpha — so a spectator with a coloured display name is
+   faded, not recoloured. Folding it into the base colour looks equivalent and
+   is not. (M136 corrected M52f's grey; this is the half a renderer needs.)
+4. **A row's background is per row.** `PlayerTabOverlay` fills once per slot
+   where `displayScoreboardSidebar` one class over fills one rect for all its
+   rows — M132's `p13` pins the sidebar's shape and this is the other one.
+
+**`KeyboardHandler.keyPress` is asymmetric about the key.** The press is gated
+on `handlesGameInput` (no screen open) and the release is unconditional
+(`:519-552`), so Tab with an inventory up does not open the list while a
+release always takes it down. Handling both in one place leaves the list on
+screen behind an inventory with nothing able to dismiss it: hold Tab, press E,
+let go.
+
+**`HudBlit` is the first HUD sprite the pass does not place itself.** Every
+sprite before it took a position computed from the screen size and a hard-coded
+layout; a ping icon's column comes from the slot solve, so the list is an input
+exactly as `HudFill` is. It is emitted after every fill, because a row's icon
+sits inside that row's own background.
+
+**Where the join lives, and why not beside the sidebar's.** `TabEntry` and the
+layout are in `rewo-gpu`, the session is in `rewo-net`, and neither crate
+depends on the other — so unlike `resolve_sidebar`, which is a five-line
+adapter over a same-crate model, the tab list has to meet in `rewo-app`. Split
+M97's way: `tab_list_view::resolve` takes closures and is unit-tested, and the
+session lookups stay in `live_cmd`'s adapter.
+
+**Two gaps, stated rather than half-built.** The 8x8 faces: `showHead` is
+honoured so the geometry is vanilla's, but Rewo has no GUI-side path that can
+sample a 64x64 skin at all — the skin pool is in the ENTITY atlas, the HUD
+atlas is built once in `HudPass::new` with no runtime upload entry point, and
+the fetched RGBA is dropped after `SkinLoader::poll_uploads`. That is a
+dynamic-texture pool, not a sprite. And `RenderType::HEARTS`: the 90-pixel
+column is reserved, because `widthForScore` moves every name, and the hearts
+are not drawn (`extractTablistHearts` needs eight more sprites and a per-uuid
+`HealthState` blink clock). The numeric LIST objective IS drawn, right-aligned,
+in `PLAYER_LIST_DEFAULT` **yellow** — which is not the sidebar's red and not
+white.
+
+**The battery's finding is about instruments, and three of its four gaps were
+one gap.** "UPDATE_LISTED only ever ADDS", "player_info_remove leaves the
+departed player listed forever" and "showHat defaults to FALSE" all SURVIVED
+the first run, because the only tests of that arithmetic were COPIES of it —
+one in `play.rs`'s own test module and one in `tablistshot`'s fixture, which is
+M45's `install_shapes` shape twice in one milestone. `PlaySession` owns a
+socket and has no test module anywhere in the repo (M71), so anything decided
+inside it is untestable by construction. The three fields became
+`TabListPlayers`, a free type both former copies now call; `PlaySession` keeps
+one delegating line per accessor, and the battery still names the remaining
+call site as a SURVIVOR rather than pretending otherwise. The fourth gap was a
+gate fixture that could not express its claim: `tablistshot`'s display
+overrides were the colour code plus each player's own profile name, so the
+flattened override IS the profile name and both sort readings agree.
+
+**And `tools/render_check.py` did not build.** It checked only that the binary
+existed, so M151's first attempt to prove r47 non-vacuous compiled nothing and
+read the unmutated number — the leftover-mutant-binary hazard running the other
+way round. It builds now.
+
+**Measured (2026-08-14):** 3200 tests / 0 failures (world 1187, net 1142, gpu
+275, data 228, app 221, mesh 45, proto 16, audio 86); **35** serverless gates
+green with **0 validation errors**, `tablistshot` 26/26 being the new one;
+`live --render-check` **47/47** with validation ON and 0 validation errors;
+demo PNG `2cc56b4acbfb92cb`, byte-identical; battery **25/25** with a surviving
+no-op control and one named survivor. r47 verified non-vacuous three ways
+against a real server: the key ignored gives 7277 of 7277 frames, `listed`
+ignored gives 5 rows where 3 is correct, and no resolver at all gives 0.

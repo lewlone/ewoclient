@@ -27,6 +27,10 @@ AGENT_LOOP_BRIEF.md's "Test server" section.
   17/18 and is not a pass.
 * Validation is `cfg!(debug_assertions)`-gated for `live`, so this insists on the
   DEBUG binary: in a release build r17 is false and r18 is vacuous.
+* **It BUILDS.** It used only to check the binary existed, so a source change
+  not followed by a manual `cargo build` was graded against the previous
+  compile — which is how M151's first attempt to prove r47 non-vacuous reported
+  a mutation as SURVIVED.
 """
 import argparse
 import hashlib
@@ -75,8 +79,17 @@ def main():
     ap.add_argument("--username", default="RewoBot")
     args = ap.parse_args()
 
+    # **Build first.** This used to only check that the binary EXISTED, which
+    # made every run grade whatever was last compiled. M151 lost a mutation
+    # verification to it: `keys.tab_list` was replaced with a literal `true`,
+    # the gate reported the unmutated ~50% frame count, and the mutation read
+    # as SURVIVED — the same shape as the leftover-mutant-binary hazard the
+    # `*_mutate.py` batteries carry a rebuild for, running the other way round.
+    b = subprocess.run(["cargo", "build", "-p", "rewo-app"], cwd=ROOT)
+    if b.returncode != 0:
+        sys.exit("cargo build failed -- nothing below would be about this tree")
     if not os.path.exists(REWO):
-        sys.exit("no debug binary at %s -- run `cargo build -p rewo-app`" % REWO)
+        sys.exit("no debug binary at %s after a successful build" % REWO)
     port = free_port()
     dest = os.path.join(BASE, "testserver-rc-%d" % port)
     if os.path.exists(dest):
