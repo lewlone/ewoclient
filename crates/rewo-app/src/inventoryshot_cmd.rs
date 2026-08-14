@@ -653,6 +653,12 @@ fn props_for(max_stack: i32, equips: Option<ArmorPiece>) -> ItemProps {
     // The furnace and beacon predicates are irrelevant to this gate — every
     // witness here is the PLAYER's menu, whose routing never consults them.
     ItemProps {
+        // M152 — a hand-built fixture, so no wire sets: a smithing table
+        // refuses everything, which is vanilla before `update_recipes`
+        // lands (`getOrDefault(id, RecipePropertySet.EMPTY)`).
+        smithing_template: false,
+        smithing_base: false,
+        smithing_addition: false,
         max_stack,
         equips,
         is_fuel: false,

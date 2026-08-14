@@ -392,6 +392,15 @@ pub struct Ids {
     pub cb_play_recipe_book_remove: i32,
     pub cb_play_recipe_book_settings: i32,
     pub cb_play_place_ghost_recipe: i32,
+    /// `update_recipes` (M152) — the `RecipePropertySet` map that makes a
+    /// smithing table's shift-click evaluable, plus the stonecutter's list.
+    ///
+    /// **Play-state only.** The `update_tags` precedent (M69) is that a packet
+    /// whose handler hangs off `ClientCommonPacketListener` has a configuration
+    /// twin; this one hangs off `ClientGamePacketListener`
+    /// (`ClientboundUpdateRecipesPacket.java:17`) and the report lists it under
+    /// clientbound-play alone, so there is no second copy to miss.
+    pub cb_play_update_recipes: i32,
     /// `ClientboundSetCameraPacket` — one VarInt entity id. An id the client
     /// cannot resolve leaves the camera where it is.
     pub cb_play_set_camera: i32,
@@ -725,6 +734,7 @@ impl Ids {
             cb_play_recipe_book_remove: req!(p, P, C, "recipe_book_remove"),
             cb_play_recipe_book_settings: req!(p, P, C, "recipe_book_settings"),
             cb_play_place_ghost_recipe: req!(p, P, C, "place_ghost_recipe"),
+            cb_play_update_recipes: req!(p, P, C, "update_recipes"),
             cb_play_set_camera: req!(p, P, C, "set_camera"),
             cb_play_ticking_state: req!(p, P, C, "ticking_state"),
             cb_play_ticking_step: req!(p, P, C, "ticking_step"),

@@ -38,7 +38,7 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 118 of them. 23
+1. **141 clientbound-play packets. Rewo resolves and consumes 119 of them. 22
    are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
    `cb_play_*` field set and the dispatch chain agree exactly, which is a real
    (and slightly surprising) property of this codebase — see §1.
@@ -46,7 +46,7 @@ impossible to repeat: every clientbound-play packet in the report appears in
    not.** It has now been stale twice (M104 and M124 both had to correct it),
    which is the same asymmetry CLAUDE.md records — trust §2, and fix §0 when
    you notice it disagreeing.
-2. **Class A and class B are both empty.** The 23 gaps split 0 / 0 / 12 / 11
+2. **Class A and class B are both empty.** The 22 gaps split 0 / 0 / 11 / 11
    across pure state, needs-rendering, needs-a-missing-subsystem and
    not-applicable — so every packet Rewo can render *is* rendered, and what is
    left needs a subsystem it has not got or is a reply to something it never
@@ -209,24 +209,25 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **118** |
+| Resolved **and** consumed | **119** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **23** |
+| Not resolved at all | **22** |
 | **Total clientbound-play** | **141** |
 
-The 23 gaps, by class:
+The 22 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
 | **B** needs rendering | **0** | 0% |
-| **C** needs a subsystem Rewo lacks | **12** | 52% |
-| **D** not applicable | **11** | 48% |
+| **C** needs a subsystem Rewo lacks | **11** | 50% |
+| **D** not applicable | **11** | 50% |
 
-**M87 was the first bite out of class C** — which has since gone 23 -> 12, the
+**M87 was the first bite out of class C** — which has since gone 23 -> 11, the
 rest of it taken by M91 (the furnace family), M93s (the stonecutter), M93u (the
 merchant), M93y (the recipe book's decode), M108 (`delete_chat`), M113 (the
-Brigadier tree) and M114 (the two suggestion packets). It is a worked example of what
+Brigadier tree), M114 (the two suggestion packets) and M152
+(`update_recipes`). It is a worked example of what
 that class costs. `open_screen` and `container_set_data` are eleven lines of
 decode between them; what made them class C is that neither means anything
 without a *menu model* — the 25 slot layouts, and an `Inventory` that stops
@@ -626,7 +627,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 130 | `update_advancements` | absent | **C** | Advancements screen. |
 | 131 | `update_attributes` | handled | `req!` → `cb_play_update_attributes` | M52/M73. |
 | 132 | `update_mob_effect` | handled | `req!` → `cb_play_update_mob_effect` | M13. |
-| 133 | `update_recipes` | absent | **C** | Recipe property sets + the stonecutter's `SingleInputSet`. **NOT the recipe book and NOT crafting** — `handleUpdateRecipes` (`ClientPacketListener.java:1704-1707`) builds a `ClientRecipeContainer` read only by the furnace family, smithing, campfire and stonecutter; the recipe book is 74/75/76, handled since M93y. |
+| 133 | `update_recipes` | handled | `req!` → `cb_play_update_recipes` | **M152.** The `RecipePropertySet` map plus the stonecutter's `SingleInputSet`. **NOT the recipe book and NOT crafting** — `handleUpdateRecipes` builds a `ClientRecipeContainer` read only by the furnace family, smithing, campfire and stonecutter; the book is 74/75/76, handled since M93y. Its `smithing_*` sets are what `SmithingMenu.canMoveIntoInputSlots` tests, which was the last quick-move decline in the container arc. **Two item-collection encodings in one packet**: `RecipePropertySet` is `Item.STREAM_CODEC.apply(list())` — raw 0-based holder ids (`Item.java:103`) — while the stonecutter's `Ingredient` is a `holderSet`, `count + 1` with `0` meaning a tag name. Neither mistake errors; each desyncs. |
 | 134 | `update_tags` | handled | `req!` → `cb_play_update_tags` | **M69.** The play copy is the `/reload` case; the join-time copy is **configuration 13**, and resolving only this one would have looked like it worked until someone reloaded. |
 | 135 | `projectile_power` | handled | `req!` → `cb_play_projectile_power` | **M77.** A VarInt id (unlike `set_entity_link`'s fixed i32, one packet away) then an f64. Written onto `AbstractHurtingProjectile` only — an **arrow is not one**, it is an `AbstractArrow` on a sibling branch, so a `projectile_power` naming one mutates nothing. |
 | 136 | `custom_report_details` | absent | **D** | Key/value metadata to attach to a crash report. |

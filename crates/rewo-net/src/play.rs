@@ -497,6 +497,18 @@ pub struct PlaySession {
     pub recipe_book_settings: crate::recipe_book::BookSettings,
     /// The last ghost recipe the server asked to be shown, and its container.
     pub ghost_recipe: Option<(i32, crate::recipe_book::RecipeDisplay)>,
+    /// `update_recipes` (M152) — the `RecipePropertySet` map and the
+    /// stonecutter's selectable-recipe list.
+    ///
+    /// **Replaced wholesale on each packet, not merged**, because vanilla's
+    /// `handleUpdateRecipes` assigns the decoded map straight onto the
+    /// `RecipeManager` rather than folding it in. A `/reload` that removes a
+    /// datapack must be able to *shrink* these sets, and merging cannot.
+    ///
+    /// `None` until the first packet: a server has told us nothing yet, which
+    /// is not the same as telling us the sets are empty. The smithing menu
+    /// distinguishes them — see [`crate::recipe_book::UpdateRecipes`].
+    pub recipes: Option<crate::recipe_book::UpdateRecipes>,
     /// Server-reported latency per player, in milliseconds (M52c).
     ///
     /// **This is the only ping a client can know**, and the reason is worth
@@ -1680,6 +1692,7 @@ impl<'a> Connection<'a> {
             recipe_book: Default::default(),
             recipe_book_settings: Default::default(),
             ghost_recipe: None,
+            recipes: None,
             writer,
             codec,
             rx,
@@ -3121,6 +3134,28 @@ impl PlaySession {
             // packet whose id resolves and whose body is dropped reads as
             // handled to every grep.
             self.apply_recipe_book(id, body);
+        } else if id == ids.cb_play_update_recipes {
+            // M152. Unlike the four above this one IS consumed: its
+            // `smithing_base` / `smithing_template` / `smithing_addition` sets
+            // are exactly what `SmithingMenu.canMoveIntoInputSlots` tests, and
+            // that guard was the only reason smithing stayed
+            // `QuickMove::Unimplemented` after M93 took the other seven.
+            //
+            // The display registries are BUILT-IN, so they come from the report
+            // rather than the wire (M92's rule) and are needed for the
+            // stonecutter half's `SlotDisplay`s. Their absence is a warn rather
+            // than a decode error: it is a Rewo-side setup failure, not a
+            // malformed packet, and the two should not report the same way.
+            match self.recipe_display_ids.as_ref() {
+                Some(display_ids) => {
+                    match crate::recipe_book::parse_update_recipes(body, display_ids) {
+                        // Replace, never merge — see the field's docs.
+                        Ok(u) => self.recipes = Some(u),
+                        Err(e) => log::warn!("net: {e}"),
+                    }
+                }
+                None => log::warn!("net: update_recipes with no display registries"),
+            }
         } else if id == ids.cb_play_game_event {
             // M33 took the four weather ids; M71 took the other ten. One
             // decode feeds the weather levels, the client game state and the
