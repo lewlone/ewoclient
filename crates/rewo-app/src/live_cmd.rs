@@ -4036,6 +4036,14 @@ pub(crate) fn build_sounds(
         }
     };
     let mut live = LiveSounds::new(sounds, registry.clone());
+    // M157 — seed the frequency from `options.txt`, as a PULL.
+    //
+    // Vanilla does the same and has to: `OptionInstance.set` skips its
+    // `onValueUpdate` while `!Minecraft.isRunning()`, so loading the file at
+    // start-up fires no callbacks, and `MusicManager`'s constructor reads the
+    // option itself (`MusicManager.java:30`). A client that waited for the
+    // callback would start every session at DEFAULT whatever the file said.
+    live.set_music_frequency(load_options().music_frequency);
     if audio {
         attach_backend(&mut live, crate::audio_backend::open(version));
     }
@@ -4459,6 +4467,10 @@ fn run_headless(
     // uniform, so mobs and terrain share a lightmap.
     let partial = 1.0;
     let snapshot = session.visual_effect_snapshot(partial);
+    // M157 — the headless path reads the same `options.txt` the windowed one
+    // does, rather than defaulting: a gate that silently used different
+    // options from the client would grade a configuration nobody runs.
+    let headless_options = load_options();
     let lightmap = resolve_lightmap(
         session.day_ticks,
         session.active_dimension_type.as_ref(),
@@ -4467,7 +4479,7 @@ fn run_headless(
         gamma,
         darkness_option,
         partial,
-        end_flash_for(&session, partial),
+        end_flash_for(&session, partial, &headless_options),
     );
     // Drained before `collect_entities` takes its long-lived borrow of the
     // session; the particle spawn happens further down, once the renderer is
@@ -5113,6 +5125,13 @@ struct LiveApp {
     /// Cleared when the list is hidden, which is `reset()` — and is why a
     /// blink does not survive closing and reopening the tab list.
     tab_health: std::collections::HashMap<u128, rewo_gpu::tab_list::HealthState>,
+    /// `options.txt`, loaded once at start-up (M157).
+    ///
+    /// **Read once rather than per frame**, which is vanilla's shape too: an
+    /// `OptionInstance` is a field the game holds, not a file it re-reads. The
+    /// one consequence worth knowing is that an external edit while the client
+    /// is running does not take effect, which is also true of vanilla.
+    options: rewo_net::options::Options,
     /// F3 is held — the `keyDebugModifier` half (M66).
     f3_down: bool,
     /// `usedDebugKeyAsModifier` — a chord fired while F3 was down, so its
@@ -8258,7 +8277,7 @@ impl LiveApp {
             },
             self.darkness_option,
             lightmap_partial,
-            end_flash_for(session, lightmap_partial),
+            end_flash_for(session, lightmap_partial, &self.options),
         );
         let trim_slots = ensure_trims(
             session,
@@ -9376,6 +9395,7 @@ fn run_windowed(
     })?;
     let mut app = LiveApp {
         tab_health: std::collections::HashMap::new(),
+        options: load_options(),
         blocks,
         capture_pending: false,
         particles: None,
@@ -12323,15 +12343,13 @@ fn sky_mode_of(def: Option<&DimensionTypeDef>) -> SkyMode {
     }
 }
 
-/// **`hideLightningFlash` is pinned off**, i.e. the flash is shown.
-///
-/// It is an accessibility option (`Options.hideLightningFlash`) and Rewo has
-/// no options screen to set it from, so this is a stated assumption rather
-/// than a transcription — exact today because the vanilla default is `false`,
-/// and the same shape as the pinned `MusicFrequency`. The gate for it is the
-/// `EndFlash::hidden()` constructor, which exists so wiring an option later is
-/// a call-site change rather than a new branch.
-const HIDE_LIGHTNING_FLASH: bool = false;
+// M157 — `hideLightningFlash` is a real option now, read from `options.txt`.
+//
+// The constant that used to sit here said it was "a stated assumption rather
+// than a transcription … the gate for it is the `EndFlash::hidden()`
+// constructor, which exists so wiring an option later is a call-site change
+// rather than a new branch." That is exactly what happened: the branch below
+// takes the option instead of the literal and nothing else moved.
 
 /// The End flash's contribution to one frame's lightmap
 /// (`LightmapRenderStateExtractor.java:57-65`).
@@ -12386,11 +12404,47 @@ fn end_flash_render(
 /// The three gates are vanilla's, in vanilla's order: the level must *have* a
 /// flash state at all (only an END skybox does), the option must be off, and
 /// only then is the boss-fog divisor chosen.
-fn end_flash_for(session: &rewo_net::play::PlaySession, partial: f32) -> EndFlash {
+/// Read `options.txt` from the game directory (M157).
+///
+/// **The GAME directory, not a config dir** (`Options.java:1468`:
+/// `new File(workingDirectory, "options.txt")`), which is what lets Rewo and a
+/// vanilla client share one — and is why saving MERGES rather than rewrites.
+///
+/// An absent or unreadable file is the defaults, not an error: vanilla's
+/// `load()` opens with `if (!this.optionsFile.exists()) return;`.
+fn options_path() -> std::path::PathBuf {
+    std::path::PathBuf::from("options.txt")
+}
+
+fn load_options() -> rewo_net::options::Options {
+    match std::fs::read_to_string(options_path()) {
+        Ok(text) => {
+            let o = rewo_net::options::Options::parse(&text);
+            log::info!("options: loaded {o:?}");
+            o
+        }
+        Err(_) => rewo_net::options::Options::default(),
+    }
+}
+
+/// Write the two options back, preserving every line Rewo does not model.
+#[allow(dead_code)]
+fn save_options(o: rewo_net::options::Options) {
+    let existing = std::fs::read_to_string(options_path()).unwrap_or_default();
+    if let Err(e) = std::fs::write(options_path(), o.merge_into(&existing)) {
+        log::warn!("options: could not save: {e}");
+    }
+}
+
+fn end_flash_for(
+    session: &rewo_net::play::PlaySession,
+    partial: f32,
+    options: &rewo_net::options::Options,
+) -> EndFlash {
     let Some(state) = session.end_flash() else {
         return EndFlash::none();
     };
-    if HIDE_LIGHTNING_FLASH {
+    if options.hide_lightning_flash {
         return EndFlash::hidden();
     }
     EndFlash {

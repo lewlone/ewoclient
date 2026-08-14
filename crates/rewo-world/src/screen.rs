@@ -67,6 +67,11 @@ pub enum ScreenKind {
     /// `DisconnectedScreen` (M85) — **the one screen with no session behind
     /// it.** Every other variant here is opened while a world is loaded.
     Disconnected,
+    /// `OptionsSubScreen` and its root (M157). One variant for all three
+    /// pages, because vanilla has one screen SLOT and the pages replace one
+    /// another in it — see [`crate::options_screen::OptionsPage`], which is
+    /// what distinguishes them.
+    Options,
 }
 
 /// A widget's identity within its screen. The screen's own module owns the

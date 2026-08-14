@@ -2173,6 +2173,30 @@ impl SoundSystem {
         }
     }
 
+    /// `setMinutesBetweenSongs` — apply the `options.music_frequency` option
+    /// (M157).
+    ///
+    /// **Vanilla's own wiring is a PULL, not a push, at start-up**:
+    /// `MusicManager`'s constructor reads `options.musicFrequency().get()`
+    /// itself (`MusicManager.java:30`), and it has to — `OptionInstance.set`
+    /// skips its `onValueUpdate` callback while `!Minecraft.isRunning()`
+    /// (`OptionInstance.java:148-158`), so loading `options.txt` fires NO
+    /// callbacks at all. A client that relied on the callback to seed the
+    /// manager would start every session at `DEFAULT` whatever the file said.
+    ///
+    /// The callback exists for the other direction — the option changing
+    /// mid-session — and `setMinutesBetweenSongs` does more than store it: it
+    /// immediately re-rolls `nextSongDelay` from the new frequency, so
+    /// changing the option reschedules the next track NOW and draws from the
+    /// RNG while doing it.
+    pub fn set_music_frequency(&mut self, frequency: crate::music::MusicFrequency) {
+        // `getSituationalMusic()` is the manager's own input and is not known
+        // here; vanilla passes it and the re-roll uses it only to pick a
+        // min/max pair. `None` takes the frequency's own maximum, which is the
+        // same branch a client with nothing on offer takes.
+        self.music.set_frequency(frequency, None);
+    }
+
     /// Feed one drained batch of [`SoundEvent`]s to the engine, in order.
     ///
     /// **Order is the contract**, which is why M63 put all four kinds in one
@@ -2523,6 +2547,13 @@ impl LiveSounds {
             registry,
             sink: None,
         }
+    }
+
+    /// Apply `options.music_frequency` (M157) — see
+    /// [`SoundSystem::set_music_frequency`] for why this is a PULL at start-up
+    /// rather than a callback.
+    pub fn set_music_frequency(&mut self, frequency: crate::music::MusicFrequency) {
+        self.system.set_music_frequency(frequency);
     }
 
     /// Attach a backend. Until this is called the client is silent by
