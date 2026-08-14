@@ -9,7 +9,7 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: shipped and headlessly verified through M149g (2026-08-13).** `main`
+**Status: shipped and headlessly verified through M151 (2026-08-14).** `main`
 carries all of it and no branch or worktree holds a commit off it; the
 long-standing branch risk (everything from M10 on living on one unmerged
 branch) closed on 2026-07-27 and has stayed closed. See §0.0 for the
@@ -143,8 +143,8 @@ not close the listening pass, and its module doc carries §4's "What the gate
 does NOT assert" paragraph verbatim** so a future session reading only the gate
 still learns that a green run is not evidence this client makes a sound.
 
-Current measurement, taken 2026-08-14 on the MERGED tree (soundshot + M139 +
-M151 all in; this is a branch, not `main`):
+Current measurement, taken 2026-08-14 on `main` at `c538afd`, after the
+audio-verification landing (M150, `soundshot`, M139 and M151 all merged):
 **3214 tests, 0 failures** (**world 1187, net 1142, gpu 275, data 228, app 221,
 mesh 45, proto 16, audio 100** — read off the runner per crate).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a

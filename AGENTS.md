@@ -2306,8 +2306,10 @@ which `PlayerList.placeNewPlayer` disproves (broadcast at line 202,
 `players.add` at line **210**).
 
 No branch or worktree holds a commit
-off `main`. The long-unmerged-branch risk closed on 2026-07-27 and has
-stayed closed; branch new work from `main` and keep it that way.
+off `main` — re-verified 2026-08-14 after the audio-verification landing
+(M150, `soundshot`, M139, M151) merged as `c538afd`. The
+long-unmerged-branch risk closed on 2026-07-27 and has stayed closed;
+branch new work from `main` and keep it that way.
 
 > **⚠ §0.0's prose goes stale faster than its numbers.** The 2026-08-02 pass
 > found the handoff still claiming M57 at `aadd8e9` and still offering two
