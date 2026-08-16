@@ -54,23 +54,24 @@
 //!
 //! ## What this module does NOT draw, stated rather than hidden
 //!
-//! - **The 8×8 player faces.** `showHead` is honoured — the layout reserves
-//!   their nine pixels on an online-mode server, which is vanilla's geometry —
-//!   but nothing fills the rect. Rewo has no GUI-side path that can sample a
-//!   64×64 skin at all: the skin pool lives in the *entity* atlas
-//!   (`rewo_gpu::entities::upload_skin`), the HUD atlas is built once in
-//!   `HudPass::new` with no runtime upload entry point, and the fetched RGBA
-//!   is dropped after `SkinLoader::poll_uploads`. That is a dynamic-texture
-//!   pool, not a sprite, and it is its own piece of work.
-//! - **`RenderType::HEARTS`.** The 90-pixel column is *reserved*, because that
-//!   is `widthForScore` and getting it wrong moves every name; the hearts
-//!   themselves are not drawn. `extractTablistHearts` needs eight more sprites
-//!   and a per-uuid `HealthState` blink clock
-//!   (`PlayerTabOverlay.HealthState`, 20/10-tick durations and a `% 6 >= 3`
-//!   phase) that nothing here keeps.
+//! **This list used to name the faces and the hearts, and M155 drew both.** The
+//! entry for each carried a detailed reason — "Rewo has no GUI-side path that
+//! can sample a 64×64 skin at all", "the HUD atlas is built once in
+//! `HudPass::new` with no runtime upload entry point" — and both were false the
+//! moment [`faces`] and [`hearts`] landed beside them: the crop is 8×8 on the
+//! CPU rather than a 64×64 sample, and `HudPass::upload_face` is that entry
+//! point. A doc that gives a *reason* for an absence is worse than one that
+//! merely notes it, because the reason is what a later reader checks instead of
+//! the code. Removed rather than corrected in place (M158).
+//!
 //! - **`Minecraft.isLocalServer()`'s half of the visibility gate.** Rewo has no
 //!   integrated server, so the clause that hides a one-player singleplayer list
 //!   can never fire — see [`visible`].
+//! - **`RenderType::HEARTS`'s text readout.** [`hearts`] draws the sprites;
+//!   when the column is too narrow for them vanilla falls back to a number, and
+//!   that branch is reached only by **high health** (score >= 44), never by a
+//!   narrow window, because the column is a constant 90. `tablistshot`'s `h1`
+//!   pins which of the two is reachable.
 
 use rewo_gpu::tab_list::{self, EntrySlot, PingIcon, ScoreColumn, TabEntry, TabListInput};
 use rewo_net::scoreboard::{DisplaySlot, RenderType, Scoreboard};
