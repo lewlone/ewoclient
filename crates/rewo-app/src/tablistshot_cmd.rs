@@ -8,10 +8,22 @@
 //!                                              (the production decoders)
 //!   -> tab_list_view::resolve                  (the SAME resolver the frame calls)
 //!   -> rewo_gpu::tab_list::layout              (production geometry)
-//!   -> tab_list_view::{fills, icons, text}     (the SAME emitters the frame calls)
+//!   -> tab_list_view::{fills, icons, faces, hearts, text}
+//!                                              (the SAME emitters the frame calls)
 //!   -> WorldRenderer::{set_hud_fills, set_hud_icons, set_text}
 //!   -> Offscreen::read_rgba                    (real pixels)
 //! ```
+//!
+//! **`faces` and `hearts` joined that list at M158, and the three milestones
+//! before it are why they are named here explicitly.** M155 shipped both
+//! emitters with exactly one caller each — the frame loop — and nothing else in
+//! the tree called either: not this gate, which built its icon list from
+//! `icons()` alone, and not a unit test, since neither name appears twice in
+//! `tab_list_view.rs`. `tools/m158_gap.py` measured it rather than arguing it:
+//! replacing each body with `return Vec::new()` left the gate at 34/34 green.
+//! The frame loop concatenates `icons`, then `faces`, then `hearts`, and this
+//! gate now does the same in the same order, because each later group draws
+//! over its own row.
 //!
 //! ## The rules this gate is built around, each earned elsewhere
 //!
@@ -58,7 +70,7 @@ use crate::tab_list_view::{self, TabListLookups, TabListView};
 
 /// Total named properties this gate asserts. Locked so a skipped property fails
 /// the run even when nothing mismatched.
-const EXPECTED_WITNESSES: usize = 34;
+const EXPECTED_WITNESSES: usize = 42;
 
 const W: u32 = 640;
 const H: u32 = 480;
@@ -1147,9 +1159,10 @@ fn check_pixels(
             && tab_list_view::face_rects(&layout).is_empty()
             && tab_list_view::face_rects(&head_layout).len() == 3,
         format!(
-            "{} -> {} px. The faces themselves are NOT drawn (see the module \
-             doc); the reservation is, because getting it wrong moves every \
-             name.",
+            "{} -> {} px. This is the RESERVATION, which matters on its own \
+             because getting it wrong moves every name; the faces themselves \
+             are drawn and `f1`-`f3` grade them. (This detail string claimed \
+             they were not drawn for three milestones after M155 drew them.)",
             layout.slot_width, head_layout.slot_width
         ),
     );
@@ -1320,6 +1333,493 @@ fn check_pixels(
         ),
     );
 
+    // -- M158: the health column and the faces, in PIXELS ---------------------
+    //
+    // M155 shipped `tab_list_view::hearts` and `tab_list_view::faces`. Each had
+    // exactly ONE caller — the frame loop — and **nothing else in the tree
+    // called either**: not this gate, which built its icon list from `icons()`
+    // alone, and not a unit test, since neither name appears twice in
+    // `tab_list_view.rs`. Measured rather than argued: replacing each body with
+    // `return Vec::new()` left this gate at 34/34 (`tools/m158_gap.py`). That is
+    // M45's `install_shapes` failure — a gate that reimplements a slice of the
+    // app's setup misses whatever the app adds to it — so the list below is
+    // built the way `live_cmd` builds it: `icons`, then `faces`, then `hearts`,
+    // in that order, because each later group draws over its own row.
+    //
+    // **Every colour predicted here is a literal read out of the jar's own
+    // PNGs**, not a constant the renderer shares (gotcha 0a). They arrive
+    // unmodified: the readback carries `[255,19,19]` and `[212,175,55]` exactly.
+    const HEART_FULL_RED: [u8; 3] = [255, 19, 19];
+    const HEART_CONTAINER_GREY: [u8; 3] = [40, 40, 40];
+    const HEART_ABSORB_GOLD: [u8; 3] = [212, 175, 55];
+
+    let hw = hearts_scene();
+    let hv = hw.resolve(true, GUI_W, Some(advance));
+    let hl = tab_list::layout(&hv.input, &hv.entries);
+    let face_slot = wr.upload_tab_face(&mut gpu, &face_strip());
+
+    // The same three lists the frame loop concatenates, in the same order.
+    let mut states = std::collections::HashMap::new();
+    let hb = tab_list_view::hearts(&hv, &hl, &mut states, 0);
+    let bare = tab_list_view::faces(&hv, &hl, &|_| face_slot, &|_| false, &|_| false);
+    let mut with_hearts = tab_list_view::icons(&hv, &hl);
+    with_hearts.extend(bare.clone());
+    with_hearts.extend(hb.clone());
+    let hframe2 = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        tab_list_view::fills(&hl),
+        with_hearts.clone(),
+        tab_list_view::text(&hv, &hl, px, &width_of),
+    )?;
+    // The control: the identical scene with the heart blits withheld. Only the
+    // subject changes, which is what p8 established for the ping icons.
+    let mut no_hearts = tab_list_view::icons(&hv, &hl);
+    no_hearts.extend(bare.clone());
+    let hcontrol = shot(
+        &mut gpu,
+        &mut off,
+        &mut wr,
+        tab_list_view::fills(&hl),
+        no_hearts,
+        tab_list_view::text(&hv, &hl, px, &width_of),
+    )?;
+
+    let in_any = |bs: &[rewo_gpu::hud::HudBlit], gx: i32, gy: i32| {
+        bs.iter().any(|b| {
+            (gx as f32) >= b.x
+                && (gx as f32) < b.x + b.w
+                && (gy as f32) >= b.y
+                && (gy as f32) < b.y + b.h
+        })
+    };
+    let (mut heart_in, mut heart_out) = (0usize, 0usize);
+    for gy in 0..GUI_H {
+        for gx in 0..GUI_W {
+            if hframe2.gui(gx, gy) != hcontrol.gui(gx, gy) {
+                if in_any(&hb, gx, gy) {
+                    heart_in += 1;
+                } else {
+                    heart_out += 1;
+                }
+            }
+        }
+    }
+    c.record(
+        "h7.the_hearts_reach_the_frame_and_only_inside_their_own_rects",
+        heart_in > 0
+            && heart_out == 0
+            // 20 health is ten hearts and 22 is eleven, each two layers; the
+            // spectator's row gets none, which is `score_span == None`.
+            && hb.len() == 42
+            && hl.entries.get(2).is_some_and(|e| e.score_span.is_none()),
+        format!(
+            "{heart_in} GUI pixels changed inside the {} heart rects and \
+             {heart_out} outside. Before M158 this emitter could be replaced \
+             by `return Vec::new()` with the gate still green.",
+            hb.len()
+        ),
+    );
+
+    // h8 — the two layers composite, and the evidence is a NEGATIVE.
+    //
+    // `container.png` is 34 interior texels of (40,40,40) plus 20 outline
+    // texels of (0,0,0); `full.png` has exactly 34 opaque texels, and they
+    // cover the interior. So a correct draw shows the container's OUTLINE and
+    // the fill's red and **no (40,40,40) anywhere**. Drop the container and the
+    // outline goes; drop the fill and the grey appears. Counting "some red
+    // arrived" cannot see either.
+    let count_of = |f: &Frame, want: [u8; 3]| {
+        let mut n = 0usize;
+        for gy in 0..GUI_H {
+            for gx in 0..GUI_W {
+                let p = f.gui(gx, gy);
+                if [p[0], p[1], p[2]] == want {
+                    n += 1;
+                }
+            }
+        }
+        n
+    };
+    // **Scoped to the heart rects, and the first cut of this was not** — which
+    // is why it failed: (40,40,40) is also the ping bars' own grey, so a
+    // whole-frame count of the container's interior colour is measuring the
+    // icons one column over. The two halves of one witness have to share a
+    // scope or they are not about the same thing.
+    let in_hearts_count = |want: [u8; 3]| {
+        let mut n = 0usize;
+        for gy in 0..GUI_H {
+            for gx in 0..GUI_W {
+                let p = hframe2.gui(gx, gy);
+                if [p[0], p[1], p[2]] == want && in_any(&hb, gx, gy) {
+                    n += 1;
+                }
+            }
+        }
+        n
+    };
+    let red = in_hearts_count(HEART_FULL_RED);
+    let grey = in_hearts_count(HEART_CONTAINER_GREY);
+    let black_in_hearts = in_hearts_count([0, 0, 0]);
+    c.record(
+        "h8.a_filled_heart_shows_its_containers_outline_and_hides_its_interior",
+        red > 0 && black_in_hearts > 0 && grey == 0,
+        format!(
+            "inside the heart rects: {red} texels of the fill's own \
+             {HEART_FULL_RED:?}, {black_in_hearts} of the container's outline \
+             black, and {grey} of the container's interior \
+             {HEART_CONTAINER_GREY:?} — the fill's 34 opaque texels cover the \
+             container's 34 interior ones exactly, so a missing container \
+             loses the outline and a missing fill exposes the grey"
+        ),
+    );
+
+    // h9 — the absorption heart is GOLD, and the detector is the art's own.
+    //
+    // Read out of the eight heart PNGs: every one of them is achromatic in the
+    // blue axis (max |g - b| == 0 over every opaque texel) EXCEPT the absorbing
+    // pair, where it is 162. So "g differs from b" identifies an absorption
+    // heart and cannot be satisfied by a red heart, a container or a blink
+    // ghost. The names are magenta (g < b) and under HEARTS no score digits are
+    // drawn at all, so nothing else in the frame competes.
+    // The absorbing rects alone — index 10 of the 22-health row. Every
+    // gold-family texel must land in one of them, which is the claim that the
+    // gold is at the ELEVENTH heart rather than smeared across the column.
+    let absorbing: Vec<rewo_gpu::hud::HudBlit> = hb
+        .iter()
+        .filter(|b| {
+            matches!(
+                b.icon,
+                rewo_gpu::hud::HudIcon::Heart(rewo_gpu::tab_list::HeartSprite::AbsorbingFull)
+            )
+        })
+        .copied()
+        .collect();
+    let mut gold = 0usize;
+    let mut gold_outside_its_rect = 0usize;
+    for gy in 0..GUI_H {
+        for gx in 0..GUI_W {
+            if !in_any(&hb, gx, gy) {
+                continue;
+            }
+            let p = hframe2.gui(gx, gy);
+            // The art's own discriminator, read out of the eight PNGs: only the
+            // absorbing pair is chromatic in the blue axis. A red heart, a
+            // container and a blink ghost all have g == b exactly. This admits
+            // the sprite's three shades — (212,175,55), (212,162,0) and
+            // (212,192,126) — rather than only its dominant one, which is what
+            // the first cut got wrong: it counted the sprite's own highlights
+            // as evidence AGAINST itself.
+            if p[1] as i32 - p[2] as i32 > 60 {
+                gold += 1;
+                if !in_any(&absorbing, gx, gy) {
+                    gold_outside_its_rect += 1;
+                }
+            }
+        }
+    }
+    c.record(
+        "h9.the_eleventh_heart_draws_in_the_absorption_sprites_own_gold",
+        gold > 0
+            && gold_outside_its_rect == 0
+            && absorbing.len() == 1
+            && in_hearts_count(HEART_ABSORB_GOLD) > 0,
+        format!(
+            "{gold} gold-family texels, all inside the {} absorbing rect \
+             ({gold_outside_its_rect} outside). `absorbing_full.png` is the \
+             only heart sprite with g != b (162 against 0 for the other \
+             seven), so this cannot be a red heart read loosely — and 22 \
+             health is ELEVEN hearts, so index 10 exists at all",
+            absorbing.len()
+        ),
+    );
+
+    // h11 — the hearts are LAID OUT across their column, at a pitch narrower
+    // than the sprite so they overlap.
+    //
+    // **Everything above this takes its rects from `hb`, which is the emitter
+    // under test** — so moving every heart to the column's left edge, or
+    // shrinking the sprite, moves the draw and the expectation together and all
+    // four survive. Both did, in M158's first battery. That is gotcha 0a in the
+    // shape M93q found it: a witness that computes its expectation from the
+    // thing it is testing covers everything about the draw except the thing
+    // they share.
+    //
+    // So this one predicts from the LAYOUT's `score_span` — which
+    // `tab_list::layout` produces and `hearts` only reads — plus the pitch and
+    // sprite size **re-declared as literals**, the way `check_transcription`
+    // re-declares `ref_columns`. And it detects a heart by differing from the
+    // no-hearts control, so it needs no rect from the emitter at all.
+    //
+    // `container.png` is opaque in all nine of its columns and rows (measured
+    // from the jar), so a drawn row is a CONTIGUOUS band exactly
+    // `pitch * (n - 1) + sprite` wide.
+    const REF_SPRITE: i32 = 9;
+    let ref_pitch = |span: i32, hearts: i32| ((span - 4) as f32 / hearts as f32).min(9.0) as i32;
+    // Two rows, two pitches, in one frame: TabMid's 22 health is eleven hearts
+    // at pitch 7 and TabZulu's 20 is ten at pitch 8. One fixture with a single
+    // pitch cannot tell a wrong pitch from a wrong sprite size.
+    let mut spans = Vec::new();
+    let mut gaps = 0usize;
+    for (i, hp) in [(0usize, 11i32), (1usize, 10i32)] {
+        // `get`, not `[]` — gotcha 15: a witness that can panic is a witness
+        // that can silently not run, and a harness scraping FAIL lines cannot
+        // tell an abort from a pass. `spans.len() == 2` below is what turns a
+        // missing row into a failure rather than a skip.
+        let Some(slot) = hl.entries.get(i) else { continue };
+        let Some((left, right)) = slot.score_span else {
+            continue;
+        };
+        let y0 = slot.name.1;
+        let occupied: Vec<i32> = (left..right + REF_SPRITE)
+            .filter(|gx| {
+                (y0..y0 + REF_SPRITE).any(|gy| hframe2.gui(*gx, gy) != hcontrol.gui(*gx, gy))
+            })
+            .collect();
+        let (lo, hi) = (
+            occupied.first().copied().unwrap_or(-1),
+            occupied.last().copied().unwrap_or(-1),
+        );
+        // Contiguous: a sprite wider than its pitch leaves no gap. At pitch 8
+        // with a 7-px sprite every heart would be one column short of its
+        // neighbour.
+        if hi >= lo && occupied.len() as i32 != hi - lo + 1 {
+            gaps += 1;
+        }
+        let pitch = ref_pitch(right - left, hp);
+        spans.push((lo - left, hi - left, pitch * (hp - 1) + REF_SPRITE - 1, pitch));
+    }
+    c.record(
+        "h11.the_hearts_span_their_column_at_a_pitch_narrower_than_the_sprite",
+        gaps == 0
+            && spans.len() == 2
+            && spans.iter().all(|(lo, hi, want, _)| *lo == 0 && hi == want),
+        format!(
+            "per row, (first, last, predicted last, pitch) offsets from the \
+             column's own left edge: {spans:?}, with {gaps} rows carrying a \
+             gap. Predicted independently as `pitch * (n - 1) + 9 - 1` from \
+             the LAYOUT's score_span; a client that ignored each heart's own \
+             dx would answer 8 for both rows, and a 7-px sprite would answer \
+             two short and open a gap in the pitch-8 row"
+        ),
+    );
+
+    // h10 — the blink clock is carried ACROSS frames.
+    //
+    // `hearts`'s own doc names the failure mode — "a caller that rebuilt the map
+    // each frame would never blink at all, because a fresh `HealthState` is
+    // seeded with its own value and has nothing to catch up to" — and nothing
+    // graded it. This drives the real emitter three times down one map, which
+    // is what the frame loop does, and once down a fresh one.
+    let hurt_w = hearts_scene_at(10, 22, 12);
+    let hurt_v = hurt_w.resolve(true, GUI_W, Some(advance));
+    let hurt_l = tab_list::layout(&hurt_v.input, &hurt_v.entries);
+    let mut carried = std::collections::HashMap::new();
+    tab_list_view::hearts(&hv, &hl, &mut carried, 0); // seen at 20
+    tab_list_view::hearts(&hurt_v, &hurt_l, &mut carried, 3); // the hit
+    let after = tab_list_view::hearts(&hurt_v, &hurt_l, &mut carried, 6);
+    let mut fresh = std::collections::HashMap::new();
+    let never = tab_list_view::hearts(&hurt_v, &hurt_l, &mut fresh, 6);
+    let ghosts = |bs: &[rewo_gpu::hud::HudBlit]| {
+        bs.iter()
+            .filter(|b| {
+                matches!(
+                    b.icon,
+                    rewo_gpu::hud::HudIcon::Heart(rewo_gpu::tab_list::HeartSprite::FullBlinking)
+                )
+            })
+            .count()
+    };
+    c.record(
+        "h10.the_blink_clock_is_carried_across_frames_by_the_callers_map",
+        ghosts(&after) > 0 && ghosts(&never) == 0 && after.len() != never.len(),
+        format!(
+            "down one map 20 -> 10 leaves {} ghost blits three ticks later ({} \
+             blits in all); down a fresh map the same view leaves {} ({} \
+             blits), because `HealthState::new(10)` has nothing to catch up to",
+            ghosts(&after),
+            after.len(),
+            ghosts(&never),
+            never.len()
+        ),
+    );
+
+    // -- the faces, in pixels -------------------------------------------------
+    //
+    // The strip is four saturated quadrants, so three separate claims are
+    // separable in one readback: WHICH HALF was sampled (head 0..8 vs hat
+    // 8..16), which way UP (the flip inverts the source v and not the
+    // destination), and that a face reached the frame at all.
+    const HEAD_TOP: [u8; 3] = [0, 255, 0];
+    const HEAD_BOTTOM: [u8; 3] = [0, 0, 255];
+    const HAT_TOP: [u8; 3] = [255, 128, 0];
+    const HAT_BOTTOM: [u8; 3] = [0, 255, 255];
+
+    let face_frame = |wrr: &mut WorldRenderer,
+                      g: &mut Gpu,
+                      o: &mut Offscreen,
+                      hat: bool,
+                      flip: bool|
+     -> Result<(Frame, Vec<rewo_gpu::hud::HudBlit>), String> {
+        let fb = tab_list_view::faces(&hv, &hl, &|_| face_slot, &|_| hat, &|_| flip);
+        let mut all = tab_list_view::icons(&hv, &hl);
+        all.extend(fb.clone());
+        let f = shot(
+            g,
+            o,
+            wrr,
+            tab_list_view::fills(&hl),
+            all,
+            tab_list_view::text(&hv, &hl, px, &width_of),
+        )?;
+        Ok((f, fb))
+    };
+    // `loaded_of` is the flip's gate, so a `true` there is a Dinnerbone in
+    // render distance; these rows are not named Dinnerbone, so the flip only
+    // fires in the frame built for `f3`.
+    let (bare_f, bare_b) = face_frame(&mut wr, &mut gpu, &mut off, false, false)?;
+    let head_seen = count_of(&bare_f, HEAD_TOP) + count_of(&bare_f, HEAD_BOTTOM);
+    let hat_seen = count_of(&bare_f, HAT_TOP) + count_of(&bare_f, HAT_BOTTOM);
+    let (mut face_in, mut face_out) = (0usize, 0usize);
+    for gy in 0..GUI_H {
+        for gx in 0..GUI_W {
+            let p = bare_f.gui(gx, gy);
+            if [p[0], p[1], p[2]] == HEAD_TOP || [p[0], p[1], p[2]] == HEAD_BOTTOM {
+                if in_any(&bare_b, gx, gy) {
+                    face_in += 1;
+                } else {
+                    face_out += 1;
+                }
+            }
+        }
+    }
+    // **The rect is compared against the LAYOUT's, not the emitter's own.**
+    // `f1` used to test containment inside `bare_b`, which `faces` produces —
+    // so a blit displaced from the rect the layout placed moved the draw and
+    // the expectation together and survived, the same hole `h11` closed for the
+    // hearts. `hl.entries[i].face` is `tab_list::layout`'s output and `faces`
+    // only reads it.
+    let placed: Vec<rewo_gpu::tab_list::Rect> = hl.entries.iter().filter_map(|e| e.face).collect();
+    let rects_are_the_layouts = bare_b.len() == placed.len()
+        && bare_b.iter().zip(placed.iter()).all(|(b, r)| {
+            (b.x, b.y, b.w, b.h) == (r.x as f32, r.y as f32, r.w as f32, r.h as f32)
+        });
+    c.record(
+        "f1.a_face_draws_from_the_head_half_of_the_strip_into_the_layouts_rect",
+        head_seen > 0
+            && hat_seen == 0
+            && face_out == 0
+            && bare_b.len() == 3
+            && rects_are_the_layouts,
+        format!(
+            "{head_seen} texels of the head's two colours, {hat_seen} of the \
+             hat's, all {face_in} inside the {} face rects and {face_out} \
+             outside — the head is source u 0..8 and a crop from the wrong \
+             half would land the hat's colours here. The rects are the \
+             LAYOUT's own ({} of them), which is what stops a displaced blit \
+             moving the draw and the expectation together.",
+            bare_b.len(),
+            placed.len()
+        ),
+    );
+
+    // f2 — the hat is a SECOND blit over the first, never a different sprite.
+    // Two blits per player at the SAME rect, so the hat hides the head
+    // completely — which is what makes "over the first" observable.
+    let (hat_f, hat_b) = face_frame(&mut wr, &mut gpu, &mut off, true, false)?;
+    let hat_now = count_of(&hat_f, HAT_TOP) + count_of(&hat_f, HAT_BOTTOM);
+    let head_now = count_of(&hat_f, HEAD_TOP) + count_of(&hat_f, HEAD_BOTTOM);
+    let same_rects = hat_b.len() == 6
+        && hat_b
+            .chunks(2)
+            // `p.len() == 2` first: `chunks` hands back a short final chunk on
+            // an odd length, and indexing it would abort the whole gate rather
+            // than fail this witness (gotcha 15).
+            .all(|p| {
+                p.len() == 2 && (p[0].x, p[0].y, p[0].w, p[0].h) == (p[1].x, p[1].y, p[1].w, p[1].h)
+            });
+    c.record(
+        "f2.the_hat_is_a_second_blit_over_the_first_at_the_same_rect",
+        same_rects && hat_now > 0 && head_now == 0 && hat_b.len() == bare_b.len() * 2,
+        format!(
+            "{} blits for three hatted players against {} bare, each pair \
+             sharing a rect; the frame carries {hat_now} hat texels and \
+             {head_now} head ones, so the second blit COVERS the first rather \
+             than sitting beside it",
+            hat_b.len(),
+            bare_b.len()
+        ),
+    );
+
+    // f3 — the flip inverts the SOURCE v and leaves the destination alone.
+    //
+    // Driven from a scene whose player really IS called Dinnerbone, and with
+    // `loaded_of` toggled rather than the name: the flip is
+    // `loaded_of(uuid) && is_upside_down_name(name)`, so BOTH orderings of
+    // "which input is held constant" have to be available or the witness cannot
+    // separate the two conjuncts. The unflipped frame here is the same player
+    // out of render distance, which is vanilla's own "on the list the right way
+    // up" case.
+    let dw = dinnerbone_scene();
+    let dv = dw.resolve(true, GUI_W, Some(advance));
+    let dl = tab_list::layout(&dv.input, &dv.entries);
+    let d_face = |wrr: &mut WorldRenderer,
+                  g: &mut Gpu,
+                  o: &mut Offscreen,
+                  loaded: bool|
+     -> Result<(Frame, Vec<rewo_gpu::hud::HudBlit>), String> {
+        let fb = tab_list_view::faces(&dv, &dl, &|_| face_slot, &|_| false, &|_| loaded);
+        let mut all = tab_list_view::icons(&dv, &dl);
+        all.extend(fb.clone());
+        let f = shot(
+            g,
+            o,
+            wrr,
+            tab_list_view::fills(&dl),
+            all,
+            tab_list_view::text(&dv, &dl, px, &width_of),
+        )?;
+        Ok((f, fb))
+    };
+    let (up_f, up_b) = d_face(&mut wr, &mut gpu, &mut off, false)?;
+    let (flip_f, flip_b) = d_face(&mut wr, &mut gpu, &mut off, true)?;
+    let rects_unmoved = !up_b.is_empty()
+        && flip_b.len() == up_b.len()
+        && flip_b
+            .iter()
+            .zip(up_b.iter())
+            .all(|(a, b)| (a.x, a.y, a.w, a.h) == (b.x, b.y, b.w, b.h));
+    let r0 = up_b.first().copied();
+    let sample = |f: &Frame, dy: i32| -> [u8; 3] {
+        match r0 {
+            Some(r) => {
+                let p = f.gui(r.x as i32 + 4, r.y as i32 + dy);
+                [p[0], p[1], p[2]]
+            }
+            None => [0, 0, 0],
+        }
+    };
+    c.record(
+        "f3.the_flip_inverts_the_source_v_and_leaves_the_destination_alone",
+        rects_unmoved
+            && sample(&up_f, 1) == HEAD_TOP
+            && sample(&up_f, 6) == HEAD_BOTTOM
+            && sample(&flip_f, 1) == HEAD_BOTTOM
+            && sample(&flip_f, 6) == HEAD_TOP,
+        format!(
+            "the rects are unchanged and the content mirrors: {:?} over {:?} \
+             becomes {:?} over {:?}. Inverting the DESTINATION v instead moves \
+             the face off its row and leaves it the right way up; and the flip \
+             needs the player LOADED, so the same Dinnerbone out of render \
+             distance is the upright frame here.",
+            sample(&up_f, 1),
+            sample(&up_f, 6),
+            sample(&flip_f, 1),
+            sample(&flip_f, 6)
+        ),
+    );
+
     if let Some(dir) = args.out_dir.as_ref() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{e}"))?;
         wr.set_hud(0.0, 0, 0, rewo_gpu::hud::HudGauges::default());
@@ -1398,4 +1898,116 @@ fn scored_scene() -> Wire {
     w.scoreboard
         .apply_set_display_objective(&parse_set_display_objective(&b).expect("set_display"));
     w
+}
+
+/// [`scene`] plus a **HEARTS** display objective, through the same production
+/// decoders (M158).
+///
+/// The scores are health points rather than the arbitrary integers
+/// [`scored_scene`] uses, and they are chosen to reach three different sprite
+/// families in one frame: **TabMid at 22** puts an absorption heart at index 10
+/// (`fullHearts` is 11, not 10), and **TabZulu at 20** is ten ordinary red
+/// ones. The spectator gets no score at all, which is vanilla's rule and what
+/// `h7` measures the third row against.
+fn hearts_scene() -> Wire {
+    hearts_scene_at(20, 22, 12)
+}
+
+/// [`hearts_scene`] with the three health values chosen by the caller, so a
+/// witness that needs a health *change* can build the same scene twice.
+fn hearts_scene_at(zulu: i32, mid: i32, alpha: i32) -> Wire {
+    use rewo_net::scoreboard::{
+        parse_set_display_objective, parse_set_objective, parse_set_score, DisplaySlot,
+    };
+    let mut w = scene();
+    let ids = rewo_data::number_formats::NumberFormatTypeIds::load(
+        &DataPaths::for_version("26.2")
+            .expect("no config dir")
+            .registries_json(),
+    )
+    .expect("number format ids");
+
+    let mut body = Vec::new();
+    mc_string("hpobj", &mut body);
+    body.push(0); // METHOD_ADD
+    nbt_string("Health", &mut body);
+    varint(1, &mut body); // RenderType.HEARTS — ordinal 1, not 0
+    body.push(0); // no number format
+    w.scoreboard
+        .apply_set_objective(&parse_set_objective(&body, ids).expect("set_objective"));
+
+    for (owner, value) in [("TabZulu", zulu), ("TabMid", mid), ("TabAlpha", alpha)] {
+        let mut b = Vec::new();
+        mc_string(owner, &mut b);
+        mc_string("hpobj", &mut b);
+        varint(value, &mut b);
+        b.push(0); // no display override
+        b.push(0); // no number format
+        w.scoreboard
+            .apply_set_score(&parse_set_score(&b, ids).expect("set_score"));
+    }
+
+    let mut b = Vec::new();
+    varint(DisplaySlot::List.id(), &mut b);
+    mc_string("hpobj", &mut b);
+    w.scoreboard
+        .apply_set_display_objective(&parse_set_display_objective(&b).expect("set_display"));
+    w
+}
+
+/// One listed player, actually named **Dinnerbone** (M158).
+///
+/// `faces` gates the flip on `loaded_of(uuid) && is_upside_down_name(&e.name)`,
+/// so a `loaded_of` that answers `true` for an ordinarily-named player flips
+/// nothing. The first cut of `f3` did exactly that and reported the flipped
+/// frame as identical to the unflipped one — a witness that could not fire,
+/// which is this project's most repeated failure and the fourth documented
+/// instance of it.
+fn dinnerbone_scene() -> Wire {
+    let mut w = Wire {
+        players: rewo_net::play::TabListPlayers::default(),
+        names: std::collections::HashMap::new(),
+        pings: std::collections::HashMap::new(),
+        spectators: std::collections::HashSet::new(),
+        text: rewo_net::tab_list_text::TabListText::new(),
+        scoreboard: rewo_net::scoreboard::Scoreboard::new(),
+    };
+    let ok = w.apply(&player_info_body(&[WirePlayer {
+        uuid: 7,
+        name: "Dinnerbone",
+        gamemode: 0,
+        listed: true,
+        latency: 10,
+        display: Some(format!("{MAGENTA_CODE}Ddd")),
+    }]));
+    assert!(ok, "tablistshot: the Dinnerbone body must decode");
+    w
+}
+
+/// A synthetic 16x8 face strip: the 8x8 head beside the 8x8 hat, which is the
+/// layout [`rewo_gpu::world::WorldRenderer::upload_tab_face`] documents.
+///
+/// **Every quadrant is a different, saturated colour**, because three separate
+/// claims have to be told apart in one readback: which HALF was sampled (head
+/// vs hat), which way up it was sampled (the flip inverts the source v and not
+/// the destination), and that a face reached the frame at all. A single-colour
+/// strip witnesses only the last of those, and this project's recurring
+/// detector error is exactly a fixture that cannot express its own claim.
+fn face_strip() -> Vec<u8> {
+    // head top / head bottom / hat top / hat bottom.
+    const QUADRANT: [[u8; 3]; 4] = [
+        [0, 255, 0],   // head, top    — pure green
+        [0, 0, 255],   // head, bottom — pure blue
+        [255, 128, 0], // hat,  top    — orange
+        [0, 255, 255],  // hat,  bottom — cyan
+    ];
+    let mut out = Vec::with_capacity(16 * 8 * 4);
+    for y in 0..8u32 {
+        for x in 0..16u32 {
+            let q = usize::from(x >= 8) * 2 + usize::from(y >= 4);
+            let c = QUADRANT[q];
+            out.extend_from_slice(&[c[0], c[1], c[2], 255]);
+        }
+    }
+    out
 }
