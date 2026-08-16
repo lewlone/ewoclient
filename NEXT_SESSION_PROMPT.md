@@ -18,12 +18,19 @@ bearing, don't "helpfully" duplicate numbers back into it.
 
 **Everything is on `main` and pushed. Nothing else exists.**
 
-```
-main == origin/main == 6246a8e
+```bash
+git rev-list --left-right --count origin/main...main   # expect: 0   0
+git status --short                                     # expect: empty
+git branch                                             # expect: only main
+git worktree list                                      # expect: only main
 ```
 
-No other local branch, no other remote branch, no worktrees. Verified on the
-merged tree, not on the branches that fed it:
+**No exact sha is quoted here on purpose.** The first two drafts of this file
+named one, and each was wrong the moment it was committed — committing the
+prompt moves `HEAD` past the sha the prompt records. A file cannot name its own
+commit. Check the invariant instead; it stays true.
+
+Verified on the merged tree, not on the branches that fed it:
 
 - **3273 tests / 0 failures** across all **eight** rewo crates
   (world 1198, net 1162, gpu 290, data 228, app 222, mesh 45, proto 16,
