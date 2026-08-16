@@ -134,7 +134,7 @@ and M65 stayed hidden:
    incoming packet id is actually tested against.
 
 **Both instruments give the same answer, and it is a negative finding: the
-resolved-but-unreferenced set is empty.** Every one of the 118 resolved ids
+resolved-but-unreferenced set is empty.** Every one of the 119 resolved ids
 reaches a dispatch arm in `play.rs` or a `route_*` in `lib.rs`. So the gap is
 entirely in question (2) — 36 names that were never resolved.
 
@@ -642,13 +642,13 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 
 Stated explicitly, because the counts above are easy to over-read.
 
-- **It does not verify that the 118 handled packets are decoded correctly.**
+- **It does not verify that the 119 handled packets are decoded correctly.**
   It verifies that the id is resolved and that a dispatch arm tests it.
-  Correctness of those 118 is what the `*shot --check` gates and the unit tests
+  Correctness of those 119 is what the `*shot --check` gates and the unit tests
   cover, and they cover it unevenly: `inventoryshot` is exhaustive about the
   container packets, while `player_info_update`'s walk is graded only by unit
   tests inside `rewo-net`.
-- **It does not verify that the 118 are decoded *completely*.** §4 lists the
+- **It does not verify that the 119 are decoded *completely*.** §4 lists the
   known partials found by reading the arms; there may be more. Nothing
   mechanical distinguishes "consumed the body" from "read the first field" —
   and that includes the machine check in §1, which is why §4 exists.
