@@ -145,7 +145,7 @@ still learns that a green run is not evidence this client makes a sound.
 
 Current measurement, taken 2026-08-14 on `main` at `c538afd`, after the
 audio-verification landing (M150, `soundshot`, M139 and M151 all merged):
-**3272 tests, 0 failures** (**world 1198, net 1162, gpu 290, data 228, app 222,
+**3273 tests, 0 failures** (**world 1198, net 1162, gpu 290, data 228, app 222,
 mesh 45, proto 16, audio 112** — read off the runner per crate; measured
 2026-08-14 after M152–M157).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a

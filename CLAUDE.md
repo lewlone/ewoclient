@@ -2145,7 +2145,7 @@ note.*
 
 ---
 
-## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, particles, the first-person hand, the Velvet type stack, the container arc, the recipe book, chat, translated text, styled spans, the chat decoration, clickable text, and the scoreboard sidebar)
+## Rewo — from-scratch native Minecraft client (online play, native CEM, exact light/colour, dimensions, the combat + block-entity arcs, weather, particles, the first-person hand, the Velvet type stack, the container arc, the recipe book, chat, translated text, styled spans, the chat decoration, clickable text, the scoreboard sidebar, the tab list with faces and hearts, and two real client options)
 
 **[REWO_PLAN.md](REWO_PLAN.md) is the plan of record — a fresh session must
 read its §0.0 HANDOFF first** (it consolidates current state, what to do next,
@@ -2172,7 +2172,7 @@ does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
 **Everything is shipped and gated** as of 2026-08-14 (M157) —
-**3272 tests / 0 failures** (world 1198, net 1162, gpu 290, data 228, app 222,
+**3273 tests / 0 failures** (world 1198, net 1162, gpu 290, data 228, app 222,
 mesh 45, proto 16, **audio 112** — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
@@ -2182,6 +2182,19 @@ all **36** serverless gates green with 0
 validation errors, `live --render-check` **47/47** with validation ON and 0
 validation errors (r46 arrived with M147, **r47 with M151**), demo PNG
 `2cc56b4acbfb92cb`.
+**M152–M157 landed 2026-08-14** and closed every item `REWO_PLAN.md` §0.0 was
+carrying: **M152** `update_recipes` and the smithing quick-move — the last
+decline in the container arc (coverage **119 / 0 / 22**); **M153** the
+stereo-attenuation divergence as an owned decision the plan had asked for and
+nobody had made; **M154** a live bug — the client passed a literal `1.0` for
+`getMusicVolume()` under a comment asserting no biome declares the attribute,
+and `pale_garden` declares **0.0**, so music should be silent there and was
+not; **M155** the tab list's faces and hearts, where the "structural" reason
+M151 gave for the faces did not survive the code (two 8x8 CPU crops, not a
+64x64 GPU sample); **M156** the static audio decode on a worker, **measured at
+20.1 ms against a 50 ms tick**; and **M157** the two real client options — the
+third §0.0 named having never been an option at all.
+
 **The recipe book is closed** (M105–M107) and **M108–M111 shipped chat** —
 `ChatComponent`, the wrap under it, the `MessageSignatureCache` without which
 `delete_chat` cannot be read, the text, the backdrop fills (which took a colour
