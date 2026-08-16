@@ -164,8 +164,8 @@ total by hand — and read them **before** writing the sentence: M100 and M101
 were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **109/109**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, `sidebarshot` 17/17, **`tablistshot` 34/34** (M151,
-raised by M155), **`live --render-check` **47/47** with validation ON and 0
+34/34, `mobshot` 246/246, `sidebarshot` 17/17, **`tablistshot` 42/42** (M151,
+raised by M155 and M158), **`live --render-check` **47/47** with validation ON and 0
 validation errors** — r46 arrived with M147 and **r47 with M151**, and the whole
 thing reproduces with `python tools/render_check.py`, which stands up a fresh
 server, **builds first** (it used only to check the binary existed, so a source
@@ -182,7 +182,7 @@ time* and are correct as such. Re-measured from a cold start on 2026-08-08 by
 running every one, and again after M125, M126 and the M127–M134 integration:
 all green, **0 validation errors**; re-measured again on 2026-08-14, when the
 count reached **36** — `sidebarshot` (17) came from M132, **`soundshot`**
-(28 default / 48 under `--features audio`) and **`tablistshot`** (34, raised by M155) are the
+(28 default / 48 under `--features audio`) and **`tablistshot`** (42, raised by M155 and M158) are the
 two newest, and `blockentityshot` reads **177** rather than the 172 the list
 below records. Enumerate them rather
 than trusting a list, since the list is what rots:
@@ -192,7 +192,7 @@ rewo.exe --help | grep -E '^  [a-z]+shot|^  [a-z]+check'
 ```
 
 Their witness counts. The 2026-08-14 run added the two newest — **`soundshot`**
-(28 in a default build / 48 under `--features audio`) and **`tablistshot`** (34)
+(28 in a default build / 48 under `--features audio`) and **`tablistshot`** (42)
 — to the list re-measured by running all 34 on 2026-08-10 (M137).
 **Only two had drifted from the M124 list this replaced** — `titleshot` and
 `deathshot`, both moved by M130 and M137 — so the rest are unchanged rather than
@@ -350,10 +350,16 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   models as `CategoryVolumes` and does not surface — and which needs the
 >   slider widget M157 deliberately did not build, since neither of its two
 >   options is one.
-> * **The tab list's hearts have no PIXEL witness.** M155's eight are model-
->   level, driving the production emitters; nothing reads back a rendered
->   heart. `tablistshot` already builds a real `Gpu` with validation on, so the
->   harness is there.
+> * ~~**The tab list's hearts have no PIXEL witness.**~~ **DONE (M158), and
+>   this bullet understated it twice.** It said M155's eight witnesses were
+>   "model-level, **driving the production emitters**" — they were not: h0-h6
+>   drive `rewo_gpu::tab_list::heart_blits`, the arithmetic one crate down,
+>   while `tab_list_view::hearts` had no caller anywhere but the frame loop.
+>   And the **faces were in exactly the same state** and are not mentioned.
+>   Measured rather than argued (`tools/m158_gap.py`): replacing either
+>   emitter's body with `return Vec::new()` left the gate at **34/34 green**.
+>   `tablistshot` is **42/42** now and builds its icon list the way `live_cmd`
+>   does. See §15.
 >
 >
 > * **The tab list's two gaps, and the "structural" claim about the faces does
@@ -1785,6 +1791,34 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
    white overridden, and 12 of its 16 rows would differ under `round`, so that
    test proves the *rule*. Re-run the sweep after any milestone that adds a
    transcribed colour or magnitude the renderer and a gate both read.
+
+   **(M158) The same shape reaches GEOMETRY, and a pixel gate is where it
+   hides.** Seven new `tablistshot` witnesses predicted every *colour* from the
+   jar's own PNGs and then tested containment "inside the heart rects" — where
+   the rects came from the emitter under test. Two mutations therefore survived
+   the first battery: *stack every heart at the column's left edge*, and *draw
+   the sprite 7x7 instead of 9x9*. Both move the draw and the expectation
+   together. The fix (`h11`) predicts from the **layout's** `score_span`, which
+   `hearts` only reads, re-declares the pitch and sprite size as literals, and
+   detects a heart by differing from a no-hearts control rather than by any
+   rect — plus it carries **two pitches in one frame**, because a single-pitch
+   fixture cannot separate a wrong pitch from a wrong sprite size. The rule
+   generalises past colour: **if a witness asks the subject where to look, it
+   grades everything except where the subject looked.**
+
+0d. **(M158) A mutation battery routed through `cargo test` cannot grade a
+   `*shot` gate, and a 10/10 green battery is not evidence the gate sees
+   anything.** M155 shipped the tab list's hearts and faces with a ten-mutation
+   battery that passed — and every entry in it ran `cargo test -p <crate>
+   <filter>`, so it graded the arithmetic in `rewo_gpu::tab_list` and never
+   asked whether `tablistshot` could reach the emitters in `tab_list_view`. It
+   could not: `tools/m158_gap.py` shows both `hearts()` and `faces()`
+   replaceable by `return Vec::new()` with the gate green at 34/34. **Route a
+   battery through whatever you are claiming coverage from**, and if a
+   milestone ships both a gate change and a model change, the battery needs
+   entries of both kinds. A gate-routed battery also needs a **rebuild after
+   the restore** — the source going back does not rebuild the binary, so the
+   next mutation grades the previous mutant.
 
 0b. **(M92) A mutation harness that restores by `mv` silently grades the
    mutated binary.** `mv`/`cp` preserve the original file's mtime, which is
@@ -3301,6 +3335,152 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M158 — the tab list's hearts and faces reach a pixel, and the doc that said they never would (2026-08-16)
+
+§0.0 offered this as *"the tab list's hearts have no PIXEL witness — M155's
+eight are model-level, driving the production emitters"*. **Both halves of that
+sentence were wrong, and the gap was twice the size it describes.**
+
+`tab_list_view::hearts` and `tab_list_view::faces` each had exactly **one**
+caller in the whole tree — the frame loop — and nothing else called either: not
+`tablistshot`, which built its icon list from `icons()` alone, and not a unit
+test, since neither name appears twice in `tab_list_view.rs`. M155's h0–h6 do
+not drive the emitters at all; they drive `rewo_gpu::tab_list::heart_blits`,
+the arithmetic one crate down. And **the faces were in the same state**, which
+§0.0 did not mention.
+
+**Measured before anything was written** (`tools/m158_gap.py`): replacing each
+body with `return Vec::new()` leaves the gate at **34/34 green**. So both of
+M155's features could have been deleted whole and the only thing in the project
+that would have noticed is a human pressing Tab. That is M45's `install_shapes`
+failure in its exact shape — *a gate that reimplements a slice of the app's
+setup misses whatever the app adds to it* — and the first time it has landed on
+a feature that shipped with a mutation battery of its own. **M155's battery ran
+entirely through `cargo test`, so it never asked the question.**
+
+The gate now builds its icon list the way `live_cmd` does: `icons`, then
+`faces`, then `hearts`, in that order, because each later group draws over its
+own row.
+
+**Every colour the new witnesses predict is a literal read out of the jar's own
+PNGs**, not a constant the renderer shares (gotcha 0a), and they arrive
+unmodified — the readback carries `[255,19,19]` and `[212,175,55]` exactly, so
+nothing sits between the atlas and the frame.
+
+**The strongest witness is a NEGATIVE, and it fell out of the measurement rather
+than being designed.** `container.png` is 34 interior texels of `(40,40,40)`
+plus 20 outline texels of black; `full.png` has exactly 34 opaque texels and
+they cover the interior. So a correct two-layer draw shows the container's
+**outline**, the fill's red, and **no `(40,40,40)` anywhere**. Drop the
+container and the outline goes; drop the fill and the grey appears. Counting
+"some red arrived" sees neither.
+
+**The absorption detector is the art's own.** Read out of all eight heart PNGs:
+every one is achromatic in the blue axis (max |g−b| == 0 over every opaque
+texel) **except the absorbing pair, where it is 162**. So "green differs from
+blue" identifies a gold heart and cannot be satisfied by a red one, a container
+or a blink ghost — and under HEARTS no score digits are drawn at all, so the
+yellow `PLAYER_LIST_DEFAULT` that would otherwise match is absent by
+construction rather than by luck.
+
+**`hearts`'s own doc named a failure mode nothing graded** — *"a caller that
+rebuilt the map each frame would never blink at all, because a fresh
+`HealthState` is seeded with its own value and has nothing to catch up to"*.
+`h10` drives the real emitter three times down one map and once down a fresh
+one: 10 ghost blits against 0.
+
+#### The battery found the hole all seven new witnesses shared
+
+Two mutations survived the first run — *every heart stacks at the column's left
+edge*, and *the sprite is drawn 7x7 rather than 9x9* — for one reason: **`h7`,
+`h8` and `h9` all test "inside the heart rects", and the rects come from `hb`,
+the emitter under test.** Move every heart and the rects move with it; shrink
+the sprite and they shrink too. That is gotcha 0a in the shape M93q found it,
+and I had predicted every *colour* from the jar and then handed the *geometry*
+straight back to the implementation.
+
+`h11` is the answer and shares nothing with the emitter: it predicts from the
+**layout's** `score_span`, re-declares the pitch and sprite size as literals the
+way `check_transcription` re-declares `ref_columns`, and detects a heart by
+differing from the no-hearts control rather than by any rect. **Two rows in one
+frame carry two different pitches** — 22 health is eleven hearts at pitch 7 and
+20 is ten at pitch 8 — because a single-pitch fixture cannot tell a wrong pitch
+from a wrong sprite size. Observed `0..78` and `0..80` against a predicted
+`pitch * (n - 1) + 8`; a stacking client answers 8 for both. The contiguity half
+is the art's again: `container.png` is opaque in **all nine of its columns and
+rows**, so a correct row is a solid band, while a 7-px sprite on an 8-px pitch
+leaves one empty column between every pair.
+
+**The FACE witnesses had the identical hole and it was predicted rather than
+caught** — recorded as the weaker claim it is. `f1` and `f3` took their rects
+from `bare_b`/`up_b`, the emitter's own blits, so a face displaced from where
+the layout put it moves both together. Having just watched `h11` fix exactly
+that for the hearts, the mutation *"the blit lands a pixel right of the
+layout's own rect"* was written expecting it to survive, `f1` was changed to
+compare against `hl.entries[i].face` — which `tab_list::layout` produces and
+`faces` only reads — and the mutation then died against the fixed witness. So
+the battery confirms the fix rather than having found the fault.
+
+Two harness notes. The anchor-count guard earned its place: mutation 9 first
+reported `SKIP — anchor matched 0 times`, because the anchor had been copied
+from `hearts()`'s 16-space indentation for a line in `faces()` that has 12. And
+the final slice was cut off by the 10-minute tool cap mid-mutation — the
+`finally` restored cleanly and the tree was checked for markers before anything
+else, per gotcha -1a, but the summary line never printed and the two remaining
+mutations had to be re-run singly.
+
+#### Three of the seven were wrong before the code was
+
+The project's dominant failure mode, again, and all three were mine:
+
+* **`h8` compared two different scopes.** It counted the container's interior
+  grey over the *whole frame* and the outline black *inside the heart rects* —
+  and `(40,40,40)` is also the **ping bars'** grey, one column over. 540 of
+  them. Two halves of one witness have to share a scope or they are not about
+  the same thing.
+* **`h9` counted its subject's own highlights as evidence against itself.**
+  `absorbing_full.png` has three shades — `(212,175,55)`, `(212,162,0)` and
+  `(212,192,126)` — and a witness admitting only the dominant one reported the
+  other two as "something else is gold". The claim it should have made is
+  positional: every gold-family texel lies inside the rect of the one
+  `AbsorbingFull` blit.
+* **`f3` could not fire.** The flip is
+  `loaded_of(uuid) && is_upside_down_name(name)`, and the scene's players are
+  called TabMid / TabZulu / TabAlpha — **so toggling `loaded_of` flips
+  nothing**, and the flipped frame came back byte-identical to the upright one.
+  I had even written a comment acknowledging the names and then did nothing
+  about it. It needs a scene whose player really is called Dinnerbone, which is
+  now `dinnerbone_scene()`; the upright control is the same player *out of
+  render distance*, which is vanilla's own case and exercises the other
+  conjunct.
+
+#### And the doc that gave a reason
+
+`tab_list_view.rs`'s "What this module does NOT draw" still listed **both**
+features M155 had drawn, each with a detailed justification: *"Rewo has no
+GUI-side path that can sample a 64×64 skin at all"*, *"the HUD atlas is built
+once in `HudPass::new` with no runtime upload entry point"*. Both were false the
+moment `upload_face` landed twenty lines away. `tablistshot`'s `p11` carried the
+same claim in a detail string it printed on every green run, and §0.0 carried
+the third version of it.
+
+That is the fifth time in this log that **a comment was not decoration beside
+the code but the justification a later reader checks instead of it** (M102,
+M154, M93t, `any_enchantments`). The generalisable half: *a doc that records an
+absence should not record a reason for it* — the note ages gracefully and the
+reason does not.
+
+#### Measured
+
+`tablistshot` **34 → 42**, validation ON, 0 validation errors. Battery
+**12/12 killed**, in two rounds — the first left two survivors, which is what
+produced `h11`. Test counts unchanged at **3273** (M158 adds no unit tests: the
+emitters are graded end to end through pixels, and a second copy of that claim
+one crate down would be two things to rot). Demo PNG `2cc56b4acbfb92cb`
+byte-identical. `live --render-check` **not re-run, deliberately** — M158
+changes no production code, only the gate and three doc comments, and r47's
+`tab_list_icons_max == 3` reads `icons()`, which is untouched.
 
 ### M155–M157 — the tab list's gaps, the decode worker, and the two real options (2026-08-14)
 

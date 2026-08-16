@@ -2177,7 +2177,7 @@ mesh 45, proto 16, **audio 112** — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **109/109**, `inventoryshot` **158/158**, `itemshot` 75/75,
-`handshot` 34/34, `swingshot` 97/97, `tablistshot` 34/34, `soundshot` 28/48,
+`handshot` 34/34, `swingshot` 97/97, `tablistshot` **42/42**, `soundshot` 28/48,
 all **36** serverless gates green with 0
 validation errors, `live --render-check` **47/47** with validation ON and 0
 validation errors (r46 arrived with M147, **r47 with M151**), demo PNG
@@ -2194,6 +2194,27 @@ M151 gave for the faces did not survive the code (two 8x8 CPU crops, not a
 64x64 GPU sample); **M156** the static audio decode on a worker, **measured at
 20.1 ms against a 50 ms tick**; and **M157** the two real client options — the
 third §0.0 named having never been an option at all.
+
+**M158 landed 2026-08-16** and is a verification milestone rather than a
+feature: **M155's two emitters had no witness of any kind.**
+`tab_list_view::hearts` and `::faces` each had exactly one caller — the frame
+loop — and `tablistshot` called neither, building its icon list from `icons()`
+alone; no unit test called them either. Measured rather than argued
+(`tools/m158_gap.py`): replacing each body with `return Vec::new()` left the
+gate **34/34 green**, so both features could have been deleted whole. That is
+M45's `install_shapes` shape a fourth time, and the first on a feature that
+shipped with its own battery — **M155's ran entirely through `cargo test`, so it
+never asked.** §0.0's description was wrong twice over: it called M155's heart
+witnesses "model-level, driving the production emitters" (they drive
+`heart_blits`, one crate down) and did not mention the faces at all. Seven pixel
+witnesses now grade both, every predicted colour a literal read out of the jar's
+PNGs — and **the battery then found the hole all seven shared**: they took their
+rects from the emitter under test, so a client that stacked every heart at the
+column's left edge, or drew 7x7 sprites, survived. `h11` predicts from the
+*layout* instead and carries two pitches in one frame. Three of the seven were
+also wrong before the code was, the sharpest being a flip witness that **could
+not fire** because no player in the scene is named Dinnerbone. `tablistshot`
+34 → **42**, battery **12/12** killed over two rounds.
 
 **The recipe book is closed** (M105–M107) and **M108–M111 shipped chat** —
 `ChatComponent`, the wrap under it, the `MessageSignatureCache` without which
