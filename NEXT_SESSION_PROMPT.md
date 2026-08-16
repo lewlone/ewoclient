@@ -19,7 +19,7 @@ bearing, don't "helpfully" duplicate numbers back into it.
 **Everything is on `main` and pushed. Nothing else exists.**
 
 ```
-main == origin/main == 4013111
+main == origin/main == 6246a8e
 ```
 
 No other local branch, no other remote branch, no worktrees. Verified on the
