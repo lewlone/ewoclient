@@ -90,6 +90,42 @@ pub trait PcmStream {
     fn read(&mut self, samples: usize) -> Result<Vec<i16>, String>;
 }
 
+/// A stream that answers a format and never yields a sample (M159).
+///
+/// **A placeholder, and the alternative was worse.** When the streaming decode
+/// runs on [`crate::stream_worker::StreamWorker`], the worker owns the real
+/// `PcmStream` for its whole life and this side never reads one — but
+/// `StreamState` is the same type on both paths, so `stopped()`, the queue
+/// arithmetic and the tests need no fork. Making the field an `Option` instead
+/// would put a "which path am I on" branch into every one of those readers.
+///
+/// It reports the real format because `StreamState::buffer_samples` is derived
+/// from it, and returns empty from `read` because nothing calls it — a panic
+/// there would be a sharper signal but would turn a wiring slip into a crash on
+/// the audio path.
+pub struct ExhaustedStream {
+    channels: u16,
+    rate: u32,
+}
+
+impl ExhaustedStream {
+    pub fn new(channels: u16, rate: u32) -> ExhaustedStream {
+        ExhaustedStream {
+            channels: channels.max(1),
+            rate: rate.max(1),
+        }
+    }
+}
+
+impl PcmStream for ExhaustedStream {
+    fn format(&self) -> (u16, u32) {
+        (self.channels, self.rate)
+    }
+    fn read(&mut self, _samples: usize) -> Result<Vec<i16>, String> {
+        Ok(Vec::new())
+    }
+}
+
 /// `Channel.calculateBufferSize(format, seconds)` — one buffer, in **bytes**.
 ///
 /// ```java

@@ -199,9 +199,30 @@ impl CpalBackend {
         source: Box<dyn PcmSource>,
         worker_source: Option<Box<dyn PcmSource + Send>>,
     ) -> Result<CpalBackend, String> {
+        Self::open_with_workers(source, worker_source, None)
+    }
+
+    /// Both workers: the static decode pool (M156) and the streaming thread
+    /// (M159).
+    ///
+    /// **Two sources, not one shared behind a lock**, for the reason
+    /// `audio_backend` already states about the first pair: they are independent
+    /// readers of an immutable store, so nothing needs synchronising. A third
+    /// reader costs one more handle and keeps the streaming thread from ever
+    /// waiting on the static one — which is vanilla's arrangement, where the two
+    /// executors are entirely separate.
+    pub fn open_with_workers(
+        source: Box<dyn PcmSource>,
+        worker_source: Option<Box<dyn PcmSource + Send>>,
+        stream_source: Option<Box<dyn PcmSource + Send>>,
+    ) -> Result<CpalBackend, String> {
         let mut b = Self::open(source)?;
         if let Some(w) = worker_source {
             b.sink.buffers_mut().with_worker(w);
+        }
+        if let Some(s) = stream_source {
+            b.sink
+                .set_stream_worker(crate::stream_worker::StreamWorker::spawn(s));
         }
         Ok(b)
     }
