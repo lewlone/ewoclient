@@ -58,12 +58,22 @@ pub fn open(version: &str) -> Result<Box<dyn ChannelSink>, String> {
     // fallback; the other is moved onto the decode worker, which owns it. They
     // are independent readers of the same immutable store, so nothing is
     // shared and nothing needs a lock.
+    // THREE sources as of M159. One stays here for the synchronous fallback,
+    // one is moved onto the static decode worker (M156), and one onto the
+    // streaming thread. They are independent readers of the same immutable
+    // store, so nothing is shared and nothing needs a lock — and keeping them
+    // separate is also vanilla's arrangement, whose two executors never wait on
+    // each other.
     let (root2, index2) = (root.clone(), index.clone());
+    let (root3, index3) = (root.clone(), index.clone());
     let source: Box<dyn PcmSource> = Box::new(BytesSource(move |key: &str| index.read(&root, key)));
     let worker_source: Box<dyn PcmSource + Send> =
         Box::new(BytesSource(move |key: &str| index2.read(&root2, key)));
+    let stream_source: Box<dyn PcmSource + Send> =
+        Box::new(BytesSource(move |key: &str| index3.read(&root3, key)));
 
-    let backend = CpalBackend::open_with_worker(source, Some(worker_source))?;
+    let backend =
+        CpalBackend::open_with_workers(source, Some(worker_source), Some(stream_source))?;
     log::info!(
         "audio: device open at {} Hz. This says a stream was accepted; it does \
          not say anything is audible.",

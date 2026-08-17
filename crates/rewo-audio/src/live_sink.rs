@@ -104,6 +104,17 @@ struct StreamState {
     /// because `LoopingAudioStream` restarts instead of returning empty — which
     /// is what keeps an ambient bed alive with no special case here.
     ended: bool,
+    /// Buffers ASKED FOR, where [`Self::pushed_buffers`] counts those handed
+    /// over (M159).
+    ///
+    /// **The two are the same number while the decode is synchronous, and the
+    /// difference is the whole of the async queue invariant.** Vanilla's
+    /// `pumpBuffers(processed)` reads its buffers inside `updateStream`, so
+    /// requested and pushed can never disagree. With a worker they do, and the
+    /// gate has to use *this* one: gating on `pushed` instead re-asks for every
+    /// buffer already in flight on each tick, so one slow read becomes twenty
+    /// duplicate requests and the queue overshoots by whatever the latency was.
+    requested_buffers: u64,
 }
 
 /// What this side remembers about one channel.
@@ -131,6 +142,16 @@ struct ChannelState {
     dead: bool,
     /// Set when this channel is fed by a stream (M144).
     stream: Option<StreamState>,
+    /// This channel's current stream identity (M159).
+    ///
+    /// Bumped on every stream attach, and carried on every request to and
+    /// landing from [`crate::stream_worker::StreamWorker`]. **A static attach
+    /// needs no such thing and `pending`'s doc says why**; the argument does not
+    /// extend to a stream, because a stream chunk is a *position* rather than an
+    /// asset. A channel released and re-acquired for the same key wants the same
+    /// static buffer, but a chunk from the old stream's middle spliced into the
+    /// new stream's beginning is a different sound.
+    epoch: u64,
     /// The asset key this channel is waiting on, while a worker decodes it
     /// (M156). `None` when nothing is outstanding.
     ///
@@ -171,6 +192,7 @@ impl Default for ChannelState {
             played_at: None,
             dead: false,
             stream: None,
+            epoch: 0,
         }
     }
 }
@@ -185,6 +207,20 @@ pub struct LiveSink<S: PcmSource> {
     tick: i64,
     unresolved: u64,
     streams_failed: u64,
+    /// The streaming decode, when one has been attached (M159).
+    ///
+    /// **Optional, exactly as M156's static worker is**, and for the same
+    /// reason: with `None` every read happens inline on the caller's thread, so
+    /// all 36 gates and every witness in this crate stay synchronous and
+    /// deterministic. A milestone that made it mandatory would have made every
+    /// existing test a race.
+    streams: Option<crate::stream_worker::StreamWorker>,
+    /// Chunks that arrived for a stream that had already been replaced.
+    ///
+    /// Counted rather than merely dropped: this is the ordering hazard the
+    /// epoch exists for, and a number is what tells "it never happens" from "it
+    /// happens and is handled".
+    stale_chunks: u64,
 }
 
 impl<S: PcmSource> LiveSink<S> {
@@ -203,7 +239,32 @@ impl<S: PcmSource> LiveSink<S> {
             tick: 0,
             unresolved: 0,
             streams_failed: 0,
+            streams: None,
+            stale_chunks: 0,
         }
+    }
+
+    /// Move the streaming decode onto the sound-engine thread (M159).
+    ///
+    /// Without this every read happens inline on the caller's thread — see the
+    /// [`streams`](Self::streams) field.
+    pub fn with_stream_worker(
+        mut self,
+        worker: crate::stream_worker::StreamWorker,
+    ) -> LiveSink<S> {
+        self.set_stream_worker(worker);
+        self
+    }
+
+    /// [`Self::with_stream_worker`] by reference, for a caller that already owns
+    /// the sink inside something else.
+    pub fn set_stream_worker(&mut self, worker: crate::stream_worker::StreamWorker) {
+        self.streams = Some(worker);
+    }
+
+    /// Chunks discarded because their stream had been replaced (M159).
+    pub fn stale_chunks(&self) -> u64 {
+        self.stale_chunks
     }
 
     /// Ticks elapsed since this sink was built — the clock `stopped()` reads.
@@ -327,6 +388,41 @@ impl<S: PcmSource> LiveSink<S> {
     /// **The format is read before anything is pumped**, which is why
     /// [`PcmStream::format`] has to answer without decoding.
     fn attach_stream(&mut self, channel: ChannelId, key: &str, looping: bool) {
+        // M159 — with a worker, the open is a request and the format arrives
+        // with `Opened`. Vanilla's is a `supplyAsync` whose `thenAccept` does
+        // the attach, so "the open does not happen on the calling thread" is the
+        // transcription; what is deviant is that it shares the worker with the
+        // reads rather than using a pool (see `stream_worker`'s module doc).
+        if self.streams.is_some() {
+            let state = self.channels.entry(channel).or_default();
+            state.epoch = state.epoch.wrapping_add(1);
+            let skey = crate::stream_worker::StreamKey {
+                channel,
+                epoch: state.epoch,
+            };
+            // Torn down before the new one is asked for, so the worker is never
+            // holding two streams for one channel — `Channel.attachBufferStream`
+            // overwrites `this.stream`, dropping the old one.
+            state.stream = None;
+            state.frames = None;
+            state.dead = false;
+            state.played_at = None;
+            let looping_stream = looping;
+            let asset = key.to_string();
+            let sent = self
+                .streams
+                .as_mut()
+                .is_some_and(|w| w.open(skey, &asset, looping_stream));
+            if !sent {
+                // A dead worker is a failed attach, not a silent wedge. Same
+                // decision as `StreamWorker::pump`'s refusal to record.
+                let state = self.channels.entry(channel).or_default();
+                state.dead = true;
+                self.streams_failed += 1;
+                log::warn!("audio: stream worker is gone; cannot open {asset}");
+            }
+            return;
+        }
         let opened = self.buffers.open_stream(key, looping);
         let state = self.channels.entry(channel).or_default();
         match opened {
@@ -350,6 +446,7 @@ impl<S: PcmSource> LiveSink<S> {
                     pushed_samples: 0,
                     pushed_buffers: 0,
                     ended: false,
+                    requested_buffers: 0,
                 });
             }
             Err(e) => {
@@ -398,13 +495,19 @@ impl<S: PcmSource> LiveSink<S> {
         // Destructured so the ring and the channel map are borrowed separately:
         // calling `self.push()` while `self.channels` is borrowed would borrow
         // all of `self` twice.
-        let LiveSink { ring, channels, .. } = self;
+        let LiveSink {
+            ring,
+            channels,
+            streams: worker,
+            ..
+        } = self;
         let Some(state) = channels.get_mut(&channel) else {
             return;
         };
         let consumed = state.consumed_frames(now);
         let per_frame = state.channels.max(1) as u64;
         let (chans, rate) = (state.channels, state.rate);
+        let epoch = state.epoch;
         let Some(stream) = state.stream.as_mut() else {
             return;
         };
@@ -414,6 +517,21 @@ impl<S: PcmSource> LiveSink<S> {
         // ran on while its queue was empty would pump a burst to catch up.
         let processed = (consumed / buffer_frames).floor().max(0.0) as u64;
         let processed = processed.min(stream.pushed_buffers);
+        // M159 — with a worker, `pumpBuffers(n)` is a request rather than a
+        // read. The count is the same arithmetic; what changes is that the
+        // outstanding requests count against the queue, or a decode slower than
+        // a tick is re-asked for on every tick until it lands.
+        if let Some(w) = worker {
+            let outstanding = stream.requested_buffers - processed;
+            let want = (QUEUED_BUFFER_COUNT as u64).saturating_sub(outstanding);
+            if want > 0 && !stream.ended {
+                let skey = crate::stream_worker::StreamKey { channel, epoch };
+                if w.pump(skey, want as usize) {
+                    stream.requested_buffers += want;
+                }
+            }
+            return;
+        }
         while !stream.ended {
             if stream.pushed_buffers - processed >= QUEUED_BUFFER_COUNT as u64 {
                 break;
@@ -439,6 +557,100 @@ impl<S: PcmSource> LiveSink<S> {
                 Err(e) => {
                     log::warn!("audio: stream read failed on channel {channel}: {e}");
                     stream.ended = true;
+                }
+            }
+        }
+    }
+
+    /// Apply everything the stream worker has finished (M159).
+    ///
+    /// **Every landing is matched on the epoch first.** A chunk whose stream has
+    /// been replaced is dropped and counted; queueing it would splice audio from
+    /// one sound into another, which is the hazard the epoch exists for and the
+    /// one place this differs structurally from M156's static landing.
+    fn poll_streams(&mut self) {
+        let Some(w) = self.streams.as_mut() else {
+            return;
+        };
+        let events = w.drain();
+        for ev in events {
+            use crate::stream_worker::StreamEvent as E;
+            let key = match &ev {
+                E::Opened { key, .. }
+                | E::OpenFailed { key, .. }
+                | E::Chunk { key, .. }
+                | E::Ended { key } => *key,
+            };
+            let Some(state) = self.channels.get_mut(&key.channel) else {
+                // The channel was released entirely. Nothing to count: there is
+                // no stream to be stale against.
+                continue;
+            };
+            if state.epoch != key.epoch {
+                if matches!(ev, E::Chunk { .. }) {
+                    self.stale_chunks += 1;
+                }
+                continue;
+            }
+            match ev {
+                E::Opened {
+                    channels, rate, ..
+                } => {
+                    let bytes = crate::buffers::calculate_buffer_size(
+                        channels,
+                        rate,
+                        crate::buffers::BUFFER_DURATION_SECONDS,
+                    );
+                    state.channels = channels.max(1);
+                    state.rate = rate.max(1);
+                    state.frames = None;
+                    state.dead = false;
+                    state.stream = Some(StreamState {
+                        // Never read on this path — the worker owns the source
+                        // and does every read — but the field is the same one
+                        // the inline path fills, so the two shapes stay one
+                        // type and `stopped()` needs no fork.
+                        src: Box::new(crate::buffers::ExhaustedStream::new(channels, rate)),
+                        buffer_samples: (bytes / 2).max(1),
+                        pushed_samples: 0,
+                        pushed_buffers: 0,
+                        ended: false,
+                        requested_buffers: 0,
+                    });
+                    // `attachBufferStream`'s own `pumpBuffers(4)`, reached by the
+                    // same top-up the tick uses.
+                    //
+                    // **Provably redundant, and kept anyway.** M159's battery
+                    // mutated this line away and every witness stayed green;
+                    // the mutant is genuinely EQUIVALENT rather than untested,
+                    // because `tick` runs `poll_streams` and then
+                    // `update_streams`, so a stream opened here is pumped by the
+                    // tick's own sweep before the tick returns — same tick, same
+                    // four buffers. It stays because `attachBufferStream` primes
+                    // its own queue (`Channel.java:127`) and a reader should
+                    // find that here rather than have to derive it from the call
+                    // order two functions away.
+                    self.pump(key.channel);
+                }
+                E::OpenFailed { error, .. } => {
+                    state.stream = None;
+                    state.frames = None;
+                    state.dead = true;
+                    self.streams_failed += 1;
+                    log::warn!("audio: could not open stream: {error}");
+                }
+                E::Chunk { pcm, .. } => {
+                    let Some(stream) = state.stream.as_mut() else {
+                        continue;
+                    };
+                    stream.pushed_samples += pcm.samples.len() as u64;
+                    stream.pushed_buffers += 1;
+                    let _ = self.ring.push(Command::Queue(key.channel, pcm));
+                }
+                E::Ended { .. } => {
+                    if let Some(stream) = state.stream.as_mut() {
+                        stream.ended = true;
+                    }
                 }
             }
         }
@@ -530,6 +742,10 @@ impl<S: PcmSource> ChannelSink for LiveSink<S> {
         // M156 — before the streams, so a decode that landed this tick is
         // audible from this tick rather than the next.
         self.poll_decodes();
+        // M159 — and the stream landings before the pump, for the same reason:
+        // a chunk that arrived this tick counts against the queue this tick, so
+        // `updateStream` does not re-ask for it.
+        self.poll_streams();
         self.update_streams();
     }
 
@@ -1579,6 +1795,326 @@ mod tests {
         assert_eq!(sink.unresolved, 1);
     }
 
+
+    // ── M159: the streaming decode on the sound-engine thread ───────────────
+    //
+    // These drive the REAL worker over a real thread. The source blocks on a
+    // mutex the test holds, which is M156's `Counting` shape: it makes "the
+    // decode has not finished yet" a state the test enters deliberately rather
+    // than one it races for.
+
+    /// A streaming source that records which thread read it, and can be held.
+    struct Watched {
+        /// Held by the test to keep every read pending.
+        gate: Arc<std::sync::Mutex<()>>,
+        /// Thread ids that have called `read`.
+        readers: Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>>,
+    }
+
+    struct WatchedStream {
+        gate: Arc<std::sync::Mutex<()>>,
+        readers: Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>>,
+        /// Chunks left before `read` returns empty. `None` never runs out,
+        /// which is `LoopingAudioStream`'s behaviour.
+        remaining: Option<u32>,
+    }
+
+    impl crate::buffers::PcmStream for WatchedStream {
+        fn format(&self) -> (u16, u32) {
+            (1, 44_100)
+        }
+        fn read(&mut self, samples: usize) -> Result<Vec<i16>, String> {
+            let _g = self.gate.lock().unwrap();
+            self.readers
+                .lock()
+                .unwrap()
+                .push(std::thread::current().id());
+            if let Some(n) = self.remaining.as_mut() {
+                if *n == 0 {
+                    // `AudioStream.read` returning nothing is exhaustion.
+                    return Ok(Vec::new());
+                }
+                *n -= 1;
+            }
+            Ok(vec![1i16; samples])
+        }
+    }
+
+    impl PcmSource for Watched {
+        fn open(&mut self, _key: &str) -> Result<Pcm, String> {
+            Err("static not supported".into())
+        }
+        fn open_stream(
+            &mut self,
+            key: &str,
+            _looping: bool,
+        ) -> Result<Box<dyn crate::buffers::PcmStream>, String> {
+            if key == "bad" {
+                return Err("no such asset".into());
+            }
+            Ok(Box::new(WatchedStream {
+                gate: Arc::clone(&self.gate),
+                readers: Arc::clone(&self.readers),
+                // Two chunks and then empty, so `Ended` is reachable.
+                remaining: (key == "short").then_some(2),
+            }))
+        }
+    }
+
+    /// Tick until `f` holds, or fail — never a bare sleep, so a slow machine
+    /// waits and a broken one fails rather than flaking.
+    fn tick_until(
+        sink: &mut LiveSink<Watched>,
+        what: &str,
+        mut f: impl FnMut(&LiveSink<Watched>) -> bool,
+    ) {
+        for _ in 0..400 {
+            if f(sink) {
+                return;
+            }
+            sink.tick();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    type Readers = Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>>;
+
+    fn watched_sink() -> (LiveSink<Watched>, Arc<std::sync::Mutex<()>>, Readers) {
+        let gate = Arc::new(std::sync::Mutex::new(()));
+        let readers: Readers = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let worker = crate::stream_worker::StreamWorker::spawn(Watched {
+            gate: Arc::clone(&gate),
+            readers: Arc::clone(&readers),
+        });
+        let ring = CommandRing::with_capacity(DEFAULT_RING_CAPACITY);
+        let sink = LiveSink::new(
+            ring,
+            Watched {
+                gate: Arc::clone(&gate),
+                readers: Arc::clone(&readers),
+            },
+        )
+        .with_stream_worker(worker);
+        (sink, gate, readers)
+    }
+
+    fn drain_ring(sink: &LiveSink<Watched>) -> Vec<Command> {
+        let mut out = Vec::new();
+        while let Some(c) = sink.ring.pop() {
+            out.push(c);
+        }
+        out
+    }
+
+    /// **The streaming decode does not run on the caller's thread**, which is
+    /// the whole milestone.
+    ///
+    /// Asserted as a thread IDENTITY rather than as a duration: a timing witness
+    /// would pass on a fast machine with the decode still inline, and this
+    /// cannot.
+    #[test]
+    fn the_streaming_decode_runs_off_the_callers_thread() {
+        let (mut sink, _gate, readers) = watched_sink();
+        sink.submit(1, &ChannelCall::AttachBufferStream("music".into(), false));
+        sink.submit(1, &ChannelCall::Play);
+        tick_until(&mut sink, "a chunk to be read", |_| {
+            !readers.lock().unwrap().is_empty()
+        });
+        let here = std::thread::current().id();
+        let seen = readers.lock().unwrap().clone();
+        assert!(!seen.is_empty(), "something read the stream");
+        assert!(
+            seen.iter().all(|t| *t != here),
+            "every read happened on the worker, not on {here:?}: {seen:?}"
+        );
+    }
+
+    /// …and the same claim in the other direction, so the witness above is
+    /// distinguishing the two paths rather than observing one.
+    ///
+    /// **Without a worker the reader IS this thread.** A pair like this is what
+    /// M158's battery showed to be missing when a witness and its subject share
+    /// a source of truth: one side alone cannot tell "off the thread" from
+    /// "never read at all".
+    #[test]
+    fn without_a_worker_the_decode_is_still_inline() {
+        let gate = Arc::new(std::sync::Mutex::new(()));
+        let readers: Readers = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ring = CommandRing::with_capacity(DEFAULT_RING_CAPACITY);
+        let mut sink = LiveSink::new(
+            ring,
+            Watched {
+                gate: Arc::clone(&gate),
+                readers: Arc::clone(&readers),
+            },
+        );
+        sink.submit(1, &ChannelCall::AttachBufferStream("music".into(), false));
+        let seen = readers.lock().unwrap().clone();
+        assert!(!seen.is_empty(), "the attach primed the queue inline");
+        assert!(
+            seen.iter().all(|t| *t == std::thread::current().id()),
+            "and every read was on this thread"
+        );
+    }
+
+    /// **A chunk for a replaced stream is dropped, not queued.**
+    ///
+    /// The hazard the epoch exists for. Re-attaching bumps the epoch, so chunks
+    /// decoded for the first stream arrive against the second — and queueing
+    /// them would splice one sound's middle into another's beginning. Held at
+    /// the gate so the re-attach provably happens while the first stream's reads
+    /// are still in flight.
+    #[test]
+    fn a_chunk_for_a_replaced_stream_is_dropped_rather_than_queued() {
+        let (mut sink, gate, _readers) = watched_sink();
+        let held = gate.lock().unwrap();
+        sink.submit(1, &ChannelCall::AttachBufferStream("music".into(), false));
+        sink.submit(1, &ChannelCall::Play);
+        // Let the OPEN land and the four pumps be requested — the open does not
+        // take the gate, only the reads do.
+        for _ in 0..40 {
+            sink.tick();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // …and now replace the stream while those reads are still blocked.
+        sink.submit(1, &ChannelCall::AttachBufferStream("music".into(), false));
+        drop(held);
+
+        tick_until(&mut sink, "the stale chunks to arrive", |s| {
+            s.stale_chunks() > 0
+        });
+        assert!(
+            sink.stale_chunks() > 0,
+            "chunks from the first stream were recognised as stale"
+        );
+    }
+
+    /// **The queue invariant counts what is IN FLIGHT, not what has landed.**
+    ///
+    /// With the reads held, nothing lands — so a gate written against
+    /// `pushed_buffers` re-asks for four buffers on every tick, and forty ticks
+    /// would queue far more than the queue holds. Counting requests holds it at
+    /// `QUEUED_BUFFER_COUNT`.
+    #[test]
+    fn a_slow_read_is_not_re_requested_on_every_tick() {
+        let (mut sink, gate, _readers) = watched_sink();
+        let held = gate.lock().unwrap();
+        sink.submit(1, &ChannelCall::AttachBufferStream("music".into(), false));
+        sink.submit(1, &ChannelCall::Play);
+        for _ in 0..40 {
+            sink.tick();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let requested = sink
+            .channels
+            .get(&1)
+            .and_then(|s| s.stream.as_ref())
+            .map(|s| s.requested_buffers)
+            .unwrap_or(0);
+        assert!(
+            requested > 0,
+            "the stream was opened and its first pump requested"
+        );
+        assert!(
+            requested <= QUEUED_BUFFER_COUNT as u64,
+            "forty ticks with nothing landing asked for {requested} buffers, not \
+             more than the {QUEUED_BUFFER_COUNT} the queue holds"
+        );
+        drop(held);
+    }
+
+    /// **A stream that fails to open marks the channel dead rather than wedging
+    /// it**, and the failure arrives asynchronously like everything else here.
+    #[test]
+    fn a_stream_that_cannot_be_opened_releases_its_channel() {
+        let (mut sink, _gate, _readers) = watched_sink();
+        sink.submit(1, &ChannelCall::AttachBufferStream("bad".into(), false));
+        sink.submit(1, &ChannelCall::Play);
+        tick_until(&mut sink, "the open to fail", |s| {
+            s.stopped(1) == Some(RELEASE_AFTER_A_FAILED_ATTACH)
+        });
+        assert_eq!(sink.stopped(1), Some(RELEASE_AFTER_A_FAILED_ATTACH));
+    }
+
+    /// **A chunk reaches the ring**, so the path is end to end rather than a
+    /// worker talking to itself.
+    #[test]
+    fn a_decoded_chunk_reaches_the_ring_as_a_queue_command() {
+        let (mut sink, _gate, _readers) = watched_sink();
+        sink.submit(1, &ChannelCall::AttachBufferStream("music".into(), false));
+        sink.submit(1, &ChannelCall::Play);
+        let mut queued = 0usize;
+        for _ in 0..400 {
+            sink.tick();
+            queued += drain_ring(&sink)
+                .into_iter()
+                .filter(|c| matches!(c, Command::Queue(1, _)))
+                .count();
+            if queued >= QUEUED_BUFFER_COUNT {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            queued >= QUEUED_BUFFER_COUNT,
+            "the four primed buffers reached the ring ({queued} did)"
+        );
+    }
+
+    /// **A finite stream ends, and its channel is given back.**
+    ///
+    /// The battery is what asked for this: with a source that never runs out,
+    /// `Ended` never fires, and two mutations — dropping the exhaustion report
+    /// and leaving an ended stream's requests counted in flight — both survived
+    /// against a fixture that could not reach them. `"short"` yields two chunks
+    /// and then empty, which is `AudioStream.read` returning nothing.
+    #[test]
+    fn a_finite_stream_reports_its_end_and_releases_the_channel() {
+        let (mut sink, _gate, _readers) = watched_sink();
+        sink.submit(1, &ChannelCall::AttachBufferStream("short".into(), false));
+        sink.submit(1, &ChannelCall::Play);
+        tick_until(&mut sink, "the stream to run out", |s| {
+            s.channels
+                .get(&1)
+                .and_then(|c| c.stream.as_ref())
+                .is_some_and(|st| st.ended)
+        });
+        // …and once drained it is stopped, which is what hands the channel back.
+        tick_until(&mut sink, "the drained stream to report stopped", |s| {
+            s.stopped(1) == Some(true)
+        });
+        assert_eq!(sink.stopped(1), Some(true));
+    }
+
+    /// **An ended stream stops counting its unanswered requests as in flight.**
+    ///
+    /// The worker answers a `Pump` of four with two chunks and an `Ended`, so
+    /// two requests are never going to be answered. Leaving them counted would
+    /// make the key look permanently busy — and since the count is keyed by
+    /// `StreamKey`, a channel re-used for a new stream at a later epoch would be
+    /// unaffected, which is exactly why this needs its own witness rather than
+    /// riding the epoch one.
+    #[test]
+    fn an_ended_stream_leaves_nothing_counted_in_flight() {
+        let (mut sink, _gate, _readers) = watched_sink();
+        sink.submit(1, &ChannelCall::AttachBufferStream("short".into(), false));
+        sink.submit(1, &ChannelCall::Play);
+        tick_until(&mut sink, "the stream to run out", |s| {
+            s.channels
+                .get(&1)
+                .and_then(|c| c.stream.as_ref())
+                .is_some_and(|st| st.ended)
+        });
+        let epoch = sink.channels.get(&1).map(|c| c.epoch).unwrap_or(0);
+        let key = crate::stream_worker::StreamKey { channel: 1, epoch };
+        assert_eq!(
+            sink.streams.as_ref().map(|w| w.inflight(key)),
+            Some(0),
+            "the two requests the ended stream will never answer are not still \
+             counted against its queue"
+        );
+    }
 }
 
 /// **The whole chain, with the device removed: a decoded packet in, audible

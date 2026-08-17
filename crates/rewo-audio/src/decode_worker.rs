@@ -33,8 +33,13 @@
 //!
 //! The "11 MB" figure in this milestone's brief is `music.end`, which is
 //! **streamed** — its inline cost is an open plus four one-second chunks, not
-//! 11 MB of decode. Measured against the real `sounds.json`, 41 of 578
-//! `minecraft/sounds/` variants are streamed.
+//! 11 MB of decode.
+//!
+//! **The "41 of 578" this paragraph used to give was wrong** (corrected M159).
+//! Re-counted against the index 26.2 actually uses: **344 streamed variant
+//! entries of 7,963**, or **98 distinct names of 4,843**. M143's `344 of 8,024`
+//! was right all along — 8,024 counts the 61 `type: "event"` redirects M66
+//! records and 7,963 excludes them.
 
 use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, Sender};

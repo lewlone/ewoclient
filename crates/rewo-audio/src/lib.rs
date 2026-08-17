@@ -31,3 +31,4 @@ pub mod device;
 pub mod live_sink;
 pub mod mixer;
 pub mod quantise;
+pub mod stream_worker;
