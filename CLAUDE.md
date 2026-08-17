@@ -2172,8 +2172,8 @@ does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
 **Everything is shipped and gated** as of 2026-08-14 (M157) —
-**3273 tests / 0 failures** (world 1198, net 1162, gpu 290, data 228, app 222,
-mesh 45, proto 16, **audio 112** — EIGHT crates now, read off the runner per
+**3281 tests / 0 failures** (world 1198, net 1162, gpu 290, data 228, app 222,
+mesh 45, proto 16, **audio 120** — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **109/109**, `inventoryshot` **158/158**, `itemshot` 75/75,
@@ -2194,6 +2194,37 @@ M151 gave for the faces did not survive the code (two 8x8 CPU crops, not a
 64x64 GPU sample); **M156** the static audio decode on a worker, **measured at
 20.1 ms against a 50 ms tick**; and **M157** the two real client options — the
 third §0.0 named having never been an option at all.
+
+**M159 landed 2026-08-17 — the streaming decode moved off the client tick, and
+the measurement inverted the milestone's own brief.** M156 moved the static
+decode and left this half; §0.0 described it as "modelling `ChannelAccess`'s
+one-thread discipline". Measured first over all **98 streamed variants**: a
+steady-state refill is **0.6 ms**, and the expensive event is *starting* a
+stream — open plus prime, ~4.7 ms warm and **~12 ms cold**, in one hitch, and
+every music track is a cold first touch. So the refills the brief names are the
+cheap half and **the open moved too**, which is also what vanilla does
+(`getStream` is a `supplyAsync`). It is a far smaller cost than M156's 20.1 ms
+static decode, and both halves moved because vanilla runs neither on the client
+thread rather than because either threatened a frame. Three things the
+transcription could not copy, each recorded: chunks return to `LiveSink` instead
+of going to the device, because **`CommandRing` is single-producer by
+construction**; the open shares the single worker where vanilla uses a pool; and
+**a stream needs an EPOCH where M156's static `pending` documents at length that
+it needs none** — a static payload is an asset key and a re-acquired channel
+wants that same buffer, while a stream chunk is a *position*, so a late one
+would splice the middle of a track into its beginning. The queue invariant also
+needed a second counter, because asynchronously "asked for" and "landed" stop
+agreeing and gating on the latter re-asks for everything in flight every tick.
+Battery **9/10 with one proven equivalent** (the explicit prime at the open is
+redundant, because `tick` runs the landing and the sweep in that order — kept
+anyway, since `attachBufferStream` primes its own queue). Two of its three
+survivors were a fixture whose source **never returned empty**, so exhaustion had
+no witness. It also corrected a wrong measurement inside M156's own "measure
+first" paragraph: *"41 of 578"* streamed variants is neither of the real
+figures (**344 of 7,963** entries, or **98 of 4,843** names), and **M143's `344
+of 8,024` three milestones earlier was right**. `rewo-audio` 112 -> **120**
+tests; `soundshot` 28/28 default and 48/48 with audio; containment re-verified
+with `cargo tree` — a default build still links **0** audio crates.
 
 **M158 landed 2026-08-16** and is a verification milestone rather than a
 feature: **M155's two emitters had no witness of any kind.**

@@ -145,9 +145,9 @@ still learns that a green run is not evidence this client makes a sound.
 
 Current measurement, taken 2026-08-14 on `main` at `c538afd`, after the
 audio-verification landing (M150, `soundshot`, M139 and M151 all merged):
-**3273 tests, 0 failures** (**world 1198, net 1162, gpu 290, data 228, app 222,
-mesh 45, proto 16, audio 112** — read off the runner per crate; measured
-2026-08-14 after M152–M157).
+**3281 tests, 0 failures** (**world 1198, net 1162, gpu 290, data 228, app 222,
+mesh 45, proto 16, audio 120** — read off the runner per crate; measured
+2026-08-17 after M159).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -340,11 +340,16 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   outstanding item no machine can do.** M156 changed *when* audio decodes and
 >   M157 changed *how often* music starts; neither has been heard. Everything a
 >   gate can check about audio passes and that is not the same claim.
-> * **The streaming decode.** M156 moved the static half deliberately, because
->   vanilla's streaming decode is a **single daemon thread** rather than a pool
->   and a unified pool would diverge. Moving it means modelling
->   `ChannelAccess`'s one-thread discipline, and its hazards are ordering
->   against `stop_sound` rather than the two M156 hit.
+> * ~~**The streaming decode.**~~ **DONE (M159)** — and the measurement inverted
+>   the shape this bullet describes. The refills it names are the CHEAP half
+>   (0.6 ms per stream per second); the expensive event is *starting* a stream,
+>   open plus prime, ~4.7 ms warm and **~12 ms cold**, so the open moved too —
+>   which is also what vanilla does. Both hazards were real: the ordering one
+>   needed an **epoch**, because a stream chunk is a *position* where M156's
+>   static `pending` is an asset key, and the queue invariant needed a second
+>   counter, because asynchronously "asked for" and "landed" stop agreeing. One
+>   thing it could not copy: chunks return to `LiveSink` rather than going to the
+>   device, because `CommandRing` is single-producer by construction. See §15.
 > * **The rest of the options.** Two are real now; vanilla has roughly eighty.
 >   The next natural group is `Options.soundSourceVolumes`, which Rewo already
 >   models as `CategoryVolumes` and does not surface — and which needs the
@@ -3336,6 +3341,113 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M159 — the streaming decode on the sound-engine thread, and the half of it that is cheap (2026-08-17)
+
+M156 moved the STATIC decode to a worker and left this half deliberately,
+recording that vanilla has **two executors of different shapes** and only one is
+a pool. §0.0 carried it forward as "modelling `ChannelAccess`'s one-thread
+discipline, not adding workers", with two named hazards.
+
+**Measured first, because M156's own entry says its brief had no number and that
+mattered.** Over all **98 streamed variants** in the 26.2 store, warm:
+
+| | mean | worst |
+|---|---|---|
+| open (file read + Ogg headers) | 2.3 ms | 3.3 ms |
+| prime — the four `attachBufferStream` pumps | 2.5 ms | 6.3 ms |
+| one steady-state refill | 0.6 ms | 0.9 ms |
+
+**The measurement inverted the briefed shape.** The refills — the thing "move
+the streaming decode" names — are the *cheap* half at 0.6 ms per stream per
+second. The expensive event is **starting** a stream: open plus prime, ~4.7 ms
+warm and **~12 ms cold**, in one hitch, and every music track is a cold first
+touch. So the open moved too, which is also what vanilla does
+(`SoundEngine.java:436-439` wraps it in `supplyAsync`).
+
+**And this is a much smaller cost than M156's, which is worth saying rather than
+dressing up.** The largest static decode was 20.1 ms against a 50 ms tick. Both
+halves moved because vanilla runs neither on the client thread, not because
+either was threatening a frame.
+
+**Two runs of the same measurement disagreed by 4x and both were right.** The
+first reported the open at 9.4 ms, the second at 2.3 ms — a cold page cache
+against a warm one. Reporting either alone is this project's recurring detector
+error; `examples/measure_stream.rs` now says to run it twice and records both.
+
+#### What the transcription could not copy, and why
+
+**The chunks come back to `LiveSink` instead of going to the device.** Vanilla's
+sound-engine thread calls `alSourceQueueBuffers` itself. This thread cannot:
+`CommandRing` is **single-producer by construction** — that is the whole of its
+safety argument, spelled out in its own `unsafe impl` comment — and `LiveSink`
+is the producer. So a decoded chunk waits for the next tick. With four seconds
+queued against a 50 ms tick that is 1.25% of the slack.
+
+**The open shares the single worker where vanilla uses a pool.** A stated
+deviation, and it buys something: the `PcmStream` is created and read on one
+thread and never crosses a boundary after that, which is `Channel.stream`'s own
+lifetime.
+
+**A stream needs an EPOCH where a static decode does not** — and M156's
+`ChannelState::pending` documents at length why *it* needs none. That argument
+does not extend: `pending` is an asset key, and a channel re-acquired for the
+same key wants that same buffer anyway. A stream chunk is a **position**. A
+channel released and re-acquired for the same key starts a new stream at 0, and
+a late chunk from the old one would splice the middle of a track into its
+beginning. Same shape of hazard, opposite answer, for a reason that is visible
+only once you ask what the payload *is*.
+
+**The queue invariant needed a second counter.** M144's rule is that the queue
+holds a BUFFER count, not a duration; vanilla's `pumpBuffers(processed)` reads
+inside `updateStream`, so requested and pushed can never disagree. Asynchronously
+they do, and the gate has to gate on **requested** — gating on pushed re-asks for
+every buffer already in flight on every tick, so one slow read becomes twenty
+duplicate requests.
+
+#### The battery found three gaps and one of them was not a gap
+
+10 mutations, **9 killed, 1 proven equivalent**.
+
+Two survivors were a fixture that could not reach its claim: the test source
+**never returned empty**, so `Ended` never fired and neither "a finite stream
+reports its end" nor "an ended stream stops counting its unanswered requests"
+had a witness. A `"short"` key that yields two chunks and then empty fixed both.
+
+The third is genuinely **equivalent**, not untested. Mutating away the explicit
+`pump` at the open changes nothing, because `tick` runs `poll_streams` and then
+`update_streams` — a stream opened in a landing is pumped by the tick's own
+sweep before that same tick returns. It is kept anyway, because
+`attachBufferStream` primes its own queue (`Channel.java:127`) and a reader
+should find that at the attach rather than derive it from a call order two
+functions away. The equivalence is recorded in both the code and the battery.
+
+**The anchor-count guard earned its place again**: extending the comment above
+that statement turned the mutation into a silent `SKIP`, reported rather than
+scored, exactly as M158's indentation slip was.
+
+#### A wrong measurement inside a "measure first" paragraph
+
+M156's entry says *"only 41 of 578 `minecraft/sounds/` variants are"* streamed.
+Re-counted against the index 26.2 actually uses: **344 streamed variant entries
+of 7,963**, or **98 distinct names of 4,843**. Neither of M156's numbers matches
+any population I can construct — and **M143's `344 of 8,024`, three milestones
+earlier in the same document, was right**: 8,024 counts the 61 `type: "event"`
+redirects M66 records, which 7,963 excludes. Corrected in `REWO_PLAN` and in
+`decode_worker`'s module doc, both of which carried it.
+
+#### Measured
+
+`rewo-audio` **112 -> 120 tests**. Battery 9/10 + 1 proven equivalent.
+`soundshot` **28/28** default and **48/48** under `--features audio`.
+Containment re-verified the way M143 established it — `cargo tree`, not an
+assertion: a default build links **0** of {cpal, symphonia, rewo-audio} and the
+audio build links 15. Demo PNG `2cc56b4acbfb92cb` byte-identical.
+`live --render-check` not re-run — no render path changed.
+
+**Nobody has heard any of this.** The listening pass is still the user's, and
+M159 changes *when* streaming audio decodes, which is one more thing in the
+"green suite, ungraded by any machine" column.
+
 ### M158 — the tab list's hearts and faces reach a pixel, and the doc that said they never would (2026-08-16)
 
 §0.0 offered this as *"the tab list's hearts have no PIXEL witness — M155's
@@ -3519,8 +3631,13 @@ first sets `last_update_tick = tick` and the second then reads `0 > 20`.
 had no number and its own research said so: the largest static decode is
 `mob/enderdragon/end.ogg` at **20.1 ms**, against a 50 ms tick — 40% of one
 tick on the thread that also runs physics and the render loop. The "11 MB" in
-the brief is `music.end`, which is **streamed**; only 41 of 578
-`minecraft/sounds/` variants are.
+the brief is `music.end`, which is **streamed**. *(That sentence continued
+"only 41 of 578 `minecraft/sounds/` variants are", and **M159 re-measured it as
+wrong**: the store has **344 streamed variant entries of 7,963**, or **98
+distinct names of 4,843**. Neither of M156's numbers matches anything, and
+M143's **344 of 8,024** three milestones earlier was right — 8,024 counts the 61
+`type: "event"` redirects M66 records, which 7,963 excludes. A measurement in
+the one paragraph whose point is "measure first".)*
 
 **"vanilla's `supplyAsync`" describes half of what vanilla does.**
 `getCompleteBuffer` wraps the whole decode of a STATIC sound; `getStream` wraps
