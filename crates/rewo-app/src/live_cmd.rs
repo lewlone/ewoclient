@@ -590,6 +590,15 @@ impl RenderCheck {
     }
 
     /// Print one row per witness; `true` if every one passed.
+    /// Witnesses `live --render-check` declares (M160).
+    ///
+    /// **A shared, merge-silent resource, which is why it is declared at all.**
+    /// See the seam block at the bottom of [`Self::report`]. Raise it in the
+    /// same commit that adds a row, and take the next free id from
+    /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
+    /// "the highest one I can see" — that is how fifteen specs all chose r48.
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 47;
+
     fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
         let mut rows: Vec<(&str, bool, String)> = Vec::new();
@@ -1115,6 +1124,31 @@ impl RenderCheck {
             format!("{vuids} errors"),
         );
 
+        // ── M160: the witness namespace is a SHARED, MERGE-SILENT resource ──
+        //
+        // Until this block existed, `report` ended `pass == rows.len()` with no
+        // declared count and no uniqueness check — so two branches could each
+        // add an `r48`, git would merge both cleanly, and the gate would print
+        // `48/48` while grading one of them twice and the other never.
+        //
+        // **That is not hypothetical.** M127-M134's integration lost r42 to
+        // exactly this (three branches minting the same id, §0.0), and a
+        // 20-agent survey in 2026-08-17 found **fifteen** independent specs all
+        // claiming `r48`. A conflict git can see is a good outcome; this one it
+        // cannot.
+        //
+        // So: ids are parsed out of the names, and the run fails closed on a
+        // duplicate, a gap, or a count that has moved without the constant
+        // moving with it. All three are things a merge produces and no pixel
+        // can show.
+        let seam = witness_seam_faults(
+            &rows.iter().map(|(n, _, _)| *n).collect::<Vec<_>>(),
+            Self::EXPECTED_RENDER_CHECK_WITNESSES,
+        );
+        for fault in &seam {
+            println!("[rendercheck] SEAM FAIL {fault}");
+        }
+        let seam_ok = seam.is_empty();
         let mut pass = 0usize;
         for (name, ok, detail) in &rows {
             println!(
@@ -1126,7 +1160,150 @@ impl RenderCheck {
             }
         }
         println!("[rendercheck] {pass}/{} witnesses", rows.len());
-        pass == rows.len()
+        pass == rows.len() && seam_ok
+    }
+}
+
+/// Faults in `live --render-check`'s witness namespace (M160).
+///
+/// **The namespace is a shared, MERGE-SILENT resource, and that is the whole
+/// reason this exists.** Until M160, `report` ended `pass == rows.len()` with no
+/// declared count and no uniqueness check — so two branches could each add an
+/// `r48`, git would merge both cleanly, and the gate would print `48/48` while
+/// grading one of them twice and the other never.
+///
+/// That is not hypothetical. The M127-M134 integration lost r42 to exactly this
+/// (`REWO_PLAN.md` §0.0), and a 20-agent survey on 2026-08-17 found **fifteen**
+/// independent specs all claiming `r48` — because every one of them picked "the
+/// highest id I can see plus one" from the same pre-merge tree.
+///
+/// Three faults, each of which a merge produces and no pixel can show:
+///
+/// * a **duplicate** id — two milestones minted the same number;
+/// * a **count** that has moved without [`RenderCheck::EXPECTED_RENDER_CHECK_WITNESSES`]
+///   moving with it, which is what catches a row silently lost to a conflict
+///   resolution;
+/// * a **gap** in the sequence — a deleted row whose id was never reclaimed,
+///   which is how the *next* milestone picks a number that looks free and is not.
+///
+/// Free-standing rather than a method on `RenderCheck` because `report` needs a
+/// live session and a server, so anything inside it is untestable by
+/// construction — M97's finding, applied for the fifth time in this repo.
+pub(crate) fn witness_seam_faults(names: &[&str], expected: usize) -> Vec<String> {
+    let ids: Vec<usize> = names
+        .iter()
+        .filter_map(|name| {
+            name.strip_prefix('r')?
+                .split_whitespace()
+                .next()?
+                .parse::<usize>()
+                .ok()
+        })
+        .collect();
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    let mut faults = Vec::new();
+
+    let mut dupes: Vec<usize> = Vec::new();
+    for w in sorted.windows(2) {
+        if w[0] == w[1] && !dupes.contains(&w[0]) {
+            dupes.push(w[0]);
+        }
+    }
+    if !dupes.is_empty() {
+        faults.push(format!(
+            "duplicate witness id(s) {dupes:?} — two milestones minted the same \
+             rNN and the merge was silent"
+        ));
+    }
+    if ids.len() != expected {
+        faults.push(format!(
+            "witness count {} != declared {expected} — bump \
+             EXPECTED_RENDER_CHECK_WITNESSES in the same commit that adds a row, \
+             and take the next free id from REWO_PLAN §0.0's shared-resource table",
+            ids.len()
+        ));
+    }
+    sorted.dedup();
+    if let Some(gap) = (1..=sorted.len()).find(|n| sorted.get(n - 1) != Some(n)) {
+        faults.push(format!(
+            "witness ids are not contiguous from r1 — first gap at r{gap}"
+        ));
+    }
+    faults
+}
+
+#[cfg(test)]
+mod witness_seam_tests {
+    use super::witness_seam_faults;
+
+    fn names(ids: &[usize]) -> Vec<String> {
+        ids.iter().map(|i| format!("r{i} something")).collect()
+    }
+    fn faults(ids: &[usize], expected: usize) -> Vec<String> {
+        let owned = names(ids);
+        let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+        witness_seam_faults(&refs, expected)
+    }
+
+    /// The healthy case, so every assertion below is a difference rather than a
+    /// constant.
+    #[test]
+    fn a_contiguous_unique_set_of_the_declared_size_is_clean() {
+        assert!(faults(&[1, 2, 3, 4], 4).is_empty());
+    }
+
+    /// **The M127-M134 failure, and the one fifteen specs were about to
+    /// reproduce.** Two rows carrying `r48` merge cleanly and the count still
+    /// matches, so the duplicate is the ONLY signal.
+    #[test]
+    fn two_milestones_minting_the_same_id_is_a_fault() {
+        let f = faults(&[1, 2, 3, 3], 4);
+        assert!(
+            f.iter().any(|s| s.contains("duplicate")),
+            "a duplicate id is reported: {f:?}"
+        );
+    }
+
+    /// …and it is reported EVEN THOUGH the other two checks are silent, which
+    /// is what makes the duplicate check load-bearing rather than redundant.
+    ///
+    /// **This assertion was wrong before the code was.** Its first version
+    /// claimed two faults — "the duplicate AND the gap at r4" — and there is no
+    /// gap: the count check sees four ids against a declared four, and the
+    /// contiguity check runs on the DEDUPLICATED set, which is `[1, 2, 3]` and
+    /// perfectly contiguous. That is precisely the point. A merge that mints
+    /// `r48` twice leaves a namespace whose size and shape both look right, so
+    /// the duplicate is the only signal there is.
+    #[test]
+    fn a_duplicate_is_the_only_signal_when_the_count_and_shape_still_look_right() {
+        let f = faults(&[1, 2, 3, 3], 4);
+        assert_eq!(f.len(), 1, "exactly one fault: {f:?}");
+        assert!(f[0].contains("duplicate"), "{f:?}");
+    }
+
+    /// A row lost to a conflict resolution: unique, contiguous, wrong count.
+    #[test]
+    fn a_row_silently_dropped_moves_the_count() {
+        let f = faults(&[1, 2, 3], 4);
+        assert!(f.iter().any(|s| s.contains("witness count 3 != declared 4")), "{f:?}");
+    }
+
+    /// A deleted row whose id was never reclaimed — the fault that stops the
+    /// NEXT milestone choosing a number that looks free.
+    #[test]
+    fn an_unreclaimed_id_leaves_a_gap() {
+        let f = faults(&[1, 2, 4], 3);
+        assert!(f.iter().any(|s| s.contains("first gap at r3")), "{f:?}");
+    }
+
+    /// A non-`rNN` row is not a witness id and must not be counted as one —
+    /// otherwise the count check fires on rows the namespace does not own.
+    #[test]
+    fn a_row_without_an_id_is_not_counted() {
+        let owned = vec!["r1 a".to_string(), "not-a-witness".to_string()];
+        let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+        assert!(witness_seam_faults(&refs, 1).is_empty());
     }
 }
 

@@ -1686,6 +1686,67 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   datagen reports under `…/datagen/generated/reports/` — NOT community docs
   (§11). Both are git-ignored (derived from the user's own Mojang download).
 
+### Shared-resource allocation table — claim a row BEFORE you write code (M160)
+
+**Read this before starting any milestone, and especially before starting
+several in parallel.** It exists because this project's integration failures are
+not textual conflicts — git catches those. They are **merge-silent** resources:
+two branches independently pick the same "free" number or coordinate, git merges
+both cleanly, and the tree is wrong with nothing failing.
+
+**The measurement that produced this table.** A 20-agent survey on 2026-08-17
+specced every open gap in the repo. **Fifteen of the twenty independently
+claimed `r48`** — because each one read the same pre-merge tree and took "the
+highest id I can see, plus one". Had those shipped as parallel branches,
+`live --render-check` would have printed `48/48` while grading one row twice and
+fourteen rows never. The M127–M134 integration already lost `r42` to exactly
+this shape once.
+
+#### The rule
+
+> A resource is **merge-silent** if two branches can both change it, git can
+> merge both without a conflict, and nothing fails afterwards. Every one of
+> those needs either a declared count, an overlap check, or a row in this table.
+> Sharing a **fail-loud** resource — a struct field, an `EXPECTED_WITNESSES`
+> constant, an enum variant, the machine-checked coverage table — is fine and
+> often *desirable*, because it forces the integrator to look.
+
+#### The merge-silent resources in this repo
+
+| Resource | Where | Guard as of M160 |
+|---|---|---|
+| `live --render-check` witness ids (`rNN`) | `live_cmd.rs` | `witness_seam_faults` + `EXPECTED_RENDER_CHECK_WITNESSES`, unit-tested. Fails closed on a duplicate, a wrong count, or a gap. |
+| HUD atlas coordinates | `rewo-gpu/src/hud.rs` | Every `place` is recorded and a `debug_assert` rejects any overlap. Verified to fire. |
+| Widget-sheet shelf coordinates | `rewo-gpu/src/screen.rs` | Its packer already clamps (`:314-317`); the shelf is hand-laid and its sheet indices are an append-only contract. **Not yet overlap-checked** — see below. |
+| `MENU_OVERLAY_SPRITES` / `MENU_BACKGROUND_TEXTURES` index contracts | `rewo-data/src/assets.rs` | Append-only by convention. **Not yet asserted.** |
+| The demo PNG hash `2cc56b4acbfb92cb` | prose only | Asserted in docs, not in code. A second rebaseline is invisible. |
+| Entity-atlas bands and the five round-robin pools | `entities.rs`, `hud.rs` | Absolute placements; `FACE_ATLAS_Y`'s pool is claimed as one region in the HUD overlap check. |
+
+#### Allocation — claim your row here, in the commit that starts the work
+
+| Milestone | `rNN` | Atlas / sheet | Gate + witness prefix |
+|---|---|---|---|
+| *(next free)* | **r48** | — | — |
+
+*Nothing is currently claimed beyond `r47` (M151). When you take `r48`, add a
+row naming your milestone in the same commit, so the next reader — human or
+agent — sees it taken rather than inferring it free from the code.*
+
+#### Two things this does not guard, stated rather than hidden
+
+**`screen.rs`'s shelf has no overlap check.** Its packer clamps, so a bad
+placement truncates rather than panicking, and its 25 hand-laid sheets are a
+comment rather than a table. A milestone that adds a widget sheet should give it
+the same treatment `hud.rs` got here.
+
+**The `assets.rs` index contracts are still convention.** `MENU_OVERLAY_SPRITES`
+and `MENU_BACKGROUND_TEXTURES` are addressed by position, so inserting rather
+than appending renumbers every consumer silently.
+
+Both are named because the honest state is "two of six guarded, four
+documented", and a table claiming otherwise would be the failure mode this
+section is about.
+
 ### Load-bearing gotchas (each cost real debugging time — internalize them)
 
 -1. **(M104) In a long gate block, a `let` 200 lines away will shadow yours —

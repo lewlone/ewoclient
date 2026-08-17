@@ -246,12 +246,28 @@ impl HudPass {
     ) -> Result<Self, String> {
         // Pack every sprite into one atlas at a fixed layout; record UVs.
         let mut atlas = vec![0u8; (ATLAS_W * ATLAS_H * 4) as usize];
+        // M160 — every placement is recorded, so the overlap test below can
+        // exist at all. See `ATLAS_REGIONS`.
+        let mut placed: Vec<(u32, u32, u32, u32)> = Vec::new();
         let mut place = |dst: &mut [u8], s: &HudSpriteData<'_>, x: u32, y: u32| -> Rect {
-            for row in 0..s.h {
+            // **Bounds-checked as of M160, and `screen.rs`'s packer always was**
+            // (`screen.rs:314-317` clamps both axes). This one did not, so a
+            // sprite placed past the edge panicked on a slice index — which is
+            // the loud half. The silent half is worse and is why the region
+            // table exists: two placements at overlapping coordinates merge
+            // cleanly and one sprite quietly becomes the other.
+            debug_assert!(
+                x + s.w <= ATLAS_W && y + s.h <= ATLAS_H,
+                "hud atlas: {}x{} at ({x}, {y}) runs past {ATLAS_W}x{ATLAS_H}",
+                s.w,
+                s.h
+            );
+            placed.push((x, y, s.w, s.h));
+            for row in 0..s.h.min(ATLAS_H.saturating_sub(y)) {
                 let src = (row * s.w * 4) as usize;
                 let d = (((y + row) * ATLAS_W + x) * 4) as usize;
-                dst[d..d + (s.w * 4) as usize]
-                    .copy_from_slice(&s.rgba[src..src + (s.w * 4) as usize]);
+                let n = (s.w.min(ATLAS_W.saturating_sub(x)) * 4) as usize;
+                dst[d..d + n].copy_from_slice(&s.rgba[src..src + n]);
             }
             Rect {
                 u0: x as f32 / ATLAS_W as f32,
@@ -352,6 +368,39 @@ impl HudPass {
             w: 1.0,
             h: 1.0,
         };
+
+        // ── M160: the atlas is a SHARED, MERGE-SILENT resource ──────────────
+        //
+        // Two milestones each adding a sprite pick coordinates from "what looks
+        // free", and two branches that each looked at the pre-merge atlas both
+        // see the same gap. Git merges them; one sprite silently becomes the
+        // other, and the only symptom is a wrong picture. The comments on the
+        // ping row and the extra-heart row above already say "nothing here is
+        // bounds-checked" — this is that worry made checkable.
+        //
+        // The synthesised patches (x 0..4 and 8..12 at y=48) are added by hand
+        // rather than through `place`, so they are declared here explicitly;
+        // the face pool at `FACE_ATLAS_Y` is addressed absolutely by
+        // `upload_face` and must not be packed into either.
+        placed.push((fill_x, fill_y, COOLDOWN_FILL_PX, COOLDOWN_FILL_PX));
+        placed.push((white_x, white_y, COOLDOWN_FILL_PX, COOLDOWN_FILL_PX));
+        placed.push((0, FACE_ATLAS_Y, ATLAS_W, ATLAS_H - FACE_ATLAS_Y));
+        for (i, a) in placed.iter().enumerate() {
+            for b in placed.iter().skip(i + 1) {
+                let disjoint = a.0 + a.2 <= b.0
+                    || b.0 + b.2 <= a.0
+                    || a.1 + a.3 <= b.1
+                    || b.1 + b.3 <= a.1;
+                debug_assert!(
+                    disjoint,
+                    "hud atlas: {}x{} at ({}, {}) overlaps {}x{} at ({}, {}) — \
+                     two placements claim the same texels, which a merge \
+                     produces silently. Take coordinates from REWO_PLAN §0.0's \
+                     shared-resource allocation table.",
+                    a.2, a.3, a.0, a.1, b.2, b.3, b.0, b.1
+                );
+            }
+        }
 
         let (image, image_alloc, view) = create_texture(gpu, &atlas, ATLAS_W, ATLAS_H)?;
         let device = gpu.device.clone();
