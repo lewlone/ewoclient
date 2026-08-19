@@ -133,7 +133,7 @@ use rewo_net::sounds::{SoundEvent, SoundRef, SoundSource};
 use rewo_net::SoundPacketKind;
 
 /// The witnesses a **default** build runs — layers (w), (s) and (a).
-pub const EXPECTED_WITNESSES_CORE: usize = 28;
+pub const EXPECTED_WITNESSES_CORE: usize = 35;
 
 /// The extra witnesses an `--features audio` build runs — layers (d) and (m).
 ///
@@ -185,7 +185,11 @@ pub fn run(args: SoundshotArgs) -> Result<(), String> {
         failures: Vec::new(),
     };
 
-    wire_layer(&mut c, &packets, &registry);
+    // M161 — the explode tail dispatches on the particle registry, and the
+    // whole point of `w9` is that the table is graded against the REPORT rather
+    // than against itself. Fail closed rather than skipping the layer.
+    let particles = rewo_data::particle_types::ParticleTypes::load(&paths.registries_json())?;
+    wire_layer(&mut c, &packets, &registry, &particles);
     resolution_layer(&mut c, &args.version, &registry);
     arithmetic_layer(&mut c);
     #[cfg(feature = "audio")]
@@ -357,7 +361,12 @@ fn level_event_body(kind: i32, x: i64, y: i64, z: i64, data: i32, global: bool) 
 // Layer (w) — the wire
 // ---------------------------------------------------------------------------
 
-fn wire_layer(c: &mut Checker, packets: &Packets, registry: &SoundEvents) {
+fn wire_layer(
+    c: &mut Checker,
+    packets: &Packets,
+    registry: &SoundEvents,
+    particles: &rewo_data::particle_types::ParticleTypes,
+) {
     // Every packet this subsystem consumes must exist under the name the
     // dispatcher resolves. A version bump that renames one has to fail here
     // rather than silently disabling every sound in the game.
@@ -375,6 +384,9 @@ fn wire_layer(c: &mut Checker, packets: &Packets, registry: &SoundEvents) {
             "level_event",
             packets.id(State::Play, Dir::Clientbound, "level_event"),
         ),
+        // M161 — `explode`'s tail carries a sound, so this subsystem consumes
+        // five packets rather than four.
+        ("explode", packets.id(State::Play, Dir::Clientbound, "explode")),
     ];
     c.record(
         "w1.packet_ids_resolve_by_name",
@@ -560,7 +572,11 @@ fn wire_layer(c: &mut Checker, packets: &Packets, registry: &SoundEvents) {
     // delegates to `pos.getX() + 0.5` on all three axes (`Level.java:475`); the
     // corner reading puts every block sound half a block out in three axes at
     // once, which looks like nothing at all in a log.
-    let dispenser = rewo_net::route_level_event_sound(&level_event_body(1000, 10, 64, -7, 0, false));
+    // A camera inside ten blocks of (10.5, 64.5, -6.5), so nothing here trips
+    // the distance-delay gate by accident (M161).
+    const CAM: [f64; 3] = [7.5, 66.5, -4.5];
+    let dispenser =
+        rewo_net::route_level_event_sound(&level_event_body(1000, 10, 64, -7, 0, false), Some(CAM));
     let centre_ok = match &dispenser {
         Some(SoundEvent::At(p)) => {
             p.x == 10.5
@@ -577,13 +593,14 @@ fn wire_layer(c: &mut Checker, packets: &Packets, registry: &SoundEvents) {
     // A mismatched `global` flag is silence, not a fall-through —
     // `globalLevelEvent` and `levelEvent` are disjoint switches in vanilla.
     let wrong_global =
-        rewo_net::route_level_event_sound(&level_event_body(1000, 10, 64, -7, 0, true));
+        rewo_net::route_level_event_sound(&level_event_body(1000, 10, 64, -7, 0, true), Some(CAM));
     // The per-row volume is carried, and it spans 200x: a ghast warning is 10.0
     // and a bat taking off is 0.05. A table that dropped the field and defaulted
     // to 1.0 would still produce a plausible sound for every row.
-    let vol_of = |id: i32| match rewo_net::route_level_event_sound(&level_event_body(
-        id, 0, 0, 0, 0, false,
-    )) {
+    let vol_of = |id: i32| match rewo_net::route_level_event_sound(
+        &level_event_body(id, 0, 0, 0, 0, false),
+        Some([0.5, 0.5, 0.5]),
+    ) {
         Some(SoundEvent::At(p)) => Some(p.volume),
         _ => None,
     };
@@ -636,8 +653,10 @@ fn wire_layer(c: &mut Checker, packets: &Packets, registry: &SoundEvents) {
         })
         .unwrap_or(false)
     }) && (0..full_le.len()).all(|n| {
-        std::panic::catch_unwind(|| rewo_net::route_level_event_sound(&full_le[..n]).is_none())
-            .unwrap_or(false)
+        std::panic::catch_unwind(|| {
+            rewo_net::route_level_event_sound(&full_le[..n], Some(CAM)).is_none()
+        })
+        .unwrap_or(false)
     });
     c.record(
         "w8.truncated_bodies_decode_to_nothing",
@@ -650,6 +669,364 @@ fn wire_layer(c: &mut Checker, packets: &Packets, registry: &SoundEvents) {
             full_le.len()
         ),
     );
+
+    level_event_tail_witnesses(c, CAM);
+    explode_tail_witnesses(c, registry, particles);
+}
+
+// ---------------------------------------------------------------------------
+// Layer (w), M161 — the two packet tails that carry a sound
+// ---------------------------------------------------------------------------
+
+/// `level_event`'s camera-placed, listener-placed and distance-delayed rows.
+fn level_event_tail_witnesses(c: &mut Checker, cam: [f64; 3]) {
+    use rewo_data::level_event_sounds::{Placement, SOUNDS};
+
+    // ---- w9: the bearing ---------------------------------------------------
+    //
+    // The block is at (10, 64, -7), so its CENTRE — which is what
+    // `Vec3.atCenterOf` takes — is (10.5, 64.5, -6.5). The camera is `cam`.
+    // Both numbers are the fixture's, not the code's.
+    let target = [10.5f64, 64.5, -6.5];
+    let mut bearing_ok = true;
+    let mut seen = 0;
+    let mut detail = String::new();
+    for row in SOUNDS.iter().filter(|s| s.placement == Placement::Camera) {
+        let got = rewo_net::route_level_event_sound(
+            &level_event_body(row.id, 10, 64, -7, 0, row.global),
+            Some(cam),
+        );
+        let Some(SoundEvent::At(p)) = got else {
+            bearing_ok = false;
+            detail.push_str(&format!("{} -> nothing; ", row.id));
+            continue;
+        };
+        let to_sound = [p.x - cam[0], p.y - cam[1], p.z - cam[2]];
+        let len = (to_sound[0] * to_sound[0] + to_sound[1] * to_sound[1] + to_sound[2] * to_sound[2])
+            .sqrt();
+        let to_event = [
+            target[0] - cam[0],
+            target[1] - cam[1],
+            target[2] - cam[2],
+        ];
+        // **The dot's SIGN is the assertion that matters.** A distance-only
+        // check passes at 180 degrees, which is exactly what reversing
+        // `Vec3.subtract` produces — and that reversal is invisible to the
+        // compiler, to a count, and to every other witness in this gate.
+        let dot = to_sound[0] * to_event[0] + to_sound[1] * to_event[1] + to_sound[2] * to_event[2];
+        if (len - 2.0).abs() > 1e-9 || dot <= 0.0 {
+            bearing_ok = false;
+        }
+        detail.push_str(&format!("{} -> {len:.6} blocks, dot {dot:+.3}; ", row.id));
+        seen += 1;
+    }
+    c.record(
+        "w9.a_global_level_event_sounds_two_blocks_along_the_bearing",
+        bearing_ok && seen == 3,
+        format!("{seen} camera-placed rows (must be 3): {detail}"),
+    );
+
+    // ---- w10: the absent camera means two different things ----------------
+    //
+    // `LevelEventHandler.java:66` wraps the whole `globalLevelEvent` body in
+    // `if (camera.isInitialized())`, with no `else` — so a camera row is
+    // SILENCE. `ClientLevel.playSound` has no such guard and `Camera.java:49`
+    // defaults its position to `Vec3.ZERO`, so a block row still plays and its
+    // delay is measured against the ORIGIN. Treating the absent camera
+    // uniformly is the natural implementation and is wrong for one of the two.
+    let no_cam = |id: i32, global: bool| {
+        rewo_net::route_level_event_sound(&level_event_body(id, 10, 64, -7, 0, global), None)
+    };
+    let silenced = SOUNDS
+        .iter()
+        .filter(|s| s.placement == Placement::Camera)
+        .all(|s| no_cam(s.id, s.global).is_none());
+    let block_still_plays = no_cam(1000, false).is_some() && no_cam(3012, false).is_some();
+    c.record(
+        "w10.an_absent_camera_silences_the_global_rows_and_only_those",
+        silenced && block_still_plays,
+        format!(
+            "camera rows silent: {silenced}; dispenser + trial spawner still play: \
+             {block_still_plays}"
+        ),
+    );
+
+    // ---- w11: the listener-placed row -------------------------------------
+    let mut listener_ok = true;
+    let mut listener_detail = String::new();
+    let mut listener_rows = 0;
+    for row in SOUNDS.iter().filter(|s| s.placement == Placement::Listener) {
+        let got = rewo_net::route_level_event_sound(
+            &level_event_body(row.id, 10, 64, -7, 0, row.global),
+            Some(cam),
+        );
+        match got {
+            Some(SoundEvent::Instance(i)) => {
+                // Every one of these is separately guessable and none is
+                // observable in a count. `forLocalAmbience(sound, PITCH,
+                // VOLUME)` takes pitch SECOND, so 1032's literal 0.25 is the
+                // volume; reading the argument list left to right gives a
+                // portal three times too loud at a fixed pitch.
+                let ok = i.relative
+                    && i.attenuation == Attenuation::None
+                    && (i.x, i.y, i.z) == (0.0, 0.0, 0.0)
+                    && i.source == SoundSource::Ambient
+                    && i.volume == row.volume.unwrap_or(1.0)
+                    && i.seed.is_none()
+                    && i.identifier == row.sound;
+                listener_ok &= ok;
+                listener_detail.push_str(&format!(
+                    "{} -> {} vol {} rel {} att {:?} at ({},{},{}) seed {:?}; ",
+                    row.id, i.identifier, i.volume, i.relative, i.attenuation, i.x, i.y, i.z, i.seed
+                ));
+            }
+            other => {
+                listener_ok = false;
+                listener_detail.push_str(&format!("{} -> {other:?}; ", row.id));
+            }
+        }
+        listener_rows += 1;
+    }
+    c.record(
+        "w11.the_listener_placed_row_is_relative_unattenuated_and_at_the_origin",
+        listener_ok && listener_rows == 1,
+        format!("{listener_rows} listener-placed row (must be 1): {listener_detail}"),
+    );
+
+    // ---- w12: the distance delay ------------------------------------------
+    //
+    // **The divisor is 40, not 340**, and the 100-block row is what separates
+    // them: 50 ticks against 5. Two places in this repo said 340 before M161.
+    let ticks = |d: f64| rewo_net::distance_delay_ticks([0.0; 3], [d, 0.0, 0.0]);
+    let arithmetic_ok = ticks(100.0) == Some(50)
+        && ticks(400.0) == Some(200)
+        // Strict, and on the SQUARE: exactly ten blocks is not delayed.
+        && ticks(10.0).is_none()
+        && ticks(10.001) == Some(5)
+        // **`x / 40.0 * 20.0` is not `x * 0.5`, and the difference reaches the
+        // tick count.** Not at a round distance, which is why the first version
+        // of this witness could not see the simplification: measured over the
+        // 3,995 tick boundaries from 6 to 4,000 ticks, 595 carry a
+        // `distanceToSqr` at which the two disagree by a whole tick, and this
+        // is the first. Vanilla answers 7 here; one multiply answers 6.
+        && ticks(13.999999999999998) == Some(7);
+    // …and it reaches the event, for exactly the nine ids the table flags.
+    // 300 blocks from the block CENTRE (10.5, …), so the camera goes at 310.5.
+    let far = Some([310.5f64, 64.5, -6.5]);
+    let mut delayed = std::collections::BTreeSet::new();
+    let mut flag_ok = true;
+    for row in SOUNDS.iter().filter(|s| s.placement == Placement::Block) {
+        use rewo_data::level_event_sounds::DataGate as G;
+        let data = match row.data {
+            G::Always => 0,
+            G::Eq(v) => v,
+            G::Ne(v) => v.wrapping_add(1),
+            G::Gt(v) => v + 1,
+            G::Le(v) => v,
+        };
+        match rewo_net::route_level_event_sound(
+            &level_event_body(row.id, 10, 64, -7, data, row.global),
+            far,
+        ) {
+            Some(SoundEvent::AtDelayed { ticks, .. }) => {
+                flag_ok &= row.distance_delay && ticks == 150;
+                delayed.insert(row.id);
+            }
+            Some(SoundEvent::At(_)) => flag_ok &= !row.distance_delay,
+            _ => flag_ok = false,
+        }
+    }
+    c.record(
+        "w12.the_distance_delay_divisor_is_forty_and_reaches_nine_ids",
+        arithmetic_ok && flag_ok && delayed.len() == 9,
+        format!(
+            "100 blocks -> {:?} ticks (340 would give Some(5)); 10.0 -> {:?}; \
+             13.999999999999998 -> {:?} (one multiply gives 6); \
+             {} delayed ids at 300 blocks -> 150 ticks each: {:?}",
+            ticks(100.0),
+            ticks(10.0),
+            ticks(13.999999999999998),
+            delayed.len(),
+            delayed
+        ),
+    );
+}
+
+/// `explode`'s tail: the particle-option table, the two holder conventions,
+/// and the sound it exists to reach.
+fn explode_tail_witnesses(
+    c: &mut Checker,
+    registry: &SoundEvents,
+    particles: &rewo_data::particle_types::ParticleTypes,
+) {
+    use rewo_net::particle_options::{OPTION_BEARING, REGISTERED_AT_26_2, SIMPLE_AT_26_2};
+
+    // ---- w13: the option table is TOTAL over the report -------------------
+    //
+    // The table is keyed by NAME and an absent name is read as
+    // `SimpleParticleType` — zero option bytes — which is right for 103 of 125
+    // types today and would silently desynchronise the moment a version added a
+    // 23rd option-bearing one. This is the guard on that: it asks the REPORT
+    // how many names exist and how many are unaccounted for, so a registry that
+    // grew fails here rather than in a packet.
+    let all_names: Vec<&str> = (0..)
+        .map_while(|id| particles.name(id))
+        .collect::<Vec<_>>();
+    // Ids are dense from 0 in this registry; if that ever stops being true the
+    // count below disagrees with `particles.len()` and this fails.
+    let dense = all_names.len() == particles.len();
+    let known: Vec<&str> = OPTION_BEARING
+        .iter()
+        .map(|(n, _)| *n)
+        .filter(|n| particles.id_of(n).is_some())
+        .collect();
+    let simple = all_names.len().saturating_sub(known.len());
+    c.record(
+        "w13.the_particle_option_table_accounts_for_every_registered_type",
+        dense
+            && all_names.len() == REGISTERED_AT_26_2
+            && known.len() == OPTION_BEARING.len()
+            && simple == SIMPLE_AT_26_2,
+        format!(
+            "report has {} names (dense: {dense}); {} of {} option-bearing names resolve; \
+             {simple} simple (expected {}/{}/{})",
+            all_names.len(),
+            known.len(),
+            OPTION_BEARING.len(),
+            REGISTERED_AT_26_2,
+            OPTION_BEARING.len(),
+            SIMPLE_AT_26_2
+        ),
+    );
+
+    // ---- w14: the tail is consumed exactly, and the sound RESOLVES --------
+    //
+    // Driven through the production `read_explode_tail` with the REAL registry
+    // ids, so this is the shape that can see M64's alphabetisation trap: a
+    // table built by `enumerate()` over a sorted map would name a different
+    // sound for the same id and still consume the same bytes.
+    let explode_id = registry.id_of("minecraft:entity.generic.explode");
+    let emitter = particles.id_of("minecraft:explosion_emitter");
+    let poof = particles.id_of("minecraft:poof");
+    let smoke = particles.id_of("minecraft:smoke");
+    let built = match (explode_id, emitter, poof, smoke) {
+        (Some(s), Some(e), Some(p), Some(k)) => Some(explode_body(e, s + 1, &[(p, 1), (k, 1)])),
+        _ => None,
+    };
+    let outcome = built.as_ref().map(|b| {
+        (
+            b.len(),
+            rewo_net::motion::read_explode_tail(b, particles).ok(),
+        )
+    });
+    let ok = match &outcome {
+        Some((len, Some(t))) => {
+            t.used == *len
+                && t.particle == "minecraft:explosion_emitter"
+                && t.block_particles == 2
+                && t.sound.resolve(registry) == Some("minecraft:entity.generic.explode")
+        }
+        _ => false,
+    };
+    // **An id the report does not know fails CLOSED**, in the head field and
+    // inside the weighted list — the codec's two call sites, of which a
+    // head-only witness sees one.
+    //
+    // Added after the mutation `types.name(id).unwrap_or("?")` SURVIVED this
+    // gate: every fixture above names a real particle, so the fallback was
+    // never reached. Assuming zero option bytes reads correctly for 103 of the
+    // 125 types today, which is what makes it worth a witness rather than a
+    // comment.
+    let unknown_id = 4242;
+    let head_closed = particles.name(unknown_id).is_none()
+        && rewo_net::motion::read_explode_tail(
+            &explode_body(unknown_id, explode_id.map_or(1, |s| s + 1), &[]),
+            particles,
+        )
+        .is_err();
+    let list_closed = match (emitter, explode_id) {
+        (Some(e), Some(s)) => rewo_net::motion::read_explode_tail(
+            &explode_body(e, s + 1, &[(unknown_id, 1)]),
+            particles,
+        )
+        .is_err(),
+        _ => false,
+    };
+    c.record(
+        "w14.the_explode_tail_is_consumed_exactly_and_names_its_sound",
+        ok && head_closed && list_closed,
+        format!(
+            "ids: sound {explode_id:?} emitter {emitter:?} poof {poof:?} smoke {smoke:?}; \
+             outcome {outcome:?}; an unresolvable particle fails closed in the head \
+             ({head_closed}) and inside the list ({list_closed})"
+        ),
+    );
+
+    // ---- w15: the sound the explosion actually plays ----------------------
+    //
+    // Volume 4.0, source BLOCKS, position the packet's CENTRE verbatim, and a
+    // pitch in [0.56, 0.84] for every seed. Each is separately wrong in a way
+    // that sounds plausible: volume 1.0 quarters the carrying distance, a
+    // single `nextFloat` halves the band and moves its centre, and the
+    // `BlockPos` overload's half-block centring does not belong here.
+    let mut rng = rewo_world::biome_noise::LegacyRandom::new(0x5EED_A11B_1E17);
+    let tail = built
+        .as_ref()
+        .and_then(|b| rewo_net::motion::read_explode_tail(b, particles).ok());
+    let centre = rewo_net::motion::Vec3::new(12.25, 71.5, -3.75);
+    let mut band_ok = true;
+    let mut lo = f32::MAX;
+    let mut hi = f32::MIN;
+    let mut first = None;
+    if let Some(t) = &tail {
+        for _ in 0..2000 {
+            let s = rewo_net::motion::explosion_sound(t, centre, &mut rng);
+            band_ok &= s.volume == 4.0
+                && s.source == SoundSource::Blocks
+                && (s.x, s.y, s.z) == (centre.x, centre.y, centre.z)
+                && (0.56..=0.84).contains(&s.pitch);
+            lo = lo.min(s.pitch);
+            hi = hi.max(s.pitch);
+            if first.is_none() {
+                first = Some(s.seed);
+            }
+        }
+    }
+    // The band must be WIDE, or a constant pitch would pass the containment
+    // above: `(1 + (a - b) * 0.2) * 0.7` with a single draw, or with `a == b`,
+    // pins it at exactly 0.7.
+    let spread = hi - lo;
+    c.record(
+        "w15.the_explosion_sound_is_loud_low_and_at_the_centre",
+        tail.is_some() && band_ok && spread > 0.2,
+        format!(
+            "2000 draws: pitch in [{lo:.4}, {hi:.4}] (band [0.56, 0.84], spread {spread:.4} \
+             must exceed 0.2 or the jitter is missing), volume 4.0, source Blocks, \
+             at {centre:?}, first seed {first:?}"
+        ),
+    );
+}
+
+/// A whole `explode` body: prefix with no knockback, then the tail.
+fn explode_body(particle_id: i32, sound_holder: i32, list: &[(i32, i32)]) -> Vec<u8> {
+    let mut b = Vec::new();
+    for v in [1.5f64, 64.0, -2.5] {
+        b.extend_from_slice(&v.to_be_bytes());
+    }
+    b.extend_from_slice(&4.0f32.to_be_bytes());
+    // `ByteBufCodecs.INT` — a fixed big-endian i32, not a VarInt.
+    b.extend_from_slice(&37i32.to_be_bytes());
+    b.push(0); // no playerKnockback
+    rewo_proto::varint::write_varint(&mut b, particle_id);
+    rewo_proto::varint::write_varint(&mut b, sound_holder);
+    rewo_proto::varint::write_varint(&mut b, list.len() as i32);
+    for (id, weight) in list {
+        rewo_proto::varint::write_varint(&mut b, *id);
+        b.extend_from_slice(&0.5f32.to_be_bytes()); // scaling
+        b.extend_from_slice(&1.0f32.to_be_bytes()); // speed
+        rewo_proto::varint::write_varint(&mut b, *weight);
+    }
+    b
 }
 
 // ---------------------------------------------------------------------------

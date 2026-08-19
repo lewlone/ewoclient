@@ -1726,11 +1726,14 @@ this shape once.
 
 | Milestone | `rNN` | Atlas / sheet | Gate + witness prefix |
 |---|---|---|---|
-| *(next free)* | **r48** | — | — |
+| M161 — the sound tails of `explode` and `level_event` | **r48, r49, r50** | — | `soundshot` w9-w15 (`EXPECTED_WITNESSES_CORE` 28 -> 35) |
+| *(next free)* | **r51** | — | — |
 
-*Nothing is currently claimed beyond `r47` (M151). When you take `r48`, add a
-row naming your milestone in the same commit, so the next reader — human or
-agent — sees it taken rather than inferring it free from the code.*
+*Claimed densely from `r48`, and `EXPECTED_RENDER_CHECK_WITNESSES` raised 47 ->
+50 in the same commit, which is what the seam checks grade. M161 also moves
+`soundshot`'s `EXPECTED_WITNESSES_CORE` — a **fail-loud** shared integer rather
+than a merge-silent one, so two branches both raising it conflict textually and
+the integrator has to look, which is the desirable case this section describes.*
 
 #### Two things this does not guard, stated rather than hidden
 
@@ -3401,6 +3404,237 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M161 — the sound halves of `explode` and `level_event`, and a decompiler literal that is not authoritative about its own type (2026-08-19)
+
+Two packets that were already "handled" and each of which was throwing a sound
+away. `explode` consumed its physics prefix and stopped (M68); `level_event`
+declined its three camera-placed ids, its one listener-placed id and its nine
+distance-delayed ones (M140). Both gaps are closed, and the milestone's largest
+finding is in neither of them.
+
+**The stated blocker on `explode`'s tail was wrong by about 10x.**
+`motion.rs`'s own doc said consuming `explosionParticle` "requires transcribing
+~125 option codecs". Measured against `ParticleTypes.java`: **125 registrations,
+of which 103 are `SimpleParticleType` and carry ZERO option bytes**, and the
+other 22 share **13 distinct option classes** — every one of which composes from
+combinators `component_wire::Shape` already had. `crates/rewo-net/src/particle_options.rs`
+is a 22-row table, not a parser.
+
+**Keyed by NAME, which is M64's alphabetisation trap avoided by construction
+rather than survived.** `Shape::Dispatch` indexes by position, so expressing
+this as a dispatch needs a 125-entry array in protocol-id order — and the
+particle registry is not alphabetical (`block` 1, `explosion_emitter` 29, `poof`
+66, `smoke` 69) while `serde_json`'s `Map` is sorted. The id comes from the
+report instead, through the same `ParticleTypes` `route_level_particles` has
+always used, so an id the report does not know fails before the table is asked.
+An absent NAME reads as `SimpleParticleType` — right for 103 of 125 and a silent
+desync the moment a version adds a 23rd option-bearing type — so `soundshot`'s
+`w13` asks the **report** for the three numbers (125 / 22 / 103) and fails
+closed on any of them moving.
+
+**`vibration` reaches a SECOND registry's ordering**, which reading
+`VibrationParticleOption` alone would miss: its `PositionSource` is another
+`ByteBufCodecs.registry(...).dispatch(...)`, over `position_source_type`
+(measured: block 0, entity 1), and its block arm is **one packed long**
+(`BlockPos.of(readLong())`), not three ints and not a VarInt.
+
+**`ExplosionParticleInfo` is a THREE-field record** — particle, `scaling` AND
+`speed`. The spec that scoped this milestone named only the first two.
+
+**A second entry point, not a wider `read_explode`.** The knockback is the
+packet's class-A payload; if the tail's walk were part of the same function, an
+untranscribed particle type on some future server would cost the player their
+explosion knockback to save a sound. So `read_explode_tail` is separate, the
+caller applies the physics first and the tail is best-effort — and
+`read_explode`'s **three existing witnesses stay green unchanged**, which is the
+evidence the change is additive. (Two of them drive bodies with no tail at all
+and would panic under a reader that continued past the prefix; the third asserts
+`used == EXPLODE_PREFIX_LEN_WITH_KNOCKBACK` against a body whose tail is a
+deliberate sentinel. The M161 spec asserted all three "must keep passing
+unchanged" while also requiring `read_explode` to consume the tail, which is not
+satisfiable.)
+
+**The explosion's volume is 4.0 and its pitch is around 0.7**, neither a
+default: `getRange` is `16 * max(volume, 1)`, so 4.0 is four times a normal
+block sound's carrying distance, and the 0.7 centre is why an explosion sounds
+low rather than sharp. The pitch is
+`(1.0F + (nextFloat() - nextFloat()) * 0.2F) * 0.7F`, a band of `[0.56, 0.84]`
+for every seed — and a single draw pins it at exactly 0.7, which the containment
+check alone cannot see, so `w15` measures the **spread**.
+
+**The seed is not decoration.** `handleExplosion` reaches
+`ClientLevel.playLocalSound`, which passes `this.random.nextLong()`, and
+`SoundEngine::resolve` feeds that to `get_sound_seeded` — so it chooses which of
+`entity.generic.explode`'s variants you hear. A constant plays the same one
+every time. That needed `next_long` on the generator Rewo uses as its
+`Level.random` stand-in, and adding it is what produced the milestone's biggest
+finding (below).
+
+#### Where the camera enters, and the absent camera that means two things
+
+Three seams were available for `level_event`'s camera: the router's parameter
+list, the sound engine's `RampWorld::camera_position` (which already exists),
+and the `PlaySession` call site. **The parameter, resolved by the caller at
+PACKET time, is the one that matches vanilla and the only one that keeps
+`SoundEvent::At` meaning one thing.**
+
+* `handleLevelEvent` calls `globalLevelEvent` **synchronously**
+  (`ClientPacketListener.java:1658-1665`), so vanilla's bearing is taken against
+  the camera at the moment the packet lands. Resolving it in the engine defers
+  it to the next `accept`, and a tick is about four blocks of walking.
+* If the engine resolved it, a camera-placed event could not carry a position at
+  all — it would have to carry the TARGET BLOCK, and `At`'s `x`/`y`/`z` would
+  then mean "final world position" for `route_sound` and "bearing target" for
+  one producer. A field whose meaning depends on who filled it is how two
+  readers come to disagree.
+* `PlaySession` owns both the packet and `self.player`, so nothing new is
+  plumbed and `RampWorld`'s seven implementors are untouched — which matters in
+  a wave of parallel branches, where `sound_engine.rs` is the highest-conflict
+  file in the subsystem.
+
+**The absent camera is TWO different things, one field apart, and treating it
+uniformly is the natural implementation.**
+
+* For a **camera-placed** row it is silence: `LevelEventHandler.java:66` wraps
+  the whole `globalLevelEvent` body in `if (camera.isInitialized())`, with no
+  `else`.
+* For a **distance-delayed block** row it is the **ORIGIN**, and the sound still
+  plays: `ClientLevel.playSound` has no `isInitialized()` check at all, and
+  `Camera.java:49` is `private Vec3 position = Vec3.ZERO;`.
+
+The asymmetry is vanilla's, not a nicety — the guard lives in
+`LevelEventHandler` and the delay lives in `ClientLevel`. Rewo's
+`camera.isInitialized()` is `PlaySession::spawned`, which is false until the
+server's first `player_position` teleport; before it, `self.player` is at the
+origin, so handing it out would put a wither's roar two blocks from `(0,0,0)`.
+
+**The divisor is 40, not 340**, and the wrong figure was written in two places
+in this tree (`lib.rs`'s own doc and `REWO_PACKET_COVERAGE.md`) while
+`level_event_sounds.rs`'s module doc had it right — the M149b shape again. At
+100 blocks the right answer is **50 ticks** and 340 gives **5**: audible,
+plausible, and 8.5x wrong. Vanilla's effective speed of sound is 40 blocks/s, a
+ninth of the real one, so "it should be 340 m/s" is exactly the intuition that
+produces the bug. The gate is `distanceToSqr > 100.0` — strict, and on the
+square, so exactly ten blocks is not delayed and comparing `sqrt(dsq) > 10.0`
+moves the boundary for every distance whose root is inexact.
+
+**`SoundEvent::AtDelayed` wraps the same `PositionedSound` rather than adding a
+field to it.** `ClientLevel.java:748` constructs the `SimpleSoundInstance`
+*above* the `distanceDelay` branch, so a delayed sound is byte-identical to an
+immediate one; `instance_from_event`'s two arms are literally one call, and a
+unit test asserts the two instances are equal. A field on `PositionedSound`
+would have made the decode of `ClientboundSoundPacket` carry something the wire
+has no bytes for, at eleven construction sites.
+
+**Vanilla's own tautology, recorded rather than tested.** All three
+camera-placed rows pass `distanceDelay = false` — *and* their position is 2.0
+blocks from the camera by construction, so `distanceToSqr == 4.0` and the gate
+could never open for them whatever the flag said. A witness asserting "a global
+event is never delayed" grades nothing; the flag is asserted instead.
+
+#### The finding that was not about sound at all
+
+Adding `next_long` to `rewo_world::biome_noise::LegacyRandom` came with a
+cross-check against `rewo_world::particles::LegacyRandom` — two transcriptions
+of the same `BitRandomSource` that nothing had ever compared. **They disagree on
+`next_double`**, by ~2.7e-8 relative, and each carries a doc comment claiming
+verification against a Temurin-25 Java port.
+
+The **bytecode** settles it, and settling it needed no reading of the decompile:
+
+```text
+$ javap -c -p -constants -cp 26.2.jar \
+      net.minecraft.world.level.levelgen.BitRandomSource
+  public default double nextDouble();
+       27: lload_3
+       28: l2d                                    <-- long to DOUBLE
+       29: ldc2_w  double 1.1102230246251565E-16d <-- a DOUBLE constant
+       32: dmul                                   <-- DOUBLE multiply
+```
+
+`particles` is right; `biome_noise` is wrong. **The trap generalises past this
+function: a decompiler's numeric literal is not authoritative about its own
+TYPE.** Vineflower inlines `BitRandomSource`'s constant into `nextDouble`'s body
+and prints it `1.110223E-16F` — with a float suffix, which under JLS 5.6.2 would
+promote `long * float` to a *float* multiply and throw away 29 bits of the
+mantissa. That reading is self-consistent, is what `biome_noise`'s doc argues
+for at length, and is wrong. The same decompiled file's **field declaration**
+(`double DOUBLE_MULTIPLIER = 1.110223E-16F;`) already says so.
+
+**Pinned, not fixed, deliberately.** `next_double` feeds `next_gaussian`, which
+feeds `SimplexNoise::new` (`weather.rs:157-159`) and therefore `BiomeInfoNoise`,
+so the fix moves M14's biome colours and M33's rain columns — whose pinned
+vectors came from the same Java port and would all need re-deriving against a
+JVM. That is a milestone, not a line, and bundling it into an unrelated sound
+change is how a wave of parallel branches becomes unmergeable.
+`biome_noise::tests::the_two_next_doubles_disagree_and_this_module_has_the_wrong_one`
+carries the `javap` output, the two values, and that reasoning; the misleading
+doc paragraph and the KAT test's name are corrected in place.
+
+#### Two more stale claims corrected in passing
+
+* `sound_engine.rs:1486-1487` said "A network sound is never distance-delayed;
+  only `playLocalSound` can be, **and nothing on the wire reaches it**". M140
+  falsified the second half without noticing: `route_level_event_sound` is a
+  second producer of positioned sounds, it IS on the wire, and nine of its ids
+  reach `playLocalSound(.., true)`.
+* `play.rs`'s `take_sound_events` said it was "unused today, which is why the
+  queue is capped above" — it has had two production callers since M143, and
+  that sentence contradicted a corrected paragraph a thousand lines above it.
+
+#### Measured
+
+`soundshot --check` **28 -> 35** in a default build and **48 -> 55** with
+`--features audio`, both exit 0. All **36** serverless gates green, 0 failures —
+re-run rather than assumed, since this milestone touches `sounds.rs`,
+`sound_engine.rs`, `motion.rs`, `play.rs` and `biome_noise.rs`. Demo PNG
+`2cc56b4acbfb92cb...`, byte-identical.
+
+Tests, measured per crate against `main` at `b88f18e` by stashing rather than by
+apportioning a total: `rewo-net` **1162 -> 1187**, `rewo-world` **1198 -> 1201**,
+`rewo-app` **228 -> 228** (this milestone adds gate witnesses, which are not
+`#[test]`s). Whole workspace **3287 -> 3315**.
+
+**§0.0's per-crate split is off by six for `rewo-app`** — it records 222, and
+`cargo test -p rewo-app --bins` on `main` reports 228, so its total of 3281 is
+six short. Reported here rather than corrected, because §0.0's measurement block
+belongs to whoever integrates the wave.
+
+Mutation battery `tools/m161_mutate.py`: **22 mutations, 22 killed**, over four
+slices each carrying its own no-op control and its own baseline check. Routed
+two ways deliberately (gotcha 0d) — 19 through `soundshot --check` and 3 through
+`cargo test`.
+
+**Two survived the first pass and both were weak fixtures rather than equivalent
+mutants**, which is the part worth keeping:
+
+* *Replace `x / 40.0 * 20.0` with `x * 0.5`.* The unit test asserted only that
+  the two FLOATS differ, which is nearly worthless because the result is
+  truncated to an integer and a one-ULP difference almost always vanishes there.
+  Measured instead of argued: over the 3,995 tick boundaries from 6 to 4,000
+  ticks, sweeping `distanceToSqr` by ULPs, **595 carry a value at which the two
+  disagree by a whole tick**. The first is `distanceToSqr == 195.99999999999994`
+  — a camera at the origin and a sound at `x = 13.999999999999998` — where
+  vanilla answers **7** and the simplification answers **6**. Both the unit test
+  and `w12` use that input now.
+* *Let an unknown particle name assume zero option bytes.* Every fixture in the
+  gate named a real particle, so the fallback was never reached; `w14` drives an
+  unresolvable id through the head field **and** through a weighted-list entry,
+  which are the codec's two call sites and of which a head-only witness sees
+  one.
+
+**`live --render-check` scores 49/50 rather than 50/50 on this machine, and the
+one failure is NOT this milestone's.** r48, r49 and r50 all pass, validation ON,
+0 validation errors; `r46` (music started) fails identically on `main` at
+`b88f18e`, measured by stashing this branch, rebuilding and running the same
+script: **46/47**. §0.0's "47/47" is stale or machine-dependent — the run is 8 s
+against a 100-tick `STARTING_DELAY` and this box spends 2.0 s of it on the
+initial mesh flood. Reported rather than papered over.
+
+Two runs of r48 on different spawns put the eye at `(7.5, -58.38, -3.5)` and
+`(2.888, -58.38, -4.5)` with the sound 2.0000000 blocks out in both, which is
+the evidence that the witness tracks the live camera rather than a constant.
 
 ### M159 — the streaming decode on the sound-engine thread, and the half of it that is cheap (2026-08-17)
 

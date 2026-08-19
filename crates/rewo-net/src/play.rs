@@ -446,6 +446,28 @@ pub struct MotionStats {
     /// the decoder for what is really a fixture that blew a hole in its own
     /// line of sight.
     pub explosion_knockbacks_nonzero: u32,
+    /// …whose TAIL was consumed to the last byte (M161).
+    ///
+    /// Separate from [`Self::explosions`] because the two decodes are
+    /// deliberately independent entry points: the physics prefix cannot fail on
+    /// tail content, so a server carrying a particle type this build does not
+    /// know still gets its knockback applied and loses only the sound. A gate
+    /// that counted explosions alone could not tell the two apart.
+    pub explosion_tails: u32,
+    /// …of which queued an explosion sound.
+    ///
+    /// **Equal to [`Self::explosion_tails`] today, and the pair is still worth
+    /// keeping.** The queue happens unconditionally once the tail walks,
+    /// because resolving the `SoundRef` to a name is the ENGINE's job and its
+    /// failure (a registry id this jar has no name for — a newer server) is a
+    /// `NotStarted::UnknownSoundId` counted over there, not here. The two
+    /// counters therefore separate "the tail did not walk" from "the tail
+    /// walked and nothing was queued", and only the second could ever indicate
+    /// a bug in this function.
+    ///
+    /// The first draft of this comment claimed the two differ on an
+    /// unresolvable id. They do not; the code never asks.
+    pub explosion_sounds: u32,
     /// `set_entity_motion` packets decoded, for any entity.
     pub entity_motions: u32,
     /// …of which addressed the local player's own entity id.
@@ -1940,6 +1962,44 @@ impl PlaySession {
     /// reaches it.
     pub const MAX_PENDING_SOUNDS: usize = 256;
 
+    /// `gameRenderer.mainCamera()`, as much of it as Rewo has (M161).
+    ///
+    /// Vanilla's camera is `Camera.alignWithEntity`'s interpolated eye. Rewo
+    /// has **no third-person camera at all** (nothing in `rewo-app` or
+    /// `rewo-gpu` mentions one), so in first person the identity
+    /// `camera == player eye` holds exactly and the only divergence is the
+    /// sub-tick lerp — worth at most about 0.4 blocks of distance and 0.2
+    /// ticks of delay. Stated rather than faked: inventing a partial tick here
+    /// would be a number with no input behind it.
+    ///
+    /// **`None` is `!camera.isInitialized()`, and it is a real state rather
+    /// than a hypothetical.** `PlaySession::spawned` is false until the
+    /// server's first `player_position` teleport, and until then `self.player`
+    /// sits at whatever the constructor left — the origin. Handing that out as
+    /// a camera puts a wither's roar two blocks from `(0, 0, 0)` for anyone who
+    /// spawns anywhere else.
+    ///
+    /// A free function taking the two values rather than a method, because
+    /// `PlaySession` owns a socket and cannot be built in a test (M71's
+    /// finding, M97's fix): this way the rule has witnesses and only the
+    /// one-line call site does not.
+    pub(crate) fn camera_eye(player: &rewo_world::physics::PlayerState, spawned: bool) -> Option<[f64; 3]> {
+        if !spawned {
+            return None;
+        }
+        Some([player.x, player.eye_y(), player.z])
+    }
+
+    /// The particle registry this session decodes against (M161).
+    ///
+    /// Exposed so `live --render-check` can build an `explode` body naming a
+    /// particle **by name** rather than by a hardcoded id — which is the same
+    /// discipline the decode uses, and the difference between a gate that fails
+    /// closed on a renumbered registry and one that fails for the wrong reason.
+    pub fn particle_types(&self) -> &rewo_data::particle_types::ParticleTypes {
+        &self.particle_types
+    }
+
     fn push_sound_event(&mut self, ev: crate::sounds::SoundEvent) {
         if self.sound_events.len() >= Self::MAX_PENDING_SOUNDS {
             self.sound_events.remove(0);
@@ -1947,8 +2007,14 @@ impl PlaySession {
         self.sound_events.push(ev);
     }
 
-    /// Drain the decoded sound queue. The seam a playback layer reads;
-    /// unused today, which is why the queue is capped above.
+    /// Drain the decoded sound queue — the seam the playback layer reads.
+    ///
+    /// **This used to end "unused today, which is why the queue is capped
+    /// above", and it has had two production callers since M143** (M161 found
+    /// it; `live_cmd.rs` drains it once per tick, and `play_cmd` once per
+    /// tick too). The cap is still right — it bounds a session whose device
+    /// never drains — but the reason given for it was three milestones stale
+    /// and contradicted the corrected paragraph 1000 lines above it.
     pub fn take_sound_events(&mut self) -> Vec<crate::sounds::SoundEvent> {
         std::mem::take(&mut self.sound_events)
     }
@@ -2668,9 +2734,20 @@ impl PlaySession {
                 );
             }
         } else if id == ids.cb_play_explode {
-            // M68. Only the physics prefix is consumed — see `motion::Explosion`.
+            // M68 decoded the physics prefix; M161 walks the tail for the
+            // sound. **Two entry points on purpose**: `read_explode` cannot
+            // fail on tail content, so an untranscribed particle type costs
+            // the sound and never the knockback.
             match crate::motion::read_explode(body) {
-                Ok((e, _used)) => self.apply_explode(&e),
+                Ok((e, _used)) => {
+                    // Vanilla's order, and it is the order of the RNG draws as
+                    // much as of the effects: `handleExplosion` plays the
+                    // sound FIRST (three draws off `Level.random`), then the
+                    // particle, then the tracker, and applies the knockback
+                    // LAST (`ClientPacketListener.java:1357-1375`).
+                    self.queue_explosion_sound(body, &e);
+                    self.apply_explode(&e);
+                }
                 Err(err) => log::debug!("net: explode decode: {err}"),
             }
         } else if id == ids.cb_play_set_entity_motion {
@@ -2703,7 +2780,12 @@ impl PlaySession {
             // is sound only, and 2000 (smoke) is particle only. Deriving one
             // from the other would lose whichever the id does not have.
             if Some(id) == ids.cb_play_level_event {
-                if let Some(s) = crate::route_level_event_sound(body) {
+                // M161 — the camera is resolved HERE, at packet time, because
+                // `handleLevelEvent` calls `globalLevelEvent` synchronously.
+                // See `route_level_event_sound`'s docs for why this seam and
+                // not the engine's.
+                let camera = Self::camera_eye(&self.player, self.spawned);
+                if let Some(s) = crate::route_level_event_sound(body, camera) {
                     self.push_sound_event(s);
                 }
             }
@@ -3681,6 +3763,39 @@ impl PlaySession {
     /// — per-recipient, and absent for anyone the explosion did not push. So
     /// "present" already means "this is *your* shove"; there is no target id
     /// to check.
+    /// `handleExplosion`'s first statement, which M68 dropped on the floor
+    /// (M161).
+    ///
+    /// The construction — volume, source, pitch formula, seed and the three
+    /// draws' order — lives in [`crate::motion::explosion_sound`], because
+    /// `PlaySession` owns a socket and nothing in it can be reached from a
+    /// test (M71's finding, M97's fix). What stays here is the decode attempt
+    /// and the two counters.
+    ///
+    /// A tail failure is logged at debug and costs only the sound: the prefix
+    /// has already applied the knockback, and the most likely cause is a
+    /// particle type newer than this build.
+    fn queue_explosion_sound(&mut self, body: &[u8], e: &crate::motion::Explosion) {
+        let tail = match crate::motion::read_explode_tail(body, &self.particle_types) {
+            Ok(t) => t,
+            Err(err) => {
+                log::debug!("net: explode tail: {err}");
+                return;
+            }
+        };
+        self.motion_stats.explosion_tails += 1;
+        let s = crate::motion::explosion_sound(&tail, e.center, &mut self.ambient_rng);
+        self.motion_stats.explosion_sounds += 1;
+        log::debug!(
+            "net: explode sound {:?} particle {} list {} pitch {:.3}",
+            s.sound,
+            tail.particle,
+            tail.block_particles,
+            s.pitch
+        );
+        self.push_sound_event(crate::sounds::SoundEvent::At(s));
+    }
+
     fn apply_explode(&mut self, e: &crate::motion::Explosion) {
         self.motion_stats.explosions += 1;
         let Some(k) = e.player_knockback else { return };
@@ -6641,6 +6756,42 @@ mod respawn_tests {
         );
         assert_eq!(s.world.shape, DimensionShape::OVERWORLD);
         assert!(s.world.has_sky_light());
+    }
+
+    // -- the camera (M161) -------------------------------------------------
+
+    /// **`None` until the server has positioned us**, which is Rewo's
+    /// `camera.isInitialized()`.
+    ///
+    /// `PlaySession::spawned` goes true on the first `player_position`
+    /// teleport; before it, `self.player` is at whatever the constructor left,
+    /// which is the origin. Handing that out as a camera puts a wither's roar
+    /// two blocks from `(0, 0, 0)` for anyone who spawns anywhere else — and
+    /// `LevelEventHandler.java:66` has no `else`, so vanilla plays nothing at
+    /// all in that state.
+    #[test]
+    fn the_camera_is_absent_until_the_server_positions_us() {
+        let p = moving_player();
+        assert_eq!(PlaySession::camera_eye(&p, false), None);
+        assert!(PlaySession::camera_eye(&p, true).is_some());
+    }
+
+    /// It is the EYE, not the feet.
+    ///
+    /// 1.62 blocks is a quarter of the bearing's own 2.0-block radius, so a
+    /// feet reading is not a rounding difference — it tilts every global
+    /// event's direction noticeably downward, and nothing about the sound's
+    /// distance would look wrong.
+    #[test]
+    fn the_camera_is_the_eye_and_not_the_feet() {
+        let p = moving_player();
+        let got = PlaySession::camera_eye(&p, true).expect("spawned");
+        assert_eq!(got, [p.x, p.y + rewo_world::physics::EYE_HEIGHT, p.z]);
+        assert_ne!(got[1], p.y, "the feet would be 1.62 blocks low");
+        // x and z pass through untouched — a transposed pair would put the
+        // listener somewhere else entirely.
+        assert_eq!((got[0], got[2]), (p.x, p.z));
+        assert_ne!(got[0], got[2], "the fixture must not hide a transposition");
     }
 
     // -- the local player --------------------------------------------------

@@ -918,6 +918,23 @@ impl SoundEngine {
         self.live.iter().map(|l| l.instance.identifier.as_str()).collect()
     }
 
+    /// Where the live instance with this identifier is, in world coordinates.
+    ///
+    /// Exists because `live_identifiers` proves a sound STARTED and says
+    /// nothing about where it was put (M161), and the camera-placed level
+    /// events are entirely about where: 1023 played at the block rather than
+    /// two blocks from the listener is a sound at the right time from the
+    /// wrong direction, which every count-shaped witness passes.
+    ///
+    /// The FIRST match, because the engine can hold several instances of one
+    /// identifier and a caller asking this is asking about one it just played.
+    pub fn live_position(&self, identifier: &str) -> Option<(f64, f64, f64)> {
+        self.live
+            .iter()
+            .find(|l| l.instance.identifier == identifier)
+            .map(|l| (l.instance.x, l.instance.y, l.instance.z))
+    }
+
     /// `SoundEngine.updateCategoryVolume(source, gain)` — the runtime gain,
     /// **clamped on the way in**, which is why `calculate_volume` reads it raw.
     pub fn update_category_volume(&mut self, source: SoundSource, gain: f32) {
@@ -1483,8 +1500,14 @@ pub enum NoInstance {
 /// packets and is not a decision this function has to make.
 ///
 /// Note also what the positioned overload passes for `distanceDelay`:
-/// **`false`**. A network sound is never distance-delayed; only
-/// `playLocalSound` can be, and nothing on the wire reaches it.
+/// **`false`**. `ClientboundSoundPacket` is never distance-delayed.
+///
+/// **The second half of that sentence used to read "and nothing on the wire
+/// reaches it", and M140 falsified it without noticing** (M161).
+/// `route_level_event_sound` is a second producer of positioned sounds, it IS
+/// on the wire, and nine of its ids reach `playLocalSound(.., true)` — the
+/// trial-spawner family. Those arrive as [`SoundEvent::AtDelayed`], which is
+/// why the arm below exists.
 pub fn instance_from_event(
     event: &SoundEvent,
     registry: &rewo_data::sound_events::SoundEvents,
@@ -1492,6 +1515,13 @@ pub fn instance_from_event(
 ) -> Result<SoundInstance, NoInstance> {
     match event {
         SoundEvent::At(p) => Ok(instance_from_positioned(p, registry)?),
+        // **Deliberately the same call, not a variant of it.**
+        // `ClientLevel.playSound` constructs its `SimpleSoundInstance` above
+        // the `distanceDelay` branch, so a delayed sound and an immediate one
+        // are the same object; only who holds it differs. Giving this arm its
+        // own construction path would be one more place for the two to drift
+        // in a way nothing observes until someone stands 40 blocks away.
+        SoundEvent::AtDelayed { sound, .. } => Ok(instance_from_positioned(sound, registry)?),
         SoundEvent::OnEntity(e) => instance_from_entity(e, registry, world),
         SoundEvent::Stop(_) => Err(NoInstance::IsStop),
         SoundEvent::Local(l) => Ok(instance_from_local(l)),
@@ -2290,6 +2320,18 @@ impl SoundSystem {
                             ramp,
                             rewo_world::end_flash::SOUND_DELAY_IN_TICKS,
                         );
+                        self.stats.queued_delayed += 1;
+                        continue;
+                    }
+                    // M161 — the second producer of a delayed sound, and the
+                    // only one whose delay is computed rather than constant.
+                    // Same reasoning as the flash above: the delay belongs to
+                    // the CALL SITE. `SoundInstance.getDelay()` is a
+                    // manual-looping concern (`SoundEngine.java:318-320`), so
+                    // routing this through the instance's `delay` field would
+                    // also change how it loops.
+                    if let SoundEvent::AtDelayed { ticks, .. } = ev {
+                        self.engine.play_delayed_ramped(instance, ramp, *ticks);
                         self.stats.queued_delayed += 1;
                         continue;
                     }
@@ -3522,6 +3564,112 @@ mod tests {
             "expected the f32-narrowed x, got {:?}",
             dev.calls_to(0)
         );
+    }
+
+    // ---- M161: the level event's distance delay -------------------------
+
+    /// A `level_event` body that decodes into a delayed sound.
+    fn level_event_body(kind: i32, x: i64, y: i64, z: i64, data: i32, global: bool) -> Vec<u8> {
+        let packed = ((x & 0x3FF_FFFF) << 38) | ((z & 0x3FF_FFFF) << 12) | (y & 0xFFF);
+        let mut b = kind.to_be_bytes().to_vec();
+        b.extend_from_slice(&(packed as i64).to_be_bytes());
+        b.extend_from_slice(&data.to_be_bytes());
+        b.push(u8::from(global));
+        b
+    }
+
+    /// **The whole delayed path, driven from BYTES** — decode, route, accept,
+    /// queue, and the tick it comes due on (M161).
+    ///
+    /// The two-sided tick assertion is what stops an off-by-one passing: a
+    /// witness that only checked "it is live eventually" is satisfied by a
+    /// delay of 1.
+    ///
+    /// 3012 is a trial spawner (`distance_delay: true`); the camera is exactly
+    /// 300 blocks from the block CENTRE, so the delay is `300 / 40 * 20 = 150`
+    /// ticks — a number derived from the fixture's geometry rather than read
+    /// back out of the code under test.
+    #[test]
+    fn a_far_level_event_is_queued_for_the_right_number_of_ticks() {
+        let body = level_event_body(3012, 10, 64, -7, 0, false);
+        let ev = crate::route_level_event_sound(&body, Some([310.5, 64.5, -6.5]))
+            .expect("3012 is a sound");
+        let SoundEvent::AtDelayed { ticks, .. } = &ev else {
+            panic!("expected a delayed sound, got {ev:?}")
+        };
+        assert_eq!(*ticks, 150);
+
+        let idx = index_of(&["minecraft:block.trial_spawner.spawn_mob"]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let world = TestWorld::default();
+        sys.accept(&[ev], &registry(), &world, &mut dev);
+        assert_eq!(sys.stats.queued_delayed, 1, "stats: {:?}", sys.stats);
+        assert_eq!(sys.stats.started, 0, "nothing is live yet");
+        assert_eq!(sys.engine.live_count(), 0);
+
+        for _ in 0..149 {
+            sys.engine.tick(false, &sys.sounds, &world, &mut dev);
+        }
+        assert_eq!(
+            sys.engine.live_count(),
+            0,
+            "149 ticks in and it has already played"
+        );
+        sys.engine.tick(false, &sys.sounds, &world, &mut dev);
+        assert_eq!(
+            sys.engine.live_identifiers(),
+            vec!["minecraft:block.trial_spawner.spawn_mob"]
+        );
+    }
+
+    /// The same id **inside** ten blocks plays immediately, and the two
+    /// instances are identical (M161).
+    ///
+    /// Pairs with the test above so the strict `> 100.0` boundary is graded
+    /// from both sides, and asserts the *position* as well as the count —
+    /// because `ClientLevel.java:748` builds the instance above the branch, so
+    /// a delayed sound that arrived by a different construction path would
+    /// still satisfy every count.
+    #[test]
+    fn a_near_level_event_is_played_immediately_and_identically() {
+        let body = level_event_body(3012, 10, 64, -7, 0, false);
+        let ev = crate::route_level_event_sound(&body, Some([12.5, 64.5, -6.5]))
+            .expect("3012 is a sound");
+        assert!(
+            matches!(ev, SoundEvent::At(_)),
+            "2 blocks out must not be delayed, got {ev:?}"
+        );
+
+        let idx = index_of(&["minecraft:block.trial_spawner.spawn_mob"]);
+        let mut sys = SoundSystem::new(idx);
+        let mut dev = RecordingDevice::default();
+        let world = TestWorld::default();
+        sys.accept(&[ev], &registry(), &world, &mut dev);
+        assert_eq!(sys.stats.started, 1, "stats: {:?}", sys.stats);
+        assert_eq!(sys.stats.queued_delayed, 0);
+        // The block centre, not the camera and not the corner.
+        assert_eq!(
+            sys.engine
+                .live_position("minecraft:block.trial_spawner.spawn_mob"),
+            Some((10.5, 64.5, -6.5))
+        );
+    }
+
+    /// The delayed instance is the SAME instance, LINEAR and non-relative
+    /// (M161) — `instance_from_event`'s two arms are one call.
+    #[test]
+    fn the_delayed_and_immediate_instances_are_byte_identical() {
+        let body = level_event_body(3012, 10, 64, -7, 0, false);
+        let near = crate::route_level_event_sound(&body, Some([12.5, 64.5, -6.5])).unwrap();
+        let far = crate::route_level_event_sound(&body, Some([310.5, 64.5, -6.5])).unwrap();
+        let a = instance_from_event(&near, &registry(), &EmptyWorld).unwrap();
+        let b = instance_from_event(&far, &registry(), &EmptyWorld).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.attenuation, crate::sound_instance::Attenuation::Linear);
+        assert!(!a.relative);
+        assert!(!a.looping);
+        assert_eq!(a.delay, 0, "the wait is the QUEUE's, not the instance's");
     }
 
     // ---- M149f: the End flash, the one sound the client QUEUES -----------

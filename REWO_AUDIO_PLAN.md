@@ -600,14 +600,25 @@ on the windowed path) + **the human listening pass** (§4).
 > plausible transcription gives every minecart ride a twenty-second pitch
 > glissando that vanilla does not have. See `REWO_PLAN.md` §15.
 >
-> Camera- and listener-placed ids (four of seventy) are declined, because both
-> need the camera and the decode layer does not have it; `distance_delay` is not
-> modelled, so those sounds arrive early rather than late. And a structural fact
-> found while writing the witness: **all three global rows are camera-placed**,
-> so the sound path never fires for a global packet at all — asserted over the
-> whole table, so adding a block-placed global row fails loudly.
+> Camera- and listener-placed ids are declined, because both need the camera
+> and the decode layer does not have it; `distance_delay` is not modelled, so
+> those sounds arrive early rather than late. And a structural fact found while
+> writing the witness: **all three global rows are camera-placed**, so the sound
+> path never fires for a global packet at all — asserted over the whole table,
+> so adding a block-placed global row fails loudly.
+>
+> **All three boundaries were closed by M161, and two of the sentences above
+> were wrong.** It is **three** camera ids and **one** listener id out of 63
+> distinct ids, not "four of seventy"; the listener id needs **no camera at
+> all** (`forLocalAmbience` is `Attenuation.NONE`, relative, at the origin); and
+> `distance_delay` is `sqrt(distanceToSqr) / 40.0` seconds, gated on
+> `distanceToSqr > 100.0` — the "`distance / 340`" figure that was in
+> `rewo-net/src/lib.rs` and `REWO_PACKET_COVERAGE.md` appears nowhere in
+> `Level.java`, `ClientLevel.java` or `client/sounds/`. The camera now enters at
+> the `PlaySession` call site, which is where vanilla resolves it. See
+> `REWO_PLAN.md` §15.
 
-`level_event_sounds` has **zero production callers** today; most block interactions (dispenser, anvil, composter) arrive as `level_event` ids, so a large fraction of world sound stays silent even with a perfect device. Plus the ~8 tickable per-tick ramps and `MusicManager`/`update_category_volume` (which is why `gainBySource` is pinned at 1.0).
+`level_event_sounds` has **zero production callers** today; most block interactions (dispenser, anvil, composter) arrive as `level_event` ids, so a large fraction of world sound stays silent even with a perfect device. Plus the ~8 tickable per-tick ramps and `MusicManager`/`update_category_volume` (which is why `gainBySource` is pinned at 1.0). *(M140 gave it a caller and M161 completed it; the tickable ramps were M141, and there are **ten** of them rather than ~8.)*
 
 ---
 

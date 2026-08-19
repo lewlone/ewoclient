@@ -310,6 +310,30 @@ struct RenderCheck {
     music_started: Option<String>,
     /// The forward vector the device last received, for a shape check.
     listener_forward: Option<[f32; 3]>,
+    /// M161 — where the engine put the wither-spawn sound a global
+    /// `level_event` asked for, and where the listener was when it landed.
+    ///
+    /// **The position rather than the fact.** `live_identifiers` would prove
+    /// the sound started and say nothing about where, and the whole of
+    /// `globalLevelEvent` is about where: 1023 played at the block instead of
+    /// two blocks from the listener is a sound at the right time from the wrong
+    /// direction, which every count-shaped witness passes.
+    global_event_sound: Option<(f64, f64, f64)>,
+    global_event_eye: Option<[f64; 3]>,
+    /// The block CENTRE the injected 1023 named, recorded by the gate from its
+    /// own arithmetic so the bearing's direction can be predicted without
+    /// asking the code under test where it thought the event was.
+    global_event_target: Option<[f64; 3]>,
+    /// M161 — the explosion sound the `explode` tail carried, if the tail was
+    /// walked at all.
+    explosion_sound: Option<(f64, f64, f64)>,
+    /// M161 — `MotionStats::explosion_tails` / `explosion_sounds` at the end.
+    explosion_tails: u32,
+    explosion_sounds_queued: u32,
+    /// M161 — `SoundStats::queued_delayed`, which only a distance-delayed
+    /// `level_event` can move in an Overworld run (the other producer is the
+    /// End flash).
+    queued_delayed: u32,
     /// M111 — frames on which the chat SCROLLBAR was drawn.
     ///
     /// It exists only while the screen is open AND the backlog exceeds the box
@@ -597,7 +621,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 47;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 50;
 
     fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1111,6 +1135,76 @@ impl RenderCheck {
                 self.tab_list_rows_max,
                 self.tab_list_icons_max,
                 self.tab_list_text_max
+            ),
+        );
+        // ── M161: the two packet tails that carry a sound ──────────────────
+        //
+        // All three call sites live inside `PlaySession`, which owns a socket
+        // and cannot be built in a unit test (M71) — so `soundshot` grades the
+        // arithmetic exactly and would stay green with `queue_explosion_sound`
+        // deleted and `camera_eye` hardwired to `None`. This is the only check
+        // that can see them, which is r45's stated reason for existing.
+        let bearing = match (
+            self.global_event_sound,
+            self.global_event_eye,
+            self.global_event_target,
+        ) {
+            (Some(s), Some(eye), Some(t)) => {
+                let to_sound = [s.0 - eye[0], s.1 - eye[1], s.2 - eye[2]];
+                let len = (to_sound[0] * to_sound[0]
+                    + to_sound[1] * to_sound[1]
+                    + to_sound[2] * to_sound[2])
+                    .sqrt();
+                let to_event = [t[0] - eye[0], t[1] - eye[1], t[2] - eye[2]];
+                let dot = to_sound[0] * to_event[0]
+                    + to_sound[1] * to_event[1]
+                    + to_sound[2] * to_event[2];
+                let to_block = ((s.0 - t[0]).powi(2) + (s.1 - t[1]).powi(2) + (s.2 - t[2]).powi(2))
+                    .sqrt();
+                Some((len, dot, to_block))
+            }
+            _ => None,
+        };
+        row(
+            "r48 a global level event placed its sound against the live camera",
+            // 2.0 blocks from the EYE the gate recorded independently — so a
+            // `camera_eye` reading feet rather than the eye misses by 1.62 and
+            // fails here. The dot's SIGN is what kills the reversed
+            // `Vec3.subtract`, which a distance-only check passes at 180
+            // degrees. And the block is 58 blocks away, so "the sound is not at
+            // the block" separates this from the block-placed path.
+            bearing.is_some_and(|(len, dot, to_block)| {
+                (len - 2.0).abs() < 1e-6 && dot > 0.0 && to_block > 50.0
+            }),
+            format!(
+                "eye {:?} -> sound {:?} (target {:?}): {:?} = (blocks from eye, dot with the \
+                 bearing, blocks from the block). `None` here means the camera never \
+                 resolved, which is what a client that hands `route_level_event_sound` a \
+                 hardcoded `None` scores.",
+                self.global_event_eye, self.global_event_sound, self.global_event_target, bearing
+            ),
+        );
+        row(
+            "r49 an explode packet's TAIL was walked and its sound started",
+            self.explosion_tails > 0
+                && self.explosion_sounds_queued > 0
+                && self.explosion_sound.is_some(),
+            format!(
+                "{} tails walked, {} sounds queued, engine position {:?}. M68 consumed only \
+                 the physics prefix and threw the sound away; a client that still does \
+                 scores 0/0/None here with every other witness green.",
+                self.explosion_tails, self.explosion_sounds_queued, self.explosion_sound
+            ),
+        );
+        row(
+            "r50 a far level event was QUEUED rather than played",
+            self.queued_delayed > 0,
+            format!(
+                "{} delayed. The injected 3012 is 200 blocks out, past the strict \
+                 `distanceToSqr > 100.0` gate, so it must reach `playDelayed`. The only \
+                 other producer in this run would be an End flash, and this is the \
+                 Overworld.",
+                self.queued_delayed
             ),
         );
         row(
@@ -5333,6 +5427,8 @@ struct LiveApp {
     sidebar_injected: bool,
     /// M151 — whether the tab-list player injection has happened.
     tab_list_injected: bool,
+    /// M161 — the two sound-carrying packet tails, injected once.
+    sound_tails_injected: bool,
     /// Whether `--render-check` has force-opened the chat screen yet (M110).
     chat_injected: bool,
     /// Whether it has typed a `/`-command yet (M116).
@@ -7733,6 +7829,106 @@ impl LiveApp {
                 // the same "read the key state fresh" the real gate does.
                 self.keys.tab_list = elapsed >= limit * 0.5;
             }
+            // M161 — the two packet tails that carry a sound. Both call sites
+            // live inside `PlaySession`, which owns a socket and cannot be
+            // built in a unit test (M71), so this is the only check that can
+            // reach them: `soundshot` grades the arithmetic and would stay
+            // green with `queue_explosion_sound` deleted and `camera_eye`
+            // returning `None` forever.
+            //
+            // Raw bodies through the production dispatcher (M17's rule), and
+            // late enough in the run that `spawned` is true — before the
+            // server's first `player_position` the camera is legitimately
+            // absent and 1023 is correctly silent.
+            if !self.sound_tails_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.3 {
+                    let explode_holder = self
+                        .sounds
+                        .registry
+                        .id_of("minecraft:entity.generic.explode")
+                        .map(|id| id + 1);
+                    let mut recorded: Option<([f64; 3], [f64; 3])> = None;
+                    if let (Some(session), Some(holder)) = (self.session.as_mut(), explode_holder) {
+                        let eye = [session.player.x, session.player.eye_y(), session.player.z];
+                        let block = |dx: i64, dy: i64, dz: i64| {
+                            let x = eye[0].floor() as i64 + dx;
+                            let y = eye[1].floor() as i64 + dy;
+                            let z = eye[2].floor() as i64 + dz;
+                            let packed = ((x & 0x3FF_FFFF) << 38)
+                                | ((z & 0x3FF_FFFF) << 12)
+                                | (y & 0xFFF);
+                            (x, y, z, packed as i64)
+                        };
+                        let level_event = |kind: i32, packed: i64, global: bool| {
+                            let mut b = kind.to_be_bytes().to_vec();
+                            b.extend_from_slice(&packed.to_be_bytes());
+                            b.extend_from_slice(&0i32.to_be_bytes());
+                            b.push(u8::from(global));
+                            b
+                        };
+
+                        // 1023, a wither spawning 40 blocks north-east and 12
+                        // up: far enough that "the sound is 2 blocks from the
+                        // listener" cannot be confused with "the sound is at
+                        // the block".
+                        let (bx, by, bz, packed) = block(40, 12, 40);
+                        recorded = Some((
+                            eye,
+                            [bx as f64 + 0.5, by as f64 + 0.5, bz as f64 + 0.5],
+                        ));
+                        session.inject_packet(
+                            session.ids.cb_play_level_event.unwrap_or(-1),
+                            &level_event(1023, packed, true),
+                        );
+
+                        // 3012, a trial spawner 200 blocks away: past the
+                        // strict `distanceToSqr > 100.0` gate, so it must be
+                        // QUEUED rather than played.
+                        let (_, _, _, far) = block(200, 0, 0);
+                        session.inject_packet(
+                            session.ids.cb_play_level_event.unwrap_or(-1),
+                            &level_event(3012, far, false),
+                        );
+
+                        // An `explode` whose TAIL carries the sound. The
+                        // particle is named rather than numbered, through the
+                        // session's own report-backed registry — a hardcoded id
+                        // would fail closed for the wrong reason if the
+                        // registry were ever renumbered.
+                        if let Some(emitter) =
+                            session.particle_types().id_of("minecraft:explosion_emitter")
+                        {
+                            let poof = session.particle_types().id_of("minecraft:poof");
+                            let smoke = session.particle_types().id_of("minecraft:smoke");
+                            if let (Some(poof), Some(smoke)) = (poof, smoke) {
+                                let mut b = Vec::new();
+                                for v in [eye[0], eye[1] - 1.0, eye[2]] {
+                                    b.extend_from_slice(&v.to_be_bytes());
+                                }
+                                b.extend_from_slice(&4.0f32.to_be_bytes());
+                                b.extend_from_slice(&37i32.to_be_bytes()); // fixed i32
+                                b.push(0); // no playerKnockback
+                                rewo_proto::varint::write_varint(&mut b, emitter);
+                                rewo_proto::varint::write_varint(&mut b, holder);
+                                rewo_proto::varint::write_varint(&mut b, 2);
+                                for id in [poof, smoke] {
+                                    rewo_proto::varint::write_varint(&mut b, id);
+                                    b.extend_from_slice(&0.5f32.to_be_bytes());
+                                    b.extend_from_slice(&1.0f32.to_be_bytes());
+                                    rewo_proto::varint::write_varint(&mut b, 1);
+                                }
+                                session.inject_packet(session.ids.cb_play_explode, &b);
+                            }
+                        }
+                    }
+                    if let (Some(c), Some((eye, target))) = (self.check.as_mut(), recorded) {
+                        c.global_event_eye = Some(eye);
+                        c.global_event_target = Some(target);
+                    }
+                    self.sound_tails_injected = true;
+                }
+            }
             if !self.chat_injected {
                 let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
                 if self.started.elapsed().as_secs_f32() >= limit * 0.2 {
@@ -8499,12 +8695,40 @@ impl LiveApp {
         // this frame computed — the claim is that a track was actually started,
         // not that a situation was named.
         let music = self.sounds.system.music.current().map(str::to_string);
+        // M161 — LATCHED rather than sampled at the end, because a one-shot is
+        // reclaimed 20 ticks after its channel is released and the run goes on
+        // for several seconds after the injection. Read off the ENGINE, not off
+        // anything the injection computed.
+        let wither = self
+            .sounds
+            .system
+            .engine
+            .live_position("minecraft:entity.wither.spawn");
+        let boom = self
+            .sounds
+            .system
+            .engine
+            .live_position("minecraft:entity.generic.explode");
+        let queued = self.sounds.system.stats.queued_delayed;
+        let (tails, sounds_queued) = (
+            session.motion_stats.explosion_tails,
+            session.motion_stats.explosion_sounds,
+        );
         if let Some(c) = self.check.as_mut() {
             c.listener_pushes = pushes;
             c.listener_forward = fwd;
             if music.is_some() {
                 c.music_started = music;
             }
+            if c.global_event_sound.is_none() {
+                c.global_event_sound = wither;
+            }
+            if c.explosion_sound.is_none() {
+                c.explosion_sound = boom;
+            }
+            c.queued_delayed = c.queued_delayed.max(queued);
+            c.explosion_tails = c.explosion_tails.max(tails);
+            c.explosion_sounds_queued = c.explosion_sounds_queued.max(sounds_queued);
         }
         // Before `set_entities`: the entity pass reads the eye as the CEM
         // `player_pos_*`, which FA aims mob eyes/heads with.
@@ -9610,6 +9834,7 @@ fn run_windowed(
         bad_command_injected: false,
         sidebar_injected: false,
         tab_list_injected: false,
+        sound_tails_injected: false,
         username,
         chat_parse: None,
         drag: DragState::default(),
