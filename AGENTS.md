@@ -2188,7 +2188,7 @@ does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
 **Everything is shipped and gated** as of 2026-08-14 (M157) —
-**3281 tests / 0 failures** (world 1198, net 1162, gpu 290, data 228, app 222,
+**3288 tests / 0 failures** (world 1198, net 1163, gpu 290, data 228, app 228,
 mesh 45, proto 16, **audio 120** — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,

@@ -406,6 +406,39 @@ impl MusicManager {
         self.frequency = frequency;
         self.next_song_delay = self.frequency.next_song_delay(situational, &mut self.random);
     }
+
+    /// `MusicManager`'s CONSTRUCTOR reading the option — a plain store, with no
+    /// re-roll (M161).
+    ///
+    /// **Vanilla has two paths and they differ in exactly one side effect**, and
+    /// conflating them is a live bug rather than a nicety:
+    ///
+    /// ```java
+    /// // MusicManager.java:30 — construction
+    /// this.gameMusicFrequency = minecraft.options.musicFrequency().get();
+    ///
+    /// // MusicManager.java:154-155 — setMinutesBetweenSongs, the option's
+    /// // onValueUpdate callback
+    /// this.gameMusicFrequency = musicFrequency;
+    /// this.nextSongDelay = this.gameMusicFrequency.getNextSongDelay(
+    ///     this.minecraft.getSituationalMusic(), this.random);
+    /// ```
+    ///
+    /// The constructor leaves `nextSongDelay` at its field initialiser of
+    /// **100** (`:25`); the callback re-rolls it, which is what makes changing
+    /// the option reschedule the next track immediately. **M157 seeded from
+    /// `options.txt` through the callback**, so every session began with a delay
+    /// of up to `24000` instead of `STARTING_DELAY` — and since the delay is
+    /// decremented once per tick, **no music played in any session shorter than
+    /// about twenty minutes**.
+    ///
+    /// Nothing in the suite could see it: `soundshot`, the 3287 unit tests and
+    /// 36 gates were all green. `live --render-check`'s r46 caught it, which is
+    /// the same shape as M147 — the gate that runs the client is the one that
+    /// finds a client that does nothing.
+    pub fn seed_frequency(&mut self, frequency: MusicFrequency) {
+        self.frequency = frequency;
+    }
 }
 
 #[cfg(test)]

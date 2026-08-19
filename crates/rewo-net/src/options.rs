@@ -375,6 +375,39 @@ mod tests {
         assert_eq!(after, 0);
     }
 
+    /// **Seeding from `options.txt` must NOT re-roll the delay** (M161).
+    ///
+    /// The pair with the test above is the whole point: vanilla's constructor
+    /// (`MusicManager.java:30`) plainly stores the option and leaves
+    /// `nextSongDelay` at its field initialiser of 100, while
+    /// `setMinutesBetweenSongs` (`:154-155`) stores it AND re-rolls. M157 seeded
+    /// through the second, so every session started with a delay of up to 24000
+    /// against a 100-tick `STARTING_DELAY` — and since the delay is decremented
+    /// once per tick, **no music played in any session under ~20 minutes**.
+    ///
+    /// One test alone cannot express this: "re-rolls" and "does not re-roll"
+    /// are the same assertion with the sign flipped, and only the pair says
+    /// which path belongs where.
+    #[test]
+    fn seeding_the_frequency_keeps_the_starting_delay() {
+        let mut m = crate::music::MusicManager::new(7, MusicFrequency::Default);
+        let before = m.next_song_delay();
+        assert_eq!(before, crate::music::STARTING_DELAY, "a fresh manager waits 100");
+        m.seed_frequency(MusicFrequency::Constant);
+        assert_eq!(
+            m.next_song_delay(),
+            crate::music::STARTING_DELAY,
+            "seeding stores the value and leaves the delay alone; re-rolling here              is what stopped music playing at all"
+        );
+        // …and the value really was taken, so this is not passing by doing nothing.
+        m.set_frequency(MusicFrequency::Constant, None);
+        assert_ne!(
+            m.next_song_delay(),
+            crate::music::STARTING_DELAY,
+            "the mid-session path still re-rolls"
+        );
+    }
+
     /// The cycle is `MusicFrequency.values()` order and it wraps.
     #[test]
     fn the_cycle_wraps_through_values_order() {

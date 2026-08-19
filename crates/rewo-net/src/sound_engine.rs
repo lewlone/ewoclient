@@ -2190,11 +2190,13 @@ impl SoundSystem {
     /// changing the option reschedules the next track NOW and draws from the
     /// RNG while doing it.
     pub fn set_music_frequency(&mut self, frequency: crate::music::MusicFrequency) {
-        // `getSituationalMusic()` is the manager's own input and is not known
-        // here; vanilla passes it and the re-roll uses it only to pick a
-        // min/max pair. `None` takes the frequency's own maximum, which is the
-        // same branch a client with nothing on offer takes.
-        self.music.set_frequency(frequency, None);
+        // **The CONSTRUCTOR's path, not the callback's** (M161). This used to
+        // call `set_frequency`, which is `setMinutesBetweenSongs` and re-rolls
+        // `nextSongDelay` — so seeding from `options.txt` replaced the 100-tick
+        // `STARTING_DELAY` with up to 24000 and no music played in any session
+        // shorter than about twenty minutes. The doc block above already said
+        // the two paths differ; the code called the wrong one.
+        self.music.seed_frequency(frequency);
     }
 
     /// Feed one drained batch of [`SoundEvent`]s to the engine, in order.
