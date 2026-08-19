@@ -20,10 +20,26 @@
 use rewo_data::components::DataComponentIds;
 use rewo_proto::reader::PacketReader;
 
+use crate::MetaKinds;
+
 #[derive(Default)]
 pub struct EntityMeta {
-    /// Custom name (index 2), flattened from its text component.
-    pub custom_name: Option<String>,
+    /// `Entity.DATA_CUSTOM_NAME` (index 2) — **two** levels of `Option`, and
+    /// both are load-bearing.
+    ///
+    /// The accessor is `EntityDataAccessor<Optional<Component>>`
+    /// (`Entity.java:269-271`), so the wire's leading `bool` is the
+    /// `Optional`'s presence and `false` is an explicit **clear** —
+    /// `setCustomName(null)` is `Optional.empty()`. The outer `Option` is
+    /// therefore "did this packet mention index 2 at all", and the inner one is
+    /// the `Optional`.
+    ///
+    /// Collapsing them loses the clear: this decode used to have no `else` on
+    /// the presence bit, so `/data remove entity @e CustomName` was read as
+    /// "index 2 absent" and the old name stood forever. It also used to drop a
+    /// present-but-**empty** name, which vanilla keeps — `hasCustomName()` is
+    /// `isPresent()`, not "is non-blank".
+    pub custom_name: Option<Option<String>>,
     /// Shared flags byte (index 0): 0x01 on-fire, 0x02 crouching, 0x08
     /// sprinting, 0x10 swimming, 0x20 invisible, 0x40 glowing, 0x80 elytra.
     pub flags: Option<u8>,
@@ -220,12 +236,21 @@ pub struct EntityMeta {
 
 /// Parse a metadata stream (reader positioned at the first entry index).
 ///
-/// `components` supplies the data-component registry ids the ITEM_STACK
+/// Takes the whole [`MetaKinds`] rather than the two fields it reads
+/// (`components` and `lang`). That is deliberate: the caller already builds one,
+/// and a decode that grows a second loose argument every time it needs another
+/// piece of session state is how two readings of the same stream drift apart.
+///
+/// `kinds.components` supplies the data-component registry ids the ITEM_STACK
 /// serializer needs to walk a stack's `DataComponentPatch`. `None` — the
 /// headless protocol harnesses — leaves ITEM_STACK unwalkable, which ends the
 /// parse at that entry exactly as it did before M24b; that is the honest
 /// answer, since a stack cannot be skipped without knowing its components.
-pub fn parse(r: &mut PacketReader, components: Option<DataComponentIds>) -> EntityMeta {
+///
+/// `kinds.lang` resolves the index-2 custom name; see [`MetaKinds::lang`] on
+/// why that happens here rather than at render.
+pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
+    let components = kinds.components;
     let mut meta = EntityMeta::default();
     loop {
         let index = match r.u8() {
@@ -240,13 +265,21 @@ pub fn parse(r: &mut PacketReader, components: Option<DataComponentIds>) -> Enti
             (0, 0) => meta.flags = r.u8().ok(), // shared flags (BYTE)
             (2, 6) => {
                 // custom name (OPTIONAL_COMPONENT): bool + text component.
-                if r.bool().unwrap_or(false) {
-                    if let Ok(nbt) = r.nbt() {
-                        let s = nbt.to_plain_text();
-                        if !s.is_empty() {
-                            meta.custom_name = Some(s);
+                //
+                // The `false` arm is a CLEAR, not a no-op — see
+                // [`EntityMeta::custom_name`]. And the component is flattened
+                // through `chat_style::flatten`, so a `translate` resolves
+                // against the table and a `§` code becomes style rather than
+                // two drawn characters (`Language.getVisualOrder`).
+                match r.bool() {
+                    Ok(true) => {
+                        if let Ok(nbt) = r.nbt() {
+                            meta.custom_name =
+                                Some(Some(rewo_world::chat_style::flatten(&nbt, kinds.lang)));
                         }
                     }
+                    Ok(false) => meta.custom_name = Some(None),
+                    Err(_) => break,
                 }
             }
             // BOOLEAN at 3 = `Entity.DATA_CUSTOM_NAME_VISIBLE` (M70). Serializer
@@ -439,9 +472,9 @@ mod tests {
         b.extend_from_slice(&nbt_string("Bessie"));
         b.push(0xFF); // terminator
         let mut r = PacketReader::new(&b);
-        let m = parse(&mut r, None);
+        let m = parse(&mut r, MetaKinds::default());
         assert_eq!(m.flags, Some(0x40));
-        assert_eq!(m.custom_name.as_deref(), Some("Bessie"));
+        assert_eq!(m.custom_name.as_ref().map(Option::as_deref), Some(Some("Bessie")));
     }
 
     #[test]
@@ -451,14 +484,14 @@ mod tests {
         b.extend_from_slice(&nbt_string("Named"));
         b.extend_from_slice(&[0x07, 0x07]); // ITEM_STACK — unskippable
         let mut r = PacketReader::new(&b);
-        let m = parse(&mut r, None);
-        assert_eq!(m.custom_name.as_deref(), Some("Named"));
+        let m = parse(&mut r, MetaKinds::default());
+        assert_eq!(m.custom_name.as_ref().map(Option::as_deref), Some(Some("Named")));
     }
 
     #[test]
     fn empty_stream_yields_nothing() {
         let mut r = PacketReader::new(&[0xFF]);
-        let m = parse(&mut r, None);
+        let m = parse(&mut r, MetaKinds::default());
         assert!(m.custom_name.is_none() && m.flags.is_none());
     }
 
@@ -470,7 +503,7 @@ mod tests {
         b.extend_from_slice(&[0x10, 0x01, 0x04]); // idx16 INT size=4
         b.push(0xFF);
         let mut r = PacketReader::new(&b);
-        let m = parse(&mut r, None);
+        let m = parse(&mut r, MetaKinds::default());
         assert_eq!(m.size, Some(4));
         assert_eq!(m.bool16, None, "INT at 16 is size, not a BOOLEAN");
     }
@@ -480,16 +513,16 @@ mod tests {
         // A player's `DATA_PLAYER_MAIN_HAND`: index 15, HUMANOID_ARM (42),
         // value 0 = LEFT.
         let mut b: Vec<u8> = vec![0x0F, 42, 0x00, 0xFF];
-        let m = parse(&mut PacketReader::new(&b), None);
+        let m = parse(&mut PacketReader::new(&b), MetaKinds::default());
         assert_eq!(m.main_arm, Some(0));
         // RIGHT.
         b = vec![0x0F, 42, 0x01, 0xFF];
-        assert_eq!(parse(&mut PacketReader::new(&b), None).main_arm, Some(1));
+        assert_eq!(parse(&mut PacketReader::new(&b), MetaKinds::default()).main_arm, Some(1));
         // The BYTE at the same index is `Mob.DATA_MOB_FLAGS_ID` (or an armor
         // stand's client flags) — not a main hand. It must skip cleanly and
         // leave a later field readable.
         b = vec![0x0F, 0x00, 0x02, 0x10, 0x08, 0x01, 0xFF];
-        let m = parse(&mut PacketReader::new(&b), None);
+        let m = parse(&mut PacketReader::new(&b), MetaKinds::default());
         assert_eq!(m.main_arm, None, "BYTE at 15 is a flags byte, not the arm");
         assert_eq!(m.bool16, Some(true), "…and the stream stayed in sync");
     }
@@ -503,7 +536,7 @@ mod tests {
         b.extend_from_slice(&[0x10, 0x08, 0x01]); // idx16 BOOLEAN = true
         b.push(0xFF);
         let mut r = PacketReader::new(&b);
-        let m = parse(&mut r, None);
+        let m = parse(&mut r, MetaKinds::default());
         assert_eq!(m.bool16, Some(true));
         assert_eq!(m.size, None, "BOOLEAN at 16 is not an INT size");
     }
@@ -517,7 +550,7 @@ mod m20_mob_metadata_tests {
     /// [`super::parse`] with no component ids — every test below drives
     /// serializers that need none.
     fn parse_nc(r: &mut PacketReader) -> metadata::EntityMeta {
-        metadata::parse(r, None)
+        metadata::parse(r, crate::MetaKinds::default())
     }
 
     /// One `(index, serializer, value)` entry plus the 0xFF terminator.

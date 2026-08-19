@@ -2881,6 +2881,10 @@ impl PlaySession {
                 variant_kinds: self.variant_type_ids,
                 classes: self.entity_classes.as_deref(),
                 components: self.swing_data.as_ref().map(|d| d.components),
+                // The nametag's language table. Resolving here rather than at
+                // render is what keeps `EntityDraw::name` a borrowed `&str`;
+                // see `MetaKinds::lang`.
+                lang: self.lang.as_deref(),
             },
         ) {
             // M141e: and the local player's own, which the router cannot store.

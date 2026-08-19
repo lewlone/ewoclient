@@ -223,12 +223,25 @@ pub struct StackComponents {
     /// `minecraft:max_damage`. Usually absent — the prototype carries it — so
     /// a bar needs the item table as well as the patch.
     pub max_damage: Option<i32>,
-    /// `minecraft:custom_name`, the anvil-given name, reduced to plain text.
-    pub custom_name: Option<String>,
+    /// `minecraft:custom_name`, the anvil-given name, **unflattened**.
+    ///
+    /// Carried as the raw component rather than as a string because this decode
+    /// has no language table and the tooltip builder does: a `translate` here
+    /// flattened to its key, and a legacy colour code to two drawn characters.
+    /// See `rewo_world::chat_style::flatten`.
+    ///
+    /// Kept apart from [`Self::item_name`] all the way to the renderer, because
+    /// `getStyledHoverName` (`ItemStack.java:827-833`) adds ITALIC iff
+    /// `has(CUSTOM_NAME)` — a merged field cannot express that — and because
+    /// `Inventory.isUsableForCrafting` (`Inventory.java:145-147`) tests
+    /// `has(CUSTOM_NAME)` **alone**.
+    pub custom_name: Option<rewo_proto::nbt::Nbt>,
     /// `minecraft:item_name`, a *default* name an item may carry. Lower
     /// precedence than `custom_name` and higher than the translated id.
-    pub item_name: Option<String>,
-    pub lore: Vec<String>,
+    /// Unflattened, for the same reason.
+    pub item_name: Option<rewo_proto::nbt::Nbt>,
+    /// `minecraft:lore`, one component per line, unflattened.
+    pub lore: Vec<rewo_proto::nbt::Nbt>,
     /// `minecraft:rarity`'s id — the name's colour.
     pub rarity: Option<i32>,
     /// `(enchantment registry id, level)`, from **both**
@@ -485,14 +498,24 @@ impl StackComponents {
 
     /// The name a tooltip shows, given the item's translated display name.
     ///
-    /// `ItemStack.getHoverName` is `getOrDefault(CUSTOM_NAME, getItemName())`,
-    /// and `getItemName` is `getOrDefault(ITEM_NAME, item.getName())` — so the
-    /// two components are a two-level override rather than alternatives.
-    pub fn hover_name<'a>(&'a self, fallback: &'a str) -> &'a str {
-        self.custom_name
-            .as_deref()
-            .or(self.item_name.as_deref())
-            .unwrap_or(fallback)
+    /// `ItemStack.getHoverName()` (`ItemStack.java:802-805`) is
+    /// `getCustomName() != null ? customName : getItemName()`, and
+    /// `getItemName()` (`:823-825`) is `this.getItem().getName(this)` — the
+    /// **item's virtual method**, whose base implementation
+    /// (`Item.java:342-344`) is
+    /// `getOrDefault(ITEM_NAME, CommonComponents.EMPTY)`.
+    ///
+    /// The comment this replaces said `getItemName` *is*
+    /// `getOrDefault(ITEM_NAME, item.getName())`, which inverts the nesting: it
+    /// reads as a patched `ITEM_NAME` beating an item's own override, where
+    /// vanilla has the override outermost (`PotionItem.java:73-75` ignores
+    /// ITEM_NAME entirely when POTION_CONTENTS is present). Rewo models none of
+    /// the six overrides, so `fallback` stands in for `Item.getName`'s answer.
+    pub fn hover_name(&self, fallback: &str, lang: Option<&rewo_data::lang::Language>) -> String {
+        match self.custom_name.as_ref().or(self.item_name.as_ref()) {
+            Some(tag) => rewo_world::chat_style::flatten(tag, lang),
+            None => fallback.to_string(),
+        }
     }
 }
 
@@ -745,9 +768,7 @@ fn read_interpreted(
     shape: &crate::component_wire::Shape,
     out: &mut StackComponents,
 ) -> Result<bool, ()> {
-    use crate::component_wire::{
-        nbt_text, read_container_slot_list, read_item_template_list, walk,
-    };
+    use crate::component_wire::{read_container_slot_list, read_item_template_list, walk};
     if ty == ids.damage {
         out.damage = Some(r.varint().map_err(|_| ())?);
         return Ok(true);
@@ -786,11 +807,13 @@ fn read_interpreted(
     }
     if ty == ids.custom_name || ty == ids.item_name {
         let tag = rewo_proto::nbt::Nbt::read_network(r).map_err(|_| ())?;
-        let text = nbt_text(&tag);
+        // Kept as the component. Flattening here is what put a raw translation
+        // key and a literal colour code on a plugin server's renamed items:
+        // this decode has no language table, and the tooltip builder does.
         if ty == ids.custom_name {
-            out.custom_name = Some(text);
+            out.custom_name = Some(tag);
         } else {
-            out.item_name = Some(text);
+            out.item_name = Some(tag);
         }
         return Ok(true);
     }
@@ -801,7 +824,7 @@ fn read_interpreted(
         }
         for _ in 0..n {
             let tag = rewo_proto::nbt::Nbt::read_network(r).map_err(|_| ())?;
-            out.lore.push(nbt_text(&tag));
+            out.lore.push(tag);
         }
         return Ok(true);
     }
@@ -988,6 +1011,13 @@ pub fn resolve_use(stack: &WireStack, profiles: &UseProfiles) -> Option<UseProfi
 
 #[cfg(test)]
 mod tests {
+    /// M161: the name components are carried unflattened. `None` for the
+    /// table, because these witnesses are about the WALK, not the resolution.
+    fn name_text(tag: &Option<rewo_proto::nbt::Nbt>) -> Option<String> {
+        tag.as_ref()
+            .map(|t| rewo_world::chat_style::flatten(t, None))
+    }
+
     use super::*;
 
     const IDS: DataComponentIds = DataComponentIds {
@@ -1682,7 +1712,7 @@ mod tests {
         assert_eq!(slots[0].as_ref().unwrap().item_id, 1);
         assert_eq!(slots[0].as_ref().unwrap().count, 64);
         assert_eq!(
-            slots[2].as_ref().unwrap().custom_name.as_deref(),
+            name_text(&slots[2].as_ref().unwrap().custom_name).as_deref(),
             Some("Excalibur")
         );
         // `addToTooltip` walks only the occupied ones.
@@ -1743,7 +1773,7 @@ mod tests {
         assert_eq!(c.damage, Some(300));
         assert_eq!(c.container_contents().map(<[_]>::len), Some(2));
         assert_eq!(
-            c.container_items().next().unwrap().custom_name.as_deref(),
+            name_text(&c.container_items().next().unwrap().custom_name).as_deref(),
             Some("Tools")
         );
     }

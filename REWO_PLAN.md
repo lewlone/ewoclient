@@ -1726,11 +1726,23 @@ this shape once.
 
 | Milestone | `rNN` | Atlas / sheet | Gate + witness prefix |
 |---|---|---|---|
-| *(next free)* | **r48** | — | — |
+| M161 — the wire-time flattens outside chat | **r48** | — | `labelshot` `fl*`, `blockentityshot` `sg*`, `inventoryshot` `nf*` |
+| *(next free)* | **r49** | — | — |
 
-*Nothing is currently claimed beyond `r47` (M151). When you take `r48`, add a
-row naming your milestone in the same commit, so the next reader — human or
-agent — sees it taken rather than inferring it free from the code.*
+*When you take an id, add a row naming your milestone in the same commit, so the
+next reader — human or agent — sees it taken rather than inferring it free from
+the code.*
+
+**M161 found the same hazard one level over, and it is NOT guarded.** Three of
+its new witnesses collided with existing names on their first run — `labelshot`
+already had an `f1`, `blockentityshot` an `n1`/`n2`, `inventoryshot` a `v1`–`v4`
+— and **no `*shot` gate checks its witness names for uniqueness**. A duplicate
+is counted twice by the `EXPECTED_WITNESSES` fail-closed count and reads as a
+pass; it was caught here only because one of the duplicates happened to fail. So
+the `*shot` name spaces belong in the table above and are still convention:
+**prefix a new group with letters nothing in that file uses**, and grep before
+choosing. Giving `Checker::record` the `witness_seam_faults` treatment is the
+fix and is a milestone of its own.
 
 #### Two things this does not guard, stated rather than hidden
 
@@ -23798,3 +23810,206 @@ demo PNG `2cc56b4acbfb92cb`, byte-identical; battery **25/25** with a surviving
 no-op control and one named survivor. r47 verified non-vacuous three ways
 against a real server: the key ignored gives 7277 of 7277 frames, `listed`
 ignored gives 5 rows where 3 is correct, and no resolver at all gives 0.
+
+### M161 — the wire-time flattens outside chat (2026-08-19)
+
+M125 carried components forward on the *chat* path and M127/M129 extended it to
+the decoration and the disconnect reason. Everything else still flattened at the
+**wire**, where no language table exists — so on any server that names a mob, an
+item or a sign with a `translate` component, the client drew the raw key, and on
+any server that uses a legacy `§` colour code it drew the two code characters.
+Both are things a vanilla client never does.
+
+M161 takes the four paths a player can actually see and leaves the rest with a
+reason written next to each. §0.0 items 6 and 7 said these "need the component
+carried to a place holding `BakedAssets::lang`"; **that blocker does not survive
+the code** — `PlaySession::lang` has held the table since M125
+(`play.rs:1011`), and its own doc comment there explains why receipt-time
+resolution is equivalent to vanilla's `Language.getInstance()` global.
+
+#### Why `to_plain_text` is not `getString()`
+
+`Language.getVisualOrder` (`Language.java:59-65`) hands every literal to
+`StringDecomposer.iterateFormatted`, whose loop (`StringDecomposer.java:95-101`)
+reads a `§` pair as `ChatFormatting.getByCode` + `Style.applyLegacyFormat` and
+emits **no character for either**. So a component's literal text is never what a
+`Font` draws, and a flatten that copies it verbatim is wrong for every styled
+string a plugin server sends.
+
+#### There were FOUR flatteners, not three, and nothing compared them
+
+`Nbt::to_plain_text`, `component_wire::nbt_text`,
+`chat_style::parse_component` + `plain_text`, and a private `nbt_plain` in
+`enchantment_parse`. Three disagreements, all invisible in ordinary traffic and
+all now pinned by differential tests in `component_wire`'s test module:
+
+* **`{text:"", translate:"k"}`** — `to_plain_text` pushes `text` and then pushes
+  the key `if out.is_empty()`, so the key gets through; `nbt_text` uses an
+  `else if`, so it does not. `"k"` against `""`, from the same bytes.
+* **`§c`** — the first two keep both characters; only the component parser
+  consumes them.
+* **`with`** — neither of the first two reads it at all, so a resolved template
+  would render with its arguments missing.
+
+`rewo_world::chat_style::flatten(tag, lang)` is now the one entry point, and
+`nbt_text`'s doc carries the register of what still flattens and why.
+`enchantment_parse::nbt_plain` stays: it is reached only after the caller has
+already split `(description_key, literal)`, so it is asking for the literal text
+of something already known not to be a key — the structurally right shape, and
+the one this milestone generalises.
+
+#### What landed, and the two bugs found under it
+
+**The entity nametag** (`metadata.rs`) resolves at **decode**, not at render, and
+that is a performance decision rather than a convenience one:
+`EntityDraw::name` is `Option<&'a str>` borrowed out of
+`EntityTable::custom_names`, so carrying the component forward would mean a
+parse and a `String` per named entity per frame at the 500 fps target. The table
+arrives through `MetaKinds`, which already had the lifetime — passed whole
+rather than as a fourth loose argument, because a decode that grows one every
+time it needs another piece of session state is how two readings of the same
+stream drift.
+
+Two bugs came out with it, both from the same line, and **`EntityTable::
+set_custom_name` had implemented the fix for one of them since M25 and was
+unreachable**:
+
+* **`DATA_CUSTOM_NAME` is `Optional<Component>`** (`Entity.java:269-271`), so
+  the wire's leading `false` is `Optional.empty()` — an explicit **clear**. The
+  decode read the presence bit with `unwrap_or(false)` and had **no `else`**, so
+  `/data remove entity @e CustomName` was indistinguishable from "index 2 was
+  not in this packet" and the old name stood forever.
+* **A present-but-empty name is a present name.** `hasCustomName()` is
+  `isPresent()`, not "is non-blank"; the decode dropped an empty string, which
+  again left the *previous* name standing.
+
+`EntityMeta::custom_name` is therefore `Option<Option<String>>` — the outer is
+"did this packet mention index 2", the inner is the `Optional`.
+
+**Item names and lore** go the other way: they are **carried** as components and
+resolved at the tooltip, because `SlotText` is a 512-entry fingerprint-keyed
+cache and only one hovered slot is drawn per frame. That needed no threading
+into `read_optional` at all — the carrier changed, not the decoder.
+
+**Splitting `SlotText::name` into `custom_name` and `item_name` is what makes
+two vanilla rules expressible, and one of them was a live bug.**
+`getStyledHoverName` (`ItemStack.java:827-833`) adds ITALIC iff
+`has(CUSTOM_NAME)`, so an item renamed through `minecraft:item_name` is renamed
+and **not** slanted. And `Inventory.isUsableForCrafting`
+(`Inventory.java:145-147`) tests `has(CUSTOM_NAME)` **alone** — Rewo tested the
+merged field, so a stack whose patch set only `item_name` was wrongly refused by
+`StackedContents` and could not be counted toward any recipe.
+
+`SlotText::is_empty` now **destructures** rather than reading seven fields, so
+adding one is a compile error there rather than a silent omission. That is not
+hypothetical: `record_text` drops an `is_empty()` entry, and `custom_name`
+without `item_name` in the list would have lost the tooltip of every
+item-name-only stack — M42's exact bug, one line away.
+
+**A comment was the false justification, again.** `lib.rs`'s `SlotText`
+construction and `component_wire`'s `ContainerSlot` both carried
+"`getItemName` is `getOrDefault(ITEM_NAME, item.getName())`", which inverts the
+nesting: `ItemStack.getItemName()` is `this.getItem().getName(this)` — the
+item's **virtual** method, outermost — whose base implementation
+(`Item.java:342-344`) is `getOrDefault(ITEM_NAME, CommonComponents.EMPTY)`. The
+inverted reading says a patched `ITEM_NAME` beats an item's own override; vanilla
+says the override wins (`PotionItem.java:73-75` ignores `ITEM_NAME` entirely when
+`POTION_CONTENTS` is present). Rewo models none of the six overrides, so the
+translated-id fallback stands in for `Item.getName`'s answer — a real and
+separate gap, and every potion still reads "Potion".
+
+**Signs** thread the table through `SignFace::from_nbt`, which is a **per-frame**
+site: `BlockEntity::sign_text` has no cache and `collect_sign_text` calls it for
+every sign block entity every frame. That was already true when the lines were
+flattened (four `String`s per face per frame), so it is not a new allocation —
+but it *is* a new exposure, because `parse_component` carries a
+`MAX_COMPONENT_STEPS` budget precisely to bound a `%1$s%1$s` template's fan-out
+and `to_plain_text` had no such exposure because it ignores `with`. Named in the
+code rather than hidden; caching on block-entity change is the fix and needs
+either interior mutability (`OnceCell` is not `Sync`) or the table at every
+construction site.
+
+#### What was NOT taken, and why — the honest scope
+
+The register lives on `component_wire::nbt_text` with a one-line pointer at each
+site, because a list kept in two places goes stale in one of them. In short:
+**both `Connection` disconnects reach a log line and not a screen** (`into_play`
+runs before a window exists and both arms return `Err(String)`), and the
+login-state one is **JSON, not NBT** —
+`ClientboundLoginDisconnectPacket.java:16-21` is `ByteBufCodecs.lenientJson`, so
+it is read as a raw string and printed verbatim; the **MOTD renders nothing** at
+all (its only vanilla renderer is a pre-join server list); the **suggestion
+tooltip** has no renderer and the local suggester discards the six keys it
+already holds, so the wire third is unobservable alone; and the **container
+title** has zero readers, so resolving it changes nothing and drawing it without
+resolving would write `container.chest` across every vanilla chest.
+
+#### The witnesses, and a collision the tree cannot see
+
+`labelshot` 47 → **52** (`fl1`–`fl5`), `blockentityshot` 177 → **179**
+(`sg1`/`sg2`), `inventoryshot` 158 → **163** (`nf1`–`nf5`), plus three
+differential unit tests and one behavioural test in `rewo-world`. Every one
+drives the **production router** with a raw body and reads what the renderer was
+handed; every one has its mutation partner built in as a second run with the
+table removed — the shape r37 established, since a witness that only counts "a
+name was drawn" is satisfied by the bug (r26 scored full marks for three
+milestones while chat drew `multiplayer.player.joined`).
+
+**Three of the new witnesses collided with existing names on their first run.**
+`labelshot` already had an `f1`, `blockentityshot` an `n1`/`n2`, and
+`inventoryshot` a `v1`–`v4` — and **no gate checks its witness names for
+uniqueness**, so a duplicate is counted twice and reads as a pass. M160 built
+exactly that check for `live --render-check`'s `rNN` ids; the `*shot` gates'
+name spaces are the same merge-silent resource and are still unguarded. Caught
+here only because one of the duplicates happened to fail.
+
+`sg1` also found something in passing: an unresolved key is **truncated** by the
+sign's own board width, so `block.minecraft.dirt` reached the renderer as
+`block.minecraft.di`. That is what the bug looked like in game, and the witness
+asserts the prefix rather than the whole key.
+
+#### `live --render-check` r48
+
+A zombie whose `DATA_CUSTOM_NAME` is `{translate:"entity.minecraft.zombie"}`,
+injected through the production router beside the tab list's players, counted
+off the **draw list** rather than the entity table — the claim is that the
+resolved string reached the renderer, and a table-level read would stay green if
+`resolve_labels` dropped it. Two halves: resolved frames `> 0` **and** raw-key
+frames `== 0`.
+
+Its first cut scored **0 and 0**, and the reason is worth keeping: the zombie was
+injected at a fixed `(0.5, 64, 0.5)` while the player spawned at
+`(-4.5, -60, -5.5)`, so the label was suppressed by `name_tag_distance` for a
+reason that has nothing to do with the flatten. It is now placed beside the
+player, and the same body carries `DATA_CUSTOM_NAME_VISIBLE` — because
+`Entity.shouldShowName()` **is** `isCustomNameVisible()` for everything but a
+player, so a named mob nobody has told to show its tag makes `resolve_labels`
+return `None` rather than the string.
+
+**Verified non-vacuous against a real server** (M151's lesson — its first
+attempt to prove r47 reported a mutation as SURVIVED because the harness had not
+rebuilt). Setting `MetaKinds.lang` to `None` at the one production construction
+site in `play.rs` flips it from `1991 of 3306 frames carried "Zombie", 0 carried
+the key` to **`0 carried "Zombie", 3107 carried "entity.minecraft.zombie"`** —
+which is not merely a red witness, it is a picture of the bug: three thousand
+frames with a raw translation key drawn over a mob's head. That construction
+site is the ONE thing in this milestone no serverless gate covers, because
+`labelshot` builds its own `MetaKinds`.
+
+#### Measured
+
+**3290 tests, 0 failures** (world 1198, net **1165**, gpu 290, data 228, app
+228, mesh 45, proto 16, audio 120), read per crate off its own `test result`
+line with its exit code. All **36** serverless gates green, **0 validation
+errors**. Demo PNG `2cc56b4acbfb92cb`, byte-identical. Battery **12 entries — 11
+killed, 1 surviving no-op control**, most of them routed through a `*shot` gate
+rather than through `cargo test` (§0.0 gotcha 0d).
+
+**Two measurements that disagree with §0.0's block, neither caused by this
+milestone.** `rewo-app` reports **228** tests where §0.0 says 222 — measured on
+an unmodified `main` at `b88f18e` as well, so M160's `witness_seam_faults` tests
+landed without the block moving; the workspace total on `main` is 3287, not
+3281. And **`live --render-check` r46 fails on unmodified `main` in this
+environment** (46/47, music never started), so this branch's 47/48 carries the
+same single pre-existing failure and no new one. Both are reported rather than
+patched: §0.0's measurement block is the integrator's.

@@ -600,12 +600,35 @@ pub enum ComponentValue {
 
 /// Extract a chat component's plain text from its NBT form.
 ///
-/// A `Component` serialises as a string for the literal case, or a compound
-/// with `text` / `translate` plus an `extra` list of children. This is
-/// deliberately *not* a text renderer: it concatenates the literal parts and
-/// falls back to the translation key, because a tooltip that shows
-/// `item.minecraft.diamond_sword` is wrong in a visible way, while inventing a
+/// **Prefer [`rewo_world::chat_style::flatten`]. This is the legacy answer and
+/// it is wrong in three ways** — it keeps a `§` code as two characters where
+/// `Language.getVisualOrder` parses it into style, it never reads `with`, and
+/// it disagrees with `Nbt::to_plain_text` on `{text:"", translate:"k"}`
+/// (`else if` against `if out.is_empty()`). The differential tests at the
+/// bottom of this module pin all three.
+///
+/// Kept because it is still the honest answer where **no language table can
+/// reach**: it falls back to the translation key, and a tooltip showing
+/// `item.minecraft.diamond_sword` is wrong in a visible way while inventing a
 /// translation would be wrong in an invisible one.
+///
+/// # What still flattens at the wire after M161, and why
+///
+/// M161 moved the four **rendered** paths off this function — the entity
+/// nametag, item names and lore, the nested container slot, and sign lines.
+/// These are what is left, each with the reason it was not taken:
+///
+/// | Site | Reason |
+/// |---|---|
+/// | `lib.rs`'s Login-state disconnect | Not NBT at all: `ClientboundLoginDisconnectPacket` is `ByteBufCodecs.lenientJson(262144)`, read here as a raw string and printed verbatim, so a whitelist kick logs `{"translate":"multiplayer.disconnect.not_whitelisted"}`. Needs a JSON-to-component reader, and **reaches no screen** — `Connection::into_play` runs before a window exists and both arms return `Err(String)`. |
+/// | `lib.rs`'s Configuration-state disconnect | On the live path (`into_play` calls `run_configuration`), but `Connection` holds no language table and `GameData` deliberately does not carry one. Also reaches a log line, not a screen. |
+/// | `lib.rs`'s `run_play` disconnect | `rewo net` / `rewo view` only. |
+/// | `session.rs`'s MOTD | **Nothing renders it.** `ServerData.motd` is drawn by `ServerSelectionList`, a pre-join screen Rewo has not got; its only readers here are `abilityshot` witnesses. |
+/// | `suggestion_wire.rs`'s tooltip | `Suggestion::tooltip` has no renderer, AND `selector.rs` discards the six `argument.entity.selector.*` keys it already stores, AND `Opt::description` is `""` for all 21 options. Fixing the wire third alone is unobservable. |
+/// | `menu.rs`'s container title | `OpenMenu::title` has **zero readers**: the label is not drawn. Drawing it without this would write `container.chest` across every vanilla chest, so it is ship-both-or-neither. |
+/// | `tab_list_text.rs`'s `renders_empty` | Deliberate and documented there: with no table a translatable is never "empty". Handing it one is a behaviour change for servers shipping an empty template. |
+/// | `chat_wire.rs`'s `trust_level` | Feeds `ChatTrustLevel`, not a render. Threading a table would change trust answers with nothing asserting them. |
+/// | `enchantment_parse.rs`'s `nbt_plain` | Already structurally right: it splits `(description_key, literal)` so the **renderer** resolves the key. |
 pub fn nbt_text(tag: &Nbt) -> String {
     fn walk(tag: &Nbt, out: &mut String) {
         match tag {
@@ -985,17 +1008,18 @@ pub fn walk_patch_with(
 /// needs one thing a bundle's grid does not: `addToTooltip` renders
 /// `item.container.item_count` from `itemStack.getHoverName()`, and a hover
 /// name can only come from the *nested* patch.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Not `Eq`: the name components are raw [`Nbt`], which carries floats.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ContainerSlot {
     /// `Item.STREAM_CODEC` is `holderRegistry(ITEM)` — a **raw** registry id.
     pub item_id: i32,
     pub count: i32,
-    /// The nested `minecraft:custom_name`, reduced to plain text.
+    /// The nested `minecraft:custom_name`, **unflattened**.
     ///
     /// A patch that *removes* `custom_name` leaves this `None`, which is the
     /// same answer as an absent one — and correct, because both send
     /// `getHoverName` on to the next fallback.
-    pub custom_name: Option<String>,
+    pub custom_name: Option<Nbt>,
     /// The nested `minecraft:item_name` (M66).
     ///
     /// **`getHoverName` is a two-level override, not a name and a fallback:**
@@ -1013,16 +1037,20 @@ pub struct ContainerSlot {
     /// render under its plain translated name instead. `item_name` is
     /// syncable and a plugin renaming an item's default name (without the
     /// custom-name italics) sets exactly this.
-    pub item_name: Option<String>,
+    pub item_name: Option<Nbt>,
 }
 
 impl ContainerSlot {
     /// `ItemStack.getHoverName()`, given the item's translated display name.
-    pub fn hover_name<'a>(&'a self, fallback: &'a str) -> &'a str {
-        self.custom_name
-            .as_deref()
-            .or(self.item_name.as_deref())
-            .unwrap_or(fallback)
+    ///
+    /// `lang` resolves a `translate` and turns a legacy colour code into style
+    /// rather than into two drawn characters; `None` keeps the pre-resolution
+    /// answer, which is what a caller with no table gets.
+    pub fn hover_name(&self, fallback: &str, lang: Option<&rewo_data::lang::Language>) -> String {
+        match self.custom_name.as_ref().or(self.item_name.as_ref()) {
+            Some(tag) => rewo_world::chat_style::flatten(tag, lang),
+            None => fallback.to_string(),
+        }
     }
 }
 
@@ -1056,7 +1084,8 @@ pub fn read_container_slot(
         // would have read for this entry. Anything else here desynchronises.
         Some(match Nbt::read_network(r) {
             Ok(tag) => {
-                *slot = Some(nbt_text(&tag));
+                // Kept as the component: this walk has no language table.
+                *slot = Some(tag);
                 Ok(true)
             }
             Err(_) => Err(()),
@@ -1185,6 +1214,87 @@ pub fn shapes_installed() -> usize {
 
 #[cfg(test)]
 mod tests {
+    /// M161: the name components are carried unflattened, so a test that used
+    /// to compare a `String` flattens here. `None` for the table, so an
+    /// unresolved key stays visible in the assertion.
+    fn text(tag: &Option<Nbt>) -> Option<String> {
+        tag.as_ref()
+            .map(|t| rewo_world::chat_style::flatten(t, None))
+    }
+
+    // ── M161: the four flatteners, side by side ──────────────────────────
+    //
+    // There were four independent component-to-string walks in this tree and
+    // NOTHING compared them, which is how the wrong one kept getting reused.
+    // These tests pin the two disagreements that matter, so a future reader
+    // reaching for `to_plain_text` sees what it costs.
+
+    /// `{text: "", translate: "k"}` — the case the two legacy flatteners
+    /// answer DIFFERENTLY, and neither the way vanilla does.
+    ///
+    /// `Nbt::to_plain_text` pushes `text` and then pushes `translate` only
+    /// `if out.is_empty()`, so an empty `text` lets the key through.
+    /// `nbt_text` uses an `else if`, so the empty `text` wins and the key is
+    /// dropped. Vanilla is `ComponentContents`-dispatched: a `TranslatableContents`
+    /// is a translatable whatever a sibling `text` field says, and the whole
+    /// component's `text` key is simply not read.
+    #[test]
+    fn the_flatteners_disagree_on_an_empty_text_beside_a_translate() {
+        let tag = Nbt::Compound(vec![
+            ("text".to_string(), Nbt::String(String::new())),
+            ("translate".to_string(), Nbt::String("k".to_string())),
+        ]);
+        assert_eq!(tag.to_plain_text(), "k", "`if out.is_empty()` lets it through");
+        assert_eq!(nbt_text(&tag), "", "`else if` drops it");
+        assert_eq!(
+            crate::enchantment_parse::nbt_plain(&tag),
+            "",
+            "the fourth never reads `translate` at all"
+        );
+        // The one Rewo now uses everywhere. `text` is present, so this is a
+        // literal component and its `translate` sibling is not a key —
+        // `to_plain_text`'s answer is the one that is actually wrong.
+        assert_eq!(rewo_world::chat_style::flatten(&tag, None), "");
+    }
+
+    /// A legacy colour code is **style**, not text.
+    ///
+    /// `Language.getVisualOrder` (`Language.java:59-65`) runs
+    /// `StringDecomposer.iterateFormatted` over every literal, and that loop
+    /// (`StringDecomposer.java:95-101`) consumes the pair into
+    /// `Style.applyLegacyFormat`. So vanilla NEVER draws the two characters,
+    /// and three of the four flatteners here do.
+    #[test]
+    fn only_the_component_parser_consumes_a_legacy_colour_code() {
+        let sec = '\u{00a7}';
+        let tag = Nbt::String(format!("{sec}cRed"));
+        assert_eq!(tag.to_plain_text(), format!("{sec}cRed"));
+        assert_eq!(nbt_text(&tag), format!("{sec}cRed"));
+        assert_eq!(rewo_world::chat_style::flatten(&tag, None), "Red");
+    }
+
+    /// And the third disagreement: neither legacy flattener reads `with`, so a
+    /// resolved template would render with its arguments missing.
+    #[test]
+    fn only_the_component_parser_substitutes_a_translatables_arguments() {
+        let tag = Nbt::Compound(vec![
+            ("translate".to_string(), Nbt::String("k".to_string())),
+            (
+                "with".to_string(),
+                Nbt::List(vec![Nbt::String("arg".to_string())]),
+            ),
+        ]);
+        let lang = rewo_data::lang::Language::from_map(
+            [("k".to_string(), "a %s b".to_string())].into_iter().collect(),
+        );
+        assert_eq!(tag.to_plain_text(), "k", "the key, and the argument is lost");
+        assert_eq!(nbt_text(&tag), "k");
+        assert_eq!(
+            rewo_world::chat_style::flatten(&tag, Some(&lang)),
+            "a arg b"
+        );
+    }
+
     use super::*;
 
     // ---- wire writers -----------------------------------------------------
@@ -1967,7 +2077,7 @@ mod tests {
             "the generic walk disagrees with the capture"
         );
         assert_eq!(slots.len(), 3);
-        assert_eq!(slots[1].as_ref().unwrap().custom_name.as_deref(), Some("Bag of Holding"));
+        assert_eq!(text(&slots[1].as_ref().unwrap().custom_name).as_deref(), Some("Bag of Holding"));
     }
 
     /// An empty slot is one zero byte and **is kept**. Dropping it would
@@ -2050,12 +2160,12 @@ mod tests {
         let (slots, read) = captured_container(&b).expect("captures");
         assert_eq!(read, b.len(), "the capture consumed exactly the list");
         let s = |i: usize| slots[i].as_ref().unwrap();
-        assert_eq!(s(0).custom_name.as_deref(), Some("Skullcrusher"));
-        assert_eq!(s(0).item_name.as_deref(), Some("Blade"));
-        assert_eq!(s(0).hover_name("Diamond Sword"), "Skullcrusher");
+        assert_eq!(text(&s(0).custom_name).as_deref(), Some("Skullcrusher"));
+        assert_eq!(text(&s(0).item_name).as_deref(), Some("Blade"));
+        assert_eq!(s(0).hover_name("Diamond Sword", None), "Skullcrusher");
         assert_eq!(s(1).custom_name, None);
-        assert_eq!(s(1).hover_name("Diamond Sword"), "Blade");
-        assert_eq!(s(2).hover_name("Diamond Sword"), "Diamond Sword");
+        assert_eq!(s(1).hover_name("Diamond Sword", None), "Blade");
+        assert_eq!(s(2).hover_name("Diamond Sword", None), "Diamond Sword");
         // …and the generic walk consumes the same bytes, which is the property
         // that stops a capture from desynchronising the enclosing packet.
         assert_eq!(walked(shape("minecraft:container"), &b), Some(b.len()));

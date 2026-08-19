@@ -210,6 +210,12 @@ fn click_witness_body() -> Vec<u8> {
     body
 }
 
+/// The entity id r48's injected zombie is given.
+///
+/// Far outside anything a server assigns in a short session, so it cannot
+/// collide with a real entity and make the witness read someone else's name.
+const NAMETAG_WITNESS_ID: i32 = 0x0052_5701;
+
 /// What `live --render-check` observed (M86).
 ///
 /// Every field is a **count of frames on which something happened**, never a
@@ -292,6 +298,25 @@ struct RenderCheck {
     /// healthy. The icons are the first `HudBlit` anything produces.
     tab_list_text_max: usize,
     tab_list_icons_max: usize,
+    /// M161 — frames on which a mob's nametag carried a RESOLVED translatable.
+    ///
+    /// The run injects a zombie whose `Entity.DATA_CUSTOM_NAME` is
+    /// `{translate: "entity.minecraft.zombie"}`, and this counts the frames on
+    /// which the label the renderer was handed reads `Zombie`.
+    ///
+    /// Every stage has to work: the raw body reaches
+    /// `route_set_entity_data`, `MetaKinds::lang` carries the table the app
+    /// installed on `PlaySession`, `chat_style::flatten` resolves the key,
+    /// `EntityTable::custom_name` stores it and `resolve_labels` hands it to
+    /// `EntityDraw::name`. Before M161 the decode called `to_plain_text`, which
+    /// has no table.
+    nametag_resolved_frames: u64,
+    /// The negative half, and the reason a `> 0` counter alone is not enough.
+    ///
+    /// r26 scored full marks while chat drew `multiplayer.player.joined`, so a
+    /// witness that only counts "a name was drawn" cannot see this bug at all.
+    /// This counts frames on which the label was the RAW KEY, and must be zero.
+    nametag_raw_key_frames: u64,
     /// M138a — listener transforms that reached the audio device.
     ///
     /// Compared against `frames`, not merely to zero: the interesting claim is
@@ -597,7 +622,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 47;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 48;
 
     fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1111,6 +1136,24 @@ impl RenderCheck {
                 self.tab_list_rows_max,
                 self.tab_list_icons_max,
                 self.tab_list_text_max
+            ),
+        );
+        // M161 — the wire-time flattens. Two halves, and the second is what
+        // makes this a witness rather than a count: r26 scored full marks for
+        // three milestones while chat drew `multiplayer.player.joined`, so
+        // "a name was drawn" is satisfied by the bug.
+        row(
+            "r48 a mob nametag drew a RESOLVED translatable, and never its raw key",
+            self.nametag_resolved_frames > 0 && self.nametag_raw_key_frames == 0,
+            format!(
+                "{} of {} frames carried `Zombie`, {} carried \
+                 `entity.minecraft.zombie`. The injected zombie's \
+                 `DATA_CUSTOM_NAME` is `{{translate: \"entity.minecraft.zombie\"}}`; \
+                 before M161 `metadata::parse` flattened it with \
+                 `Nbt::to_plain_text`, which has no language table, so the \
+                 second number was the whole of it. Zero for BOTH means the \
+                 injection never landed",
+                self.nametag_resolved_frames, self.frames, self.nametag_raw_key_frames
             ),
         );
         row(
@@ -4995,7 +5038,7 @@ fn run_headless(
     world_renderer.prepare_held_items(&mut gpu, &held)?;
     let be_draws: Vec<_> = bes.iter().map(|b| b.as_draw()).collect();
     let sign_lines = match world_renderer.font_advance() {
-        Some(a) => collect_sign_text(&session.world, &sign_states, &lightmap, a),
+        Some(a) => collect_sign_text(&session.world, &sign_states, &lightmap, a, session.lang.as_deref()),
         None => Vec::new(),
     };
     let sign_draws: Vec<_> = sign_lines
@@ -7727,6 +7770,59 @@ impl LiveApp {
                         }
                         session.inject_packet(session.ids.cb_play_player_info_update, &body);
                     }
+                    // M161 — a zombie whose custom name is a TRANSLATABLE, so
+                    // r48 can see whether the windowed client's decode reached
+                    // a language table. Injected as raw bodies through the
+                    // production router (M17's rule): a live encounter would
+                    // depend on a server spawning a mob and naming it, which is
+                    // neither deterministic nor stageable without a third
+                    // caller requirement (deliberately not added -- §0.0).
+                    if let Some(session) = self.session.as_mut() {
+                        if let Some(zombie) = self.etypes.id_of("minecraft:zombie") {
+                            // `add_entity`: id, uuid, type, xyz, LpVec3 zero
+                            // sentinel, then pitch / yaw / head-yaw bytes.
+                            let mut add: Vec<u8> = Vec::new();
+                            rewo_proto::varint::write_varint(&mut add, NAMETAG_WITNESS_ID);
+                            add.extend_from_slice(
+                                &0x5257_0000_0000_0000_0000_0000_0000_0001u128.to_be_bytes(),
+                            );
+                            rewo_proto::varint::write_varint(&mut add, zombie);
+                            // Beside the PLAYER, not at a fixed point: the
+                            // label is gated on `name_tag_distance`, so a
+                            // zombie at the origin scores zero for a reason
+                            // that has nothing to do with the flatten. The
+                            // first cut did exactly that and r48 read 0/0.
+                            let p = &session.player;
+                            for v in [p.x + 2.0, p.y, p.z] {
+                                add.extend_from_slice(&v.to_be_bytes());
+                            }
+                            add.push(0); // LpVec3's zero sentinel
+                            add.extend_from_slice(&[0, 0, 0]); // pitch, yaw, head yaw
+                            session.inject_packet(session.ids.cb_play_add_entity, &add);
+                            // `set_entity_data`: index 2, OPTIONAL_COMPONENT
+                            // (serializer 6), present, `{translate: "..."}`.
+                            let key = "entity.minecraft.zombie";
+                            let mut meta: Vec<u8> = Vec::new();
+                            rewo_proto::varint::write_varint(&mut meta, NAMETAG_WITNESS_ID);
+                            meta.extend_from_slice(&[2, 6, 1]);
+                            meta.extend_from_slice(&[10, 8]);
+                            meta.extend_from_slice(&9u16.to_be_bytes());
+                            meta.extend_from_slice(b"translate");
+                            meta.extend_from_slice(&(key.len() as u16).to_be_bytes());
+                            meta.extend_from_slice(key.as_bytes());
+                            meta.push(0); // TAG_End
+                            // …and `DATA_CUSTOM_NAME_VISIBLE` (index 3,
+                            // BOOLEAN) in the same body, because
+                            // `Entity.shouldShowName()` IS
+                            // `isCustomNameVisible()` for everything but a
+                            // player — a named mob nobody has told to show its
+                            // tag draws none, and `resolve_labels` returns
+                            // `None` rather than the string.
+                            meta.extend_from_slice(&[3, 8, 1]);
+                            meta.push(0xFF); // metadata terminator
+                            session.inject_packet(session.ids.cb_play_set_entity_data, &meta);
+                        }
+                    }
                     self.tab_list_injected = true;
                 }
                 // The hold. Assigned every frame rather than latched, so it is
@@ -8318,7 +8414,7 @@ impl LiveApp {
             let label = self
                 .baked
                 .as_ref()
-                .and_then(|b| selected_item_label(session, &self.items, &b.item_names));
+                .and_then(|b| selected_item_label(session, &self.items, &b.item_names, &b.lang));
             self.tool_highlight.tick(
                 label.as_ref().map(|(id, n)| (*id, n.as_str())),
                 NOTIFICATION_DISPLAY_TIME,
@@ -8480,6 +8576,22 @@ impl LiveApp {
             self.hud_hidden,
             frame_crosshair_pick(session, &self.etypes, alpha),
         );
+        // M161 — read the label OFF THE DRAW LIST, not off the entity table:
+        // the claim is that the resolved string reached the renderer, and a
+        // table-level read would stay green if `resolve_labels` dropped it.
+        if let Some(c) = self.check.as_mut() {
+            let named = |want: &str| {
+                draws
+                    .iter()
+                    .any(|d| d.name == Some(want))
+            };
+            if named("Zombie") {
+                c.nametag_resolved_frames += 1;
+            }
+            if named("entity.minecraft.zombie") {
+                c.nametag_raw_key_frames += 1;
+            }
+        }
         let (cr, cu) = camera_basis(session.player.yaw, session.player.pitch);
         let eye = player_eye(session);
         // M138a — `SoundEngine.updateSource(camera)`, and it lives HERE rather
@@ -8580,7 +8692,13 @@ impl LiveApp {
         }
         let be_draws: Vec<_> = bes.iter().map(|b| b.as_draw()).collect();
         let sign_lines = match state.world_renderer.font_advance() {
-            Some(a) => collect_sign_text(&session.world, &self.sign_states, &lightmap, a),
+            Some(a) => collect_sign_text(
+                &session.world,
+                &self.sign_states,
+                &lightmap,
+                a,
+                session.lang.as_deref(),
+            ),
             None => Vec::new(),
         };
         let sign_draws: Vec<_> = sign_lines
@@ -10731,13 +10849,18 @@ fn selected_item_label(
     session: &PlaySession,
     items: &rewo_data::items::Items,
     names: &std::collections::HashMap<String, String>,
+    lang: &rewo_data::lang::Language,
 ) -> Option<(i32, String)> {
     let stack = session.inventory.held()?;
     let translated = items.name(stack.item_id).and_then(|n| names.get(n))?;
+    // `getHoverName()`: `custom_name` then `item_name` then the item's own
+    // translated name. Resolved here, against the table, rather than at the
+    // wire — see `rewo_world::chat_style::flatten`.
     let name = session
         .inventory
         .text_of(stack)
-        .and_then(|t| t.name.clone())
+        .and_then(|t| t.custom_name.as_ref().or(t.item_name.as_ref()))
+        .map(|tag| rewo_world::chat_style::flatten(tag, Some(lang)))
         .unwrap_or_else(|| translated.clone());
     Some((stack.item_id, name))
 }
@@ -12280,6 +12403,9 @@ pub(crate) fn collect_sign_text(
     signs: &rewo_data::sign_states::SignStates,
     lightmap: &LightmapState,
     advance: &[u8; 256],
+    // The language table, threaded through to `SignFace::from_nbt`. Its doc
+    // records what a per-frame resolution costs and why no cache is taken yet.
+    lang: Option<&rewo_data::lang::Language>,
 ) -> Vec<OwnedSignLine> {
     use rewo_data::sign_text;
     let mut out = Vec::new();
@@ -12287,7 +12413,7 @@ pub(crate) fn collect_sign_text(
         let Some(sign) = signs.get(world.block_state_at(pos.x, pos.y, pos.z)) else {
             continue;
         };
-        let (front, back) = be.sign_text();
+        let (front, back) = be.sign_text(lang);
         let light = entity_light(
             world,
             pos.x as f64 + 0.5,
@@ -21402,7 +21528,10 @@ pub(crate) fn container_lines(
         out.push(vec![Span::new(
             rewo_data::lang::format(
                 count_key,
-                &[e.hover_name(translated), &e.count.to_string()],
+                &[
+                    &e.hover_name(translated, Some(lang)),
+                    &e.count.to_string(),
+                ],
             ),
             GRAY_TEXT,
         )]);
@@ -21417,6 +21546,69 @@ pub(crate) fn container_lines(
         .italic()]);
     }
     out
+}
+
+/// `ItemStack.getStyledHoverName()` as one tooltip line (M161).
+///
+/// ```java
+/// MutableComponent n = Component.empty().append(getHoverName())
+///                               .withStyle(getRarity().color());
+/// if (this.has(DataComponents.CUSTOM_NAME)) n.withStyle(ChatFormatting.ITALIC);
+/// ```
+/// (`ItemStack.java:827-833`.)
+///
+/// **Two things here are only expressible because `SlotText` keeps
+/// `custom_name` and `item_name` apart.** `getHoverName()` is
+/// `getCustomName() ?? getItemName()`, so the value falls back — but the ITALIC
+/// keys off `has(CUSTOM_NAME)` alone, so an item whose patch sets only
+/// `minecraft:item_name` is renamed and **not** slanted. A merged
+/// `custom_name.or(item_name)` field cannot say which one answered.
+///
+/// And the name is a *component*, resolved here against `lang` rather than at
+/// the wire — see [`rewo_world::chat_style::flatten`] on why the decode cannot.
+///
+/// Extracted from the tooltip closure so a gate can reach it: that closure
+/// needs a `PlaySession`, an `Inventory` and four registries, which is M97's
+/// rule (a rule with no reachable seam is a rule no witness can grade).
+pub(crate) fn styled_hover_name(
+    text: Option<&rewo_world::inventory::SlotText>,
+    translated: &str,
+    color: [f32; 3],
+    lang: &rewo_data::lang::Language,
+) -> rewo_gpu::tooltip::Line {
+    let custom = text.and_then(|t| t.custom_name.as_ref());
+    let named = custom.or_else(|| text.and_then(|t| t.item_name.as_ref()));
+    let span = rewo_gpu::tooltip::Span::new(
+        match named {
+            Some(tag) => rewo_world::chat_style::flatten(tag, Some(lang)),
+            None => translated.to_string(),
+        },
+        color,
+    );
+    vec![if custom.is_some() { span.italic() } else { span }]
+}
+
+/// `minecraft:lore`'s lines, in `ItemLore.LORE_STYLE` (M161).
+///
+/// `Style.EMPTY.withColor(DARK_PURPLE).withItalic(true)`. The colour was always
+/// right; the italic had nowhere to live until M52b's span model, and the TEXT
+/// was the raw component's literal until M161 — so a lore line carrying a
+/// `translate` showed its key and one carrying a legacy colour code showed the
+/// code.
+pub(crate) fn lore_lines(
+    text: &rewo_world::inventory::SlotText,
+    lang: &rewo_data::lang::Language,
+) -> Vec<rewo_gpu::tooltip::Line> {
+    text.lore
+        .iter()
+        .map(|line| {
+            vec![rewo_gpu::tooltip::Span::new(
+                rewo_world::chat_style::flatten(line, Some(lang)),
+                LORE_COLOR,
+            )
+            .italic()]
+        })
+        .collect()
 }
 
 /// `ItemStack.addDetailsToTooltip`'s advanced block, translated (M66).
@@ -21592,16 +21784,16 @@ pub(crate) fn screen_tooltip(
         // dropped. Geometry is unchanged -- the box is still measured from the
         // plain text with the vanilla advances.
         let mut lines: Vec<rewo_gpu::tooltip::Line> = Vec::new();
-        lines.push(vec![rewo_gpu::tooltip::Span::new(
-            text.and_then(|t| t.name.as_deref())
-                .unwrap_or(translated)
-                .to_string(),
+        lines.push(styled_hover_name(
+            text,
+            translated,
             rarity_color(stack_rarity(
                 Some(item_name),
                 text.and_then(|t| t.rarity),
                 text.is_some_and(|t| t.is_enchanted),
             )),
-        )]);
+            lang,
+        ));
         if let Some(t) = text {
             // Vanilla's order: the enchantments come before the lore.
             lines.extend(enchantment_lines(
@@ -21609,15 +21801,7 @@ pub(crate) fn screen_tooltip(
                 enchant_registry,
                 enchant_text,
             ));
-            for line in &t.lore {
-                // `ItemLore.LORE_STYLE` is
-                // `Style.EMPTY.withColor(DARK_PURPLE).withItalic(true)`. The
-                // colour was already right; the italic had nowhere to live until
-                // the span model, so Rewo rendered lore upright.
-                lines.push(vec![
-                    rewo_gpu::tooltip::Span::new(line.clone(), LORE_COLOR).italic(),
-                ]);
-            }
+            lines.extend(lore_lines(t, lang));
             if t.unbreakable {
                 lines.push(vec![rewo_gpu::tooltip::Span::new(
                     "Unbreakable".to_string(),

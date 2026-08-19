@@ -8,8 +8,9 @@
 //! `rewo-gpu` does not depend on and should not — the GPU crate has no
 //! business knowing the wire format. So the *parse* belongs here, beside
 //! `rewo_net::component_wire::nbt_text`, which is the plain-text answer this
-//! module
-//! is the styled replacement for.
+//! module is the styled replacement for. [`flatten`] is that replacement's
+//! plain-text face, and since M161 it is what every non-chat consumer calls —
+//! `nbt_text`'s own doc carries the register of what still does not.
 //!
 //! The *output* is deliberately renderer-agnostic. [`ChatSpan`] names colours
 //! and flags and nothing about typefaces, exactly as `rewo_gpu::tooltip::Span`
@@ -271,6 +272,37 @@ pub type ChatLine = Vec<ChatSpan>;
 /// the `§` codes are already gone, because they never became text.
 pub fn plain_text(line: &ChatLine) -> String {
     line.iter().map(|s| s.text.as_str()).collect()
+}
+
+/// **The** flatten: a network text component to the characters vanilla draws.
+///
+/// This is the one function every non-chat consumer should call, and it exists
+/// because the tree had grown *four* independent flatteners that disagree —
+/// `Nbt::to_plain_text`, this module's [`parse_component`] + [`plain_text`]
+/// pair, `component_wire::nbt_text`, and a private `nbt_plain` in
+/// `enchantment_parse`. The disagreements are invisible in ordinary traffic and
+/// wrong on a plugin server:
+///
+/// * **`§` codes.** `Language.getVisualOrder` (`Language.java:59-65`) runs
+///   `StringDecomposer.iterateFormatted` over every literal, and that loop
+///   (`StringDecomposer.java:95-101`) turns a `§` pair into *style*. So vanilla
+///   never draws the two characters; the two `to_plain_text`-shaped flatteners
+///   did. This one parses them, which is why it also drops them from the text.
+/// * **`translate`.** `to_plain_text` pushes the key only `if out.is_empty()`
+///   while `nbt_text` uses an `else if`, so `{text:"", translate:"k"}` flattens
+///   to `"k"` under one and `""` under the other. Here it is `getOrDefault`,
+///   with `lang` supplying the table — and `None` selecting key-as-default,
+///   which is what every caller did before there was any resolution.
+/// * **`with`.** Neither of the other two reads it at all, so a resolved
+///   template would render with its arguments missing.
+///
+/// The cost that comes with it is real and stated: [`parse_component`] has a
+/// [`MAX_COMPONENT_STEPS`] budget precisely because a `with` argument can be
+/// duplicated by a `%1$s%1$s` template, and `to_plain_text` has no such
+/// exposure *because* it ignores `with`. A per-frame caller pays that budget
+/// per call in the worst case — `SignFace::from_nbt` is one, and says so.
+pub fn flatten(tag: &Nbt, lang: Option<&Language>) -> String {
+    plain_text(&parse_component(tag, ChatStyle::WHITE, lang))
 }
 
 /// `ChatFormatting.getByCode` for the sixteen colours — the index into

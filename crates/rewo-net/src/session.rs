@@ -591,6 +591,10 @@ pub fn read_player_combat_enter(_body: &[u8]) -> usize {
 /// optional unbounded byte array.
 pub fn read_server_data(body: &[u8]) -> Result<ServerMetadata> {
     let mut r = PacketReader::new(body);
+    // M161 left this flattened deliberately: NOTHING renders it. `ServerData
+    // .motd` is drawn only by `ServerSelectionList`, a pre-join screen Rewo has
+    // not got, so carrying the component would change no pixel. See the table
+    // on `component_wire::nbt_text`.
     let motd = r.nbt()?.to_plain_text();
     // `ByteBufCodecs.BYTE_ARRAY.apply(optional)`: a bool, then
     // `FriendlyByteBuf.readByteArray(input)` = `readByteArray(input,

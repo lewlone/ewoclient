@@ -2542,6 +2542,9 @@ fn meta(ctx: &Ctx, t: &mut EntityTable, eid: i32, index: u8, ser: i32, value: &[
             variant_kinds: Default::default(),
             classes: Some(&ctx.classes),
             components: Some(ctx.wire.components),
+            // The nametag's language table — no nametag reaches an arm rig,
+            // so an unresolved `translate` cannot be observed from here.
+            lang: None,
         },
     )
 }

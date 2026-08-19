@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 177;
+const EXPECTED_WITNESSES: usize = 179;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -2753,8 +2753,20 @@ fn check_sign_style(
         .ok_or("blocks.json: no minecraft:oak_sign")?;
     let lightmap = rewo_world::lightmap::LightmapState::default();
 
-    let build =
-        |color: Option<&str>, glowing: bool, text: &str| -> Vec<crate::live_cmd::OwnedSignLine> {
+    // M161's table. Hand-built rather than loaded from the jar because this
+    // gate never bakes assets — what the witnesses below grade is that the sign
+    // path CONSULTS a table at all, and the mutation partner (`lang: None`) is
+    // what proves the consulting is load-bearing.
+    let sign_lang = rewo_data::lang::Language::from_map(
+        [("block.minecraft.dirt".to_string(), "Dirt".to_string())]
+            .into_iter()
+            .collect(),
+    );
+    let build = |color: Option<&str>,
+                 glowing: bool,
+                 msg: Nbt,
+                 lang: Option<&rewo_data::lang::Language>|
+     -> Vec<crate::live_cmd::OwnedSignLine> {
             let shape = DimensionShape::OVERWORLD;
             let mut world = rewo_world::World::new(shape);
             let body = chunk_body(0, 0, shape.section_count(), &[(0x00, 64, sign_type)]);
@@ -2765,7 +2777,7 @@ fn check_sign_style(
             let mut face = vec![(
                 "messages".to_string(),
                 Nbt::List(vec![
-                    Nbt::String(text.to_string()),
+                    msg,
                     Nbt::String(String::new()),
                     Nbt::String(String::new()),
                     Nbt::String(String::new()),
@@ -2784,11 +2796,12 @@ fn check_sign_style(
                     data: Nbt::Compound(vec![("front_text".to_string(), Nbt::Compound(face))]),
                 },
             );
-            crate::live_cmd::collect_sign_text(&world, &signs, &lightmap, adv)
+            crate::live_cmd::collect_sign_text(&world, &signs, &lightmap, adv, lang)
         };
 
-    let plain_lines = build(None, false, "hi");
-    let dyed_lines = build(Some("red"), false, "hi");
+    let lit = |s: &str| Nbt::String(s.to_string());
+    let plain_lines = build(None, false, lit("hi"), None);
+    let dyed_lines = build(Some("red"), false, lit("hi"), None);
     c.record(
         "g8.a_dyed_sign_reaches_the_renderer_in_its_own_colour",
         plain_lines.len() == 1
@@ -2802,7 +2815,7 @@ fn check_sign_style(
         ),
     );
 
-    let glow_lines = build(Some("red"), true, "hi");
+    let glow_lines = build(Some("red"), true, lit("hi"), None);
     c.record(
         "g9.glowing_text_draws_eight_outline_copies_behind_one_glyph_run",
         glow_lines.len() == 9
@@ -2855,7 +2868,7 @@ fn check_sign_style(
     );
 
     let whole = "the quick brown fox jumps over the lazy dog";
-    let wrapped = build(None, false, whole);
+    let wrapped = build(None, false, lit(whole), None);
     c.record(
         "g12.the_collector_truncates_a_long_line_rather_than_overhanging",
         wrapped.len() == 1
@@ -2870,8 +2883,73 @@ fn check_sign_style(
             whole.len()
         ),
     );
+
+    // ── M161: the sign's lines are components, and the collector flattens them
+    // ── every frame. Before this they went through `Nbt::to_plain_text`, which
+    // ── has no table and no legacy-code parser.
+    let translatable = Nbt::Compound(vec![(
+        "translate".to_string(),
+        Nbt::String("block.minecraft.dirt".to_string()),
+    )]);
+    let resolved = build(None, false, translatable.clone(), Some(&sign_lang));
+    let unresolved = build(None, false, translatable, None);
+    c.record(
+        "sg1.a_translatable_sign_line_resolves_against_the_table",
+        resolved.len() == 1
+            && resolved[0].text == "Dirt"
+            // The no-table arm keeps the KEY — and the collector then TRUNCATES
+            // it, because `getRenderMessages` splits every line against the
+            // board and keeps fragment 0. So the assertion is a prefix, not an
+            // equality: `block.minecraft.dirt` does not fit a 90 px sign and
+            // reaches the renderer as `block.minecraft.di`. That is what the
+            // pre-M161 client drew for every translatable sign line.
+            //
+            // `len() == 1` is what makes this a mutation partner rather than a
+            // tautology: an empty line is skipped by `collect_sign_text`, so a
+            // resolver that blanked an unknown key scores zero lines here.
+            && unresolved.len() == 1
+            && !unresolved[0].text.is_empty()
+            && "block.minecraft.dirt".starts_with(&unresolved[0].text)
+            && unresolved[0].text != "Dirt",
+        format!(
+            "with a table {:?}, without one {:?} — the second is the pre-M161 \
+             answer for BOTH, because `SignFace::from_nbt` called \
+             `Nbt::to_plain_text`, which has no table. It is also truncated: an \
+             unresolved key is longer than a sign board, which is how this bug \
+             looked in game",
+            resolved.first().map(|l| &l.text),
+            unresolved.first().map(|l| &l.text)
+        ),
+    );
+
+    // The one witness that separates `to_plain_text` from a real flatten. A
+    // legacy code is STYLE in vanilla (`Language.getVisualOrder` runs
+    // `StringDecomposer.iterateFormatted`, which parses it), so neither
+    // character is drawn — and `AbstractSignRenderer.prepare` is `font.split`,
+    // the styled splitter, so a sign is one of the surfaces where it shows.
+    let coded = Nbt::String(format!("{SECTION}cRed"));
+    let coded_lines = build(None, false, coded, None);
+    c.record(
+        "sg2.a_legacy_code_on_a_sign_is_consumed_rather_than_drawn",
+        coded_lines.len() == 1
+            && coded_lines[0].text == "Red"
+            && !coded_lines[0].text.contains(SECTION),
+        format!(
+            "{:?} — before M161 this was the four characters {:?}, board width \
+             and all. Note the COLOUR is still the dye's: Rewo's sign pass \
+             carries one colour per line, so the parsed style is dropped rather \
+             than applied, which is a narrower claim than the text one and is \
+             why this witness grades the text",
+            coded_lines.first().map(|l| &l.text),
+            format!("{SECTION}cRed")
+        ),
+    );
     Ok(())
 }
+
+/// U+00A7, the legacy formatting prefix. Named rather than written inline so a
+/// grep for it finds every site, and so no source file needs the raw character.
+const SECTION: char = '\u{00a7}';
 
 /// The eight offsets `prepare8xTextOutline` draws at, as the gate expects to
 /// observe them. Written here independently of the renderer's own list.
@@ -3282,7 +3360,7 @@ fn check_sign_text(c: &mut Checker, version: &str) -> Result<(), String> {
         type_id: 0,
         data: Nbt::Compound(vec![("front_text".to_string(), face)]),
     };
-    let (front, back) = be.sign_text();
+    let (front, back) = be.sign_text(None);
     c.record(
         "t10.sign_text_decodes_from_the_block_entity_nbt",
         front.as_ref().is_some_and(|f| {
@@ -3303,7 +3381,7 @@ fn check_sign_text(c: &mut Checker, version: &str) -> Result<(), String> {
         "messages".to_string(),
         Nbt::List(vec![msg("one")]),
     )]);
-    let decoded = SignFace::from_nbt(&short);
+    let decoded = SignFace::from_nbt(&short, None);
     c.record(
         "t11.a_short_message_list_pads_to_four",
         decoded.as_ref().is_some_and(|f| {

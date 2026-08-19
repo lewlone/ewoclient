@@ -499,10 +499,25 @@ impl Inventory {
 /// fingerprint travels in the `ItemSlot`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SlotText {
-    /// `custom_name` if present, else `item_name`. Either overrides the item's
-    /// translated name; the caller supplies that fallback.
-    pub name: Option<String>,
-    pub lore: Vec<String>,
+    /// `minecraft:custom_name` — the anvil-given name, as the raw component.
+    ///
+    /// **Split from [`Self::item_name`], and the split is load-bearing twice.**
+    /// `getStyledHoverName` (`ItemStack.java:827-833`) adds ITALIC iff
+    /// `has(CUSTOM_NAME)`, and `Inventory.isUsableForCrafting`
+    /// (`Inventory.java:145-147`) tests `has(CUSTOM_NAME)` alone — a merged
+    /// `custom_name.or(item_name)` can express neither, and the old merged field
+    /// made every `item_name`-only stack unusable by the recipe-book solver.
+    ///
+    /// Unflattened: the decode has no language table (see
+    /// [`crate::chat_style::flatten`]), so a `translate` would have shown its
+    /// key and a legacy colour code its two characters.
+    pub custom_name: Option<rewo_proto::nbt::Nbt>,
+    /// `minecraft:item_name` — a *default* name the item may carry. Lower
+    /// precedence than [`Self::custom_name`], higher than the translated id,
+    /// and it does **not** italicise.
+    pub item_name: Option<rewo_proto::nbt::Nbt>,
+    /// `minecraft:lore`, one component per line, unflattened.
+    pub lore: Vec<rewo_proto::nbt::Nbt>,
     pub rarity: Option<i32>,
     pub unbreakable: bool,
     /// `(enchantment protocol id, level)` from `minecraft:enchantments`, and
@@ -540,14 +555,31 @@ impl SlotText {
     /// a field missing from here is a whole class of stack whose tooltip
     /// silently loses its lines — which is exactly what happened to the
     /// enchantments before they were added.
+    ///
+    /// So this **destructures** rather than reading `self.x` seven times: adding
+    /// a field is then a compile error here, not a silent omission. Adding
+    /// `item_name` beside `custom_name` was exactly the change that could have
+    /// slipped through — a stack carrying only a patched `item_name` would have
+    /// read as textless and been dropped.
     pub fn is_empty(&self) -> bool {
-        self.name.is_none()
-            && self.lore.is_empty()
-            && self.rarity.is_none()
-            && !self.unbreakable
-            && self.enchantments.is_empty()
-            && !self.is_enchanted
-            && self.cooldown_group.is_none()
+        let SlotText {
+            custom_name,
+            item_name,
+            lore,
+            rarity,
+            unbreakable,
+            enchantments,
+            is_enchanted,
+            cooldown_group,
+        } = self;
+        custom_name.is_none()
+            && item_name.is_none()
+            && lore.is_empty()
+            && rarity.is_none()
+            && !*unbreakable
+            && enchantments.is_empty()
+            && !*is_enchanted
+            && cooldown_group.is_none()
     }
 }
 
@@ -606,7 +638,11 @@ impl Inventory {
         let damaged = stack.max_damage.is_some() && stack.damage.unwrap_or(0) > 0;
         let text = self.text_of(stack);
         let enchanted = text.is_some_and(|t| t.is_enchanted);
-        let named = text.is_some_and(|t| t.name.is_some());
+        // `has(CUSTOM_NAME)` — **not** `getHoverName()`. This used to read the
+        // merged `name` field, i.e. `custom_name OR item_name`, so a stack whose
+        // patch set only `minecraft:item_name` was wrongly refused by the
+        // solver. Splitting the field is what makes the right question askable.
+        let named = text.is_some_and(|t| t.custom_name.is_some());
         !damaged && !enchanted && !named
     }
 }
@@ -1733,9 +1769,27 @@ mod tests {
         assert!(!inv.is_usable_for_crafting(tagged));
         inv.texts.insert(
             7,
-            SlotText { name: Some("Bob".into()), ..Default::default() },
+            SlotText {
+                custom_name: Some(rewo_proto::nbt::Nbt::String("Bob".into())),
+                ..Default::default()
+            },
         );
         assert!(!inv.is_usable_for_crafting(tagged));
+        // M161 — and the one this predicate used to get WRONG. The gate is
+        // `has(CUSTOM_NAME)` (`Inventory.java:145-147`), not `getHoverName()`,
+        // so a stack whose patch sets only `minecraft:item_name` is still
+        // usable. It was refused while `SlotText` merged the two fields.
+        inv.texts.insert(
+            7,
+            SlotText {
+                item_name: Some(rewo_proto::nbt::Nbt::String("Blade".into())),
+                ..Default::default()
+            },
+        );
+        assert!(
+            inv.is_usable_for_crafting(tagged),
+            "item_name is not CUSTOM_NAME: the solver must still count this stack"
+        );
         // A stack with a patch that carries neither still passes.
         inv.texts.insert(7, SlotText::default());
         assert!(inv.is_usable_for_crafting(tagged));

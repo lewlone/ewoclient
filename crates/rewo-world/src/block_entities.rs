@@ -49,6 +49,7 @@
 
 use std::collections::HashMap;
 
+use rewo_data::lang::Language;
 use rewo_proto::nbt::Nbt;
 
 /// One block entity's decoded identity and payload.
@@ -388,7 +389,24 @@ pub struct SignFace {
 
 impl SignFace {
     /// Read one `front_text` / `back_text` compound.
-    pub fn from_nbt(tag: &Nbt) -> Option<SignFace> {
+    ///
+    /// **This runs per frame**, and knowingly: [`BlockEntity::sign_text`] has no
+    /// cache and `live_cmd::collect_sign_text` calls it for every sign block
+    /// entity on every frame. That was already true when the lines were
+    /// flattened by `Nbt::to_plain_text` — four `String`s per face per frame —
+    /// so this is not a new allocation, but it *is* a new exposure:
+    /// [`crate::chat_style::parse_component`] carries a
+    /// [`crate::chat_style::MAX_COMPONENT_STEPS`] budget because a `with`
+    /// argument can be duplicated by a `%1$s%1$s` template, and
+    /// `to_plain_text` had no such exposure precisely because it ignored `with`.
+    /// A hostile server can therefore make one sign cost that budget per frame.
+    ///
+    /// Resolving once on block-entity change is the fix and is deliberately not
+    /// taken here: `BlockEntity` is stored in `World` behind `&`, so a memo
+    /// needs either interior mutability (and `OnceCell` is not `Sync`) or the
+    /// language table threaded to every construction site. Named rather than
+    /// hidden — see `REWO_PLAN.md` §15's M161 entry.
+    pub fn from_nbt(tag: &Nbt, lang: Option<&Language>) -> Option<SignFace> {
         let msgs = tag.get("messages")?;
         let Nbt::List(items) = msgs else {
             return None;
@@ -397,10 +415,14 @@ impl SignFace {
         for (i, slot) in lines.iter_mut().enumerate() {
             if let Some(m) = items.get(i) {
                 // Each message is a text component — sometimes a bare JSON
-                // string, sometimes a compound. `to_plain_text` handles both,
-                // and a plain string that *looks* like JSON is left alone
-                // because the server already resolved it to a component.
-                *slot = m.to_plain_text();
+                // string, sometimes a compound. `flatten` handles both, and a
+                // plain string that *looks* like JSON is left alone because the
+                // server already resolved it to a component.
+                //
+                // `AbstractSignRenderer.prepare` is `font.split(...)`, the
+                // STYLED splitter, so a legacy colour code in a sign's text is
+                // style in vanilla and was two drawn characters here.
+                *slot = crate::chat_style::flatten(m, lang);
             }
         }
         Some(SignFace {
@@ -424,10 +446,17 @@ impl BlockEntity {
     ///
     /// Returns `(front, back)`; either may be blank. A block entity that is
     /// not a sign simply has neither key.
-    pub fn sign_text(&self) -> (Option<SignFace>, Option<SignFace>) {
+    ///
+    /// `lang` resolves a `translate` line; see [`SignFace::from_nbt`] on why
+    /// this is a per-frame call and what that costs.
+    pub fn sign_text(&self, lang: Option<&Language>) -> (Option<SignFace>, Option<SignFace>) {
         (
-            self.data.get("front_text").and_then(SignFace::from_nbt),
-            self.data.get("back_text").and_then(SignFace::from_nbt),
+            self.data
+                .get("front_text")
+                .and_then(|t| SignFace::from_nbt(t, lang)),
+            self.data
+                .get("back_text")
+                .and_then(|t| SignFace::from_nbt(t, lang)),
         )
     }
 }

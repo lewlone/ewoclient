@@ -448,6 +448,17 @@ impl<'a> Connection<'a> {
                 }
                 x if x == self.ids.cb_login_disconnect => {
                     let mut r = PacketReader::new(&self.packet[body..]);
+                    // **This one is JSON, not NBT.**
+                    // `ClientboundLoginDisconnectPacket.java:16-21` is
+                    // `ByteBufCodecs.lenientJson(262144)`, so it reads as a
+                    // string and prints verbatim: a whitelist kick logs
+                    // `{"translate":"multiplayer.disconnect.not_whitelisted"}`.
+                    //
+                    // M161 left it: it needs a JSON-to-component reader Rewo has
+                    // not got, `Connection` holds no language table, and this
+                    // arm reaches a log line rather than a screen — `into_play`
+                    // runs before a window exists. See the table on
+                    // `component_wire::nbt_text`.
                     let reason = r.string(262144).unwrap_or_else(|_| "<unparsed>".into());
                     return Err(format!("login disconnect: {reason}"));
                 }
@@ -612,6 +623,12 @@ impl<'a> Connection<'a> {
                 }
                 x if x == self.ids.cb_config_disconnect => {
                     let mut r = PacketReader::new(&self.packet[body..]);
+                    // On the LIVE path — `PlaySession::into_play` calls
+                    // `run_configuration` — but `Connection` has no language
+                    // table and `GameData` deliberately does not carry one, and
+                    // this arm returns `Err(String)` to a log line rather than
+                    // to a screen. M161 left it; see the table on
+                    // `component_wire::nbt_text`.
                     let reason = r.nbt().map(|n| n.to_plain_text()).unwrap_or_default();
                     stats.disconnect_reason = Some(reason.clone());
                     return Err(format!("config disconnect: {reason}"));
@@ -2074,10 +2091,17 @@ fn read_slot(
         crate::item_stack::WireSlot::Stack(s) => {
             let c = &s.components;
             let text = rewo_world::inventory::SlotText {
-                // `getItemName` is `getOrDefault(ITEM_NAME, item.getName())`
-                // and `getHoverName` wraps that in `CUSTOM_NAME`, so the two
-                // are a two-level override rather than alternatives.
-                name: c.custom_name.clone().or_else(|| c.item_name.clone()),
+                // `getHoverName()` is `getCustomName() ?? getItemName()`, and
+                // `getItemName()` is the item's virtual `getName(stack)` whose
+                // base is `getOrDefault(ITEM_NAME, EMPTY)` — a two-level
+                // override, resolved at *render* rather than merged here.
+                //
+                // They stay apart because two rules ask about the first alone:
+                // `getStyledHoverName`'s italic and `isUsableForCrafting`. And
+                // they stay as components because this decode has no language
+                // table — see `rewo_world::chat_style::flatten`.
+                custom_name: c.custom_name.clone(),
+                item_name: c.item_name.clone(),
                 lore: c.lore.clone(),
                 rarity: c.rarity,
                 unbreakable: c.unbreakable,
@@ -2547,6 +2571,22 @@ pub struct MetaKinds<'a> {
     /// that serializer unwalkable, which ends the parse at that entry rather
     /// than desynchronising the rest.
     pub components: Option<rewo_data::components::DataComponentIds>,
+    /// The language table, for `Entity.DATA_CUSTOM_NAME` (index 2).
+    ///
+    /// **The nametag resolves at DECODE, not at render**, and that is a
+    /// performance decision rather than a convenience one:
+    /// `rewo_gpu::entities::EntityDraw::name` is `Option<&'a str>` borrowed
+    /// straight out of `EntityTable::custom_names`, so carrying the component
+    /// forward would mean a parse and a `String` per named entity per frame at
+    /// the 500 fps target. It is also what vanilla effectively does —
+    /// `TranslatableContents.decompose` reaches the `Language.getInstance()`
+    /// global — and [`crate::play::PlaySession::lang`]'s own doc records why
+    /// receipt-time resolution is equivalent for a client that cannot change
+    /// language mid-session.
+    ///
+    /// `None` leaves a `translate` component as its key, which is what this
+    /// decode did before the table was threaded here.
+    pub lang: Option<&'a rewo_data::lang::Language>,
 }
 
 impl<'a> From<Option<i32>> for MetaKinds<'a> {
@@ -2639,9 +2679,12 @@ pub(crate) fn apply_set_entity_data<'a>(
     let Some(type_id) = entities.get(eid).map(|e| e.type_id) else {
         return;
     };
-    let meta = crate::metadata::parse(&mut r, kinds.components);
-    if meta.custom_name.is_some() {
-        entities.set_custom_name(eid, meta.custom_name);
+    let meta = crate::metadata::parse(&mut r, kinds);
+    // `Some(None)` is the `Optional<Component>`'s EMPTY arm — an explicit
+    // clear. It used to be indistinguishable from "index 2 absent", so a
+    // server removing a custom name never removed it.
+    if let Some(name) = meta.custom_name {
+        entities.set_custom_name(eid, name);
     }
     if let Some(p) = meta.pose {
         entities.set_pose(eid, p);
@@ -2861,7 +2904,7 @@ pub(crate) fn apply_local_player_score(body: &[u8], local_player: Option<i32>, s
     }
     // No component table: the score is an INT, and any entry this walk cannot
     // size stops it — which is the existing `parse` contract, not a new rule.
-    if let Some(v) = crate::metadata::parse(&mut r, None).int18 {
+    if let Some(v) = crate::metadata::parse(&mut r, MetaKinds::default()).int18 {
         log::debug!("net: local player score = {v}");
         *score = v;
     }
