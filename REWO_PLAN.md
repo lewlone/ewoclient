@@ -145,7 +145,7 @@ still learns that a green run is not evidence this client makes a sound.
 
 Current measurement, taken 2026-08-14 on `main` at `c538afd`, after the
 audio-verification landing (M150, `soundshot`, M139 and M151 all merged):
-**3281 tests, 0 failures** (**world 1198, net 1162, gpu 290, data 228, app 222,
+**3288 tests, 0 failures** (**world 1198, net 1163, gpu 290, data 228, app 228,
 mesh 45, proto 16, audio 120** — read off the runner per crate; measured
 2026-08-17 after M159).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
@@ -1727,6 +1727,20 @@ this shape once.
 | Milestone | `rNN` | Atlas / sheet | Gate + witness prefix |
 |---|---|---|---|
 | *(next free)* | **r48** | — | — |
+
+**And the seam this table exists for has a hole, found by the wave it was built
+for (2026-08-19).** `witness_seam_faults` has exactly ONE production call site —
+inside `RenderCheck::report`, which needs a live session and a server. So
+`cargo test` grades the *helper* and never the row list: **on a machine with no
+staged server, nothing in the repo can detect a duplicate id, a stale constant
+or a gap.** It is armed only at `live --render-check`. Three of wave 1's four
+branches wrote a byte-identical `EXPECTED_RENDER_CHECK_WITNESSES = 48;`, and any
+two of them would have merged that line with no conflict at all.
+
+**The sibling hole, unguarded entirely.** `Checker::record` in every `*shot`
+gate dedups nothing, and each gate is fail-closed on a *count* — so two
+witnesses sharing a NAME are counted twice and read as a pass. M160 guarded the
+`rNN` namespace one level up and left this one. It is the obvious next seam.
 
 *Nothing is currently claimed beyond `r47` (M151). When you take `r48`, add a
 row naming your milestone in the same commit, so the next reader — human or
@@ -3401,6 +3415,66 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M161 — no music played at all, and the option that stopped it (2026-08-19)
+
+**`live --render-check` was red on `main` at r46 and had been for three
+milestones**, because M158, M159 and M160 each skipped it — the first two
+deliberately (neither added a render path) and M160 by omission. The last actual
+run was the session before. So the honest first finding is procedural: *"no
+render path changed"* is a sound reason to skip the gate that grades render
+paths, and it is not a reason to skip the only gate that **runs the client**.
+
+**The bug.** Vanilla's `MusicManager` reads its frequency option on two paths
+that differ in exactly one side effect:
+
+```java
+// MusicManager.java:30 — the CONSTRUCTOR
+this.gameMusicFrequency = minecraft.options.musicFrequency().get();
+
+// MusicManager.java:154-155 — setMinutesBetweenSongs, the option's callback
+this.gameMusicFrequency = musicFrequency;
+this.nextSongDelay = this.gameMusicFrequency.getNextSongDelay(
+    this.minecraft.getSituationalMusic(), this.random);
+```
+
+The constructor leaves `nextSongDelay` at its field initialiser of **100**
+(`:25`); the callback re-rolls it, which is what makes changing the option
+reschedule the next track immediately. **M157 seeded from `options.txt` through
+the callback.** So every session began with a delay of up to **24000** against a
+100-tick `STARTING_DELAY`, and since the delay is decremented once per tick,
+**no music played in any session shorter than about twenty minutes.**
+
+**M157's own entry names the fact and the code does the opposite** — *"the
+option is seeded by a PULL because `OptionInstance.set` skips its callback while
+`!isRunning()`, which is exactly why `MusicManager`'s constructor pulls the value
+itself"*. So does the doc block directly above the call site, which explains at
+length that `setMinutesBetweenSongs` "does more than store it". Both were right;
+the line between them called the wrong function. That is the sixth instance in
+this log of a comment that is not decoration beside the code but the
+justification a later reader checks instead of it.
+
+**Nothing in the suite could see it.** 36 gates, 3287 unit tests and both
+`soundshot` configurations were green throughout. It is M147's shape exactly —
+a client that resolves music perfectly and plays none — and it was found the
+same way, by running the client and reading a number that should not have been
+what it was: `delay=24000` where the witness's own detail string says 100.
+
+**Diagnosed by instrumentation, not by reading.** Three readings of the tick
+body found nothing, because the arithmetic is correct — `situational` resolved
+to `music.creative`, the volume was 1.0, and every branch was right. One
+temporary log line printed the delay and settled it in a single run.
+
+`seed_frequency` is the constructor's path and `set_frequency` remains the
+callback's. The witness is a **pair**, because "re-rolls" and "does not re-roll"
+are the same assertion with the sign flipped and only the pair says which path
+belongs where.
+
+**Measured:** `live --render-check` **46/47 → 47/47**, exit 0. `rewo-net`
+1162 → 1163. 36 gates green, 0 VUIDs. Demo PNG `2cc56b4acbfb92cb`
+byte-identical. And the counts M160 left stale in §0.0 and CLAUDE.md (3281 /
+app 222) are corrected to the measured 3287 / 228 — a drift introduced by the
+milestone whose subject was silent drift.
 
 ### M159 — the streaming decode on the sound-engine thread, and the half of it that is cheap (2026-08-17)
 
