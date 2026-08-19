@@ -292,6 +292,9 @@ struct RenderCheck {
     /// healthy. The icons are the first `HudBlit` anything produces.
     tab_list_text_max: usize,
     tab_list_icons_max: usize,
+    /// M161 — the largest `ColumnMesh::carried_fluid_cells` any column uploaded
+    /// in the windowed client. See `r48`.
+    carried_fluid_cells: u32,
     /// M138a — listener transforms that reached the audio device.
     ///
     /// Compared against `frames`, not merely to zero: the interesting claim is
@@ -597,7 +600,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 47;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 48;
 
     fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1111,6 +1114,30 @@ impl RenderCheck {
                 self.tab_list_rows_max,
                 self.tab_list_icons_max,
                 self.tab_list_text_max
+            ),
+        );
+        // M161 — waterlogged water in the WINDOWED client.
+        //
+        // This does not grade a pixel, and says so: `meshshot`'s waterlogged
+        // control grades the geometry, and the water rides the translucent pass
+        // the client has drawn since M3. What no serverless gate can see is the
+        // wiring — `MeshTables.fluid` is a new field, and a `live_cmd` that
+        // failed to fill it would mesh no carried water anywhere while every
+        // other witness here, every unit test and every `*shot` stayed green.
+        // That is the M86 shape exactly, so the claim is "the production chain
+        // from the bake through the mesh pool reached a real server's block".
+        //
+        // The run places the block itself rather than making this a fourth
+        // caller requirement (M108's precedent): `/setblock` needs op, which
+        // `tools/render_check.py` already grants for r25.
+        row(
+            "r48 a waterlogged block from the server meshed its water",
+            self.carried_fluid_cells > 0,
+            format!(
+                "{} carried-fluid cells in the largest column (0 means the bake, \
+                 the MeshTables field, the mesh pool or the setblock did not \
+                 reach each other -- and renders EXACTLY as it did before M161)",
+                self.carried_fluid_cells
             ),
         );
         row(
@@ -4091,6 +4118,9 @@ fn pump_meshing(
     world_renderer: &mut WorldRenderer,
     pool: &mut MeshPool,
     upload_budget: usize,
+    // M161 — raised to the largest `carried_fluid_cells` seen. Read by `r48`;
+    // ignored otherwise.
+    carried_fluid_cells: &mut u32,
 ) -> Result<usize, String> {
     for (cx, cz) in session.take_removed() {
         world_renderer.remove_column(gpu, cx, cz);
@@ -4110,6 +4140,7 @@ fn pump_meshing(
         let gone = session.world.column(out.cx, out.cz).is_none();
         match out.mesh {
             Some(mesh) if !gone => {
+                *carried_fluid_cells = (*carried_fluid_cells).max(mesh.carried_fluid_cells);
                 world_renderer.upload_column(
                     gpu,
                     out.cx,
@@ -4600,6 +4631,7 @@ fn run_headless(
         &session.world,
         &baked.render,
         &baked.models,
+        &baked.fluid,
         &coords,
     );
     let mut meshed = 0usize;
@@ -8360,6 +8392,11 @@ impl LiveApp {
             // otherwise unstaged run.
             if self.check.is_some() {
                 let _ = session.send_chat("rewo render-check");
+                // M161 (r48) — a waterlogged block for the mesher to find.
+                // ABOVE the player, not beside: `~ ~2 ~` is air wherever a
+                // player is standing, while `~2 ~ ~` assumes flat ground.
+                let _ = session
+                    .send_command("setblock ~ ~2 ~ minecraft:oak_slab[type=bottom,waterlogged=true]");
             }
             log::info!(
                 "live: spawned at ({:.1},{:.1},{:.1})",
@@ -8381,13 +8418,19 @@ impl LiveApp {
         // Upload finished meshes + feed the worker pool. (Uploads are
         // async slot-ring submissions — the CPU never waits on the copy;
         // same-queue FIFO ordering keeps this frame's draws safe.)
-        match pump_meshing(
+        let mut carried_cells = self.check.as_ref().map_or(0, |c| c.carried_fluid_cells);
+        let pumped = pump_meshing(
             session,
             &mut state.gpu,
             &mut state.world_renderer,
             &mut self.pool,
             UPLOAD_BUDGET,
-        ) {
+            &mut carried_cells,
+        );
+        if let Some(c) = self.check.as_mut() {
+            c.carried_fluid_cells = carried_cells;
+        }
+        match pumped {
             Ok(n) => {
                 self.uploaded_total += n;
                 // Log once when the pool first idles after spawn + a settle
@@ -9569,6 +9612,9 @@ fn run_windowed(
     let pool = MeshPool::new(MeshTables {
         render: baked.render.clone(),
         models: baked.models.clone(),
+        // M161 — without this the windowed client meshes no waterlogged water
+        // at all, and looks EXACTLY as it did before. `r48` is what asks.
+        fluid: baked.fluid.clone(),
     })?;
     let mut app = LiveApp {
         tab_health: std::collections::HashMap::new(),

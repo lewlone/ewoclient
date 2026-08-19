@@ -29,7 +29,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use rewo_data::assets::{Quad, RenderKind};
+use rewo_data::assets::{CarriedFluid, Quad, RenderKind};
 use rewo_world::World;
 
 use crate::{mesh_column, ColumnMesh};
@@ -39,6 +39,12 @@ use crate::{mesh_column, ColumnMesh};
 pub struct MeshTables {
     pub render: Vec<RenderKind>,
     pub models: Vec<Vec<Quad>>,
+    /// Per-state carried water (M161) — `BakedAssets::fluid`. An empty vec is
+    /// legal and means "no block carries a fluid", which is what every
+    /// pre-M161 fixture asserts; it is NOT how a production caller opts out,
+    /// because the way this feature disappears is precisely a caller that
+    /// forgot it.
+    pub fluid: Vec<Option<CarriedFluid>>,
 }
 
 /// One finished mesh job. `mesh: None` means the column baked to nothing
@@ -106,7 +112,14 @@ impl MeshPool {
         let tables = Arc::clone(&self.tables);
         let tx = self.tx.clone();
         self.pool.spawn(move || {
-            let mesh = mesh_column(&snapshot, &tables.render, &tables.models, cx, cz);
+            let mesh = mesh_column(
+                &snapshot,
+                &tables.render,
+                &tables.models,
+                &tables.fluid,
+                cx,
+                cz,
+            );
             // Receiver gone = app is shutting down; the result is moot.
             let _ = tx.send(MeshOutput {
                 generation,
@@ -144,6 +157,7 @@ pub fn mesh_all(
     world: &World,
     render: &[RenderKind],
     models: &[Vec<Quad>],
+    fluid: &[Option<CarriedFluid>],
     coords: &[(i32, i32)],
 ) -> Vec<MeshOutput> {
     coords
@@ -152,7 +166,7 @@ pub fn mesh_all(
             generation,
             cx,
             cz,
-            mesh: mesh_column(world, render, models, cx, cz),
+            mesh: mesh_column(world, render, models, fluid, cx, cz),
         })
         .collect()
 }
@@ -174,6 +188,7 @@ mod tests {
                 },
             ],
             models: Vec::new(),
+            fluid: Vec::new(),
         }
     }
 
@@ -273,7 +288,7 @@ mod tests {
         }
         let t = tables();
         let coords = vec![(3, 0), (1, 0), (2, 0), (0, 0)];
-        let outs = mesh_all(5, &world, &t.render, &t.models, &coords);
+        let outs = mesh_all(5, &world, &t.render, &t.models, &t.fluid, &coords);
         let got: Vec<(i32, i32)> = outs.iter().map(|o| (o.cx, o.cz)).collect();
         assert_eq!(got, coords);
         assert!(outs.iter().all(|o| o.mesh.is_some()));

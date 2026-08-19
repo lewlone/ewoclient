@@ -48,8 +48,11 @@ pub fn run(args: MeshshotArgs) -> Result<(), String> {
          all four AO codes, tint word); all five safe directions merged while every up \
          face stayed 1x1 (top-unit exclusion); the material, block-light, sky-light and \
          tint boundaries each split at the exact seam; non-uniform AO fell back to unit \
-         quads inside a plane that still merged elsewhere; and the model, water and lava \
-         controls came out byte-identical to the reference"
+         quads inside a plane that still merged elsewhere; the model, water and lava \
+         controls came out byte-identical to the reference; and one waterlogged block \
+         produced BOTH streams from a single state, with its own DOWN face suppressed by \
+         its own occlusion shape, its UP face NOT even when it occludes on all six, and an ordinary pool beside it \
+         suppressing the face between them"
     );
     Ok(())
 }
@@ -116,8 +119,31 @@ fn print_report(args: &MeshshotArgs, r: &GreedyOracleReport) {
         r.tint_boundary_words[1],
     );
 
+    let w = &r.waterlogged_faces;
+    println!(
+        "[meshshot] waterlogged: one Model state emitted {} opaque + {} translucent vertices \
+         from ONE position (the dry twin: {} translucent quads); carried_fluid_cells {} / {}",
+        r.waterlogged.opaque_vertices,
+        r.waterlogged.translucent_vertices,
+        w.dry_translucent_quads,
+        w.carried_cells.0,
+        w.carried_cells.1,
+    );
+    println!(
+        "[meshshot] waterlogged faces (top, side, bottom): own-DOWN-covered {:?}, \
+         own-UP-covered {:?}, ALL-SIX-covered {:?} — `renderUp` skips \
+         `shouldRenderFace`, so the top survives even a double slab; pool quads in the \
+         plane between it and a waterlogged / a dry neighbour: {} / {}",
+        w.bottom_slab,
+        w.top_slab,
+        w.double_slab,
+        w.pool_plane_faces.0,
+        w.pool_plane_faces.1,
+    );
+
     print_legacy("model", r.model_only_identical, r.model_only);
     print_legacy("water", r.water_only_identical, r.water_only);
+    print_legacy("waterlogged", r.waterlogged_identical, r.waterlogged);
     print_legacy("lava", r.lava_only_identical, r.lava_only);
 }
 

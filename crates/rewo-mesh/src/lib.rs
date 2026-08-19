@@ -42,7 +42,7 @@ pub mod pool;
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
-use rewo_data::assets::{RenderKind, TintSource};
+use rewo_data::assets::{CarriedFluid, RenderKind, TintSource};
 use rewo_world::World;
 
 /// Vanilla `Options.biomeBlendRadius` default — the `(2r+1)²` block-tint window.
@@ -277,6 +277,16 @@ pub struct ColumnMesh {
     /// with a non-uniform corner-AO pattern — emitted as legacy unit quads.
     /// `visible_cube_faces == greedy_candidate_faces + unit_fallback_faces`.
     pub unit_fallback_faces: u32,
+    /// Cells where a fluid was emitted for a block that is **not** a
+    /// `RenderKind::Fluid` — i.e. a waterlogged (or unconditionally watery)
+    /// block's water (M161).
+    ///
+    /// It exists so the windowed client can be *asked* whether the feature
+    /// reached it. `live --render-check`'s r48 reads it, because the way this
+    /// feature fails is not a wrong pixel: it is `MeshTables.fluid` never being
+    /// threaded through, which renders exactly as it did before and is the M86
+    /// shape — a whole feature that only ever ran headlessly.
+    pub carried_fluid_cells: u32,
 }
 
 /// [up(+Y), down(-Y), north(-Z), south(+Z), west(-X), east(+X)].
@@ -422,6 +432,7 @@ pub(crate) fn mesh_column_reference(
     world: &World,
     table: &[RenderKind],
     models: &[Vec<rewo_data::assets::Quad>],
+    carried: &[Option<CarriedFluid>],
     cx: i32,
     cz: i32,
 ) -> Option<ColumnMesh> {
@@ -440,6 +451,7 @@ pub(crate) fn mesh_column_reference(
     let mut y_min = f32::MAX;
     let mut y_max = f32::MIN;
     let mut visible_cube_faces = 0u32;
+    let mut carried_fluid_cells = 0u32;
     let mut bump = |y: f32| {
         y_min = y_min.min(y);
         y_max = y_max.max(y + 1.0);
@@ -456,6 +468,31 @@ pub(crate) fn mesh_column_reference(
                     let wx = base_x + lx;
                     let wz = base_z + lz;
                     let state = world.block_state_at(wx, y, wz);
+                    // `SectionCompiler.compile:89-97` — the fluid first, then
+                    // the block, as two independent draws at one position.
+                    if let Some(f) = fluid_at(table, carried, state) {
+                        // Water blends → translucent set; lava is opaque (and
+                        // fullbright) → opaque set.
+                        let (fv, fi) = if f.lava {
+                            (&mut vertices, &mut indices)
+                        } else {
+                            (&mut tvertices, &mut tindices)
+                        };
+                        emit_fluid(
+                            world,
+                            table,
+                            carried,
+                            &mut tint_cache,
+                            fv,
+                            fi,
+                            wx,
+                            y,
+                            wz,
+                            f,
+                        );
+                        carried_fluid_cells += u32::from(f.carried);
+                        bump(y as f32);
+                    }
                     match table.get(state as usize) {
                         Some(RenderKind::Cube {
                             faces,
@@ -492,35 +529,10 @@ pub(crate) fn mesh_column_reference(
                             );
                             bump(y as f32);
                         }
-                        Some(RenderKind::Fluid {
-                            layer,
-                            raw_layer,
-                            level,
-                            lava,
-                        }) => {
-                            // Water blends → translucent set; lava is
-                            // opaque (and fullbright) → opaque set.
-                            let (fv, fi) = if *lava {
-                                (&mut vertices, &mut indices)
-                            } else {
-                                (&mut tvertices, &mut tindices)
-                            };
-                            emit_fluid(
-                                world,
-                                table,
-                                &mut tint_cache,
-                                fv,
-                                fi,
-                                wx,
-                                y,
-                                wz,
-                                *layer,
-                                *raw_layer,
-                                *level,
-                                *lava,
-                            );
-                            bump(y as f32);
-                        }
+                        // Already drawn above. `LiquidBlock.getRenderShape`
+                        // is `RenderShape.INVISIBLE` (`:135-137`), so the block
+                        // itself contributes nothing.
+                        Some(RenderKind::Fluid { .. }) => {}
                         _ => {}
                     }
                 }
@@ -545,6 +557,7 @@ pub(crate) fn mesh_column_reference(
         greedy_candidate_faces: 0,
         greedy_quads: 0,
         unit_fallback_faces: visible_cube_faces,
+        carried_fluid_cells,
     })
 }
 
@@ -790,6 +803,7 @@ pub fn mesh_column(
     world: &World,
     table: &[RenderKind],
     models: &[Vec<rewo_data::assets::Quad>],
+    carried: &[Option<CarriedFluid>],
     cx: i32,
     cz: i32,
 ) -> Option<ColumnMesh> {
@@ -813,6 +827,7 @@ pub fn mesh_column(
     let mut visible_cube_faces = 0u32;
     let mut greedy_candidate_faces = 0u32;
     let mut unit_fallback_faces = 0u32;
+    let mut carried_fluid_cells = 0u32;
 
     // Size the masks to the nontrivial-section range, not the whole dimension:
     // an overworld column is 24 sections tall and typically holds terrain in a
@@ -850,6 +865,31 @@ pub fn mesh_column(
                     let wx = base_x + lx;
                     let wz = base_z + lz;
                     let state = world.block_state_at(wx, y, wz);
+                    // `SectionCompiler.compile:89-97` — the fluid first, then
+                    // the block, as two independent draws at one position. A
+                    // waterlogged stair runs BOTH arms; a `LiquidBlock` only
+                    // this one (its render shape is INVISIBLE).
+                    if let Some(f) = fluid_at(table, carried, state) {
+                        let (fv, fi) = if f.lava {
+                            (&mut vertices, &mut indices)
+                        } else {
+                            (&mut tvertices, &mut tindices)
+                        };
+                        emit_fluid(
+                            world,
+                            table,
+                            carried,
+                            &mut tint_cache,
+                            fv,
+                            fi,
+                            wx,
+                            y,
+                            wz,
+                            f,
+                        );
+                        carried_fluid_cells += u32::from(f.carried);
+                        bump(y as f32);
+                    }
                     match table.get(state as usize) {
                         Some(RenderKind::Cube {
                             faces,
@@ -950,33 +990,8 @@ pub fn mesh_column(
                             );
                             bump(y as f32);
                         }
-                        Some(RenderKind::Fluid {
-                            layer,
-                            raw_layer,
-                            level,
-                            lava,
-                        }) => {
-                            let (fv, fi) = if *lava {
-                                (&mut vertices, &mut indices)
-                            } else {
-                                (&mut tvertices, &mut tindices)
-                            };
-                            emit_fluid(
-                                world,
-                                table,
-                                &mut tint_cache,
-                                fv,
-                                fi,
-                                wx,
-                                y,
-                                wz,
-                                *layer,
-                                *raw_layer,
-                                *level,
-                                *lava,
-                            );
-                            bump(y as f32);
-                        }
+                        // Already drawn above (see the `fluid_at` block).
+                        Some(RenderKind::Fluid { .. }) => {}
                         _ => {}
                     }
                 }
@@ -1022,6 +1037,86 @@ pub fn mesh_column(
         greedy_candidate_faces,
         greedy_quads,
         unit_fallback_faces,
+        carried_fluid_cells,
+    })
+}
+
+/// Mesher face index -> the bit [`rewo_data::assets::FACE_DIRS`] uses for the
+/// same direction, for reading [`CarriedFluid::self_occludes`].
+///
+/// The two crates order their faces differently and always have —
+/// `FACE_OFFSETS` is `[up, down, north, south, west, east]` while `FACE_DIRS`
+/// is `[west, east, down, up, north, south]`. A remap table is exactly the kind
+/// of thing that inverts silently, so `self_occlude_remap_is_the_two_direction_
+/// tables` derives it from both arrays rather than trusting these literals.
+const SELF_OCCLUDE_REMAP: [u32; 6] = [3, 2, 4, 5, 0, 1];
+
+/// One block state's fluid, as vanilla's `BlockState.getFluidState()` answers
+/// it, reduced to what [`emit_fluid`] reads.
+///
+/// **This is the single query.** 26.2 stores the answer in two unrelated
+/// places — `LiquidBlock.getFluidState` reads its own `LEVEL`, while a
+/// `SimpleWaterloggedBlock` returns a source — and Rewo mirrors that split
+/// (`RenderKind::Fluid` vs [`CarriedFluid`]) because the two really are
+/// different things: one block *is* the fluid, the other *carries* it. What
+/// must not be split is the lookup, so everything that asks goes through
+/// [`fluid_at`]. `same()` in particular decides face suppression for ordinary
+/// pools too, and a version of it that only knew about `RenderKind::Fluid`
+/// would leave a visible internal wall wherever a pool meets a waterlogged
+/// block.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct FluidHere {
+    layer: u16,
+    raw_layer: u16,
+    level: u8,
+    lava: bool,
+    /// `isFaceOccludedBySelf`'s input, in the **mesher's** face order.
+    self_occludes: u8,
+    /// The fluid came from the carried table rather than from a `LiquidBlock`.
+    carried: bool,
+}
+
+/// What `blockState.getFluidState()` answers for `state`, or `None` for
+/// `Fluids.EMPTY`.
+fn fluid_at(
+    table: &[RenderKind],
+    carried: &[Option<CarriedFluid>],
+    state: u32,
+) -> Option<FluidHere> {
+    if let Some(RenderKind::Fluid {
+        layer,
+        raw_layer,
+        level,
+        lava,
+    }) = table.get(state as usize)
+    {
+        return Some(FluidHere {
+            layer: *layer,
+            raw_layer: *raw_layer,
+            level: *level,
+            lava: *lava,
+            // A `LiquidBlock` is `noOcclusion` + `replaceable`, so its own
+            // occlusion shape is `Shapes.empty()` and `isFaceOccludedByState`
+            // returns false at its first branch — plain water never suppresses
+            // its own faces.
+            self_occludes: 0,
+            carried: false,
+        });
+    }
+    let f = (*carried.get(state as usize)?)?;
+    let mut mask = 0u8;
+    for (face, bit) in SELF_OCCLUDE_REMAP.iter().enumerate() {
+        if f.self_occludes & (1 << bit) != 0 {
+            mask |= 1 << face;
+        }
+    }
+    Some(FluidHere {
+        layer: f.layer,
+        raw_layer: f.raw_layer,
+        level: f.level,
+        lava: false,
+        self_occludes: mask,
+        carried: true,
     })
 }
 
@@ -1036,49 +1131,66 @@ fn fluid_h(level: u8) -> f32 {
 }
 
 /// The fluid's level at (x,y,z) if it is the same fluid type, else None.
+///
+/// This is vanilla's `isNeighborSameFluid` and `getHeight` sharing one input:
+/// `neighborFluidState.getType().isSame(fluidState.getType())`. A waterlogged
+/// block's type IS water, so it answers here.
 fn fluid_level(
     world: &World,
     table: &[RenderKind],
+    carried: &[Option<CarriedFluid>],
     x: i32,
     y: i32,
     z: i32,
     want_lava: bool,
 ) -> Option<u8> {
-    match table.get(world.block_state_at(x, y, z) as usize) {
-        Some(RenderKind::Fluid { level, lava, .. }) if *lava == want_lava => Some(*level),
-        _ => None,
-    }
+    let f = fluid_at(table, carried, world.block_state_at(x, y, z))?;
+    (f.lava == want_lava).then_some(f.level)
 }
 
 /// Vanilla-style fluid cell: top face at per-corner heights (max over the
 /// four touching same-fluid cells — a simpler take on vanilla's weighted
 /// average that still reads as a continuous sloped surface), trapezoid
 /// side faces down to the block floor, bottom face against air.
+///
+/// `f` is the cell's own fluid ([`fluid_at`]) — a `LiquidBlock`'s or a
+/// waterlogged block's, indistinguishable from here, which is the point.
+///
+/// **`f.self_occludes` is applied to the four sides and the bottom and NOT to
+/// the top**, and that asymmetry is vanilla's, not an oversight.
+/// `FluidRenderer.tesselate:77` computes `renderUp` as
+/// `!isNeighborSameFluid(..)` alone, while `:78-83` route the other five
+/// through `shouldRenderFace`, which is
+/// `!isNeighborSameFluid(..) && !isFaceOccludedBySelf(blockState, direction)`
+/// (`:56-60`). So a waterlogged **top** slab really does emit a water surface
+/// at y+8/9, buried inside its own geometry; adding the self test to the up
+/// face "for consistency" deletes surfaces vanilla draws.
 #[allow(clippy::too_many_arguments)]
 fn emit_fluid(
     world: &World,
     table: &[RenderKind],
+    carried: &[Option<CarriedFluid>],
     cache: &mut TintCache,
     vertices: &mut Vec<MeshVertex>,
     indices: &mut Vec<u32>,
     wx: i32,
     y: i32,
     wz: i32,
-    layer: u16,
-    raw_layer: u16,
-    _level: u8,
-    lava: bool,
+    f: FluidHere,
 ) {
+    let lava = f.lava;
     // Water gets the biome water tint (raw layer + dynamic color); lava never.
     let (fluid_layer, tint_rgb) = if lava {
-        (layer, TINT_WHITE)
+        (f.layer, TINT_WHITE)
     } else {
         match biome_tint(world, cache, wx, y, wz, TintSource::Water) {
-            Some(rgb) => (raw_layer, rgb),
-            None => (layer, TINT_WHITE),
+            Some(rgb) => (f.raw_layer, rgb),
+            None => (f.layer, TINT_WHITE),
         }
     };
-    let same = |x: i32, yy: i32, z: i32| fluid_level(world, table, x, yy, z, lava).is_some();
+    let same = |x: i32, yy: i32, z: i32| {
+        fluid_level(world, table, carried, x, yy, z, lava).is_some()
+    };
     // Corner height at grid point (wx+dx, wz+dz): max over the 4 cells
     // sharing that corner; a cell with the same fluid above it is a full
     // column (1.0).
@@ -1090,7 +1202,7 @@ fn emit_fluid(
             (wx + dx - 1, wz + dz),
             (wx + dx, wz + dz),
         ] {
-            if let Some(lv) = fluid_level(world, table, cx, y, cz, lava) {
+            if let Some(lv) = fluid_level(world, table, carried, cx, y, cz, lava) {
                 let ch = if same(cx, y + 1, cz) {
                     1.0
                 } else {
@@ -1195,13 +1307,31 @@ fn emit_fluid(
     ];
     for ((dx, dz), face, corners) in sides {
         let (nx, nz) = (wx + dx, wz + dz);
-        if same(nx, y, nz) || is_full_cube(table, world.block_state_at(nx, y, nz)) {
+        // `shouldRenderFace` = !isNeighborSameFluid && !isFaceOccludedBySelf.
+        // The `is_full_cube` term is Rewo's older stand-in for vanilla's THIRD
+        // test, `isFaceOccludedByNeighbor(faceDir, max(hh0,hh1), faceState)`
+        // (`FluidRenderer.java:289`) — a height-aware shape query where this is
+        // a full-cube one. Left alone here on purpose: it is a pre-existing
+        // divergence of the plain-water path, so changing it moves the demo PNG
+        // and belongs to whoever takes that on.
+        if same(nx, y, nz)
+            || f.self_occludes & (1 << face) != 0
+            || is_full_cube(table, world.block_state_at(nx, y, nz))
+        {
             continue;
         }
         quad(corners, face_shade_code(world, face), light(nx, y, nz));
     }
-    // Bottom — against anything that isn't fluid or a full cube.
-    if !same(wx, y - 1, wz) && !is_full_cube(table, world.block_state_at(wx, y - 1, wz)) {
+    // Bottom — against anything that isn't fluid, isn't covered by our own
+    // shape, and isn't a full cube. Vanilla's `renderDown` has TWO neighbour
+    // gates (`:78-79`): `shouldRenderFace` — whose self half is the new term —
+    // and `!isFaceOccludedByNeighbor(DOWN, 0.8888889F, blockStateDown)`, the
+    // hard-coded MAX_FLUID_HEIGHT. `is_full_cube` stands in for the second, as
+    // on the sides.
+    if !same(wx, y - 1, wz)
+        && f.self_occludes & (1 << 1) == 0
+        && !is_full_cube(table, world.block_state_at(wx, y - 1, wz))
+    {
         quad(
             [
                 ([x0, yf, z0], [0.0, 0.0]),
@@ -1959,20 +2089,277 @@ pub struct LegacyControlCounts {
     pub translucent_indices: usize,
 }
 
+// -- M161: the waterlogged controls ----------------------------------------
+//
+// Face indices below are the MESHER's, except inside `CarriedFluid`, whose
+// `self_occludes` is `rewo_data::assets::FACE_DIRS`-ordered (see
+// `SELF_OCCLUDE_REMAP`). `DOWN` is `FACE_DIRS` index 2 and `UP` is 3.
+
+/// `self_occludes` for a shape flush with the bottom of its block (a bottom
+/// slab, a stair's lower step) — `FACE_DIRS` order.
+const ORACLE_OCC_DOWN: u8 = 1 << 2;
+/// `self_occludes` for a shape flush with the top of its block (a top slab).
+const ORACLE_OCC_UP: u8 = 1 << 3;
+/// All six — a `type=double` slab, and the ONLY shape in the fixture that
+/// occludes a SIDE. Measured against the real bake, the 68 full-cube carriers
+/// are exactly the waterlogged double slabs (`blockentityshot` names them), so
+/// this is the common real case and not a synthetic corner: without it the
+/// side half of `shouldRenderFace` has no witness at all, which is how M161's
+/// battery first found it SURVIVING.
+const ORACLE_OCC_ALL: u8 = 0b11_1111;
+
+/// A DRY `Model(0)`; the two waterlogged states below share its geometry.
+const WL_DRY: u32 = 4;
+/// The same model, waterlogged, with a bottom-slab occlusion shape.
+const WL_BOTTOM_SLAB: u32 = 5;
+/// The same model, waterlogged, with a top-slab occlusion shape.
+const WL_TOP_SLAB: u32 = 6;
+/// The same model, waterlogged, occluding on every face — a double slab.
+const WL_DOUBLE_SLAB: u32 = 7;
+/// A plain water source (`oracle_fluid_table`'s).
+const WL_WATER: u32 = 2;
+
+/// [`oracle_fluid_table`] (0 air, 1 an opaque cube, 2 water, **3 LAVA**) plus
+/// three `Model(0)` states.
+///
+/// The three models share one model index deliberately: the only input that
+/// differs between the dry control and the two waterlogged blocks is the
+/// carried-fluid table, so a difference in the output cannot come from the
+/// geometry. `oracle_waterlogged_states_are_what_they_are_named` pins the
+/// indices — an earlier draft of this fixture counted the base table as three
+/// entries rather than four and graded LAVA as its "dry model", and the only
+/// thing that noticed was the opaque-byte-identity witness.
+fn oracle_waterlogged_table() -> Vec<RenderKind> {
+    let mut t = oracle_fluid_table();
+    debug_assert_eq!(t.len(), WL_DRY as usize);
+    for _ in WL_DRY..=WL_DOUBLE_SLAB {
+        t.push(RenderKind::Model(0));
+    }
+    t
+}
+
+fn oracle_waterlogged_carried() -> Vec<Option<CarriedFluid>> {
+    let wl = |self_occludes| {
+        Some(CarriedFluid {
+            layer: 1,
+            raw_layer: 1,
+            level: 0,
+            falling: false,
+            self_occludes,
+        })
+    };
+    let mut c: Vec<Option<CarriedFluid>> = vec![None; WL_DOUBLE_SLAB as usize + 1];
+    c[WL_BOTTOM_SLAB as usize] = wl(ORACLE_OCC_DOWN);
+    c[WL_TOP_SLAB as usize] = wl(ORACLE_OCC_UP);
+    c[WL_DOUBLE_SLAB as usize] = wl(ORACLE_OCC_ALL);
+    c
+}
+
+/// One block of `state` in mid-air at (2, 62, 2) — nothing below, so the
+/// fluid's down face is decided by the block's OWN occlusion shape alone.
+fn oracle_waterlogged_world(state: u32) -> World {
+    use rewo_world::dimension::DimensionShape;
+    let mut w = World::new(DimensionShape::OVERWORLD);
+    w.ensure_column(0, 0);
+    w.set_block(2, 62, 2, state);
+    w
+}
+
+/// A water source at (8, 62, 2) with `east` at (9, 62, 2) — the `same()`
+/// witness. Everything else is air, so the only face in the plane x = 9 is the
+/// pool's east side and (if `east` carries water) that block's west side.
+fn oracle_pool_beside(east: u32) -> World {
+    use rewo_world::dimension::DimensionShape;
+    let mut w = World::new(DimensionShape::OVERWORLD);
+    w.ensure_column(0, 0);
+    w.set_block(8, 62, 2, WL_WATER);
+    w.set_block(9, 62, 2, east);
+    w
+}
+
+/// Classify a translucent stream's fluid quads by geometry alone — `(top, side,
+/// bottom)`. Reads the emitted vertices, not the emitter: a bottom face has all
+/// four vertices on the block floor, a top face none, a side face two.
+fn fluid_face_counts(v: &[MeshVertex], floor: f32) -> (usize, usize, usize) {
+    let (mut top, mut side, mut bottom) = (0, 0, 0);
+    for q in v.chunks_exact(4) {
+        match q.iter().filter(|x| (x.pos[1] - floor).abs() < 1e-6).count() {
+            4 => bottom += 1,
+            0 => top += 1,
+            _ => side += 1,
+        }
+    }
+    (top, side, bottom)
+}
+
+/// Quads whose four vertices all sit on the plane `x`.
+fn quads_on_x_plane(v: &[MeshVertex], x: f32) -> usize {
+    v.chunks_exact(4)
+        .filter(|q| q.iter().all(|p| (p.pos[0] - x).abs() < 1e-6))
+        .count()
+}
+
+/// What [`check_waterlogged`] measured. Every number is observed — the checker
+/// returns `Err` before a report exists if any of them is wrong.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WaterloggedFaceCounts {
+    /// `(top, side, bottom)` for the bottom-slab-shaped waterlogged block.
+    pub bottom_slab: (usize, usize, usize),
+    /// The same for the top-slab-shaped one.
+    pub top_slab: (usize, usize, usize),
+    /// And for the one that occludes on all six faces.
+    pub double_slab: (usize, usize, usize),
+    /// Translucent quads the DRY twin produced. Must be 0.
+    pub dry_translucent_quads: usize,
+    /// `ColumnMesh::carried_fluid_cells` for the bottom-slab world / the dry one.
+    pub carried_cells: (u32, u32),
+    /// Quads in the plane x = 9 with a waterlogged / a dry east neighbour.
+    pub pool_plane_faces: (usize, usize),
+}
+
+/// Grade the M161 waterlogged path. Serverless, asset-free, and driven through
+/// the production [`mesh_column`] — the fixture supplies only the two tables the
+/// bake supplies in production.
+fn check_waterlogged() -> Result<WaterloggedFaceCounts, String> {
+    let table = oracle_waterlogged_table();
+    let carried = oracle_waterlogged_carried();
+    let models = oracle_model_quads();
+    // The fixture's own indices, asserted before anything is graded against
+    // them: `WL_DRY` must be a model that carries nothing, and the two
+    // waterlogged states must be the SAME model that does. Without this the
+    // checker happily grades whatever happens to sit at those indices.
+    for (st, want_carried) in [
+        (WL_DRY, false),
+        (WL_BOTTOM_SLAB, true),
+        (WL_TOP_SLAB, true),
+        (WL_DOUBLE_SLAB, true),
+    ] {
+        if !matches!(table.get(st as usize), Some(RenderKind::Model(0))) {
+            return Err(format!(
+                "waterlogged fixture: state {st} is {:?}, not Model(0)",
+                table.get(st as usize)
+            ));
+        }
+        if carried.get(st as usize).copied().flatten().is_some() != want_carried {
+            return Err(format!(
+                "waterlogged fixture: state {st} carries {:?}, expected carried={want_carried}",
+                carried.get(st as usize)
+            ));
+        }
+    }
+    let mesh = |state: u32| {
+        mesh_column(
+            &oracle_waterlogged_world(state),
+            &table,
+            &models,
+            &carried,
+            0,
+            0,
+        )
+    };
+
+    // 1. One state, two draws (`SectionCompiler.compile:89-97`). The dry twin is
+    //    the same `RenderKind::Model` with the same model index, so the only
+    //    input that differs is the carried-fluid table.
+    let wl = mesh(WL_BOTTOM_SLAB).ok_or("waterlogged: the bottom-slab world meshed to nothing")?;
+    let dry = mesh(WL_DRY).ok_or("waterlogged: the dry world meshed to nothing")?;
+    if wl.vertices.is_empty() {
+        return Err("waterlogged: the block's own model produced no opaque geometry".into());
+    }
+    if wl.tvertices.is_empty() {
+        return Err(
+            "waterlogged: the block carried water and produced NO translucent geometry — this is the whole feature"
+                .into(),
+        );
+    }
+    if !dry.tvertices.is_empty() {
+        return Err(format!(
+            "waterlogged: the DRY twin produced {} translucent vertices — the carried-fluid table, not the render kind, must decide",
+            dry.tvertices.len()
+        ));
+    }
+    if bytemuck::cast_slice::<_, u8>(&wl.vertices) != bytemuck::cast_slice::<_, u8>(&dry.vertices) {
+        return Err(
+            "waterlogged: the block's own opaque geometry changed when it carried water — the two draws must be independent"
+                .into(),
+        );
+    }
+    if (wl.carried_fluid_cells, dry.carried_fluid_cells) != (1, 0) {
+        return Err(format!(
+            "waterlogged: carried_fluid_cells is {} / {}, expected 1 / 0",
+            wl.carried_fluid_cells, dry.carried_fluid_cells
+        ));
+    }
+
+    // 2. `isFaceOccludedBySelf` on the down face, and its ABSENCE on the up one.
+    //    The two worlds differ in exactly one bit of `self_occludes`.
+    let top = mesh(WL_TOP_SLAB).ok_or("waterlogged: the top-slab world meshed to nothing")?;
+    let a = fluid_face_counts(&wl.tvertices, 62.0);
+    let b = fluid_face_counts(&top.tvertices, 62.0);
+    if a != (1, 4, 0) {
+        return Err(format!(
+            "waterlogged: a block whose own DOWN face is covered emitted (top,side,bottom) {a:?}, expected (1,4,0) — `shouldRenderFace` (FluidRenderer:56-60) must suppress the down face"
+        ));
+    }
+    if b != (1, 4, 1) {
+        return Err(format!(
+            "waterlogged: a block whose own UP face is covered emitted (top,side,bottom) {b:?}, expected (1,4,1) — `renderUp` (FluidRenderer:77) does NOT go through `shouldRenderFace`, so the top face survives, and the self mask must not touch the sides"
+        ));
+    }
+    // The real case: a `type=double` slab occludes on every direction, so
+    // `shouldRenderFace` suppresses all four sides AND the bottom, and the ONE
+    // face vanilla still draws is the top — which is the whole point of
+    // `renderUp` skipping the self test. The two witnesses above cannot see the
+    // side half of the test at all (their masks name only up and down), which
+    // M161's mutation battery found by watching a dropped side test survive.
+    let d = mesh(WL_DOUBLE_SLAB).ok_or("waterlogged: the double-slab world meshed to nothing")?;
+    let dbl = fluid_face_counts(&d.tvertices, 62.0);
+    if dbl != (1, 0, 0) {
+        return Err(format!(
+            "waterlogged: a block that occludes on ALL SIX faces emitted (top,side,bottom) {dbl:?}, expected (1,0,0) — every face but the top goes through `shouldRenderFace`, and the top does not"
+        ));
+    }
+
+    // 3. `isNeighborSameFluid` — an ordinary pool must stop drawing toward a
+    //    waterlogged block, because that block's fluid type IS water.
+    let near = |east: u32| {
+        mesh_column(&oracle_pool_beside(east), &table, &models, &carried, 0, 0)
+            .ok_or("waterlogged: a pool world meshed to nothing")
+    };
+    let toward_wl = quads_on_x_plane(&near(WL_BOTTOM_SLAB)?.tvertices, 9.0);
+    let toward_dry = quads_on_x_plane(&near(WL_DRY)?.tvertices, 9.0);
+    if (toward_wl, toward_dry) != (0, 1) {
+        return Err(format!(
+            "waterlogged: the plane x=9 holds {toward_wl} quads beside a waterlogged block and {toward_dry} beside a dry one, expected 0 and 1 — `same()` decides face suppression for ORDINARY pools too, so a version that only knows `RenderKind::Fluid` leaves a visible internal wall in every underwater build"
+        ));
+    }
+
+    Ok(WaterloggedFaceCounts {
+        bottom_slab: a,
+        top_slab: b,
+        double_slab: dbl,
+        dry_translucent_quads: dry.tvertices.len() / 4,
+        carried_cells: (wl.carried_fluid_cells, dry.carried_fluid_cells),
+        pool_plane_faces: (toward_wl, toward_dry),
+    })
+}
+
 /// Grade one legacy control: the optimized mesher must reproduce the reference
 /// **byte for byte** on both streams, touch no cube metrics, and actually
 /// produce the stream(s) the fixture exists to cover.
+#[allow(clippy::too_many_arguments)]
 fn oracle_check_legacy_control(
     world: &World,
     table: &[RenderKind],
     models: &[Vec<rewo_data::assets::Quad>],
+    carried: &[Option<CarriedFluid>],
     what: &str,
     want_opaque: bool,
     want_translucent: bool,
 ) -> Result<LegacyControlCounts, String> {
-    let r = mesh_column_reference(world, table, models, 0, 0)
+    let r = mesh_column_reference(world, table, models, carried, 0, 0)
         .ok_or_else(|| format!("{what} control: the reference mesher produced nothing"))?;
-    let o = mesh_column(world, table, models, 0, 0)
+    let o = mesh_column(world, table, models, carried, 0, 0)
         .ok_or_else(|| format!("{what} control: the optimized mesher produced nothing"))?;
 
     // Non-vacuity first: a control that emitted nothing would "match" trivially.
@@ -2126,6 +2513,10 @@ pub struct GreedyOracleReport {
     pub water_only: LegacyControlCounts,
     pub lava_only_identical: bool,
     pub lava_only: LegacyControlCounts,
+    /// M161 — a waterlogged model, which produces BOTH streams from one state.
+    pub waterlogged_identical: bool,
+    pub waterlogged: LegacyControlCounts,
+    pub waterlogged_faces: WaterloggedFaceCounts,
 }
 
 /// Locate the single expanded entry covering one unit face.
@@ -2193,9 +2584,9 @@ pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
     let world = oracle_world();
     let table = oracle_table();
 
-    let r = mesh_column_reference(&world, &table, &[], 0, 0)
+    let r = mesh_column_reference(&world, &table, &[], &[], 0, 0)
         .ok_or("reference mesher produced nothing for the oracle column")?;
-    let o = mesh_column(&world, &table, &[], 0, 0)
+    let o = mesh_column(&world, &table, &[], &[], 0, 0)
         .ok_or("optimized mesher produced nothing for the oracle column")?;
 
     // The fixture is cube-only, so nothing may reach the translucent stream and
@@ -2513,7 +2904,7 @@ pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
     // -- 12. determinism ------------------------------------------------------
     let deterministic_runs = 4;
     for run in 0..deterministic_runs {
-        let again = mesh_column(&world, &table, &[], 0, 0)
+        let again = mesh_column(&world, &table, &[], &[], 0, 0)
             .ok_or("determinism: a rerun produced nothing")?;
         if bytemuck::cast_slice::<_, u8>(&again.vertices)
             != bytemuck::cast_slice::<_, u8>(&o.vertices)
@@ -2550,6 +2941,7 @@ pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
         &oracle_model_world(),
         &oracle_model_table(),
         &oracle_model_quads(),
+        &[],
         "model-only",
         true,  // models land in the opaque stream
         false, // and never in the translucent one
@@ -2559,6 +2951,7 @@ pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
         &oracle_water_world(),
         &fluid_table,
         &[],
+        &[],
         "water-only",
         false, // water blends, so the opaque stream must stay empty
         true,
@@ -2567,10 +2960,24 @@ pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
         &oracle_lava_world(),
         &fluid_table,
         &[],
+        &[],
         "lava-only",
         true, // lava is opaque and fullbright
         false,
     )?;
+    // M161 — one waterlogged block. The only control that must populate BOTH
+    // streams, because it is the only fixture where one block state runs both
+    // of `SectionCompiler`'s draws.
+    let waterlogged = oracle_check_legacy_control(
+        &oracle_waterlogged_world(WL_BOTTOM_SLAB),
+        &oracle_waterlogged_table(),
+        &oracle_model_quads(),
+        &oracle_waterlogged_carried(),
+        "waterlogged",
+        true, // the block's own model
+        true, // and the water it carries
+    )?;
+    let waterlogged_faces = check_waterlogged()?;
 
     Ok(GreedyOracleReport {
         reference_unit_faces: exp_ref.len(),
@@ -2608,6 +3015,9 @@ pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
         water_only,
         lava_only_identical: true,
         lava_only,
+        waterlogged_identical: true,
+        waterlogged,
+        waterlogged_faces,
     })
 }
 
@@ -2628,7 +3038,7 @@ mod tests {
         w.ensure_column(0, 0);
         w.set_block(4, 9, 4, 1); // floor cube
         w.set_block(4, 10, 4, 2); // water source on it
-        let mesh = mesh_column(&w, &fluid_table(), &[], 0, 0).expect("meshed");
+        let mesh = mesh_column(&w, &fluid_table(), &[], &[], 0, 0).expect("meshed");
         assert!(
             !mesh.vertices.is_empty(),
             "floor cube goes to the opaque set"
@@ -2648,12 +3058,143 @@ mod tests {
         );
     }
 
+    // -- M161: waterlogged blocks ------------------------------------------
+    //
+    // The face-emission rules and the two-draws property are graded by
+    // `check_greedy_oracle`'s waterlogged control (production code, run by
+    // `rewo meshshot --check` AND by the test below it). These cover the pieces
+    // that control cannot reach.
+
+    /// The remap between the two crates' face orders, derived from both
+    /// direction tables rather than trusted as literals. A wrong entry here
+    /// reads a bottom slab's occlusion as a north face's and is invisible in
+    /// every fixture whose block occludes on more than one side.
+    #[test]
+    fn self_occlude_remap_is_the_two_direction_tables() {
+        use rewo_data::assets::FACE_DIRS;
+        for (face, &bit) in SELF_OCCLUDE_REMAP.iter().enumerate() {
+            let (dx, dy, dz) = FACE_OFFSETS[face];
+            assert_eq!(
+                FACE_DIRS[bit as usize],
+                (dx, dy, dz),
+                "mesher face {face} maps to FACE_DIRS[{bit}]"
+            );
+        }
+        // A permutation, so no direction is dropped or read twice.
+        let mut seen: Vec<u32> = SELF_OCCLUDE_REMAP.to_vec();
+        seen.sort_unstable();
+        assert_eq!(seen, vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    /// The two storage sites, one query. `RenderKind::Fluid` wins where both
+    /// could answer, and a `LiquidBlock` never suppresses its own faces —
+    /// vanilla's water is `noOcclusion`, so `getFaceOcclusionShape` is
+    /// `Shapes.empty()` and `isFaceOccludedByState` returns at its first branch.
+    #[test]
+    fn fluid_at_reads_the_liquid_block_then_the_carried_table() {
+        let table = oracle_waterlogged_table();
+        let carried = oracle_waterlogged_carried();
+        let water = fluid_at(&table, &carried, WL_WATER).expect("water is a fluid");
+        assert!(!water.carried && !water.lava && water.self_occludes == 0);
+        let wl = fluid_at(&table, &carried, WL_BOTTOM_SLAB).expect("the slab carries water");
+        assert!(wl.carried && !wl.lava, "carried water is never lava");
+        assert_eq!(wl.level, 0, "every carried fluid in 26.2 is a source");
+        assert_eq!(
+            wl.self_occludes,
+            1 << 1,
+            "FACE_DIRS' down bit must land on the mesher's face 1"
+        );
+        assert!(fluid_at(&table, &carried, WL_DRY).is_none());
+        // An out-of-range state, and a carried table shorter than the render
+        // table (every pre-M161 caller passes an empty one).
+        assert!(fluid_at(&table, &carried, 999).is_none());
+        assert!(fluid_at(&table, &[], WL_BOTTOM_SLAB).is_none());
+        assert!(fluid_at(&table, &[], WL_WATER).is_some());
+    }
+
+    /// A carried fluid is a SOURCE — `getOwnHeight` is `amount / 9.0` and a
+    /// source's amount is 8 — so its surface sits at 8/9 like any other source,
+    /// not at the top of the block it is inside.
+    #[test]
+    fn carried_water_surfaces_at_eight_ninths() {
+        let mesh = mesh_column(
+            &oracle_waterlogged_world(WL_TOP_SLAB),
+            &oracle_waterlogged_table(),
+            &oracle_model_quads(),
+            &oracle_waterlogged_carried(),
+            0,
+            0,
+        )
+        .expect("meshed");
+        let top = mesh
+            .tvertices
+            .iter()
+            .map(|v| v.pos[1])
+            .fold(f32::MIN, f32::max);
+        assert!((top - (62.0 + 8.0 / 9.0)).abs() < 1e-5, "surface at {top}");
+    }
+
+    /// `getHeight`'s `hasSameAbove` arm reaches ACROSS the two storage sites:
+    /// an ordinary water block above a waterlogged one makes the waterlogged
+    /// cell a full column, and the waterlogged cell stops emitting a top face
+    /// at all. A `same()` that only knew `RenderKind::Fluid` would leave a
+    /// surface buried inside the pool.
+    #[test]
+    fn a_pool_above_a_waterlogged_block_makes_it_a_full_column() {
+        use rewo_world::dimension::DimensionShape;
+        let table = oracle_waterlogged_table();
+        let carried = oracle_waterlogged_carried();
+        let models = oracle_model_quads();
+        let mut w = World::new(DimensionShape::OVERWORLD);
+        w.ensure_column(0, 0);
+        w.set_block(2, 62, 2, WL_TOP_SLAB);
+        w.set_block(2, 63, 2, WL_WATER);
+        let m = mesh_column(&w, &table, &models, &carried, 0, 0).expect("meshed");
+        // `fluid_face_counts` is per-CELL and this world has two, so the claim
+        // is made directly on the plane a buried surface would sit in. (The
+        // first draft of this test asked `fluid_face_counts(.., 62.0)` for
+        // `top == 0` and failed, because the POOL's quads have no vertex at
+        // y=62 either and so counted as tops.)
+        let surface_at = |y: f32| {
+            m.tvertices
+                .chunks_exact(4)
+                .filter(|q| q.iter().all(|v| (v.pos[1] - y).abs() < 1e-5))
+                .count()
+        };
+        assert_eq!(
+            surface_at(62.0 + 8.0 / 9.0),
+            0,
+            "the buried cell must not emit a surface"
+        );
+        assert_eq!(surface_at(63.0 + 8.0 / 9.0), 1, "the pool's own surface");
+        // The pool's own sides run from 63 down to 63 + 8/9; the waterlogged
+        // cell's run the full block height, which is what "full column" means.
+        let low = m
+            .tvertices
+            .iter()
+            .filter(|v| v.pos[1] > 62.0 && v.pos[1] < 63.0)
+            .count();
+        assert_eq!(low, 0, "a full column has no vertex between 62 and 63");
+        assert_eq!(m.carried_fluid_cells, 1);
+    }
+
+    /// The production gate, run by `cargo test` as well as by
+    /// `rewo meshshot --check`.
+    #[test]
+    fn the_waterlogged_oracle_passes() {
+        let f = check_waterlogged().expect("waterlogged oracle");
+        assert_eq!(f.bottom_slab, (1, 4, 0));
+        assert_eq!(f.top_slab, (1, 4, 1));
+        assert_eq!(f.double_slab, (1, 0, 0));
+        assert_eq!(f.pool_plane_faces, (0, 1));
+    }
+
     #[test]
     fn lava_meshes_opaque() {
         let mut w = World::new(DimensionShape::OVERWORLD);
         w.ensure_column(0, 0);
         w.set_block(4, 10, 4, 3);
-        let mesh = mesh_column(&w, &fluid_table(), &[], 0, 0).expect("meshed");
+        let mesh = mesh_column(&w, &fluid_table(), &[], &[], 0, 0).expect("meshed");
         assert!(!mesh.vertices.is_empty(), "lava is opaque geometry");
         assert!(mesh.tvertices.is_empty());
     }
@@ -2664,7 +3205,7 @@ mod tests {
         w.ensure_column(0, 0);
         w.set_block(4, 10, 4, 2);
         w.set_block(4, 11, 4, 2); // water above → lower cell is a full column
-        let mesh = mesh_column(&w, &fluid_table(), &[], 0, 0).expect("meshed");
+        let mesh = mesh_column(&w, &fluid_table(), &[], &[], 0, 0).expect("meshed");
         // Lower cell contributes no top face; the surface is the upper
         // cell's 8/9 → max y = 11 + 8/9.
         let top = mesh
@@ -2719,7 +3260,7 @@ mod tests {
         let mut w = World::new(DimensionShape::OVERWORLD);
         w.ensure_column(0, 0);
         w.set_block(2, 64, 2, 1);
-        let m = mesh_column(&w, &table, &models, 0, 0).expect("meshed");
+        let m = mesh_column(&w, &table, &models, &[], 0, 0).expect("meshed");
         let v = m.vertices[0];
         assert_eq!(v.layer_index(), 7, "legacy path uses the pre-tinted layer");
         assert_eq!(
@@ -2758,7 +3299,7 @@ mod tests {
             0,
         );
         w.set_biome_context(Arc::new(ctx));
-        let m2 = mesh_column(&w, &table, &models, 0, 0).expect("meshed");
+        let m2 = mesh_column(&w, &table, &models, &[], 0, 0).expect("meshed");
         let v2 = m2.vertices[0];
         assert_eq!(v2.layer_index(), 8, "biome path uses the RAW layer");
         assert_eq!(
@@ -3250,8 +3791,8 @@ mod tests {
         plate(&mut w, 4, 9, 64, 4, 8, 1); // 6 × 5 blocks
         let table = cube_table();
 
-        let r = mesh_column_reference(&w, &table, &[], 0, 0).expect("reference meshed");
-        let o = mesh_column(&w, &table, &[], 0, 0).expect("optimized meshed");
+        let r = mesh_column_reference(&w, &table, &[], &[], 0, 0).expect("reference meshed");
+        let o = mesh_column(&w, &table, &[], &[], 0, 0).expect("optimized meshed");
         assert_metrics(&o);
 
         // 30 blocks: 30 tops + 30 bottoms + a 22-face perimeter.
@@ -3307,8 +3848,8 @@ mod tests {
         plate(&mut w, 4, 9, 64, 4, 8, 1); // the same 6 × 5 plate
         let table = cube_table();
 
-        let r = mesh_column_reference(&w, &table, &[], 0, 0).expect("reference");
-        let o = mesh_column(&w, &table, &[], 0, 0).expect("optimized");
+        let r = mesh_column_reference(&w, &table, &[], &[], 0, 0).expect("reference");
+        let o = mesh_column(&w, &table, &[], &[], 0, 0).expect("optimized");
         assert_metrics(&o);
 
         // 82 = 30 tops + 30 bottoms + a 22-face perimeter. The 30 that fall back
@@ -3351,7 +3892,7 @@ mod tests {
         plate(&mut w, 4, 7, 64, 4, 7, 1); // stone half
         plate(&mut w, 8, 11, 64, 4, 7, 2); // slate half, same plane
         let table = cube_table();
-        let o = mesh_column(&w, &table, &[], 0, 0).expect("meshed");
+        let o = mesh_column(&w, &table, &[], &[], 0, 0).expect("meshed");
         assert_metrics(&o);
 
         // Graded on the bottom plane: it shares the top's u/v axes, and up faces
@@ -3368,7 +3909,7 @@ mod tests {
         );
         assert_eq!(
             unit_faces(&o),
-            unit_faces(&mesh_column_reference(&w, &table, &[], 0, 0).unwrap())
+            unit_faces(&mesh_column_reference(&w, &table, &[], &[], 0, 0).unwrap())
         );
     }
 
@@ -3381,8 +3922,8 @@ mod tests {
         let table = oracle_model_table();
         let models = oracle_model_quads();
         let w = oracle_model_world();
-        let r = mesh_column_reference(&w, &table, &models, 0, 0).expect("reference");
-        let o = mesh_column(&w, &table, &models, 0, 0).expect("optimized");
+        let r = mesh_column_reference(&w, &table, &models, &[], 0, 0).expect("reference");
+        let o = mesh_column(&w, &table, &models, &[], 0, 0).expect("optimized");
 
         assert!(!o.vertices.is_empty());
         assert_eq!(
@@ -3417,8 +3958,8 @@ mod tests {
                 w.set_block(x + 8, 62, z, 3); // lava
             }
         }
-        let r = mesh_column_reference(&w, &table, &[], 0, 0).expect("reference");
-        let o = mesh_column(&w, &table, &[], 0, 0).expect("optimized");
+        let r = mesh_column_reference(&w, &table, &[], &[], 0, 0).expect("reference");
+        let o = mesh_column(&w, &table, &[], &[], 0, 0).expect("optimized");
 
         assert!(!o.vertices.is_empty(), "lava populates the opaque stream");
         assert!(
@@ -3471,8 +4012,8 @@ mod tests {
         w.set_block(5, 65, 5, 1);
         let table = cube_table();
 
-        let r = mesh_column_reference(&w, &table, &[], 0, 0).expect("reference");
-        let o = mesh_column(&w, &table, &[], 0, 0).expect("optimized");
+        let r = mesh_column_reference(&w, &table, &[], &[], 0, 0).expect("reference");
+        let o = mesh_column(&w, &table, &[], &[], 0, 0).expect("optimized");
         assert_metrics(&o);
 
         let disc = expand(&o.vertices, &o.indices)
@@ -3520,8 +4061,8 @@ mod tests {
             w.set_block(8, y, 8, 1);
         }
         let table = cube_table();
-        let r = mesh_column_reference(&w, &table, &[], 0, 0).expect("reference");
-        let o = mesh_column(&w, &table, &[], 0, 0).expect("optimized");
+        let r = mesh_column_reference(&w, &table, &[], &[], 0, 0).expect("reference");
+        let o = mesh_column(&w, &table, &[], &[], 0, 0).expect("optimized");
         assert_metrics(&o);
 
         // The north face plane holds one 1-wide, 12-tall run.
@@ -3549,8 +4090,8 @@ mod tests {
         let (base_x, base_z) = (16, 16);
         plate(&mut w, base_x, base_x + 15, 64, base_z, base_z + 15, 1);
         let table = cube_table();
-        let r = mesh_column_reference(&w, &table, &[], 1, 1).expect("reference");
-        let o = mesh_column(&w, &table, &[], 1, 1).expect("optimized");
+        let r = mesh_column_reference(&w, &table, &[], &[], 1, 1).expect("reference");
+        let o = mesh_column(&w, &table, &[], &[], 1, 1).expect("optimized");
         assert_metrics(&o);
 
         for v in &o.vertices {
@@ -3623,8 +4164,8 @@ mod tests {
         w.set_block(11, 63, 3, 3); // water
         w.set_block(3, 63, 11, 4); // lava
 
-        let r = mesh_column_reference(&w, &table, &models, 0, 0).expect("reference");
-        let o = mesh_column(&w, &table, &models, 0, 0).expect("optimized");
+        let r = mesh_column_reference(&w, &table, &models, &[], 0, 0).expect("reference");
+        let o = mesh_column(&w, &table, &models, &[], 0, 0).expect("optimized");
         assert_metrics(&o);
 
         assert!(
@@ -3693,9 +4234,9 @@ mod tests {
         plate(&mut w, 2, 13, 64, 2, 13, 1);
         plate(&mut w, 5, 8, 65, 5, 8, 2);
         let table = cube_table();
-        let a = mesh_column(&w, &table, &[], 0, 0).expect("meshed");
+        let a = mesh_column(&w, &table, &[], &[], 0, 0).expect("meshed");
         for _ in 0..4 {
-            let b = mesh_column(&w, &table, &[], 0, 0).expect("meshed");
+            let b = mesh_column(&w, &table, &[], &[], 0, 0).expect("meshed");
             assert_eq!(
                 bytemuck::cast_slice::<_, u8>(&a.vertices),
                 bytemuck::cast_slice::<_, u8>(&b.vertices)
@@ -3999,11 +4540,11 @@ mod tests {
         for (what, m) in [
             (
                 "reference",
-                mesh_column_reference(&w, &table, &[], 0, 0).expect("reference"),
+                mesh_column_reference(&w, &table, &[], &[], 0, 0).expect("reference"),
             ),
             (
                 "optimized",
-                mesh_column(&w, &table, &[], 0, 0).expect("optimized"),
+                mesh_column(&w, &table, &[], &[], 0, 0).expect("optimized"),
             ),
         ] {
             let qs = quads(&m.vertices, &m.indices);
@@ -4039,7 +4580,7 @@ mod tests {
 
         // The optimized path still merges the bottom plane into one 2×2
         // rectangle, all of it at code 6.
-        let o = mesh_column(&w, &table, &[], 0, 0).expect("optimized");
+        let o = mesh_column(&w, &table, &[], &[], 0, 0).expect("optimized");
         let downs: Vec<_> = quads(&o.vertices, &o.indices)
             .into_iter()
             .filter(|q| face_of_quad(q) == 1)
@@ -4102,7 +4643,7 @@ mod tests {
             ("nether", nether_world(), [6, 2, 0]),
         ] {
             w.set_block(4, 10, 4, 1);
-            let m = mesh_column(&w, &table, &models, 0, 0).expect("model meshed");
+            let m = mesh_column(&w, &table, &models, &[], 0, 0).expect("model meshed");
             let codes: Vec<u8> = quads(&m.vertices, &m.indices)
                 .iter()
                 .map(|q| q[0].shade_code())
@@ -4130,7 +4671,7 @@ mod tests {
             ("nether", nether_world(), [6, 6]),
         ] {
             w.set_block(4, 10, 4, 2); // a lone water source: all six faces visible
-            let m = mesh_column(&w, &ftable, &[], 0, 0).expect("fluid meshed");
+            let m = mesh_column(&w, &ftable, &[], &[], 0, 0).expect("fluid meshed");
             let qs = quads(&m.tvertices, &m.tindices);
             assert_eq!(qs.len(), 6, "{what}: a lone source emits six faces");
             let mut seen = [false; 6];
@@ -4214,11 +4755,11 @@ mod tests {
         for (what, m) in [
             (
                 "reference",
-                mesh_column_reference(&w, &table, &models, 0, 0).expect("reference"),
+                mesh_column_reference(&w, &table, &models, &[], 0, 0).expect("reference"),
             ),
             (
                 "optimized",
-                mesh_column(&w, &table, &models, 0, 0).expect("optimized"),
+                mesh_column(&w, &table, &models, &[], 0, 0).expect("optimized"),
             ),
         ] {
             let mut checked = 0usize;
@@ -4265,7 +4806,7 @@ mod tests {
         let mut w = World::new(DimensionShape::OVERWORLD);
         w.ensure_column(0, 0);
         let table = cube_table();
-        assert!(mesh_column_reference(&w, &table, &[], 0, 0).is_none());
-        assert!(mesh_column(&w, &table, &[], 0, 0).is_none());
+        assert!(mesh_column_reference(&w, &table, &[], &[], 0, 0).is_none());
+        assert!(mesh_column(&w, &table, &[], &[], 0, 0).is_none());
     }
 }

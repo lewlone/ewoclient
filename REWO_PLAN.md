@@ -1726,11 +1726,12 @@ this shape once.
 
 | Milestone | `rNN` | Atlas / sheet | Gate + witness prefix |
 |---|---|---|---|
-| *(next free)* | **r48** | — | — |
+| M161 waterlogged rendering | **r48** | — | `meshshot` (waterlogged control), `blockentityshot` 178–185 |
+| *(next free)* | **r49** | — | — |
 
-*Nothing is currently claimed beyond `r47` (M151). When you take `r48`, add a
-row naming your milestone in the same commit, so the next reader — human or
-agent — sees it taken rather than inferring it free from the code.*
+*When you take `r49`, add a row naming your milestone in the same commit, so the
+next reader — human or agent — sees it taken rather than inferring it free from
+the code.*
 
 #### Two things this does not guard, stated rather than hidden
 
@@ -3401,6 +3402,125 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M161 — a waterlogged block renders its water, and the 68 double slabs (2026-08-19)
+
+**36% of the block-state space rendered no water.** `mesh_column` matched ONE
+`RenderKind` per state, so a waterlogged stair was a `Model` and emitted nothing
+but the stair; measured against the report, that is **11,728 of 32,366 states
+across 429 blocks**, plus 32 more that carry water with no property at all.
+
+**The split is vanilla's, not an encoding convenience.**
+`SectionCompiler.compile:89-97` makes two independent draws at every position —
+`blockState.getFluidState()` through `FluidRenderer.tesselate`, then
+*separately* `getRenderShape() == MODEL` through `tesselateBlock`. A
+`LiquidBlock` is `RenderShape.INVISIBLE` (`:135-137`) so plain water draws only
+through the first; a waterlogged stair draws through **both**. Rewo now mirrors
+that: `RenderKind::Fluid` stays "the block IS the fluid", a new
+`BakedAssets::fluid` is "the block CARRIES one", and **one** function
+(`fluid_at`) answers both — because `same()` decides face suppression for
+ordinary pools too, and a version of it that only knew `RenderKind::Fluid` would
+leave a visible internal wall wherever a pool meets a waterlogged block.
+
+**Five things that read backwards, each transcribed rather than inferred.**
+
+* **`renderUp` is the ONE face that skips `shouldRenderFace`** (`:77` against
+  `:78-83`), so `isFaceOccludedBySelf` applies to the four sides and the bottom
+  and NOT to the top. A waterlogged top slab really does emit a water surface at
+  y+8/9 inside its own geometry, and adding the self test "for consistency"
+  deletes surfaces vanilla draws.
+* **`isFaceOccludedBySelf` double-negates.** It calls
+  `isFaceOccludedByState(dir.getOpposite(), 1.0F, state)`, which reads
+  `getFaceOcclusionShape(dir.getOpposite().getOpposite())` — so the net query is
+  the block's own shape on the **same** direction as the face, and because the
+  height is exactly `1.0F` the `Shapes.block()` arm answers true for every
+  direction including UP.
+* **The set is not `waterlogged=true`.** Five blocks return
+  `Fluids.WATER.getSource(false)` outright with no property to key off — kelp,
+  kelp_plant, seagrass, tall_seagrass, bubble_column, **32 states**. Read every
+  `getFluidState` override in `world/level/block`: 46 files, 40 of the ternary
+  form, one `LiquidBlock`, one `WaterloggedTransparentBlock`, and these five.
+* **`WaterloggedTransparentBlock` passes `getSource(TRUE)`** — the one override
+  of the 46 that does — and `Blocks.java:5245-5250` gives it to the whole
+  `COPPER_GRATE` collection, so **the eight copper grates are the only blocks
+  whose carried water is FALLING**. Nothing reads the flag yet: its only effect
+  is through `FlowingFluid.getFlow`'s `(0,-6,0)` branch, which selects the
+  still-vs-rotated TOP sprite, and Rewo bakes no `water_flow` sprite at all. It
+  is stored with a test anyway, because "a waterlogged block's fluid is a
+  source, therefore never falling" is the natural reading and it is wrong for
+  eight blocks.
+* **A carried fluid is a SOURCE**, amount 8, `getOwnHeight` = 8/9 — so its
+  surface sits at 8/9 like any other source, not at the top of the block it is
+  inside.
+
+**The finding is the 68.** The bake completes `face_occludes` to all six for a
+full occluding cube — the light path deliberately leaves that at 0 and routes a
+full cube through `dampening 15` instead — and the states that reach it turn out
+to be **exactly the `type=double` slabs**, 68 of them. A double slab is a full
+cube, so vanilla's `getFaceOcclusionShape` (`canOcclude ? getShape : empty`) is
+`Shapes.block()` on every direction and `shouldRenderFace` suppresses all four
+sides **and** the bottom, leaving the top face alone — which is exactly what
+`renderUp` skipping the self test is for. Without the completion a waterlogged
+double slab draws four side faces and a floor **inside solid stone**.
+`blockentityshot` names it against `blocks.json`'s own `type` property
+(`double` → `0b111111`, `bottom` → the DOWN bit only, `top` → the UP bit only)
+rather than recomputing the bake's expression.
+
+**It also closed a live M30 gap.** `BakedAssets::water` (`isWaterAt`, which the
+conduit's activation scan reads) was keyed on the `waterlogged` property, so the
+32 unconditional states were dry — a conduit inside a kelp forest would refuse
+to activate. `water` is now DERIVED from `fluid`, so the table that renders
+water and the table that counts as water cannot disagree.
+
+**Two fixture errors, and both were caught by a witness rather than by
+reading.** The waterlogged oracle's state indices were off by one — it extended
+`oracle_fluid_table` as though that had three entries where it has four — so its
+"dry model" was **LAVA**, and the only thing that noticed was the
+opaque-byte-identity witness; with that witness absent, "the waterlogged state
+emits translucent geometry and the dry one does not" would have passed while
+grading lava. The fixture now asserts its own indices before grading anything.
+And a test claiming a buried surface is not emitted asked
+`fluid_face_counts(.., 62.0)` for `top == 0`, which the POOL's quads also
+satisfy (they have no vertex at y=62 either); it names the plane directly now.
+
+**The battery's own finding: the side half of `shouldRenderFace` had no
+witness.** Dropping it SURVIVED, because both waterlogged fixtures occluded only
+UP or only DOWN and both assert `side == 4`. The fix is the double slab —
+the real-world case, `(top, side, bottom) == (1, 0, 0)`. Battery **15
+mutations, 15 killed**, control SURVIVED in every slice, and the control runs
+**every checker its slice uses** (a control validated against `cargo test` says
+nothing about whether a gate-routed or live-routed checker can return 0 at all).
+
+**`r48` exists for a reason no serverless gate can cover.** The water rides the
+translucent pass the client has drawn since M3, so nothing about it is a new
+render path — but `MeshTables.fluid` is a new field, and a `live_cmd` that
+failed to fill it meshes no carried water anywhere while every unit test, every
+`*shot` and every other render-check witness stays green. That is the M86 shape,
+and the battery kills exactly that mutation through `r48` alone. The run places
+its own block (`setblock ~ ~2 ~ oak_slab[waterlogged=true]`, above the player
+because `~2 ~ ~` assumes flat ground) rather than adding a fourth caller
+requirement — M108's precedent.
+
+**Measured.** 3295 tests (world 1198, net 1162, gpu 290, data 231, app 228,
+audio 120, mesh 50, proto 16); all 36 serverless gates green with validation ON
+and **0 VUIDs**; `meshshot` +1 legacy control +4 face witnesses,
+`blockentityshot` 177 → **185**; demo PNG **`2cc56b4acbfb92cb`** byte-identical.
+`live --render-check` is **47 of 48** — `r48` PASSES, and **`r46` (music) fails
+on `main` too**: measured at `b88f18e` with a debug build, `46/47`, so the
+regression predates this branch and is not it.
+
+**Deliberately not done, and stated rather than hidden.**
+`emit_fluid`'s side and bottom suppression still uses `is_full_cube` where
+vanilla's third test is `isFaceOccludedByNeighbor(faceDir, max(hh0,hh1),
+faceState)` — a height-aware shape query. That is a pre-existing divergence of
+the *plain water* path (grass_block is a `Model`, so `is_full_cube` is false for
+it and a pool beside grass draws a wall today), and changing it moves the demo
+PNG. `fluid_h(level >= 8) = 1.0` is likewise still a double count — vanilla's
+`getOwnHeight` for `getFlowing(8, true)` is 8/9 and the 1.0 comes only from
+`hasSameAbove`, which the `corner` closure already applies — and it is half of a
+two-part bug whose other half (level 8 is the FALLING state, so it also selects
+`getFlow`'s `(0,-6,0)` branch) belongs to a flow milestone. Both are recorded
+here rather than half-fixed.
 
 ### M159 — the streaming decode on the sound-engine thread, and the half of it that is cheap (2026-08-17)
 

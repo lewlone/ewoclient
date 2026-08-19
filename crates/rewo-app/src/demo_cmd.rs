@@ -116,7 +116,7 @@ pub fn run(args: DemoArgs) -> Result<(), String> {
     let mut wr = WorldRenderer::new(&mut gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
     let mut total_verts = 0;
     for (cx, cz) in world.column_coords() {
-        if let Some(mesh) = rewo_mesh::mesh_column(&world, &baked.render, &baked.models, cx, cz) {
+        if let Some(mesh) = rewo_mesh::mesh_column(&world, &baked.render, &baked.models, &baked.fluid, cx, cz) {
             total_verts += mesh.vertices.len();
             wr.upload_column(
                 &mut gpu,

@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 177;
+const EXPECTED_WITNESSES: usize = 185;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -257,6 +257,7 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
             .ok_or_else(|| "no client jar for the bubble-column table".to_string())?;
         let baked = rewo_data::assets::bake(&jar, &paths.blocks_json())?;
         check_bubble_column_table(&mut c, &baked, &paths.blocks_json())?;
+        check_carried_fluid_table(&mut c, &baked, &paths.blocks_json())?;
     }
 
     println!(
@@ -3707,6 +3708,226 @@ fn check_lifecycle(c: &mut Checker, ids: &Ids, blocks: &rewo_data::blocks::Block
 /// * The block's **default state is `drag=true`**, so a reader that missed the
 ///   property and fell back to the default would turn every column into a
 ///   whirlpool — a wrong sound rather than a missing one.
+/// M161 — the carried-water table (`BakedAssets::fluid`) against the raw
+/// `blocks.json`, and `BakedAssets::water` (`isWaterAt`) against it.
+///
+/// **Why here.** M64's alphabetisation lesson is that a per-state table which
+/// is silently *short* is invisible: every id still resolves, every state still
+/// renders, and only the missing rows are wrong. The rule itself is unit-tested
+/// in `rewo-data` (`carried_water`); this is the count, and it has to live in a
+/// gate that bakes from the jar. `blockentityshot` is that gate for this table
+/// twice over — it already grades a bake table against the raw report
+/// (`check_bubble_column_table`), and `check_conduit_active` already reads
+/// `BakedAssets::water`, which M161 changed.
+fn check_carried_fluid_table(
+    c: &mut Checker,
+    baked: &rewo_data::assets::BakedAssets,
+    blocks_json: &std::path::Path,
+) -> Result<(), String> {
+    use rewo_data::assets::{FALLING_WATERLOGGED, UNCONDITIONAL_WATER};
+
+    // Read the report RAW — the expectation must not come through the bake.
+    let raw = std::fs::read_to_string(blocks_json).map_err(|e| e.to_string())?;
+    let blocks: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let blocks = blocks.as_object().ok_or("blocks.json is not an object")?;
+
+    // The two families, counted independently of the bake.
+    let mut want_carried: Vec<u32> = Vec::new();
+    let mut want_falling: Vec<u32> = Vec::new();
+    let mut want_unconditional: Vec<u32> = Vec::new();
+    let mut waterlogged_blocks = 0usize;
+    let mut total_states = 0usize;
+    for (name, def) in blocks {
+        let Some(states) = def.get("states").and_then(|s| s.as_array()) else {
+            continue;
+        };
+        total_states += states.len();
+        let unconditional = UNCONDITIONAL_WATER.contains(&name.as_str());
+        let falling = FALLING_WATERLOGGED.contains(&name.as_str());
+        let mut any = false;
+        for st in states {
+            let Some(id) = st.get("id").and_then(|i| i.as_u64()) else {
+                continue;
+            };
+            let id = id as u32;
+            let wl = st
+                .get("properties")
+                .and_then(|p| p.get("waterlogged"))
+                .and_then(|v| v.as_str())
+                == Some("true");
+            if unconditional {
+                want_carried.push(id);
+                want_unconditional.push(id);
+            } else if wl {
+                want_carried.push(id);
+                any = true;
+                if falling {
+                    want_falling.push(id);
+                }
+            }
+        }
+        if any {
+            waterlogged_blocks += 1;
+        }
+    }
+    want_carried.sort_unstable();
+
+    let mut got_carried: Vec<u32> = baked
+        .fluid
+        .iter()
+        .enumerate()
+        .filter_map(|(id, f)| f.map(|_| id as u32))
+        .collect();
+    got_carried.sort_unstable();
+    let mut got_falling: Vec<u32> = baked
+        .fluid
+        .iter()
+        .enumerate()
+        .filter_map(|(id, f)| f.filter(|f| f.falling).map(|_| id as u32))
+        .collect();
+    got_falling.sort_unstable();
+    want_falling.sort_unstable();
+
+    c.record(
+        "the carried-water table is exactly blocks.json's waterlogged + unconditional states",
+        !want_carried.is_empty() && got_carried == want_carried,
+        format!(
+            "baked {} states vs report {} ({} waterlogged=true across {} blocks, of {} states \
+             total, + {} unconditional)",
+            got_carried.len(),
+            want_carried.len(),
+            want_carried.len() - want_unconditional.len(),
+            waterlogged_blocks,
+            total_states,
+            want_unconditional.len(),
+        ),
+    );
+    // The unconditional five are the half a property-keyed rule loses, so they
+    // are named separately rather than only summed into the total above.
+    c.record(
+        "the five unconditional blocks carry water with no `waterlogged` property",
+        want_unconditional.len() == 32
+            && want_unconditional.iter().all(|id| baked.fluid[*id as usize].is_some()),
+        format!("{} states across {} blocks", want_unconditional.len(), UNCONDITIONAL_WATER.len()),
+    );
+    c.record(
+        "only the copper grates carry FALLING water",
+        got_falling == want_falling && want_falling.len() == 8,
+        format!("baked {got_falling:?} vs report {want_falling:?}"),
+    );
+    // `self_occludes` is `face_occludes` for every state that has one — the two
+    // are written from the same expression, and this is what stops them
+    // drifting. A full non-`noOcclusion` cube reads all six instead, which is
+    // the one case `face_occludes` deliberately leaves at 0.
+    let occ_mismatch: Vec<u32> = baked
+        .fluid
+        .iter()
+        .enumerate()
+        .filter_map(|(id, f)| {
+            let f = (*f)?;
+            let fo = baked.face_occludes[id];
+            (f.self_occludes != fo && f.self_occludes != 0b11_1111).then_some(id as u32)
+        })
+        .collect();
+    let full_cube_masks = baked
+        .fluid
+        .iter()
+        .filter(|f| f.is_some_and(|f| f.self_occludes == 0b11_1111))
+        .count();
+    c.record(
+        "a carried fluid's self-occlusion is the block's own face_occludes",
+        occ_mismatch.is_empty(),
+        format!(
+            "{} states disagree: {:?}; {full_cube_masks} carriers are full occluding cubes",
+            occ_mismatch.len(),
+            &occ_mismatch[..occ_mismatch.len().min(8)]
+        ),
+    );
+    // The 68 full-cube carriers are, measured, exactly the `type=double`
+    // slabs: a double slab is a full cube, so vanilla's
+    // `getFaceOcclusionShape` (`canOcclude ? getShape : empty`) is
+    // `Shapes.block()` on all six directions and `isFaceOccludedBySelf`
+    // suppresses everything but the top face — which `renderUp` never asks.
+    // Without the full-cube completion those states read 0 from
+    // `face_occludes` (which the LIGHT path deliberately leaves at 0 for a full
+    // cube, routing it through `dampening 15` instead) and a waterlogged double
+    // slab would draw four side faces and a floor INSIDE solid stone.
+    //
+    // Named against `blocks.json`'s own `type` property rather than
+    // recomputed from `solid`/`no_occlude`, which is the bake's own expression.
+    let slab_mask = |ty: &str| {
+        blocks
+            .get("minecraft:oak_slab")
+            .and_then(|b| b.get("states"))
+            .and_then(|s| s.as_array())
+            .and_then(|states| {
+                states.iter().find(|s| {
+                    let p = s.get("properties");
+                    p.and_then(|p| p.get("type")).and_then(|v| v.as_str()) == Some(ty)
+                        && p.and_then(|p| p.get("waterlogged")).and_then(|v| v.as_str())
+                            == Some("true")
+                })
+            })
+            .and_then(|s| s.get("id"))
+            .and_then(|i| i.as_u64())
+            .and_then(|id| baked.fluid[id as usize])
+            .map(|f| f.self_occludes)
+    };
+    // FACE_DIRS order: [west, east, DOWN, UP, north, south].
+    const DOWN: u8 = 1 << 2;
+    const UP: u8 = 1 << 3;
+    c.record(
+        "a waterlogged DOUBLE slab occludes its own fluid on all six faces",
+        slab_mask("double") == Some(0b11_1111) && full_cube_masks == 68,
+        format!(
+            "{:?}; {full_cube_masks} full-cube carriers (every `type=double` slab, and only those)",
+            slab_mask("double")
+        ),
+    );
+    c.record(
+        "a bottom slab occludes DOWN and a top slab UP, and neither the other",
+        slab_mask("bottom").is_some_and(|m| m & DOWN != 0 && m & UP == 0)
+            && slab_mask("top").is_some_and(|m| m & UP != 0 && m & DOWN == 0),
+        format!("bottom {:?}, top {:?}", slab_mask("bottom"), slab_mask("top")),
+    );
+    // Every carrier is a SOURCE: all 46 `getFluidState` overrides call
+    // `getSource`, never `getFlowing`. A non-zero level here would put the
+    // surface at the wrong height (`fluid_h(0)` is 8/9, `fluid_h(3)` is 5/9).
+    c.record(
+        "every carried fluid is a source (level 0)",
+        !got_carried.is_empty()
+            && got_carried
+                .iter()
+                .all(|id| baked.fluid[*id as usize].is_some_and(|f| f.level == 0)),
+        format!("{} carriers", got_carried.len()),
+    );
+    // `isWaterAt` (M30) is now derived from the same table, which closes a real
+    // gap: kelp, seagrass and bubble columns were dry, so a conduit inside a
+    // kelp forest would refuse to activate.
+    let water_ok = baked.water.iter().enumerate().all(|(id, w)| {
+        let carried = baked.fluid[id].is_some();
+        let own = matches!(
+            baked.render[id],
+            rewo_data::assets::RenderKind::Fluid { lava: false, .. }
+        );
+        *w == (carried || own)
+    });
+    let kelp_wet = blocks
+        .get("minecraft:kelp_plant")
+        .and_then(|b| b.get("states"))
+        .and_then(|s| s.as_array())
+        .and_then(|s| s.first())
+        .and_then(|s| s.get("id"))
+        .and_then(|i| i.as_u64())
+        .map(|id| baked.water[id as usize]);
+    c.record(
+        "isWaterAt covers every carrier, including the five with no property",
+        water_ok && kelp_wet == Some(true),
+        format!("derived-from-fluid {water_ok}, kelp_plant is water: {kelp_wet:?}"),
+    );
+    Ok(())
+}
+
 fn check_bubble_column_table(
     c: &mut Checker,
     baked: &rewo_data::assets::BakedAssets,
