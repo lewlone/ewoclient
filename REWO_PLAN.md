@@ -1483,6 +1483,20 @@ The user hates manual testing (§0.1). Everything is headlessly verifiable:
   `--time t` (pose the animation), `--skin <user|url>` (real player skin,
   M7c), `--pack <zip>` (render OptiFine CEM models + animations, M9),
   `--gesture name[,age]` / `--shell` (gesture rigs).
+- `rewo mobtexshot --check` — **the real-texture, multi-entity mob gate**
+  (M161, serverless, validation-required, fail-closed on a declared count, 10
+  witnesses). The **complement** of `mobshot --check`, which substitutes
+  per-face debug colours and renders exactly one entity draw per frame: this one
+  renders up to 81 mobs in **one** `set_entities` with the jar's real sheets and
+  asks of every pixel whether that mob's own sheets could have produced it. The
+  oracle is exact rather than fuzzy — `NEAREST` sampling, blending off on the
+  solid range, no fog term, and five possible shade values — so the whole render
+  is `srgb_encode(srgb_decode(texel) * shade * tint)` and each sheet's
+  producible byte triples come off the jar's PNG bytes. Attribution is
+  leave-one-out, so it needs no projection or ray-cast. Run it after anything
+  touching the entity atlas, a mob's texture list, `emit_model`'s UVs, or one of
+  the dynamic pools. Its `m9` is a **negative control** and exists because a
+  mutation showed m1/m5 proving only "some sheet" without it.
 - `rewo skyshot --check` — **the sky gate** (M12): a serverless headless pass
   (validation layers on) that reconstructs each celestial transform in f64 and
   asserts read-back pixel properties — zenith tint, phase/alpha/discard/UV
@@ -1726,11 +1740,13 @@ this shape once.
 
 | Milestone | `rNN` | Atlas / sheet | Gate + witness prefix |
 |---|---|---|---|
-| *(next free)* | **r48** | — | — |
+| M161 — the real-texture mob gate | **r48** | — (no new atlas region) | `mobtexshot` / `mN` |
+| *(next free)* | **r49** | — | — |
 
-*Nothing is currently claimed beyond `r47` (M151). When you take `r48`, add a
-row naming your milestone in the same commit, so the next reader — human or
-agent — sees it taken rather than inferring it free from the code.*
+*`r48` is taken by the mob-texture milestone (`EXPECTED_RENDER_CHECK_WITNESSES`
+47 → 48). When you take `r49`, add a row naming your milestone in the same
+commit, so the next reader — human or agent — sees it taken rather than
+inferring it free from the code.*
 
 #### Two things this does not guard, stated rather than hidden
 
@@ -2176,20 +2192,47 @@ a record, because what it teaches outlived it:
   items rots silently because nothing fails when it is wrong. If you close
   something, strike it here in the same commit — and if you are picking work off
   this list, grep the crates for the symbol before believing it is missing.
-- **A mob can render with another mob's texture when more than one is in
-  the scene** — OPEN, found 2026-07-28 during M46, **pre-existing** (a
-  stashed pre-M46 build reproduces it exactly). Two zombies summoned side
-  by side both rendered with a villager's brown head and magenta legs;
-  a *single* zombie in the same spot rendered correctly. Ruled out: the
-  atlas (the packed slot table is byte-identical with and without M46's
-  fifteen armour sheets — `zombie -> (768, 512, 64, 64)` either way), and
-  `skin_uv` (only set for players). Not yet ruled out: the per-entity draw
-  ranges, or kind resolution for entities that stream in together.
-  **`mobshot` is structurally blind to it** — its check substitutes
-  per-face debug colours, so it verifies UV/face correspondence and cannot
-  see the wrong *sheet* being sampled. A gate for this wants a
-  real-texture witness (a known mob's known pixel colour), not a facelabel
-  one. Repro: `REWO_PRECMD` two `summon zombie` at one spot, `REWO_SETTLE=13`.
+- ~~**A mob can render with another mob's texture when more than one is in
+  the scene**~~ — **NOT REPRODUCED (M161, 2026-08-19)**, and the gate that
+  could not exist now does. `rewo mobtexshot --check` renders many entities in
+  ONE `set_entities` with the **real jar textures** and checks every rendered
+  pixel against the colours that mob's own sheets can produce: **81 of 81
+  gradeable kinds are sound**, including the reported scene (two zombies plus a
+  villager in one draw list), and one mob is **byte-identical** alone and in the
+  crowd. The old entry's *"not yet ruled out: the per-entity draw ranges"* names
+  something that does not exist — `set_draws` has six **stage** ranges shared by
+  every entity (`solid | text | glint | trim | armor_glint | emissive`) and
+  `draw_solid` is one `cmd_draw` over one descriptor set. Its
+  *"`mobshot` is structurally blind"* was right and incomplete: the missing half
+  is that every `--*check` mode renders exactly ONE entity draw per frame, which
+  is the axis the symptom names. The symptom description comes from the same
+  M46 session that documented three of its own screenshot misreadings; treat it
+  as a hypothesis that did not survive measurement. **What the gate did find is
+  in §15**: `skin_uv` was applied to every kind while its doc claimed otherwise
+  (7,362 bytes of difference on a zombie, now closed in the pass), and two of
+  the atlas pools recycled a slot without evicting the key that addressed it.
+- **Two dynamic atlas pools still alias, and it is the caller's to see** —
+  `upload_skin` (32 slots) and `upload_cape` (32) hand an address *out* and the
+  app stores it per-uuid forever, so the 33rd distinct player of a session
+  overwrites slot 0 while player #1's `skin_uv` still points at it and nothing
+  reports it. `rewo_gpu::hud::upload_face` (128) is a fifth pool of the same
+  shape in another crate. Closing them needs the slot returned alongside the UV
+  and the app dropping the evicted uuid — an API change through `WorldRenderer`
+  and two registries. `upload_trim` and `prepare_held_items` had the same bug
+  *and* a key→slot cache, so M161's `SlotRing` fixed those two here.
+- **Rewo bakes ZERO baby sheets, and 44 of vanilla's 91 `getTextureLocation`
+  overrides are state-conditional** — `MOB_TEXTURE_SPECS` has no key or path
+  containing `baby` and `collect_entities` consumes `is_baby` only to halve the
+  scale, so a baby zombie is a half-size adult wearing `zombie.png` where
+  vanilla binds `zombie_baby.png`. Measured: **147** `*baby*.png` under the
+  jar's `textures/entity/`, pinned by `mobtexshot`'s `m8` so the number cannot
+  rot. The exclusion is documented (`mob_variants.rs:31-35`, M64's §15 entry)
+  with the reason *"there is no baby model for a baby texture to sit on"* — a
+  claim about the **model** that does not settle the **texture**, since the
+  sheets share the adult UV layout. `vanilla_variant` covers seven mobs'
+  variant axis and **no state axis at all** (`_ => 0`): no charging ghast or
+  vex, no suffocating strider, no invulnerable wither, no angry or
+  nectar-carrying bee, no toast rabbit.
 
 - ~~Entities are decoded into a table but NOT rendered~~ — **RESOLVED
   2026-07-21.** Full entity track: movement/teleport/position-sync/
@@ -3401,6 +3444,184 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M161 — the real-texture mob gate, and the symptom it did NOT reproduce (2026-08-19)
+
+**Numbering caveat**: this landed as one branch of a parallel wave, so `M161`
+may need renumbering on integration; the subject line is the stable identifier.
+
+`REWO_PLAN.md` §0.0 has carried this since 2026-07-28: *"a mob can render with
+another mob's texture when more than one is in the scene"* — OPEN, found during
+M46, two zombies rendering with a villager's brown head, a single zombie in the
+same spot rendering correctly. It also carried the reason nothing could grade
+it: `mobshot --check` substitutes per-face debug colours, so it verifies UV/face
+correspondence and **cannot see the wrong sheet being sampled**. A gate for this
+wants a real-texture witness.
+
+That is right, and it is half of the blindness. **Every one of `mobshot`'s five
+`--*check` modes renders exactly one entity draw per frame** —
+`mobshot_cmd.rs:341/344` for the facelabel gate and `std::slice::from_ref(&d)`
+for the other four — and *more than one entity in the scene* is the axis the
+symptom is defined by. So the gate was blind on the count axis too, and that
+half is not in §0.0. Meanwhile `mobshot --out` has always rendered every kind in
+**one** `set_entities` with real textures, which means a whole hypothesis class
+was refutable by running an existing command; that was the first thing done and
+the sheet came back clean.
+
+#### The symptom is NOT REPRODUCED, and the elimination is the deliverable
+
+`rewo mobtexshot --check` is the **37th gate**: real jar textures, many entities
+in one `set_entities`, ten witnesses, fail-closed on a declared count.
+**All 81 gradeable kinds sample only their own sheets**, including two zombies
+and a villager in one draw list — the exact scene M46 reported. Nothing was
+"fixed" to make that true; it was true before this milestone and no one could
+say so.
+
+Three mechanisms were eliminated by measurement rather than by reading:
+
+* **the count axis** (`m1`): two of one kind plus a third, one `set_entities`,
+  every pixel of each explained by that kind's own sheets;
+* **"more than one entity" as such** (`m2`): the same mob at the same place
+  with the same camera is **byte-identical** alone and in the crowd;
+* **the whole cast** (`m5`): 81 kinds in a single draw list, all sound.
+
+§0.0's recorded "not yet ruled out: the per-entity draw ranges" **names
+something that does not exist**. `set_draws` builds ONE vertex list with six
+*stage* ranges (`solid | text | glint | trim | armor_glint | emissive`) and
+`draw_solid` is a single `cmd_draw` over one descriptor set; every entity's
+quads are interleaved in the same range. Struck.
+
+#### What the gate DID find, and it is the shape the report described
+
+**`EntityDraw::skin_uv`'s doc said "Ignored for non-player models" and
+`emit_model` ignored nothing.** The whole invariant was one caller's
+`if is_player` in `live_cmd::collect_entities`; the pass added the offset to
+every quad of every kind. Measured at the pixel: a zombie carrying
+`skin_uv = Some([0.125, 0.0625])` differed from the same zombie with `None` in
+**7,362 bytes**. That is a comment acting as a justification rather than a
+guard, in the exact function this gap is about, and it is the fourth-plus
+instance of the pattern this file records. It is enforced in the pass now, and
+graded **in both directions** — `m3` inert on a zombie, `m4` still live on the
+player model, because a witness that only said "skin_uv changes nothing" would
+pass against a pass that had broken player skins too.
+
+**Two of the four round-robin atlas pools recycled a slot while the map that
+addresses it still pointed there.** `upload_trim` (64 slots) and
+`prepare_held_items` (1,024) each keep a key→slot cache and neither dropped the
+stale entry on a wrap, so past capacity two keys resolve to one slot and the
+older key silently addresses the newer upload — "renders with a texture that is
+not its own", one atlas band over from the mob sheets. `SlotRing` makes the
+recycle name its evictee and both callers now drop it. The ring is a plain
+struct with no GPU in it precisely so the wrap is testable: `upload_trim` needs
+a device, `claim` does not.
+
+**`upload_skin` (32) and `upload_cape` (32) still alias and are recorded rather
+than half-fixed.** They hand the address *out* and the app stores it per-uuid
+forever, so the 33rd distinct player of a session overwrites slot 0 while player
+#1's `skin_uv` still points at it. Closing that needs the slot returned
+alongside the UV and the app dropping the evicted uuid, i.e. an API change
+through `WorldRenderer` and two registries. `rewo_gpu::hud::upload_face` (128) is
+a fifth pool of the same shape in another crate, whose own comment says so.
+
+#### The oracle, and why it is exact
+
+Four properties of the entity pass, each measured, make "could this pixel have
+come from this sheet" a closed form rather than a similarity score: the entity
+atlas sampler is `NEAREST`/`NEAREST` at `mip_levels(1)`; the solid pipeline is
+`blend_enable(!solid)`, i.e. **off**; `entity.frag` has no fog term and the gate
+draws at `light = [1,1,1]`; and `v_color.rgb` is `q.shade * slot_tint` where
+`shade_for` returns one of five values. So the render is
+`srgb_encode(srgb_decode(texel) * shade * tint)`, and each sheet's producible
+byte triples are computable from the jar's own PNG bytes. Attribution is
+**leave-one-out** — render, render again without mob *i*, take the differing
+pixels — so it needs no projection, bounding box or ray-cast and cannot drift
+from what was drawn.
+
+#### Three of the gate's own first runs were the ORACLE being wrong, not the renderer
+
+Worth recording because all three look like a red gate:
+
+1. **Five kinds reported unexplained** (spider, cave_spider, enderman, phantom,
+   warden). A vanilla emissive layer re-renders the same geometry against a
+   *separate* sheet declared in `mobs::emissive_layers`, not in
+   `MobDef::textures` — a mob's own sheets are the union of the two.
+2. **The warden still failed**, at 0.25 alpha: `PulsatingSpots` is
+   `max(0, cos(age*0.045 + phase) * 0.25)`, which is exactly **0.25** at age 0
+   and phase 0, so one layer in the whole cast is a genuine convex combination.
+3. **And still failed after that**, because `entity.frag` ends
+   `a = t.a * v_color.a` — the blend weight is **per texel**. `emit_model`'s own
+   comment already records that a vanilla emissive texture is "either fully
+   transparent or at least 0.19 opaque", and 0.19 is a blend. So an `Always`
+   layer blends too.
+
+#### The mutation battery found a real hole, and it was the one that mattered
+
+12 mutations across three batches, each with a no-op control that must SURVIVE
+(`tools/mobtex_mutate.py`). Eleven behaved. **One survived: replacing
+`first_unexplained`'s "the kind's own sheets" with "every sheet in the atlas"
+left m1, m2 and m5 all green.** So what they proved was that a mob sampled
+*some* sheet — a materially weaker claim than the gate's name, and one the very
+bug it exists to catch would satisfy. A witness cannot observe its own predicate
+being widened.
+
+`m9` closes it: it feeds the **villager's** rendered pixels to the **zombie's**
+sheet set, through the same function, and requires a miss. A predicate ignoring
+the set it was handed answers `None` there and the gate goes red. Re-run: 12/12,
+three controls SURVIVED, nine KILLED — including `du` forced to the
+`-0.25` U delta §0.0's atlas measurement predicts for zombie→villager.
+
+An earlier form of the emissive mutation also survived and was **not** a hole:
+removing the emissive keys from `keys` while leaving them in `blends` is
+strictly-not-weaker, because the blend path at `a = 1.0` reproduces the plain
+membership test. Replaced with the form that removes both, which is killed.
+
+#### Two defects the gate does not fix, measured rather than asserted
+
+**Rewo bakes ZERO baby sheets.** `MOB_TEXTURE_SPECS` has no key or path
+containing `baby`, and `collect_entities` consumes `is_baby` only to halve the
+scale — so a baby zombie is a half-size adult wearing `zombie.png` where vanilla
+binds `zombie_baby.png` (`AbstractZombieRenderer.java:25-27`). Measured in the
+jar: **147** `*baby*.png` under `assets/minecraft/textures/entity/` (recursive;
+a top-level-only count gives fewer). `m8` pins the size of that gap so it cannot
+rot in either direction. The exclusion IS documented — `mob_variants.rs:31-35`
+and M64's §15 entry — with the reason *"there is no baby model for a baby
+texture to sit on"*, which is a claim about the **model** and does not settle
+the **texture**: the sheets share the adult UV layout, so binding one would be
+strictly closer to vanilla than what ships.
+
+**Vanilla's `getTextureLocation` is state-conditional far more often than Rewo
+models.** Brace-matched census over
+`decompiled/net/minecraft/client/renderer/entity/*.java`: **91 files declare it,
+2 abstract, 44 conditional, 45 constant.** (The spec this milestone started from
+said 86/42/44 and its reviewer said 92/2/45/45; the recursive tree has 95
+declaring files across subdirectories. Counted here at the top level.) Rewo's
+`vanilla_variant` covers seven mobs' *variant* axis and no state axis at all,
+ending `_ => 0` — so no charging ghast or vex, no suffocating strider, no
+invulnerable wither, no angry or nectar-carrying bee, no toast rabbit.
+
+#### A pre-existing red, reported rather than absorbed
+
+**`live --render-check` is 46/47 on a clean `main` at `b88f18e` on this
+machine**, with **r46** (music selection) failing — verified by stashing this
+branch, rebuilding and running the baseline. §0.0's measurement block claims
+47/47. It is not this milestone's regression and is not fixed here; with r48 it
+is 47/48, the same single failure.
+
+#### Measured
+
+**3290 tests** (world 1198, net 1162, gpu **293**, data 228, app 228, audio 120,
+mesh 45, proto 16), against 3287 on `main` — the three are `SlotRing`'s. §0.0's
+3281 predates M160, whose six `witness_seam_faults` tests are the other
+difference. **37 serverless gates, all green, 0 validation errors**:
+`mobtexshot` **10/10**, `mobshot` 246/246, `blockentityshot` 177,
+`inventoryshot` 158, `containershot` 109, `swingshot` 97, `itemshot` 75,
+`tablistshot` 42, `handshot` 34, `soundshot` 28 (default build). `live
+--render-check` **47/48** with validation ON and 0 validation errors, r48
+mutation-verified live (forcing `kind_for_entity_name` to `Capsule` drops it to
+`0 same-kind, 0 distinct kinds`). Demo PNG `2cc56b4acbfb92cb`, byte-identical.
+
+**Witness ids claimed: r48** (`EXPECTED_RENDER_CHECK_WITNESSES` 47 → 48).
+
 
 ### M159 — the streaming decode on the sound-engine thread, and the half of it that is cheap (2026-08-17)
 

@@ -292,6 +292,19 @@ struct RenderCheck {
     /// healthy. The icons are the first `HudBlit` anything produces.
     tab_list_text_max: usize,
     tab_list_icons_max: usize,
+    /// The most draws of ONE mob kind that reached a single `set_entities`,
+    /// and the most distinct non-capsule kinds in one.
+    ///
+    /// Two counts because they break independently. The first is the crowd —
+    /// §0.0's mob-texture report says the symptom needs more than one mob in
+    /// the scene, and nothing anywhere drove that in the *windowed* client. The
+    /// second is kind RESOLUTION: every serverless gate (including this
+    /// milestone's `mobtexshot`) hands `EntityDraw::kind` in directly, so the
+    /// live `etypes.name(type_id)` -> `kind_for_entity_name` chain has never
+    /// had a witness. A break in the type registry, the `add_entity` decode or
+    /// the name match leaves both at their unlucky values rather than erroring.
+    crowd_same_kind_max: usize,
+    crowd_kinds_max: usize,
     /// M138a — listener transforms that reached the audio device.
     ///
     /// Compared against `frames`, not merely to zero: the interesting claim is
@@ -597,7 +610,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 47;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 48;
 
     fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1111,6 +1124,27 @@ impl RenderCheck {
                 self.tab_list_rows_max,
                 self.tab_list_icons_max,
                 self.tab_list_text_max
+            ),
+        );
+        // r48 — the crowd, and the kind resolution under it.
+        //
+        // `>= 2` of one kind is the axis the M46 report names and the one no
+        // gate drove in the windowed client. `>= 2` distinct kinds is the live
+        // `etypes.name(type_id)` -> `kind_for_entity_name` chain, which every
+        // serverless gate bypasses: it is `>=` rather than `== 2` because the
+        // local player is a `Player` draw and any real server may have more
+        // entities about, so an equality here would be a claim about the world
+        // rather than about the client.
+        row(
+            "r48 two mobs of one type and one of another reached ONE draw list, with distinct resolved kinds",
+            self.crowd_same_kind_max >= 2 && self.crowd_kinds_max >= 2,
+            format!(
+                "{} draws of one kind at peak, {} distinct non-capsule kinds \
+                 (0 same-kind means the injected `add_entity` bodies never \
+                 decoded; 1 distinct kind means `kind_for_entity_name` \
+                 collapsed them, which is the wrong-model half of the reported \
+                 bug)",
+                self.crowd_same_kind_max, self.crowd_kinds_max
             ),
         );
         row(
@@ -5333,6 +5367,8 @@ struct LiveApp {
     sidebar_injected: bool,
     /// M151 — whether the tab-list player injection has happened.
     tab_list_injected: bool,
+    /// Whether the two-of-one-kind mob injection has happened (r48).
+    crowd_injected: bool,
     /// Whether `--render-check` has force-opened the chat screen yet (M110).
     chat_injected: bool,
     /// Whether it has typed a `/`-command yet (M116).
@@ -7729,6 +7765,59 @@ impl LiveApp {
                     }
                     self.tab_list_injected = true;
                 }
+                // r48 — TWO mobs of one type plus one of another, injected
+                // through the production `add_entity` route (M17/M88's rule:
+                // injection is the deterministic proof where a live encounter
+                // depends on the server's spawn timing).
+                //
+                // This is the only check anywhere that drives
+                // `etypes.name(type_id)` -> `kind_for_entity_name`: every
+                // serverless gate, this milestone's `mobtexshot` included,
+                // hands `kind` straight to `EntityDraw`. It is also the only
+                // one that puts more than one mob in the WINDOWED client's
+                // draw list, which is the axis §0.0's "a mob renders with
+                // another mob's texture when more than one is in the scene"
+                // report is defined by.
+                if !self.crowd_injected && elapsed >= limit * 0.3 {
+                    if let Some(session) = self.session.as_mut() {
+                        let types = session.entity_types.clone();
+                        let p = &session.player;
+                        let eye = [p.x, p.y, p.z];
+                        if let Some(types) = types {
+                            let spawn = |eid: i32, tid: i32, dx: f64| -> Vec<u8> {
+                                let mut b: Vec<u8> = Vec::new();
+                                rewo_proto::varint::write_varint(&mut b, eid);
+                                // A uuid far from any real profile's.
+                                let uuid =
+                                    0xC0D0_0000_0000_0000_0000_0000_0000_0000u128 + eid as u128;
+                                b.extend_from_slice(&uuid.to_be_bytes());
+                                rewo_proto::varint::write_varint(&mut b, tid);
+                                b.extend_from_slice(&(eye[0] + dx).to_be_bytes());
+                                b.extend_from_slice(&eye[1].to_be_bytes());
+                                b.extend_from_slice(&(eye[2] - 4.0).to_be_bytes());
+                                // `LpVec3`'s one-byte zero sentinel: no motion.
+                                b.push(0);
+                                b.extend_from_slice(&[0, 0, 0]); // pitch, yaw, head yaw
+                                b
+                            };
+                            let pid = session.ids.cb_play_add_entity;
+                            for (i, (name, dx)) in [
+                                ("minecraft:zombie", -1.5f64),
+                                ("minecraft:zombie", 0.0),
+                                ("minecraft:villager", 1.5),
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            {
+                                if let Some(tid) = types.id_of(name) {
+                                    let body = spawn(0x5A00 + i as i32, tid, dx);
+                                    session.inject_packet(pid, &body);
+                                }
+                            }
+                        }
+                    }
+                    self.crowd_injected = true;
+                }
                 // The hold. Assigned every frame rather than latched, so it is
                 // the same "read the key state fresh" the real gate does.
                 self.keys.tab_list = elapsed >= limit * 0.5;
@@ -8595,6 +8684,29 @@ impl LiveApp {
                 light: l.light,
             })
             .collect();
+        // r48 — the crowd census, taken on the list that is about to be
+        // uploaded, so it cannot drift from what was drawn. Two counts because
+        // they break independently: how many draws of the ONE injected type
+        // reached one `set_entities` (the axis the M46 report is defined by),
+        // and how many distinct non-capsule kinds are in it (the live
+        // `etypes.name(type_id)` -> `kind_for_entity_name` chain, which every
+        // serverless gate bypasses by handing `kind` in directly).
+        if let Some(rc) = self.check.as_mut() {
+            let mut same = 0usize;
+            let mut kinds: Vec<rewo_gpu::mobs::EntityModelKind> = Vec::new();
+            for d in &draws {
+                if d.kind == rewo_gpu::mobs::EntityModelKind::Zombie {
+                    same += 1;
+                }
+                if d.kind != rewo_gpu::mobs::EntityModelKind::Capsule
+                    && !kinds.contains(&d.kind)
+                {
+                    kinds.push(d.kind);
+                }
+            }
+            rc.crowd_same_kind_max = rc.crowd_same_kind_max.max(same);
+            rc.crowd_kinds_max = rc.crowd_kinds_max.max(kinds.len());
+        }
         state.world_renderer.set_entities_and_block_entities(
             &draws,
             &be_draws,
@@ -9610,6 +9722,7 @@ fn run_windowed(
         bad_command_injected: false,
         sidebar_injected: false,
         tab_list_injected: false,
+        crowd_injected: false,
         username,
         chat_parse: None,
         drag: DragState::default(),

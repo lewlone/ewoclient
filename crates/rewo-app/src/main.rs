@@ -36,6 +36,7 @@ mod locatorshot_cmd;
 mod sidebarshot_cmd;
 mod titleshot_cmd;
 mod mobshot_cmd;
+mod mobtexshot_cmd;
 mod modules;
 mod live_cmd;
 mod net_cmd;
@@ -160,6 +161,11 @@ enum Command {
     /// Mob-model verification: contact sheet of every mob (no server), or
     /// `--check` for the facelabel texture-correspondence gate.
     Mobshot(mobshot_cmd::MobshotArgs),
+    /// Real-texture, multi-entity mob gate: many mobs in ONE `set_entities`,
+    /// each rendered pixel checked against the colours its own jar sheet can
+    /// produce. The complement of `mobshot --check`, which substitutes debug
+    /// colours and renders one entity per frame.
+    Mobtexshot(mobtexshot_cmd::MobtexshotArgs),
     /// M12 sky verification: render sun/moon/stars/sunrise + the zenith tint
     /// headless (no server) and assert their pixel properties with `--check`.
     Skyshot(skyshot_cmd::SkyshotArgs),
@@ -356,6 +362,7 @@ fn main() {
         Some(Command::Demo(demo_args)) => demo_cmd::run(demo_args),
         Some(Command::Bench(bench_args)) => bench_cmd::run(bench_args),
         Some(Command::Mobshot(mobshot_args)) => mobshot_cmd::run(mobshot_args),
+        Some(Command::Mobtexshot(mt_args)) => mobtexshot_cmd::run(mt_args),
         Some(Command::Skyshot(skyshot_args)) => skyshot_cmd::run(skyshot_args),
         Some(Command::Lightmapshot(lm_args)) => lightmapshot_cmd::run(lm_args),
         Some(Command::Tintshot(ts_args)) => tintshot_cmd::run(ts_args),
