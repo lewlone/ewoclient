@@ -1040,7 +1040,7 @@ pub const SELECTED_ITEM_NAME_BOTTOM: i32 = 59;
 /// `if (!this.minecraft.gameMode.canHurtPlayer()) y += 14;`
 ///
 /// Creative and spectator draw no health bar, so the label drops into the row
-/// the hearts would have used. Rewo cannot see the game mode, so this is the
+/// the hearts would have used. Rewo CAN see the game mode since M71/M75 (`ClientGameState::game_mode`), so this is the
 /// rule and [`selected_item_name_pos`]'s caller supplies the input.
 pub const SELECTED_ITEM_NAME_NO_HEALTH_SHIFT: i32 = 14;
 

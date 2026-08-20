@@ -145,9 +145,9 @@ still learns that a green run is not evidence this client makes a sound.
 
 Current measurement, taken 2026-08-14 on `main` at `c538afd`, after the
 audio-verification landing (M150, `soundshot`, M139 and M151 all merged):
-**3288 tests, 0 failures** (**world 1198, net 1163, gpu 290, data 228, app 228,
-mesh 45, proto 16, audio 120** — read off the runner per crate; measured
-2026-08-17 after M159).
+**3336 tests, 0 failures** (**world 1201, net 1195, gpu 293, data 231, app 228,
+mesh 52, proto 16, audio 120** — read off the runner per crate; measured
+2026-08-20 after the M162-M165 wave).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -176,12 +176,12 @@ caller requirements; demo PNG
 **11** (M152 took `update_recipes`) — M96–M107 consume packets M93y already decoded, M108 resolved
 `delete_chat`, M113 the Brigadier tree and M114 the two suggestion packets.
 
-**There are 36 serverless gate commands, not the "fourteen" older paragraphs in
+**There are 37 serverless gate commands, not the "fourteen" older paragraphs in
 this file say** — those sentences are historical records of the count *at the
 time* and are correct as such. Re-measured from a cold start on 2026-08-08 by
 running every one, and again after M125, M126 and the M127–M134 integration:
-all green, **0 validation errors**; re-measured again on 2026-08-14, when the
-count reached **36** — `sidebarshot` (17) came from M132, **`soundshot`**
+all green, **0 validation errors**; re-measured again on 2026-08-20, when the
+count reached **37** (`mobtexshot`, M165) — `sidebarshot` (17) came from M132, **`soundshot`**
 (28 default / 48 under `--features audio`) and **`tablistshot`** (42, raised by M155 and M158) are the
 two newest, and `blockentityshot` reads **177** rather than the 172 the list
 below records. Enumerate them rather
@@ -333,6 +333,81 @@ witnesses are mostly self-driven can look healthy against nothing.
 > and M157 the two real options — the third having turned out not to be an
 > option at all. **Every item this box listed on 2026-08-13 is now done**; what
 > follows is what remains.
+>
+> **REWRITTEN 2026-08-20, after the M158-M165 run.** Everything the previous
+> version of this box listed has shipped. What follows is measured on the merged
+> tree, not carried forward.
+>
+> **The state:** 37 serverless gates green with 0 validation errors, **3336
+> tests**, `live --render-check` **54/54** exit 0, `soundshot` 37 default / 57
+> under `--features audio`, demo PNG `2cc56b4acbfb92cb` byte-identical, packet
+> coverage **119 / 0 / 22** with classes A and B empty.
+>
+> **A 20-agent survey (2026-08-17) specced every open gap and every one of the
+> twenty specs came back `needs-revision`.** The verified specs are the best
+> starting point for anything below, and they are in this session's scratch only
+> — treat the summaries in §15's M162-M165 entries as the durable record.
+>
+> #### The three things measured as most valuable, in order
+>
+> 1. **`resource-pack=` HANGS THE CLIENT.** If the destination server sets it,
+>    `rewo live` never opens a window and never errors: the config task never
+>    self-finishes, and the 30 s socket timeout cannot fire because a keep-alive
+>    arrives every 15 s. `lib.rs:619`'s ignore arm is where it dies. The fix is a
+>    two-field decode and a 17-byte ack, ~30 lines. **Check whether Frogsy sets
+>    it before scheduling anything else** — if it does, this is first.
+> 2. **`is_usable_for_crafting` tests the wrong field** — `SlotText::name.is_some()`
+>    (custom OR item name) where vanilla tests `has(CUSTOM_NAME)` alone
+>    (`rewo-world/src/inventory.rs`), so a stack carrying only a patched
+>    `item_name` is wrongly refused by the recipe-book solver. Small, exact
+>    oracle, live consequence.
+> 3. **The `*shot` witness-NAME namespace is unguarded.** `Checker::record`
+>    dedups nothing and every gate is fail-closed on a *count*, so two witnesses
+>    sharing a name are counted twice and read as a pass. M160 guarded the `rNN`
+>    namespace one level up and left this one; it is the same milestone shape and
+>    it is cheap.
+>
+> #### Ready, specced, unblocked
+>
+> * **The HUD's real gaps** — armour bar, air bubbles, mob-effect icons, vehicle
+>   health, jump bar. Zero mentions each in `hud.rs`. Exact vanilla oracle.
+>   Traps already paid for: there is no `ArmorLevelBar` or `Gui.renderArmor` in
+>   26.2 (the site is `Hud.java:815 extractArmor`); no `AirLevelBar` either, and
+>   air is ten independently-sprited 9x9 bubbles rather than a bar; the jump bar
+>   replaces the **XP** bar, not the food column; and `hudshot_cmd.rs` is the
+>   VELVET gate and contains zero `Gpu`/`Offscreen`, so it cannot host a HUD
+>   pixel witness.
+> * **`p4-leash`** (the rope), **`sub-book`**, **`sub-sign`**, **`sub-map`**,
+>   **`options`' volume sliders**, **`render-misc [INTERP]`**. Each has a
+>   verified spec with its traps; see §15's wave entries for the corrections.
+>
+> #### Deliberately NOT next, with the measurement
+>
+> * **`sub-dialog`** — a real 26.2 server sends `show_dialog` **zero** times and
+>   both dialog tags arrive empty. Very-large, and unobservable except against a
+>   plugin server.
+> * **`sub-advancements`** — **1562 of 1688 vanilla advancements have no
+>   `display`**, so the screen would show 126. Also needs a per-draw scissor the
+>   renderer has not got.
+> * **`render-misc [AO]` and `[FLOW]`** — both need a decision the agents cannot
+>   make. `[AO]`: an exact `prepareQuadAmbientOcclusion` wants 8+8 bits of
+>   per-vertex light where `MeshVertex` has 4+4 and **11 spare bits**, reopening
+>   M15's rejected 24-byte reasoning — **and doing the cheap heuristic first pins
+>   the heuristic in witnesses and blocks the exact one, so do not start either.**
+>   `[FLOW]`: `water_flow.png` is 32x1024 against `TEX_SIZE = 16`, three exits at
+>   three costs. The side-face half needs no decision and is the only part that
+>   should be taken opportunistically.
+>
+> #### Known-deletable code, named rather than hidden
+>
+> The M162-M165 re-review found production code still removable with every gate
+> green. Most is pre-existing rather than new: `MobDef::textures` (any mob's
+> sheet declaration is silently mutable — `mobtexshot` grades *addressing*, and
+> its oracle reads the same declaration `emit_model` does), the
+> `upload_skin`/`upload_cape`/`hud::upload_face` slot recycling (32/32/128, no
+> `SlotRing`, no eviction — the 33rd distinct player of a session overwrites slot
+> 0), `explode`'s call site in `play.rs`, and three `live_cmd` sign/tooltip
+> bypasses reachable only serverlessly. See the M165 entry.
 >
 > Candidates for the next *code* milestone, none of them blocked:
 >
@@ -2467,7 +2542,11 @@ a record, because what it teaches outlived it:
 - ~~No texture animation ticking~~ — **RESOLVED 2026-07-21**: `.mcmeta`
   frame order + frametime drive per-layer re-uploads on the 20 Hz tick
   (water ripples, lava churns; `demo --anim-tick N` is the deterministic
-  check). Frame *interpolation* (lava's `interpolate` flag) not done.
+  check). Frame *interpolation* not done — and **lava has no `interpolate` flag**
+  (corrected 2026-08-20). Measured over the jar: 54 animated block textures,
+  **23** of them interpolate (prismarine, magma, sculk, the twelve
+  command-block faces); `lava_still` is `{frametime:2, frames:[38-entry
+  ping-pong]}`.
 - ~~**36-byte vertices**~~ — **RESOLVED M15 (§15)** with an exact 28-byte ABI.
   A smaller f16-UV format was measured and rejected because it changed pixels.
 - **Grazing-angle far-field slivers** on flat ground at near-edge-on angles
@@ -2479,13 +2558,20 @@ a record, because what it teaches outlived it:
   moon (all eight phases), stars, the sunrise fan (M12) — per-biome sky/fog
   (M14), and **clouds plus rain/snow and the full weather attribute stack**
   (M33/M33b). Nothing on this line is deferred any more.
-- **HUD is crosshair + hotbar + hearts + hunger only** — no item icons in the
+- **HUD gaps, corrected 2026-08-20.** This bullet read "crosshair + hotbar +
+  hearts + hunger only — no item icons in the hotbar slots, no XP bar" and
+  **both of those shipped** (M34, M79), as did the cooldown sweep and the
+  locator bar; its closing claim that `container_set_content` has "zero
+  references in `rewo-net`" was flatly false. Measured by grepping `hud.rs`:
+  what is genuinely missing is the **armour bar, the air bubbles, the
+  mob-effect icons, vehicle health and the jump bar** — zero mentions each.
+  The original text follows, struck: ~~no item icons in the
   hotbar slots, no XP bar, no armor/air, no effect icons, no
   gamemode-awareness (creative shows hearts/hunger). M22 built the item
   *models*, so the icons are now blocked on an **inventory model** rather than
   on geometry: `container_set_content` / `container_set_slot` / `set_held_slot`
   are all clientbound in 26.2 and have **zero references** in `rewo-net`, so
-  nothing knows what is in the nine slots.
+  nothing knows what is in the nine slots.~~
 - **Mega-buffer has no resize** — over-cap columns are dropped with a log
   (4M verts / 6M indices; high RD could hit this).
 - `VK_NV_low_latency2` deferred **measure-first** — the benchmark shows GPU

@@ -382,7 +382,7 @@ pub struct SignFace {
     pub lines: [String; 4],
     /// `color` — a dye name, or `None` for the default black.
     pub color: Option<String>,
-    /// `has_glowing_text`. Not rendered (glow is an outline pass Rewo does not
+    /// `has_glowing_text`. Rendered since M27 (`OUTLINE_OFFSETS`, `live_cmd.rs`); this said "an outline pass Rewo does not
     /// have), but decoded so the exclusion is visible rather than silent.
     pub glowing: bool,
 }

@@ -634,7 +634,11 @@ impl<'a> Connection<'a> {
                     stats.disconnect_reason = Some(reason.clone());
                     return Err(format!("config disconnect: {reason}"));
                 }
-                _ => {} // update_tags, enabled_features, code_of_conduct, etc.
+                // NOT update_tags -- that is handled ~57 lines above (M69). This arm is
+                // enabled_features, code_of_conduct and the rest. The comment named
+                // update_tags until 2026-08-20, on the exact line where a
+                // resource_pack_push silently dies (see REWO_PLAN section 0.0).
+                _ => {}
             }
         }
     }

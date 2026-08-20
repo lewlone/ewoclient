@@ -93,7 +93,15 @@
 //! would put a `file:` or `javascript:` URL in front of the user. Both are
 //! plausible and neither is vanilla.
 //!
-//! # Rewo never opens a URL
+//! # Rewo DOES open a URL now (corrected 2026-08-20)
+//!
+//! **This section was headed "Rewo never opens a URL" and ended "Rewo opens
+//! nothing" long after M128 shipped `uri_open.rs`** — chat links open, from
+//! `live_cmd.rs`. What is still true is narrower and is the interesting part:
+//! the SERVER-LINKS dialog's own buttons only log, so **one action has two call
+//! sites that disagree**. The paragraphs below are kept for the warning-line
+//! transcription they carry; read their "opens nothing" as "this screen's
+//! buttons open nothing".
 //!
 //! For the record, because it is the question this milestone exists to answer:
 //! vanilla's click path is `ServerLinksDialogScreen.createDialogClickAction` →
@@ -111,7 +119,8 @@
 //!
 //! — so even vanilla does not open a link without a confirmation screen unless
 //! the player turned the prompt off, and the `trusted = false` argument adds a
-//! red `chat.link.warning` line to it. **Rewo opens nothing.** Launching a
+//! red `chat.link.warning` line to it. **This screen's buttons open nothing**
+//! (M128 gave chat links `uri_open`; these were not wired). Launching a
 //! browser from a string a remote server chose is a decision, not a
 //! transcription; the links render, they are selectable, and pressing one logs
 //! the URL. Whether Rewo ever spawns a browser is left to the project.

@@ -2188,8 +2188,8 @@ does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
 **Everything is shipped and gated** as of 2026-08-14 (M157) —
-**3288 tests / 0 failures** (world 1198, net 1163, gpu 290, data 228, app 228,
-mesh 45, proto 16, **audio 120** — EIGHT crates now, read off the runner per
+**3336 tests / 0 failures** (world 1201, net 1195, gpu 293, data 231, app 228,
+mesh 52, proto 16, **audio 120** — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **109/109**, `inventoryshot` **158/158**, `itemshot` 75/75,
@@ -2210,6 +2210,33 @@ M151 gave for the faces did not survive the code (two 8x8 CPU crops, not a
 64x64 GPU sample); **M156** the static audio decode on a worker, **measured at
 20.1 ms against a 50 ms tick**; and **M157** the two real client options — the
 third §0.0 named having never been an option at all.
+
+**M158–M165 landed 2026-08-16/20 — a verification milestone, a live bug, a seam,
+and the first parallel wave.** **M158** found that M155's tab-list hearts and
+faces had **no witness of any kind** — each emitter had one caller, the frame
+loop, and replacing either body with `return Vec::new()` left the gate 34/34
+green. **M159** moved the streaming audio decode off the client tick and its
+measurement inverted its own brief (the refills are the cheap half at 0.6 ms;
+the expensive event is *starting* a stream). **M160** guarded the merge-silent
+seams after a 20-agent survey found **fifteen of twenty specs independently
+claiming the same render-check witness id** — git merges that cleanly and the
+gate prints a number that looks right. **M161** is the bug the survey's own
+tooling exposed: `live --render-check` was red at r46 for three milestones, and
+M157 had seeded the music-frequency option through `setMinutesBetweenSongs`
+(which re-rolls `nextSongDelay`) instead of the constructor's plain read — so
+**no music played in any session shorter than about twenty minutes**, with 36
+gates and 3287 tests green throughout. **M162–M165** are the first parallel
+implementation wave, four branches merged with renumbering: the sound halves of
+`explode` and `level_event`, the wire-time flattens outside chat (on a plugin
+network every nametag, named item, lore line and sign was drawing literal `§c`
+characters), waterlogged blocks rendering their water, and `mobtexshot` — the
+37th gate and the real-texture multi-entity mob witness missing since M22, which
+**narrows rather than closes** the M46 symptom and found that Rewo bakes **zero
+of the jar's 147 baby sheets**.
+
+**The lesson the wave taught, in one line:** every branch was green alone and
+four of them held production code that could be deleted whole with every gate
+still green. Adversarial re-review is what found it; a green suite did not.
 
 **M159 landed 2026-08-17 — the streaming decode moved off the client tick, and
 the measurement inverted the milestone's own brief.** M156 moved the static
