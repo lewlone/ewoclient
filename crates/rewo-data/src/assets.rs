@@ -102,7 +102,7 @@ pub struct CarriedFluid {
     /// Raw (untinted) `block/water_still` layer for the M14 biome water tint.
     pub raw_layer: u16,
     /// `FluidState.getAmount()` read the way `RenderKind::Fluid` reads it:
-    /// 0 = source. **Every** carried fluid in 26.2 is a source — all 46
+    /// 0 = source. **Every** carried fluid in 26.2 is a source — all 45
     /// `getFluidState` overrides call `Fluids.WATER.getSource(..)`, never
     /// `getFlowing` — but the level is stored rather than assumed at the call
     /// site so the fact lives in the data next to the measurement, and a
@@ -110,7 +110,7 @@ pub struct CarriedFluid {
     pub level: u8,
     /// `Fluids.WATER.getSource(true)` — the `FALLING` property.
     ///
-    /// **`WaterloggedTransparentBlock` is the ONE override of the 46 that
+    /// **`WaterloggedTransparentBlock` is the ONE override of the 45 that
     /// passes `true`** (`WaterloggedTransparentBlock.java`, its `getFluidState`
     /// line), and `Blocks.java:5245-5250` builds the whole `COPPER_GRATE`
     /// weathering collection from it — so the eight copper grates are the only
@@ -146,13 +146,21 @@ pub struct CarriedFluid {
 /// The five blocks whose `getFluidState` returns `Fluids.WATER.getSource(false)`
 /// **unconditionally** — with no `waterlogged` property to key off.
 ///
-/// Measured by reading every `getFluidState` override in
-/// `net/minecraft/world/level/block`: 46 files, 40 of the form
-/// `state.getValue(WATERLOGGED) ? … : super.getFluidState(state)`, one
-/// (`WaterloggedTransparentBlock`) the same shape with `getSource(true)`, one
-/// (`LiquidBlock`) reading its own `LEVEL`, and these five returning a source
-/// outright. Keying waterlogging off the blockstate property alone leaves a
-/// kelp forest, a seagrass bed and every bubble column dry.
+/// Measured by classifying the return expression of every `getFluidState`
+/// **override** under `net/minecraft/world/level/block`: **45**, of which 38
+/// are `state.getValue(WATERLOGGED) ? … : super.getFluidState(state)`, one
+/// (`WaterloggedTransparentBlock`) is that shape with `getSource(true)`, one
+/// (`LiquidBlock`) reads its own `LEVEL`, and these five return a source
+/// outright. 38 + 1 + 1 + 5 = 45. Keying waterlogging off the blockstate
+/// property alone leaves a kelp forest, a seagrass bed and every bubble column
+/// dry.
+///
+/// **The obvious grep gives 46 and one of them is not an override.**
+/// `FluidState getFluidState` matches `state/BlockBehaviour.java` too — the
+/// base *declaration*, whose body is `return Fluids.EMPTY.defaultFluidState()`.
+/// Counting files rather than overrides is what produced this comment's
+/// previous "46 files, 40 of the form", whose parts (40 + 1 + 1 + 5) sum to 47
+/// and so agreed with neither figure.
 pub const UNCONDITIONAL_WATER: &[&str] = &[
     "minecraft:bubble_column",
     "minecraft:kelp",
@@ -161,15 +169,6 @@ pub const UNCONDITIONAL_WATER: &[&str] = &[
     "minecraft:tall_seagrass",
 ];
 
-/// The eight blocks built from `WaterloggedTransparentBlock`, whose carried
-/// water is `getSource(`**`true`**`)` — see [`CarriedFluid::falling`].
-///
-/// Derived, not guessed: `Blocks.java:5245-5250` constructs the `COPPER_GRATE`
-/// `WeatheringCopperCollection` from `(var0, p) -> new
-/// WaterloggedTransparentBlock(p)` plus `WeatheringCopperGrateBlock::new` (which
-/// `extends WaterloggedTransparentBlock`), and `BlockItemIds.java:778` names the
-/// collection `createSimpleCopper("copper_grate")` — i.e. the four weathering
-/// states and their waxed twins. Nothing else in the tree references the class.
 /// Whether `block_name` in a state with the given `waterlogged` property
 /// carries water, and if so whether that water is `FALLING`.
 ///
@@ -186,6 +185,23 @@ pub fn carried_water(block_name: &str, waterlogged: bool) -> Option<bool> {
     waterlogged.then(|| FALLING_WATERLOGGED.contains(&block_name))
 }
 
+/// The eight blocks built from `WaterloggedTransparentBlock`, whose carried
+/// water is `getSource(`**`true`**`)` — see [`CarriedFluid::falling`].
+///
+/// Derived, not guessed: `Blocks.java:5245-5250` constructs the `COPPER_GRATE`
+/// `WeatheringCopperCollection` from `(var0, p) -> new
+/// WaterloggedTransparentBlock(p)` plus `WeatheringCopperGrateBlock::new` (which
+/// `extends WaterloggedTransparentBlock`), and `BlockItemIds.java:778` names the
+/// collection `createSimpleCopper("copper_grate")` — i.e. the four weathering
+/// states and their waxed twins.
+///
+/// Nothing else **constructs** it. The class is referenced twice more and
+/// neither reference adds a block: `BlockTypes.java:257` registers its
+/// `MapCodec` (`Registry.register(registry, "waterlogged_transparent",
+/// WaterloggedTransparentBlock.CODEC)`), and `WeatheringCopperGrateBlock`
+/// `extends` it — which is the second constructor already named above. An
+/// earlier version of this comment said "nothing else in the tree references
+/// the class", which is the stronger claim and is false.
 pub const FALLING_WATERLOGGED: &[&str] = &[
     "minecraft:copper_grate",
     "minecraft:exposed_copper_grate",
@@ -372,9 +388,10 @@ pub struct BakedAssets {
     /// * the five blocks whose override is unconditional — see
     ///   [`UNCONDITIONAL_WATER`].
     ///
-    /// No vanilla block carries **lava**: all 46 `getFluidState` overrides in
+    /// No vanilla block carries **lava**: all 45 `getFluidState` overrides in
     /// `world/level/block` return either water or `super`, so the carried fluid
-    /// has no `lava` field rather than a field that is always false.
+    /// has no `lava` field rather than a field that is always false. (45, not
+    /// the 46 files the obvious grep finds — see [`UNCONDITIONAL_WATER`].)
     pub fluid: Vec<Option<CarriedFluid>>,
     /// Per block state: `Some(drag)` for `minecraft:bubble_column`, `None` for
     /// everything else — the input `BubbleColumnAmbientSoundHandler` scans the

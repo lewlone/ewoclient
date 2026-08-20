@@ -478,6 +478,7 @@ pub(crate) fn mesh_column_reference(
                         } else {
                             (&mut tvertices, &mut tindices)
                         };
+                        let fluid_verts_before = fv.len();
                         emit_fluid(
                             world,
                             table,
@@ -490,7 +491,12 @@ pub(crate) fn mesh_column_reference(
                             wz,
                             f,
                         );
-                        carried_fluid_cells += u32::from(f.carried);
+                        // Counted only when the draw produced geometry.
+                        // `r48`'s claim is "meshed its water", and an increment
+                        // beside the CALL would also fire for a cell whose six
+                        // faces were all suppressed.
+                        carried_fluid_cells +=
+                            u32::from(f.carried && fv.len() > fluid_verts_before);
                         bump(y as f32);
                     }
                     match table.get(state as usize) {
@@ -875,6 +881,7 @@ pub fn mesh_column(
                         } else {
                             (&mut tvertices, &mut tindices)
                         };
+                        let fluid_verts_before = fv.len();
                         emit_fluid(
                             world,
                             table,
@@ -887,7 +894,12 @@ pub fn mesh_column(
                             wz,
                             f,
                         );
-                        carried_fluid_cells += u32::from(f.carried);
+                        // Counted only when the draw produced geometry.
+                        // `r48`'s claim is "meshed its water", and an increment
+                        // beside the CALL would also fire for a cell whose six
+                        // faces were all suppressed.
+                        carried_fluid_cells +=
+                            u32::from(f.carried && fv.len() > fluid_verts_before);
                         bump(y as f32);
                     }
                     match table.get(state as usize) {
@@ -1095,10 +1107,23 @@ fn fluid_at(
             raw_layer: *raw_layer,
             level: *level,
             lava: *lava,
-            // A `LiquidBlock` is `noOcclusion` + `replaceable`, so its own
-            // occlusion shape is `Shapes.empty()` and `isFaceOccludedByState`
-            // returns false at its first branch — plain water never suppresses
-            // its own faces.
+            // Plain water never suppresses its own faces —
+            // `isFaceOccludedByState` (`FluidRenderer.java:37`) returns false at
+            // its first branch, because water's own face-occlusion shape is
+            // `Shapes.empty()`.
+            //
+            // NOT because water is `noOcclusion`: it is not.
+            // `Blocks.java:285-297` builds WATER with `.replaceable()
+            // .noCollision().strength(100).pushReaction(DESTROY).noLootTable()
+            // .liquid().sound(EMPTY)` and no `noOcclusion()`, so `canOcclude`
+            // stays **true** — and Rewo agrees, `minecraft:water` is not in
+            // `block_light::NO_OCCLUDE`. The empty shape arrives the other way:
+            // `BlockBehaviour:514` is `canOcclude ? getOcclusionShape : empty`,
+            // `getOcclusionShape` (`:287-288`) delegates to `getShape`, and
+            // `LiquidBlock.getShape` (`:145-146`) is `Shapes.empty()` — so
+            // `:516-517` files every face under `EMPTY_OCCLUSION_SHAPES`.
+            // Stated at length because the wrong reason invites adding water to
+            // `NO_OCCLUDE`, which would change the light path for no reason.
             self_occludes: 0,
             carried: false,
         });
@@ -2101,11 +2126,20 @@ const ORACLE_OCC_DOWN: u8 = 1 << 2;
 /// `self_occludes` for a shape flush with the top of its block (a top slab).
 const ORACLE_OCC_UP: u8 = 1 << 3;
 /// All six — a `type=double` slab, and the ONLY shape in the fixture that
-/// occludes a SIDE. Measured against the real bake, the 68 full-cube carriers
-/// are exactly the waterlogged double slabs (`blockentityshot` names them), so
-/// this is the common real case and not a synthetic corner: without it the
-/// side half of `shouldRenderFace` has no witness at all, which is how M161's
-/// battery first found it SURVIVING.
+/// occludes a SIDE. Without it the side half of `shouldRenderFace` has no
+/// witness at all, which is how M161's battery first found it SURVIVING.
+///
+/// Measured against the real bake, the 68 full-cube carriers are exactly the
+/// waterlogged double slabs (`blockentityshot` names them) — but **that state
+/// is command-only**, and an earlier version of this comment called it "the
+/// common real case", which is backwards. `SlabBlock.getStateForPlacement:72`
+/// writes `WATERLOGGED, false` the moment a slab becomes DOUBLE, and
+/// `placeLiquid` / `canPlaceLiquid` (`:106-113`) both refuse a DOUBLE slab, so
+/// `type=double, waterlogged=true` is reachable only through `/setblock`, a
+/// structure or a datapack. It is a real state that vanilla renders this way,
+/// so the fixture stays; what was wrong was the reason given for it. The side
+/// rule's *ordinary* case is a waterlogged stair — 1,536 of the 2,560
+/// waterlogged stair states carry a side bit, measured in `blockentityshot`.
 const ORACLE_OCC_ALL: u8 = 0b11_1111;
 
 /// A DRY `Model(0)`; the two waterlogged states below share its geometry.
@@ -3088,8 +3122,9 @@ mod tests {
 
     /// The two storage sites, one query. `RenderKind::Fluid` wins where both
     /// could answer, and a `LiquidBlock` never suppresses its own faces —
-    /// vanilla's water is `noOcclusion`, so `getFaceOcclusionShape` is
-    /// `Shapes.empty()` and `isFaceOccludedByState` returns at its first branch.
+    /// `getFaceOcclusionShape` is `Shapes.empty()`, so `isFaceOccludedByState`
+    /// returns at its first branch. Water is **not** `noOcclusion` (see
+    /// [`fluid_at`]); the empty shape comes from `LiquidBlock.getShape`.
     #[test]
     fn fluid_at_reads_the_liquid_block_then_the_carried_table() {
         let table = oracle_waterlogged_table();
@@ -3110,6 +3145,50 @@ mod tests {
         assert!(fluid_at(&table, &carried, 999).is_none());
         assert!(fluid_at(&table, &[], WL_BOTTOM_SLAB).is_none());
         assert!(fluid_at(&table, &[], WL_WATER).is_some());
+    }
+
+    /// `fluid_at` hands each of the two layers to the field of the same name —
+    /// on BOTH branches.
+    ///
+    /// Its own fixtures cannot ask: `oracle_fluid_table`'s water is
+    /// `layer: 1, raw_layer: 1` and `oracle_waterlogged_carried`'s carrier is
+    /// the same pair, so `layer: f.raw_layer, raw_layer: f.layer` is
+    /// **indistinguishable** there — and it is not a cosmetic swap, because
+    /// `emit_fluid` picks between them by whether the world has a biome
+    /// (`f.raw_layer` + the dynamic M14 colour, else the pre-tinted `f.layer`),
+    /// so swapping them double-tints one path and un-tints the other. Distinct
+    /// sentinels are the whole point of this test; a shared value grades
+    /// nothing. The real bake's pair is graded in `blockentityshot`.
+    #[test]
+    fn fluid_at_keeps_the_pre_tinted_and_raw_layers_apart() {
+        const POOL_TINTED: u16 = 11;
+        const POOL_RAW: u16 = 22;
+        const CARRIED_TINTED: u16 = 33;
+        const CARRIED_RAW: u16 = 44;
+        let table = vec![
+            RenderKind::Invisible,
+            RenderKind::Fluid {
+                layer: POOL_TINTED,
+                raw_layer: POOL_RAW,
+                level: 0,
+                lava: false,
+            },
+        ];
+        let carried = vec![
+            None,
+            None,
+            Some(CarriedFluid {
+                layer: CARRIED_TINTED,
+                raw_layer: CARRIED_RAW,
+                level: 0,
+                falling: false,
+                self_occludes: 0,
+            }),
+        ];
+        let pool = fluid_at(&table, &carried, 1).expect("state 1 is a pool");
+        assert_eq!((pool.layer, pool.raw_layer), (POOL_TINTED, POOL_RAW));
+        let wl = fluid_at(&table, &carried, 2).expect("state 2 carries water");
+        assert_eq!((wl.layer, wl.raw_layer), (CARRIED_TINTED, CARRIED_RAW));
     }
 
     /// A carried fluid is a SOURCE — `getOwnHeight` is `amount / 9.0` and a
@@ -3176,6 +3255,49 @@ mod tests {
             .count();
         assert_eq!(low, 0, "a full column has no vertex between 62 and 63");
         assert_eq!(m.carried_fluid_cells, 1);
+    }
+
+    /// `carried_fluid_cells` counts cells that **emitted**, not cells whose
+    /// lookup found a carrier — which is what `r48`'s label claims.
+    ///
+    /// The two forms differ in exactly one situation and it is a real one: a
+    /// carrier whose six faces are ALL suppressed. `renderUp` skips
+    /// `shouldRenderFace`, so the top survives self-occlusion and only a same
+    /// fluid ABOVE can take it — i.e. a waterlogged double slab submerged in a
+    /// pool. Every other fixture in this file emits at least that top face, so
+    /// this is the only place the gate is observable, and without it the gate
+    /// could be deleted and `r48` would go back to proving that the TABLE
+    /// reached the mesher rather than that any water was meshed.
+    #[test]
+    fn a_fully_occluded_submerged_carrier_is_not_counted_as_meshed() {
+        use rewo_world::dimension::DimensionShape;
+        let table = oracle_waterlogged_table();
+        let carried = oracle_waterlogged_carried();
+        let models = oracle_model_quads();
+        let mesh_at = |above: Option<u32>| {
+            let mut w = World::new(DimensionShape::OVERWORLD);
+            w.ensure_column(0, 0);
+            w.set_block(2, 62, 2, WL_DOUBLE_SLAB);
+            if let Some(a) = above {
+                w.set_block(2, 63, 2, a);
+            }
+            mesh_column(&w, &table, &models, &carried, 0, 0).expect("meshed")
+        };
+        // In open air the same block DOES emit its top face, so the zero below
+        // is the gate and not a lookup that found nothing.
+        let open = mesh_at(None);
+        assert_eq!(open.carried_fluid_cells, 1, "an exposed double slab meshes its top");
+        let buried = mesh_at(Some(WL_WATER));
+        let own_cell = buried
+            .tvertices
+            .chunks_exact(4)
+            .filter(|q| q.iter().any(|v| v.pos[1] < 63.0 - 1e-5))
+            .count();
+        assert_eq!(own_cell, 0, "all six of the buried carrier's faces are suppressed");
+        assert_eq!(
+            buried.carried_fluid_cells, 0,
+            "a carrier that emitted no geometry did not mesh its water"
+        );
     }
 
     /// The production gate, run by `cargo test` as well as by

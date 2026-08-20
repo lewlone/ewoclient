@@ -13,6 +13,17 @@ Discipline per AGENT_LOOP_BRIEF and REWO_PLAN §0.0:
   * the restore verified by BYTES, not by `git diff`, which cannot tell a
     leftover mutation from uncommitted work.
 
+**Extended after review (M161b).** Three mutations were added because an
+adversarial reviewer found them ALIVE against the shipped branch: forcing every
+carrier onto `block/lava_still`, and swapping the pre-tinted and raw layers in
+each of the two places they travel. `CarriedFluid::layer` and `raw_layer` had
+no witness anywhere — `check_carried_fluid_table` read only `is_some`,
+`falling`, `level` and `self_occludes`, `meshshot`'s oracle hand-builds
+`layer: 1`, and `r48` counts cells. They are graded now by three
+`blockentityshot` rows (the layer NAMES, the #3F76E4 tint arithmetic, and
+agreement with `RenderKind::Fluid`) and one `rewo-mesh` test with distinct
+sentinels.
+
 **One mutation is routed at `live --render-check`, and its verdict is read per
 WITNESS rather than from the exit code.** That is a deliberate exception with a
 measurement behind it: `r46` (music) FAILS on `main` at `b88f18e` as well as on
@@ -192,7 +203,8 @@ MUTATIONS = [
     (
         "mesh_column: carried_fluid_cells never counts",
         MESH,
-        """                        carried_fluid_cells += u32::from(f.carried);
+        """                        carried_fluid_cells +=
+                            u32::from(f.carried && fv.len() > fluid_verts_before);
                         bump(y as f32);
                     }
                     match table.get(state as usize) {
@@ -213,6 +225,85 @@ MUTATIONS = [
                             for face in 0..6 {""",
         ["unit-mesh", "meshshot"],
         "`r48` loses its only input and the windowed client stops being askable",
+    ),
+    (
+        "mesh_column: carried_fluid_cells counts a cell that emitted nothing",
+        MESH,
+        """                        carried_fluid_cells +=
+                            u32::from(f.carried && fv.len() > fluid_verts_before);
+                        bump(y as f32);
+                    }
+                    match table.get(state as usize) {
+                        Some(RenderKind::Cube {
+                            faces,
+                            raw_faces,
+                            tint,
+                        }) => {
+                            for face in 0..6 {""",
+        """                        let _ = fluid_verts_before;
+                        carried_fluid_cells += u32::from(f.carried);
+                        bump(y as f32);
+                    }
+                    match table.get(state as usize) {
+                        Some(RenderKind::Cube {
+                            faces,
+                            raw_faces,
+                            tint,
+                        }) => {
+                            for face in 0..6 {""",
+        ["unit-mesh"],
+        "the M161-as-shipped form: `r48`'s label says a block \"meshed its "
+        "water\" while the counter fires for a cell whose six faces were all "
+        "suppressed. Killed by "
+        "`a_fully_occluded_submerged_carrier_is_not_counted_as_meshed`, which "
+        "is the only fixture where the two forms can disagree — every other "
+        "one emits at least the top face, which `renderUp` never suppresses",
+    ),
+    (
+        "bake: every carrier samples `block/lava_still`",
+        DATA,
+        """            if !lava {
+                water_layers = Some((layer, raw_layer));
+            }""",
+        """            if lava {
+                water_layers = Some((layer, raw_layer));
+            }""",
+        ["unit-data", "blockentityshot", "meshshot"],
+        "EVERY waterlogged block in the game renders orange lava. This is the "
+        "review's measured hole: before `blockentityshot`'s three layer "
+        "witnesses it left 185/185, rewo-data 231, meshshot and tintshot all "
+        "green, i.e. the whole feature could have shipped pointing at the "
+        "wrong sprite",
+    ),
+    (
+        "bake: the pre-tinted and raw carried layers are swapped",
+        DATA,
+        """            fluid[id] = Some(CarriedFluid {
+                layer,
+                raw_layer,
+                level: 0,""",
+        """            fluid[id] = Some(CarriedFluid {
+                layer: raw_layer,
+                raw_layer: layer,
+                level: 0,""",
+        ["unit-data", "blockentityshot"],
+        "a no-biome world double-tints its waterlogged water and a real world "
+        "un-tints it — and the NAME witness cannot see it, because both layers "
+        "are `block/water_still`; the #3F76E4 arithmetic is what catches it",
+    ),
+    (
+        "fluid_at: the pre-tinted and raw layers are swapped on the way out",
+        MESH,
+        """    Some(FluidHere {
+        layer: f.layer,
+        raw_layer: f.raw_layer,""",
+        """    Some(FluidHere {
+        layer: f.raw_layer,
+        raw_layer: f.layer,""",
+        ["unit-mesh", "meshshot"],
+        "the same swap one crate over, invisible to every pre-existing fixture "
+        "because `oracle_waterlogged_carried` builds both layers as 1 — "
+        "`fluid_at_keeps_the_pre_tinted_and_raw_layers_apart` is the witness",
     ),
     # ---- the wiring the windowed client alone can see --------------------
     (
@@ -257,18 +348,39 @@ CHECKERS = {
 }
 
 
+# The distinctive text of THIS branch's r48 row. Checked, not assumed — see
+# `live_r48`.
+R48_MARK = "carried-fluid cells in the largest column"
+
+
 def live_r48():
-    """The one per-witness verdict — see the module docstring."""
-    code, out = run([sys.executable, "tools/render_check.py"], 900)
-    path = os.path.join(os.environ["TEMP"], "rewo-render-check.out")
-    try:
-        body = io.open(path, encoding="utf-8", errors="replace").read()
-    except OSError:
-        return 1, "no render-check output file"
-    rows = [ln for ln in body.splitlines() if " r48 " in ln]
+    """The one per-witness verdict — see the module docstring.
+
+    **Read from the run's OWN stdout first.** `tools/render_check.py` also
+    writes `%TEMP%/rewo-render-check.out`, and that path is shared by every
+    worktree on the machine: during M161b a concurrent wave agent's run
+    overwrote it between two reads of the same file, and the `r48` row it then
+    carried was a different branch's claim entirely (a mob nametag, not water).
+    The stdout this function reads belongs to the process it just started, so
+    it cannot be another branch's; the file is a fallback and is accepted only
+    when the row still carries `R48_MARK`.
+    """
+    _code, out = run([sys.executable, "tools/render_check.py"], 900)
+    rows = [ln for ln in out.splitlines() if " r48 " in ln and R48_MARK in ln]
+    where = "stdout"
+    if not rows:
+        path = os.path.join(os.environ["TEMP"], "rewo-render-check.out")
+        try:
+            body = io.open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            return 1, "no r48 row on stdout and no render-check output file"
+        rows = [ln for ln in body.splitlines() if " r48 " in ln and R48_MARK in ln]
+        where = "temp file"
     if len(rows) != 1:
-        return 1, f"expected exactly one r48 row, found {len(rows)}"
-    return (0 if "PASS r48" in rows[0] else 1), rows[0][:120]
+        # Zero is the interesting case: either the run died before the rows, or
+        # the only r48 present belongs to somebody else's branch.
+        return 1, f"expected exactly one of THIS branch's r48 rows, found {len(rows)}"
+    return (0 if "PASS r48" in rows[0] else 1), f"[{where}] " + rows[0][:110]
 
 
 CHECKERS["live-r48"] = live_r48

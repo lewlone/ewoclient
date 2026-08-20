@@ -1127,6 +1127,12 @@ impl RenderCheck {
         // That is the M86 shape exactly, so the claim is "the production chain
         // from the bake through the mesh pool reached a real server's block".
         //
+        // The counter behind it is **emission-gated** (`mesh_column`:
+        // `f.carried && fv.len() > fluid_verts_before`), which it was not when
+        // M161 shipped: it incremented beside the `emit_fluid` CALL, so it
+        // proved the table reached the mesher rather than that any water was
+        // meshed, and this row's own wording over-claimed by exactly that gap.
+        //
         // The run places the block itself rather than making this a fourth
         // caller requirement (M108's precedent): `/setblock` needs op, which
         // `tools/render_check.py` already grants for r25.
