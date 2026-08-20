@@ -607,16 +607,25 @@ pub enum ComponentValue {
 /// (`else if` against `if out.is_empty()`). The differential tests at the
 /// bottom of this module pin all three.
 ///
-/// Kept because it is still the honest answer where **no language table can
-/// reach**: it falls back to the translation key, and a tooltip showing
-/// `item.minecraft.diamond_sword` is wrong in a visible way while inventing a
-/// translation would be wrong in an invisible one.
+/// **It has NO production caller.** M161 moved the last four onto
+/// [`rewo_world::chat_style::flatten`] and did not say so, leaving a doc that
+/// read as though it were still in use. It is kept for two reasons, both
+/// honest and neither "it is the answer somewhere": the differential tests at
+/// the bottom of this module need it to *state* the disagreement they pin, and
+/// its doc is where the register below lives. A future milestone that deletes
+/// it must move both.
 ///
-/// # What still flattens at the wire after M161, and why
+/// # What still flattens with no language table after M161, and why
 ///
-/// M161 moved the four **rendered** paths off this function — the entity
-/// nametag, item names and lore, the nested container slot, and sign lines.
-/// These are what is left, each with the reason it was not taken:
+/// The register is here rather than beside any one site because a list kept at
+/// each site goes stale at all but one of them. Note the sites below do **not**
+/// all call this function — several call `Nbt::to_plain_text` or
+/// `chat_style::flatten(.., None)`; what they share is the *absence of a
+/// table*, which is the property the register is about.
+///
+/// M161 moved the four **rendered** paths onto the resolving flatten — the
+/// entity nametag, item names and lore, the nested container slot, and sign
+/// lines. These are what is left, each with the reason it was not taken:
 ///
 /// | Site | Reason |
 /// |---|---|
@@ -626,7 +635,7 @@ pub enum ComponentValue {
 /// | `session.rs`'s MOTD | **Nothing renders it.** `ServerData.motd` is drawn by `ServerSelectionList`, a pre-join screen Rewo has not got; its only readers here are `abilityshot` witnesses. |
 /// | `suggestion_wire.rs`'s tooltip | `Suggestion::tooltip` has no renderer, AND `selector.rs` discards the six `argument.entity.selector.*` keys it already stores, AND `Opt::description` is `""` for all 21 options. Fixing the wire third alone is unobservable. |
 /// | `menu.rs`'s container title | `OpenMenu::title` has **zero readers**: the label is not drawn. Drawing it without this would write `container.chest` across every vanilla chest, so it is ship-both-or-neither. |
-/// | `tab_list_text.rs`'s `renders_empty` | Deliberate and documented there: with no table a translatable is never "empty". Handing it one is a behaviour change for servers shipping an empty template. |
+/// | `tab_list_text.rs`'s `renders_empty` | Deliberate and documented there: with no table a translatable is never "empty". Handing it one is a behaviour change for servers shipping an empty template. (It calls `chat_style::flatten(.., None)` — the table is what is missing, not the walk.) |
 /// | `chat_wire.rs`'s `trust_level` | Feeds `ChatTrustLevel`, not a render. Threading a table would change trust answers with nothing asserting them. |
 /// | `enchantment_parse.rs`'s `nbt_plain` | Already structurally right: it splits `(description_key, literal)` so the **renderer** resolves the key. |
 pub fn nbt_text(tag: &Nbt) -> String {
@@ -1222,22 +1231,53 @@ mod tests {
             .map(|t| rewo_world::chat_style::flatten(t, None))
     }
 
-    // ── M161: the four flatteners, side by side ──────────────────────────
+    // ── M161: the walks, side by side ───────────────────────────────────
     //
-    // There were four independent component-to-string walks in this tree and
-    // NOTHING compared them, which is how the wrong one kept getting reused.
-    // These tests pin the two disagreements that matter, so a future reader
+    // THREE independent component-to-string walks over the wire tree, and
+    // nothing compared them, which is how the wrong one kept getting reused.
+    // These tests pin the three disagreements that matter, so a future reader
     // reaching for `to_plain_text` sees what it costs.
+    //
+    // The FOURTH thing M161's own census called a flattener was not a fourth
+    // walk at all — it was a second spelling of `chat_style::flatten`, and
+    // there turned out to be four of those.
+    // `the_four_spellings_of_the_flatten_agree` below is the guard against
+    // that census going stale again.
 
-    /// `{text: "", translate: "k"}` — the case the two legacy flatteners
-    /// answer DIFFERENTLY, and neither the way vanilla does.
+    /// `{text: "", translate: "k"}` — the case the legacy walks answer
+    /// DIFFERENTLY, and the case where vanilla's own answer is decided by an
+    /// iteration order rather than by a rule.
     ///
     /// `Nbt::to_plain_text` pushes `text` and then pushes `translate` only
     /// `if out.is_empty()`, so an empty `text` lets the key through.
     /// `nbt_text` uses an `else if`, so the empty `text` wins and the key is
-    /// dropped. Vanilla is `ComponentContents`-dispatched: a `TranslatableContents`
-    /// is a translatable whatever a sibling `text` field says, and the whole
-    /// component's `text` key is simply not read.
+    /// dropped.
+    ///
+    /// **Vanilla answers `""`, and the reason is not a dispatch on content
+    /// type.** With no `type` field present, `ComponentSerialization`'s
+    /// `StrictEither.decode` (`:173-174`) takes the *fuzzy* branch, and
+    /// `FuzzyCodec.decode` (`:137-146`) returns the **first codec that
+    /// succeeds** over `LateBoundIdMapper.values()`. Both succeed here:
+    /// `PlainTextContents.MAP_CODEC` (`PlainTextContents.java:12-14`) and
+    /// `TranslatableContents.MAP_CODEC` (`TranslatableContents.java:38-45`)
+    /// are both `RecordCodecBuilder` map codecs, and a record codec ignores
+    /// fields it does not name. So the winner is whichever the collection
+    /// yields first — and `ComponentSerialization.bootstrap` (`:118-126`)
+    /// puts `text` in before `translatable`, over a Guava `HashBiMap`
+    /// (`ExtraCodecs.java:667`, `:680-681`).
+    ///
+    /// That last step is the one the decompile alone does not settle, because
+    /// `HashBiMap`'s iteration order is an implementation property rather than
+    /// a documented guarantee. **Measured** against the guava the 26.2 server
+    /// actually ships (`guava-33.6.0-jre`, on a temurin-25 JDK): inserting
+    /// bootstrap's seven keys in order and printing `values()` hands them back
+    /// in insertion order, `text` first. So `text` wins, and `flatten` agrees.
+    ///
+    /// M161's first draft of this doc asserted the opposite — that a
+    /// `TranslatableContents` is a translatable whatever a sibling `text`
+    /// field says, and that the component's `text` key is not read — while
+    /// an inline comment four lines down asserted the reading above. Both were
+    /// guesses; the conclusion the code shipped happens to be the right one.
     #[test]
     fn the_flatteners_disagree_on_an_empty_text_beside_a_translate() {
         let tag = Nbt::Compound(vec![
@@ -1249,19 +1289,93 @@ mod tests {
         assert_eq!(
             crate::enchantment_parse::nbt_plain(&tag),
             "",
-            "the fourth never reads `translate` at all"
+            "the third never reads `translate` at all"
         );
-        // The one Rewo now uses everywhere. `text` is present, so this is a
-        // literal component and its `translate` sibling is not a key —
-        // `to_plain_text`'s answer is the one that is actually wrong.
+        // The one Rewo now uses everywhere: `text` is offered to the fuzzy
+        // codec first and succeeds, so the component is the empty literal.
         assert_eq!(rewo_world::chat_style::flatten(&tag, None), "");
+    }
+
+    /// The four spellings of [`rewo_world::chat_style::flatten`] are ONE walk.
+    ///
+    /// M161's headline finding was a census — "there are four flatteners"
+    /// — and it was wrong in both directions: there are three independent
+    /// walks, and `chat_style::flatten` was the *fourth copy of itself*,
+    /// byte-identical to the already-public
+    /// `chat_translate::chat_component_text` in the same crate with the same
+    /// signature. Two more sites open-coded the same expression. So the change
+    /// that claimed to collapse the spellings raised them from three to four.
+    ///
+    /// They all delegate now, and this is what stops them drifting apart
+    /// again. It matters because the drift is silent: every one of them
+    /// returns a plausible string, and the difference only shows on a server
+    /// that sends a `translate` or a legacy colour code.
+    ///
+    /// `renders_empty`'s base was written `ChatStyle::plain([1.0, 1.0, 1.0])`
+    /// where the others use `ChatStyle::WHITE` — `chat_style.rs:169`
+    /// defines the latter AS the former, so that difference was never one.
+    #[test]
+    fn the_four_spellings_of_the_flatten_agree() {
+        let sec = '\u{00a7}';
+        let lang = rewo_data::lang::Language::from_map(
+            [("k".to_string(), "resolved".to_string())]
+                .into_iter()
+                .collect(),
+        );
+        for tag in [
+            Nbt::String(format!("{sec}cRed")),
+            // A BARE code, which is the only shape that makes
+            // `renders_empty`'s bool observable: `flatten` consumes both
+            // characters and renders nothing, where the legacy walks render
+            // two. Without it a `renders_empty` that reverted to `nbt_text`
+            // agrees on every fixture in this list.
+            Nbt::String(format!("{sec}c")),
+            Nbt::Compound(vec![("translate".to_string(), Nbt::String("k".to_string()))]),
+            Nbt::Compound(vec![
+                ("text".to_string(), Nbt::String("a".to_string())),
+                (
+                    "extra".to_string(),
+                    Nbt::List(vec![Nbt::String("b".to_string())]),
+                ),
+            ]),
+            Nbt::String(String::new()),
+        ] {
+            // The named chat alias — same crate, same signature. This is
+            // the pair M161 duplicated byte for byte.
+            assert_eq!(
+                rewo_world::chat_translate::chat_component_text(&tag, Some(&lang)),
+                rewo_world::chat_style::flatten(&tag, Some(&lang)),
+                "chat_component_text drifted from flatten on {tag:?}"
+            );
+            // The two no-table spellings, which is the whole of what makes
+            // them different.
+            assert_eq!(
+                crate::hud_state::plain(&tag),
+                rewo_world::chat_style::flatten(&tag, None),
+                "hud_state::plain drifted from flatten on {tag:?}"
+            );
+            assert_eq!(
+                crate::tab_list_text::renders_empty(&tag),
+                rewo_world::chat_style::flatten(&tag, None).is_empty(),
+                "renders_empty drifted from flatten on {tag:?}"
+            );
+        }
+        // …and the alias really does carry the table, rather than agreeing
+        // by both ignoring it. Without this the loop above passes for a pair
+        // that both answer the raw key.
+        let key = Nbt::Compound(vec![("translate".to_string(), Nbt::String("k".to_string()))]);
+        assert_eq!(
+            rewo_world::chat_translate::chat_component_text(&key, Some(&lang)),
+            "resolved"
+        );
+        assert_eq!(crate::hud_state::plain(&key), "k");
     }
 
     /// A legacy colour code is **style**, not text.
     ///
     /// `Language.getVisualOrder` (`Language.java:59-65`) runs
     /// `StringDecomposer.iterateFormatted` over every literal, and that loop
-    /// (`StringDecomposer.java:95-101`) consumes the pair into
+    /// (`StringDecomposer.java:92-103`) consumes the pair into
     /// `Style.applyLegacyFormat`. So vanilla NEVER draws the two characters,
     /// and three of the four flatteners here do.
     #[test]

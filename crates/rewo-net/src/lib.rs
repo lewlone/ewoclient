@@ -2586,6 +2586,20 @@ pub struct MetaKinds<'a> {
     ///
     /// `None` leaves a `translate` component as its key, which is what this
     /// decode did before the table was threaded here.
+    ///
+    /// **Adding it was NOT fail-loud, and M161's report said it was.** The
+    /// claim was that any other branch writing a `MetaKinds` literal would get
+    /// `E0063`. **Five** literals end in `..Default::default()`: `labelshot`
+    /// names `lang` explicitly, `local_player_data.rs`'s documents why it
+    /// wants `None`, and the other three — `capeshot_cmd.rs`,
+    /// `healthbarshot_cmd.rs`, `mobshot_cmd.rs` — took `None` silently. That
+    /// is the right value for all three (none of them grades a nametag), but
+    /// the *mechanism* is the merge-silent one §0.0's allocation table is
+    /// about, so it is written down rather than left as a claim nobody
+    /// checked. Deriving `Default` and offering `From<Option<i32>>` is what
+    /// makes the struct-update form available at all, and both are
+    /// load-bearing for the M18-shaped callers — so this is a stated property
+    /// rather than a thing to fix.
     pub lang: Option<&'a rewo_data::lang::Language>,
 }
 

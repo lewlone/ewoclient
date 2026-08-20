@@ -22,6 +22,18 @@ Three rules this file exists to obey, all of them recorded in
 Exit codes only, never a substring: `blockentityshot`, `labelshot` and
 `inventoryshot` are all fail-closed on a declared witness count and print `ok`
 on every individual line while being red.
+
+**The gap the first twelve entries had, and it is the one gotcha 0a names.**
+Not one of them mutated a production CALL SITE - every entry edited a function
+a gate reaches directly. An adversarial review then found three mutations that
+survived everything, and all three were call-site edits: `styled_hover_name`'s
+precedence (no fixture carried both names), `screen_tooltip` dropping the call
+(no witness drove the real builder), and the app's two `collect_sign_text`
+sites passing no table (`sg1`/`sg2` hand the collector a table of their own).
+Entries 12-16 are the review's, and the sign one is not among them: it is a
+compile error now, because `collect_session_sign_text` has no `lang` parameter
+to pass the wrong thing to. What grades the one line left is `r49`, hand-run
+against a real server - see the note at the bottom of this file.
 """
 
 import os
@@ -128,6 +140,59 @@ MUTATIONS = [
         "                rewo_world::chat_style::flatten(line, None),",
         ("gate", "inventoryshot"),
     ),
+    # -- The review's entries. Each is a mutation an adversarial reviewer
+    # -- applied to the shipped branch and watched every gate stay green.
+    (
+        "getHoverName's precedence swaps: item_name beats custom_name",
+        "crates/rewo-app/src/live_cmd.rs",
+        "    let named = custom.or_else(|| text.and_then(|t| t.item_name.as_ref()));",
+        "    let named = text.and_then(|t| t.item_name.as_ref()).or(custom);",
+        ("gate", "inventoryshot"),
+    ),
+    (
+        "the production tooltip bypasses styled_hover_name entirely",
+        "crates/rewo-app/src/live_cmd.rs",
+        """        lines.push(styled_hover_name(
+            text,
+            translated,
+            rarity_color(stack_rarity(
+                Some(item_name),
+                text.and_then(|t| t.rarity),
+                text.is_some_and(|t| t.is_enchanted),
+            )),
+            lang,
+        ));""",
+        """        lines.push(vec![rewo_gpu::tooltip::Span::new(
+            translated.to_string(),
+            rarity_color(stack_rarity(
+                Some(item_name),
+                text.and_then(|t| t.rarity),
+                text.is_some_and(|t| t.is_enchanted),
+            )),
+        )]);""",
+        ("gate", "inventoryshot"),
+    ),
+    (
+        "chat_component_text stops delegating and drops the table",
+        "crates/rewo-world/src/chat_translate.rs",
+        "    crate::chat_style::flatten(tag, lang)",
+        "    let _ = lang;\n    crate::chat_style::flatten(tag, None)",
+        ("test", "rewo-net", "the_four_spellings"),
+    ),
+    (
+        "hud_state::plain open-codes to_plain_text again",
+        "crates/rewo-net/src/hud_state.rs",
+        "    chat_style::flatten(component, None)",
+        "    component.to_plain_text()",
+        ("test", "rewo-net", "the_four_spellings"),
+    ),
+    (
+        "renders_empty open-codes nbt_text again",
+        "crates/rewo-net/src/tab_list_text.rs",
+        "    chat_style::flatten(component, None).is_empty()",
+        "    crate::component_wire::nbt_text(component).is_empty()",
+        ("test", "rewo-net", "the_four_spellings"),
+    ),
 ]
 
 
@@ -208,6 +273,26 @@ def main():
     print(f"\nkilled={killed} survived={survived}")
     return 0
 
+
+# -- The two entries no serverless gate can carry ---------------------------
+#
+# Both need `python tools/render_check.py`, i.e. a real server, so they are run
+# by hand and their measurements written down rather than left as a claim.
+#
+# 1. `play.rs`'s single production `MetaKinds` construction site, `lang: None`.
+#    `labelshot` builds its own `MetaKinds`, so nothing serverless sees it.
+#    Measured: r48 goes from `1991 of 3306 frames carried "Zombie", 0 carried
+#    the key` to `0 carried "Zombie", 3107 carried "entity.minecraft.zombie"`.
+#
+# 2. `collect_session_sign_text`'s body, `session.lang.as_deref()` -> `None`,
+#    the one line left after the wrapper removed the per-call-site choice.
+#    Measured: r49 goes from `3790 of 7188 frames carried "Dirt", 0 carried the
+#    truncated key` to `0 of 5819 carried "Dirt", 2779 carried the truncated
+#    key`. Not merely a red witness: two thousand frames of a raw translation
+#    key sawn off by the sign board, which is what the bug looked like in game.
+#
+# After either, grep for the marker before anything else - an interrupted
+# battery leaves its mutation on disk (gotcha -1a).
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -231,7 +231,7 @@ pub struct StackComponents {
     /// See `rewo_world::chat_style::flatten`.
     ///
     /// Kept apart from [`Self::item_name`] all the way to the renderer, because
-    /// `getStyledHoverName` (`ItemStack.java:827-833`) adds ITALIC iff
+    /// `getStyledHoverName` (`ItemStack.java:829-836`) adds ITALIC iff
     /// `has(CUSTOM_NAME)` — a merged field cannot express that — and because
     /// `Inventory.isUsableForCrafting` (`Inventory.java:145-147`) tests
     /// `has(CUSTOM_NAME)` **alone**.
@@ -498,9 +498,9 @@ impl StackComponents {
 
     /// The name a tooltip shows, given the item's translated display name.
     ///
-    /// `ItemStack.getHoverName()` (`ItemStack.java:802-805`) is
+    /// `ItemStack.getHoverName()` (`ItemStack.java:803-806`) is
     /// `getCustomName() != null ? customName : getItemName()`, and
-    /// `getItemName()` (`:823-825`) is `this.getItem().getName(this)` — the
+    /// `getItemName()` (`:825-827`) is `this.getItem().getName(this)` — the
     /// **item's virtual method**, whose base implementation
     /// (`Item.java:342-344`) is
     /// `getOrDefault(ITEM_NAME, CommonComponents.EMPTY)`.

@@ -216,6 +216,23 @@ fn click_witness_body() -> Vec<u8> {
 /// collide with a real entity and make the witness read someone else's name.
 const NAMETAG_WITNESS_ID: i32 = 0x0052_5701;
 
+/// Where r49's injected sign is placed, relative to the player's block.
+///
+/// Two east and one up, so it sits in air rather than replacing whatever the
+/// player is standing on — a sign whose block is overwritten by the server's
+/// next chunk update would make the witness flap.
+const SIGN_WITNESS_OFFSET: (i32, i32, i32) = (2, 1, 0);
+
+/// The translation key r49's sign carries.
+const SIGN_WITNESS_KEY: &str = "block.minecraft.dirt";
+
+/// What `en_us.json` says that key is.
+///
+/// A literal rather than a `baked.lang` lookup ON PURPOSE: a witness that asks
+/// the table under test what to expect grades everything except the table
+/// (§0.0 gotcha 0a). This is the jar's own answer, read once and written down.
+const SIGN_WITNESS_RESOLVED: &str = "Dirt";
+
 /// What `live --render-check` observed (M86).
 ///
 /// Every field is a **count of frames on which something happened**, never a
@@ -317,6 +334,31 @@ struct RenderCheck {
     /// witness that only counts "a name was drawn" cannot see this bug at all.
     /// This counts frames on which the label was the RAW KEY, and must be zero.
     nametag_raw_key_frames: u64,
+    /// M161 — frames on which a SIGN line carried a RESOLVED translatable.
+    ///
+    /// The sibling of `nametag_resolved_frames`, and it exists because the two
+    /// halves of that feature fail independently. The nametag resolves at
+    /// DECODE (`MetaKinds::lang`); a sign resolves in the FRAME LOOP, because
+    /// `BlockEntity::sign_text` is called per sign per frame — so r48 proves
+    /// nothing at all about this path.
+    ///
+    /// A review demonstrated the gap by changing both of the app's
+    /// `collect_sign_text` call sites to pass no table, with
+    /// `blockentityshot` still 179/179: `sg1`/`sg2` hand the collector a table
+    /// of their own, so they grade the function and never ask who calls it.
+    /// [`collect_session_sign_text`] now makes that particular edit a compile
+    /// error, and this counts the frames on which the line the renderer was
+    /// handed actually reads `Dirt`.
+    sign_resolved_frames: u64,
+    /// The negative half — frames on which the sign line was the RAW KEY.
+    ///
+    /// Truncated, and deliberately matched as a PREFIX: `getRenderMessages`
+    /// splits each line against the board and keeps fragment 0, so
+    /// `block.minecraft.dirt` reaches the renderer as `block.minecraft.di` on
+    /// a 90 px standing sign. That truncation is what the bug looked like in
+    /// game, and asserting the whole key here would score zero for the wrong
+    /// reason.
+    sign_raw_key_frames: u64,
     /// M138a — listener transforms that reached the audio device.
     ///
     /// Compared against `frames`, not merely to zero: the interesting claim is
@@ -622,7 +664,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 48;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 49;
 
     fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1154,6 +1196,19 @@ impl RenderCheck {
                  second number was the whole of it. Zero for BOTH means the \
                  injection never landed",
                 self.nametag_resolved_frames, self.frames, self.nametag_raw_key_frames
+            ),
+        );
+        row(
+            "r49 a sign line drew a RESOLVED translatable, and never its raw key",
+            self.sign_resolved_frames > 0 && self.sign_raw_key_frames == 0,
+            format!(
+                "{} of {} frames carried `Dirt`, {} carried the truncated key. \
+                 The injected sign's front text is \
+                 `{{translate: \"block.minecraft.dirt\"}}`; the app resolves it \
+                 in the FRAME LOOP rather than at decode, which is why r48 \
+                 cannot stand in for this. Zero for BOTH means the injection \
+                 never landed or `collect_session_sign_text` was not called",
+                self.sign_resolved_frames, self.frames, self.sign_raw_key_frames
             ),
         );
         row(
@@ -5038,7 +5093,7 @@ fn run_headless(
     world_renderer.prepare_held_items(&mut gpu, &held)?;
     let be_draws: Vec<_> = bes.iter().map(|b| b.as_draw()).collect();
     let sign_lines = match world_renderer.font_advance() {
-        Some(a) => collect_sign_text(&session.world, &sign_states, &lightmap, a, session.lang.as_deref()),
+        Some(a) => collect_session_sign_text(&session, &sign_states, &lightmap, a),
         None => Vec::new(),
     };
     let sign_draws: Vec<_> = sign_lines
@@ -7823,6 +7878,62 @@ impl LiveApp {
                             session.inject_packet(session.ids.cb_play_set_entity_data, &meta);
                         }
                     }
+                    // M161 — a SIGN whose front text is a translatable, for
+                    // r49. Written straight into the world rather than
+                    // injected as two packets, and the reason is a decode rule
+                    // rather than convenience: `World::set_block_entity_data`
+                    // keeps vanilla's "a position with no block entity is
+                    // ignored" (`lib.rs:218-221`), so a `block_entity_data`
+                    // packet cannot CREATE one — a block entity arrives only
+                    // in a chunk payload, and staging a real sign would mean a
+                    // third caller requirement plus an SNBT form nothing here
+                    // can check.
+                    //
+                    // What r49 grades is downstream of that anyway: the claim
+                    // is that the windowed frame loop hands the language table
+                    // to the sign collector, not that a block entity can be
+                    // conjured mid-session.
+                    if let Some(session) = self.session.as_mut() {
+                        if let Some(state) = self.blocks.default_state("minecraft:oak_sign") {
+                            let (dx, dy, dz) = SIGN_WITNESS_OFFSET;
+                            let (x, y, z) = (
+                                session.player.x.floor() as i32 + dx,
+                                session.player.y.floor() as i32 + dy,
+                                session.player.z.floor() as i32 + dz,
+                            );
+                            session.world.set_block(x, y, z, state);
+                            let face = rewo_proto::nbt::Nbt::Compound(vec![(
+                                "messages".to_string(),
+                                rewo_proto::nbt::Nbt::List(vec![
+                                    rewo_proto::nbt::Nbt::Compound(vec![(
+                                        "translate".to_string(),
+                                        rewo_proto::nbt::Nbt::String(
+                                            SIGN_WITNESS_KEY.to_string(),
+                                        ),
+                                    )]),
+                                    rewo_proto::nbt::Nbt::String(String::new()),
+                                    rewo_proto::nbt::Nbt::String(String::new()),
+                                    rewo_proto::nbt::Nbt::String(String::new()),
+                                ]),
+                            )]);
+                            session.world.block_entities.insert(
+                                rewo_world::block_entities::BlockEntityPos { x, y, z },
+                                rewo_world::block_entities::BlockEntity {
+                                    // The type id is not read by the sign path
+                                    // — `collect_sign_text` keys off the BLOCK
+                                    // STATE through `SignStates::get` — so this
+                                    // is a marker rather than a claim about the
+                                    // block-entity registry.
+                                    type_id: -1,
+                                    data: rewo_proto::nbt::Nbt::Compound(vec![(
+                                        "front_text".to_string(),
+                                        face,
+                                    )]),
+                                },
+                            );
+                            log::info!("render-check: sign witness at ({x},{y},{z})");
+                        }
+                    }
                     self.tab_list_injected = true;
                 }
                 // The hold. Assigned every frame rather than latched, so it is
@@ -8692,15 +8803,25 @@ impl LiveApp {
         }
         let be_draws: Vec<_> = bes.iter().map(|b| b.as_draw()).collect();
         let sign_lines = match state.world_renderer.font_advance() {
-            Some(a) => collect_sign_text(
-                &session.world,
-                &self.sign_states,
-                &lightmap,
-                a,
-                session.lang.as_deref(),
-            ),
+            Some(a) => collect_session_sign_text(session, &self.sign_states, &lightmap, a),
             None => Vec::new(),
         };
+        // M161/r49 — read the sign line OFF THE DRAW LIST, for r48's reason
+        // one list over: the claim is that the resolved string reached the
+        // renderer. The RAW-KEY half is a prefix match because
+        // `getRenderMessages` truncates each line to the board, so an
+        // unresolved `block.minecraft.dirt` arrives as `block.minecraft.di`.
+        if let Some(c) = self.check.as_mut() {
+            if sign_lines.iter().any(|l| l.text == SIGN_WITNESS_RESOLVED) {
+                c.sign_resolved_frames += 1;
+            }
+            if sign_lines
+                .iter()
+                .any(|l| !l.text.is_empty() && SIGN_WITNESS_KEY.starts_with(l.text.as_str()))
+            {
+                c.sign_raw_key_frames += 1;
+            }
+        }
         let sign_draws: Vec<_> = sign_lines
             .iter()
             .map(|l| rewo_gpu::entities::WorldTextDraw {
@@ -12388,6 +12509,42 @@ const OUTLINE_OFFSETS: [(f32, f32); 8] = [
 /// the depth buffer's resolution at any distance a sign is legible from, and
 /// far above the coplanar z-fighting it prevents.
 const OUTLINE_DEPTH: f32 = -0.01;
+
+/// [`collect_sign_text`] against a live session — the app's ONLY entry.
+///
+/// **The world and the language table come from one owner, so no call site can
+/// pair one with the other's absence.** Both of the app's frame loops used to
+/// spell out `(&session.world, .., session.lang.as_deref())`, and an
+/// adversarial review changed both of them to `None` with `blockentityshot`
+/// still 179/179: the whole sign path could be wired to nothing and the only
+/// gate that grades it never asks who calls it, because `sg1`/`sg2` hand
+/// `collect_sign_text` a table of their own.
+///
+/// That is M89's finding — *a per-call-site choice is how two things from one
+/// owner come to disagree* — reached for the fourth time in this tree, after
+/// the container hover, the quick-move's slot kinds and the recipe book's
+/// displacement. The remedy is the same one: one accessor, and the choice
+/// deleted rather than duplicated. With no `lang` parameter here the mutation
+/// is a compile error at both sites rather than a silent green.
+///
+/// [`collect_sign_text`] keeps taking the table, because that is the seam
+/// `blockentityshot` needs and a session cannot be built in a gate (M71 — it
+/// owns a socket). What is left ungraded is this one line, and `r49` grades it
+/// end to end in the windowed client.
+pub(crate) fn collect_session_sign_text(
+    session: &rewo_net::play::PlaySession,
+    signs: &rewo_data::sign_states::SignStates,
+    lightmap: &LightmapState,
+    advance: &[u8; 256],
+) -> Vec<OwnedSignLine> {
+    collect_sign_text(
+        &session.world,
+        signs,
+        lightmap,
+        advance,
+        session.lang.as_deref(),
+    )
+}
 
 /// Every sign face in the world, as text draws.
 ///
@@ -21555,7 +21712,7 @@ pub(crate) fn container_lines(
 ///                               .withStyle(getRarity().color());
 /// if (this.has(DataComponents.CUSTOM_NAME)) n.withStyle(ChatFormatting.ITALIC);
 /// ```
-/// (`ItemStack.java:827-833`.)
+/// (`ItemStack.java:829-836`.)
 ///
 /// **Two things here are only expressible because `SlotText` keeps
 /// `custom_name` and `item_name` apart.** `getHoverName()` is

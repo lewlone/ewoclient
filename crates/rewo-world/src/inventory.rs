@@ -502,7 +502,7 @@ pub struct SlotText {
     /// `minecraft:custom_name` — the anvil-given name, as the raw component.
     ///
     /// **Split from [`Self::item_name`], and the split is load-bearing twice.**
-    /// `getStyledHoverName` (`ItemStack.java:827-833`) adds ITALIC iff
+    /// `getStyledHoverName` (`ItemStack.java:829-836`) adds ITALIC iff
     /// `has(CUSTOM_NAME)`, and `Inventory.isUsableForCrafting`
     /// (`Inventory.java:145-147`) tests `has(CUSTOM_NAME)` alone — a merged
     /// `custom_name.or(item_name)` can express neither, and the old merged field

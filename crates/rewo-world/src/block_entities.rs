@@ -392,9 +392,14 @@ impl SignFace {
     ///
     /// **This runs per frame**, and knowingly: [`BlockEntity::sign_text`] has no
     /// cache and `live_cmd::collect_sign_text` calls it for every sign block
-    /// entity on every frame. That was already true when the lines were
-    /// flattened by `Nbt::to_plain_text` — four `String`s per face per frame —
-    /// so this is not a new allocation, but it *is* a new exposure:
+    /// entity on every frame. It was already allocating — `Nbt::to_plain_text`
+    /// built four `String`s per face per frame — but M161's first draft called
+    /// that "not a new allocation", and it is: [`crate::chat_style::parse_component`]
+    /// builds a `Vec<ChatSpan>` and a `String` per span before
+    /// [`crate::chat_style::plain_text`] concatenates them into one more, so a
+    /// single-span line goes from one allocation to three. Against the
+    /// project's 1%/0.1%-low target that is the number worth stating rather
+    /// than the one that sounded better. There is also a new *exposure*:
     /// [`crate::chat_style::parse_component`] carries a
     /// [`crate::chat_style::MAX_COMPONENT_STEPS`] budget because a `with`
     /// argument can be duplicated by a `%1$s%1$s` template, and

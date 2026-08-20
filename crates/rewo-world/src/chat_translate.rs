@@ -228,14 +228,17 @@ fn java_scientific(s: String) -> String {
 /// Flatten a chat component to the plain text the chat store holds, resolving
 /// `translate` against `lang`.
 ///
-/// It goes through the **styled** walker and then discards the styling, rather
-/// than through `rewo_net::component_wire::nbt_text`, and that is deliberate:
-/// [`crate::chat_style`] is where the resolution lives, and a second copy of
-/// it in the plain walker is how M100's nine-slice arithmetic came to have two
-/// versions a pixel apart. `hud_state::plain` already flattens this way for
-/// the same reason.
+/// **A one-line alias for [`crate::chat_style::flatten`], and it must stay
+/// one.** M161's first cut wrote the body out again — the same crate, the same
+/// signature, the same expression — which raised the number of spellings of
+/// one walk while its own doc claimed to be collapsing them. The two are
+/// pinned equal by `the_four_spellings_of_the_flatten_agree` in
+/// `rewo_net::component_wire`'s test module, so a future edit to either has to
+/// move both or fail.
 ///
-/// The styling is discarded because the chat store is plain text — see
+/// It is kept as a name rather than deleted because the five chat call sites
+/// read better for it and because *why the styling is discarded* is a chat
+/// fact, not a flatten fact: the chat store is plain text — see
 /// `rewo_world::chat::GuiMessage::content`. That is a pre-existing limitation
 /// M125 does not lift; what changes is that the text being discarded down to
 /// is English rather than a translation key.
@@ -245,11 +248,7 @@ fn java_scientific(s: String) -> String {
 /// rule that lives there is untestable — and M97 found exactly that hiding a
 /// live gap. The session keeps a one-line adapter.
 pub fn chat_component_text(tag: &Nbt, lang: Option<&Language>) -> String {
-    crate::chat_style::plain_text(&crate::chat_style::parse_component(
-        tag,
-        crate::chat_style::ChatStyle::WHITE,
-        lang,
-    ))
+    crate::chat_style::flatten(tag, lang)
 }
 
 #[cfg(test)]
