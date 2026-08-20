@@ -1777,6 +1777,13 @@ section defines**, and so is the M-number it embeds; the table above allocates
 `rNN`, atlas coordinates and witness prefixes and does not yet allocate either.
 A future revision should add a column for it.*
 
+| M161 waterlogged rendering | **r48** | — | `meshshot` (waterlogged control), `blockentityshot` 178–189 (M161b raised 185 → 189) |
+| *(next free)* | **r49** | — | — |
+
+*When you take `r49`, add a row naming your milestone in the same commit, so the
+next reader — human or agent — sees it taken rather than inferring it free from
+the code.*
+
 #### Two things this does not guard, stated rather than hidden
 
 **`screen.rs`'s shelf has no overlap check.** Its packer clamps, so a bad
@@ -3446,6 +3453,262 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M161 — a waterlogged block renders its water, and the 68 double slabs (2026-08-19)
+
+**36% of the block-state space rendered no water.** `mesh_column` matched ONE
+`RenderKind` per state, so a waterlogged stair was a `Model` and emitted nothing
+but the stair; measured against the report, that is **11,728 of 32,366 states
+across 429 blocks**, plus 32 more that carry water with no property at all.
+
+**The split is vanilla's, not an encoding convenience.**
+`SectionCompiler.compile:89-97` makes two independent draws at every position —
+`blockState.getFluidState()` through `FluidRenderer.tesselate`, then
+*separately* `getRenderShape() == MODEL` through `tesselateBlock`. A
+`LiquidBlock` is `RenderShape.INVISIBLE` (`:135-137`) so plain water draws only
+through the first; a waterlogged stair draws through **both**. Rewo now mirrors
+that: `RenderKind::Fluid` stays "the block IS the fluid", a new
+`BakedAssets::fluid` is "the block CARRIES one", and **one** function
+(`fluid_at`) answers both — because `same()` decides face suppression for
+ordinary pools too, and a version of it that only knew `RenderKind::Fluid` would
+leave a visible internal wall wherever a pool meets a waterlogged block.
+
+**Five things that read backwards, each transcribed rather than inferred.**
+
+* **`renderUp` is the ONE face that skips `shouldRenderFace`** (`:77` against
+  `:78-83`), so `isFaceOccludedBySelf` applies to the four sides and the bottom
+  and NOT to the top. A waterlogged top slab really does emit a water surface at
+  y+8/9 inside its own geometry, and adding the self test "for consistency"
+  deletes surfaces vanilla draws.
+* **`isFaceOccludedBySelf` double-negates.** It calls
+  `isFaceOccludedByState(dir.getOpposite(), 1.0F, state)`, which reads
+  `getFaceOcclusionShape(dir.getOpposite().getOpposite())` — so the net query is
+  the block's own shape on the **same** direction as the face, and because the
+  height is exactly `1.0F` the `Shapes.block()` arm answers true for every
+  direction including UP.
+* **The set is not `waterlogged=true`.** Five blocks return
+  `Fluids.WATER.getSource(false)` outright with no property to key off — kelp,
+  kelp_plant, seagrass, tall_seagrass, bubble_column, **32 states**. Read every
+  `getFluidState` override in `world/level/block`: **45**, of which 38 are the
+  ternary form, one `LiquidBlock`, one `WaterloggedTransparentBlock`, and these
+  five. (The obvious `grep -l` gives **46 files** and one of them —
+  `state/BlockBehaviour.java` — is the base *declaration*, not an override.
+  This entry originally said "46 files, 40 of the ternary form", whose parts
+  sum to 47 and so matched neither count.)
+* **`WaterloggedTransparentBlock` passes `getSource(TRUE)`** — the one override
+  of the 45 that does — and `Blocks.java:5245-5250` gives it to the whole
+  `COPPER_GRATE` collection, so **the eight copper grates are the only blocks
+  whose carried water is FALLING**. Nothing reads the flag yet: its only effect
+  is through `FlowingFluid.getFlow`'s `(0,-6,0)` branch, which selects the
+  still-vs-rotated TOP sprite, and Rewo bakes no `water_flow` sprite at all. It
+  is stored with a test anyway, because "a waterlogged block's fluid is a
+  source, therefore never falling" is the natural reading and it is wrong for
+  eight blocks.
+* **A carried fluid is a SOURCE**, amount 8, `getOwnHeight` = 8/9 — so its
+  surface sits at 8/9 like any other source, not at the top of the block it is
+  inside.
+
+**The finding is the 68.** The bake completes `face_occludes` to all six for a
+full occluding cube — the light path deliberately leaves that at 0 and routes a
+full cube through `dampening 15` instead — and the states that reach it turn out
+to be **exactly the `type=double` slabs**, 68 of them. A double slab is a full
+cube, so vanilla's `getFaceOcclusionShape` (`canOcclude ? getShape : empty`) is
+`Shapes.block()` on every direction and `shouldRenderFace` suppresses all four
+sides **and** the bottom, leaving the top face alone — which is exactly what
+`renderUp` skipping the self test is for. Without the completion a waterlogged
+double slab draws four side faces and a floor **inside solid stone**.
+`blockentityshot` names it against `blocks.json`'s own `type` property
+(`double` → `0b111111`, `bottom` → the DOWN bit only, `top` → the UP bit only)
+rather than recomputing the bake's expression.
+
+**Corrected in M161b: that state is command-only.**
+`SlabBlock.getStateForPlacement:72` writes `WATERLOGGED, false` the moment a
+slab becomes DOUBLE, and `placeLiquid` / `canPlaceLiquid` (`:106-113`) both
+refuse a DOUBLE slab — so `type=double, waterlogged=true` exists in
+`blocks.json` and is unreachable by placement. The state is real and vanilla
+renders it this way, so the code and the fixture are right; what was wrong is
+this entry's original claim that it is "the common real case". The side rule's
+ORDINARY case is a waterlogged **stair**: 1,536 of the 2,560 waterlogged stair
+states carry a side bit, measured in `blockentityshot`.
+
+**It also closed a live M30 gap.** `BakedAssets::water` (`isWaterAt`, which the
+conduit's activation scan reads) was keyed on the `waterlogged` property, so the
+32 unconditional states were dry — a conduit inside a kelp forest would refuse
+to activate. `water` is now DERIVED from `fluid`, so the table that renders
+water and the table that counts as water cannot disagree.
+
+**Two fixture errors, and both were caught by a witness rather than by
+reading.** The waterlogged oracle's state indices were off by one — it extended
+`oracle_fluid_table` as though that had three entries where it has four — so its
+"dry model" was **LAVA**, and the only thing that noticed was the
+opaque-byte-identity witness; with that witness absent, "the waterlogged state
+emits translucent geometry and the dry one does not" would have passed while
+grading lava. The fixture now asserts its own indices before grading anything.
+And a test claiming a buried surface is not emitted asked
+`fluid_face_counts(.., 62.0)` for `top == 0`, which the POOL's quads also
+satisfy (they have no vertex at y=62 either); it names the plane directly now.
+
+**The battery's own finding: the side half of `shouldRenderFace` had no
+witness.** Dropping it SURVIVED, because both waterlogged fixtures occluded only
+UP or only DOWN and both assert `side == 4`. The fix is the double slab,
+`(top, side, bottom) == (1, 0, 0)` — a real state, though a command-only one
+(see above; M161b measured the stairs that make the rule ordinary). Battery
+**19 mutations, 19 killed** after M161b's three additions (15 as first
+shipped), control SURVIVED in every slice, and the control runs
+**every checker its slice uses** (a control validated against `cargo test` says
+nothing about whether a gate-routed or live-routed checker can return 0 at all).
+
+**`r48` exists for a reason no serverless gate can cover.** The water rides the
+translucent pass the client has drawn since M3, so nothing about it is a new
+render path — but `MeshTables.fluid` is a new field, and a `live_cmd` that
+failed to fill it meshes no carried water anywhere while every unit test, every
+`*shot` and every other render-check witness stays green. That is the M86 shape,
+and the battery kills exactly that mutation through `r48` alone. The run places
+its own block (`setblock ~ ~2 ~ oak_slab[waterlogged=true]`, above the player
+because `~2 ~ ~` assumes flat ground) rather than adding a fourth caller
+requirement — M108's precedent.
+
+**Measured** (as shipped; M161b's numbers are in its own entry). 3295 tests
+(world 1198, net 1162, gpu 290, data 231, app 228, audio 120, mesh 50,
+proto 16); all 36 serverless gates green with validation ON and **0 VUIDs**;
+`meshshot` +1 legacy control +4 face witnesses, `blockentityshot` 177 →
+**185**; demo PNG **`2cc56b4acbfb92cb`** byte-identical.
+`live --render-check` is **47 of 48** — `r48` PASSES, and **`r46` (music) fails
+on `main` too**: measured at `b88f18e` with a debug build, `46/47`, so the
+regression predates this branch and is not it.
+
+**Deliberately not done, and stated rather than hidden.**
+`emit_fluid`'s side and bottom suppression still uses `is_full_cube` where
+vanilla's third test is `isFaceOccludedByNeighbor(faceDir, max(hh0,hh1),
+faceState)` — a height-aware shape query. That is a pre-existing divergence of
+the *plain water* path (grass_block is a `Model`, so `is_full_cube` is false for
+it and a pool beside grass draws a wall today), and changing it moves the demo
+PNG. `fluid_h(level >= 8) = 1.0` is likewise still a double count — vanilla's
+`getOwnHeight` for `getFlowing(8, true)` is 8/9 and the 1.0 comes only from
+`hasSameAbove`, which the `corner` closure already applies — and it is half of a
+two-part bug whose other half (level 8 is the FALLING state, so it also selects
+`getFlow`'s `(0,-6,0)` branch) belongs to a flow milestone. Both are recorded
+here rather than half-fixed.
+
+### M161b — what an adversarial review found: a table graded by nothing (2026-08-20)
+
+A reviewer mutated M161's production code and every gate stayed green. Four
+items, one of them a hole big enough that the feature could have shipped
+pointing at the wrong texture, and three of them prose that does not survive
+the decompile. Each is reproduced here before it is fixed, because a defect
+nobody re-measured is a defect nobody can grade.
+
+**`CarriedFluid::layer` and `raw_layer` were graded by NOTHING.** Reproduced:
+change one character in the bake — `if !lava` to `if lava` at the
+`water_layers` assignment — and all **11,760 carriers sample
+`block/lava_still`**. Every waterlogged block in the game renders orange lava,
+and `blockentityshot` stayed **185/185**, `rewo-data` 231, `meshshot` and
+`tintshot` exit 0. Nothing anywhere read either field:
+`check_carried_fluid_table` read `is_some`, `falling`, `level` and
+`self_occludes`; `meshshot`'s oracle hand-builds `layer: 1`; `r48` counts
+cells; the battery had no entry there.
+
+Closed by **three witnesses, each predicting from a source the assignment does
+not share** — which is the point, because a witness that asks its subject where
+to look grades everything except the thing they share (§0.0 gotcha 0a, and the
+M158 geometry version of it):
+
+* the **texture**, from `BakedAssets::layer_names` — a separate table keyed by
+  the layer id, so a carrier pointing at lava is named `block/lava_still` there;
+* the **orientation**, from vanilla's legacy plains water colour `#3F76E4`
+  re-declared in the gate. `layer` is the pre-tinted copy and `raw_layer` the
+  untinted one, and a NAME check cannot separate them because both are
+  `block/water_still` — the `px * c / 255` arithmetic can. Measured: 0 of 256
+  texels disagree on a clean tree, 256 of 256 under the swap;
+* the **agreement** with the other storage site. `RenderKind::Fluid` holds a
+  pool's layers, `fluid_at` hands both kinds to one `FluidHere`, and the two
+  are written in different iterations of the bake's block loop — so a carrier
+  sampling a different sprite from the pool beside it is a visible seam.
+
+**The same hole exists one crate over**, and its cause is a fixture that cannot
+express its own claim: `oracle_waterlogged_carried` builds `layer: 1,
+raw_layer: 1`, so `fluid_at`'s carried branch could return `layer: f.raw_layer,
+raw_layer: f.layer` and **no test in the repo would notice**. It is not
+cosmetic — `emit_fluid` chooses between the two by whether the world has a
+biome, so the swap double-tints one path and un-tints the other.
+`fluid_at_keeps_the_pre_tinted_and_raw_layers_apart` uses four distinct
+sentinels and is the only thing that fails under it, verified by mutation.
+
+**`r48`'s label was an over-claim, so the code moved to meet it.**
+`carried_fluid_cells` incremented beside the `emit_fluid` CALL, so the row
+proved the TABLE reached the mesher rather than that any water was meshed. It
+is emission-gated now (`f.carried && fv.len() > fluid_verts_before`, both
+meshers). The two forms differ in exactly one situation and it is a real one —
+a carrier whose six faces are ALL suppressed, which needs a same fluid ABOVE
+because `renderUp` skips the self test, i.e. a waterlogged double slab
+submerged in a pool. Every pre-existing fixture emits at least that top face,
+which is why the gate needed a fixture of its own
+(`a_fully_occluded_submerged_carrier_is_not_counted_as_meshed`) rather than a
+comment.
+
+**Three prose facts that do not survive the decompile.**
+
+* **"A `LiquidBlock` is `noOcclusion`" is false, and the value it justifies is
+  right.** `Blocks.java:285-297` builds WATER with `.replaceable()
+  .noCollision().strength(100).pushReaction(DESTROY).noLootTable().liquid()
+  .sound(EMPTY)` and **no `noOcclusion()`**, so `canOcclude` stays true — and
+  Rewo agrees, `minecraft:water` is not in `block_light::NO_OCCLUDE`. The empty
+  face-occlusion shape arrives the other way: `BlockBehaviour:514` is
+  `canOcclude ? getOcclusionShape : empty`, `getOcclusionShape` (`:287-288`)
+  delegates to `getShape`, and `LiquidBlock.getShape` (`:145-146`) is
+  `Shapes.empty()`, so `:516-517` files every face under
+  `EMPTY_OCCLUSION_SHAPES`. `self_occludes: 0` is correct; the wrong reason
+  invites adding water to `NO_OCCLUDE`, which would change the light path for
+  nothing.
+* **"46 `getFluidState` overrides, 40 of the ternary form" is neither figure.**
+  `grep -l "FluidState getFluidState"` over `world/level/block` gives 46 files
+  and one of them is `state/BlockBehaviour.java`, the base *declaration*
+  (`return Fluids.EMPTY.defaultFluidState()`). Re-measured by classifying each
+  file's return expression: **45 overrides = 38 ternary + 1 `getSource(true)` +
+  1 `LiquidBlock` + 5 unconditional.** The old parts summed to 47, so they
+  agreed with neither count. Corrected in four code sites and here.
+* **"Nothing else in the tree references `WaterloggedTransparentBlock`" is
+  true of construction only.** `BlockTypes.java:257` registers its `MapCodec`
+  and `WeatheringCopperGrateBlock` extends it.
+
+**A witness that presented a tautology as a drift guard.**
+`check_carried_fluid_table`'s `self_occludes == face_occludes` row said the two
+"are written from the same expression, and this is what stops them drifting" —
+but that is exactly why they CANNOT drift: the bake's non-full-cube branch is
+`self_occludes = face_occludes[id]` read in one statement, and nothing writes
+`face_occludes[id]` afterwards. It is redundant rather than load-bearing; the
+comment now says so, and names the three slab rows that carry the real claim.
+
+**A cross-agent instrument collision, found live.** `tools/render_check.py`
+writes `%TEMP%/rewo-render-check.out`, a path **shared by every worktree on the
+machine**. During this work a concurrent wave agent's run overwrote it between
+two reads of the same file, and the `r48` row it then carried was a different
+branch's claim entirely (a mob nametag, not water). The battery's per-witness
+checker read a fixed temp path, so it could have reported another branch's
+verdict as this branch's. It now reads the row from **the run's own stdout**,
+and accepts the temp file only when the row still carries this branch's
+distinctive text. The shared path itself is left alone — it belongs to a file
+no wave branch has touched, and naming the hazard is worth more than a
+four-way conflict.
+
+**Measured.** `cargo build` exit 0. **3297 tests, 0 failures** across all eight
+rewo crates, each read off its own exit code (world 1198, net 1162, gpu 290,
+data 231, app 228, **mesh 52**, audio 120, proto 16 — mesh 50 → 52 is this
+entry's two new tests). All **36** serverless gates enumerated from `--help`
+and run by exit code: every one **exit 0 with 0 `VUID-` lines**;
+`blockentityshot` 185 → **189**, `mobshot` 246/246, `containershot` 109/109,
+`inventoryshot` 158/158, `tablistshot` 42/42, `soundshot` 28/28 (default
+build). Demo PNG **`2cc56b4acbfb92cb`** byte-identical. Battery **19 mutations,
+19 killed** over four slices, the no-op control SURVIVING in each and running
+the union of that slice's checkers. `live --render-check` **47 of 48** — `r48`
+PASS with 1 carried-fluid cell, `r46` (music) FAIL, which M161 measured as
+pre-existing on `main` at `b88f18e`.
+
+**Not done.** M161's two recorded divergences are untouched and still recorded:
+`emit_fluid`'s `is_full_cube` stand-in for `isFaceOccludedByNeighbor`, and
+`fluid_h(level >= 8) = 1.0`. `CarriedFluid::falling` still has no production
+reader; it now has three witnesses about the layers beside it and none about
+itself beyond the eight-copper-grate count, which is the honest state.
 
 ### M163 — the wire-time flattens outside chat (2026-08-19)
 

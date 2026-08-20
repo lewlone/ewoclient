@@ -90,6 +90,129 @@ pub enum RenderKind {
     Model(u32),
 }
 
+/// The water one block state **carries** — vanilla's `getFluidState()` override
+/// on a block that has geometry of its own (M164).
+///
+/// Reduced to exactly what `FluidRenderer.tesselate` reads. There is no `lava`
+/// field because no vanilla block carries lava (see [`BakedAssets::fluid`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CarriedFluid {
+    /// Pre-tinted `block/water_still` layer (legacy / no-biome path).
+    pub layer: u16,
+    /// Raw (untinted) `block/water_still` layer for the M14 biome water tint.
+    pub raw_layer: u16,
+    /// `FluidState.getAmount()` read the way `RenderKind::Fluid` reads it:
+    /// 0 = source. **Every** carried fluid in 26.2 is a source — all 45
+    /// `getFluidState` overrides call `Fluids.WATER.getSource(..)`, never
+    /// `getFlowing` — but the level is stored rather than assumed at the call
+    /// site so the fact lives in the data next to the measurement, and a
+    /// version that introduces a flowing carrier needs no shape change.
+    pub level: u8,
+    /// `Fluids.WATER.getSource(true)` — the `FALLING` property.
+    ///
+    /// **`WaterloggedTransparentBlock` is the ONE override of the 45 that
+    /// passes `true`** (`WaterloggedTransparentBlock.java`, its `getFluidState`
+    /// line), and `Blocks.java:5245-5250` builds the whole `COPPER_GRATE`
+    /// weathering collection from it — so the eight copper grates are the only
+    /// blocks in the game whose carried water is falling.
+    ///
+    /// **Nothing reads this yet, deliberately.** Its only effect is through
+    /// `FlowingFluid.getFlow`, whose `FALLING` branch adds `(0,-6,0)` beside a
+    /// solid face and so decides `FluidRenderer`'s still-vs-rotated *top* face
+    /// sprite (`FluidRenderer.java:141-165`) — and Rewo bakes no `water_flow`
+    /// sprite at all yet, so both branches would sample the same texels. It is
+    /// recorded here, with a test, because it is a fact a flow milestone would
+    /// otherwise have to rediscover: the natural reading of "a waterlogged
+    /// block's fluid is a source, so it is never falling" is wrong for eight
+    /// blocks.
+    pub falling: bool,
+    /// The **carrying block's own** face-occlusion mask, in [`FACE_DIRS`] order
+    /// — `FluidRenderer.isFaceOccludedBySelf`'s input (`:52-54`).
+    ///
+    /// That helper double-negates: it calls
+    /// `isFaceOccludedByState(dir.opposite, 1.0F, state)`, which then reads
+    /// `state.getFaceOcclusionShape(dir.opposite.opposite)` — so the net query
+    /// is the block's own occlusion shape on the **same** direction as the
+    /// fluid face. Because the height passed is exactly `1.0F`, the
+    /// `Shapes.block()` arm answers true for every direction *including* UP, so
+    /// a bit set here really does mean "this face is covered by my own shape".
+    ///
+    /// Same value as [`BakedAssets::face_occludes`] for every state that has
+    /// one; a full cube reads all six, which `face_occludes` leaves at 0
+    /// because the light path handles full cubes through `dampening` instead.
+    pub self_occludes: u8,
+}
+
+/// The five blocks whose `getFluidState` returns `Fluids.WATER.getSource(false)`
+/// **unconditionally** — with no `waterlogged` property to key off.
+///
+/// Measured by classifying the return expression of every `getFluidState`
+/// **override** under `net/minecraft/world/level/block`: **45**, of which 38
+/// are `state.getValue(WATERLOGGED) ? … : super.getFluidState(state)`, one
+/// (`WaterloggedTransparentBlock`) is that shape with `getSource(true)`, one
+/// (`LiquidBlock`) reads its own `LEVEL`, and these five return a source
+/// outright. 38 + 1 + 1 + 5 = 45. Keying waterlogging off the blockstate
+/// property alone leaves a kelp forest, a seagrass bed and every bubble column
+/// dry.
+///
+/// **The obvious grep gives 46 and one of them is not an override.**
+/// `FluidState getFluidState` matches `state/BlockBehaviour.java` too — the
+/// base *declaration*, whose body is `return Fluids.EMPTY.defaultFluidState()`.
+/// Counting files rather than overrides is what produced this comment's
+/// previous "46 files, 40 of the form", whose parts (40 + 1 + 1 + 5) sum to 47
+/// and so agreed with neither figure.
+pub const UNCONDITIONAL_WATER: &[&str] = &[
+    "minecraft:bubble_column",
+    "minecraft:kelp",
+    "minecraft:kelp_plant",
+    "minecraft:seagrass",
+    "minecraft:tall_seagrass",
+];
+
+/// Whether `block_name` in a state with the given `waterlogged` property
+/// carries water, and if so whether that water is `FALLING`.
+///
+/// The whole of Rewo's waterlogging rule, in one place. `None` means
+/// `Fluids.EMPTY` — the block carries nothing.
+pub fn carried_water(block_name: &str, waterlogged: bool) -> Option<bool> {
+    if UNCONDITIONAL_WATER.contains(&block_name) {
+        // These five have no property to read: their override is
+        // `return Fluids.WATER.getSource(false);` outright, so the
+        // `waterlogged` argument is deliberately ignored here rather than
+        // consulted — none of them even declares the property.
+        return Some(false);
+    }
+    waterlogged.then(|| FALLING_WATERLOGGED.contains(&block_name))
+}
+
+/// The eight blocks built from `WaterloggedTransparentBlock`, whose carried
+/// water is `getSource(`**`true`**`)` — see [`CarriedFluid::falling`].
+///
+/// Derived, not guessed: `Blocks.java:5245-5250` constructs the `COPPER_GRATE`
+/// `WeatheringCopperCollection` from `(var0, p) -> new
+/// WaterloggedTransparentBlock(p)` plus `WeatheringCopperGrateBlock::new` (which
+/// `extends WaterloggedTransparentBlock`), and `BlockItemIds.java:778` names the
+/// collection `createSimpleCopper("copper_grate")` — i.e. the four weathering
+/// states and their waxed twins.
+///
+/// Nothing else **constructs** it. The class is referenced twice more and
+/// neither reference adds a block: `BlockTypes.java:257` registers its
+/// `MapCodec` (`Registry.register(registry, "waterlogged_transparent",
+/// WaterloggedTransparentBlock.CODEC)`), and `WeatheringCopperGrateBlock`
+/// `extends` it — which is the second constructor already named above. An
+/// earlier version of this comment said "nothing else in the tree references
+/// the class", which is the stronger claim and is false.
+pub const FALLING_WATERLOGGED: &[&str] = &[
+    "minecraft:copper_grate",
+    "minecraft:exposed_copper_grate",
+    "minecraft:weathered_copper_grate",
+    "minecraft:oxidized_copper_grate",
+    "minecraft:waxed_copper_grate",
+    "minecraft:waxed_exposed_copper_grate",
+    "minecraft:waxed_weathered_copper_grate",
+    "minecraft:waxed_oxidized_copper_grate",
+];
+
 /// Which biome color a face's `tintindex` layer draws — the metadata the M14
 /// dynamic-tint mesh path reads (a faithful transcription of the decompiled
 /// `BlockColors.createDefault` registrations + `BlockTintSources`, keyed by
@@ -232,7 +355,44 @@ pub struct BakedAssets {
     /// all 27 cells around it, and a waterlogged slab or stair counts. Reading
     /// only `RenderKind::Fluid` would refuse to activate a conduit inside a
     /// perfectly legal frame.
+    ///
+    /// **Derived from [`Self::fluid`] since M164**, so the two cannot disagree:
+    /// `water[id] == fluid[id].is_some() && !lava`. That fixed a real M30 gap —
+    /// the five blocks whose `getFluidState` returns water *unconditionally*
+    /// (kelp, kelp_plant, seagrass, tall_seagrass, bubble_column) carry no
+    /// `waterlogged` property, so the old property-keyed rule left 32 states
+    /// dry and a conduit inside a kelp forest would refuse to activate.
     pub water: Vec<bool>,
+    /// Per block state: the water it **carries**, or `None`.
+    ///
+    /// The distinction against [`RenderKind::Fluid`] is vanilla's, not an
+    /// encoding convenience. 26.2's `SectionCompiler.compile` (`:89-97`) makes
+    /// two independent draws at every position — `blockState.getFluidState()`
+    /// through `FluidRenderer.tesselate`, then, *separately*,
+    /// `blockState.getRenderShape() == MODEL` through `tesselateBlock`. A
+    /// `LiquidBlock` is `RenderShape.INVISIBLE` (`LiquidBlock.java:135-137`),
+    /// so plain water draws only through the first; a waterlogged stair draws
+    /// through **both**. `RenderKind::Fluid` is "the block *is* the fluid";
+    /// this table is "the block *carries* one".
+    ///
+    /// Populated for exactly two families, measured against the decompile:
+    ///
+    /// * every `waterlogged=true` state (11,728 of 32,366, across 429 blocks).
+    ///   Every block class declaring `BlockStateProperties.WATERLOGGED`
+    ///   overrides `getFluidState` to `Fluids.WATER.getSource(..)`, directly or
+    ///   through a parent that does — measured over all 58 classes in
+    ///   `world/level/block` that name the symbol; the four that only ever call
+    ///   `state.hasProperty(WATERLOGGED)` on someone else's state
+    ///   (`DoublePlantBlock`, `SculkBlock`, `FireBlock`,
+    ///   `BuddingAmethystBlock`) declare none of their own.
+    /// * the five blocks whose override is unconditional — see
+    ///   [`UNCONDITIONAL_WATER`].
+    ///
+    /// No vanilla block carries **lava**: all 45 `getFluidState` overrides in
+    /// `world/level/block` return either water or `super`, so the carried fluid
+    /// has no `lava` field rather than a field that is always false. (45, not
+    /// the 46 files the obvious grep finds — see [`UNCONDITIONAL_WATER`].)
+    pub fluid: Vec<Option<CarriedFluid>>,
     /// Per block state: `Some(drag)` for `minecraft:bubble_column`, `None` for
     /// everything else — the input `BubbleColumnAmbientSoundHandler` scans the
     /// player's torso box for (M142c).
@@ -1000,6 +1160,14 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let mut emission = vec![0u8; max_id + 1];
     let mut dampening = vec![0u8; max_id + 1];
     let mut face_occludes = vec![0u8; max_id + 1];
+    let mut fluid: Vec<Option<CarriedFluid>> = vec![None; max_id + 1];
+    // The water layers are interned by the `minecraft:water` branch below, and
+    // `blocks` iterates in an order this function does not control — so the
+    // carried-fluid states are COLLECTED here and filled in after the loop.
+    // Interning `block/water_still` up front instead would renumber the whole
+    // texture array for a table that has nothing to do with atlas order.
+    let mut water_layers: Option<(u16, u16)> = None;
+    let mut carried: Vec<(usize, bool, u8)> = Vec::new();
     let mut particle_layer = vec![NO_PARTICLE_LAYER; max_id + 1];
     let mut models: Vec<Vec<Quad>> = Vec::new();
     let mut stats = BakeStats::default();
@@ -1046,6 +1214,9 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 log::warn!("rewo-data: {short}_still texture missing — fluid invisible");
                 continue;
             };
+            if !lava {
+                water_layers = Some((layer, raw_layer));
+            }
             for state in states {
                 let Some(id) = state.get("id").and_then(|i| i.as_u64()) else {
                     continue;
@@ -1062,7 +1233,6 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                     level,
                     lava,
                 };
-                water[id as usize] = !lava;
                 // Fluids skip the shared per-state light block below (they
                 // `continue`), so assign their light here from the same tables.
                 let (e, d) = fluid_light(lava);
@@ -1135,11 +1305,6 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             // sky passes it at full strength, fences return "not waterlogged".
             let waterlogged =
                 props.and_then(|p| p.get("waterlogged")).and_then(|v| v.as_str()) == Some("true");
-            // A waterlogged block's fluid state IS water, which is what
-            // `isWaterAt` asks (M30).
-            if waterlogged {
-                water[id as usize] = true;
-            }
             let propagates = match sky_propagate.get(block_name.as_str()) {
                 Some(0) => false,
                 Some(1) => true,
@@ -1163,6 +1328,27 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             if !full_cube && !no_occlude.contains(block_name.as_str()) {
                 face_occludes[id as usize] = face_coverage(&collide[id as usize]);
             }
+            // M164 — the water this state CARRIES (see `BakedAssets::fluid`).
+            // Two disjoint families: the `waterlogged=true` states, and the five
+            // blocks whose override is unconditional.
+            if let Some(falling) = carried_water(block_name.as_str(), waterlogged) {
+                // `isFaceOccludedBySelf` asks the block's own occlusion shape,
+                // and `face_occludes` only carries it for non-full-cube shapes
+                // — the light path routes a full cube through `dampening 15`
+                // instead. The fluid path needs the real answer, so the full
+                // cube's all-six mask is completed here, in the one place both
+                // branches are visible. (Vanilla: `getFaceOcclusionShape` is
+                // `canOcclude ? getShape : empty`, so an occluding full cube is
+                // `Shapes.block()` on every direction. Waterlogged leaves are
+                // the reachable case and they are `noOcclusion()`, hence the
+                // `no_occlude` term rather than a bare `full_cube`.)
+                let self_occludes = if full_cube && !no_occlude.contains(block_name.as_str()) {
+                    0b11_1111
+                } else {
+                    face_occludes[id as usize]
+                };
+                carried.push((id as usize, falling, self_occludes));
+            }
             // Emission. A property-driven rule (a candle's `3 × candles`, a
             // glow berry's `berries`, a light block's `level`) wins over the
             // constant tables; see `block_light::STATE_EMISSION`.
@@ -1185,6 +1371,30 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 0
             };
         }
+    }
+
+    // M164 — fill the carried-fluid table now that `block/water_still` has a
+    // layer. A jar with no water texture leaves it empty, which is the same
+    // outcome the `RenderKind::Fluid` path takes for the same reason.
+    if let Some((layer, raw_layer)) = water_layers {
+        for (id, falling, self_occludes) in carried {
+            fluid[id] = Some(CarriedFluid {
+                layer,
+                raw_layer,
+                level: 0,
+                falling,
+                self_occludes,
+            });
+        }
+    } else {
+        log::warn!("rewo-data: no water_still layer — waterlogged blocks render dry");
+    }
+    // `water` is `isWaterAt` (M30) and is now DERIVED from the same table the
+    // renderer reads, so a block that renders water and a block that counts as
+    // water cannot disagree. The `RenderKind::Fluid` half is water's own states.
+    for (id, w) in water.iter_mut().enumerate() {
+        *w = fluid[id].is_some()
+            || matches!(render[id], RenderKind::Fluid { lava: false, .. });
     }
 
     // M22: held items, after every block layer exists (block items copy them).
@@ -1216,6 +1426,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         render,
         solid,
         water,
+        fluid,
         bubble_column_drag,
         collide,
         emission,
@@ -3691,6 +3902,66 @@ fn tint_rgb(rgba: &mut [u8], color: [u8; 3]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- M164: the waterlogging rule ---------------------------------------
+    //
+    // The rule, not the table: the exact per-state COUNTS against the real
+    // `blocks.json` are `blockentityshot`'s `check_carried_fluid_table`, which
+    // is the gate that already bakes.
+
+    #[test]
+    fn an_ordinary_block_carries_water_only_when_waterlogged() {
+        assert_eq!(carried_water("minecraft:oak_slab", false), None);
+        assert_eq!(carried_water("minecraft:oak_slab", true), Some(false));
+        assert_eq!(carried_water("minecraft:stone", false), None);
+        // Not a waterloggable block at all — the caller only ever passes `true`
+        // for a state whose report entry says so, so this is the shape of the
+        // rule rather than a claim about stone.
+        assert_eq!(carried_water("minecraft:stone", true), Some(false));
+    }
+
+    /// `WaterloggedTransparentBlock.getFluidState` is the ONE override of the 46
+    /// that passes `true` to `getSource`, and `Blocks.java:5245-5250` gives it
+    /// to the whole copper-grate collection. Reading "a waterlogged block's
+    /// fluid is a source, therefore never falling" — which is what the plain
+    /// `SlabBlock` / `StairBlock` line says — is wrong for exactly these eight.
+    #[test]
+    fn only_the_copper_grates_carry_falling_water() {
+        for b in FALLING_WATERLOGGED {
+            assert_eq!(carried_water(b, true), Some(true), "{b}");
+            assert_eq!(carried_water(b, false), None, "{b}");
+            assert!(b.contains("copper_grate"), "{b} is not a copper grate");
+        }
+        assert_eq!(FALLING_WATERLOGGED.len(), 8);
+        assert_eq!(carried_water("minecraft:oak_stairs", true), Some(false));
+    }
+
+    /// The five that have no property to key off. `KelpBlock`, `KelpPlantBlock`,
+    /// `SeagrassBlock`, `TallSeagrassBlock` and `BubbleColumnBlock` return
+    /// `Fluids.WATER.getSource(false)` outright, so the `waterlogged` argument
+    /// must not gate them — that is the half a property-keyed rule loses, and it
+    /// is 32 block states.
+    #[test]
+    fn the_unconditional_five_carry_water_with_no_property() {
+        for b in UNCONDITIONAL_WATER {
+            assert_eq!(carried_water(b, false), Some(false), "{b}");
+            assert_eq!(carried_water(b, true), Some(false), "{b}");
+        }
+        assert_eq!(UNCONDITIONAL_WATER.len(), 5);
+        // Disjoint from the falling set, and neither list repeats itself.
+        for b in UNCONDITIONAL_WATER {
+            assert!(!FALLING_WATERLOGGED.contains(b), "{b} is in both lists");
+        }
+        let mut all: Vec<&str> = UNCONDITIONAL_WATER
+            .iter()
+            .chain(FALLING_WATERLOGGED)
+            .copied()
+            .collect();
+        let n = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), n, "a block name is listed twice");
+    }
 
     #[test]
     fn snap_face_picks_axis() {

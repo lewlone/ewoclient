@@ -403,13 +403,13 @@ fn cpu_checks(
     base.set_block(8, 8, 5, st.grass_block); // A/B boundary at x=8
 
     // Legacy (no biome context) mesh of chunk 0: pre-tinted layers, white.
-    let legacy = mesh_column(&base, &baked.render, &baked.models, 0, 0).expect("legacy mesh");
+    let legacy = mesh_column(&base, &baked.render, &baked.models, &baked.fluid, 0, 0).expect("legacy mesh");
 
     // Biome-aware mesh: install the A/B layout (loaded chunks [-1,1]) + context.
     let mut world = base;
     install_biomes(&mut world, -1, 1, biome_tint_layout);
     world.set_biome_context(std::sync::Arc::new(context()));
-    let mesh = mesh_column(&world, &baked.render, &baked.models, 0, 0).expect("biome mesh");
+    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0).expect("biome mesh");
 
     // -- grass_block in A → RED, in B → CYAN (distinct primaries) -----------
     check_tint_ratio(failures, "grass_A", &mesh, 2, 8, 2, A_GRASS);
@@ -618,7 +618,7 @@ fn check_dark_forest(failures: &mut Vec<String>, baked: &BakedAssets, st: &State
     install_single_biome(&mut world, 0, 0);
     world.set_block(2, 8, 2, st.grass_block);
     world.set_biome_context(std::sync::Arc::new(single_biome_context(def)));
-    let mesh = mesh_column(&world, &baked.render, &baked.models, 0, 0).expect("dark_forest mesh");
+    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0).expect("dark_forest mesh");
     check_exact_tint(failures, "dark_forest", &mesh, 2, 8, 2, DARK_FOREST_RED);
 }
 
@@ -675,7 +675,7 @@ fn check_swamp_at(
     install_single_biome(&mut world, cx, cz);
     world.set_block(bx, 8, bz, st.grass_block);
     world.set_biome_context(std::sync::Arc::new(single_biome_context(def.clone())));
-    let mesh = mesh_column(&world, &baked.render, &baked.models, cx, cz).expect("swamp mesh");
+    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, cx, cz).expect("swamp mesh");
     check_exact_tint(failures, name, &mesh, bx, 8, bz, expect);
 }
 
@@ -750,7 +750,7 @@ fn check_axis_orientation(failures: &mut Vec<String>, baked: &BakedAssets, st: &
     // correct is B (cyan).
     install_biomes(&mut world, -1, 1, |_gqx, gqz| if gqz < 2 { 0 } else { 1 });
     world.set_biome_context(std::sync::Arc::new(context()));
-    let mesh = mesh_column(&world, &baked.render, &baked.models, 0, 0).expect("axis mesh");
+    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0).expect("axis mesh");
     check_tint_ratio(failures, "axis_z", &mesh, 2, 8, 13, B_GRASS);
 }
 
@@ -779,7 +779,7 @@ fn check_indirect_palette(failures: &mut Vec<String>, baked: &BakedAssets, st: &
     let containers = rewo_world::chunk::read_chunk_biomes(&mut r, &shape(), 7).unwrap();
     world.apply_chunks_biomes(0, 0, containers);
     world.set_biome_context(std::sync::Arc::new(context()));
-    let mesh = mesh_column(&world, &baked.render, &baked.models, 0, 0).expect("indirect mesh");
+    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0).expect("indirect mesh");
     check_tint_ratio(failures, "indirect_A", &mesh, 2, 8, 2, A_GRASS);
     check_tint_ratio(failures, "indirect_B", &mesh, 13, 8, 8, B_GRASS);
 }
@@ -803,7 +803,7 @@ fn check_colormap_path(failures: &mut Vec<String>, baked: &BakedAssets, st: &Sta
         }
     }
     world.set_biome_context(std::sync::Arc::new(context()));
-    let mesh = mesh_column(&world, &baked.render, &baked.models, 0, 0).expect("cmap mesh");
+    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0).expect("cmap mesh");
     // Independent index: temp=0,downfall=0 → x=255,y=255 → 65535 → C_GRASS_CELL.
     let expect = {
         let (temp, downfall) = (0.0f64, 0.0f64);
@@ -1218,7 +1218,7 @@ fn render_terrain_fog(
     let containers = rewo_world::chunk::read_chunk_biomes(&mut r, &shape(), 7).unwrap();
     world.apply_chunks_biomes(0, 0, containers);
     world.set_biome_context(std::sync::Arc::new(context()));
-    let mesh = mesh_column(&world, &baked.render, &baked.models, 0, 0)
+    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0)
         .ok_or_else(|| format!("{name}: stone plane meshed empty"))?;
 
     let ov: &[u8] = bytemuck::cast_slice(&mesh.vertices);
@@ -1272,7 +1272,7 @@ fn render_plane(
     let containers = rewo_world::chunk::read_chunk_biomes(&mut r, &shape(), 7).unwrap();
     world.apply_chunks_biomes(0, 0, containers);
     world.set_biome_context(std::sync::Arc::new(context()));
-    let mesh = mesh_column(&world, &baked.render, &baked.models, 0, 0)
+    let mesh = mesh_column(&world, &baked.render, &baked.models, &baked.fluid, 0, 0)
         .ok_or_else(|| format!("{name}: plane meshed empty"))?;
 
     let ov: &[u8] = bytemuck::cast_slice(&mesh.vertices);

@@ -29,7 +29,7 @@ use rewo_world::block_entities::{
 };
 use rewo_world::dimension::DimensionShape;
 
-const EXPECTED_WITNESSES: usize = 179;
+const EXPECTED_WITNESSES: usize = 191;
 
 #[derive(Args, Debug)]
 pub struct BlockentityshotArgs {
@@ -257,6 +257,7 @@ pub fn run(args: BlockentityshotArgs) -> Result<(), String> {
             .ok_or_else(|| "no client jar for the bubble-column table".to_string())?;
         let baked = rewo_data::assets::bake(&jar, &paths.blocks_json())?;
         check_bubble_column_table(&mut c, &baked, &paths.blocks_json())?;
+        check_carried_fluid_table(&mut c, &baked, &paths.blocks_json())?;
     }
 
     println!(
@@ -3764,6 +3765,408 @@ fn check_lifecycle(c: &mut Checker, ids: &Ids, blocks: &rewo_data::blocks::Block
         order == vec![(1, 1), (1, 5), (3, 3), (5, 1)],
         format!("{order:?} — lexicographic by (x, y, z)"),
     );
+}
+
+/// M164 — the carried-water table (`BakedAssets::fluid`) against the raw
+/// `blocks.json`, and `BakedAssets::water` (`isWaterAt`) against it.
+///
+/// **Why here.** M64's alphabetisation lesson is that a per-state table which
+/// is silently *short* is invisible: every id still resolves, every state still
+/// renders, and only the missing rows are wrong. The rule itself is unit-tested
+/// in `rewo-data` (`carried_water`); this is the count, and it has to live in a
+/// gate that bakes from the jar. `blockentityshot` is that gate for this table
+/// twice over — it already grades a bake table against the raw report
+/// (`check_bubble_column_table`), and `check_conduit_active` already reads
+/// `BakedAssets::water`, which M164 changed.
+fn check_carried_fluid_table(
+    c: &mut Checker,
+    baked: &rewo_data::assets::BakedAssets,
+    blocks_json: &std::path::Path,
+) -> Result<(), String> {
+    use rewo_data::assets::{FALLING_WATERLOGGED, UNCONDITIONAL_WATER};
+
+    // Read the report RAW — the expectation must not come through the bake.
+    let raw = std::fs::read_to_string(blocks_json).map_err(|e| e.to_string())?;
+    let blocks: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let blocks = blocks.as_object().ok_or("blocks.json is not an object")?;
+
+    // The two families, counted independently of the bake.
+    let mut want_carried: Vec<u32> = Vec::new();
+    let mut want_falling: Vec<u32> = Vec::new();
+    let mut want_unconditional: Vec<u32> = Vec::new();
+    let mut waterlogged_blocks = 0usize;
+    let mut total_states = 0usize;
+    for (name, def) in blocks {
+        let Some(states) = def.get("states").and_then(|s| s.as_array()) else {
+            continue;
+        };
+        total_states += states.len();
+        let unconditional = UNCONDITIONAL_WATER.contains(&name.as_str());
+        let falling = FALLING_WATERLOGGED.contains(&name.as_str());
+        let mut any = false;
+        for st in states {
+            let Some(id) = st.get("id").and_then(|i| i.as_u64()) else {
+                continue;
+            };
+            let id = id as u32;
+            let wl = st
+                .get("properties")
+                .and_then(|p| p.get("waterlogged"))
+                .and_then(|v| v.as_str())
+                == Some("true");
+            if unconditional {
+                want_carried.push(id);
+                want_unconditional.push(id);
+            } else if wl {
+                want_carried.push(id);
+                any = true;
+                if falling {
+                    want_falling.push(id);
+                }
+            }
+        }
+        if any {
+            waterlogged_blocks += 1;
+        }
+    }
+    want_carried.sort_unstable();
+
+    let mut got_carried: Vec<u32> = baked
+        .fluid
+        .iter()
+        .enumerate()
+        .filter_map(|(id, f)| f.map(|_| id as u32))
+        .collect();
+    got_carried.sort_unstable();
+    let mut got_falling: Vec<u32> = baked
+        .fluid
+        .iter()
+        .enumerate()
+        .filter_map(|(id, f)| f.filter(|f| f.falling).map(|_| id as u32))
+        .collect();
+    got_falling.sort_unstable();
+    want_falling.sort_unstable();
+
+    c.record(
+        "the carried-water table is exactly blocks.json's waterlogged + unconditional states",
+        !want_carried.is_empty() && got_carried == want_carried,
+        format!(
+            "baked {} states vs report {} ({} waterlogged=true across {} blocks, of {} states \
+             total, + {} unconditional)",
+            got_carried.len(),
+            want_carried.len(),
+            want_carried.len() - want_unconditional.len(),
+            waterlogged_blocks,
+            total_states,
+            want_unconditional.len(),
+        ),
+    );
+    // The unconditional five are the half a property-keyed rule loses, so they
+    // are named separately rather than only summed into the total above.
+    c.record(
+        "the five unconditional blocks carry water with no `waterlogged` property",
+        want_unconditional.len() == 32
+            && want_unconditional.iter().all(|id| baked.fluid[*id as usize].is_some()),
+        format!("{} states across {} blocks", want_unconditional.len(), UNCONDITIONAL_WATER.len()),
+    );
+    c.record(
+        "only the copper grates carry FALLING water",
+        got_falling == want_falling && want_falling.len() == 8,
+        format!("baked {got_falling:?} vs report {want_falling:?}"),
+    );
+    // `self_occludes` is `face_occludes` for every state that has one, and a
+    // full non-`noOcclusion` cube reads all six instead — the one case
+    // `face_occludes` deliberately leaves at 0.
+    //
+    // **This row is redundant, deliberately, and its previous comment claimed
+    // otherwise.** It said the two "are written from the same expression, and
+    // this is what stops them drifting" — but that is exactly why they CANNOT
+    // drift: the bake's non-full-cube branch is literally `self_occludes =
+    // face_occludes[id]`, read in one statement, and nothing writes
+    // `face_occludes[id]` afterwards. So this cannot catch an error inside
+    // `face_coverage`; what it does catch is the full-cube branch selecting the
+    // wrong arm, and the three slab rows below are what carry the real claim.
+    let occ_mismatch: Vec<u32> = baked
+        .fluid
+        .iter()
+        .enumerate()
+        .filter_map(|(id, f)| {
+            let f = (*f)?;
+            let fo = baked.face_occludes[id];
+            (f.self_occludes != fo && f.self_occludes != 0b11_1111).then_some(id as u32)
+        })
+        .collect();
+    let full_cube_masks = baked
+        .fluid
+        .iter()
+        .filter(|f| f.is_some_and(|f| f.self_occludes == 0b11_1111))
+        .count();
+    c.record(
+        "a carried fluid's self-occlusion is the block's own face_occludes",
+        occ_mismatch.is_empty(),
+        format!(
+            "{} states disagree: {:?}; {full_cube_masks} carriers are full occluding cubes",
+            occ_mismatch.len(),
+            &occ_mismatch[..occ_mismatch.len().min(8)]
+        ),
+    );
+    // The 68 full-cube carriers are, measured, exactly the `type=double`
+    // slabs: a double slab is a full cube, so vanilla's
+    // `getFaceOcclusionShape` (`canOcclude ? getShape : empty`) is
+    // `Shapes.block()` on all six directions and `isFaceOccludedBySelf`
+    // suppresses everything but the top face — which `renderUp` never asks.
+    // Without the full-cube completion those states read 0 from
+    // `face_occludes` (which the LIGHT path deliberately leaves at 0 for a full
+    // cube, routing it through `dampening 15` instead) and a waterlogged double
+    // slab would draw four side faces and a floor INSIDE solid stone.
+    //
+    // The state is **command-only**, which an earlier version of this comment
+    // had backwards — see the stair witness at the end of this function.
+    //
+    // Named against `blocks.json`'s own `type` property rather than
+    // recomputed from `solid`/`no_occlude`, which is the bake's own expression.
+    let slab_mask = |ty: &str| {
+        blocks
+            .get("minecraft:oak_slab")
+            .and_then(|b| b.get("states"))
+            .and_then(|s| s.as_array())
+            .and_then(|states| {
+                states.iter().find(|s| {
+                    let p = s.get("properties");
+                    p.and_then(|p| p.get("type")).and_then(|v| v.as_str()) == Some(ty)
+                        && p.and_then(|p| p.get("waterlogged")).and_then(|v| v.as_str())
+                            == Some("true")
+                })
+            })
+            .and_then(|s| s.get("id"))
+            .and_then(|i| i.as_u64())
+            .and_then(|id| baked.fluid[id as usize])
+            .map(|f| f.self_occludes)
+    };
+    // FACE_DIRS order: [west, east, DOWN, UP, north, south].
+    const DOWN: u8 = 1 << 2;
+    const UP: u8 = 1 << 3;
+    c.record(
+        "a waterlogged DOUBLE slab occludes its own fluid on all six faces",
+        slab_mask("double") == Some(0b11_1111) && full_cube_masks == 68,
+        format!(
+            "{:?}; {full_cube_masks} full-cube carriers (every `type=double` slab, and only those)",
+            slab_mask("double")
+        ),
+    );
+    c.record(
+        "a bottom slab occludes DOWN and a top slab UP, and neither the other",
+        slab_mask("bottom").is_some_and(|m| m & DOWN != 0 && m & UP == 0)
+            && slab_mask("top").is_some_and(|m| m & UP != 0 && m & DOWN == 0),
+        format!("bottom {:?}, top {:?}", slab_mask("bottom"), slab_mask("top")),
+    );
+    // Every carrier is a SOURCE: all 45 `getFluidState` overrides call
+    // `getSource`, never `getFlowing`. A non-zero level here would put the
+    // surface at the wrong height (`fluid_h(0)` is 8/9, `fluid_h(3)` is 5/9).
+    c.record(
+        "every carried fluid is a source (level 0)",
+        !got_carried.is_empty()
+            && got_carried
+                .iter()
+                .all(|id| baked.fluid[*id as usize].is_some_and(|f| f.level == 0)),
+        format!("{} carriers", got_carried.len()),
+    );
+    // `isWaterAt` (M30) is now derived from the same table, which closes a real
+    // gap: kelp, seagrass and bubble columns were dry, so a conduit inside a
+    // kelp forest would refuse to activate.
+    let water_ok = baked.water.iter().enumerate().all(|(id, w)| {
+        let carried = baked.fluid[id].is_some();
+        let own = matches!(
+            baked.render[id],
+            rewo_data::assets::RenderKind::Fluid { lava: false, .. }
+        );
+        *w == (carried || own)
+    });
+    let kelp_wet = blocks
+        .get("minecraft:kelp_plant")
+        .and_then(|b| b.get("states"))
+        .and_then(|s| s.as_array())
+        .and_then(|s| s.first())
+        .and_then(|s| s.get("id"))
+        .and_then(|i| i.as_u64())
+        .map(|id| baked.water[id as usize]);
+    c.record(
+        "isWaterAt covers every carrier, including the five with no property",
+        water_ok && kelp_wet == Some(true),
+        format!("derived-from-fluid {water_ok}, kelp_plant is water: {kelp_wet:?}"),
+    );
+    // ---- M164b: which SPRITE the carriers sample --------------------------
+    //
+    // `CarriedFluid::layer` and `raw_layer` were graded by NOTHING when M164
+    // shipped. Measured, not argued: forcing `water_layers` to lava's pair —
+    // one character, `if !lava` to `if lava` — points all 11,760 carriers at
+    // `block/lava_still`, so every waterlogged block in the game renders
+    // orange lava, and `blockentityshot` stayed 185/185 with `rewo-data`'s 231
+    // unit tests, `meshshot` and `tintshot` all green.
+    //
+    // Three witnesses, each predicting from a source the mutated assignment
+    // does not share:
+    //
+    //  * the TEXTURE, from `BakedAssets::layer_names` — a separate table keyed
+    //    by the layer id and written by `layer_for`'s interning, so a carrier
+    //    pointing at lava names `block/lava_still` there;
+    //  * the ORIENTATION, from vanilla's legacy plains water colour re-declared
+    //    below. `layer` is the pre-tinted copy and `raw_layer` the untinted one
+    //    (M14's biome path reads the second and multiplies its own colour in),
+    //    and a name check cannot separate them because both are
+    //    `block/water_still`. The arithmetic can;
+    //  * the AGREEMENT with the OTHER storage site. `RenderKind::Fluid` is
+    //    where a pool's layers live, `fluid_at` hands both kinds to one
+    //    `FluidHere`, and the two are written in different iterations of the
+    //    bake's block loop — so a waterlogged block beside a pool sampling a
+    //    different sprite is a visible seam, and this is what catches it.
+    let carried_pairs: std::collections::BTreeSet<(u16, u16)> =
+        baked.fluid.iter().flatten().map(|f| (f.layer, f.raw_layer)).collect();
+    let pair = carried_pairs.iter().copied().next();
+    let layer_name = |l: u16| {
+        baked.layer_names.get(l as usize).map(String::as_str).unwrap_or("<no such layer>")
+    };
+    c.record(
+        "every carrier samples block/water_still, and one sprite serves them all",
+        carried_pairs.len() == 1
+            && pair.is_some_and(|(l, r)| {
+                l != r
+                    && layer_name(l).starts_with("block/water_still")
+                    && layer_name(r).starts_with("block/water_still")
+            }),
+        match pair {
+            Some((l, r)) => format!(
+                "{} distinct (layer, raw_layer) pairs; layer {l} = {:?}, raw_layer {r} = {:?}",
+                carried_pairs.len(),
+                layer_name(l),
+                layer_name(r),
+            ),
+            None => "no carriers at all".to_string(),
+        },
+    );
+    // `TintKind::Water` is the fixed plains water colour vanilla ships as
+    // `BiomeSpecialEffects`' default `water_color` — re-declared here rather
+    // than imported, so a wrong constant in the bake moves the render and NOT
+    // the expectation (REWO_PLAN §0.0 gotcha 0a). `tint_rgb`'s form is integer:
+    // `px * c / 255`, alpha untouched.
+    const LEGACY_WATER_TINT: [u16; 3] = [0x3F, 0x76, 0xE4];
+    let tint_ok = pair.map(|(l, r)| {
+        let (Some(tinted), Some(raw)) = (baked.layers.get(l as usize), baked.layers.get(r as usize))
+        else {
+            return (false, "a carried layer is out of range".to_string());
+        };
+        if tinted.len() != raw.len() || raw.len() < 4 {
+            return (false, format!("layer sizes {} vs {}", tinted.len(), raw.len()));
+        }
+        let mut bad = 0usize;
+        let mut nonblack = 0usize;
+        for (t, s) in tinted.chunks_exact(4).zip(raw.chunks_exact(4)) {
+            if s[..3].iter().any(|&v| v != 0) {
+                nonblack += 1;
+            }
+            let want = [
+                (s[0] as u16 * LEGACY_WATER_TINT[0] / 255) as u8,
+                (s[1] as u16 * LEGACY_WATER_TINT[1] / 255) as u8,
+                (s[2] as u16 * LEGACY_WATER_TINT[2] / 255) as u8,
+                s[3],
+            ];
+            if t != want {
+                bad += 1;
+            }
+        }
+        (
+            bad == 0 && nonblack > 0,
+            format!("{bad} of {} texels disagree, {nonblack} non-black", raw.len() / 4),
+        )
+    });
+    c.record(
+        "`layer` is the #3F76E4-tinted copy and `raw_layer` the untinted one, not the reverse",
+        tint_ok.as_ref().is_some_and(|(ok, _)| *ok),
+        tint_ok.map_or("no carriers at all".to_string(), |(_, d)| d),
+    );
+    // The other storage site, found through `blocks.json` rather than through
+    // the bake's own iteration order.
+    let fluid_pair = |name: &str| {
+        blocks
+            .get(name)
+            .and_then(|b| b.get("states"))
+            .and_then(|s| s.as_array())
+            .and_then(|states| {
+                states.iter().find(|s| {
+                    s.get("properties").and_then(|p| p.get("level")).and_then(|v| v.as_str())
+                        == Some("0")
+                })
+            })
+            .and_then(|s| s.get("id"))
+            .and_then(|i| i.as_u64())
+            .and_then(|id| match baked.render.get(id as usize) {
+                Some(&rewo_data::assets::RenderKind::Fluid {
+                    layer,
+                    raw_layer,
+                    lava,
+                    ..
+                }) => Some((layer, raw_layer, lava)),
+                _ => None,
+            })
+    };
+    let pool = fluid_pair("minecraft:water");
+    let lava = fluid_pair("minecraft:lava");
+    c.record(
+        "a carrier and a water POOL sample the same layers, and neither is lava's",
+        pair.is_some()
+            && pool.is_some_and(|(l, r, is_lava)| !is_lava && Some((l, r)) == pair)
+            && lava.is_some_and(|(l, r, is_lava)| is_lava && Some((l, r)) != pair),
+        format!("carried {pair:?}, water source {pool:?}, lava source {lava:?}"),
+    );
+    // The side half of `shouldRenderFace` in the SHAPE it is reachable in.
+    //
+    // The 68 full-cube carriers really are the `type=double` slabs (witnessed
+    // above), and an earlier version of this file and of `rewo-mesh`'s fixture
+    // called that "the common real case". It is not:
+    // `SlabBlock.getStateForPlacement:72` writes `WATERLOGGED, false` the
+    // moment a slab becomes DOUBLE, and `placeLiquid`/`canPlaceLiquid`
+    // (`:106-113`) both refuse a DOUBLE slab — so `type=double,
+    // waterlogged=true` exists in `blocks.json` and is unreachable by
+    // placement, i.e. `/setblock`, a structure or a datapack only. The state is
+    // real and vanilla renders it that way; the JUSTIFICATION was backwards.
+    //
+    // What IS ordinary play is a waterlogged stair: place a stair in water and
+    // its lower step covers a whole vertical face, so `isFaceOccludedBySelf`
+    // suppresses that side. Counted here so the claim is a measurement rather
+    // than a paragraph.
+    const SIDES: u8 = 0b11_0011; // FACE_DIRS [west, east, down, up, north, south]
+    let mut stair_states = 0usize;
+    let mut stair_side_states = 0usize;
+    for (name, def) in blocks {
+        if !name.ends_with("_stairs") {
+            continue;
+        }
+        let Some(states) = def.get("states").and_then(|s| s.as_array()) else {
+            continue;
+        };
+        for st in states {
+            let p = st.get("properties");
+            if p.and_then(|p| p.get("waterlogged")).and_then(|v| v.as_str()) != Some("true") {
+                continue;
+            }
+            let Some(id) = st.get("id").and_then(|i| i.as_u64()) else {
+                continue;
+            };
+            stair_states += 1;
+            if baked.fluid[id as usize].is_some_and(|f| f.self_occludes & SIDES != 0) {
+                stair_side_states += 1;
+            }
+        }
+    }
+    c.record(
+        "a waterlogged STAIR occludes a side — the side rule in a placeable state",
+        stair_states > 0 && stair_side_states > 0 && stair_side_states < stair_states,
+        format!(
+            "{stair_side_states} of {stair_states} waterlogged stair states carry a side bit \
+             (a DOUBLE slab is command-only: SlabBlock.getStateForPlacement:72)"
+        ),
+    );
+    Ok(())
 }
 
 /// `BakedAssets::bubble_column_drag` — the input

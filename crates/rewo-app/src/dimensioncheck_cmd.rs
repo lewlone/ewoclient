@@ -683,6 +683,7 @@ fn cube_tables() -> MeshTables {
     MeshTables {
         render,
         models: Vec::new(),
+        fluid: Vec::new(),
     }
 }
 
@@ -720,7 +721,7 @@ fn check_mesh_binding(defs: &[DimensionTypeDef]) -> Result<MeshReport, String> {
         // visible in every shape.
         let y = d.shape.min_y + 32;
         w.set_block(8, y, 8, STONE);
-        let mesh = rewo_mesh::mesh_column(&w, &tables.render, &tables.models, 0, 0)
+        let mesh = rewo_mesh::mesh_column(&w, &tables.render, &tables.models, &tables.fluid, 0, 0)
             .ok_or_else(|| format!("{name}: the cube column meshed to nothing"))?;
         if mesh.vertices.len() != 24 {
             return Err(format!(
