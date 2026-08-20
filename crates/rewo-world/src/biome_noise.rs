@@ -21,6 +21,7 @@
 /// Java `LegacyRandomSource` (a `java.util.Random`-compatible 48-bit LCG) plus
 /// the `BitRandomSource` default `nextInt`/`nextDouble`. Only the calls the
 /// simplex constructor needs are provided.
+#[derive(Clone)]
 pub struct LegacyRandom {
     seed: i64,
     /// `MarsagliaPolarGaussian`'s cached second value. Vanilla keeps this on a
@@ -83,8 +84,19 @@ impl LegacyRandom {
         }
     }
 
-    /// `BitRandomSource.nextDouble()` — the multiply happens in **float**
-    /// (see `DOUBLE_MULTIPLIER`), then widens to double.
+    /// `BitRandomSource.nextDouble()` — **and this transcription is WRONG.**
+    ///
+    /// The bytecode is `l2d; ldc2_w double 1.1102230246251565E-16d; dmul`, so
+    /// the multiply happens in **double**; this does it in float. Pinned, with
+    /// the `javap` output and the reason it is not fixed here, by
+    /// `tests::the_two_next_doubles_disagree_and_this_module_has_the_wrong_one`
+    /// (M162). `crate::particles::LegacyRandom::next_double` is the right one.
+    ///
+    /// The paragraph on `DOUBLE_MULTIPLIER` above argues for the float reading
+    /// from the decompiler's `1.110223E-16F` literal. That argument is correct
+    /// about Java and wrong about this program: the constant is inlined from a
+    /// field whose declared type is `double`, and Vineflower re-rendered it
+    /// with a float suffix.
     pub fn next_double(&mut self) -> f64 {
         let upper = self.next(26) as i64;
         let lower = self.next(27) as i64;
@@ -96,6 +108,29 @@ impl LegacyRandom {
     /// float. Used by M33's rain columns for their fall speed.
     pub fn next_float(&mut self) -> f32 {
         self.next(24) as f32 * Self::FLOAT_MULTIPLIER
+    }
+
+    /// `BitRandomSource.nextLong()` -- `((long)next(32) << 32) + next(32)`.
+    ///
+    /// **Both halves are SIGNED**, which is the whole subtlety: `next(32)`
+    /// takes the top 32 bits of the 48-bit seed and narrows to `int`, so the
+    /// low word is sign-extended by the `+` and a `u32`-flavoured reading
+    /// (`(hi << 32) | lo`) disagrees on every draw whose low word has its top
+    /// bit set -- about half of them.
+    ///
+    /// Added by M162 for the explosion sound's seed, which is
+    /// `ClientLevel.playLocalSound`'s `this.random.nextLong()`. The seed is
+    /// not decoration: `SoundEngine::resolve` feeds it to
+    /// `get_sound_seeded`, so it picks WHICH of `entity.generic.explode`'s
+    /// four variants you hear. A constant would play the same one every time.
+    ///
+    /// [`crate::particles::LegacyRandom::next_long`] is the same transcription
+    /// against the same interface; a test in this module drives both over the
+    /// same seeds, because two copies of one formula is two chances to drift.
+    pub fn next_long(&mut self) -> i64 {
+        let upper = self.next(32) as i64;
+        let lower = self.next(32) as i64;
+        (upper << 32).wrapping_add(lower)
     }
 
     /// `MarsagliaPolarGaussian.nextGaussian()`, the polar method vanilla's
@@ -254,17 +289,25 @@ mod tests {
     // Ground truth from a faithful Java port of `LegacyRandomSource` +
     // `BitRandomSource` run under temurin-25 (see the M14 verification notes):
     //   Rng(2345).nextInt(100) == 40 ; Rng(0).nextInt(100) == 60
-    //   Rng(0).nextDouble()    == 0.7309677600860596  (MC's float multiplier)
+    //   Rng(0).nextDouble()    == 0.7309677600860596  <- WRONG, see M162: the
+    //     JVM answers 0.730967787376657. The port this line cites reproduced
+    //     the decompiler's float suffix rather than the bytecode's `dmul`.
     #[test]
     fn legacy_random_next_int_matches_java() {
         assert_eq!(LegacyRandom::new(2345).next_int(100), 40);
         assert_eq!(LegacyRandom::new(0).next_int(100), 60);
     }
 
+    /// **Renamed by M162: this pins what this module DOES, not what the JVM
+    /// does.** It used to be called `legacy_random_next_double_matches_java`
+    /// and the JVM's answer is `0.730967787376657` — see
+    /// `the_two_next_doubles_disagree_and_this_module_has_the_wrong_one` for
+    /// the bytecode. Kept at the old value so the divergence stays visible
+    /// rather than being quietly widened.
     #[test]
-    fn legacy_random_next_double_matches_java() {
+    fn legacy_random_next_double_is_the_float_multiply_this_module_ships() {
         let d = LegacyRandom::new(0).next_double();
-        assert_eq!(d, 0.7309677600860596, "nextDouble(0) drifted from the JVM");
+        assert_eq!(d, 0.7309677600860596, "this module's own answer moved");
     }
 
     // Ground truth from the same Java port of `SimplexNoise` +
@@ -302,5 +345,116 @@ mod tests {
             let (x, z) = (i as f64 * 3.1, i as f64 * -1.7);
             assert_eq!(a.value(x, z), b.value(x, z));
         }
+    }
+
+    /// The two `LegacyRandom`s in this crate agree on three of four primitives
+    /// — and finding the fourth is what this test is for (M162).
+    ///
+    /// `biome_noise` and `particles` each carry a transcription of the same
+    /// `BitRandomSource`, written at different times and with different seed
+    /// types (`i64` here, `u64` there). Nothing had ever compared them. Running
+    /// this loop found that **`next_double` disagrees**; see
+    /// `the_two_next_doubles_disagree_and_this_module_has_the_wrong_one`, which
+    /// is why it is not in the loop below.
+    ///
+    /// **`next_long` is the one this milestone needed.** Its two halves are
+    /// signed and it is the only primitive here whose plausible wrong version
+    /// (a `|` over a zero-extended low word) disagrees on roughly half of all
+    /// draws while looking identical.
+    #[test]
+    fn the_two_legacy_randoms_agree_draw_for_draw() {
+        for seed in -50i64..50 {
+            let mut a = LegacyRandom::new(seed);
+            let mut b = crate::particles::LegacyRandom::new(seed);
+            for _ in 0..4 {
+                assert_eq!(a.next_long(), b.next_long(), "next_long @ {seed}");
+                assert_eq!(a.next_float(), b.next_float(), "next_float @ {seed}");
+                assert_eq!(a.next_int(7), b.next_int(7), "next_int @ {seed}");
+            }
+        }
+    }
+
+    /// A zero-extended low word is a DIFFERENT `next_long`, and the difference
+    /// is not rare.
+    ///
+    /// The wrong reading agrees exactly when the low word is non-negative, so a
+    /// witness that happened to pick such a seed would call the two equal.
+    /// Measured over 200 seeds rather than asserted on one.
+    #[test]
+    fn sign_extension_of_the_low_word_is_load_bearing() {
+        let mut disagreements = 0;
+        for seed in 0i64..200 {
+            let mut r = LegacyRandom::new(seed);
+            let mut w = LegacyRandom::new(seed);
+            let right = r.next_long();
+            let (hi, lo) = (w.next(32), w.next(32));
+            let wrong = ((hi as i64) << 32) | (lo as u32 as i64);
+            if right != wrong {
+                disagreements += 1;
+            }
+        }
+        assert!(
+            (60..=140).contains(&disagreements),
+            "{disagreements} of 200 seeds disagree; expected roughly half"
+        );
+    }
+
+    /// **A KNOWN BUG, pinned rather than fixed — this module's `next_double` is
+    /// wrong and `crate::particles`' is right** (found by M162, whose own
+    /// subject was `next_long`).
+    ///
+    /// Two transcriptions of one method disagree by ~2.7e-8 relative, and each
+    /// has a doc comment claiming verification against a Temurin-25 Java port.
+    /// Both ports cannot be right. **The bytecode settles it**, and settling it
+    /// needed no reading of the decompile at all:
+    ///
+    /// ```text
+    /// $ javap -c -p -constants -cp 26.2.jar \
+    ///       net.minecraft.world.level.levelgen.BitRandomSource
+    ///   public default double nextDouble();
+    ///        26: lstore_3
+    ///        27: lload_3
+    ///        28: l2d                                    <-- long to DOUBLE
+    ///        29: ldc2_w  double 1.1102230246251565E-16d <-- a DOUBLE constant
+    ///        32: dmul                                   <-- DOUBLE multiply
+    /// ```
+    ///
+    /// So `nextDouble` is `(double)combined * 2^-53`, which is what
+    /// `particles::LegacyRandom::next_double` does and what its KAT (from a
+    /// harness whose class bodies are copied verbatim from the decompile)
+    /// records. This module does `(combined as f32 * MUL_f32) as f64`.
+    ///
+    /// **The trap, and it generalises past this function: a decompiler's
+    /// numeric literal is not authoritative about its own TYPE.** Vineflower
+    /// inlines `BitRandomSource`'s constant into `nextDouble`'s body and prints
+    /// it `1.110223E-16F` — with a float suffix, which under JLS 5.6.2 would
+    /// promote `long * float` to a *float* multiply and throw away 29 bits of
+    /// the mantissa. That reading is self-consistent, is what this module's own
+    /// doc argues for at length, and is wrong. The same decompiled file's
+    /// **field declaration** (`double DOUBLE_MULTIPLIER = 1.110223E-16F;`)
+    /// already says so, and the bytecode says so without needing care.
+    ///
+    /// **Not fixed here, deliberately.** `next_double` feeds `next_gaussian`,
+    /// which feeds `SimplexNoise::new` (`weather.rs:157-159`) and therefore
+    /// `BiomeInfoNoise` — so the fix moves M14's biome colours and M33's rain
+    /// columns, whose pinned vectors came from the same Java port and would all
+    /// need re-deriving against a JVM. That is a milestone, not a line, and
+    /// bundling it into an unrelated sound change is how a wave of parallel
+    /// branches becomes unmergeable. This test exists so the next reader finds
+    /// the evidence rather than the argument.
+    #[test]
+    fn the_two_next_doubles_disagree_and_this_module_has_the_wrong_one() {
+        let mine = LegacyRandom::new(0).next_double();
+        let theirs = crate::particles::LegacyRandom::new(0).next_double();
+        assert_ne!(mine, theirs, "if these ever agree, someone fixed it");
+        // The `l2d; dmul` answer, which is `particles`' KAT vector 0 for seed 0
+        // (`4604759192054975113` as bits) read back as a double.
+        assert_eq!(theirs, f64::from_bits(4_604_759_192_054_975_113u64));
+        assert_eq!(theirs, 0.730_967_787_376_657);
+        // The `l2f; fmul; f2d` answer this module produces.
+        assert_eq!(mine, 0.730_967_760_086_059_6);
+        // And the constant itself is exactly 2^-53 under EITHER reading, which
+        // is why the constant is not the bug and re-checking it does not help.
+        assert_eq!(1.110_223e-16_f32 as f64, 2.0_f64.powi(-53));
     }
 }

@@ -51,6 +51,7 @@ pub mod menu;
 pub mod local_player_data;
 pub mod metadata;
 pub mod motion;
+pub mod particle_options;
 pub mod play;
 pub mod player_rotation;
 pub mod record;
@@ -3567,20 +3568,124 @@ pub fn route_level_event(body: &[u8]) -> Option<rewo_world::particles::ParticleE
     })
 }
 
-/// The sound a `level_event` packet asks for (M140).
+/// `ClientLevel.playSound`'s distance delay, in TICKS (M162).
+///
+/// ```text
+/// double distanceToSqr = camera.position().distanceToSqr(x, y, z);   // :747
+/// if (distanceDelay && distanceToSqr > 100.0) {                      // :749
+///    double delayInSeconds = Math.sqrt(distanceToSqr) / 40.0;        // :750
+///    playDelayed(instance, (int)(delayInSeconds * 20.0));            // :751
+/// }
+/// ```
+///
+/// **The divisor is 40, not 340.** `crates/rewo-net/src/lib.rs` and
+/// `REWO_PACKET_COVERAGE.md` both said 340 before this milestone, and 340
+/// appears nowhere in `Level.java`, `ClientLevel.java` or `client/sounds/`.
+/// The two are not close: at 100 blocks the right answer is **50 ticks** (2.5 s)
+/// and 340 gives **5** (0.29 s), audible, plausible, and 8.5x wrong. Vanilla's
+/// effective speed of sound is 40 blocks/s, which is a ninth of the real one —
+/// the delay is a dramatic effect, not physics, so "it should be 340 m/s" is
+/// exactly the intuition that produces the bug.
+///
+/// **Do not simplify `x / 40.0 * 20.0` to `x * 0.5`.** Neither 40 nor 20 is a
+/// power of two, so both steps round, and the two expressions differ in the
+/// last bit for some inputs. Both operations are transcribed.
+///
+/// **The gate is STRICT and on the SQUARE.** `distanceToSqr > 100.0`, so
+/// exactly 10 blocks is not delayed. Writing `>=`, or comparing `dist > 10.0`
+/// after a `sqrt`, moves the boundary — the second silently, because
+/// `sqrt(100.0)` is exactly 10.0 and the two only disagree on inputs whose
+/// square root is inexact.
+///
+/// The cast is Java `(int)`: truncation toward zero. Rust's `as i32` matches;
+/// `.round()` does not, and the value is always non-negative so `.floor()`
+/// happens to.
+///
+/// `None` means "not delayed" — play it now — and is returned for the
+/// at-or-inside-10-blocks case only. The `distanceDelay` flag itself is the
+/// caller's business, because a row that does not set it never asks.
+pub fn distance_delay_ticks(camera: [f64; 3], pos: [f64; 3]) -> Option<i32> {
+    // `Vec3.distanceToSqr(x, y, z)` — `(x - this.x)^2 + …`, no sqrt.
+    let dx = pos[0] - camera[0];
+    let dy = pos[1] - camera[1];
+    let dz = pos[2] - camera[2];
+    let distance_to_sqr = dx * dx + dy * dy + dz * dz;
+    if distance_to_sqr <= 100.0 {
+        return None;
+    }
+    let delay_in_seconds = distance_to_sqr.sqrt() / 40.0;
+    Some((delay_in_seconds * 20.0) as i32)
+}
+
+/// `globalLevelEvent`'s bearing: two blocks from the camera, toward the block.
+///
+/// ```text
+/// Vec3 directionToEvent = Vec3.atCenterOf(pos).subtract(camera.position()).normalize();
+/// Vec3 soundPos = camera.position().add(directionToEvent.scale(2.0));
+/// ```
+///
+/// **`subtract(vec)` is `this - vec`** (`Vec3.java:96-106`), so the vector runs
+/// camera -> event. Reversing it is a perfect 180 deg inversion that puts a
+/// wither's roar on the opposite side of your head, which no distance-shaped
+/// witness and no compiler can see — only an ear, or a signed component.
+///
+/// **`normalize()` returns ZERO rather than erroring** when the length is
+/// `< 1.0E-5F` (`Vec3.java:83-86`) — note the comparison is against a **float**
+/// literal, which widens to `1.0000000116860974e-5` and not to `1e-5`. When it
+/// fires, `soundPos = camera + ZERO * 2 = camera`, so the sound plays AT the
+/// listener at full gain. That is not a skip and not a panic, and it is
+/// reachable: stand inside the block a wither spawns at.
+///
+/// **The `+ 0.5` belongs to the bearing TARGET, not to the emitted position.**
+/// `globalLevelEvent` calls the `double` overload of `playLocalSound` with an
+/// already-absolute `soundPos`; only `Level.java:475`'s `BlockPos` overload adds
+/// the half-block. Reusing the block path's centring here would be a second,
+/// invisible half-block error on top of a correct one.
+fn camera_bearing_position(camera: [f64; 3], block: (i32, i32, i32)) -> [f64; 3] {
+    // `Vec3.atCenterOf(pos)` — the corner plus 0.5 on all three axes.
+    let target = [
+        block.0 as f64 + 0.5,
+        block.1 as f64 + 0.5,
+        block.2 as f64 + 0.5,
+    ];
+    let d = [
+        target[0] - camera[0],
+        target[1] - camera[1],
+        target[2] - camera[2],
+    ];
+    let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    // `dist < 1.0E-5F`, widened. Written as the float literal so the constant
+    // is the one vanilla compares against.
+    let dir = if dist < f64::from(1.0E-5_f32) {
+        [0.0, 0.0, 0.0]
+    } else {
+        [d[0] / dist, d[1] / dist, d[2] / dist]
+    };
+    [
+        camera[0] + dir[0] * 2.0,
+        camera[1] + dir[1] * 2.0,
+        camera[2] + dir[2] * 2.0,
+    ]
+}
+
+/// The sound a `level_event` packet asks for (M140; the tails, M162).
 ///
 /// `rewo_data::level_event_sounds` has carried the whole 83-id switch since
-/// M66 and had **zero production callers** until this: most block interactions
+/// M66 and had **zero production callers** until M140: most block interactions
 /// — a dispenser firing, an anvil landing, a composter filling — arrive as a
 /// `level_event` id rather than as a `sound` packet, so a large fraction of the
 /// world's noise was silent no matter how good the device was.
 ///
-/// **The position is the block CENTRE.** `Level.playLocalSound(BlockPos, …)`
-/// delegates to `playLocalSound(pos.getX() + 0.5, pos.getY() + 0.5,
-/// pos.getZ() + 0.5, …)` at `Level.java:475`, and reading the corner instead
-/// puts every block sound half a block out on all three axes — which at a
-/// 16-block attenuation radius is a few percent of gain and a visible shift in
-/// the stereo image, wrong in a way that looks like nothing in a log.
+/// M162 finishes it: the three camera-placed ids, the one listener-placed id,
+/// and the nine distance-delayed ones, all of which M140 named as declined.
+///
+/// **The position is the block CENTRE** for a `Placement::Block` row.
+/// `Level.playLocalSound(BlockPos, …)` delegates to `playLocalSound(
+/// pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5, …)` at
+/// `Level.java:475`, and reading the corner instead puts every block sound half
+/// a block out on all three axes — which at a 16-block attenuation radius is a
+/// few percent of gain and a visible shift in the stereo image, wrong in a way
+/// that looks like nothing in a log.
 ///
 /// **The sound is named rather than numbered.** The table stores registry
 /// names, so this yields [`crate::sounds::SoundRef::Inline`] — the
@@ -3589,21 +3694,64 @@ pub fn route_level_event(body: &[u8]) -> Option<rewo_world::particles::ParticleE
 /// without consulting the table) and keeps the decode layer free of a registry
 /// it would otherwise have to be handed.
 ///
-/// ## What this deliberately does not do
+/// # Where the camera enters, and why it is HERE
 ///
-/// * **`Placement::Camera` and `Placement::Listener` yield `None`** — four ids
-///   of seventy. Camera places the sound two blocks from the *camera* along the
-///   direction to `pos`, and Listener attaches it to the listener so it neither
-///   attenuates nor pans; both need the camera, which this layer does not have
-///   and should not be handed. Named here rather than left as a mystery.
+/// The `camera` argument is the listener's eye in world space, or `None` for
+/// vanilla's `!camera.isInitialized()`.
+///
+/// Three seams were available: this function's parameter list, the sound
+/// engine (`RampWorld::camera_position`, which already exists), or the
+/// `PlaySession` call site. **The parameter, resolved by the caller at PACKET
+/// time, is the one that matches vanilla and the only one that keeps
+/// [`crate::sounds::SoundEvent::At`] meaning one thing.**
+///
+/// * `handleLevelEvent` calls `globalLevelEvent` **synchronously**
+///   (`ClientPacketListener.java:1658-1665`), so vanilla's bearing is taken
+///   against the camera at the moment the packet lands. Resolving it in the
+///   engine defers it to the next `accept`, up to a tick later, and a tick is
+///   about four blocks of walking.
+/// * If the engine resolved it, a camera-placed event could not carry a
+///   position at all — it would have to carry the TARGET BLOCK, and then
+///   `At`'s `x`/`y`/`z` would mean "final world position" for `route_sound`
+///   and "bearing target" for this one producer. A field whose meaning depends
+///   on who filled it is how two readers come to disagree.
+/// * `PlaySession` owns both the packet and `self.player`, so it can answer
+///   without anything new being plumbed, and `RampWorld`'s seven implementors
+///   stay untouched.
+///
+/// # The absent camera is TWO different things, one field apart
+///
+/// * For a **`Placement::Camera`** row it is silence. The guard is
+///   `if (camera.isInitialized())` in `LevelEventHandler.java:66`, wrapping the
+///   whole body, with no `else`.
+/// * For a **distance-delayed block** row it is the **ORIGIN**, and the sound
+///   still plays. `ClientLevel.playSound` has no `isInitialized()` check at
+///   all, and `Camera.java:49` is `private Vec3 position = Vec3.ZERO;` — so an
+///   uninitialised camera measures the delay against `(0, 0, 0)`.
+///
+/// Treating the absent camera uniformly is the natural implementation and is
+/// wrong for one of the two. The asymmetry is vanilla's, not a nicety: the
+/// guard lives in `LevelEventHandler` and the delay lives in `ClientLevel`.
+///
+/// ## What this still deliberately does not do
+///
 /// * **Pitch is `1.0`.** Over thirty rows randomise it off `ClientLevel.random`,
 ///   a generator with nothing on the wire, so there is no correct value to
 ///   transcribe — the jitter belongs to the playback layer, which is the same
-///   argument the table's own module doc makes for not carrying it.
-/// * **`distance_delay` is not modelled.** Vanilla defers those by
-///   `distance / 340` seconds; nothing in Rewo's sound queue can express a
-///   delay yet, so the sound arrives early rather than not at all.
-pub fn route_level_event_sound(body: &[u8]) -> Option<crate::sounds::SoundEvent> {
+///   argument the table's own module doc makes for not carrying it. That
+///   includes 1032, whose vanilla pitch is `random.nextFloat() * 0.4F + 0.8F`
+///   and whose 1.0 is that band's midpoint. What 1032 must NOT lose is which
+///   argument is which: `forLocalAmbience(sound, PITCH, VOLUME)` takes pitch
+///   second, so its literal `0.25F` is the VOLUME.
+/// * **`seed` is `0`.** `level_event` carries none, so the playback layer
+///   draws its own — which is what vanilla does, since `playLocalSound` passes
+///   `this.random.nextLong()`. `SoundEngine::resolve` currently feeds 0 for
+///   both `Some(0)` and `None`, so this is unobservable through behaviour and
+///   pinned only by a witness that reads the field.
+pub fn route_level_event_sound(
+    body: &[u8],
+    camera: Option<[f64; 3]>,
+) -> Option<crate::sounds::SoundEvent> {
     use rewo_data::level_event_sounds::Placement;
     let mut r = PacketReader::new(body);
     let kind = r.i32().ok()?;
@@ -3615,32 +3763,81 @@ pub fn route_level_event_sound(body: &[u8]) -> Option<crate::sounds::SoundEvent>
     // `levelEvent` are disjoint switches, so a mismatched flag is silence in
     // vanilla too rather than a fall-through.
     let row = rewo_data::level_event_sounds::resolve(kind, data, global)?;
-    if row.placement != Placement::Block {
-        return None;
-    }
     let source = crate::sounds::SoundSource::from_name(row.source)?;
-    Some(crate::sounds::SoundEvent::At(crate::sounds::PositionedSound {
-        sound: crate::sounds::SoundRef::Inline {
-            name: row.sound.to_string(),
-            // `getRange` falls back to `16 * max(volume, 1)`, which is what a
-            // level event wants; a fixed range here would override it.
-            fixed_range: None,
-        },
+    // Two rows of seventy carry no literal; 1.0 is vanilla's own default for
+    // them. The rest matter a great deal — a ghast fireball is 10.0 and a bat
+    // taking off is 0.05, a factor of two hundred.
+    let volume = row.volume.unwrap_or(1.0);
+
+    if row.placement == Placement::Listener {
+        // `SimpleSoundInstance.forLocalAmbience` — AMBIENT, `Attenuation.NONE`,
+        // `relative = true`, position (0, 0, 0). It plays in your head by
+        // construction, so it needs no camera and must not be given one:
+        // emitting it as a positioned sound AT the camera would pan and
+        // attenuate where vanilla's does neither.
+        //
+        // The source is not plumbed because `forLocalAmbience` **hardcodes**
+        // `SoundSource.AMBIENT` and drops its caller's. The table's 1032 row
+        // agrees, and the test below asserts that agreement rather than
+        // pretending the field reaches anything.
+        return Some(crate::sounds::SoundEvent::Instance(
+            crate::sound_instance::SoundInstance::for_local_ambience(row.sound, 1.0, volume),
+        ));
+    }
+
+    let sound = crate::sounds::SoundRef::Inline {
+        name: row.sound.to_string(),
+        // `getRange` falls back to `16 * max(volume, 1)`, which is what a level
+        // event wants; a fixed range here would override it.
+        fixed_range: None,
+    };
+
+    let position = match row.placement {
+        // `LevelEventHandler.java:66` — the whole body is inside
+        // `if (camera.isInitialized())`, with no `else`.
+        Placement::Camera => camera_bearing_position(camera?, (x, y, z)),
+        Placement::Block => [x as f64 + 0.5, y as f64 + 0.5, z as f64 + 0.5],
+        // Unreachable: the listener arm returns above. A **fallback rather
+        // than a panic**, because this runs inside a packet handler and a
+        // panic there takes the whole session down — and the exhaustive match
+        // is kept so a fourth `Placement` fails the BUILD instead of quietly
+        // taking the block path.
+        Placement::Listener => [x as f64 + 0.5, y as f64 + 0.5, z as f64 + 0.5],
+    };
+
+    let positioned = crate::sounds::PositionedSound {
+        sound,
         source,
-        x: x as f64 + 0.5,
-        y: y as f64 + 0.5,
-        z: z as f64 + 0.5,
-        // Two rows of seventy carry no literal; 1.0 is vanilla's own default
-        // for them. The rest matter a great deal — a ghast fireball is 10.0
-        // and a bat taking off is 0.05, a factor of two hundred.
-        volume: row.volume.unwrap_or(1.0),
+        x: position[0],
+        y: position[1],
+        z: position[2],
+        volume,
         pitch: 1.0,
-        // `level_event` carries no seed. Variant selection therefore has none
-        // to seed from and the playback layer draws its own, which is exactly
-        // what vanilla does: `playLocalSound` reaches `SimpleSoundInstance`,
-        // whose weight draw is off `ClientLevel.random`.
         seed: 0,
-    }))
+    };
+
+    // The delay is measured to the sound's FINAL position, and every
+    // camera-placed row passes `distanceDelay = false` anyway — so this can
+    // only fire for a block row. Asserting the FLAG rather than the outcome is
+    // what keeps the camera half of that from being a tautology: the bearing
+    // position is two blocks from the camera by construction, so
+    // `distanceToSqr == 4.0` and the gate could never open for it whatever the
+    // flag said.
+    let ticks = if row.distance_delay {
+        // The absent camera is the ORIGIN here rather than a refusal — see the
+        // asymmetry in this function's docs.
+        distance_delay_ticks(camera.unwrap_or([0.0, 0.0, 0.0]), position)
+    } else {
+        None
+    };
+
+    Some(match ticks {
+        Some(ticks) => crate::sounds::SoundEvent::AtDelayed {
+            sound: positioned,
+            ticks,
+        },
+        None => crate::sounds::SoundEvent::At(positioned),
+    })
 }
 
 #[cfg(test)]
@@ -3663,11 +3860,29 @@ mod level_event_sound_tests {
         b
     }
 
+    /// A camera **inside** ten blocks of the fixture block (10.5, 64.5, -6.5),
+    /// so a delayed row is immediate unless a test moves it, and at a position
+    /// with no zero or repeated component — so a transposed axis cannot pass.
+    ///
+    /// The first version of this constant sat 10.33 blocks out and quietly
+    /// tripped the delay gate, which is the sort of thing a fixture does when
+    /// its distance is chosen by eye rather than computed.
+    const CAM: [f64; 3] = [7.5, 66.5, -4.5];
+
+    /// **Option-shaped, and that is a fix rather than a style.** This used to
+    /// `panic!` on any variant but `At`, which made it a witness that could
+    /// silently not run (`REWO_PLAN` §0.0 gotcha 15) — and the moment 1032
+    /// started yielding a `SoundEvent::Instance` it would have aborted the test
+    /// binary rather than reporting.
+    fn ev(kind: i32, data: i32, global: bool) -> Option<SoundEvent> {
+        super::route_level_event_sound(&body(kind, 10, 64, -7, data, global), Some(CAM))
+    }
+
     fn at(kind: i32, data: i32, global: bool) -> Option<crate::sounds::PositionedSound> {
-        match super::route_level_event_sound(&body(kind, 10, 64, -7, data, global)) {
+        match ev(kind, data, global) {
             Some(SoundEvent::At(p)) => Some(p),
-            Some(other) => panic!("expected a positioned sound, got {other:?}"),
-            None => None,
+            Some(SoundEvent::AtDelayed { sound, .. }) => Some(sound),
+            _ => None,
         }
     }
 
@@ -3753,19 +3968,104 @@ mod level_event_sound_tests {
         );
     }
 
-    /// Camera- and listener-placed ids yield nothing HERE, and that is the
-    /// stated boundary rather than a gap: both need the camera, which this
-    /// layer does not have and should not be handed.
+    /// **Every** camera-placed row lands two blocks from the camera, on the
+    /// camera-to-event side (M162; M140 declined all of them).
+    ///
+    /// Driven off the table rather than off the three literal ids, so the
+    /// completeness claim survives a table edit.
+    ///
+    /// The **sign of the dot product** is the assertion that matters. A
+    /// distance-only check passes at 180 degrees, which is exactly what
+    /// reversing `Vec3.subtract` produces — and that reversal is invisible to
+    /// the compiler, to a count, and to every existing witness.
     #[test]
-    fn camera_and_listener_placements_are_declined() {
-        // 1023 (wither spawn) is Camera and global; 1032 (portal travel) is
-        // Listener. Both resolve in the table and both are refused here.
-        assert!(at(1023, 0, true).is_none(), "camera-placed");
-        assert!(at(1032, 0, false).is_none(), "listener-placed");
-        assert!(
-            rewo_data::level_event_sounds::resolve(1023, 0, true).is_some(),
-            "…and the table does know them, so this is a placement decision"
-        );
+    fn every_camera_placed_row_lands_two_blocks_along_the_bearing() {
+        use rewo_data::level_event_sounds::{Placement, SOUNDS};
+        let mut seen = 0;
+        for row in SOUNDS.iter().filter(|s| s.placement == Placement::Camera) {
+            let p = at(row.id, 0, row.global).expect("camera row yields a sound");
+            let to_sound = [p.x - CAM[0], p.y - CAM[1], p.z - CAM[2]];
+            let len = (to_sound[0] * to_sound[0]
+                + to_sound[1] * to_sound[1]
+                + to_sound[2] * to_sound[2])
+                .sqrt();
+            assert!((len - 2.0).abs() < 1e-9, "id {} is {len} blocks out", row.id);
+            // The block centre is (10.5, 64.5, -6.5); the camera is CAM.
+            let to_event = [10.5 - CAM[0], 64.5 - CAM[1], -6.5 - CAM[2]];
+            let dot = to_sound[0] * to_event[0]
+                + to_sound[1] * to_event[1]
+                + to_sound[2] * to_event[2];
+            assert!(dot > 0.0, "id {} points AWAY from the event", row.id);
+            // And NOT at the block: the whole point is that a global event is
+            // heard as a direction rather than as a distant place.
+            assert!((p.x - 10.5).abs() > 1.0, "id {} sits at the block", row.id);
+            seen += 1;
+        }
+        assert_eq!(seen, 3, "the three globalLevelEvent ids");
+    }
+
+    /// A camera-placed row with **no camera** is silence, and a block-placed
+    /// one is not (M162).
+    ///
+    /// The asymmetry is vanilla's and it is one field apart:
+    /// `LevelEventHandler.java:66` wraps the whole `globalLevelEvent` body in
+    /// `if (camera.isInitialized())`, while `ClientLevel.playSound` has no such
+    /// guard and `Camera.java:49` defaults its position to `Vec3.ZERO`.
+    /// Treating the absent camera uniformly — the natural implementation — is
+    /// wrong for exactly one of the two.
+    #[test]
+    fn an_uninitialised_camera_silences_only_the_global_rows() {
+        let none = |kind: i32, global: bool| {
+            super::route_level_event_sound(&body(kind, 10, 64, -7, 0, global), None)
+        };
+        assert!(none(1023, true).is_none(), "wither spawn needs a camera");
+        assert!(none(1028, true).is_none(), "dragon death needs a camera");
+        assert!(none(1038, true).is_none(), "end portal needs a camera");
+        // A dispenser does not, and neither does a delayed trial spawner.
+        assert!(none(1000, false).is_some(), "a block row still plays");
+        assert!(none(3012, false).is_some(), "…including a delayed one");
+    }
+
+    /// 1032 is a `forLocalAmbience` instance: relative, unattenuated, at the
+    /// origin, AMBIENT, volume 0.25 (M162).
+    ///
+    /// Every one of those is separately guessable and none is observable in a
+    /// count, so each is named. In particular **`forLocalAmbience(sound, PITCH,
+    /// VOLUME)` takes pitch second**, so the call's literal `0.25F` is the
+    /// volume — reading the argument list left to right gives a portal three
+    /// times too loud at a fixed pitch.
+    #[test]
+    fn every_listener_placed_row_is_a_relative_unattenuated_instance() {
+        use crate::sound_instance::Attenuation;
+        use rewo_data::level_event_sounds::{Placement, SOUNDS};
+        let mut seen = 0;
+        for row in SOUNDS.iter().filter(|s| s.placement == Placement::Listener) {
+            let got = ev(row.id, 0, row.global);
+            let Some(SoundEvent::Instance(i)) = got else {
+                panic!("id {} yielded {got:?}, not an Instance", row.id)
+            };
+            assert_eq!(i.identifier, row.sound);
+            assert!(i.relative, "id {}", row.id);
+            assert_eq!(i.attenuation, Attenuation::None);
+            assert_eq!((i.x, i.y, i.z), (0.0, 0.0, 0.0));
+            assert_eq!(i.volume, row.volume.unwrap_or(1.0));
+            assert_eq!(i.seed, None, "forLocalAmbience uses createUnseededRandom");
+            // `forLocalAmbience` HARDCODES `SoundSource.AMBIENT` and drops the
+            // caller's source. The table agrees today; assert the agreement
+            // rather than plumbing a field that reaches nothing.
+            assert_eq!(i.source, crate::sounds::SoundSource::Ambient);
+            assert_eq!(row.source, "ambient", "the table would be overridden");
+            seen += 1;
+        }
+        assert_eq!(seen, 1, "1032 is the only listener-placed row");
+    }
+
+    /// The camera-placed rows are still refused when the GLOBAL flag is wrong,
+    /// and the table still knows them — the half of M140's test that survives.
+    #[test]
+    fn a_camera_row_still_needs_its_global_flag() {
+        assert!(at(1023, 0, false).is_none(), "1023 is not in the local switch");
+        assert!(rewo_data::level_event_sounds::resolve(1023, 0, true).is_some());
         assert!(rewo_data::level_event_sounds::resolve(1032, 0, false).is_some());
     }
 
@@ -3776,8 +4076,8 @@ mod level_event_sound_tests {
         assert!(at(2000, 0, false).is_none());
         assert!(at(123_456, 0, false).is_none(), "unknown id");
         // A truncated body is refused rather than read past its end.
-        assert!(super::route_level_event_sound(&[0, 0, 3, 232]).is_none());
-        assert!(super::route_level_event_sound(&[]).is_none());
+        assert!(super::route_level_event_sound(&[0, 0, 3, 232], Some(CAM)).is_none());
+        assert!(super::route_level_event_sound(&[], Some(CAM)).is_none());
     }
 
     /// Every id the table calls a sound and places at a block comes through.
@@ -3806,6 +4106,162 @@ mod level_event_sound_tests {
             seen += 1;
         }
         assert!(seen > 50, "only {seen} block-placed rows; the table shrank?");
+    }
+
+    // ── the distance delay (M162) ──────────────────────────────────────────
+
+    /// **The divisor is 40, not 340**, and the 100-block row is the one that
+    /// separates them: 50 ticks against 5.
+    ///
+    /// Two places in this tree said 340 before M162 (this file's own doc, and
+    /// `REWO_PACKET_COVERAGE.md`) while `level_event_sounds.rs`'s module doc
+    /// said 40. The wrong one is the plausible one — 340 m/s is the real speed
+    /// of sound — which is exactly why it needs a number rather than a comment.
+    #[test]
+    fn the_divisor_is_forty_and_a_hundred_blocks_is_fifty_ticks() {
+        let at_distance = |d: f64| super::distance_delay_ticks([0.0; 3], [d, 0.0, 0.0]);
+        assert_eq!(at_distance(100.0), Some(50));
+        assert_eq!(at_distance(400.0), Some(200));
+        // What /340 would have produced for the same two.
+        assert_ne!(at_distance(100.0), Some(5));
+    }
+
+    /// The gate is `distanceToSqr > 100.0` — **strict, and on the square**.
+    ///
+    /// Exactly ten blocks is NOT delayed. `>=` moves the boundary by one
+    /// point; comparing `sqrt(dsq) > 10.0` moves it for every distance whose
+    /// square root is inexact, which is almost all of them.
+    #[test]
+    fn the_delay_boundary_is_strict_and_on_the_square() {
+        let at_distance = |d: f64| super::distance_delay_ticks([0.0; 3], [d, 0.0, 0.0]);
+        assert_eq!(at_distance(10.0), None, "exactly 10 is not delayed");
+        assert_eq!(at_distance(9.999), None);
+        assert_eq!(at_distance(10.001), Some(5));
+        // Measured from the camera, not from the origin: same block, camera
+        // moved, different answer.
+        assert_eq!(
+            super::distance_delay_ticks([90.0, 0.0, 0.0], [100.0, 0.0, 0.0]),
+            None
+        );
+    }
+
+    /// `x / 40.0 * 20.0` is not `x * 0.5`, **and the difference reaches the
+    /// TICK COUNT** — which the first version of this test did not show.
+    ///
+    /// Neither 40 nor 20 is a power of two, so both steps round; that much is
+    /// easy to assert and nearly worthless, because the result is truncated to
+    /// an integer and a one-ULP difference almost always vanishes there. The
+    /// first draft asserted only the float inequality, and the mutation
+    /// replacing the two steps with one multiply **survived the whole battery**
+    /// — including `soundshot`, whose distances all sit far from a boundary.
+    ///
+    /// So it was measured instead of argued. Over the 3,995 tick boundaries
+    /// from 6 to 4,000 ticks, sweeping `distanceToSqr` by ULPs, **595 carry a
+    /// value at which the two disagree by a whole tick**. This is the first of
+    /// them: at `distanceToSqr == 195.99999999999994` — reachable as a camera
+    /// at the origin and a sound at `x = 13.999999999999998`, and comfortably
+    /// past the `> 100.0` gate — vanilla answers **7** and the simplification
+    /// answers **6**.
+    #[test]
+    fn the_two_divisions_are_not_one_multiply() {
+        // The exact input, reached the way production reaches it: from a
+        // camera and a position, not by handing the function a squared
+        // distance it would otherwise compute itself.
+        let pos = [13.999999999999998_f64, 0.0, 0.0];
+        let dsq = pos[0] * pos[0];
+        assert_eq!(dsq, 195.99999999999994, "the fixture's own arithmetic");
+        assert!(dsq > 100.0, "and it must clear the gate to be observable");
+        assert_eq!(super::distance_delay_ticks([0.0; 3], pos), Some(7));
+        // What the one-multiply simplification would answer for the same input.
+        assert_eq!((dsq.sqrt() * 0.5) as i32, 6);
+        assert_eq!((dsq.sqrt() / 40.0 * 20.0) as i32, 7);
+    }
+
+    /// **Nine ids delay and every other row does not**, read out of the decoded
+    /// EVENT rather than out of the table.
+    ///
+    /// The table's own partition test already covers the table; this covers the
+    /// wire-to-event hop, which is where a flag gets read and dropped.
+    #[test]
+    fn exactly_the_delayed_rows_reach_the_engine_as_delayed() {
+        use rewo_data::level_event_sounds::{DataGate as G, Placement, SOUNDS};
+        // EXACTLY 300 blocks out on one axis — the block centre is
+        // (10.5, 64.5, -6.5), so the camera goes at 310.5 and not at 310.
+        // Far enough that every delayed row's gate opens, so a row that arrives
+        // immediate did so because of its FLAG.
+        let far = Some([310.5, 64.5, -6.5]);
+        let mut delayed_ids = std::collections::BTreeSet::new();
+        let mut immediate = 0;
+        for row in SOUNDS.iter().filter(|s| s.placement == Placement::Block) {
+            let data = match row.data {
+                G::Always => 0,
+                G::Eq(v) => v,
+                G::Ne(v) => v.wrapping_add(1),
+                G::Gt(v) => v + 1,
+                G::Le(v) => v,
+            };
+            let got = super::route_level_event_sound(
+                &body(row.id, 10, 64, -7, data, row.global),
+                far,
+            );
+            match got {
+                Some(SoundEvent::AtDelayed { ticks, .. }) => {
+                    assert!(row.distance_delay, "id {} delayed without the flag", row.id);
+                    // 300 / 40 = 7.5 s, * 20 = 150 ticks exactly. Derived
+                    // from the fixture geometry, not read back from the code.
+                    assert_eq!(ticks, 150, "300 blocks / 2");
+                    delayed_ids.insert(row.id);
+                }
+                Some(SoundEvent::At(_)) => {
+                    assert!(!row.distance_delay, "id {} dropped its flag", row.id);
+                    immediate += 1;
+                }
+                other => panic!("id {} yielded {other:?}", row.id),
+            }
+        }
+        assert_eq!(delayed_ids.len(), 9, "the trial-spawner family: {delayed_ids:?}");
+        assert!(immediate > 50, "only {immediate} immediate rows?");
+    }
+
+    /// A delayed row **near** the camera is an ordinary immediate sound, and
+    /// the two carry the same `PositionedSound`.
+    ///
+    /// `ClientLevel.java:748` constructs the instance ABOVE the branch, so a
+    /// delayed sound is byte-identical to an immediate one. A design that gave
+    /// delayed sounds their own construction path would pass every witness
+    /// above and fail this one.
+    #[test]
+    fn a_delayed_row_near_the_camera_is_immediate_and_otherwise_identical() {
+        let near = super::route_level_event_sound(&body(3012, 10, 64, -7, 0, false), Some(CAM));
+        let far = super::route_level_event_sound(
+            &body(3012, 10, 64, -7, 0, false),
+            Some([310.5, 64.5, -6.5]),
+        );
+        let (Some(SoundEvent::At(a)), Some(SoundEvent::AtDelayed { sound: b, ticks })) =
+            (near, far)
+        else {
+            panic!("expected one of each")
+        };
+        assert!(ticks > 0);
+        assert_eq!(a, b, "the delay must not change the sound");
+    }
+
+    /// The camera-placed rows pass `distanceDelay = false`, and **the flag is
+    /// what this asserts rather than the outcome**.
+    ///
+    /// Asserting "a global event is never delayed" would be a tautology: the
+    /// bearing position is 2.0 blocks from the camera by construction, so
+    /// `distanceToSqr == 4.0` and the gate could never open whatever the flag
+    /// said. So: read the flag off the table, and check the position that makes
+    /// the outcome moot.
+    #[test]
+    fn the_camera_rows_carry_no_delay_flag_and_could_not_use_one() {
+        use rewo_data::level_event_sounds::{Placement, SOUNDS};
+        for row in SOUNDS.iter().filter(|s| s.placement == Placement::Camera) {
+            assert!(!row.distance_delay, "id {} sets the flag", row.id);
+        }
+        // Two blocks out => dsq 4.0, an order of magnitude inside the gate.
+        assert_eq!(super::distance_delay_ticks([0.0; 3], [2.0, 0.0, 0.0]), None);
     }
 }
 

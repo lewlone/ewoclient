@@ -285,14 +285,18 @@ pub fn read_set_entity_motion(body: &[u8]) -> Result<EntityMotion> {
 /// struct carries are exactly the prefix — the physics payload sits entirely
 /// before the open-ended tail.
 ///
-/// The tail is skipped rather than walked because `ParticleTypes.STREAM_CODEC`
-/// dispatches on a registry id into that particle type's own options codec,
-/// and M37 transcribed only the handful of types it simulates
-/// (`route_level_particles` returns `None` for the rest for the same reason).
-/// Consuming `explosionParticle` therefore requires transcribing ~125 option
-/// codecs, `explosionSound` requires the inline-`SoundEvent` branch, and
-/// `blockParticles` requires a `WeightedList` of the first. None of that
-/// changes a single number the player's velocity depends on.
+/// The tail is not walked *here*, and this paragraph used to say why it could
+/// not be walked at all: "consuming `explosionParticle` requires transcribing
+/// ~125 option codecs". **That was wrong by about 10x** (M162). Measured
+/// against `ParticleTypes.java`: 125 registrations, **103 of them
+/// `SimpleParticleType` with zero option bytes**, and the other 22 sharing 13
+/// option classes that all compose from combinators `component_wire::Shape`
+/// already had. [`read_explode_tail`] does it.
+///
+/// This function still stops here, deliberately: the physics prefix must decode
+/// even when the tail cannot, because the knockback is the packet's
+/// class-A payload and an untranscribed particle type would otherwise cost it.
+/// See [`read_explode_tail`] for the split.
 ///
 /// Stopping early is safe rather than a desync risk for the reason
 /// `route_level_particles` records: frames are length-prefixed, so abandoning
@@ -349,6 +353,177 @@ pub fn read_explode(body: &[u8]) -> Result<(Explosion, usize)> {
         },
         r.offset(),
     ))
+}
+
+/// The three fields [`read_explode`] stops before (M162).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExplosionTail {
+    /// `ParticleTypes.STREAM_CODEC explosionParticle` — the registry NAME, so
+    /// a caller can say which fireball the server asked for without holding
+    /// the report. Vanilla passes it to `level.addParticle(…, 1.0, 0.0, 0.0)`.
+    pub particle: String,
+    /// `SoundEvent.STREAM_CODEC explosionSound` — `ByteBufCodecs.holder`, so
+    /// `id + 1` with **0 meaning an inline definition follows**. This is the
+    /// field the milestone existed for: `handleExplosion`'s first statement is
+    /// `playLocalSound(center, packet.explosionSound().value(), BLOCKS, 4.0F,
+    /// …)`, and it was being thrown away.
+    pub sound: crate::sounds::SoundRef,
+    /// How many entries `blockParticles` carried.
+    ///
+    /// The *contents* are walked and discarded: they belong to the tracker
+    /// (`ClientExplosionTracker`), which is a separate milestone, and capturing
+    /// values nothing reads is how a struct grows fields no test can see. The
+    /// count is kept because it is the one thing the walk proves cheaply — a
+    /// list that decoded as empty when the server sent two is a silent failure
+    /// that `used == body.len()` alone would not catch, since a zero-length
+    /// misread would stop one byte short and only *then* look truncated.
+    pub block_particles: usize,
+    /// Bytes consumed — the whole body, for a well-formed packet.
+    pub used: usize,
+}
+
+/// Decode an `explode` body **including** the tail (M162).
+///
+/// Wire order after [`read_explode`]'s prefix, from
+/// `ClientboundExplodePacket.STREAM_CODEC`:
+///
+/// 1. `ParticleTypes.STREAM_CODEC explosionParticle`
+/// 2. `SoundEvent.STREAM_CODEC explosionSound`
+/// 3. `WeightedList.streamCodec(ExplosionParticleInfo.STREAM_CODEC)
+///    blockParticles` — a VarInt count, then per entry an
+///    `ExplosionParticleInfo` (a particle, `FLOAT scaling`, `FLOAT speed`)
+///    followed by a `VAR_INT weight`, because `Weighted.streamCodec` puts the
+///    value first and the weight second.
+///
+/// # Two holder conventions, one field apart
+///
+/// `explosionParticle` is `ByteBufCodecs.registry(...)` — a **raw** id.
+/// `explosionSound` is `ByteBufCodecs.holder(...)` — **`id + 1`, with 0 meaning
+/// an inline `SoundEvent` follows**. Reading either as the other shifts by one
+/// and then reads the following field as something else, so the weighted list
+/// after them is garbage. They are adjacent on purpose in the fixture that
+/// grades this.
+///
+/// # Why this is a SECOND entry point rather than a change to `read_explode`
+///
+/// The knockback is the packet's physics payload and M68 shipped it. If the
+/// tail's walk were part of the same function, an untranscribed particle type
+/// on some future server would cost the player their explosion knockback — a
+/// visible, physical wrong — to save a sound. So the caller reads the prefix
+/// (which cannot fail on tail content), applies the physics, and *then* tries
+/// the tail; a tail failure costs only the sound.
+///
+/// It also keeps [`read_explode`]'s three witnesses green **unchanged**, which
+/// is the evidence that this milestone is additive. Two of them drive bodies
+/// with no tail at all and would panic under a reader that continued past the
+/// prefix, and the third asserts `used == EXPLODE_PREFIX_LEN_WITH_KNOCKBACK`
+/// against a body whose tail is a deliberate sentinel.
+pub fn read_explode_tail(
+    body: &[u8],
+    types: &rewo_data::particle_types::ParticleTypes,
+) -> Result<ExplosionTail> {
+    // The prefix, through the SAME function production uses, so the two cannot
+    // disagree about where the tail starts.
+    let (_, prefix) = read_explode(body)?;
+    let mut r = PacketReader::new(&body[prefix..]);
+
+    let particle = crate::particle_options::walk_particle(&mut r, types)
+        .ok_or_else(|| rewo_proto::ProtoError::Frame("explode: unwalkable explosionParticle".into()))?;
+    let sound = crate::sounds::SoundRef::read(&mut r)?;
+
+    // `ByteBufCodecs.list()` — a VarInt count. `count` rejects a length the
+    // remaining bytes cannot hold rather than trusting it.
+    let n = r.count("explode blockParticles", 1)?;
+    for _ in 0..n {
+        // `ExplosionParticleInfo` is a THREE-field record — particle, scaling
+        // AND speed. Reading it as two floats' worth short leaves every
+        // subsequent entry misaligned, and the last one runs off the end,
+        // which reads as a truncated packet rather than as a bad shape.
+        crate::particle_options::walk_particle(&mut r, types).ok_or_else(|| {
+            rewo_proto::ProtoError::Frame("explode: unwalkable blockParticles entry".into())
+        })?;
+        let _scaling = r.f32()?;
+        let _speed = r.f32()?;
+        let _weight = r.varint()?;
+    }
+
+    Ok(ExplosionTail {
+        particle,
+        sound,
+        block_particles: n,
+        used: prefix + r.offset(),
+    })
+}
+
+/// `handleExplosion`'s first statement, as a value (M162).
+///
+/// ```java
+/// this.minecraft.level.playLocalSound(center.x(), center.y(), center.z(),
+///    packet.explosionSound().value(), SoundSource.BLOCKS, 4.0F,
+///    (1.0F + (level.getRandom().nextFloat() - level.getRandom().nextFloat()) * 0.2F) * 0.7F,
+///    false);
+/// ```
+///
+/// **Volume 4.0 and pitch around 0.7**, neither of them a default and both
+/// audible: `getRange` is `16 * max(volume, 1)`, so 4.0 is four times a normal
+/// block sound's carrying distance, and the 0.7 centre is why an explosion
+/// sounds low rather than sharp. The two draws are each in `[0, 1)`, so the
+/// pitch band is `[0.56, 0.84]` for every seed.
+///
+/// The position is the packet's `center` **verbatim** — `playLocalSound`'s
+/// `double` overload, not the `BlockPos` one, so no half-block centring.
+/// `distanceDelay` is `false`: an explosion is not thunder.
+///
+/// # It takes the generator rather than three numbers
+///
+/// Vanilla makes exactly **three consecutive draws off `Level.random`**
+/// (`Level.java:122`; `ClientLevel` does not shadow it): `nextFloat`,
+/// `nextFloat`, then `nextLong` for the seed inside `playLocalSound`. Passing
+/// the RNG in rather than the values keeps that ORDER inside a function a test
+/// can drive — `PlaySession` owns a socket and cannot be built in one (M71),
+/// so anything left up there is ungraded (M97).
+///
+/// Rewo's stand-in for `Level.random` is `PlaySession::ambient_rng`, whose own
+/// doc already says "vanilla shares the level's". Vanilla's is nanotime-seeded
+/// and reproduces nothing, so only the *distribution* is a transcribable fact
+/// — but from a fixed start the order is exactly observable, and it is:
+/// [`tests::the_explosion_sound_matches_a_real_jvm`] pins the (pitch, seed)
+/// pair against numbers a real JDK 25 printed, and `soundshot`'s `w16` sweeps
+/// 256 start seeds against the same LCG re-declared from
+/// `LegacyRandomSource.java`'s literals. Both name the seed-first ordering and
+/// show it disagrees, so neither can be satisfied by a reordering. **That
+/// sentence used to end "which is why it is stated here rather than discovered
+/// later", and nothing graded it** — a review moved the seed draw and every
+/// gate stayed green.
+///
+/// The seed is not decoration: `SoundEngine::resolve` feeds it to
+/// `get_sound_seeded`, so it chooses **which of `entity.generic.explode`'s
+/// four variants plays**. A constant would play the same one every time, which
+/// is the sort of wrong no gate can hear — and until the witnesses above, no
+/// gate could *see* it either: `let seed = 0;` passed `soundshot` 35/35 and
+/// this crate's 1187 tests.
+pub fn explosion_sound(
+    tail: &ExplosionTail,
+    center: Vec3,
+    rng: &mut rewo_world::biome_noise::LegacyRandom,
+) -> crate::sounds::PositionedSound {
+    // `(1.0F + (nextFloat() - nextFloat()) * 0.2F) * 0.7F`, all in f32 and left
+    // to right. A single draw would give a band half as wide and centred
+    // wrong; doing it in f64 would drift from vanilla's rounding.
+    let a = rng.next_float();
+    let b = rng.next_float();
+    let pitch = (1.0f32 + (a - b) * 0.2f32) * 0.7f32;
+    let seed = rng.next_long();
+    crate::sounds::PositionedSound {
+        sound: tail.sound.clone(),
+        source: crate::sounds::SoundSource::Blocks,
+        x: center.x,
+        y: center.y,
+        z: center.z,
+        volume: 4.0,
+        pitch,
+        seed,
+    }
 }
 
 // ── move_vehicle ────────────────────────────────────────────────────────────
@@ -815,6 +990,197 @@ mod tests {
         assert_eq!(e.player_knockback, None);
     }
 
+    // ── the tail (M162) ────────────────────────────────────────────────────
+
+    /// A registry whose ids are deliberately NOT alphabetical and NOT the real
+    /// ones, so nothing here can pass by accidentally agreeing with a sorted
+    /// `enumerate()`.
+    fn tail_types() -> rewo_data::particle_types::ParticleTypes {
+        rewo_data::particle_types::ParticleTypes::from_pairs(&[
+            (29, "minecraft:explosion_emitter"), // Simple: zero option bytes
+            (66, "minecraft:poof"),              // Simple
+            (69, "minecraft:smoke"),             // Simple
+            (1, "minecraft:block"),              // VarInt block state
+            (28, "minecraft:entity_effect"),     // fixed i32 colour
+            (55, "minecraft:vibration"),         // nested dispatch
+        ])
+    }
+
+    /// A `blockParticles` entry: the particle, `FLOAT scaling`, `FLOAT speed`,
+    /// then the `VAR_INT weight` `Weighted.streamCodec` writes after the value.
+    fn weighted_entry(b: &mut Vec<u8>, particle_id: i32, weight: i32) {
+        rewo_proto::varint::write_varint(b, particle_id);
+        b.extend_from_slice(&0.5f32.to_be_bytes()); // scaling
+        b.extend_from_slice(&1.0f32.to_be_bytes()); // speed
+        rewo_proto::varint::write_varint(b, weight);
+    }
+
+    /// Vanilla's own default list: POOF and SMOKE, one each.
+    ///
+    /// `Level.java:105-108` is the only `ExplosionParticleInfo` construction
+    /// site in the whole decompile.
+    fn default_block_particles(b: &mut Vec<u8>) {
+        rewo_proto::varint::write_varint(b, 2);
+        weighted_entry(b, 66, 1);
+        weighted_entry(b, 69, 1);
+    }
+
+    /// A whole tail: particle, sound (as a registry holder), weighted list.
+    fn explode_tail_bytes(particle_id: i32, sound_holder: i32) -> Vec<u8> {
+        let mut b = Vec::new();
+        rewo_proto::varint::write_varint(&mut b, particle_id);
+        rewo_proto::varint::write_varint(&mut b, sound_holder);
+        default_block_particles(&mut b);
+        b
+    }
+
+    /// **The whole body is consumed, to the last byte.**
+    ///
+    /// `used == body.len()` is the assertion the tail exists for: every field
+    /// in it is variable-length and none is length-prefixed, so a shape that is
+    /// wrong anywhere leaves a remainder or runs off the end.
+    #[test]
+    fn the_explode_tail_is_consumed_exactly() {
+        let mut body = explode_body(Some(Vec3::new(0.4, 0.7, -0.2)));
+        // `entity.generic.explode` would be some registry id; the holder is
+        // that id PLUS ONE.
+        body.extend_from_slice(&explode_tail_bytes(29, 1234 + 1));
+        let t = read_explode_tail(&body, &tail_types()).unwrap();
+        assert_eq!(t.used, body.len(), "left {} bytes", body.len() - t.used);
+        assert_eq!(t.particle, "minecraft:explosion_emitter");
+        assert_eq!(t.sound, crate::sounds::SoundRef::Registry(1234));
+        assert_eq!(t.block_particles, 2);
+    }
+
+    /// **The two holder conventions, one field apart.**
+    ///
+    /// `explosionParticle` is `ByteBufCodecs.registry(...)` — a raw id.
+    /// `explosionSound` is `ByteBufCodecs.holder(...)` — `id + 1`, with **0
+    /// meaning an inline definition follows**. Reading either as the other
+    /// desynchronises the weighted list after them.
+    #[test]
+    fn the_particle_is_a_raw_id_and_the_sound_is_id_plus_one() {
+        let types = tail_types();
+
+        // The sound as an INLINE definition: 0, an identifier, an
+        // `Optional<Float>` fixed range.
+        let mut body = explode_body(None);
+        rewo_proto::varint::write_varint(&mut body, 29);
+        rewo_proto::varint::write_varint(&mut body, 0); // inline
+        let name = "mypack:custom.boom";
+        rewo_proto::varint::write_varint(&mut body, name.len() as i32);
+        body.extend_from_slice(name.as_bytes());
+        body.push(1); // the Optional is present
+        body.extend_from_slice(&24.0f32.to_be_bytes());
+        default_block_particles(&mut body);
+        let t = read_explode_tail(&body, &types).unwrap();
+        assert_eq!(t.used, body.len());
+        assert_eq!(
+            t.sound,
+            crate::sounds::SoundRef::Inline {
+                name: name.to_string(),
+                fixed_range: Some(24.0),
+            }
+        );
+
+        // And the particle side: id 28 (`entity_effect`) carries a FIXED i32.
+        // Under a `holder` reading its selector would be 27 — a different
+        // registered particle — and the four colour bytes would be read as the
+        // sound holder and the list count.
+        let mut body = explode_body(None);
+        rewo_proto::varint::write_varint(&mut body, 28);
+        body.extend_from_slice(&0x7F00_0001i32.to_be_bytes());
+        rewo_proto::varint::write_varint(&mut body, 1235);
+        default_block_particles(&mut body);
+        let t = read_explode_tail(&body, &types).unwrap();
+        assert_eq!(t.used, body.len());
+        assert_eq!(t.particle, "minecraft:entity_effect");
+        assert_eq!(t.sound, crate::sounds::SoundRef::Registry(1234));
+    }
+
+    /// A particle id the report does not know **fails closed** rather than
+    /// assuming zero option bytes.
+    ///
+    /// That default reads correctly for 103 of 125 types today, which is
+    /// exactly what makes it dangerous: it would keep reading correctly right
+    /// up until a version added a 23rd option-bearing type, and then produce a
+    /// wrong sound rather than no sound.
+    #[test]
+    fn an_unknown_particle_id_fails_closed() {
+        let mut body = explode_body(None);
+        body.extend_from_slice(&explode_tail_bytes(4242, 1235));
+        assert!(read_explode_tail(&body, &tail_types()).is_err());
+        // …and inside the weighted list too, which is the second call site of
+        // the same codec and the one a head-only witness cannot see.
+        let mut body = explode_body(None);
+        rewo_proto::varint::write_varint(&mut body, 29);
+        rewo_proto::varint::write_varint(&mut body, 1235);
+        rewo_proto::varint::write_varint(&mut body, 1);
+        weighted_entry(&mut body, 4242, 1);
+        assert!(read_explode_tail(&body, &tail_types()).is_err());
+    }
+
+    /// An option-bearing particle **inside the weighted list** is walked with
+    /// its options, and the list's own arithmetic survives it.
+    ///
+    /// `ParticleTypes.STREAM_CODEC` appears TWICE in this packet — once as the
+    /// head field and once per list entry. A witness on the head alone is blind
+    /// to the second, and vanilla's own default list is poof + smoke, both
+    /// zero-byte, so the natural fixture cannot see it either.
+    #[test]
+    fn a_list_entry_with_options_is_walked_too() {
+        let mut body = explode_body(None);
+        rewo_proto::varint::write_varint(&mut body, 66); // head: poof, no options
+        rewo_proto::varint::write_varint(&mut body, 1235);
+        rewo_proto::varint::write_varint(&mut body, 2);
+        // A `block` entry: VarInt state id after the type id.
+        rewo_proto::varint::write_varint(&mut body, 1);
+        rewo_proto::varint::write_varint(&mut body, 3941);
+        body.extend_from_slice(&0.5f32.to_be_bytes());
+        body.extend_from_slice(&1.0f32.to_be_bytes());
+        rewo_proto::varint::write_varint(&mut body, 7);
+        weighted_entry(&mut body, 69, 3);
+        let t = read_explode_tail(&body, &tail_types()).unwrap();
+        assert_eq!(t.used, body.len());
+        assert_eq!(t.block_particles, 2);
+        assert_eq!(t.particle, "minecraft:poof");
+    }
+
+    /// An empty list is a real state and consumes exactly one byte.
+    ///
+    /// `blockCount == 0` — TNT in the open air — is the common case:
+    /// `ClientExplosionTracker` weights by the number of blocks destroyed, so a
+    /// mid-air explosion has nothing to throw.
+    #[test]
+    fn an_empty_weighted_list_is_one_byte() {
+        let mut body = explode_body(None);
+        rewo_proto::varint::write_varint(&mut body, 29);
+        rewo_proto::varint::write_varint(&mut body, 1235);
+        rewo_proto::varint::write_varint(&mut body, 0);
+        let t = read_explode_tail(&body, &tail_types()).unwrap();
+        assert_eq!(t.used, body.len());
+        assert_eq!(t.block_particles, 0);
+    }
+
+    /// Every truncation of a well-formed body is refused rather than read past
+    /// its end, and none of them panics.
+    #[test]
+    fn a_truncated_tail_decodes_to_nothing() {
+        let mut body = explode_body(Some(Vec3::new(0.4, 0.7, -0.2)));
+        body.extend_from_slice(&explode_tail_bytes(29, 1235));
+        let types = tail_types();
+        for n in EXPLODE_PREFIX_LEN_WITH_KNOCKBACK..body.len() {
+            let got = std::panic::catch_unwind(|| read_explode_tail(&body[..n], &types).is_err());
+            assert_eq!(got.ok(), Some(true), "prefix of {n} bytes");
+        }
+        // And the prefix reader is untouched by any of it: the physics still
+        // decodes from every one of those bodies, which is the whole reason the
+        // two are separate entry points.
+        for n in EXPLODE_PREFIX_LEN_WITH_KNOCKBACK..body.len() {
+            assert!(read_explode(&body[..n]).is_ok(), "prefix of {n} bytes");
+        }
+    }
+
     #[test]
     fn explode_block_count_is_a_fixed_int_not_a_varint() {
         // Rule 3, as a measurement. Pick a blockCount whose big-endian i32
@@ -1129,5 +1495,108 @@ mod tests {
             t.tick_lerp();
         }
         assert_eq!(t.delta_movement(9), Some([0.5, 0.0, 0.0]));
+    }
+
+    // ── explosion_sound: the three draws, against a real JVM ────────────
+
+    /// A tail whose contents do not reach the sound: only `sound` is read.
+    fn explode_tail_stub() -> ExplosionTail {
+        ExplosionTail {
+            particle: "minecraft:explosion_emitter".into(),
+            sound: crate::sounds::SoundRef::Registry(7),
+            block_particles: 0,
+            used: 0,
+        }
+    }
+
+    /// **The pitch AND the seed, pinned to values a real JDK 25 printed.**
+    ///
+    /// The numbers come from
+    /// `tools/explosion_sound_oracle/ExplosionSoundOracle.java`, which runs
+    /// `java.util.Random` — an exact stand-in for `LegacyRandomSource` for
+    /// `next`, `nextFloat` and `nextLong` (the same 48-bit LCG, the same float
+    /// multiplier, and the same SIGNED `+` in `nextLong`). So this grades
+    /// Rewo's transcription against the platform rather than against a second
+    /// transcription of the same paragraph, which is the difference between a
+    /// witness and a mirror.
+    ///
+    /// It pins the **order** as well as the values, and that is not a
+    /// by-product: the oracle also prints the seed-first ordering from the
+    /// same start, and that produces a different seed (2912740758204167767)
+    /// and a different pitch (bits `0x3F2DA53A`). So a reordering of the three
+    /// draws cannot satisfy this test, where a band check on the pitch alone
+    /// is blind to it.
+    ///
+    /// Added after a review found `let seed = rng.next_long();` replaceable by
+    /// `let seed = 0;` with `soundshot` 35/35 and this crate's 1187 tests all
+    /// green. The seed is what `SoundEngine::resolve` hands to
+    /// `get_sound_seeded`, and `minecraft:entity.generic.explode` has four
+    /// variants, so a constant makes every explosion in the game play the same
+    /// sample — audible, and until now graded by nothing.
+    #[test]
+    fn the_explosion_sound_matches_a_real_jvm() {
+        // (start seed, pitch bits, sound seed) — printed by the oracle.
+        const ORACLE: &[(i64, u32, i64)] = &[
+            (0, 0x3F2F_995B, 4437113781045784766),
+            (1, 0x3F49_CB31, 7564655870752979346),
+            (0x5EED_A11B_1E17, 0x3F25_E16B, -3920823684251294871),
+            (-1, 0x3F2D_15C2, 226341162490527646),
+            (1234567890123, 0x3F43_A1E6, -4294232599635685378),
+        ];
+        let tail = explode_tail_stub();
+        let centre = Vec3::new(12.25, 71.5, -3.75);
+        for &(start, pitch_bits, sound_seed) in ORACLE {
+            let mut rng = rewo_world::biome_noise::LegacyRandom::new(start);
+            let s = explosion_sound(&tail, centre, &mut rng);
+            assert_eq!(
+                s.pitch.to_bits(),
+                pitch_bits,
+                "pitch from start seed {start}: got {} (bits {:#010X})",
+                s.pitch,
+                s.pitch.to_bits()
+            );
+            assert_eq!(s.seed, sound_seed, "sound seed from start seed {start}");
+        }
+        // The one reordering a plausible implementation reaches for, spelled
+        // out so this test's kill of it is visible rather than incidental.
+        assert_ne!(
+            ORACLE[2].2, 2912740758204167767,
+            "the seed-first ordering must not agree with the transcribed one"
+        );
+    }
+
+    /// **Consecutive explosions must not all pick the same variant.**
+    ///
+    /// The exact-value test above already fails on a constant seed, but it
+    /// fails as "the number is wrong"; this one fails as the thing a player
+    /// would hear. The oracle measures 2000 distinct seeds over 2000
+    /// consecutive explosions off one generator, so the bar here is the whole
+    /// run rather than a sample of it.
+    #[test]
+    fn consecutive_explosions_draw_distinct_seeds() {
+        let tail = explode_tail_stub();
+        let centre = Vec3::new(0.5, 64.0, 0.5);
+        let mut rng = rewo_world::biome_noise::LegacyRandom::new(0x5EED_A11B_1E17);
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..2000 {
+            seen.insert(explosion_sound(&tail, centre, &mut rng).seed);
+        }
+        assert_eq!(seen.len(), 2000, "a real JVM produces 2000 distinct seeds");
+    }
+
+    /// The volume, source, position and sound, which the pitch/seed pair does
+    /// not reach. Volume **4.0** feeds `getRange`'s `16 * max(volume, 1)` —
+    /// four times a normal block sound's carrying distance — and the position
+    /// is `playLocalSound`'s `double` overload, so no half-block centring.
+    #[test]
+    fn the_explosion_sound_is_loud_at_the_centre_and_a_block_sound() {
+        let tail = explode_tail_stub();
+        let centre = Vec3::new(12.25, 71.5, -3.75);
+        let mut rng = rewo_world::biome_noise::LegacyRandom::new(4);
+        let s = explosion_sound(&tail, centre, &mut rng);
+        assert_eq!(s.volume, 4.0);
+        assert_eq!(s.source, crate::sounds::SoundSource::Blocks);
+        assert_eq!((s.x, s.y, s.z), (centre.x, centre.y, centre.z));
+        assert_eq!(s.sound, tail.sound);
     }
 }

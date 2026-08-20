@@ -382,6 +382,38 @@ pub struct LocalSound {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SoundEvent {
     At(PositionedSound),
+    /// The same sound, held by `SoundManager.playDelayed` (M162).
+    ///
+    /// `ClientLevel.playSound(x, y, z, .., distanceDelay, seed)` builds ONE
+    /// `SimpleSoundInstance` and *then* branches:
+    ///
+    /// ```text
+    /// double distanceToSqr = camera.position().distanceToSqr(x, y, z);
+    /// SimpleSoundInstance instance = new SimpleSoundInstance(...);   // :748
+    /// if (distanceDelay && distanceToSqr > 100.0) {                  // :749
+    ///    double delayInSeconds = Math.sqrt(distanceToSqr) / 40.0;    // :750
+    ///    getSoundManager().playDelayed(instance, (int)(delay * 20)); // :751
+    /// } else { getSoundManager().play(instance); }
+    /// ```
+    ///
+    /// **The instance is built before the branch**, so a delayed sound is
+    /// byte-identical to an immediate one — same LINEAR attenuation, same
+    /// `relative = false`, same seed. That is why this wraps the same
+    /// [`PositionedSound`] rather than carrying a second construction path,
+    /// and why `instance_from_event`'s two arms are literally the same call.
+    ///
+    /// **A separate variant rather than a field on [`PositionedSound`]**,
+    /// because a delay is not something `ClientboundSoundPacket` carries: that
+    /// struct is the decode of a packet, and giving it a field the wire has no
+    /// bytes for would make `route_sound` invent a zero at eleven construction
+    /// sites. The producer is `level_event`'s nine `distanceDelay = true` rows,
+    /// which reach `playLocalSound` and not the sound packet.
+    AtDelayed {
+        sound: PositionedSound,
+        /// `(int)(sqrt(distanceToSqr) / 40.0 * 20.0)` — see
+        /// [`crate::distance_delay_ticks`], which owns the arithmetic.
+        ticks: i32,
+    },
     OnEntity(EntitySound),
     Stop(StopSound),
     /// Not from a packet — see [`LocalSound`].

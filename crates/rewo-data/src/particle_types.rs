@@ -61,6 +61,27 @@ impl ParticleTypes {
         self.by_id.is_empty()
     }
 
+    /// Build a table from explicit (id, name) pairs, for tests and gates that
+    /// synthesise a packet body without a datagen report on disk (M162).
+    ///
+    /// Deliberately NOT a self-skipping `DataPaths` load in the unit tests that
+    /// need this: a test that returns early on a machine without the report
+    /// proves nothing on exactly the machine where it would be reassuring, which
+    /// is the trap `REWO_AUDIO_PLAN` section 5 records. The report-backed
+    /// claims — that the registry really holds 125 names in this order — live in
+    /// `soundshot`, which fails closed rather than skipping.
+    pub fn from_pairs(pairs: &[(i32, &str)]) -> Self {
+        let mut by_id = HashMap::with_capacity(pairs.len());
+        for (id, name) in pairs {
+            by_id.insert(*id, (*name).to_string());
+        }
+        let block_id = by_id
+            .iter()
+            .find(|(_, n)| n.as_str() == "minecraft:block")
+            .map(|(id, _)| *id);
+        Self { by_id, block_id }
+    }
+
     /// Protocol id for a registry name, for tests and gates that need to
     /// synthesise a packet body.
     pub fn id_of(&self, name: &str) -> Option<i32> {
