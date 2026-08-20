@@ -35,7 +35,7 @@ use rewo_proto::nbt::Nbt;
 use rewo_proto::reader::PacketReader;
 use rewo_proto::Result;
 
-use crate::chat_style::{self, ChatStyle};
+use crate::chat_style;
 
 /// The decoded packet: the two components exactly as they arrived.
 #[derive(Clone, Debug, PartialEq)]
@@ -71,8 +71,11 @@ pub fn parse_tab_list(body: &[u8]) -> Result<TabListPacket> {
 /// string. Named rather than hidden; no vanilla template is empty, so the two
 /// readings differ only for a server that ships one deliberately.
 pub fn renders_empty(component: &Nbt) -> bool {
-    let base = ChatStyle::plain([1.0, 1.0, 1.0]);
-    chat_style::plain_text(&chat_style::parse_component(component, base, None)).is_empty()
+    // [`chat_style::flatten`]'s base IS `ChatStyle::plain([1.0, 1.0, 1.0])` —
+    // `ChatStyle::WHITE` is defined as exactly that constant — so delegating
+    // here is the identity, not an approximation. It is done because the
+    // open-coded form was one of four spellings of one walk (M163's census).
+    chat_style::flatten(component, None).is_empty()
 }
 
 /// The tab list's header and footer as the client holds them

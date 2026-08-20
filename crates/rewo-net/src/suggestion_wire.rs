@@ -81,6 +81,10 @@ impl CommandSuggestionsReply {
         let mut entries = Vec::with_capacity(count);
         for _ in 0..count {
             let text = r.string(32767)?;
+            // M163 left this flattened: it is the SMALLEST third of that gap.
+            // Nothing renders `Suggestion::tooltip`, and the local suggester
+            // throws away the six selector keys it already holds. See the table
+            // on `component_wire::nbt_text`.
             let tooltip = r.option(|r| Ok(r.nbt()?.to_plain_text()))?;
             entries.push((text, tooltip));
         }

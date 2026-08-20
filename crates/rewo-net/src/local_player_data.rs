@@ -139,7 +139,16 @@ pub fn apply_local_metadata(
     if eid != player_id {
         return LocalMetaOutcome::default();
     }
-    let meta = crate::metadata::parse(&mut r, components);
+    // Only `components` is used here: the local player's metadata never
+    // reaches a nametag (vanilla draws none for you), so the language table is
+    // deliberately not threaded to this call.
+    let meta = crate::metadata::parse(
+        &mut r,
+        crate::MetaKinds {
+            components,
+            ..Default::default()
+        },
+    );
     let Some(flags) = meta.flags else {
         // The packet did not mention index 0, so `onSyncedDataUpdated` never
         // ran for that accessor and the elytra test is not reached — however
@@ -316,6 +325,7 @@ mod tests {
             variant_kinds: Default::default(),
             classes: None,
             components: None,
+            lang: None,
         };
 
         crate::apply_set_entity_data(&body, &mut t, kinds(Some(7)));
@@ -369,6 +379,7 @@ mod tests {
             variant_kinds: Default::default(),
             classes: None,
             components: None,
+            lang: None,
         };
         let table = |type_id: i32| {
             let mut t = rewo_world::entities::EntityTable::default();

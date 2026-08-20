@@ -132,6 +132,12 @@ pub fn route(
     if id == ids.open_screen {
         match read_open_screen(body) {
             Ok(p) => {
+                // M163 left this flattened: `OpenMenu::title` has zero
+                // readers, so the label is not drawn at all. Resolving it
+                // changes nothing, and DRAWING it without resolving would
+                // write `container.chest` across every vanilla chest — ship
+                // both or neither. See the register on
+                // `component_wire::nbt_text`.
                 let title = crate::hud_state::plain(&p.title);
                 if !menus.apply_open_screen(p.container_id, p.menu_type, title) {
                     // `MenuScreens.create` logs a warning and does nothing for

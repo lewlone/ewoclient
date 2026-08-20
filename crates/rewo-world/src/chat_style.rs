@@ -8,8 +8,11 @@
 //! `rewo-gpu` does not depend on and should not — the GPU crate has no
 //! business knowing the wire format. So the *parse* belongs here, beside
 //! `rewo_net::component_wire::nbt_text`, which is the plain-text answer this
-//! module
-//! is the styled replacement for.
+//! module is the styled replacement for. [`flatten`] is that replacement's
+//! plain-text face, and since M163 it is what every consumer calls — its own
+//! doc carries the census (three independent walks, four spellings of this
+//! one), and `nbt_text`'s carries the register of the sites that still flatten
+//! with no language table and why.
 //!
 //! The *output* is deliberately renderer-agnostic. [`ChatSpan`] names colours
 //! and flags and nothing about typefaces, exactly as `rewo_gpu::tooltip::Span`
@@ -271,6 +274,68 @@ pub type ChatLine = Vec<ChatSpan>;
 /// the `§` codes are already gone, because they never became text.
 pub fn plain_text(line: &ChatLine) -> String {
     line.iter().map(|s| s.text.as_str()).collect()
+}
+
+/// **The** flatten: a network text component to the characters vanilla draws.
+///
+/// This is the one function every consumer should call, and the census that
+/// says why has two halves — **three independent walks, and four spellings of
+/// this one**. M163 shipped that census wrong in both halves, which is worth
+/// keeping because the error is the one a census invites: it counted the walks
+/// it had gone looking for and missed the copies of itself.
+///
+/// **The three independent walks over the wire tree**, each disagreeing with
+/// the others (differential tests in `rewo_net::component_wire`'s test module
+/// pin all three):
+///
+/// * `Nbt::to_plain_text` — the oldest, no table, no `§` parser, no `with`.
+/// * `component_wire::nbt_text` — the same shape with `text` and `translate`
+///   in the other order. **No production caller since M163**; kept for the
+///   differential tests that pin the disagreement, and for its module-level
+///   register of what still flattens without a table.
+/// * `enchantment_parse::nbt_plain` — private, and the only pre-existing site
+///   that was already structurally right: it splits `(description_key,
+///   literal)` so the *renderer* resolves the key, which is the shape M163
+///   generalised. It reads no `translate` at all.
+///
+/// **The four spellings of THIS walk**, all `plain_text(parse_component(..))`
+/// and all now routed here, pinned equal by
+/// `the_four_spellings_of_the_flatten_agree`:
+///
+/// * this function;
+/// * [`crate::chat_translate::chat_component_text`] — a named alias with five
+///   chat call sites, which M163 duplicated byte-for-byte rather than calling;
+/// * `rewo_net::hud_state::plain` — this with `lang: None`;
+/// * `rewo_net::tab_list_text::renders_empty` — this with `lang: None`, then
+///   `is_empty()`. Its `ChatStyle::plain([1.0, 1.0, 1.0])` **is**
+///   [`ChatStyle::WHITE`], which is defined as that expression, so the
+///   delegation is an identity.
+///
+/// The disagreements between the three walks are invisible in ordinary traffic
+/// and wrong on a plugin server:
+///
+/// * **`§` codes.** `Language.getVisualOrder` (`Language.java:59-65`) runs
+///   `StringDecomposer.iterateFormatted` over every literal, and that loop
+///   (`StringDecomposer.java:92-103`) turns a `§` pair into *style*. So vanilla
+///   never draws the two characters; the two `to_plain_text`-shaped flatteners
+///   did. This one parses them, which is why it also drops them from the text.
+/// * **`translate`.** `to_plain_text` pushes the key only `if out.is_empty()`
+///   while `nbt_text` uses an `else if`, so `{text:"", translate:"k"}` flattens
+///   to `"k"` under one and `""` under the other, and `nbt_plain` gives `""`
+///   for a third reason (it never reads `translate`). Here it is
+///   `getOrDefault`, with `lang` supplying the table — and `None` selecting
+///   key-as-default, which is what every caller did before there was any
+///   resolution.
+/// * **`with`.** Neither of the other two reads it at all, so a resolved
+///   template would render with its arguments missing.
+///
+/// The cost that comes with it is real and stated: [`parse_component`] has a
+/// [`MAX_COMPONENT_STEPS`] budget precisely because a `with` argument can be
+/// duplicated by a `%1$s%1$s` template, and `to_plain_text` has no such
+/// exposure *because* it ignores `with`. A per-frame caller pays that budget
+/// per call in the worst case — `SignFace::from_nbt` is one, and says so.
+pub fn flatten(tag: &Nbt, lang: Option<&Language>) -> String {
+    plain_text(&parse_component(tag, ChatStyle::WHITE, lang))
 }
 
 /// `ChatFormatting.getByCode` for the sixteen colours — the index into

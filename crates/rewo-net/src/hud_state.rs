@@ -155,7 +155,7 @@ use rewo_proto::nbt::Nbt;
 use rewo_proto::reader::PacketReader;
 use rewo_proto::Result;
 
-use crate::chat_style::{self, ChatStyle};
+use crate::chat_style;
 
 /// `Hud.resetTitleTimes()` — `titleFadeInTime = 10`.
 pub const DEFAULT_FADE_IN: i32 = 10;
@@ -170,8 +170,7 @@ pub const DEFAULT_FADE_OUT: i32 = 20;
 /// seconds regardless of what `set_titles_animation` last said.
 pub const OVERLAY_MESSAGE_TICKS: i32 = 60;
 
-/// Flatten a component to plain text, the way the tab list and chat already
-/// do — [`chat_style::parse_component`] resolves `text` / `extra`.
+/// Flatten a component to plain text — [`chat_style::flatten`] with no table.
 ///
 /// **No language table**, because this runs at packet-decode time inside
 /// `PlaySession` and the table is the app's (`BakedAssets::lang`). A
@@ -181,8 +180,13 @@ pub const OVERLAY_MESSAGE_TICKS: i32 = 60;
 /// action bar are kept as raw [`Nbt`] precisely so the app can resolve and
 /// style them at render time. This is for the callers that want a string now,
 /// mostly logging and witnesses.
+///
+/// It **delegates** rather than open-coding `plain_text(parse_component(..))`:
+/// that expression had grown four spellings across two crates by M163, which
+/// is the census that milestone's own doc got wrong. `None` is the whole of
+/// what distinguishes this one, so it is the whole of what this body says.
 pub fn plain(component: &Nbt) -> String {
-    chat_style::plain_text(&chat_style::parse_component(component, ChatStyle::WHITE, None))
+    chat_style::flatten(component, None)
 }
 
 // ---------------------------------------------------------------------------

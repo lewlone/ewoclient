@@ -112,7 +112,15 @@ pub fn parse_enchantment_registry(
 }
 
 /// The literal text of a chat component tag — `text` plus any `extra`.
-fn nbt_plain(tag: &Nbt) -> String {
+///
+/// **The fourth flattener in the tree**, and deliberately not replaced by
+/// [`rewo_world::chat_style::flatten`]: this is the arm for a component with
+/// **no** `translate`, reached only after the caller has already split
+/// `(description_key, literal)` — so it is asking for the literal text of
+/// something already known not to be a key. That split is the structurally
+/// right shape and predates M163; the resolution happens at the renderer.
+/// See the differential test in [`crate::component_wire`].
+pub(crate) fn nbt_plain(tag: &Nbt) -> String {
     let mut out = String::new();
     if let Some(Nbt::String(s)) = tag.get("text") {
         out.push_str(s);

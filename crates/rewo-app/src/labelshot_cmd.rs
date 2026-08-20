@@ -54,7 +54,7 @@ use rewo_world::label::{
 
 use crate::live_cmd::{label_inputs_from_table, resolve_labels, LabelViewer};
 
-const EXPECTED_WITNESSES: usize = 47;
+const EXPECTED_WITNESSES: usize = 52;
 
 const W: u32 = 256;
 const H: u32 = 256;
@@ -271,6 +271,18 @@ impl Fixture {
     }
 
     fn send_meta(&self, t: &mut EntityTable, body: &[u8]) {
+        self.send_meta_lang(t, body, None);
+    }
+
+    /// [`Self::send_meta`] with a language table, for the M163 nametag
+    /// witnesses. Same production router; the table is the only difference, so
+    /// the pair `(Some(lang), None)` is the mutation partner built in.
+    fn send_meta_lang(
+        &self,
+        t: &mut EntityTable,
+        body: &[u8],
+        lang: Option<&rewo_data::lang::Language>,
+    ) {
         rewo_net::route_set_entity_data(
             self.ids.cb_play_set_entity_data,
             body,
@@ -278,6 +290,7 @@ impl Fixture {
             t,
             rewo_net::MetaKinds {
                 classes: Some(&self.classes),
+                lang,
                 ..Default::default()
             },
         );
@@ -1827,7 +1840,160 @@ fn check_wiring(
         ),
     );
 
+    check_name_flatten(c, &f, baked);
+
     wr.destroy(&mut gpu);
     off.destroy(&mut gpu);
     Ok(())
+}
+
+/// M163 — `Entity.DATA_CUSTOM_NAME` is a **component**, and the wire decode
+/// used to flatten it with `Nbt::to_plain_text`.
+///
+/// That flatten has no language table and no legacy-code parser, so on any
+/// server that names a mob with a `translate` component or a `§` code the
+/// nametag drew the raw key or the two code characters. Vanilla draws neither:
+/// `Language.getVisualOrder` (`Language.java:59-65`) runs
+/// `StringDecomposer.iterateFormatted` over every literal, which parses `§`
+/// pairs into style, and `TranslatableContents.decompose` resolves the key.
+///
+/// Every witness here drives the **production router** with a raw
+/// `set_entity_data` body and reads `EntityTable::custom_name`, i.e. exactly
+/// the string `live_cmd::resolve_labels` hands to `EntityDraw::name`.
+fn check_name_flatten(c: &mut Checker, f: &Fixture, baked: &assets::BakedAssets) {
+    /// One `Entity.DATA_CUSTOM_NAME` entry: index 2, OPTIONAL_COMPONENT
+    /// (serializer 6), present, carrying `tag` as network NBT.
+    fn named(tag: &[u8]) -> Vec<u8> {
+        let mut v = vec![0x01u8];
+        v.extend_from_slice(tag);
+        meta_body(1, 2, 6, &v)
+    }
+    fn nbt_str(s: &str) -> Vec<u8> {
+        let mut v = vec![8u8];
+        v.extend_from_slice(&(s.len() as u16).to_be_bytes());
+        v.extend_from_slice(s.as_bytes());
+        v
+    }
+    /// `{translate: "<key>"}` as a network `TAG_Compound`.
+    fn nbt_translate(key: &str) -> Vec<u8> {
+        let mut v = vec![10u8, 8u8];
+        v.extend_from_slice(&(9u16).to_be_bytes());
+        v.extend_from_slice(b"translate");
+        v.extend_from_slice(&(key.len() as u16).to_be_bytes());
+        v.extend_from_slice(key.as_bytes());
+        v.push(0); // TAG_End
+        v
+    }
+
+    // The expectation is the JAR's own answer, not a literal written here:
+    // `baked.lang` is `en_us.json` after M54's deprecation pass, and
+    // `entity.minecraft.zombie` is what `Entity.getTypeName()` would name a
+    // zombie with. If the jar ever renames it, this moves with it.
+    let expected = baked.lang.get("entity.minecraft.zombie").unwrap_or("").to_string();
+
+    let resolved = {
+        let mut t = f.spawn(f.zombie);
+        f.send_meta_lang(&mut t, &named(&nbt_translate("entity.minecraft.zombie")), Some(&baked.lang));
+        t.custom_name(1).map(str::to_string)
+    };
+    let unresolved = {
+        let mut t = f.spawn(f.zombie);
+        f.send_meta_lang(&mut t, &named(&nbt_translate("entity.minecraft.zombie")), None);
+        t.custom_name(1).map(str::to_string)
+    };
+    c.record(
+        "fl1.a_translatable_nametag_resolves_at_the_wire",
+        !expected.is_empty()
+            && resolved.as_deref() == Some(expected.as_str())
+            && resolved != unresolved,
+        format!(
+            "with the jar's table {resolved:?}, without one {unresolved:?} \
+             (en_us says {expected:?}). The second is what EVERY client built \
+             before M163 drew, because `metadata::parse` called \
+             `Nbt::to_plain_text`, which has no table and never reads `with`"
+        ),
+    );
+
+    // `getOrDefault(key)`'s key-as-default has to survive: a resolver that
+    // blanked an unknown key would satisfy `fl1` and lose every plugin-defined
+    // name. This is that half, and it is not the same as `fl1`'s `None` arm —
+    // here the TABLE EXISTS and simply does not hold the key.
+    let missing = {
+        let mut t = f.spawn(f.zombie);
+        f.send_meta_lang(&mut t, &named(&nbt_translate("plugin.example.boss")), Some(&baked.lang));
+        t.custom_name(1).map(str::to_string)
+    };
+    c.record(
+        "fl2.an_unknown_key_falls_back_to_the_key_itself",
+        missing.as_deref() == Some("plugin.example.boss"),
+        format!(
+            "{missing:?} — `Language.getOrDefault` answers the key, so a server \
+             using its own keys renders them rather than blanking. Without this \
+             `fl1` is satisfied by a resolver that returns an empty string for \
+             everything it does not know"
+        ),
+    );
+
+    // The witness that separates `to_plain_text` from a real flatten. A `§`
+    // pair is STYLE, so neither character is drawn — and this is the one that
+    // fires if someone "resolves" by bolting a `translate` branch onto
+    // `Nbt::to_plain_text` rather than using the component parser.
+    let coded = {
+        let mut t = f.spawn(f.zombie);
+        f.send_meta_lang(&mut t, &named(&nbt_str("\u{00a7}cRed")), Some(&baked.lang));
+        t.custom_name(1).map(str::to_string)
+    };
+    c.record(
+        "fl3.a_legacy_code_in_a_nametag_becomes_style_not_characters",
+        coded.as_deref() == Some("Red"),
+        format!(
+            "{coded:?} — before M163 this was the four characters \
+             \"\u{00a7}cRed\", section sign and all, over the mob's head"
+        ),
+    );
+
+    // `DATA_CUSTOM_NAME` is `Optional<Component>` (`Entity.java:269-271`), so
+    // the wire's leading `false` is `Optional.empty()` — a CLEAR. The decode
+    // had no `else` arm, so `/data remove entity @e CustomName` never removed
+    // anything: `EntityTable::set_custom_name` already implemented the removal
+    // and was unreachable.
+    let cleared = {
+        let mut t = f.spawn(f.zombie);
+        f.send_meta_lang(&mut t, &named(&nbt_str("Bob")), Some(&baked.lang));
+        let before = t.custom_name(1).map(str::to_string);
+        f.send_meta_lang(&mut t, &meta_body(1, 2, 6, &[0x00]), Some(&baked.lang));
+        (before, t.custom_name(1).map(str::to_string))
+    };
+    c.record(
+        "fl4.an_absent_optional_clears_the_nametag",
+        cleared.0.as_deref() == Some("Bob") && cleared.1.is_none(),
+        format!(
+            "set {:?} then cleared to {:?} — the accessor is \
+             `EntityDataAccessor<Optional<Component>>`, and the decode used to \
+             read the presence bit with `unwrap_or(false)` and no `else`, so an \
+             explicit clear was indistinguishable from index 2 being absent and \
+             the old name stood forever",
+            cleared.0, cleared.1
+        ),
+    );
+
+    // …and a present-but-empty name is a PRESENT name. `hasCustomName()` is
+    // `isPresent()`, not "is non-blank" — the old decode dropped an empty
+    // string, which merged the two states the packet keeps apart.
+    let empty = {
+        let mut t = f.spawn(f.zombie);
+        f.send_meta_lang(&mut t, &named(&nbt_str("Bob")), Some(&baked.lang));
+        f.send_meta_lang(&mut t, &named(&nbt_str("")), Some(&baked.lang));
+        t.custom_name(1).map(str::to_string)
+    };
+    c.record(
+        "fl5.a_present_but_empty_name_is_present_rather_than_dropped",
+        empty.as_deref() == Some(""),
+        format!(
+            "{empty:?} — `Entity.hasCustomName()` is \
+             `entityData.get(DATA_CUSTOM_NAME).isPresent()`, so an empty \
+             component is a name. Dropping it left the PREVIOUS name standing, \
+             which is a different picture from the one the server sent"
+        ),
+    );
 }

@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 158;
+const EXPECTED_WITNESSES: usize = 165;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -2036,9 +2036,14 @@ fn check_components(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
     // codec of its own.
     let named = read(&stack(&[(ids.custom_name, nbt_string("Old Faithful"))], &[]));
     let name = match &named {
-        Ok((rewo_net::item_stack::WireSlot::Stack(s), rest)) => {
-            (s.components.custom_name.clone(), *rest)
-        }
+        Ok((rewo_net::item_stack::WireSlot::Stack(s), rest)) => (
+            // M163: carried as the component, so the gate flattens it here.
+            s.components
+                .custom_name
+                .as_ref()
+                .map(|t| rewo_world::chat_style::flatten(t, None)),
+            *rest,
+        ),
         _ => (None, usize::MAX),
     };
     c.record(
@@ -2168,7 +2173,13 @@ fn check_components(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
             && slots[0].as_ref().is_some_and(|s| (s.item_id, s.count) == (1, 64))
             && slots[2]
                 .as_ref()
-                .is_some_and(|s| s.custom_name.as_deref() == Some("Excalibur"))
+                .is_some_and(|s| {
+                    s.custom_name
+                        .as_ref()
+                        .map(|t| rewo_world::chat_style::flatten(t, None))
+                        .as_deref()
+                        == Some("Excalibur")
+                })
             && comps.damage == Some(300)
     });
     c.record(
@@ -2948,7 +2959,7 @@ fn check_advanced_tooltip(
             slots
                 .iter()
                 .flatten()
-                .map(|s| s.hover_name("Diamond Sword").to_string())
+                .map(|s| s.hover_name("Diamond Sword", None))
                 .collect()
         })
         .unwrap_or_default();
@@ -2959,10 +2970,9 @@ fn check_advanced_tooltip(
             slots
                 .iter()
                 .flatten()
-                .map(|s| {
-                    s.custom_name
-                        .clone()
-                        .unwrap_or_else(|| "Diamond Sword".to_string())
+                .map(|s| match s.custom_name.as_ref() {
+                    Some(t) => rewo_world::chat_style::flatten(t, None),
+                    None => "Diamond Sword".to_string(),
                 })
                 .collect()
         })
@@ -3037,7 +3047,8 @@ fn check_advanced_tooltip(
             (i != 1).then(|| rewo_net::item_stack::ContainerSlot {
                 item_id: dirt_id,
                 count: 64,
-                custom_name: (i == 0).then(|| "Skullcrusher".to_string()),
+                custom_name: (i == 0)
+                    .then(|| rewo_proto::nbt::Nbt::String("Skullcrusher".to_string())),
                 item_name: None,
             })
         })
@@ -3072,6 +3083,378 @@ fn check_advanced_tooltip(
             without_rename.len()
         ),
     );
+
+    // M163 — the NESTED slot's hover name is a component too. `container_lines`
+    // is the production consumer (`item.container.item_count`'s first
+    // argument), so this is the shulker-box preview end to end.
+    {
+        let nested = |tag: rewo_proto::nbt::Nbt| {
+            vec![Some(rewo_net::item_stack::ContainerSlot {
+                item_id: dirt_id,
+                count: 1,
+                custom_name: Some(tag),
+                item_name: None,
+            })]
+        };
+        let key = rewo_proto::nbt::Nbt::Compound(vec![(
+            "translate".to_string(),
+            rewo_proto::nbt::Nbt::String("block.minecraft.dirt".to_string()),
+        )]);
+        let resolved = crate::live_cmd::container_lines(
+            &nested(key.clone()),
+            &items,
+            &baked.item_names,
+            lang,
+        );
+        let empty_lang = rewo_data::lang::Language::empty();
+        let coded = crate::live_cmd::container_lines(
+            &nested(rewo_proto::nbt::Nbt::String("\u{00a7}cRed".to_string())),
+            &items,
+            &baked.item_names,
+            lang,
+        );
+        let texts: Vec<String> = resolved.iter().map(rewo_gpu::tooltip::line_text).collect();
+        let coded_texts: Vec<String> = coded.iter().map(rewo_gpu::tooltip::line_text).collect();
+        c.record(
+            "nf5.a_nested_container_slots_hover_name_resolves",
+            texts == vec!["Dirt x1"]
+                && coded_texts == vec!["Red x1"]
+                // With no table the key survives, which is the pre-M163 answer
+                // and the mutation partner for the first half.
+                && crate::live_cmd::container_lines(
+                    &nested(key),
+                    &items,
+                    &baked.item_names,
+                    &empty_lang,
+                )
+                .is_empty(),
+            format!(
+                "{texts:?} and {coded_texts:?}. `read_container_slot` called \
+                 `nbt_text` before M163, so a nested stack renamed with a \
+                 translatable showed its key and one renamed with a legacy code \
+                 showed the code. What kills a no-table decode here is the \
+                 FIRST clause: `texts` must read the resolved name. The \
+                 empty-table arm produces no lines at all — `container_lines` \
+                 needs `item.container.item_count` — so that half is satisfied \
+                 whether or not `hover_name` was handed a table, and an earlier \
+                 draft of this string called it the STRONGER partner when it is \
+                 the weaker one"
+            ),
+        );
+    }
+
+    // ── Stage 4b: M163 — the names and the lore are COMPONENTS ────────────
+    //
+    // Every witness here drives the production `route_inventory` with a raw
+    // `container_set_slot` body, so a break anywhere from the packet id to the
+    // patch walk to the span is visible. Before M163 the decode called
+    // `component_wire::nbt_text`, which has no language table and no
+    // legacy-code parser.
+    //
+    // **But nf1-nf6 stop at `styled_hover_name` and `lore_lines`**, and an
+    // earlier draft of this comment claimed they read "the tooltip line the
+    // production builder emits". They do not, and a review proved it by
+    // deleting the `styled_hover_name` call from `screen_tooltip` outright —
+    // a client that never shows a custom name and never italicises — with this
+    // gate 163/163 and containershot 109/109 green. `nf7` is the one that
+    // drives the real builder; everything above it grades the helper.
+    {
+        let packets = Packets::load(&paths.packets_json())?;
+        let net_ids = rewo_net::ids::Ids::resolve(&packets)?;
+        rewo_net::component_wire::install_shapes(registry.ids());
+        let dirt = items.id("minecraft:dirt").ok_or("no dirt in the registry")?;
+
+        // `container_set_slot`: container 0, state id, i16 slot, then a stack
+        // whose patch carries `entries`.
+        let send = |entries: &[(i32, Vec<u8>)]| -> Inventory {
+            let mut v = Vec::new();
+            push_varint(&mut v, 0);
+            push_varint(&mut v, 1);
+            v.extend_from_slice(&(HOTBAR_MENU_START as i16).to_be_bytes());
+            push_varint(&mut v, 1); // count
+            push_varint(&mut v, dirt);
+            push_varint(&mut v, entries.len() as i32);
+            push_varint(&mut v, 0); // none removed
+            for (ty, body) in entries {
+                push_varint(&mut v, *ty);
+                v.extend_from_slice(body);
+            }
+            let mut inv = Inventory::default();
+            let mut menus = rewo_world::menu::Menus::new();
+            rewo_net::route_inventory(
+                net_ids.cb_play_container_set_slot,
+                &v,
+                &net_ids,
+                Some(ids),
+                &mut inv,
+                &mut menus,
+                None,
+            );
+            inv
+        };
+        // `{translate: "<key>"}` and `"<literal>"` as network NBT.
+        let translate = |key: &str| -> Vec<u8> {
+            let mut v = vec![10u8, 8u8];
+            v.extend_from_slice(&(9u16).to_be_bytes());
+            v.extend_from_slice(b"translate");
+            v.extend_from_slice(&(key.len() as u16).to_be_bytes());
+            v.extend_from_slice(key.as_bytes());
+            v.push(0);
+            v
+        };
+        let literal = |s: &str| -> Vec<u8> {
+            let mut v = vec![8u8];
+            v.extend_from_slice(&(s.len() as u16).to_be_bytes());
+            v.extend_from_slice(s.as_bytes());
+            v
+        };
+        // The line the tooltip builder emits for the hotbar slot this writes.
+        let hover = |inv: &Inventory, l: &rewo_data::lang::Language| {
+            let stack = inv.hotbar(0).expect("the slot was written");
+            crate::live_cmd::styled_hover_name(
+                inv.text_of(stack),
+                "Dirt",
+                [1.0, 1.0, 1.0],
+                l,
+            )
+        };
+
+        // The expectation is the JAR's own answer for the key, not a literal.
+        let expect = lang.get("block.minecraft.dirt").unwrap_or("").to_string();
+        let named = send(&[(ids.custom_name, translate("block.minecraft.dirt"))]);
+        let resolved = hover(&named, lang);
+        // MUTATION PARTNER: the same stack against an EMPTY table. That is what
+        // a decode-time flatten produced for every server.
+        let empty_lang = rewo_data::lang::Language::empty();
+        let unresolved = hover(&named, &empty_lang);
+        c.record(
+            "nf1.a_translatable_custom_name_resolves_in_the_tooltip",
+            !expect.is_empty()
+                && rewo_gpu::tooltip::line_text(&resolved) == expect
+                && rewo_gpu::tooltip::line_text(&unresolved) == "block.minecraft.dirt",
+            format!(
+                "{:?} with the jar's table, {:?} without one (en_us says \
+                 {expect:?}). The second is the pre-M163 answer for BOTH, \
+                 because `read_interpreted` called `nbt_text` at the wire where \
+                 no table exists",
+                rewo_gpu::tooltip::line_text(&resolved),
+                rewo_gpu::tooltip::line_text(&unresolved)
+            ),
+        );
+
+        // `getStyledHoverName`'s italic is `has(CUSTOM_NAME)` ALONE, so the
+        // same name arriving as `item_name` renames without slanting. This is
+        // the witness that forces `SlotText` to keep the two apart — a merged
+        // `custom_name.or(item_name)` cannot tell them apart at all.
+        let by_item_name = send(&[(ids.item_name, literal("Blade"))]);
+        let custom = hover(&named, lang);
+        let item = hover(&by_item_name, lang);
+        c.record(
+            "nf2.a_custom_name_is_italic_and_an_item_name_is_not",
+            custom[0].italic
+                && !item[0].italic
+                && rewo_gpu::tooltip::line_text(&item) == "Blade",
+            format!(
+                "custom_name italic={} , item_name italic={} text={:?}. \
+                 `ItemStack.getStyledHoverName` adds ITALIC iff \
+                 `has(DataComponents.CUSTOM_NAME)`; a merged name field answers \
+                 the same for both and slants an item-renamed stack",
+                custom[0].italic,
+                item[0].italic,
+                rewo_gpu::tooltip::line_text(&item)
+            ),
+        );
+
+        // Lore: DARK_PURPLE + ITALIC, and the text is a component too.
+        let lored = send(&[(
+            ids.lore,
+            {
+                let mut v = Vec::new();
+                push_varint(&mut v, 2);
+                v.extend_from_slice(&translate("block.minecraft.dirt"));
+                v.extend_from_slice(&literal("\u{00a7}cRed"));
+                v
+            },
+        )]);
+        let lore_stack = lored.hotbar(0).expect("the slot was written");
+        let lore = lored
+            .text_of(lore_stack)
+            .map(|t| crate::live_cmd::lore_lines(t, lang))
+            .unwrap_or_default();
+        c.record(
+            "nf3.lore_lines_resolve_and_stay_italic",
+            lore.len() == 2
+                && rewo_gpu::tooltip::line_text(&lore[0]) == expect
+                && rewo_gpu::tooltip::line_text(&lore[1]) == "Red"
+                && lore.iter().all(|l| l[0].italic),
+            format!(
+                "{:?} — `ItemLore.LORE_STYLE` is DARK_PURPLE + ITALIC, and the \
+                 second line proves the legacy code is consumed as STYLE rather \
+                 than drawn: before M163 it read as the four characters \
+                 \"\u{00a7}cRed\"",
+                lore.iter()
+                    .map(rewo_gpu::tooltip::line_text)
+                    .collect::<Vec<_>>()
+            ),
+        );
+
+        // The live bug the merged field was hiding.
+        // `Inventory.isUsableForCrafting` is `!isDamaged() && !isEnchanted() &&
+        // !has(CUSTOM_NAME)` — `CUSTOM_NAME` alone.
+        let usable_custom = named.is_usable_for_crafting(named.hotbar(0).unwrap());
+        let usable_item = by_item_name.is_usable_for_crafting(by_item_name.hotbar(0).unwrap());
+        c.record(
+            "nf4.only_a_custom_name_blocks_the_recipe_book_solver",
+            !usable_custom && usable_item,
+            format!(
+                "custom_name usable={usable_custom}, item_name usable={usable_item}. \
+                 `Inventory.java:145-147` tests `has(DataComponents.CUSTOM_NAME)`, \
+                 and this read the MERGED name field, so a stack whose patch set \
+                 only `minecraft:item_name` was wrongly refused by \
+                 `StackedContents` and could not be counted toward any recipe"
+            ),
+        );
+
+        // nf6 — the PRECEDENCE, which nothing above could see because no
+        // fixture carried both names. `named` sets only `custom_name` and
+        // `by_item_name` only `item_name`, so swapping the two arms of
+        // `styled_hover_name`'s `or_else` left nf1-nf5, containershot and
+        // every app test green. It is the exact rule the field split exists
+        // for, and it was the last thing ungraded about it.
+        //
+        // `ItemStack.getHoverName()` (`ItemStack.java:803-806`) is
+        // `customName != null ? customName : this.getItemName()` — the custom
+        // name FIRST — and `getStyledHoverName` (`:829-836`) then adds ITALIC
+        // on `has(CUSTOM_NAME)`, which is true here because the stack carries
+        // one. The two strings are the fixture's own, chosen so a swap cannot
+        // land on the right answer by accident.
+        let both = send(&[
+            (ids.custom_name, literal("Skullcrusher")),
+            (ids.item_name, literal("Cudgel")),
+        ]);
+        let both_line = hover(&both, lang);
+        // Proof the stack really carries BOTH — without this the witness is
+        // also satisfied by a decode that dropped `item_name` on the floor,
+        // which is a different bug wearing the same green.
+        let both_text = both
+            .hotbar(0)
+            .and_then(|st| both.text_of(st))
+            .map(|t| {
+                (
+                    t.custom_name
+                        .as_ref()
+                        .map(|c| rewo_world::chat_style::flatten(c, Some(lang))),
+                    t.item_name
+                        .as_ref()
+                        .map(|c| rewo_world::chat_style::flatten(c, Some(lang))),
+                )
+            });
+        c.record(
+            "nf6.a_custom_name_beats_an_item_name_on_the_same_stack",
+            both_text == Some((Some("Skullcrusher".to_string()), Some("Cudgel".to_string())))
+                && rewo_gpu::tooltip::line_text(&both_line) == "Skullcrusher"
+                && both_line[0].italic,
+            format!(
+                "the stack carries {both_text:?} and the hover line reads {:?} \
+                 (italic={}). `getHoverName` is `customName != null ? customName \
+                 : getItemName()`, so a swapped precedence answers \"Cudgel\" \
+                 here and matches every other witness in this file",
+                rewo_gpu::tooltip::line_text(&both_line),
+                both_line[0].italic
+            ),
+        );
+
+        // nf7 — the same stack through the PRODUCTION tooltip builder.
+        //
+        // Every witness above calls `styled_hover_name` directly, so
+        // `screen_tooltip` could drop the call entirely — replacing the line
+        // with a plain `Span::new(translated, rarity)`, i.e. a client that
+        // never shows a custom name and never italicises — and inventoryshot
+        // and containershot both stayed green. That is REWO_PLAN §0.0 gotcha
+        // 0a's sibling: a gate that grades an extracted helper is not grading
+        // whoever was supposed to call it.
+        //
+        // The bitmap path (`glyphs: None`) carries `TextStyle::PLAIN` by
+        // construction, so this grades the TEXT and nf6 grades the italic.
+        // Text is enough to kill both mutations: the bypass shows "Dirt" and a
+        // swapped precedence shows "Cudgel".
+        {
+            let advance = &baked
+                .font
+                .as_ref()
+                .ok_or("inventoryshot: no baked font")?
+                .advance;
+            let layout = &rewo_world::menu_layout::PLAYER;
+            // Menu slot 36 is `StandardInventory{left: 8, top: 84}`'s hotbar
+            // column 0, i.e. GUI (8, 84 + TOP_TO_HOTBAR) — the 58 is a named
+            // constant, not `3 * 18`, because of the 4 px hotbar separator.
+            let (gx, gy) = (
+                8.0 + f32::from(rewo_world::menu_layout::SLOT_PITCH) * 0.0,
+                84.0 + f32::from(rewo_world::menu_layout::TOP_TO_HOTBAR),
+            );
+            let (w, h) = (960.0f32, 540.0f32);
+            let (left, top, sc) = rewo_gpu::container::gui_origin_for(
+                w,
+                h,
+                layout.image_w as f32,
+                layout.image_h as f32,
+            );
+            let over = (
+                f64::from(left + (gx + 8.0) * sc),
+                f64::from(top + (gy + 8.0) * sc),
+            );
+            let tip = |inv: &Inventory| -> Option<Vec<String>> {
+                crate::live_cmd::screen_tooltip(
+                    inv,
+                    &items,
+                    &baked.item_names,
+                    lang,
+                    &[],
+                    &baked.enchantment_text,
+                    &Default::default(),
+                    None,
+                    rewo_gpu::tooltip::TooltipFlag::NORMAL,
+                    advance,
+                    None,
+                    over,
+                    (w, h),
+                    layout,
+                    None,
+                    false,
+                    false,
+                )
+                .map(|(_, lines, _)| lines.into_iter().map(|l| l.text).collect())
+            };
+            let from_both = tip(&both);
+            let from_named = tip(&named);
+            // The unrenamed control: the same slot with no name components at
+            // all must read the item's translated name. Without it "the first
+            // line is Skullcrusher" could be satisfied by a builder that only
+            // ever prints whatever `custom_name` holds.
+            let plain_stack = send(&[]);
+            let from_plain = tip(&plain_stack);
+            c.record(
+                "nf7.the_production_tooltip_builder_uses_the_styled_hover_name",
+                from_both.as_ref().and_then(|l| l.first()).map(String::as_str)
+                    == Some("Skullcrusher")
+                    && from_named.as_ref().and_then(|l| l.first()).map(String::as_str)
+                        == Some(&expect[..])
+                    && from_plain.as_ref().and_then(|l| l.first()).map(String::as_str)
+                        == Some("Dirt"),
+                format!(
+                    "hovering menu slot {HOTBAR_MENU_START} of the player panel: \
+                     both names -> {:?}, a translatable custom name -> {:?}, no \
+                     name at all -> {:?} (en_us says {expect:?}). Dropping \
+                     `styled_hover_name` from `screen_tooltip` gives \"Dirt\" for \
+                     all three, and swapping its precedence gives \"Cudgel\" for \
+                     the first",
+                    from_both.as_ref().and_then(|l| l.first()),
+                    from_named.as_ref().and_then(|l| l.first()),
+                    from_plain.as_ref().and_then(|l| l.first())
+                ),
+            );
+        }
+    }
 
     // ── Stage 5: the held-item label ──────────────────────────────────────
 
