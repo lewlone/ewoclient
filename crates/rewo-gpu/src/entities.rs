@@ -290,7 +290,14 @@ pub struct EntityDraw<'a> {
     pub ground_seed: i32,
     /// Player skin: a normalized UV offset that relocates the (default-Steve)
     /// player-model quads onto this player's uploaded skin slot. `None` →
-    /// the default skin. Ignored for non-player models.
+    /// the default skin.
+    ///
+    /// **Ignored for non-player models, and `emit_model` is what ignores it.**
+    /// This sentence used to be here on its own while the pass added the offset
+    /// unconditionally, so the invariant lived in one caller's `if is_player`
+    /// (`live_cmd::collect_entities`). `mobtexshot`'s `m3`/`m4` grade both
+    /// directions — inert on a zombie, still live on the player model — so a
+    /// future caller cannot re-open it by accident.
     pub skin_uv: Option<[f32; 2]>,
     /// Uniform model-scale multiplier on top of the baked scale — vanilla's
     /// per-entity render scale (slime/magma-cube `size`). 1.0 = as baked.
@@ -488,6 +495,63 @@ const MAX_MOB_TEXTURES: usize = 4;
 /// stays free of a rewo-data dependency (the same reason `FontData` and the
 /// texture slices are borrowed views).
 pub const EMISSIVE_VARIANT: u32 = 1 << 16;
+
+/// A round-robin atlas-slot ring that says **whose slot it just took**.
+///
+/// Every dynamic pool in this file hands out `next % cap` and increments, and
+/// the field comment on `skin_next` states the hazard as if it were the design:
+/// *"a small network never fills 32, and wrap-around just recycles the oldest
+/// slot."* Recycling is fine for a pool nothing remembers. It is a real
+/// aliasing bug for one with a **key → slot cache**, which `upload_trim` and
+/// `prepare_held_items` both have: after `cap` distinct uploads, two keys
+/// resolve to one slot, the older key's entry is still in the map, and every
+/// draw that resolves through it samples the newer sprite's pixels. That is
+/// "renders with a texture that is not its own", one atlas band over from the
+/// mob sheets — reachable at 65 distinct armour trims or 1,025 distinct held
+/// item textures in one session, with nothing anywhere logging it.
+///
+/// The ring is a plain struct with no GPU in it precisely so the wrap can be
+/// tested: `upload_trim` needs a device, `claim` does not.
+///
+/// **That covers `claim`, not the fix.** The bug is a *caller* keeping a stale
+/// key, so unit tests on this type say nothing about whether either call site
+/// drops its evictee — both `remove(&old)` blocks below could be deleted with
+/// the whole suite and every gate green, which is exactly how the pre-M165
+/// code passed. The call sites are graded at the pool by `mobtexshot`'s `m10`
+/// (trim) and `m11` (items), through [`EntityPass::trim_slot_pairs`] /
+/// [`EntityPass::item_slot_pairs`] and, for trim, through the public
+/// `upload_trim` itself: each over-fills its pool by one and requires that the
+/// evicted key no longer resolves to the slot that took its place.
+pub(crate) struct SlotRing<K> {
+    next: u32,
+    cap: u32,
+    /// Which key each slot currently holds — the bookkeeping the bare cursor
+    /// did not have, and the only thing that can name an evictee.
+    owner: Vec<Option<K>>,
+}
+
+impl<K: PartialEq> SlotRing<K> {
+    pub(crate) fn new(cap: u32) -> Self {
+        let mut owner = Vec::new();
+        owner.resize_with(cap as usize, || None);
+        Self {
+            next: 0,
+            cap,
+            owner,
+        }
+    }
+
+    /// Claim the next slot for `key`. Returns `(slot, evicted)`, where
+    /// `evicted` is the key that slot held until now — the caller **must**
+    /// drop its cache entry, or that key keeps addressing this upload.
+    pub(crate) fn claim(&mut self, key: K) -> (u32, Option<K>) {
+        let slot = self.next % self.cap;
+        self.next = self.next.wrapping_add(1);
+        let evicted = self.owner[slot as usize].take();
+        self.owner[slot as usize] = Some(key);
+        (slot, evicted)
+    }
+}
 
 const SKIN_SLOT: u32 = 64;
 const SKIN_POOL_COLS: u32 = ATLAS_W / SKIN_SLOT; // 16
@@ -876,13 +940,26 @@ pub struct EntityPass {
     armor_slots: std::collections::HashMap<String, (u32, u32, u32, u32)>,
     /// Sprite path → its origin in the trim pool (M48).
     trim_slots: std::collections::HashMap<String, (u32, u32)>,
-    trim_next: u32,
-    /// Round-robin cursor into the item pool, like `skin_next`.
-    item_next: u32,
-    /// Next free dynamic skin slot (wraps at `SKIN_SLOTS`; a small network
-    /// never fills 32, and wrap-around just recycles the oldest slot).
+    trim_ring: SlotRing<String>,
+    /// Round-robin ring over the item pool, like `trim_ring`.
+    item_ring: SlotRing<u16>,
+    /// Next free dynamic skin slot, wrapping at `SKIN_SLOTS` (32).
+    ///
+    /// **This still aliases, and the alias is the caller's to see.** Unlike the
+    /// trim and item pools — which cache key → slot here and so could be fixed
+    /// here, by [`SlotRing`] evicting the stale key — this pool hands the
+    /// address *out* and the app stores it per-uuid forever
+    /// (`live_cmd`'s skin registry). The 33rd distinct player of a session
+    /// therefore overwrites slot 0 while player #1's stored `skin_uv` still
+    /// points at it, and player #1 renders wearing player #33's skin with
+    /// nothing anywhere reporting it. Closing it needs the slot returned
+    /// alongside the UV and the app dropping the evicted uuid's entry, which is
+    /// an API change through `WorldRenderer` and two registries, so it is
+    /// recorded rather than half-done.
     skin_next: u32,
-    /// Round-robin cursor into the cape pool (M60), like `skin_next`.
+    /// Round-robin cursor into the cape pool (M60) — the same, at 32 slots,
+    /// and worse in kind: a cape origin is an absolute texel address rather
+    /// than a delta, so a recycled one samples a *fixed* wrong rectangle.
     cape_next: u32,
     /// Per-entity CEM variable state, persisted across frames (see [`CemVars`]).
     cem_state: std::collections::HashMap<u64, CemVars>,
@@ -1380,7 +1457,7 @@ impl EntityPass {
                 white_uv,
                 has_font,
                 trim_slots: std::collections::HashMap::new(),
-                trim_next: 0,
+                trim_ring: SlotRing::new(TRIM_SLOTS),
                 player_origin: slots.get("player").map(|&(x, y, _, _)| (x, y)).unwrap_or((0, 0)),
                 // Armour sheets are looked up by name every frame — a mob's
                 // model is fixed at build time, but what it wears is not.
@@ -1395,7 +1472,7 @@ impl EntityPass {
                 cape_next: 0,
                 held_items: None,
                 item_slots: std::collections::HashMap::new(),
-                item_next: 0,
+                item_ring: SlotRing::new(ITEM_SLOTS),
                 cem_state: std::collections::HashMap::new(),
                 generation: 0,
                 frame_counter: 0.0,
@@ -1458,8 +1535,14 @@ impl EntityPass {
                 if tex.w != ITEM_SLOT || tex.h != ITEM_SLOT {
                     continue;
                 }
-                let slot = self.item_next % ITEM_SLOTS;
-                self.item_next += 1;
+                // Past 1,024 distinct textures the ring recycles, and the key
+                // that used to own the slot has to leave the map with it —
+                // otherwise that texture id keeps resolving to this sprite's
+                // pixels and the item renders as whatever was paged in over it.
+                let (slot, evicted) = self.item_ring.claim(q.tex);
+                if let Some(old) = evicted {
+                    self.item_slots.remove(&old);
+                }
                 let (sx, sy) = item_slot_origin(slot);
                 if let Err(e) =
                     upload_region(gpu, self.image, &tex.rgba, sx, sy, ITEM_SLOT, ITEM_SLOT)
@@ -1472,6 +1555,29 @@ impl EntityPass {
         }
         self.held_items = Some(items);
         result
+    }
+
+    /// Every `(texture id, slot)` the **item** pool currently addresses, and
+    /// every `(sprite path, atlas origin)` the **trim** pool does.
+    ///
+    /// Read-only, and they exist for one reason: the invariant that makes
+    /// [`SlotRing`] worth having — *no two live keys resolve to one slot* — is
+    /// otherwise unobservable from outside this file, so the caller-side
+    /// eviction could be (and was) deleted with every gate staying green.
+    /// `mobtexshot`'s `m10`/`m11` state the invariant on these; nothing in the
+    /// renderer calls them.
+    ///
+    /// The map's size is half the claim and the distinctness of the slots is
+    /// the other half: without the eviction the map simply grows past the
+    /// pool, so `len()` exceeds the cap *and*, by pigeonhole, two keys share a
+    /// slot. With it, `len() <= cap` and the slots are pairwise distinct.
+    pub fn item_slot_pairs(&self) -> Vec<(u16, u32)> {
+        self.item_slots.iter().map(|(k, v)| (*k, *v)).collect()
+    }
+
+    /// The trim pool's half of [`Self::item_slot_pairs`].
+    pub fn trim_slot_pairs(&self) -> Vec<(String, (u32, u32))> {
+        self.trim_slots.iter().map(|(k, v)| (k.clone(), *v)).collect()
     }
 
     /// Atlas UV rect `(u0, v0, du, dv)` of a resident item texture.
@@ -1508,8 +1614,13 @@ impl EntityPass {
             log::warn!("entities: trim sprite {key} is {w}x{h}, expected {TRIM_SLOT_W}x{TRIM_SLOT_H}");
             return None;
         }
-        let slot = self.trim_next % TRIM_SLOTS;
-        self.trim_next += 1;
+        // Past 64 distinct sprites the ring recycles; the evicted sprite path
+        // must leave `trim_slots` with it, or that path still resolves here and
+        // the trim it names renders as this one.
+        let (slot, evicted) = self.trim_ring.claim(key.to_string());
+        if let Some(old) = evicted {
+            self.trim_slots.remove(&old);
+        }
         let (sx, sy) = trim_slot_origin(slot);
         upload_region(gpu, self.image, rgba, sx, sy, TRIM_SLOT_W, TRIM_SLOT_H).ok()?;
         self.trim_slots.insert(key.to_string(), (sx, sy));
@@ -2498,6 +2609,23 @@ impl EntityPass {
             .then(|| model.variants.get(&d.variant))
             .flatten()
             .map(|v| v.as_slice());
+        // `EntityDraw::skin_uv`'s doc has always said "Ignored for non-player
+        // models" and, until the real-texture gate (`mobtexshot`) asked, this
+        // pass ignored nothing: a skin offset on a zombie relocated every one
+        // of its quads onto whatever the atlas holds at that delta. The
+        // invariant was held only by `live_cmd`'s `if is_player`, i.e. by one
+        // caller — a comment acting as a justification rather than a guard, and
+        // the exact shape of the "a mob renders with another mob's texture"
+        // report §0.0 has carried since M46. Enforced here so it is a property
+        // of the pass. Measured before the fix: a zombie with
+        // `skin_uv = Some([0.125, 0.0625])` differed from the same zombie with
+        // `None` in 7,362 bytes.
+        let skin_du = match d.kind {
+            EntityModelKind::Player | EntityModelKind::PlayerSlim => {
+                d.skin_uv.unwrap_or([0.0, 0.0])
+            }
+            _ => [0.0, 0.0],
+        };
         // Directional face shade x the entity's per-channel world light.
         let [light_r, light_g, light_b] = d.light;
         let hurt = if d.hurt { 1.0f32 } else { 0.0 };
@@ -2574,8 +2702,7 @@ impl EntityPass {
             // same size: a player's uploaded skin, and a pack's ETF variant.
             // They never apply to the same mob (skins are the player model's),
             // so the variant wins where it exists.
-            let du = variant_uv
-                .map_or_else(|| d.skin_uv.unwrap_or([0.0, 0.0]), |v| v[q.tex as usize]);
+            let du = variant_uv.map_or(skin_du, |v| v[q.tex as usize]);
             let out: &mut Vec<Vertex> = if coplanar { trim_verts } else { verts };
             for &i in &[0usize, 1, 2, 0, 2, 3] {
                 out.push(Vertex {
@@ -6310,5 +6437,58 @@ mod tests {
         let pivot = |name: &str| m.parts.iter().find(|p| p.name == name).unwrap().pivot;
         assert_eq!(pivot("right_tendril"), [-8.0, -12.0, 0.0]);
         assert_eq!(pivot("left_tendril"), [8.0, -12.0, 0.0]);
+    }
+    // ---- the dynamic-pool slot ring (real-texture mob gate) --------------
+
+    /// The property the bare `next % cap` cursor could not state: a claim that
+    /// recycles a slot **names the key it took it from**, so a key→slot cache
+    /// can drop the stale entry instead of resolving to the new upload.
+    #[test]
+    fn slot_ring_names_the_key_it_evicts() {
+        let mut r: SlotRing<u16> = SlotRing::new(3);
+        // The first pass round fills empty slots and evicts nobody.
+        assert_eq!(r.claim(10), (0, None));
+        assert_eq!(r.claim(11), (1, None));
+        assert_eq!(r.claim(12), (2, None));
+        // The wrap is where the old pools went silent.
+        assert_eq!(r.claim(13), (0, Some(10)));
+        assert_eq!(r.claim(14), (1, Some(11)));
+        // And it keeps naming the *current* owner, not the first one.
+        assert_eq!(r.claim(15), (2, Some(12)));
+        assert_eq!(r.claim(16), (0, Some(13)));
+    }
+
+    /// A one-slot ring is the degenerate case a cache is most likely to get
+    /// wrong, because every claim after the first is an eviction.
+    #[test]
+    fn slot_ring_of_one_evicts_every_time() {
+        let mut r: SlotRing<String> = SlotRing::new(1);
+        assert_eq!(r.claim("a".into()), (0, None));
+        assert_eq!(r.claim("b".into()), (0, Some("a".into())));
+        assert_eq!(r.claim("c".into()), (0, Some("b".into())));
+    }
+
+    /// The cursor is `wrapping_add`, so a very long session rolls over `u32`
+    /// rather than panicking in debug — and the slot it lands on must still be
+    /// inside the pool.
+    ///
+    /// The roll is **seamless**, and the fact that makes it so is that `2^32`
+    /// *is* a multiple of both real caps (64 and 1,024 are powers of two), so
+    /// `u32::MAX % cap == cap - 1` and the next claim lands on slot 0 with
+    /// nothing skipped. An earlier version of this comment said `u32::MAX` is
+    /// *not* a multiple of the caps and drew the same conclusion from it, which
+    /// is a non-sequitur — the test was right and the reasoning beside it was
+    /// not. A cap that was not a power of two would genuinely skip here.
+    #[test]
+    fn slot_ring_survives_a_cursor_rollover() {
+        let mut r: SlotRing<u32> = SlotRing::new(64);
+        r.next = u32::MAX - 1;
+        let (a, _) = r.claim(1);
+        let (b, _) = r.claim(2);
+        let (c, _) = r.claim(3);
+        assert_eq!(a, (u32::MAX - 1) % 64);
+        assert_eq!(b, u32::MAX % 64);
+        assert_eq!(c, 0);
+        assert!([a, b, c].iter().all(|s| *s < 64));
     }
 }

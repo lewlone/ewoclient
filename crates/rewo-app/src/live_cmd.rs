@@ -160,6 +160,17 @@ const GRAY_LINEAR: f32 = 0.401_977_78;
 
 /// Well under one 8-bit colour step, well over the f32/f64 evaluation gap.
 const COLOR_EPS: f32 = 1e-4;
+/// r48 — the entity ids `--render-check`'s crowd injection creates.
+///
+/// Two zombies and a villager, spawned through the production `add_entity`
+/// route. They are named here rather than written at the injection site
+/// because **the census joins on them**: the two crowd counts are taken over
+/// exactly these three draws and nothing else in the frame, so that a fixture
+/// elsewhere in the same run which happens to spawn a zombie cannot satisfy
+/// r48's threshold on this check's behalf. Far above any id a short
+/// render-check session's server will hand out, and far from any real profile.
+const CROWD_IDS: [i32; 3] = [0x5A00, 0x5A01, 0x5A02];
+
 /// M128 — the text of the one clickable message `--render-check` injects.
 ///
 /// Deliberately nothing a server would say, so the drawn-line scan that finds
@@ -360,8 +371,40 @@ struct RenderCheck {
     /// reason.
     sign_raw_key_frames: u64,
     /// M164 — the largest `ColumnMesh::carried_fluid_cells` any column uploaded
-    /// in the windowed client. See `r48`.
+    /// in the windowed client. See `r53`.
     carried_fluid_cells: u32,
+    /// Over the draws THIS RUN'S OWN INJECTION produced (`CROWD_IDS`, joined
+    /// to the draw list by the position `collect_entities` gave each of them
+    /// this frame): the most draws sharing one `EntityModelKind` that reached a
+    /// single `set_entities`, and the most distinct non-capsule kinds among
+    /// them.
+    ///
+    /// **The restriction to our own three entity ids is the load-bearing part.**
+    /// The first version counted every `EntityModelKind::Zombie` draw in the
+    /// frame, which is a claim about the world rather than about this
+    /// injection: any other fixture in the same run that happens to spawn a
+    /// zombie satisfies `>= 2` on its own, so a *partially* landed injection
+    /// (one of the three bodies decoded) would still have passed. Restricting
+    /// by id makes the two counts a statement about exactly the three entities
+    /// this check created — and the two together pin the multiset `{A, A, B}`,
+    /// since `same >= 2` with at most three draws and `distinct >= 2` cannot
+    /// both hold otherwise.
+    ///
+    /// Two counts because they break independently. The first is the crowd —
+    /// §0.0's mob-texture report says the symptom needs more than one mob in
+    /// the scene, and nothing anywhere drove that in the *windowed* client. The
+    /// second is kind RESOLUTION: every serverless gate (including this
+    /// milestone's `mobtexshot`) hands `EntityDraw::kind` in directly, so the
+    /// live `etypes.name(type_id)` -> `kind_for_entity_name` chain has never
+    /// had a witness. A break in the type registry, the `add_entity` decode or
+    /// the name match leaves both at their unlucky values rather than erroring.
+    ///
+    /// The first is a real maximum over kinds, not a count of one hard-coded
+    /// kind: the doc used to say "the most draws of ONE mob kind" while the
+    /// code counted only `Zombie`, which is the comment-that-outranks-the-code
+    /// shape this file keeps recording.
+    crowd_same_kind_max: usize,
+    crowd_kinds_max: usize,
     /// M138a — listener transforms that reached the audio device.
     ///
     /// Compared against `frames`, not merely to zero: the interesting claim is
@@ -691,7 +734,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 53;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 54;
 
     fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1336,6 +1379,34 @@ impl RenderCheck {
                  the MeshTables field, the mesh pool or the setblock did not \
                  reach each other -- and renders EXACTLY as it did before M164)",
                 self.carried_fluid_cells
+            ),
+        );
+        // r48 — the crowd, and the kind resolution under it.
+        //
+        // Both counts are taken over THIS CHECK'S OWN three injected entities
+        // (`CROWD_IDS`), never over the frame at large. That is what stops the
+        // threshold being satisfied by somebody else's mob: with at most three
+        // draws in scope, `same >= 2` means both injected zombies decoded and
+        // resolved to one kind, and `distinct >= 2` means the villager decoded
+        // and resolved to a different one — together the multiset `{A, A, B}`,
+        // which no partially landed injection can produce.
+        //
+        // It stays `>=` rather than `==` because the numbers are running
+        // maxima over frames and a third distinct kind is unreachable from
+        // three entities of two types; the restriction, not the comparison, is
+        // what makes it a claim about the client rather than about the world.
+        row(
+            "r54 two mobs of one type and one of another reached ONE draw list, with distinct resolved kinds",
+            self.crowd_same_kind_max >= 2 && self.crowd_kinds_max >= 2,
+            format!(
+                "over the {} injected entities: {} draws of one kind at peak, {} \
+                 distinct non-capsule kinds (0 same-kind means the injected \
+                 `add_entity` bodies never decoded or never reached the draw \
+                 list; 1 distinct kind means `kind_for_entity_name` collapsed \
+                 them, which is the wrong-model half of the reported bug)",
+                CROWD_IDS.len(),
+                self.crowd_same_kind_max,
+                self.crowd_kinds_max
             ),
         );
         row(
@@ -5565,6 +5636,8 @@ struct LiveApp {
     tab_list_injected: bool,
     /// M162 — the two sound-carrying packet tails, injected once.
     sound_tails_injected: bool,
+    /// Whether the two-of-one-kind mob injection has happened (r54).
+    crowd_injected: bool,
     /// Whether `--render-check` has force-opened the chat screen yet (M110).
     chat_injected: bool,
     /// Whether it has typed a `/`-command yet (M116).
@@ -8070,6 +8143,63 @@ impl LiveApp {
                     }
                     self.tab_list_injected = true;
                 }
+                // r48 — TWO mobs of one type plus one of another, injected
+                // through the production `add_entity` route (M17/M88's rule:
+                // injection is the deterministic proof where a live encounter
+                // depends on the server's spawn timing).
+                //
+                // This is the only check anywhere that drives
+                // `etypes.name(type_id)` -> `kind_for_entity_name`: every
+                // serverless gate, this milestone's `mobtexshot` included,
+                // hands `kind` straight to `EntityDraw`. It is also the only
+                // one that puts more than one mob in the WINDOWED client's
+                // draw list, which is the axis §0.0's "a mob renders with
+                // another mob's texture when more than one is in the scene"
+                // report is defined by.
+                //
+                // The ids are fixed and named in `CROWD_IDS` because the census
+                // below joins on them: without that, the count is a claim about
+                // whatever the world contains rather than about this injection.
+                if !self.crowd_injected && elapsed >= limit * 0.3 {
+                    if let Some(session) = self.session.as_mut() {
+                        let types = session.entity_types.clone();
+                        let p = &session.player;
+                        let eye = [p.x, p.y, p.z];
+                        if let Some(types) = types {
+                            let spawn = |eid: i32, tid: i32, dx: f64| -> Vec<u8> {
+                                let mut b: Vec<u8> = Vec::new();
+                                rewo_proto::varint::write_varint(&mut b, eid);
+                                // A uuid far from any real profile's.
+                                let uuid =
+                                    0xC0D0_0000_0000_0000_0000_0000_0000_0000u128 + eid as u128;
+                                b.extend_from_slice(&uuid.to_be_bytes());
+                                rewo_proto::varint::write_varint(&mut b, tid);
+                                b.extend_from_slice(&(eye[0] + dx).to_be_bytes());
+                                b.extend_from_slice(&eye[1].to_be_bytes());
+                                b.extend_from_slice(&(eye[2] - 4.0).to_be_bytes());
+                                // `LpVec3`'s one-byte zero sentinel: no motion.
+                                b.push(0);
+                                b.extend_from_slice(&[0, 0, 0]); // pitch, yaw, head yaw
+                                b
+                            };
+                            let pid = session.ids.cb_play_add_entity;
+                            for (i, (name, dx)) in [
+                                ("minecraft:zombie", -1.5f64),
+                                ("minecraft:zombie", 0.0),
+                                ("minecraft:villager", 1.5),
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            {
+                                if let Some(tid) = types.id_of(name) {
+                                    let body = spawn(CROWD_IDS[i], tid, dx);
+                                    session.inject_packet(pid, &body);
+                                }
+                            }
+                        }
+                    }
+                    self.crowd_injected = true;
+                }
                 // The hold. Assigned every frame rather than latched, so it is
                 // the same "read the key state fresh" the real gate does.
                 self.keys.tab_list = elapsed >= limit * 0.5;
@@ -9107,6 +9237,50 @@ impl LiveApp {
                 light: l.light,
             })
             .collect();
+        // r48 — the crowd census, taken on the list that is about to be
+        // uploaded, so it cannot drift from what was drawn. Two counts because
+        // they break independently: how many of the injected draws share one
+        // `EntityModelKind` (the axis the M46 report is defined by), and how
+        // many distinct non-capsule kinds are among them (the live
+        // `etypes.name(type_id)` -> `kind_for_entity_name` chain, which every
+        // serverless gate bypasses by handing `kind` in directly).
+        //
+        // **Restricted to `CROWD_IDS`.** `EntityDraw` carries no entity id, so
+        // the join is the position: each of our three ids is resolved through
+        // the very same `render_pos(alpha)` call `collect_entities` used one
+        // screenful above, with the same `alpha`, so the two `[f32; 3]`s are
+        // bit-identical and the match is exact rather than approximate. The
+        // ids are inert on the wire (nothing else in the run can be at those
+        // coordinates *and* be one of them), and the alternative — counting
+        // every `Zombie` in the frame — is a claim about the world: another
+        // fixture that spawns one satisfies it, so a partially decoded
+        // injection would pass on somebody else's mob.
+        if let Some(rc) = self.check.as_mut() {
+            let mine: Vec<[f32; 3]> = CROWD_IDS
+                .iter()
+                .filter_map(|id| session.world.entities.get(*id))
+                .map(|e| {
+                    let q = e.render_pos(alpha);
+                    [q[0] as f32, q[1] as f32, q[2] as f32]
+                })
+                .collect();
+            let mut counts: Vec<(rewo_gpu::mobs::EntityModelKind, usize)> = Vec::new();
+            let mut kinds: Vec<rewo_gpu::mobs::EntityModelKind> = Vec::new();
+            for d in draws.iter().filter(|d| mine.contains(&d.pos)) {
+                match counts.iter_mut().find(|(k, _)| *k == d.kind) {
+                    Some((_, n)) => *n += 1,
+                    None => counts.push((d.kind, 1)),
+                }
+                if d.kind != rewo_gpu::mobs::EntityModelKind::Capsule
+                    && !kinds.contains(&d.kind)
+                {
+                    kinds.push(d.kind);
+                }
+            }
+            let same = counts.iter().map(|(_, n)| *n).max().unwrap_or(0);
+            rc.crowd_same_kind_max = rc.crowd_same_kind_max.max(same);
+            rc.crowd_kinds_max = rc.crowd_kinds_max.max(kinds.len());
+        }
         state.world_renderer.set_entities_and_block_entities(
             &draws,
             &be_draws,
@@ -10126,6 +10300,7 @@ fn run_windowed(
         sidebar_injected: false,
         tab_list_injected: false,
         sound_tails_injected: false,
+        crowd_injected: false,
         username,
         chat_parse: None,
         drag: DragState::default(),
