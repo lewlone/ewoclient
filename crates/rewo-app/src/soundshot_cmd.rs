@@ -133,7 +133,7 @@ use rewo_net::sounds::{SoundEvent, SoundRef, SoundSource};
 use rewo_net::SoundPacketKind;
 
 /// The witnesses a **default** build runs — layers (w), (s) and (a).
-pub const EXPECTED_WITNESSES_CORE: usize = 35;
+pub const EXPECTED_WITNESSES_CORE: usize = 37;
 
 /// The extra witnesses an `--features audio` build runs — layers (d) and (m).
 ///
@@ -726,6 +726,69 @@ fn level_event_tail_witnesses(c: &mut Checker, cam: [f64; 3]) {
         format!("{seen} camera-placed rows (must be 3): {detail}"),
     );
 
+    // ---- w9b: the camera standing INSIDE the block ------------------------
+    //
+    // `Vec3.normalize()` returns **ZERO** rather than erroring when the length
+    // is `< 1.0E-5F` (`Vec3.java:83-86`), so `soundPos = camera + ZERO * 2` is
+    // the camera itself: the sound plays at the listener, at full gain.
+    //
+    // `camera_bearing_position`'s doc has always called that branch reachable
+    // — "stand inside the block a wither spawns at" — and until this witness
+    // nothing reached it. Every other fixture here, and `w9`'s in particular,
+    // uses a camera 3.6 blocks from the block centre, so deleting the guard
+    // outright left `soundshot` 36/36 and `rewo-net`'s 1190 tests green while
+    // emitting a **NaN** position: `0.0 / 0.0`. A NaN reaches the mixer's
+    // attenuation, where it is neither loud nor quiet but silently poisons the
+    // gain — which is exactly the shape of wrong no gate can hear.
+    //
+    // The camera is the block's CENTRE, spelled as literals rather than read
+    // from the code, so it is the fixture that decides where the degenerate
+    // point is.
+    let centre_cam = [10.5f64, 64.5, -6.5];
+    let mut degenerate_ok = true;
+    let mut degenerate_rows = 0;
+    let mut degenerate_detail = String::new();
+    for row in SOUNDS.iter().filter(|s| s.placement == Placement::Camera) {
+        let got = rewo_net::route_level_event_sound(
+            &level_event_body(row.id, 10, 64, -7, 0, row.global),
+            Some(centre_cam),
+        );
+        match got {
+            Some(SoundEvent::At(p)) => {
+                let finite = p.x.is_finite() && p.y.is_finite() && p.z.is_finite();
+                let at_camera = (p.x, p.y, p.z) == (centre_cam[0], centre_cam[1], centre_cam[2]);
+                degenerate_ok &= finite && at_camera;
+                degenerate_detail
+                    .push_str(&format!("{} -> ({}, {}, {}); ", row.id, p.x, p.y, p.z));
+            }
+            other => {
+                degenerate_ok = false;
+                degenerate_detail.push_str(&format!("{} -> {other:?}; ", row.id));
+            }
+        }
+        degenerate_rows += 1;
+    }
+    // …and one block away it is NOT the camera, or "always emit the camera
+    // position" would satisfy the assertion above.
+    let one_away = rewo_net::route_level_event_sound(
+        &level_event_body(1023, 10, 64, -7, 0, true),
+        Some([9.5f64, 64.5, -6.5]),
+    );
+    let moves_when_not_degenerate = matches!(
+        one_away,
+        Some(SoundEvent::At(ref p)) if (p.x, p.y, p.z) != (9.5, 64.5, -6.5)
+    );
+    c.record(
+        "w9b.a_camera_inside_the_block_gets_a_finite_sound_at_the_listener",
+        degenerate_ok && degenerate_rows == 3 && moves_when_not_degenerate,
+        format!(
+            "{degenerate_rows} camera-placed rows (must be 3) with the camera AT the block \
+             centre: {degenerate_detail}the position must be finite and equal to the \
+             camera (a deleted normalize() guard makes it NaN); one block away it moves \
+             instead: {moves_when_not_degenerate}"
+        ),
+    );
+
     // ---- w10: the absent camera means two different things ----------------
     //
     // `LevelEventHandler.java:66` wraps the whole `globalLevelEvent` body in
@@ -881,20 +944,36 @@ fn explode_tail_witnesses(
         .filter(|n| particles.id_of(n).is_some())
         .collect();
     let simple = all_names.len().saturating_sub(known.len());
+    // **`simple == SIMPLE_AT_26_2` is implied by the two conjuncts above it**,
+    // so asserting it adds a third number and no third claim: `SIMPLE_AT_26_2`
+    // is *defined* as
+    // `REGISTERED_AT_26_2 - OPTION_BEARING.len()` — a number that reads as an
+    // independent measurement and is algebra. The independent statement is the
+    // decompile's own shape count: `ParticleTypes.java` has 125 `register(`
+    // call sites, and exactly **103** of them take the two-argument
+    // `register(String, boolean)` overload that returns a `SimpleParticleType`
+    // (counted over the file; the other 22 pass a codec pair). That literal is
+    // what the derived constant is graded against here, and the equality
+    // between the two is asserted separately so a drift in either is visible.
+    const SIMPLE_REGISTRATIONS_IN_PARTICLE_TYPES_JAVA: usize = 103;
     c.record(
         "w13.the_particle_option_table_accounts_for_every_registered_type",
         dense
             && all_names.len() == REGISTERED_AT_26_2
             && known.len() == OPTION_BEARING.len()
-            && simple == SIMPLE_AT_26_2,
+            && simple == SIMPLE_REGISTRATIONS_IN_PARTICLE_TYPES_JAVA
+            && SIMPLE_AT_26_2 == SIMPLE_REGISTRATIONS_IN_PARTICLE_TYPES_JAVA,
         format!(
             "report has {} names (dense: {dense}); {} of {} option-bearing names resolve; \
-             {simple} simple (expected {}/{}/{})",
+             {simple} simple against the decompile's {} two-argument register() calls \
+             (expected {}/{}/{}), and the derived SIMPLE_AT_26_2 is {}",
             all_names.len(),
             known.len(),
             OPTION_BEARING.len(),
+            SIMPLE_REGISTRATIONS_IN_PARTICLE_TYPES_JAVA,
             REGISTERED_AT_26_2,
             OPTION_BEARING.len(),
+            SIMPLE_REGISTRATIONS_IN_PARTICLE_TYPES_JAVA,
             SIMPLE_AT_26_2
         ),
     );
@@ -978,6 +1057,18 @@ fn explode_tail_witnesses(
     let mut lo = f32::MAX;
     let mut hi = f32::MIN;
     let mut first = None;
+    // **The seed is drawn, and consecutive explosions do not share it.**
+    //
+    // This set is the correction to the first version of w15, which captured
+    // `first` into the format string and asserted nothing about it — so
+    // `let seed = rng.next_long()` was replaceable by `let seed = 0` with this
+    // gate 35/35 and `rewo-net`'s 1187 tests all green. `SoundEngine::resolve`
+    // hands the seed to `get_sound_seeded` and
+    // `minecraft:entity.generic.explode` has FOUR variants, so a constant
+    // makes every explosion in the game play the same sample. `w16` pins the
+    // seed's exact VALUE; this pins the consequence a player would hear, and
+    // the two fail differently on purpose.
+    let mut seeds = std::collections::BTreeSet::new();
     if let Some(t) = &tail {
         for _ in 0..2000 {
             let s = rewo_net::motion::explosion_sound(t, centre, &mut rng);
@@ -987,6 +1078,7 @@ fn explode_tail_witnesses(
                 && (0.56..=0.84).contains(&s.pitch);
             lo = lo.min(s.pitch);
             hi = hi.max(s.pitch);
+            seeds.insert(s.seed);
             if first.is_none() {
                 first = Some(s.seed);
             }
@@ -996,13 +1088,108 @@ fn explode_tail_witnesses(
     // above: `(1 + (a - b) * 0.2) * 0.7` with a single draw, or with `a == b`,
     // pins it at exactly 0.7.
     let spread = hi - lo;
+    // 2000 of 2000, measured on a real JVM by
+    // `tools/explosion_sound_oracle/ExplosionSoundOracle.java` — the whole run,
+    // not a sample of it, because a 48-bit LCG's `nextLong` cannot repeat here.
+    let distinct_ok = seeds.len() == 2000;
     c.record(
         "w15.the_explosion_sound_is_loud_low_and_at_the_centre",
-        tail.is_some() && band_ok && spread > 0.2,
+        tail.is_some() && band_ok && spread > 0.2 && distinct_ok,
         format!(
             "2000 draws: pitch in [{lo:.4}, {hi:.4}] (band [0.56, 0.84], spread {spread:.4} \
              must exceed 0.2 or the jitter is missing), volume 4.0, source Blocks, \
-             at {centre:?}, first seed {first:?}"
+             at {centre:?}, first seed {first:?}, {} DISTINCT seeds (must be 2000 — a \
+             constant seed plays one of explode's four variants forever)",
+            seeds.len()
+        ),
+    );
+
+    // ---- w16: the three draws, and their ORDER, against a real JVM --------
+    //
+    // `java.util.Random` is an exact stand-in for `LegacyRandomSource` for the
+    // three calls this makes — the same 48-bit LCG (`LegacyRandomSource.java`:
+    // multiplier 25214903917, increment 11, mask 281474976710655), the same
+    // `next(24) * 5.9604645E-8F` float, and the same SIGNED `+` in
+    // `((long)next(32) << 32) + next(32)`. So the LCG is re-declared here from
+    // those literals rather than imported, and then ANCHORED to numbers a real
+    // JDK 25 printed, which is what stops it being a second copy of the thing
+    // it grades. Regenerate with
+    // `java tools/explosion_sound_oracle/ExplosionSoundOracle.java`.
+    struct JavaLcg(i64);
+    impl JavaLcg {
+        fn new(seed: i64) -> Self {
+            Self((seed ^ 25214903917) & 281474976710655)
+        }
+        fn next(&mut self, bits: u32) -> i32 {
+            self.0 = self
+                .0
+                .wrapping_mul(25214903917)
+                .wrapping_add(11)
+                & 281474976710655;
+            (self.0 >> (48 - bits)) as i32
+        }
+        fn next_float(&mut self) -> f32 {
+            self.next(24) as f32 * 5.9604645E-8
+        }
+        fn next_long(&mut self) -> i64 {
+            let upper = self.next(32) as i64;
+            let lower = self.next(32) as i64;
+            (upper << 32).wrapping_add(lower)
+        }
+        /// `(1.0F + (nextFloat() - nextFloat()) * 0.2F) * 0.7F`, then the seed.
+        fn explosion(&mut self) -> (u32, i64) {
+            let a = self.next_float();
+            let b = self.next_float();
+            let pitch = (1.0f32 + (a - b) * 0.2f32) * 0.7f32;
+            (pitch.to_bits(), self.next_long())
+        }
+    }
+    // The anchor: two of the oracle's five printed triples. Without these the
+    // sweep below would only prove two transcriptions agree with each other.
+    let anchored = JavaLcg::new(0).explosion() == (0x3F2F_995B, 4437113781045784766)
+        && JavaLcg::new(0x5EED_A11B_1E17).explosion()
+            == (0x3F25_E16B, -3920823684251294871);
+    // The oracle also prints the seed-FIRST ordering from the same start, and
+    // it disagrees in both fields — so this witness cannot be satisfied by a
+    // reordering of the three draws, which is the claim `motion.rs`'s doc makes
+    // and which nothing graded before.
+    let seed_first_differs = {
+        let mut r = JavaLcg::new(0x5EED_A11B_1E17);
+        let s = r.next_long();
+        let a = r.next_float();
+        let b = r.next_float();
+        let p = ((1.0f32 + (a - b) * 0.2f32) * 0.7f32).to_bits();
+        (s, p) == (2912740758204167767, 0x3F2D_A53A)
+            && (s, p) != (-3920823684251294871, 0x3F25_E16B)
+    };
+    let mut swept = 0usize;
+    let mut agree = true;
+    let mut worst = None;
+    if let Some(t) = &tail {
+        for start in -128i64..=127 {
+            let want = JavaLcg::new(start).explosion();
+            let mut got_rng = rewo_world::biome_noise::LegacyRandom::new(start);
+            let got = rewo_net::motion::explosion_sound(t, centre, &mut got_rng);
+            if (got.pitch.to_bits(), got.seed) != want {
+                agree = false;
+                if worst.is_none() {
+                    worst = Some((start, want, (got.pitch.to_bits(), got.seed)));
+                }
+            }
+            swept += 1;
+        }
+    }
+    c.record(
+        "w16.the_explosion_draws_two_floats_then_a_seed_and_matches_a_real_jvm",
+        anchored && seed_first_differs && agree && swept == 256,
+        format!(
+            "anchored to a real JDK 25 ({anchored}); the seed-first ordering is \
+             distinguishable ({seed_first_differs}); {swept} start seeds swept (must be \
+             256), all agree: {agree}{}",
+            match worst {
+                Some((s, w, g)) => format!("; first disagreement at {s}: want {w:?} got {g:?}"),
+                None => String::new(),
+            }
         ),
     );
 }

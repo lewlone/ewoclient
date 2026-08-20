@@ -1,13 +1,21 @@
 """M161's mutation battery — the sound tails of `explode` and `level_event`.
 
-Run:  python tools/m161_mutate.py [lo] [hi]
+Run:  python tools/m161_sound_tails_mutate.py [lo] [hi]
+
+**The filename carries the task, not just the M-number.** Three branches of the
+same parallel wave each created `tools/m161_mutate.py` with different contents —
+an add/add conflict at one path, and the M-number triple-claimed. The number is
+a merge-silent resource in the sense REWO_PLAN section 0.0 describes; a
+task-suffixed name costs nothing and removes the collision.
 
 **Two routes, deliberately.** The milestone ships both a gate (`soundshot`'s
-w9-w15) and unit tests, and gotcha 0d says a battery has to be routed through
+w9-w16) and unit tests, and gotcha 0d says a battery has to be routed through
 whatever it claims coverage from: M155's ran entirely through `cargo test` and
 so never asked whether its gate could reach the code at all. Each mutation below
 declares its own route, and several are here specifically to check that the
-GATE — not only the unit suite — sees the break.
+GATE — not only the unit suite — sees the break. Four entries appear TWICE, once
+per route, because the review's headline defect was precisely a break that one
+route could see and the other could not.
 
 Discipline per AGENT_LOOP_BRIEF and REWO_PLAN section 0.0:
 
@@ -242,6 +250,92 @@ MUTATIONS = [
         y: center.y.floor() + 0.5,
         z: center.z.floor() + 0.5,""",
         "the BlockPos overload's centring, which this path does not take",
+    ),
+    # ---- the seed (w15's distinctness + w16), added after review ----------
+    #
+    # THE REVIEW'S HEADLINE DEFECT. `let seed = 0;` scored `soundshot` 35/35
+    # exit 0 and `rewo-net` 1187/1187 exit 0 on the first commit of this
+    # milestone: the seed was the entire reason `biome_noise::next_long` was
+    # added, and nothing anywhere asserted anything about it. Routed BOTH ways,
+    # because the fix ships a gate witness and unit tests and gotcha 0d says a
+    # battery has to ask each of them separately.
+    (
+        "explosion sound: the seed is a constant [gate]",
+        "gate",
+        MOTION,
+        "    let seed = rng.next_long();",
+        "    let seed = 0;",
+        "every explosion in the game plays the same one of "
+        "`entity.generic.explode`'s FOUR variants - the sort of wrong no gate "
+        "can hear, and until w15/w16 no gate could see it either",
+    ),
+    (
+        "explosion sound: the seed is a constant [unit]",
+        "net",
+        MOTION,
+        "    let seed = rng.next_long();",
+        "    let seed = 0;",
+        "the same break, asked of the unit suite rather than the gate",
+    ),
+    (
+        "explosion sound: the seed is drawn FIRST",
+        "gate",
+        MOTION,
+        """    let a = rng.next_float();
+    let b = rng.next_float();
+    let pitch = (1.0f32 + (a - b) * 0.2f32) * 0.7f32;
+    let seed = rng.next_long();""",
+        """    let seed = rng.next_long();
+    let a = rng.next_float();
+    let b = rng.next_float();
+    let pitch = (1.0f32 + (a - b) * 0.2f32) * 0.7f32;""",
+        "the draw ORDER, which `explosion_sound`'s own doc claimed was "
+        "observable in a seeded gate while nothing observed it; the JVM oracle "
+        "prints this ordering's seed (2912740758204167767) precisely so the "
+        "witness cannot be satisfied by it",
+    ),
+    (
+        "explosion sound: the seed is drawn FIRST [unit]",
+        "net",
+        MOTION,
+        """    let a = rng.next_float();
+    let b = rng.next_float();
+    let pitch = (1.0f32 + (a - b) * 0.2f32) * 0.7f32;
+    let seed = rng.next_long();""",
+        """    let seed = rng.next_long();
+    let a = rng.next_float();
+    let b = rng.next_float();
+    let pitch = (1.0f32 + (a - b) * 0.2f32) * 0.7f32;""",
+        "the same reordering, asked of the unit suite",
+    ),
+    (
+        "next_long: the low word is zero-extended [explosion oracle]",
+        "net",
+        NOISE,
+        """        let upper = self.next(32) as i64;
+        let lower = self.next(32) as i64;
+        (upper << 32).wrapping_add(lower)""",
+        """        let upper = self.next(32) as i64;
+        let lower = self.next(32) as u32 as i64;
+        (upper << 32) | lower""",
+        "the same primitive break the `world`-routed entry covers, asked here "
+        "of the only PRODUCTION caller - the review's point was that grading a "
+        "primitive is not grading its use",
+    ),
+    # ---- normalize()'s zero guard (w9b), added after review ---------------
+    (
+        "bearing: normalize()'s zero guard is deleted",
+        "gate",
+        LIB,
+        """    let dir = if dist < f64::from(1.0E-5_f32) {
+        [0.0, 0.0, 0.0]
+    } else {
+        [d[0] / dist, d[1] / dist, d[2] / dist]
+    };""",
+        "    let dir = [d[0] / dist, d[1] / dist, d[2] / dist];",
+        "a camera standing INSIDE the block gets a NaN sound position - the "
+        "branch `camera_bearing_position`'s doc called reachable and no fixture "
+        "reached, so deleting it left soundshot 36/36 and rewo-net 1190 green",
     ),
     # ---- unit-routed --------------------------------------------------
     (

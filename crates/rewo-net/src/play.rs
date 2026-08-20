@@ -3754,17 +3754,13 @@ impl PlaySession {
         self.local_vehicle().is_some()
     }
 
-    /// `handleExplosion`'s tail:
-    /// `packet.playerKnockback().ifPresent(this.minecraft.player::addDeltaMovement)`.
-    ///
-    /// Every player within 64 blocks of the blast receives this packet
-    /// (`ServerLevel`: `player.distanceToSqr(center) < 4096.0`), but the
-    /// knockback is `Optional.ofNullable(explosion.getHitPlayers().get(player))`
-    /// — per-recipient, and absent for anyone the explosion did not push. So
-    /// "present" already means "this is *your* shove"; there is no target id
-    /// to check.
-    /// `handleExplosion`'s first statement, which M68 dropped on the floor
+    /// `handleExplosion`'s FIRST statement, which M68 dropped on the floor
     /// (M161).
+    ///
+    /// ```java
+    /// this.minecraft.level.playLocalSound(center.x(), center.y(), center.z(),
+    ///    packet.explosionSound().value(), SoundSource.BLOCKS, 4.0F, …, false);
+    /// ```
     ///
     /// The construction — volume, source, pitch formula, seed and the three
     /// draws' order — lives in [`crate::motion::explosion_sound`], because
@@ -3796,6 +3792,22 @@ impl PlaySession {
         self.push_sound_event(crate::sounds::SoundEvent::At(s));
     }
 
+    /// `handleExplosion`'s tail:
+    /// `packet.playerKnockback().ifPresent(this.minecraft.player::addDeltaMovement)`.
+    ///
+    /// Every player within 64 blocks of the blast receives this packet
+    /// (`ServerLevel`: `player.distanceToSqr(center) < 4096.0`), but the
+    /// knockback is `Optional.ofNullable(explosion.getHitPlayers().get(player))`
+    /// — per-recipient, and absent for anyone the explosion did not push. So
+    /// "present" already means "this is *your* shove"; there is no target id
+    /// to check.
+    ///
+    /// M161 moved the SOUND out of this packet's handling and into
+    /// [`PlaySession::queue_explosion_sound`], which runs first; the two share
+    /// nothing but the decoded prefix, and this paragraph belongs here rather
+    /// than there. (It briefly did not: M161's first commit fused it onto the
+    /// sound's rustdoc, which left this function undocumented and made the
+    /// sound's doc say it implemented the knockback.)
     fn apply_explode(&mut self, e: &crate::motion::Explosion) {
         self.motion_stats.explosions += 1;
         let Some(k) = e.player_knockback else { return };

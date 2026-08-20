@@ -1726,7 +1726,7 @@ this shape once.
 
 | Milestone | `rNN` | Atlas / sheet | Gate + witness prefix |
 |---|---|---|---|
-| M161 — the sound tails of `explode` and `level_event` | **r48, r49, r50** | — | `soundshot` w9-w15 (`EXPECTED_WITNESSES_CORE` 28 -> 35) |
+| M161 — the sound tails of `explode` and `level_event` | **r48, r49, r50** | — | `soundshot` w9-w9b, w10-w16 (`EXPECTED_WITNESSES_CORE` 28 -> 37) |
 | *(next free)* | **r51** | — | — |
 
 *Claimed densely from `r48`, and `EXPECTED_RENDER_CHECK_WITNESSES` raised 47 ->
@@ -1734,6 +1734,16 @@ this shape once.
 `soundshot`'s `EXPECTED_WITNESSES_CORE` — a **fail-loud** shared integer rather
 than a merge-silent one, so two branches both raising it conflict textually and
 the integrator has to look, which is the desirable case this section describes.*
+
+*The review pass raised the constant again, 35 -> 37, for `w9b` and `w16`; the
+prefix is `w9`, `w9b`, `w10`..`w16`. The battery lives at
+`tools/m161_sound_tails_mutate.py` rather than `tools/m161_mutate.py`, because
+**three branches of this wave each created that second path with different
+contents** — an add/add conflict where a task-suffixed name costs nothing. **A
+mutation-harness FILENAME is a merge-silent resource in exactly the sense this
+section defines**, and so is the M-number it embeds; the table above allocates
+`rNN`, atlas coordinates and witness prefixes and does not yet allocate either.
+A future revision should add a column for it.*
 
 #### Two things this does not guard, stated rather than hidden
 
@@ -3635,6 +3645,92 @@ initial mesh flood. Reported rather than papered over.
 Two runs of r48 on different spawns put the eye at `(7.5, -58.38, -3.5)` and
 `(2.888, -58.38, -4.5)` with the sound 2.0000000 blocks out in both, which is
 the evidence that the witness tracks the live camera rather than a constant.
+
+#### Review follow-up (2026-08-20) — two deletable features, and a witness that watched a value go past
+
+An adversarial review mutated this branch's production code and found **two
+places where a feature could be deleted whole with every gate green**. Both are
+now killed, and both are the same shape as gotcha 0a's closing line: *if a
+witness asks the subject where to look, it grades everything except where the
+subject looked.* Here the witness did not even look — it captured the value into
+a format string.
+
+**1. The RNG seed draw was graded by nothing, and it was the entire reason
+`biome_noise::next_long` was added.** Replacing `let seed = rng.next_long();`
+with `let seed = 0;` scored `soundshot` 35/35 exit 0 and `rewo-net` 1187/1187
+exit 0 — reproduced before fixing. `w15` captured `s.seed` into its detail string
+and asserted nothing about it; the battery's only seed-adjacent entry mutated
+`next_long`'s **body** routed through `rewo-world`, which grades the primitive
+and not its sole production caller. **Grading a primitive is not grading its
+use** — a `rewo-world` battery entry and a `rewo-net` production call site are
+different claims, and the milestone had only the first. The consequence is
+audible: `SoundEngine::resolve` hands the seed to `get_sound_seeded` and
+`minecraft:entity.generic.explode` has **four** variants, so a constant makes
+every explosion in the game play the same sample.
+
+The same paragraph also claimed the three draws' **order** was "observable in a
+seeded gate, which is why it is stated here rather than discovered later", and
+nothing observed it either.
+
+Both are closed by predicting from a source the code cannot influence:
+`tools/explosion_sound_oracle/ExplosionSoundOracle.java` runs **`java.util.Random`
+on a real JDK 25** and prints the (pitch bits, seed) pair for five start seeds.
+`java.util.Random` is an exact stand-in for `LegacyRandomSource` for these three
+calls — same 48-bit LCG, same `next(24) * 5.9604645E-8F`, and the same **signed**
+`+` in `((long)next(32) << 32) + next(32)` — so it is an oracle rather than a
+second transcription. The oracle *also* prints the seed-first ordering, which
+from the same start gives a different seed (`2912740758204167767`) and a
+different pitch (`0x3F2DA53A`), so neither witness can be satisfied by a
+reordering. Three unit tests carry the literals; `w16` re-declares the LCG from
+`LegacyRandomSource.java`'s constants, **anchors it to two of the oracle's
+triples**, and sweeps 256 start seeds; `w15` gains the consequence a player
+would hear — 2000 consecutive explosions must produce **2000 distinct seeds**,
+which is what the oracle measures.
+
+**2. `normalize()`'s zero guard was unreachable from every fixture.**
+`camera_bearing_position`'s doc has always called the `dist < 1.0E-5F` branch
+reachable — "stand inside the block a wither spawns at" — and every fixture in
+the gate and the unit suite put the camera 3.6 blocks from the block centre.
+Deleting the guard outright left `soundshot` 36/36 and `rewo-net` 1190 green
+while emitting a **NaN** position, which reaches the mixer's attenuation and is
+neither loud nor quiet. `w9b` puts the camera exactly at the block centre and
+asserts the position is finite **and** equal to the camera, with a one-block-away
+control so "always emit the camera position" cannot satisfy it.
+
+**3. A doc comment had been stolen from the function it described.** M161's
+first commit moved `apply_explode`'s rustdoc — M68's rule about why the
+knockback needs no target-id check — onto the new `queue_explosion_sound`,
+where it contradicted the fourth sentence of its own block and left
+`apply_explode` undocumented. Restored, with each function's doc naming its own
+statement of `handleExplosion`. **The false-justification failure mode is worse
+than an absent comment**, because a reader checking the sound's rationale reads
+about knockback and stops.
+
+**4. `w13`'s third conjunct was algebra presenting as a measurement.**
+`simple == SIMPLE_AT_26_2` is implied by the two conjuncts before it, since
+`SIMPLE_AT_26_2` is *defined* as `REGISTERED_AT_26_2 - OPTION_BEARING.len()`.
+The independent statement is the decompile's own shape count — `ParticleTypes.java`
+has 125 `register(` call sites and exactly **103** take the two-argument
+`register(String, boolean)` overload returning a `SimpleParticleType` — so that
+literal is what the derived constant is graded against now, with the equality
+between them asserted separately.
+
+**Measured after the follow-up.** `soundshot --check` **35 -> 37** default and
+**55 -> 57** with `--features audio`, both exit 0 (there is no constant 57: the
+total is `EXPECTED_WITNESSES_CORE + EXPECTED_WITNESSES_AUDIO`, 37 + 20).
+`rewo-net` **1187 -> 1190**. Battery **22 -> 28 mutations, 28 killed**, over
+seven slices each with its own no-op control (SURVIVED every time) and its own
+baseline check. Four of the six new entries appear twice, once per route, because
+the defect this closes was exactly a break one route could see and the other
+could not.
+
+**Not closed, and stated rather than hidden.** `r49`'s three-way conjunction is
+two independent assertions: `explosion_tails` and `explosion_sounds_queued` move
+together by construction, which `MotionStats`'s own doc already says. Fixing the
+detail string would mean touching `live_cmd.rs`, which every branch in this wave
+touches and which would invalidate the recorded `49/50` render-check run for a
+comment. The third conjunct — the engine's live position — is independent, so
+the witness is sound; only its arithmetic is over-stated.
 
 ### M159 — the streaming decode on the sound-engine thread, and the half of it that is cheap (2026-08-17)
 

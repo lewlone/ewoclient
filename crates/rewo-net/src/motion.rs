@@ -486,13 +486,22 @@ pub fn read_explode_tail(
 /// Rewo's stand-in for `Level.random` is `PlaySession::ambient_rng`, whose own
 /// doc already says "vanilla shares the level's". Vanilla's is nanotime-seeded
 /// and reproduces nothing, so only the *distribution* is a transcribable fact
-/// — but the draw order is observable in a seeded gate, which is why it is
-/// stated here rather than discovered later.
+/// — but from a fixed start the order is exactly observable, and it is:
+/// [`tests::the_explosion_sound_matches_a_real_jvm`] pins the (pitch, seed)
+/// pair against numbers a real JDK 25 printed, and `soundshot`'s `w16` sweeps
+/// 256 start seeds against the same LCG re-declared from
+/// `LegacyRandomSource.java`'s literals. Both name the seed-first ordering and
+/// show it disagrees, so neither can be satisfied by a reordering. **That
+/// sentence used to end "which is why it is stated here rather than discovered
+/// later", and nothing graded it** — a review moved the seed draw and every
+/// gate stayed green.
 ///
 /// The seed is not decoration: `SoundEngine::resolve` feeds it to
 /// `get_sound_seeded`, so it chooses **which of `entity.generic.explode`'s
-/// variants plays**. A constant would play the same one every time, which is
-/// the sort of wrong no gate can hear.
+/// four variants plays**. A constant would play the same one every time, which
+/// is the sort of wrong no gate can hear — and until the witnesses above, no
+/// gate could *see* it either: `let seed = 0;` passed `soundshot` 35/35 and
+/// this crate's 1187 tests.
 pub fn explosion_sound(
     tail: &ExplosionTail,
     center: Vec3,
@@ -1486,5 +1495,108 @@ mod tests {
             t.tick_lerp();
         }
         assert_eq!(t.delta_movement(9), Some([0.5, 0.0, 0.0]));
+    }
+
+    // ── explosion_sound: the three draws, against a real JVM ────────────
+
+    /// A tail whose contents do not reach the sound: only `sound` is read.
+    fn explode_tail_stub() -> ExplosionTail {
+        ExplosionTail {
+            particle: "minecraft:explosion_emitter".into(),
+            sound: crate::sounds::SoundRef::Registry(7),
+            block_particles: 0,
+            used: 0,
+        }
+    }
+
+    /// **The pitch AND the seed, pinned to values a real JDK 25 printed.**
+    ///
+    /// The numbers come from
+    /// `tools/explosion_sound_oracle/ExplosionSoundOracle.java`, which runs
+    /// `java.util.Random` — an exact stand-in for `LegacyRandomSource` for
+    /// `next`, `nextFloat` and `nextLong` (the same 48-bit LCG, the same float
+    /// multiplier, and the same SIGNED `+` in `nextLong`). So this grades
+    /// Rewo's transcription against the platform rather than against a second
+    /// transcription of the same paragraph, which is the difference between a
+    /// witness and a mirror.
+    ///
+    /// It pins the **order** as well as the values, and that is not a
+    /// by-product: the oracle also prints the seed-first ordering from the
+    /// same start, and that produces a different seed (2912740758204167767)
+    /// and a different pitch (bits `0x3F2DA53A`). So a reordering of the three
+    /// draws cannot satisfy this test, where a band check on the pitch alone
+    /// is blind to it.
+    ///
+    /// Added after a review found `let seed = rng.next_long();` replaceable by
+    /// `let seed = 0;` with `soundshot` 35/35 and this crate's 1187 tests all
+    /// green. The seed is what `SoundEngine::resolve` hands to
+    /// `get_sound_seeded`, and `minecraft:entity.generic.explode` has four
+    /// variants, so a constant makes every explosion in the game play the same
+    /// sample — audible, and until now graded by nothing.
+    #[test]
+    fn the_explosion_sound_matches_a_real_jvm() {
+        // (start seed, pitch bits, sound seed) — printed by the oracle.
+        const ORACLE: &[(i64, u32, i64)] = &[
+            (0, 0x3F2F_995B, 4437113781045784766),
+            (1, 0x3F49_CB31, 7564655870752979346),
+            (0x5EED_A11B_1E17, 0x3F25_E16B, -3920823684251294871),
+            (-1, 0x3F2D_15C2, 226341162490527646),
+            (1234567890123, 0x3F43_A1E6, -4294232599635685378),
+        ];
+        let tail = explode_tail_stub();
+        let centre = Vec3::new(12.25, 71.5, -3.75);
+        for &(start, pitch_bits, sound_seed) in ORACLE {
+            let mut rng = rewo_world::biome_noise::LegacyRandom::new(start);
+            let s = explosion_sound(&tail, centre, &mut rng);
+            assert_eq!(
+                s.pitch.to_bits(),
+                pitch_bits,
+                "pitch from start seed {start}: got {} (bits {:#010X})",
+                s.pitch,
+                s.pitch.to_bits()
+            );
+            assert_eq!(s.seed, sound_seed, "sound seed from start seed {start}");
+        }
+        // The one reordering a plausible implementation reaches for, spelled
+        // out so this test's kill of it is visible rather than incidental.
+        assert_ne!(
+            ORACLE[2].2, 2912740758204167767,
+            "the seed-first ordering must not agree with the transcribed one"
+        );
+    }
+
+    /// **Consecutive explosions must not all pick the same variant.**
+    ///
+    /// The exact-value test above already fails on a constant seed, but it
+    /// fails as "the number is wrong"; this one fails as the thing a player
+    /// would hear. The oracle measures 2000 distinct seeds over 2000
+    /// consecutive explosions off one generator, so the bar here is the whole
+    /// run rather than a sample of it.
+    #[test]
+    fn consecutive_explosions_draw_distinct_seeds() {
+        let tail = explode_tail_stub();
+        let centre = Vec3::new(0.5, 64.0, 0.5);
+        let mut rng = rewo_world::biome_noise::LegacyRandom::new(0x5EED_A11B_1E17);
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..2000 {
+            seen.insert(explosion_sound(&tail, centre, &mut rng).seed);
+        }
+        assert_eq!(seen.len(), 2000, "a real JVM produces 2000 distinct seeds");
+    }
+
+    /// The volume, source, position and sound, which the pitch/seed pair does
+    /// not reach. Volume **4.0** feeds `getRange`'s `16 * max(volume, 1)` —
+    /// four times a normal block sound's carrying distance — and the position
+    /// is `playLocalSound`'s `double` overload, so no half-block centring.
+    #[test]
+    fn the_explosion_sound_is_loud_at_the_centre_and_a_block_sound() {
+        let tail = explode_tail_stub();
+        let centre = Vec3::new(12.25, 71.5, -3.75);
+        let mut rng = rewo_world::biome_noise::LegacyRandom::new(4);
+        let s = explosion_sound(&tail, centre, &mut rng);
+        assert_eq!(s.volume, 4.0);
+        assert_eq!(s.source, crate::sounds::SoundSource::Blocks);
+        assert_eq!((s.x, s.y, s.z), (centre.x, centre.y, centre.z));
+        assert_eq!(s.sound, tail.sound);
     }
 }
