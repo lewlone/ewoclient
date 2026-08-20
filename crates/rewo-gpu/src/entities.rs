@@ -512,6 +512,16 @@ pub const EMISSIVE_VARIANT: u32 = 1 << 16;
 ///
 /// The ring is a plain struct with no GPU in it precisely so the wrap can be
 /// tested: `upload_trim` needs a device, `claim` does not.
+///
+/// **That covers `claim`, not the fix.** The bug is a *caller* keeping a stale
+/// key, so unit tests on this type say nothing about whether either call site
+/// drops its evictee — both `remove(&old)` blocks below could be deleted with
+/// the whole suite and every gate green, which is exactly how the pre-M161
+/// code passed. The call sites are graded at the pool by `mobtexshot`'s `m10`
+/// (trim) and `m11` (items), through [`EntityPass::trim_slot_pairs`] /
+/// [`EntityPass::item_slot_pairs`] and, for trim, through the public
+/// `upload_trim` itself: each over-fills its pool by one and requires that the
+/// evicted key no longer resolves to the slot that took its place.
 pub(crate) struct SlotRing<K> {
     next: u32,
     cap: u32,
@@ -1545,6 +1555,29 @@ impl EntityPass {
         }
         self.held_items = Some(items);
         result
+    }
+
+    /// Every `(texture id, slot)` the **item** pool currently addresses, and
+    /// every `(sprite path, atlas origin)` the **trim** pool does.
+    ///
+    /// Read-only, and they exist for one reason: the invariant that makes
+    /// [`SlotRing`] worth having — *no two live keys resolve to one slot* — is
+    /// otherwise unobservable from outside this file, so the caller-side
+    /// eviction could be (and was) deleted with every gate staying green.
+    /// `mobtexshot`'s `m10`/`m11` state the invariant on these; nothing in the
+    /// renderer calls them.
+    ///
+    /// The map's size is half the claim and the distinctness of the slots is
+    /// the other half: without the eviction the map simply grows past the
+    /// pool, so `len()` exceeds the cap *and*, by pigeonhole, two keys share a
+    /// slot. With it, `len() <= cap` and the slots are pairwise distinct.
+    pub fn item_slot_pairs(&self) -> Vec<(u16, u32)> {
+        self.item_slots.iter().map(|(k, v)| (*k, *v)).collect()
+    }
+
+    /// The trim pool's half of [`Self::item_slot_pairs`].
+    pub fn trim_slot_pairs(&self) -> Vec<(String, (u32, u32))> {
+        self.trim_slots.iter().map(|(k, v)| (k.clone(), *v)).collect()
     }
 
     /// Atlas UV rect `(u0, v0, du, dv)` of a resident item texture.
@@ -6437,9 +6470,15 @@ mod tests {
 
     /// The cursor is `wrapping_add`, so a very long session rolls over `u32`
     /// rather than panicking in debug — and the slot it lands on must still be
-    /// inside the pool. `u32::MAX` is not a multiple of the two real caps (64
-    /// and 1024), so this also pins that the roll does not skip a slot in a way
-    /// a `% cap` on a saturating counter would.
+    /// inside the pool.
+    ///
+    /// The roll is **seamless**, and the fact that makes it so is that `2^32`
+    /// *is* a multiple of both real caps (64 and 1,024 are powers of two), so
+    /// `u32::MAX % cap == cap - 1` and the next claim lands on slot 0 with
+    /// nothing skipped. An earlier version of this comment said `u32::MAX` is
+    /// *not* a multiple of the caps and drew the same conclusion from it, which
+    /// is a non-sequitur — the test was right and the reasoning beside it was
+    /// not. A cap that was not a power of two would genuinely skip here.
     #[test]
     fn slot_ring_survives_a_cursor_rollover() {
         let mut r: SlotRing<u32> = SlotRing::new(64);

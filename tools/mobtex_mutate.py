@@ -9,6 +9,8 @@ argument:
 
     python tools/mobtex_mutate.py gate     # du + skin_uv sensitivity
     python tools/mobtex_mutate.py gate2    # attribution, vacuity, emissive
+    python tools/mobtex_mutate.py gate3    # the pinned counts and the fail-open paths
+    python tools/mobtex_mutate.py pools    # the two CALL SITES of the slot ring
     python tools/mobtex_mutate.py ring     # the slot ring's unit tests
 
 Every batch opens with a BASELINE that must PASS and carries a NO-OP CONTROL
@@ -19,6 +21,18 @@ whole batteries (AGENT_LOOP_BRIEF).
 Verdicts come from EXIT CODES, never from a substring: `mobtexshot` is
 fail-closed on a declared witness count, so a run can print `ok` on every line
 and still be red.
+
+**`ring` and `pools` are not the same claim, and the difference is the whole
+reason `pools` exists.** `ring` mutates `SlotRing::claim` and is graded by its
+unit tests; `pools` mutates the two CALLERS, which is where the bug lived. An
+adversarial review deleted both `remove(&old)` blocks — restoring the exact
+aliasing bug — and `mobtexshot` stayed 10/10, `rewo-gpu` 293/293, `itemshot` and
+`mobshot` green, because nothing anywhere graded a call site. A battery that
+mutates only the helper reports 3/3 against a feature that could be deleted
+whole.
+
+One mutation below is deliberately recorded as an EXPECTED SURVIVOR rather than
+omitted: see `first_unexplained`'s empty-set arm in `gate3`.
 """
 
 import os
@@ -173,6 +187,97 @@ GATE2_BATCH = [
     ),
 ]
 
+GATE3_BATCH = [
+    NOOP,
+    (
+        # m8's name says "exactly this size" and its first version asserted
+        # `jar_babies > 0`, so 147 lived only in the detail string. Changing
+        # what the jar scan counts must now turn it red.
+        "the jar's baby-sheet count changes (the pinned 147 moves)",
+        GATE,
+        b'            && name.contains("baby")\n        {',
+        b'            && name.contains("baby")\n            && !name.contains("zombie")\n        {',
+        "gate",
+        "KILL",
+    ),
+    (
+        # `first_unexplained` used to answer `None` — "every pixel explained" —
+        # when a kind's declared sheets did not resolve, i.e. it was greenest
+        # exactly where it knew least. Unreachable with the real registry, so
+        # the mutation makes it reachable.
+        #
+        # **ONE kind, not all of them, and the difference is the point.**
+        # Blanking every kind's sheets is killed either way, because `m9` feeds
+        # the villager's pixels to the ZOMBIE's set and a blank zombie set
+        # makes it answer `None` — so that version proves the negative control
+        # works and says nothing about the arm it names. Blanking the villager
+        # alone leaves `m9` intact: fail-closed this is red (m1/m5/m12 report
+        # the villager's pixels as unexplained), fail-open it was green.
+        "ONE kind's declared sheets stop resolving (isolates the empty-set arm)",
+        GATE,
+        b"            let mut keys = d.textures.to_vec();",
+        b"            let mut keys = if d.kind == rewo_gpu::mobs::EntityModelKind::Villager {\n"
+        b'                vec!["rewo:no-such-sheet"]\n'
+        b"            } else {\n"
+        b"                d.textures.to_vec()\n"
+        b"            };",
+        "gate",
+        "KILL",
+    ),
+    (
+        # "Drew nothing" used to pass as a printed SKIP: `graded >= 60` against
+        # a measured 81 tolerated 21 kinds vanishing. One kind attributed no
+        # pixels must now break the accounting identity and the pinned SKIP
+        # bucket together.
+        "one kind in the sweep draws nothing (the SKIP bucket grows to 10)",
+        GATE,
+        b"        let wo = big.shoot(gpu, &cast, Some(i))?;\n        let px = attributed(&full, &wo);",
+        b"        let wo = big.shoot(gpu, &cast, Some(i))?;\n        let px = if i == 0 { Vec::new() } else { attributed(&full, &wo) };",
+        "gate",
+        "KILL",
+    ),
+]
+
+# The mutations the reviewer applied, verbatim. Each is one call site, so they
+# are separate entries: covering only one of them would leave the other
+# deletable, and that is the failure mode this batch exists to prove is gone.
+POOLS_BATCH = [
+    NOOP,
+    (
+        "the ITEM pool's caller keeps the key it just evicted",
+        ENTITIES,
+        b"                let (slot, evicted) = self.item_ring.claim(q.tex);\n"
+        b"                if let Some(old) = evicted {\n"
+        b"                    self.item_slots.remove(&old);\n"
+        b"                }\n",
+        b"                let (slot, _evicted) = self.item_ring.claim(q.tex);\n",
+        "gate",
+        "KILL",
+    ),
+    (
+        "the TRIM pool's caller keeps the key it just evicted",
+        ENTITIES,
+        b"        let (slot, evicted) = self.trim_ring.claim(key.to_string());\n"
+        b"        if let Some(old) = evicted {\n"
+        b"            self.trim_slots.remove(&old);\n"
+        b"        }\n",
+        b"        let (slot, _evicted) = self.trim_ring.claim(key.to_string());\n",
+        "gate",
+        "KILL",
+    ),
+    (
+        # The pools' witnesses must not be satisfied by a pool that never
+        # wrapped: if the over-fill stopped one short, `m10`/`m11` would be
+        # asserting a full-but-unwrapped pool, which the pre-fix code also has.
+        "the trim over-fill stops one short (the wrap never happens)",
+        GATE,
+        b"    for i in 0..TRIM_POOL {",
+        b"    for i in 0..TRIM_POOL - 1 {",
+        "gate",
+        "KILL",
+    ),
+]
+
 RING_BATCH = [
     (
         "noop-control: reword a SlotRing doc line",
@@ -211,7 +316,13 @@ RING_BATCH = [
 
 def main():
     which = sys.argv[1] if len(sys.argv) > 1 else "gate"
-    batch = {"gate": GATE_BATCH, "gate2": GATE2_BATCH, "ring": RING_BATCH}[which]
+    batch = {
+        "gate": GATE_BATCH,
+        "gate2": GATE2_BATCH,
+        "gate3": GATE3_BATCH,
+        "pools": POOLS_BATCH,
+        "ring": RING_BATCH,
+    }[which]
 
     # BASELINE. Everything below is meaningless if the tree is already red.
     ok, log = build()

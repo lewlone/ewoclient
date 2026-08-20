@@ -57,6 +57,33 @@
 //! the two are complements. And it grades vanilla's **default** state only:
 //! Rewo bakes no baby sheet and no charging/suffocating/invulnerable/angry
 //! sheet at all, which `m8` measures rather than hides.
+//!
+//! Two more limits, both structural rather than incidental:
+//!
+//! * **It grades atlas ADDRESSING, not the mob→sheet DECLARATION.** "This
+//!   mob's own sheets" is read from `MobDef::textures` plus
+//!   `mobs::emissive_layers` — the same two declarations the atlas packer and
+//!   `emit_model` read — so a mob declared to use the *wrong* sheet is
+//!   invisible here: the renderer and the oracle would agree and the gate
+//!   would be green. That is sound for the bug this exists for (an addressing
+//!   bug) and it is not the same claim as "the right sheet".
+//! * **[`TINTS`] is an over-approximation.** All three neutral tints are
+//!   applied to every sheet rather than only to the two kinds that can carry
+//!   them, so each mob's acceptance set is about twice as wide as that mob can
+//!   actually produce. It only ever widens, so it cannot manufacture a pass
+//!   for a colour that is outside every sheet — but the module's "exact rather
+//!   than fuzzy" claim is about the *shade/blend algebra*, not about this.
+//!   `m6` measures how sharp the result still is (76 of 81 kinds are uniquely
+//!   explained by their own sheet) and pins it so it cannot decay quietly.
+//!
+//! # The pools
+//!
+//! `m10` and `m11` are not about mob sheets at all: they grade the two
+//! demand-filled atlas pools' **call sites**. `SlotRing`'s own unit tests
+//! cover `claim`; the bug is a *caller* keeping a key that addresses a
+//! recycled slot, and a helper's tests say nothing about that. Both witnesses
+//! over-fill a pool by exactly one and require that the evicted key stops
+//! resolving.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -76,7 +103,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 10;
+const EXPECTED_WITNESSES: usize = 13;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -104,10 +131,57 @@ const TINTS: [[u8; 3]; 3] = [
 /// rather than graded on noise.
 const MIN_PIXELS: usize = 40;
 
+/// `m12`'s spacing, in blocks — one zombie's own width.
+///
+/// §0.0's repro summons two zombies **at one spot**; two entities at one point
+/// push apart to about their own width by the time they settle, and exactly
+/// coincident draws would leave the hidden one with no attributed pixels at
+/// all, which grades nothing. This is as close as a gradeable pile gets.
+const PILE_SPACING: f32 = 0.6;
+
+/// `*baby*.png` under `assets/minecraft/textures/entity/` in the pinned 26.2
+/// client jar, counted recursively.
+///
+/// **Asserted, not printed.** `m8`'s first version tested `jar_babies > 0`
+/// while its name — and three prose sites — claimed it pinned the size, so a
+/// version bump that took the jar from 147 baby sheets to 12 would have left
+/// it green. It could only rot in one direction. This is the number, and it
+/// goes red in both.
+const JAR_BABY_SHEETS: usize = 147;
+
+/// The two demand-filled atlas pools' capacities and slot sizes,
+/// **re-declared** from `entities.rs`'s private `TRIM_SLOTS` / `ITEM_SLOTS` /
+/// `TRIM_SLOT_W` / `TRIM_SLOT_H` / `ITEM_SLOT` (M93r — a witness that reads the
+/// constant the renderer reads grades everything about the pool except the
+/// constant). `m10`/`m11` assert the *observed* pool size equals these, so a
+/// capacity change turns the gate red rather than shrinking its coverage.
+const TRIM_POOL: usize = 64;
+const ITEM_POOL: usize = 1024;
+const TRIM_W: u32 = 64;
+const TRIM_H: u32 = 32;
+const ITEM_PX: u32 = 16;
+
 /// Floors the sweep must clear, so the gate cannot quietly become vacuous by
 /// grading nothing or by grading only kinds it cannot tell apart.
-const MIN_GRADED: usize = 60;
-const MIN_DISCRIMINATING: usize = 40;
+///
+/// `MIN_GRADED` was 60 against a measured 81, which tolerated **21 kinds
+/// silently vanishing**: a UV or atlas break that lands a mob's quads on an
+/// empty atlas region makes it draw fewer than [`MIN_PIXELS`] attributed
+/// pixels, and that bucket is a printed `SKIP` rather than a failure. So the
+/// floor is now stated the other way round — the two escape buckets are
+/// **pinned at their measured sizes** and the sweep must account for every
+/// kind — which turns "a mob stopped rendering" from a SKIP into a red gate.
+const MIN_GRADED: usize = 78;
+const MIN_DISCRIMINATING: usize = 70;
+/// Kinds too small to grade at 1600x900, measured: fox, tadpole, cod, salmon,
+/// tropical_fish x2, parrot, allay, copper_golem. A tenth means something
+/// stopped drawing.
+const MAX_SMALL: usize = 9;
+/// Kinds whose whole render some *other* single sheet could also explain,
+/// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
+/// (both directions) and piglin/piglin_brute. Sound but not discriminating, so
+/// the count is pinned rather than left to drift.
+const MAX_AMBIGUOUS: usize = 5;
 
 #[derive(ClapArgs)]
 pub struct MobtexshotArgs {
@@ -170,7 +244,11 @@ fn producible(rgba: &[u8]) -> HashSet<u32> {
     // thousands of texels, so this makes the product tiny.
     let mut texels: HashSet<u32> = HashSet::new();
     for px in rgba.chunks_exact(4) {
-        // `entity.frag` discards `a < 0.004`, i.e. byte alpha 0.
+        // `entity.frag` discards `a < 0.004`. Byte alpha 1 is 0.00392, which
+        // is *also* below that, so the shader drops it too and this keeps it.
+        // The mismatch only ever WIDENS the acceptance set, so it cannot
+        // manufacture a pass for a colour outside every sheet — but the
+        // stated equivalence with "byte alpha 0" was wrong.
         if px[3] != 0 {
             texels.insert(pack(px[0], px[1], px[2]));
         }
@@ -383,10 +461,27 @@ struct Stage {
 
 impl Stage {
     fn shoot(&mut self, gpu: &mut Gpu, specs: &[Spec], skip: Option<usize>) -> Result<Vec<u8>, String> {
+        self.shoot_at(gpu, specs, skip, 0.0)
+    }
+
+    /// The same, at a chosen animation clock.
+    ///
+    /// `time` is `ageInTicks / 20`, so `0.0` is the neutral state every
+    /// witness but `m12` grades. It matters for the oracle and not only for
+    /// the pose: [`neutral_alpha`] evaluates the emissive alpha functions **at
+    /// age 0**, so a sweep at another clock would need those re-derived. `m12`
+    /// stays on kinds with no emissive layer for exactly that reason.
+    fn shoot_at(
+        &mut self,
+        gpu: &mut Gpu,
+        specs: &[Spec],
+        skip: Option<usize>,
+        time: f32,
+    ) -> Result<Vec<u8>, String> {
         let draws = build(specs, skip);
         let ring = OverlayRing::default();
         let ov = overlay_offscreen(&ring);
-        self.wr.set_entities(&draws, self.right, self.up, 0.0);
+        self.wr.set_entities(&draws, self.right, self.up, time);
         self.off.render(gpu, Some((&mut self.wr, self.vp)), &ov, BG)?;
         self.off.read_rgba(gpu)
     }
@@ -630,6 +725,16 @@ fn run_check(
         let wo = big.shoot(gpu, &cast, Some(i))?;
         let px = attributed(&full, &wo);
         let Some(keys) = own.get(&s.kind) else {
+            // The other fail-open path: `continue` here dropped a kind from
+            // the sweep without printing it and without counting it in
+            // `small`, so it was the one silent exit in this file. Unreachable
+            // today (81 graded + 9 too small = 90 = `available_kinds().len()`)
+            // — which is exactly why it has to be an assertion rather than a
+            // comment saying it cannot happen.
+            bad.push(format!(
+                "{}: renders, but `mobs::MOBS` declares no sheets for it",
+                s.kind.name()
+            ));
             continue;
         };
         if px.len() < MIN_PIXELS {
@@ -675,13 +780,21 @@ fn run_check(
             "[mobtexshot] NOTE {k}: sheet {imp:?} could produce every colour it drew — sound, not discriminating"
         );
     }
+    // The accounting identity is half of this witness and the reason is that
+    // "drew nothing" used to pass: every kind in the draw list must land in
+    // exactly one of the two buckets, and the SKIP bucket is pinned, so a mob
+    // that stops rendering moves from `graded` to `small` and turns this red
+    // instead of printing one more SKIP line.
+    let accounted = graded + small.len() == kinds_all.len();
     w.push(wit(
         "m5.every_kind_in_one_draw_list_samples_only_its_own_sheets",
-        bad.is_empty() && graded >= MIN_GRADED,
+        bad.is_empty() && accounted && graded >= MIN_GRADED && small.len() <= MAX_SMALL,
         if bad.is_empty() {
             format!(
-                "{graded} kinds graded in one set_entities, {} too small to grade",
-                small.len()
+                "{graded} kinds graded in one set_entities, {} too small to grade \
+                 (max {MAX_SMALL}), {} in the draw list",
+                small.len(),
+                kinds_all.len()
             )
         } else {
             bad.join("; ")
@@ -690,8 +803,12 @@ fn run_check(
     // The gate must be able to tell sheets apart or m1/m5 are vacuous.
     w.push(wit(
         "m6.the_oracle_can_tell_most_sheets_apart",
-        discriminating >= MIN_DISCRIMINATING,
-        format!("{discriminating} of {graded} kinds are uniquely explained by their own sheet"),
+        discriminating >= MIN_DISCRIMINATING && ambiguous.len() <= MAX_AMBIGUOUS,
+        format!(
+            "{discriminating} of {graded} kinds are uniquely explained by their own \
+             sheet, {} ambiguous (max {MAX_AMBIGUOUS})",
+            ambiguous.len()
+        ),
     ));
 
     // m7: the oracle's own sensitivity, proven rather than asserted. §0.0's
@@ -756,9 +873,241 @@ fn run_check(
         .count();
     w.push(wit(
         "m8.the_baby_sheet_gap_is_exactly_this_size",
-        jar_babies > 0 && baked_babies == 0,
-        format!("jar has {jar_babies} *baby*.png under textures/entity; Rewo bakes {baked_babies}"),
+        jar_babies == JAR_BABY_SHEETS && baked_babies == 0,
+        format!(
+            "jar has {jar_babies} *baby*.png under textures/entity (pinned at \
+             {JAR_BABY_SHEETS}); Rewo bakes {baked_babies}"
+        ),
     ));
+
+    // m12: the recorded repro's own geometry and clock, which m1 did not have.
+    //
+    // §0.0's repro is `REWO_PRECMD` two `summon zombie` **at one spot** with
+    // `REWO_SETTLE=13`; m1's trio sits `ROW_X` = 3.6 blocks apart at `t = 0`,
+    // so it eliminated the *count* axis and left the *co-location* and *settle*
+    // ones untouched. This one puts the pair inside each other's bounding box
+    // (0.6 blocks, one entity width — what two mobs summoned at one point have
+    // pushed apart to by the time they settle) and renders at `t = 13.0`.
+    //
+    // Leave-one-out does not care that they overlap: the pixels that vanish
+    // when mob *i* is removed are exactly the ones it covered, *including*
+    // where it occluded a neighbour, which is the property that makes the
+    // attribution work on a pile at all.
+    let mut stack = stage_from(
+        gpu,
+        baked,
+        sw,
+        sh,
+        Vec3::new(0.0, 1.4, 12.0),
+        Vec3::new(0.0, 1.2, 0.0),
+    )?;
+    let pile = [
+        Spec {
+            kind: EntityModelKind::Zombie,
+            pos: [0.0, 0.0, 0.0],
+            skin_uv: None,
+        },
+        Spec {
+            kind: EntityModelKind::Zombie,
+            pos: [PILE_SPACING, 0.0, -PILE_SPACING],
+            skin_uv: None,
+        },
+        Spec {
+            kind: EntityModelKind::Villager,
+            pos: [2.0 * PILE_SPACING, 0.0, -2.0 * PILE_SPACING],
+            skin_uv: None,
+        },
+    ];
+    const SETTLED: f32 = 13.0;
+    let pile_full = stack.shoot_at(gpu, &pile, None, SETTLED)?;
+    if let Some(d) = &args.out_dir {
+        save_png(&pile_full, sw, sh, &d.join("pile.png"))?;
+    }
+    let mut pile_bad: Vec<String> = Vec::new();
+    let mut pile_px = Vec::new();
+    for (i, sp) in pile.iter().enumerate() {
+        let wo = stack.shoot_at(gpu, &pile, Some(i), SETTLED)?;
+        let px = attributed(&pile_full, &wo);
+        pile_px.push(px.len());
+        let keys = &own[&sp.kind];
+        if let Some(bad) = first_unexplained(&px, keys, &sheets, &lin) {
+            pile_bad.push(format!(
+                "{}#{i}: {} px, colour #{:06X} is not producible by {:?}",
+                sp.kind.name(),
+                px.len(),
+                bad,
+                keys.keys
+            ));
+        }
+    }
+    stack.destroy(gpu);
+    w.push(wit(
+        "m12.two_zombies_at_one_spot_after_a_settle_still_sample_their_own_sheets",
+        pile_bad.is_empty() && pile_px.iter().all(|n| *n >= MIN_PIXELS),
+        if pile_bad.is_empty() {
+            format!("pixels {pile_px:?} at {PILE_SPACING} block spacing, t = {SETTLED}s")
+        } else {
+            pile_bad.join("; ")
+        },
+    ));
+
+    // ---- the dynamic atlas pools ----------------------------------------
+    //
+    // m10/m11 are the witnesses `SlotRing`'s unit tests are NOT. The pools'
+    // bug is a *caller* that recycles a slot and leaves the key that addressed
+    // it in the map, so past capacity two keys resolve to one slot and the
+    // older one silently addresses the newer upload — "renders with a texture
+    // that is not its own", one atlas band over from the mob sheets. `claim`'s
+    // tests grade the ring; deleting **both** `remove(&old)` blocks at the two
+    // call sites left this gate at 10/10, `rewo-gpu` at 293/293, `itemshot`
+    // and `mobshot` green. These two run the production `upload_trim` and
+    // `prepare_held_items` on a real device, over-fill each pool by exactly
+    // one, and state the invariant the eviction exists for.
+    let mut pools = stage_from(
+        gpu,
+        baked,
+        64,
+        64,
+        Vec3::new(0.0, 1.4, 12.0),
+        Vec3::new(0.0, 1.2, 0.0),
+    )?;
+
+    // m10 — the trim pool (64 slots), through `upload_trim` itself.
+    let trim_key = |i: usize| format!("rewo:mobtexshot/pool/{i}");
+    let trim_sprite = |i: usize| -> Vec<u8> {
+        let mut v = vec![0u8; (TRIM_W * TRIM_H * 4) as usize];
+        for (n, px) in v.chunks_exact_mut(4).enumerate() {
+            px[0] = (i & 0xFF) as u8;
+            px[1] = (n & 0xFF) as u8;
+            px[2] = 0x40;
+            px[3] = 0xFF;
+        }
+        v
+    };
+    let mut origins: Vec<Option<(u32, u32)>> = Vec::new();
+    for i in 0..TRIM_POOL {
+        origins.push(pools.wr.upload_entity_trim(
+            gpu,
+            &trim_key(i),
+            &trim_sprite(i),
+            TRIM_W,
+            TRIM_H,
+        ));
+    }
+    // One past capacity: this claim must recycle slot 0 and evict key 0.
+    let over = pools.wr.upload_entity_trim(
+        gpu,
+        &trim_key(TRIM_POOL),
+        &trim_sprite(TRIM_POOL),
+        TRIM_W,
+        TRIM_H,
+    );
+    let trim_pairs = pools
+        .wr
+        .entity_pass()
+        .map(|p| p.trim_slot_pairs())
+        .unwrap_or_default();
+    let distinct_origins: HashSet<(u32, u32)> = origins.iter().flatten().copied().collect();
+    let live_origins: HashSet<(u32, u32)> = trim_pairs.iter().map(|(_, o)| *o).collect();
+    let evicted_still_resident = trim_pairs.iter().any(|(k, _)| *k == trim_key(0));
+    let m10 = origins.iter().all(|o| o.is_some())
+        && distinct_origins.len() == TRIM_POOL
+        && over.is_some()
+        && over == origins[0]
+        && trim_pairs.len() == TRIM_POOL
+        && live_origins.len() == TRIM_POOL
+        && !evicted_still_resident;
+    w.push(wit(
+        "m10.the_trim_pools_wrap_evicts_the_key_that_addressed_the_slot",
+        m10,
+        format!(
+            "{} distinct origins over {TRIM_POOL} slots; the {}th claim {} slot 0's \
+             origin; {} live key(s) over {} distinct slot(s); the evicted key is {}",
+            distinct_origins.len(),
+            TRIM_POOL + 1,
+            if over == origins[0] { "recycled" } else { "did NOT recycle" },
+            trim_pairs.len(),
+            live_origins.len(),
+            if evicted_still_resident {
+                "STILL RESIDENT — it now addresses the sprite uploaded over it"
+            } else {
+                "gone"
+            }
+        ),
+    ));
+
+    // m11 — the item pool (1,024 slots), through `prepare_held_items`.
+    //
+    // Driven with the jar's REAL held items rather than a synthetic fixture,
+    // because the fixture would be one more thing that could agree with the
+    // code under test. The names are sorted and truncated to the shortest
+    // prefix that offers exactly `ITEM_POOL + 1` distinct 16x16 textures, so
+    // the wrap happens exactly once, the claim order is deterministic, and the
+    // run costs 1,025 uploads rather than every item in the jar.
+    let items = crate::live_cmd::to_gpu_held_items(&baked.held_items);
+    let mut all_names: Vec<String> = items
+        .models
+        .keys()
+        .chain(items.block_entities.keys())
+        .cloned()
+        .collect();
+    all_names.sort();
+    let mut offered: Vec<u16> = Vec::new();
+    let mut seen: HashSet<u16> = HashSet::new();
+    let mut names: Vec<String> = Vec::new();
+    'outer: for n in &all_names {
+        names.push(n.clone());
+        let Some(m) = items.any(n) else { continue };
+        for q in &m.quads {
+            let Some(t) = items.textures.get(q.tex as usize) else {
+                continue;
+            };
+            if t.w != ITEM_PX || t.h != ITEM_PX || !seen.insert(q.tex) {
+                continue;
+            }
+            offered.push(q.tex);
+            if offered.len() > ITEM_POOL {
+                break 'outer;
+            }
+        }
+    }
+    pools.wr.set_held_items(items);
+    let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    pools.wr.prepare_held_items(gpu, &refs)?;
+    let item_pairs = pools
+        .wr
+        .entity_pass()
+        .map(|p| p.item_slot_pairs())
+        .unwrap_or_default();
+    let live_slots: HashSet<u32> = item_pairs.iter().map(|(_, s)| *s).collect();
+    // The first texture claimed is the one slot 0 holds, so the claim past
+    // capacity takes its slot; it is the key that used to alias.
+    let first_tex = offered.first().copied();
+    let first_still_resident = first_tex.is_some_and(|t| item_pairs.iter().any(|(k, _)| *k == t));
+    let m11 = offered.len() == ITEM_POOL + 1
+        && item_pairs.len() == ITEM_POOL
+        && live_slots.len() == ITEM_POOL
+        && !first_still_resident;
+    w.push(wit(
+        "m11.the_item_pools_wrap_evicts_the_key_that_addressed_the_slot",
+        m11,
+        format!(
+            "{} distinct 16x16 textures offered over {ITEM_POOL} slots from {} item \
+             name(s); {} live key(s) over {} distinct slot(s); the evicted texture \
+             {:?} is {}",
+            offered.len(),
+            refs.len(),
+            item_pairs.len(),
+            live_slots.len(),
+            first_tex,
+            if first_still_resident {
+                "STILL RESIDENT — it now addresses the sprite uploaded over it"
+            } else {
+                "gone"
+            }
+        ),
+    ));
+    pools.destroy(gpu);
 
     // ---- report ----------------------------------------------------------
     let pass = w.iter().filter(|x| x.ok).count();
@@ -818,7 +1167,13 @@ fn first_unexplained(
 ) -> Option<u32> {
     let sets: Vec<&HashSet<u32>> = own.keys.iter().filter_map(|k| sheets.get(k)).collect();
     if sets.is_empty() {
-        return None;
+        // FAIL CLOSED. Empty means none of this kind's declared sheet keys
+        // resolved in `baked.mob_textures`, and answering `None` there reads
+        // as *every pixel explained* — the gate would be greenest exactly
+        // where it knows least, which is the one thing a fail-closed gate must
+        // not do. Report the first pixel instead; the caller prints the kind
+        // and the (empty) key list beside it.
+        return px.first().copied();
     }
     let mut seen: HashSet<u32> = HashSet::new();
     for c in px {
