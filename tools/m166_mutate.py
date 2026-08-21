@@ -35,6 +35,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CT = os.path.join(ROOT, "crates/rewo-net/src/config_tasks.rs")
 LIB = os.path.join(ROOT, "crates/rewo-net/src/lib.rs")
+PLAY = os.path.join(ROOT, "crates/rewo-net/src/play.rs")
 
 # ── the arithmetic ───────────────────────────────────────────────────────────
 UNIT = [
@@ -182,6 +183,25 @@ LIVE = [
      "the subtlest shape: the packet is read, the log is written, and nothing "
      "goes back — which is exactly what an implementation that treats a "
      "blocking task as a plain decode looks like, and it hangs identically"),
+
+    # The last two are killed by a FAILED ROW rather than by a hang, which is
+    # the point: they are the parts of M166 that block nothing and could
+    # therefore be deleted whole with the client still perfectly usable.
+    ("the play-state arm never fires",
+     PLAY,
+     "        } else if id == ids.cb_play_resource_pack_push {",
+     "        } else if false {",
+     "nothing in this repo reaches the play arm except r55's own injection — a "
+     "vanilla server pushes during CONFIGURATION — so without that injection "
+     "this whole arm is deletable with every gate green (the M45/M158 shape)"),
+
+    ("the accepted code of conduct is decoded and not recorded",
+     LIB,
+     "                            self.config_tasks.codes_of_conduct.push(text);",
+     "                            let _ = text;",
+     "the reply still goes out and the client still reaches play, so ONLY r56 "
+     "can see it — and it is the line that makes r56 a claim about a decode "
+     "rather than about a packet id having arrived"),
 ]
 
 
@@ -218,8 +238,20 @@ def run_live():
     except subprocess.TimeoutExpired:
         return False, "TIMEOUT (counted as killed)"
     if p.returncode != 0:
-        tail = (p.stdout + p.stderr).strip().splitlines()
-        return False, tail[-1][:120] if tail else "non-zero exit"
+        # NOT the tail: `render_check.py`'s output is stdout followed by
+        # stderr, so the last line is usually cargo's "Finished", which reads
+        # like a build note and says nothing about WHY the gate went red. Pull
+        # the failed rows and the count instead — the first version of this
+        # reported a genuine witness failure as a build line.
+        out = p.stdout + p.stderr
+        rows = [ln.strip() for ln in out.splitlines() if "FAIL " in ln]
+        count = [ln.strip() for ln in out.splitlines() if "witnesses" in ln]
+        hung = [ln.strip() for ln in out.splitlines() if "HUNG" in ln]
+        if hung:
+            return False, hung[-1][:110]
+        if rows:
+            return False, "; ".join(r.split("(")[0][:80] for r in rows[:3])
+        return False, count[-1][:110] if count else "non-zero exit, no rows"
     return True, "gate green"
 
 

@@ -3794,6 +3794,26 @@ whole default property set, so all three keys are **already present** — the
 staging replaces them in place with a per-key hit count, because appending would
 leave two copies and let the server read whichever came last.
 
+#### An adversarial pass found production code nothing exercised
+
+Re-reading the milestone's own diff against the standing question — *what here
+could be deleted with every gate green?* — found the **play-state arm**. A
+vanilla server pushes its pack during configuration, so nothing in the repo
+reaches the play copy: no unit test (it lives in `play.rs`), and
+`render_check.py` never triggers a mid-session push. It was deletable whole.
+That is the M45/M158 shape, and it was found by reading rather than by any
+check, which is the argument for making the pass a habit.
+
+It is closed rather than named: the gate injects a play-state push at 0.55 of
+the run, through the production dispatcher (M17's rule), carrying a **different
+UUID** and an **`ftp:`** url — so r55 asserts the two replies **in order**,
+`FAILED_DOWNLOAD` for the configuration push and `INVALID_URL` for the play
+one. A client answering only the configuration push fails on the length; one
+answering both identically fails on the action; one ignoring the url fails on
+the second action. The `INVALID_URL` half is also the only live grading the URL
+rule gets, since both actions are terminal and the client reaches play either
+way.
+
 #### The battery, in two halves
 
 M158's gotcha 0d — route a battery through whatever you are claiming coverage
@@ -3801,10 +3821,13 @@ from — bites here in a way worth recording, because the two claims need
 different checks. The arithmetic is graded by `cargo test`: **14/14 killed**,
 control survived. The **wiring** is graded by nothing there — delete both
 dispatch arms and all 16 unit witnesses stay green while the client hangs on
-every real server — so three mutations run through `render_check.py`: **3/3
-killed**, control green on each, and all three killed by a **timeout** rather
-than by a failed row. The mutant does not render a wrong pixel; it never
-renders at all.
+every real server — so five mutations run through `render_check.py`: **5/5
+killed**, control green on each. Three are killed by a **timeout**: the mutant
+does not render a wrong pixel, it never renders at all. The other two — the
+play arm, and the code-of-conduct text recorded rather than dropped — are
+killed by a **failed row**, which is the right signal for them, because they
+are the parts of M166 that block nothing and would leave a perfectly usable
+client behind.
 
 Which is why `render_check.py` grew a timeout in the same commit. It called
 `subprocess.run` with none, so a hung client — the exact failure this milestone
@@ -3818,6 +3841,12 @@ harness reported cargo's failure as a KILL — a mutant that never ran says
 nothing about any witness (M141h). Its second anchored on a send-call occurring
 five times in `lib.rs`; the anchor-count guard reported that as a **SKIP**
 rather than pretending, which is the guard working.
+
+**And the harness's own reporting was wrong once**, in the way this project
+keeps finding: `render_check.py`'s output is stdout followed by stderr, so the
+last line is usually cargo's `Finished` — a genuine r55 failure was printed as
+a **build note**. It reports the failed rows now. The kill was real either way;
+the instrument was not.
 
 #### The allocation table had rotted in the one direction that matters
 

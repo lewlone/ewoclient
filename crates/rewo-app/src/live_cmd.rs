@@ -221,6 +221,14 @@ fn click_witness_body() -> Vec<u8> {
     body
 }
 
+/// M166 — the UUID r55's PLAY-state `resource_pack_push` injection carries.
+///
+/// Deliberately not the one `render_check.py` stages for the configuration
+/// task: r55 asserts the two replies in order, so a client that answered only
+/// the configuration push, or answered the same id twice, fails on the id
+/// rather than on a count.
+const PLAY_PACK_ID: u128 = 0x00c0_ffee_0000_4000_8000_0000_0bad_f00d;
+
 /// The entity id r48's injected zombie is given.
 ///
 /// Far outside anything a server assigns in a short session, so it cannot
@@ -1438,16 +1446,19 @@ impl RenderCheck {
         // where the precondition is what matters.
         let want_pack = std::env::var("REWO_RC_PACK_ID").ok();
         row(
-            "r55 a pushed resource pack was decoded and answered TERMINALLY",
+            "r55 both pushed resource packs were decoded and answered TERMINALLY",
             match (&want_pack, self.config_tasks.pack_replies.as_slice()) {
-                (Some(want), [(got, action)]) => {
-                    format!("{got:032x}") == want.to_ascii_lowercase()
-                        && *action == rewo_net::config_tasks::PackAction::FailedDownload
+                (Some(want), [(cfg_id, cfg_act), (play_id, play_act)]) => {
+                    use rewo_net::config_tasks::PackAction;
+                    format!("{cfg_id:032x}") == want.to_ascii_lowercase()
+                        && *cfg_act == PackAction::FailedDownload
+                        && *play_id == PLAY_PACK_ID
+                        && *play_act == PackAction::InvalidUrl
                 }
                 _ => false,
             },
             format!(
-                "staged id {:?}, replies {:?}. The id is the server's own                  `resource-pack-id`, so agreement proves the UUID came off the                  wire rather than out of a default. `None`/empty means the run                  was not staged, or -- the bug this milestone fixes -- the                  client never got past configuration at all, in which case                  every row above is also zero.",
+                "staged id {:?}, replies {:?}. TWO are required, in order: the                  configuration task's (the server's own `resource-pack-id`, so                  agreement proves the UUID came off the wire rather than out of                  a default) answered FAILED_DOWNLOAD, then the injected                  PLAY-state push answered INVALID_URL because its url is                  `ftp:`. One reply means the play arm is dead -- nothing else                  in this repo reaches it, since a vanilla server pushes during                  CONFIGURATION. Empty means the run was not staged, or -- the                  bug this milestone fixes -- the client never got past                  configuration at all, in which case every row above is also                  zero.",
                 want_pack,
                 self.config_tasks
                     .pack_replies
@@ -5695,6 +5706,11 @@ struct LiveApp {
     tab_list_injected: bool,
     /// M162 — the two sound-carrying packet tails, injected once.
     sound_tails_injected: bool,
+    /// M166 — whether the PLAY-state `resource_pack_push` has been
+    /// injected. Its own flag rather than riding another block's: the
+    /// claim is that the play arm exists at all, and sharing a trigger
+    /// would make it disappear with whatever it shared.
+    play_pack_injected: bool,
     /// Whether the two-of-one-kind mob injection has happened (r54).
     crowd_injected: bool,
     /// Whether `--render-check` has force-opened the chat screen yet (M110).
@@ -8274,6 +8290,40 @@ impl LiveApp {
             // late enough in the run that `spawned` is true — before the
             // server's first `player_position` the camera is legitimately
             // absent and 1023 is correctly silent.
+            // M166 — the PLAY-state `resource_pack_push`, injected because
+            // NOTHING ELSE REACHES IT. A vanilla server pushes its pack during
+            // configuration, so the play arm is only taken by `/resourcepack`
+            // or a plugin, and without this the whole arm could be deleted with
+            // every gate green — the M45/M158 shape, caught by re-reading this
+            // milestone's own diff rather than by any check.
+            //
+            // Raw body through the production dispatcher (M17's rule), with a
+            // DIFFERENT UUID from the configuration one so r55's list has to
+            // grow rather than merely be non-empty.
+            if !self.play_pack_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.55 {
+                    if let Some(session) = self.session.as_mut() {
+                        let mut b = PLAY_PACK_ID.to_be_bytes().to_vec();
+                        // An `ftp:` URL, so this one must come back INVALID_URL
+                        // and the two replies differ in their ACTION as well as
+                        // their id. A second FAILED_DOWNLOAD would be satisfied
+                        // by a client that ignored the url entirely.
+                        for t in ["ftp://example.invalid/mid-session.zip", ""] {
+                            rewo_proto::varint::write_varint(&mut b, t.len() as i32);
+                            b.extend_from_slice(t.as_bytes());
+                        }
+                        b.push(0); // required = false
+                        b.push(0); // no prompt
+                        let pid = session.ids.cb_play_resource_pack_push;
+                        session.inject_packet(pid, &b);
+                        // Inside the `if let`, not after it: a run that reached
+                        // the deadline before the session existed would
+                        // otherwise mark itself injected and never inject.
+                        self.play_pack_injected = true;
+                    }
+                }
+            }
             if !self.sound_tails_injected {
                 let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
                 if self.started.elapsed().as_secs_f32() >= limit * 0.3 {
@@ -10368,6 +10418,7 @@ fn run_windowed(
         sidebar_injected: false,
         tab_list_injected: false,
         sound_tails_injected: false,
+        play_pack_injected: false,
         crowd_injected: false,
         username,
         chat_parse: None,
