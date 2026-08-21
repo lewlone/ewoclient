@@ -1821,7 +1821,23 @@ this shape once.
 | Milestone | `rNN` | Atlas / sheet | Gate + witness prefix |
 |---|---|---|---|
 | M162 — the sound tails of `explode` and `level_event` | **r48, r49, r50** | — | `soundshot` w9-w9b, w10-w16 (`EXPECTED_WITNESSES_CORE` 28 -> 37) |
-| *(next free)* | **r51** | — | — |
+| M163 — the wire-time flattens | **r51, r52** | — | — |
+| M164 — waterlogged water in the windowed client | **r53** | — | — |
+| M165 — the real-texture mob gate | **r54** | — | `mobtexshot` |
+| M166 — the two blocking configuration tasks | **r55, r56** | — | (live only; `render_check.py` stages the tasks) |
+| *(next free)* | **r57** | — | — |
+
+**⚠ This table said "next free: r51" until M166, and r51–r54 were already
+taken.** Four milestones added rows and none claimed one here, so the table
+rotted in the one direction that matters: `EXPECTED_RENDER_CHECK_WITNESSES`'
+own doc comment tells you to take the next id **from this table rather than
+from "the highest one I can see"**, so following the documented process would
+have produced exactly the duplicate the table exists to prevent.
+`witness_seam_faults` would have caught it — but only under a live server,
+which is the hole named immediately below. **Until this table is populated by
+something other than discipline, measure the free id from the code**
+(`grep -oE '"r[0-9]+ ' crates/rewo-app/src/live_cmd.rs`) and reconcile the
+table afterwards.
 
 **And the seam this table exists for has a hole, found by the wave it was built
 for (2026-08-19).** `witness_seam_faults` has exactly ONE production call site —

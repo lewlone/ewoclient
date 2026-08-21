@@ -338,6 +338,14 @@ struct RenderCheck {
     /// `EntityTable::custom_name` stores it and `resolve_labels` hands it to
     /// `EntityDraw::name`. Before M163 the decode called `to_plain_text`, which
     /// has no table.
+    /// M166 — what the two blocking configuration tasks asked for, mirrored
+    /// off the `PlaySession`.
+    ///
+    /// Mirrored rather than counted: a counter is satisfied by any client that
+    /// reached the arm, including one replying with a zero UUID, whereas the
+    /// server stages a **known** pack id and code-of-conduct text and this
+    /// carries what came off the wire.
+    config_tasks: rewo_net::config_tasks::ConfigTaskLog,
     nametag_resolved_frames: u64,
     /// The negative half, and the reason a `> 0` counter alone is not enough.
     ///
@@ -734,7 +742,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 54;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 56;
 
     fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1407,6 +1415,57 @@ impl RenderCheck {
                 CROWD_IDS.len(),
                 self.crowd_same_kind_max,
                 self.crowd_kinds_max
+            ),
+        );
+        // ── M166: the two BLOCKING configuration tasks ──
+        //
+        // These two are unlike every other row here, because before M166 the
+        // failure was not a wrong pixel — it was **no run at all**. A server
+        // with `resource-pack=` or `enable-code-of-conduct=true` set left the
+        // client in `run_configuration` forever, so the whole gate scored
+        // 0 witnesses and the window never opened.
+        //
+        // Both claims are cross-checks against something the SERVER was
+        // configured with, passed in by `tools/render_check.py` through the
+        // environment. That matters: a counter (`we replied twice`) is
+        // satisfied by a client that replied with a zero id and an empty
+        // string, which is exactly what the malformed-body path produces.
+        // Comparing against the staged values means the wire must have carried
+        // them.
+        //
+        // They fail CLOSED when unstaged, on §5's rule — a witness that skips
+        // itself when its precondition is absent is green on every machine
+        // where the precondition is what matters.
+        let want_pack = std::env::var("REWO_RC_PACK_ID").ok();
+        row(
+            "r55 a pushed resource pack was decoded and answered TERMINALLY",
+            match (&want_pack, self.config_tasks.pack_replies.as_slice()) {
+                (Some(want), [(got, action)]) => {
+                    format!("{got:032x}") == want.to_ascii_lowercase()
+                        && *action == rewo_net::config_tasks::PackAction::FailedDownload
+                }
+                _ => false,
+            },
+            format!(
+                "staged id {:?}, replies {:?}. The id is the server's own                  `resource-pack-id`, so agreement proves the UUID came off the                  wire rather than out of a default. `None`/empty means the run                  was not staged, or -- the bug this milestone fixes -- the                  client never got past configuration at all, in which case                  every row above is also zero.",
+                want_pack,
+                self.config_tasks
+                    .pack_replies
+                    .iter()
+                    .map(|(id, a)| format!("{id:032x}:{a:?}"))
+                    .collect::<Vec<_>>()
+            ),
+        );
+        let want_coc = std::env::var("REWO_RC_COC").ok();
+        row(
+            "r56 the server's code of conduct was decoded and accepted",
+            match (&want_coc, self.config_tasks.codes_of_conduct.as_slice()) {
+                (Some(want), [got]) => got == want,
+                _ => false,
+            },
+            format!(
+                "staged {:?}, accepted {:?}. This task is queued AHEAD of the                  resource pack (`addOptionalTasks`), so on a server with both                  it is the one that hangs first and r55 can never be reached                  without it.",
+                want_coc, self.config_tasks.codes_of_conduct
             ),
         );
         row(
@@ -9066,6 +9125,15 @@ impl LiveApp {
         // the claim is that the resolved string reached the renderer, and a
         // table-level read would stay green if `resolve_labels` dropped it.
         if let Some(c) = self.check.as_mut() {
+            // M166 — mirror only when it has grown. Fixed at configuration
+            // time except for a mid-session `resource_pack_push`, so this is a
+            // no-op on all but a handful of frames.
+            if c.config_tasks.pack_replies.len() != session.config_tasks.pack_replies.len()
+                || c.config_tasks.codes_of_conduct.len()
+                    != session.config_tasks.codes_of_conduct.len()
+            {
+                c.config_tasks = session.config_tasks.clone();
+            }
             let named = |want: &str| {
                 draws
                     .iter()

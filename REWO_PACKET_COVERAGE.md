@@ -38,7 +38,7 @@ impossible to repeat: every clientbound-play packet in the report appears in
 
 ## §0 Handoff — the eight things worth knowing
 
-1. **141 clientbound-play packets. Rewo resolves and consumes 119 of them. 22
+1. **141 clientbound-play packets. Rewo resolves and consumes 120 of them. 21
    are not in `ids.rs` at all.** No packet is resolved-but-ignored: the
    `cb_play_*` field set and the dispatch chain agree exactly, which is a real
    (and slightly surprising) property of this codebase — see §1.
@@ -46,7 +46,7 @@ impossible to repeat: every clientbound-play packet in the report appears in
    not.** It has now been stale twice (M104 and M124 both had to correct it),
    which is the same asymmetry CLAUDE.md records — trust §2, and fix §0 when
    you notice it disagreeing.
-2. **Class A and class B are both empty.** The 22 gaps split 0 / 0 / 11 / 11
+2. **Class A and class B are both empty.** The 21 gaps split 0 / 0 / 10 / 11
    across pure state, needs-rendering, needs-a-missing-subsystem and
    not-applicable — so every packet Rewo can render *is* rendered, and what is
    left needs a subsystem it has not got or is a reply to something it never
@@ -134,7 +134,7 @@ and M65 stayed hidden:
    incoming packet id is actually tested against.
 
 **Both instruments give the same answer, and it is a negative finding: the
-resolved-but-unreferenced set is empty.** Every one of the 119 resolved ids
+resolved-but-unreferenced set is empty.** Every one of the 120 resolved ids
 reaches a dispatch arm in `play.rs` or a `route_*` in `lib.rs`. So the gap is
 entirely in question (2) — 36 names that were never resolved.
 
@@ -209,19 +209,19 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **119** |
+| Resolved **and** consumed | **120** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **22** |
+| Not resolved at all | **21** |
 | **Total clientbound-play** | **141** |
 
-The 22 gaps, by class:
+The 21 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
 | **B** needs rendering | **0** | 0% |
-| **C** needs a subsystem Rewo lacks | **11** | 50% |
-| **D** not applicable | **11** | 50% |
+| **C** needs a subsystem Rewo lacks | **10** | 48% |
+| **D** not applicable | **11** | 52% |
 
 **M87 was the first bite out of class C** — which has since gone 23 -> 11, the
 rest of it taken by M91 (the furnace family), M93s (the stonecutter), M93u (the
@@ -409,16 +409,27 @@ every hop.
 
 ## §4 "Handled" is not "complete"
 
-> **⚠ Scope, and a fourth instance of the same miss.** This survey is
-> **clientbound-`play` only**, and **four of the twelve class-C packets have
-> configuration-state twins** — `resource_pack_pop`/`push` (8/9), `transfer`
+> **⚠ Scope, and the paragraph that turned out to be a bug report.** This
+> survey is **clientbound-`play` only**, and class-C packets have
+> configuration-state twins — `resource_pack_pop`/`push` (8/9), `transfer`
 > (11) and `clear_dialog`/`show_dialog` (17/18). A vanilla server pushes its
 > resource pack **during configuration**
 > (`ServerResourcePackConfigurationTask.java:20-24`), so a play-only
 > implementation of that pair misses the ordinary case entirely. The rule this
 > keeps re-teaching — M69's `update_tags`, M78's `custom_payload`, M85's
-> `server_links`, and now this — is: **if the handler is declared on
+> `server_links` — is: **if the handler is declared on
 > `ClientCommonPacketListener`, look for the configuration copy.**
+>
+> **M166 read this paragraph the other way round and found a hang.** The
+> configuration copy of `resource_pack_push` is not merely the ordinary case —
+> it is a **blocking configuration task**, so ignoring it stalled the server's
+> task queue and the client never reached play at all. Nor was that packet
+> alone: `code_of_conduct` (cfg cb 19) is a second blocking task, queued
+> *ahead* of it, and it is invisible to this survey because it has **no play
+> twin at all**. Both are answered as of M166. What this survey's scope
+> therefore cannot see is not just "the configuration copy of a play packet" —
+> it is **any configuration-only packet whose absence is fatal**, and the two
+> that exist were both of them.
 
 
 `ids.rs` cannot express *partially*, and neither can the machine check in §1 —
@@ -574,8 +585,8 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 77 | `remove_entities` | handled | `req!` → `cb_play_remove_entities` | |
 | 78 | `remove_mob_effect` | handled | `req!` → `cb_play_remove_mob_effect` | |
 | 79 | `reset_score` | handled | `req!` → `cb_play_reset_score` | M65. |
-| 80 | `resource_pack_pop` | absent | **C** | Server resource-pack pipeline (download, prompt, apply). Rewo loads a CEM pack from disk; it fetches none. |
-| 81 | `resource_pack_push` | absent | **C** | As above. |
+| 80 | `resource_pack_pop` | absent | **C** | Deliberately still absent after **M166**, which took its sibling: pop needs no reply and blocks no task, so resolving it would create a row in the `ignored` class (§0.1 argues that is worse than `absent`) and a model with no consumer. Removing a pack needs the download pipeline Rewo does not have. |
+| 81 | `resource_pack_push` | handled | `req!` -> `cb_play_resource_pack_push` | **M166** answers it, in BOTH states, from the one `config_tasks::answer_pack_push` (vanilla's handler is on the *common* listener). No download: the reply is `FAILED_DOWNLOAD`, which is true and is the one terminal action that is not `DECLINED`, so a `require-resource-pack` server stays joinable. |
 | 82 | `respawn` | handled | `req!` → `cb_play_respawn` | |
 | 83 | `rotate_head` | handled | `req!` → `cb_play_rotate_head` | |
 | 84 | `section_blocks_update` | handled | `req!` → `cb_play_section_blocks_update` | |

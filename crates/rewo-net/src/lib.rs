@@ -34,6 +34,7 @@ pub mod commands;
 pub mod dispatcher;
 pub mod chunk_batch;
 pub mod client_state;
+pub mod config_tasks;
 pub mod component_wire;
 pub mod crypt;
 pub mod dimension_parse;
@@ -261,6 +262,9 @@ pub struct Connection<'a> {
     scratch: Vec<u8>,
     packet: Vec<u8>,
     pub recorder: Option<record::Recorder>,
+    /// What the two blocking configuration tasks asked for and what Rewo
+    /// answered (M166). Moved onto the `PlaySession` at `into_play`.
+    config_tasks: config_tasks::ConfigTaskLog,
     /// The `minecraft:dimension_type` registry in raw wire order — index *is*
     /// the holder registry id. One vector of unified definitions, not the
     /// M14-era parallel `dim_shapes` / `dim_attrs` pair that a holder id could
@@ -343,6 +347,7 @@ impl<'a> Connection<'a> {
             scratch: Vec::new(),
             packet: Vec::new(),
             recorder: None,
+            config_tasks: config_tasks::ConfigTaskLog::default(),
             dim_types: Vec::new(),
             overworld_clock_id: None,
             world_clock_ids: Vec::new(),
@@ -578,6 +583,49 @@ impl<'a> Connection<'a> {
                     // reach the same walk.
                     apply_update_tags(&self.packet[body..], &mut self.tags);
                 }
+                x if x == self.ids.cb_config_code_of_conduct => {
+                    // M166 — the FIRST of the two blocking tasks
+                    // (`addOptionalTasks` appends it ahead of the resource
+                    // pack), and the one whose name was already sitting in the
+                    // comment on the ignore arm below. Until this reply exists
+                    // the server's task queue never advances and
+                    // `finish_configuration` never arrives.
+                    match config_tasks::read_code_of_conduct(&self.packet[body..]) {
+                        Ok(text) => {
+                            log::info!(
+                                "net: accepting the server's code of conduct ({} chars)",
+                                text.chars().count()
+                            );
+                            self.config_tasks.codes_of_conduct.push(text);
+                        }
+                        Err(err) => {
+                            // Answer anyway. The body is one string and the
+                            // reply carries none of it, so a failed decode
+                            // costs the log line above and nothing else —
+                            // whereas going silent costs the whole connection.
+                            log::warn!("net: code_of_conduct decode: {err} — accepting regardless");
+                            self.config_tasks.codes_of_conduct.push(String::new());
+                        }
+                    }
+                    let ack = config_tasks::write_code_of_conduct_accept(
+                        self.ids.sb_config_accept_code_of_conduct,
+                    );
+                    self.send(ack)?;
+                }
+                x if x == self.ids.cb_config_resource_pack_push => {
+                    // M166 — the second blocking task. See `config_tasks` for
+                    // why the reply is FAILED_DOWNLOAD and not DECLINED.
+                    // Disjoint-field borrow: the body is read out of
+                    // `self.packet` while the log is written -- one function,
+                    // two fields, no clone.
+                    let (id, action) =
+                        config_tasks::answer_pack_push(&self.packet[body..], &mut self.config_tasks);
+                    self.send(config_tasks::write_pack_reply(
+                        self.ids.sb_config_resource_pack,
+                        id,
+                        action,
+                    ))?;
+                }
                 x if x == self.ids.cb_config_finish => {
                     let ack = PacketWriter::packet(self.ids.sb_config_finish);
                     self.send(ack)?;
@@ -634,10 +682,17 @@ impl<'a> Connection<'a> {
                     stats.disconnect_reason = Some(reason.clone());
                     return Err(format!("config disconnect: {reason}"));
                 }
-                // NOT update_tags -- that is handled ~57 lines above (M69). This arm is
-                // enabled_features, code_of_conduct and the rest. The comment named
-                // update_tags until 2026-08-20, on the exact line where a
-                // resource_pack_push silently dies (see REWO_PLAN section 0.0).
+                // NOT update_tags -- that is handled ~57 lines above (M69), and NOT
+                // either blocking task -- both are answered above (M166). What
+                // is left is genuinely inert: enabled_features, reset_chat,
+                // transfer, custom_report_details, the dialog pair, and
+                // resource_pack_pop (deliberately unresolved -- see
+                // `config_tasks`). None of them blocks the server's task queue.
+                //
+                // This comment named `code_of_conduct` and `update_tags` while
+                // both of those hung or dropped real traffic, which is the
+                // shape to watch for: an ignore arm that LISTS what it ignores
+                // reads as deliberate whether or not anyone checked.
                 _ => {}
             }
         }
