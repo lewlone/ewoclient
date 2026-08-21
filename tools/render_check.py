@@ -211,14 +211,34 @@ def main():
         # configured with. Two hard-coded copies would drift; this cannot.
         env["REWO_RC_PACK_ID"] = PACK_ID.replace("-", "")
         env["REWO_RC_COC"] = COC_TEXT
-        p = subprocess.run(
-            [REWO, "live", "--render-check",
-             "--host", "127.0.0.1", "--port", str(port),
-             "--username", args.username],
-            cwd=ROOT,
-            env=env,
-            capture_output=True,
-        )
+        # TIMEOUT, because the client's worst failure mode is not a crash.
+        # A configuration-state packet the client fails to answer leaves it
+        # reading keep-alives forever (M166), and an untimed `run` inherits
+        # that: the gate hangs with no output, no exit code and nothing to
+        # diagnose. Same family as the mutation-harness hang M138d records,
+        # where a hung child took the harness down and left a mutation on disk.
+        # A healthy run is ~15s; the ceiling only has to be well clear of a
+        # cold asset bake.
+        try:
+            p = subprocess.run(
+                [REWO, "live", "--render-check",
+                 "--host", "127.0.0.1", "--port", str(port),
+                 "--username", args.username],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                timeout=float(os.environ.get("REWO_RC_TIMEOUT", "300")),
+            )
+        except subprocess.TimeoutExpired as e:
+            out = (e.stdout or b"") + (e.stderr or b"")
+            io.open(os.path.join(tempfile.gettempdir(), "rewo-render-check.out"),
+                    "wb").write(out)
+            sys.exit(
+                "the client did not exit within the timeout -- it is HUNG, not "
+                "slow. The usual cause is a configuration-state packet nothing "
+                "answers, which stalls the server's task queue while keep-alives "
+                "keep the socket alive (see crates/rewo-net/src/config_tasks.rs)."
+            )
         code = p.returncode
         text = (p.stdout + p.stderr).decode("utf-8", "replace")
         # **Write bytes, do not `print` this.** The gate's rows contain arrows
