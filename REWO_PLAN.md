@@ -143,8 +143,8 @@ not close the listening pass, and its module doc carries §4's "What the gate
 does NOT assert" paragraph verbatim** so a future session reading only the gate
 still learns that a green run is not evidence this client makes a sound.
 
-Current measurement, re-taken **2026-08-21 after M166**:
-**3352 tests, 0 failures** (**world 1201, net 1211, gpu 293, data 231, app 228,
+Current measurement, re-taken **2026-08-21 after M167**:
+**3355 tests, 0 failures** (**world 1201, net 1211, gpu 293, data 231, app 231,
 mesh 52, proto 16, audio 120** — read off the runner per crate).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
@@ -340,8 +340,8 @@ witnesses are mostly self-driven can look healthy against nothing.
 > version of this box listed has shipped. What follows is measured on the merged
 > tree, not carried forward.
 >
-> **The state (re-measured 2026-08-21 after M166):** 37 serverless gates green
-> with 0 validation errors, **3352 tests**, `live --render-check` **56/56** exit
+> **The state (re-measured 2026-08-21 after M167):** 37 serverless gates green
+> with 0 validation errors, **3355 tests**, `live --render-check` **56/56** exit
 > 0, `soundshot` 37 default / 57 under `--features audio`, demo PNG
 > `2cc56b4acbfb92cb` byte-identical, packet coverage **120 / 0 / 21** with
 > classes A and B empty.
@@ -371,16 +371,35 @@ witnesses are mostly self-driven can look healthy against nothing.
 >    `clear_dialog`/`show_dialog` (17/18). Neither is a blocking task, so
 >    neither hangs; but the reading that found M166 applies to them, and
 >    `transfer` silently forgets the session on every hop.
-> 2. **`is_usable_for_crafting` tests the wrong field** — `SlotText::name.is_some()`
->    (custom OR item name) where vanilla tests `has(CUSTOM_NAME)` alone
->    (`rewo-world/src/inventory.rs`), so a stack carrying only a patched
->    `item_name` is wrongly refused by the recipe-book solver. Small, exact
->    oracle, live consequence.
-> 3. **The `*shot` witness-NAME namespace is unguarded.** `Checker::record`
->    dedups nothing and every gate is fail-closed on a *count*, so two witnesses
->    sharing a name are counted twice and read as a pass. M160 guarded the `rNN`
->    namespace one level up and left this one; it is the same milestone shape and
->    it is cheap.
+> 2. ~~**`is_usable_for_crafting` tests the wrong field.**~~ **ALREADY FIXED
+>    when this box was written (M163, 2026-08-19), and verified so by M167.**
+>    `SlotText::name` does not exist — M163 split it into `custom_name` and
+>    `item_name` for exactly this reason — and the predicate reads
+>    `custom_name` alone. It is pinned twice: restoring the merged form fails a
+>    `rewo-world` unit test *and* drops `inventoryshot`'s `nf4`. The
+>    neighbourhood is correct too (`getHoverName`, `getStyledHoverName`, and an
+>    `is_empty` that destructures).
+>
+>    **Note how it could have been caught for free:** the item cited a symbol,
+>    `SlotText::name`, that had been renamed the day before. A forward-looking
+>    claim naming a symbol is falsifiable by grep — which is more than most
+>    prose in this section offers.
+> 3. **The `*shot` witness-NAME namespace — the cheap half shipped as M167;
+>    the strong half is a decision.** The item's mechanism was right and its two
+>    surrounding claims were not, both corrected by measurement:
+>    **there is no `Checker`** (30 independent definitions, one per gate file,
+>    three distinct `record` bodies — so a dedup "inside `record`" is a 30-file
+>    refactor), and **there is no live duplicate** (all 37 gates run, rows
+>    counted, `soundshot` in both configurations: zero).
+>
+>    M167 ships the source-level check as a unit test
+>    (`crates/rewo-app/src/witness_names.rs`), which catches the commonest
+>    cause — a copied `record(...)` call that was never renamed. **It cannot see
+>    a name built at runtime**, and several gates format theirs, so the
+>    remaining exposure is real but unexercised. Closing it means giving all 30
+>    gates a shared `Checker` that rejects a duplicate in `record`; that is
+>    strictly stronger and is a 30-file mechanical change with no live bug
+>    behind it, so it is left as an explicit choice rather than assumed.
 >
 > #### Ready, specced, unblocked
 >
@@ -3661,6 +3680,114 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M167 — the witness-name namespace, and the item above it that was already fixed (2026-08-21)
+
+Two of §0.0's three "most valuable" items, taken in one sitting. **One of them
+was already done and one was described wrongly**, and both were settled by
+measuring before building — which is the only reason this entry is short.
+
+#### Item 2 was fixed on 2026-08-19 and the handoff was written on 2026-08-20
+
+§0.0 said `is_usable_for_crafting` tests `SlotText::name.is_some()` (custom **or**
+item name) where vanilla tests `has(CUSTOM_NAME)` alone. **It does not, and has
+not since M163**, which split `SlotText::name` into `custom_name` and
+`item_name` precisely because the merged field could express neither this
+predicate nor `getStyledHoverName`'s ITALIC rule.
+
+It is pinned **twice**, and both pins were verified live rather than read:
+restoring the merged form (`custom_name.is_some() || item_name.is_some()`)
+fails a `rewo-world` unit test *and* drops `inventoryshot`'s
+`nf4.only_a_custom_name_blocks_the_recipe_book_solver` — the gate exits 1 and
+names it. The neighbourhood is correct too: `selected_item_label` is
+`getHoverName` (custom, then item, then the translated id), `styled_hover_name`
+is `getStyledHoverName` (same order, italic iff `custom_name`), and
+`SlotText::is_empty` **destructures**, so a new field is a compile error rather
+than M42's silent tooltip loss.
+
+**What would have caught it mechanically:** the item names `SlotText::name`, and
+that field does not exist. A stale forward-looking claim that cites a symbol is
+falsifiable by grep — and this one was written a day after the rename.
+
+That is the third wrong forward-looking claim in §0.0 in two milestones (M166's
+item 1 was half the bug and wrong about the packet's shape; this one is
+entirely done). Its *measurements* were exact again. **The asymmetry this file
+keeps recording is not that documentation rots — it is that the checked numbers
+do not and the sentences beside them do.**
+
+#### Item 3 was real, and wrong about its own size and its urgency
+
+> *"`Checker::record` dedups nothing and every gate is fail-closed on a count,
+> so two witnesses sharing a name are counted twice and read as a pass."*
+
+The mechanism is exactly right. Two things around it are not:
+
+* **There is no `Checker`.** There are **30 independent definitions**, one per
+  gate file, sharing no code — `record`'s body falls into three shapes (22
+  identical, 7 identical, 1 unique). A dedup "inside `record`" is a 30-file
+  refactor, not the one-line change the item reads as.
+* **There is no live duplicate.** All 37 gates were run and their emitted rows
+  counted, plus `soundshot` in both build configurations: **zero** duplicate
+  names today. So this is hardening, and saying so changes where it belongs in
+  a queue.
+
+Four files *do* carry the same literal twice — `abilityshot` ×1, `eventshot`
+×7, `soundshot` ×4, `titleshot` ×2 — and in every case the two calls sit in
+**mutually exclusive branches**, which the runtime sweep confirms.
+`soundshot`'s are the clearest and the least accidental: it grades a different
+set of layers under `--features audio`, so one row name legitimately has two
+definitions.
+
+**The measurement needed two instruments, and the first was wrong.** A source
+scan reported duplicates in four files; a runtime scan then reported one in
+`hudshot` that the source scan had not — and it was the *parser*, because
+`hudshot` names its rows `a:tl`, `a:tc`, and splitting on the first colon
+manufactures nine copies of `a`. The same script's "non-literal `record()`
+calls" column came back exactly equal to its literal count for all 30 files,
+which is the tell of a regex matching nothing; it was discarded rather than
+reported. Two detector errors in one measurement, both caught by the numbers
+disagreeing with each other.
+
+#### What shipped, and what deliberately did not
+
+`crates/rewo-app/src/witness_names.rs` — a unit test, on M74's reasoning: a
+guard fires best on the event that causes the drift, and the event here is
+someone editing a gate file. It scans every `*shot_cmd.rs` for duplicate
+**literal** `record("...")` names, with the four branch-exclusive files listed
+as **exact counts** rather than exemptions — too low and the main test fails,
+too high and a second test does, so a file that gets cleaned up cannot leave a
+standing allowance behind. It fails closed on floors (≥25 files, ≥1200 names),
+because M138a's rule is that a check turning a missing input into an empty
+result is green exactly where it stopped working.
+
+**Its blind spot is stated rather than implied:** a name built at runtime.
+Several gates format theirs (`mobshot`'s per-mob rows, `eventshot`'s
+`c3.head_rot_x@0.25`), and two of those can collide with neither appearing as a
+literal. Only a check inside `record` sees that — the 30-file version — and it
+is strictly stronger. It is **not** shipped here: with no live duplicate, a
+30-file mechanical refactor of every gate's plumbing is a bigger risk than the
+thing it prevents, and it is the user's call rather than a milestone's.
+
+#### The battery has an unusual shape, and it is the interesting part
+
+**The headline assertion cannot be killed by loosening it.** Raising the
+threshold, widening the allow-list or dropping the comparison outright all
+leave a green suite, because no gate file currently defines a name twice. That
+is M138a's self-skip trap **inverted**: the assertion is unobservable precisely
+on the tree where it holds.
+
+So the battery mutates the **data** as well as the check — one row introduces a
+real duplicate into `bordershot_cmd.rs` and requires the check to catch it.
+Without that row every verdict would have been about the floors and the
+allow-list rather than about the thing the milestone is for. **7 mutations, 6
+killed, 1 expected survivor** (removing the file floor, which is inert while
+the scanner works — kept beside the mutation that breaks the scanner, so a
+reader sees the pair rather than an unexplained gap).
+
+**Measured:** **3355 tests** (rewo-app 228 -> 231); the 37 serverless gates and
+`live --render-check` are untouched by this change and were spot-checked
+green. No render path changed, so the demo PNG and the render-check were not
+re-run beyond that.
 
 ### M166 — the two blocking configuration tasks, and half a bug in the handoff (2026-08-21)
 

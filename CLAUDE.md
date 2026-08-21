@@ -2171,8 +2171,8 @@ default build (**28** witnesses) and adds decode and the mixer under
 does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
-**Everything is shipped and gated** as of 2026-08-21 (M166) —
-**3352 tests / 0 failures** (world 1201, net 1211, gpu 293, data 231, app 228,
+**Everything is shipped and gated** as of 2026-08-21 (M167) —
+**3355 tests / 0 failures** (world 1201, net 1211, gpu 293, data 231, app 231,
 mesh 52, proto 16, **audio 120** — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
@@ -2199,6 +2199,21 @@ true and joinable on a `require-resource-pack` server. Coverage **120 / 0 / 21**
 `render_check.py` now stages both tasks (a regression scores *zero* witnesses,
 not a failed row) and grew a **timeout**, because until M166 a hung client hung
 the gate with nothing to read.
+
+**M167 then took the other two items §0.0 called most valuable, and neither was
+what it said.** `is_usable_for_crafting` had been **fixed two days earlier** by
+M163's `SlotText` field split and is pinned twice — the item cited
+`SlotText::name`, a symbol renamed the day before the item was written, so it
+was falsifiable by grep. The witness-name item's mechanism was right and its
+size and urgency were not: **there is no `Checker`** (30 independent
+definitions, one per gate file) and **no gate emits a duplicate name today**
+(all 37 run, `soundshot` in both configurations). M167 ships the source-level
+half as a unit test that fails closed on floors and pins its four
+branch-exclusive files as exact counts; the runtime half — a shared `Checker`
+rejecting duplicates, which is the only thing that sees a *formatted* name — is
+left as an explicit 30-file decision rather than assumed. **The standing
+asymmetry: §0.0's measurements were exact again and three of its
+forward-looking sentences in two milestones were not.**
 **M152–M157 landed 2026-08-14** and closed every item `REWO_PLAN.md` §0.0 was
 carrying: **M152** `update_recipes` and the smithing quick-move — the last
 decline in the container arc (coverage **119 / 0 / 22**); **M153** the

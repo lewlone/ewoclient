@@ -52,6 +52,7 @@ mod uri_open;
 mod skyshot_cmd;
 mod soundshot_cmd;
 mod stats;
+mod witness_names;
 mod stats_view;
 mod statshot_cmd;
 mod swingshot_cmd;
