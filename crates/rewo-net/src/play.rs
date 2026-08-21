@@ -510,6 +510,10 @@ pub struct PlaySession {
     codec: FrameCodec,
     rx: Receiver<Vec<u8>>,
     pub ids: Ids,
+    /// What the two blocking configuration tasks asked for and what Rewo
+    /// answered (M166), carried over from the `Connection` and appended to by
+    /// a mid-session `resource_pack_push`.
+    pub config_tasks: crate::config_tasks::ConfigTaskLog,
     /// The villager trade list, when a merchant screen is open (M93u).
     pub merchant: Option<crate::merchant::MerchantOffers>,
     /// The unlocked recipes, by `RecipeDisplayId` (M93y). Decoded and held;
@@ -1710,6 +1714,7 @@ impl<'a> Connection<'a> {
             .map(|r| r.global_bits)
             .unwrap_or(7);
         let mut session = PlaySession {
+            config_tasks: std::mem::take(&mut self.config_tasks),
             merchant: None,
             recipe_book: Default::default(),
             recipe_book_settings: Default::default(),
@@ -2512,6 +2517,19 @@ impl PlaySession {
                 p.i32(v);
                 self.send(p)?;
             }
+        } else if id == ids.cb_play_resource_pack_push {
+            // M166. Unlike its configuration twin this blocks nothing — there
+            // is no task queue in play — but vanilla answers it from the same
+            // `ClientCommonPacketListenerImpl.handleResourcePackPush`, so Rewo
+            // answers it from the same `answer_pack_push`. A server that
+            // swaps packs per-world pushes here.
+            let (pack_id, action) =
+                crate::config_tasks::answer_pack_push(body, &mut self.config_tasks);
+            self.send(crate::config_tasks::write_pack_reply(
+                self.ids.sb_play_resource_pack,
+                pack_id,
+                action,
+            ))?;
         } else if id == ids.cb_play_position {
             self.apply_teleport(body)?;
         } else if id == ids.cb_play_player_rotation || id == ids.cb_play_player_look_at {

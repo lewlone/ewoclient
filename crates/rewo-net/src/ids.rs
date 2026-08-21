@@ -33,10 +33,27 @@ pub struct Ids {
     pub sb_config_select_known_packs: i32,
     pub sb_config_finish: i32,
     pub sb_config_cookie_response: i32,
+    /// `ServerboundResourcePackPacket` (M166) — the reply that finishes
+    /// `ServerResourcePackConfigurationTask`. Without it a server with
+    /// `resource-pack=` set hangs the client in configuration forever.
+    pub sb_config_resource_pack: i32,
+    /// `ServerboundAcceptCodeOfConductPacket` (M166) — the zero-byte reply
+    /// that finishes `ServerCodeOfConductConfigurationTask`. Queued *before*
+    /// the resource-pack task, so on a server with both this is the one that
+    /// hangs first.
+    pub sb_config_accept_code_of_conduct: i32,
     pub cb_config_keep_alive: i32,
     pub cb_config_ping: i32,
     pub cb_config_select_known_packs: i32,
     pub cb_config_registry_data: i32,
+    /// `ClientboundResourcePackPushPacket` in the **configuration** state
+    /// (M166). Its sibling `resource_pack_pop` is deliberately left
+    /// unresolved — see `config_tasks`.
+    pub cb_config_resource_pack_push: i32,
+    /// `ClientboundCodeOfConductPacket` (M166). Configuration-only: there is
+    /// no play-state twin, because the code of conduct is shown before you
+    /// join rather than during play.
+    pub cb_config_code_of_conduct: i32,
     /// `ClientboundUpdateTagsPacket` in the **configuration** state (M69).
     ///
     /// This is the one that actually fires on a normal join: a vanilla server
@@ -584,6 +601,17 @@ pub struct Ids {
     /// See [`cb_config_server_links`](Self::cb_config_server_links) for the one
     /// that actually fires on a join.
     pub cb_play_server_links: i32,
+    /// `ClientboundResourcePackPushPacket` in the **play** state (M166) — a
+    /// pack pushed mid-session by `/resourcepack` or a plugin.
+    ///
+    /// It blocks nothing (there is no configuration queue in play), so unlike
+    /// its configuration twin it is not a hang. It is answered anyway because
+    /// `handleResourcePackPush` is on the *common* listener — one handler, two
+    /// state ids, the same shape as the brand / cookie / server-links trio
+    /// `crate::session` already unifies.
+    pub cb_play_resource_pack_push: i32,
+    /// `ServerboundResourcePackPacket` in the **play** state (M166).
+    pub sb_play_resource_pack: i32,
 }
 
 impl Ids {
@@ -607,10 +635,14 @@ impl Ids {
             sb_config_select_known_packs: req!(p, Cfg, S, "select_known_packs"),
             sb_config_finish: req!(p, Cfg, S, "finish_configuration"),
             sb_config_cookie_response: req!(p, Cfg, S, "cookie_response"),
+            sb_config_resource_pack: req!(p, Cfg, S, "resource_pack"),
+            sb_config_accept_code_of_conduct: req!(p, Cfg, S, "accept_code_of_conduct"),
             cb_config_keep_alive: req!(p, Cfg, C, "keep_alive"),
             cb_config_ping: req!(p, Cfg, C, "ping"),
             cb_config_select_known_packs: req!(p, Cfg, C, "select_known_packs"),
             cb_config_registry_data: req!(p, Cfg, C, "registry_data"),
+            cb_config_resource_pack_push: req!(p, Cfg, C, "resource_pack_push"),
+            cb_config_code_of_conduct: req!(p, Cfg, C, "code_of_conduct"),
             cb_config_update_tags: req!(p, Cfg, C, "update_tags"),
             cb_config_finish: req!(p, Cfg, C, "finish_configuration"),
             cb_config_cookie_request: opt!(p, Cfg, C, "cookie_request"),
@@ -773,6 +805,8 @@ impl Ids {
             cb_play_cooldown: req!(p, P, C, "cooldown"),
             cb_play_waypoint: req!(p, P, C, "waypoint"),
             cb_play_server_links: req!(p, P, C, "server_links"),
+            cb_play_resource_pack_push: req!(p, P, C, "resource_pack_push"),
+            sb_play_resource_pack: req!(p, P, S, "resource_pack"),
         })
     }
 }

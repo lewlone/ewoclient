@@ -27,6 +27,12 @@ AGENT_LOOP_BRIEF.md's "Test server" section.
   17/18 and is not a pass.
 * Validation is `cfg!(debug_assertions)`-gated for `live`, so this insists on the
   DEBUG binary: in a release build r17 is false and r18 is vacuous.
+* **It stages the two BLOCKING configuration tasks** (M166): `resource-pack`,
+  `resource-pack-id` and `enable-code-of-conduct` plus a `codeofconduct/`
+  directory. Unlike every other staging here this one is not about reaching a
+  witness -- it is about reaching the run at all. Without M166's replies the
+  server's configuration queue never advances, the client sits in
+  `run_configuration` answering keep-alives, and the gate scores **nothing**.
 * **It BUILDS.** It used only to check the binary existed, so a source change
   not followed by a manual `cargo build` was graded against the previous
   compile — which is how M151's first attempt to prove r47 non-vacuous reported
@@ -54,6 +60,23 @@ PRECMD = (
     "give @s minecraft:dirt 64;"
     "recipe give @s *"
 )
+
+# M166 -- the two BLOCKING configuration tasks, staged so the gate exercises the
+# hang it fixes. `addOptionalTasks` queues a code-of-conduct task and a
+# resource-pack task, neither of which finishes itself, so before M166 a server
+# with either of these set left the client in `run_configuration` forever: no
+# window, no error, and the 30s socket timeout unreachable because a keep-alive
+# lands every 15s. With the fix missing this run scores **0 witnesses**, not 54.
+#
+# The server never fetches the URL -- `getServerPackInfo` only checks it is
+# non-empty -- so an unroutable one is fine and keeps the run offline.
+PACK_ID = "0f1e2d3c-4b5a-4988-8776-655443322110"
+PACK_URL = "http://127.0.0.1:1/rewo-render-check.zip"
+# Single line, ASCII, no section signs: the server joins the file's lines with a
+# newline and runs `StringUtil.stripColor` over the result, so anything else
+# would make the staged string and the delivered one disagree for reasons that
+# have nothing to do with the client.
+COC_TEXT = "Be excellent to each other."
 
 
 def offline_uuid(name):
@@ -105,14 +128,41 @@ def main():
 
     props = io.open(os.path.join(SRC, "server.properties"), "rb").read().decode("utf-8")
     out, hits = [], 0
+    # M166 stages three keys. They are REPLACED IN PLACE and each must be hit
+    # exactly once: a vanilla server writes its whole default property set, so
+    # all three are already present and appending would leave two copies with
+    # the server reading whichever comes last -- the gate would then grade a
+    # value it did not choose. The hit count also fails loud if a key is ever
+    # dropped from the template, which is the direction that would silently
+    # un-stage the run.
+    staged = {
+        "resource-pack": PACK_URL,
+        "resource-pack-id": PACK_ID,
+        "enable-code-of-conduct": "true",
+    }
+    staged_hits = dict.fromkeys(staged, 0)
     for line in props.splitlines():
         if line.startswith("server-port="):
             line = "server-port=%d" % port
             hits += 1
+        key = line.split("=", 1)[0]
+        if key in staged:
+            line = "%s=%s" % (key, staged[key])
+            staged_hits[key] += 1
         out.append(line)
+    assert staged_hits == dict.fromkeys(staged, 1), (
+        "M166 staging did not land exactly once per key: %r" % staged_hits
+    )
     assert hits == 1, "expected exactly one server-port line, found %d" % hits
     io.open(os.path.join(dest, "server.properties"), "wb").write(
         ("\n".join(out) + "\n").encode("utf-8")
+    )
+    # `enable-code-of-conduct=true` with no `codeofconduct/` directory is a
+    # startup THROW, not a warning -- so this file is part of the staging, not a
+    # nicety.
+    os.makedirs(os.path.join(dest, "codeofconduct"))
+    io.open(os.path.join(dest, "codeofconduct", "en_us.txt"), "wb").write(
+        (COC_TEXT + chr(10)).encode("utf-8")
     )
     io.open(os.path.join(dest, "ops.json"), "wb").write(
         json.dumps(
@@ -155,14 +205,40 @@ def main():
 
         env = dict(os.environ)
         env["REWO_PRECMD"] = PRECMD
-        p = subprocess.run(
-            [REWO, "live", "--render-check",
-             "--host", "127.0.0.1", "--port", str(port),
-             "--username", args.username],
-            cwd=ROOT,
-            env=env,
-            capture_output=True,
-        )
+        # One source of truth for both halves of r55/r56: the same literals
+        # that went into server.properties are handed to the client, so the
+        # witness compares what came off the WIRE against what the server was
+        # configured with. Two hard-coded copies would drift; this cannot.
+        env["REWO_RC_PACK_ID"] = PACK_ID.replace("-", "")
+        env["REWO_RC_COC"] = COC_TEXT
+        # TIMEOUT, because the client's worst failure mode is not a crash.
+        # A configuration-state packet the client fails to answer leaves it
+        # reading keep-alives forever (M166), and an untimed `run` inherits
+        # that: the gate hangs with no output, no exit code and nothing to
+        # diagnose. Same family as the mutation-harness hang M138d records,
+        # where a hung child took the harness down and left a mutation on disk.
+        # A healthy run is ~15s; the ceiling only has to be well clear of a
+        # cold asset bake.
+        try:
+            p = subprocess.run(
+                [REWO, "live", "--render-check",
+                 "--host", "127.0.0.1", "--port", str(port),
+                 "--username", args.username],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                timeout=float(os.environ.get("REWO_RC_TIMEOUT", "300")),
+            )
+        except subprocess.TimeoutExpired as e:
+            out = (e.stdout or b"") + (e.stderr or b"")
+            io.open(os.path.join(tempfile.gettempdir(), "rewo-render-check.out"),
+                    "wb").write(out)
+            sys.exit(
+                "the client did not exit within the timeout -- it is HUNG, not "
+                "slow. The usual cause is a configuration-state packet nothing "
+                "answers, which stalls the server's task queue while keep-alives "
+                "keep the socket alive (see crates/rewo-net/src/config_tasks.rs)."
+            )
         code = p.returncode
         text = (p.stdout + p.stderr).decode("utf-8", "replace")
         # **Write bytes, do not `print` this.** The gate's rows contain arrows
