@@ -129,6 +129,18 @@ requirements, detached start, `FAILED TO BIND` grep, teardown) with each trap
 below turned into an assertion rather than a paragraph to remember. Read on when
 you need a server for something else, or when that script needs changing.
 
+**A hand-rolled server no longer satisfies the gate, as of M166.** Two witnesses
+(r55/r56) need the server to set `resource-pack`, `resource-pack-id`,
+`enable-code-of-conduct=true` and carry a `codeofconduct/en_us.txt`, with the
+staged values handed to the client through `REWO_RC_PACK_ID` / `REWO_RC_COC`.
+They **fail closed** without it rather than skipping, on §5's rule. The script
+does all of that; a server you build by following the recipe below will score
+54/56. It is also the reason the script now passes a **timeout** to the client:
+before M166 an unanswered configuration packet left the client reading
+keep-alives forever, and an untimed `subprocess.run` inherited that — the gate
+hung with no exit code and nothing to read. `REWO_RC_TIMEOUT` overrides the
+300 s default.
+
 Do **not** reuse a shared directory when the world's shape or the player's state
 matters — a concurrent session once left the shared one with a size-12 world
 border, and unlocked recipes persist into the save (which made a fresh-player

@@ -2171,17 +2171,34 @@ default build (**28** witnesses) and adds decode and the mixer under
 does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
-**Everything is shipped and gated** as of 2026-08-14 (M157) —
-**3336 tests / 0 failures** (world 1201, net 1195, gpu 293, data 231, app 228,
+**Everything is shipped and gated** as of 2026-08-21 (M166) —
+**3352 tests / 0 failures** (world 1201, net 1211, gpu 293, data 231, app 228,
 mesh 52, proto 16, **audio 120** — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **109/109**, `inventoryshot` **158/158**, `itemshot` 75/75,
-`handshot` 34/34, `swingshot` 97/97, `tablistshot` **42/42**, `soundshot` 28/48,
-all **36** serverless gates green with 0
-validation errors, `live --render-check` **47/47** with validation ON and 0
-validation errors (r46 arrived with M147, **r47 with M151**), demo PNG
+`handshot` 34/34, `swingshot` 97/97, `tablistshot` **42/42**, `soundshot` 37/57,
+all **37** serverless gates green with 0
+validation errors, `live --render-check` **56/56** with validation ON and 0
+validation errors (r55/r56 arrived with M166), demo PNG
 `2cc56b4acbfb92cb`.
+
+**M166 (2026-08-21) fixed a hang, and the handoff item that named it was half
+the bug.** A server setting `resource-pack=` **or** `enable-code-of-conduct=true`
+left `rewo live` with no window and no error, forever:
+`ServerConfigurationPacketListenerImpl.addOptionalTasks` queues **two** tasks
+that do not finish themselves, `startNextTask` runs the queue one at a time, and
+both replies died on one `_ => {}` arm — whose comment **listed
+`code_of_conduct` as something it ignored**. The socket stays live and a
+keep-alive lands every 15 s, so the read timeout can never fire; silence is the
+whole symptom. The coverage doc's class-C label ("download, prompt, apply") was
+wrong for the **sixth** time — the fix is a decode and a 17-byte reply, no
+pipeline. The reply is `FAILED_DOWNLOAD`, chosen because
+`ServerCommonPacketListenerImpl:107` kicks on **`DECLINED` alone**, so it is both
+true and joinable on a `require-resource-pack` server. Coverage **120 / 0 / 21**.
+`render_check.py` now stages both tasks (a regression scores *zero* witnesses,
+not a failed row) and grew a **timeout**, because until M166 a hung client hung
+the gate with nothing to read.
 **M152–M157 landed 2026-08-14** and closed every item `REWO_PLAN.md` §0.0 was
 carrying: **M152** `update_recipes` and the smithing quick-move — the last
 decline in the container arc (coverage **119 / 0 / 22**); **M153** the

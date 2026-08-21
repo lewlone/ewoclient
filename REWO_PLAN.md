@@ -143,11 +143,9 @@ not close the listening pass, and its module doc carries §4's "What the gate
 does NOT assert" paragraph verbatim** so a future session reading only the gate
 still learns that a green run is not evidence this client makes a sound.
 
-Current measurement, taken 2026-08-14 on `main` at `c538afd`, after the
-audio-verification landing (M150, `soundshot`, M139 and M151 all merged):
-**3336 tests, 0 failures** (**world 1201, net 1195, gpu 293, data 231, app 228,
-mesh 52, proto 16, audio 120** — read off the runner per crate; measured
-2026-08-20 after the M162-M165 wave).
+Current measurement, re-taken **2026-08-21 after M166**:
+**3352 tests, 0 failures** (**world 1201, net 1211, gpu 293, data 231, app 228,
+mesh 52, proto 16, audio 120** — read off the runner per crate).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -165,15 +163,19 @@ were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **109/109**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
 34/34, `mobshot` 246/246, `sidebarshot` 17/17, **`tablistshot` 42/42** (M151,
-raised by M155 and M158), **`live --render-check` **47/47** with validation ON and 0
-validation errors** — r46 arrived with M147 and **r47 with M151**, and the whole
+raised by M155 and M158), **`live --render-check` **56/56** with validation ON and 0
+validation errors** — r46 arrived with M147, r47 with M151, r48-r50 with M162,
+r51/r52 with M163, r53 with M164, r54 with M165 and **r55/r56 with M166**, and the whole
 thing reproduces with `python tools/render_check.py`, which stands up a fresh
 server, **builds first** (it used only to check the binary existed, so a source
 change not followed by a manual `cargo build` was graded against the previous
 compile — M151 lost a mutation verification to exactly that) and carries both
-caller requirements; demo PNG
-`2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at **119 / 0 / 22**, class C
-**11** (M152 took `update_recipes`) — M96–M107 consume packets M93y already decoded, M108 resolved
+caller requirements, **has a timeout as of M166** (an untimed `subprocess.run`
+inherited the client's worst failure mode — a hung client hung the gate with no
+exit code and nothing to read), and **stages the two blocking configuration
+tasks**, without which the run scores nothing at all; demo PNG
+`2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at **120 / 0 / 21**, class C
+**10** (M152 took `update_recipes`, M166 `resource_pack_push`) — M96–M107 consume packets M93y already decoded, M108 resolved
 `delete_chat`, M113 the Brigadier tree and M114 the two suggestion packets.
 
 **There are 37 serverless gate commands, not the "fourteen" older paragraphs in
@@ -338,10 +340,11 @@ witnesses are mostly self-driven can look healthy against nothing.
 > version of this box listed has shipped. What follows is measured on the merged
 > tree, not carried forward.
 >
-> **The state:** 37 serverless gates green with 0 validation errors, **3336
-> tests**, `live --render-check` **54/54** exit 0, `soundshot` 37 default / 57
-> under `--features audio`, demo PNG `2cc56b4acbfb92cb` byte-identical, packet
-> coverage **119 / 0 / 22** with classes A and B empty.
+> **The state (re-measured 2026-08-21 after M166):** 37 serverless gates green
+> with 0 validation errors, **3352 tests**, `live --render-check` **56/56** exit
+> 0, `soundshot` 37 default / 57 under `--features audio`, demo PNG
+> `2cc56b4acbfb92cb` byte-identical, packet coverage **120 / 0 / 21** with
+> classes A and B empty.
 >
 > **A 20-agent survey (2026-08-17) specced every open gap and every one of the
 > twenty specs came back `needs-revision`.** The verified specs are the best
@@ -350,12 +353,24 @@ witnesses are mostly self-driven can look healthy against nothing.
 >
 > #### The three things measured as most valuable, in order
 >
-> 1. **`resource-pack=` HANGS THE CLIENT.** If the destination server sets it,
->    `rewo live` never opens a window and never errors: the config task never
->    self-finishes, and the 30 s socket timeout cannot fire because a keep-alive
->    arrives every 15 s. `lib.rs:619`'s ignore arm is where it dies. The fix is a
->    two-field decode and a 17-byte ack, ~30 lines. **Check whether Frogsy sets
->    it before scheduling anything else** — if it does, this is first.
+> 1. ~~**`resource-pack=` HANGS THE CLIENT.**~~ **DONE (M166) — and this item
+>    was half the bug and wrong about the rest.** There were **two** blocking
+>    configuration tasks, not one: `addOptionalTasks` queues a **code of
+>    conduct** ahead of the resource pack, it hangs identically, and it was
+>    named in the very comment on the ignore arm that swallowed it. The push is
+>    **five** fields, not two (the ack really is 17 bytes). And the coverage
+>    doc's class-C label was wrong for the sixth time — nothing about unhanging
+>    the client needs the download pipeline it names. Both are answered in both
+>    states; the reply is `FAILED_DOWNLOAD`, which is true and is the one
+>    terminal action that is not `DECLINED`, so a `require-resource-pack=true`
+>    server stays joinable. `render_check.py` now stages both tasks, so a
+>    regression scores **zero witnesses** rather than a failed row — and it grew
+>    a timeout, because until M166 a hung client hung the gate forever. See §15.
+>
+>    **Two configuration twins are still unhandled** — `transfer` (11) and
+>    `clear_dialog`/`show_dialog` (17/18). Neither is a blocking task, so
+>    neither hangs; but the reading that found M166 applies to them, and
+>    `transfer` silently forgets the session on every hop.
 > 2. **`is_usable_for_crafting` tests the wrong field** — `SlotText::name.is_some()`
 >    (custom OR item name) where vanilla tests `has(CUSTOM_NAME)` alone
 >    (`rewo-world/src/inventory.rs`), so a stack carrying only a patched
@@ -3646,6 +3661,189 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M166 — the two blocking configuration tasks, and half a bug in the handoff (2026-08-21)
+
+§0.0 named `resource-pack=` as the highest-value open item and described the
+fix as *"a two-field decode and a 17-byte ack, ~30 lines"*. The ack really is
+17 bytes. Everything else in that sentence was wrong, and one of the errors was
+the milestone.
+
+**There are TWO blocking tasks, not one.**
+`ServerConfigurationPacketListenerImpl.addOptionalTasks` (`:110-128`) appends a
+`ServerCodeOfConductConfigurationTask` and then a
+`ServerResourcePackConfigurationTask`, and `startNextTask` (`:206`) runs the
+queue **strictly one at a time**, refusing to advance until something calls
+`finishCurrentTask`. Most tasks finish themselves — `SynchronizeRegistriesTask`
+on the client's `select_known_packs` reply, `JoinWorldTask` on
+`finish_configuration`. These two do not:
+
+| task | `start()` sends | finished by |
+|---|---|---|
+| `ServerCodeOfConductConfigurationTask` | `code_of_conduct` (cfg cb **19**) | `accept_code_of_conduct` (cfg sb **9**) |
+| `ServerResourcePackConfigurationTask` | `resource_pack_push` (cfg cb **9**) | `resource_pack` (cfg sb **6**), **terminal** action |
+
+Both replies died on the same `_ => {}` arm in `lib.rs`, and **that arm's
+comment listed `code_of_conduct` as one of the things it ignored**. The code of
+conduct is queued *first*, so on a server with both it is the one that hangs
+and the resource pack is never even sent. An ignore arm that enumerates what it
+ignores reads as deliberate whether or not anyone checked — which is why the
+comment there now says what is left and why none of it blocks.
+
+**The hang is silent by construction**, which is why it survived: the socket
+stays live and a keep-alive arrives every 15 s, so Rewo's 30 s read timeout can
+never fire. No window, no error, no log line — the same shape as a slow
+connection.
+
+**The push is five fields, not two** (UUID, url, hash `stringUtf8(40)`, bool,
+optional component). The whole body is walked even though only the UUID leaves
+the client again: a decode stopping after the UUID cannot tell a well-formed
+packet from a malformed one, and this is a packet whose mis-decode is otherwise
+invisible — the reply would still be *sent*, just addressed to a UUID the
+server never issued, and `finishCurrentTask` matches on the task **type** and
+never reads the id back.
+
+#### `FAILED_DOWNLOAD`, and the guard that makes it available
+
+Which terminal action to send is a real behavioural choice and was the user's.
+`ServerCommonPacketListenerImpl:107` is
+
+```
+if (packet.action() == Action.DECLINED && this.server.isResourcePackRequired())
+```
+
+— **only `DECLINED`**, and against the server's *own* `require-resource-pack`
+setting rather than the `required` flag it just sent. So `DECLINED` is the one
+terminal action that gets you kicked from a required-pack server, which is
+correct vanilla behaviour (`PackConfirmScreen`'s decline arm disconnects the
+client itself). `FAILED_DOWNLOAD` is equally terminal, is **true** — Rewo has
+no `DownloadedPackSource` and fetched nothing — and slips past that guard, so a
+required-pack server stays joinable without Rewo ever claiming to have applied
+a pack it will not render.
+
+`isTerminal()` is a **denial-list**: `!= ACCEPTED && != DOWNLOADED`. Six of the
+eight actions finish the task. Reading it as "SUCCESSFULLY_LOADED finishes it"
+and sending anything else leaves the client hung exactly as before — which is
+what the live mutation *"the reply is ACCEPTED"* demonstrates: the reply is
+sent, the server ignores it, and the queue stalls. A fix wearing a fix.
+
+`INVALID_URL` is transcribed too, because `parseResourcePackUrl` is the one
+branch of `handleResourcePackPush` that runs without a pack pipeline. Its three
+failure routes collapse to one answer — an unknown scheme throws, a *known*
+non-web scheme (`ftp:`, `file:`) parses and then fails the protocol test, and no
+scheme throws — so the rule reduces to "the scheme is http or https",
+case-insensitively (`URL(String)` lowercases before its handler lookup). One
+**stated deviation**: `java.net.URL` also rejects a few strings that do start
+`http:`, where Rewo answers `FAILED_DOWNLOAD` rather than `INVALID_URL`. Both
+are terminal, neither is kicked, and the difference is one word in a server log.
+
+#### The class-C label was wrong for the sixth time, and its own doc said so
+
+`REWO_PACKET_COVERAGE.md` filed rows 80/81 as class **C** — "server
+resource-pack pipeline (download, prompt, apply)" — naming a subsystem Rewo
+genuinely lacks. Nothing about unblocking the task needs it. That is the same
+misreading as M91's furnace recipes, M93's merchant quick-move, M93s's
+stonecutter list, M93u's merchant offers and M152's smithing sets: **a blocker
+stated from the wire's point of view can be wrong because the answer was never
+on the wire.**
+
+And the doc had already half-caught it. §4's scope warning says the survey is
+clientbound-*play* only and that `resource_pack_pop`/`push` have
+configuration twins, ending *"if the handler is declared on
+`ClientCommonPacketListener`, look for the configuration copy."* Read the other
+way round it is a bug report: the configuration copy is not merely the ordinary
+case, it is a **blocking task**. And it could not have caught the other half at
+all — `code_of_conduct` has **no play twin**, so a clientbound-play survey
+cannot see it in principle. What that scope misses is not "the configuration
+copy of a play packet" but **any configuration-only packet whose absence is
+fatal**, and the two that exist were both of them.
+
+`resource_pack_pop` stays deliberately **absent** rather than
+resolved-and-ignored: it needs no reply, blocks no task, and Rewo has nothing to
+remove, so resolving it would put the first row in the coverage doc's `ignored`
+class, which M74 argues is worse than `absent` because it reads as handled to
+every grep.
+
+The **play-state twin** is answered from the same `answer_pack_push`, because
+vanilla's handler is on the *common* listener — one handler, two state ids, the
+same shape as the brand / cookie / server-links trio `session` already unifies.
+It blocks nothing there (there is no task queue in play), so that half is
+uniformity rather than a second fix.
+
+#### The witnesses, and why a counter would not have done
+
+16 unit witnesses, every expected value a literal read out of the decompile —
+the ordinals written longhand in `Action`'s declaration order rather than
+computed from `PackAction`, which would assert only that the enum equals itself
+(M93r's sweep exists because of exactly that shape).
+
+Live: **r55/r56**, and the design choice worth keeping is that neither is a
+counter. `replies_sent == 2` is satisfied by any client that reached the arm —
+including the malformed-body path, which answers with a **zero id and an empty
+string**. So `render_check.py` stages a known `resource-pack-id` and a known
+`codeofconduct/en_us.txt`, hands the same literals to the client through the
+environment, and the witness compares what came **off the wire** against what
+the server was configured with. One source, and agreement is only reachable
+through the decode.
+
+Three staging facts, all measured rather than assumed: the server never fetches
+the URL (`getServerPackInfo` only checks it is non-empty), so an unroutable one
+keeps the run offline; `enable-code-of-conduct=true` with no `codeofconduct/`
+directory is a startup **throw**, not a warning; and a vanilla server writes its
+whole default property set, so all three keys are **already present** — the
+staging replaces them in place with a per-key hit count, because appending would
+leave two copies and let the server read whichever came last.
+
+#### The battery, in two halves
+
+M158's gotcha 0d — route a battery through whatever you are claiming coverage
+from — bites here in a way worth recording, because the two claims need
+different checks. The arithmetic is graded by `cargo test`: **14/14 killed**,
+control survived. The **wiring** is graded by nothing there — delete both
+dispatch arms and all 16 unit witnesses stay green while the client hangs on
+every real server — so three mutations run through `render_check.py`: **3/3
+killed**, control green on each, and all three killed by a **timeout** rather
+than by a failed row. The mutant does not render a wrong pixel; it never
+renders at all.
+
+Which is why `render_check.py` grew a timeout in the same commit. It called
+`subprocess.run` with none, so a hung client — the exact failure this milestone
+fixes — hung the gate with no exit code, no output and nothing to diagnose (the
+same family as the harness hang M138d records). `REWO_RC_TIMEOUT` overrides the
+300 s default, which is what lets a mutant be declared dead in 90 s.
+
+**The third live mutation was wrong twice before it graded anything**, and both
+failures are recorded beside it. Its first version did not **compile**, and the
+harness reported cargo's failure as a KILL — a mutant that never ran says
+nothing about any witness (M141h). Its second anchored on a send-call occurring
+five times in `lib.rs`; the anchor-count guard reported that as a **SKIP**
+rather than pretending, which is the guard working.
+
+#### The allocation table had rotted in the one direction that matters
+
+It said *"next free: **r51**"* while r51–r54 were already taken by M163–M165 —
+four milestones had added rows and none had claimed one. That is not a cosmetic
+staleness: `EXPECTED_RENDER_CHECK_WITNESSES`' own doc comment tells you to take
+the next id **from that table rather than from "the highest one I can see"**, so
+following the documented process would have produced exactly the duplicate the
+table exists to prevent. `witness_seam_faults` would have caught it — but only
+under a live server, which is the hole §0.0 already names. The table is
+reconciled through M166 and now carries the instruction to **measure the free id
+from the code** until something other than discipline populates it.
+
+**Measured:** **3352 tests** (world 1201, net 1211, gpu 293, data 231, app 228,
+mesh 52, proto 16, audio 120); **37** serverless gates green, 0 validation
+errors; `soundshot` 37 default / **57** with `--features audio`; `live
+--render-check` **56/56**, validation ON, 0 errors; demo PNG
+`2cc56b4acbfb92cb` byte-identical; coverage **120 / 0 / 21**, class C 11 -> 10;
+`cargo tree -p rewo-app` still links **0** audio crates by default.
+
+**Open, and named rather than hidden:** Rewo still downloads no resource pack,
+so a server that gates content on one shows vanilla textures — that is the
+class-C subsystem, untouched. `resource_pack_pop` is unresolved on purpose.
+`transfer` and the dialog pair still have unhandled configuration twins; neither
+blocks a task, so neither hangs, but the same reading that found this one
+applies to them.
 
 ### M165 — the real-texture mob gate, and the symptom it did NOT reproduce (2026-08-19)
 
