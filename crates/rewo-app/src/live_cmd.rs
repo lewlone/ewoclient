@@ -11660,48 +11660,103 @@ fn selected_item_name_line(
     })
 }
 
+/// M168 — the session-free inputs of [`survival_inputs_from`], so a gate can
+/// build them by hand and grade the derivation. M97's pattern: logic that
+/// lives only where a `PlaySession` is in scope has no test module, and a
+/// mutation there survives every battery. What the assembler
+/// ([`resolve_survival_inputs`]) adds is WHERE each field comes from; what
+/// this carries is the values.
+pub(crate) struct SurvivalSources<'a> {
+    /// `gameMode.getPlayerMode()`; `None` when the server never said.
+    pub game_mode: Option<rewo_net::play::GameMode>,
+    /// `PlaySession::local_attributes` — the local player's synced snapshots.
+    pub local_attributes: &'a rewo_world::attributes::EntityAttributes,
+    pub attribute_registry: Option<&'a rewo_data::attributes::AttributeRegistry>,
+    /// The local player's `activeEffects`.
+    pub effects: &'a rewo_net::effects::VisualEffects,
+    /// Air, frozen ticks, absorption.
+    pub local: rewo_net::local_player_data::LocalPlayerData,
+    /// `isEyeInFluid(WATER)`.
+    pub underwater: bool,
+    /// The DIRECT vehicle, already known to be a `LivingEntity` — the
+    /// assembler applies the `instanceof` with the class table.
+    pub vehicle: Option<VehicleSource<'a>>,
+    pub health: f32,
+    pub food: i32,
+    pub saturation: f32,
+    pub hardcore: bool,
+    /// `Util.getMillis()`.
+    pub millis: u64,
+}
+
+/// The living vehicle under the player, as the table knows it.
+pub(crate) struct VehicleSource<'a> {
+    /// `etypes.name(type_id)` — what the attribute registry's suppliers are
+    /// keyed by.
+    pub type_name: Option<&'a str>,
+    /// Its synced attributes, if any `update_attributes` has arrived.
+    pub attributes: Option<&'a rewo_world::attributes::EntityAttributes>,
+    /// Metadata index 9.
+    pub health: f32,
+}
+
+/// `player.getActiveEffects()` as `extractEffects` reads each entry: the
+/// wire's five fields plus the two the registry report does not carry, looked
+/// up in the generated table by id (`isBeneficial()` and `getColor()`). An id
+/// past the table — a server-added effect on a modded server — is neither
+/// beneficial nor coloured, which puts it on the harmful row last.
+pub(crate) fn effect_inputs(
+    effects: &rewo_net::effects::VisualEffects,
+) -> Vec<rewo_gpu::survival_hud::EffectInput> {
+    use rewo_data::mob_effect_table as fx;
+    effects
+        .active()
+        .iter()
+        .map(|e| {
+            let def = fx::def(e.effect_id);
+            rewo_gpu::survival_hud::EffectInput {
+                id: e.effect_id,
+                duration: e.duration,
+                ambient: e.ambient,
+                show_icon: e.show_icon,
+                beneficial: def.is_some_and(|d| d.category.is_beneficial()),
+                color: def.map_or(0, |d| d.color),
+            }
+        })
+        .collect()
+}
+
 /// M168 — everything `extractPlayerHealth`, `extractVehicleHealth` and
-/// `extractEffects` read, resolved from the session once per frame, and the
-/// one piece of per-frame STATE the HUD owns (`Hud.displayHealth` and its
-/// blink clock) advanced in the same call, which is why this takes `&mut`.
+/// `extractEffects` read, plus the one piece of per-frame STATE the HUD owns
+/// (`Hud.displayHealth` and its blink clock), which is why `hud` is `&mut`.
 ///
-/// Session-free except for that update: every input is a plain read, so a
-/// gate can build the same `SurvivalInputs` by hand and grade the layout,
-/// and a unit test can drive [`rewo_gpu::survival_hud::layout`] with no
-/// socket. What only this function knows is WHERE each input lives:
-///
-/// * the two attributes come from `PlaySession::local_attributes` through
-///   `rewo_world::attributes::resolve` with `"minecraft:player"`, falling
-///   back to the supplier's default (20 / 0) — the local player never
-///   receives the initial pairing packet (`ServerEntity.java:286-290` goes to
-///   tracking players only), so an absent ARMOR is the registered 0 and
-///   vanilla draws nothing for it;
-/// * `getArmorValue()` is `Mth.floor` of the attribute (`LivingEntity.java:1879`);
-/// * the heart type and the HUNGER / REGENERATION tests read the active-
-///   effects map by id, and the ids are the generated table's positions,
-///   which a `rewo-data` test pins against the registry report;
-/// * the vehicle is `getVehicle()` — the DIRECT vehicle, not the root — and
-///   counts only if its type `instanceof LivingEntity`, with its health off
-///   metadata index 9 and its MAX_HEALTH resolved like any tracked entity's;
-/// * `isEyeInFluid(WATER)` is the same eye test the ambient handlers use
-///   (`local_player_view`).
-pub(crate) fn resolve_survival_inputs(
-    session: &mut PlaySession,
-    etypes: &EntityTypes,
-    millis: u64,
+/// * The two player attributes go through `rewo_world::attributes::resolve`
+///   with `"minecraft:player"`, falling back to the supplier's default
+///   (20 / 0) — the local player never receives the initial pairing packet
+///   (`ServerEntity.java:286-290` goes to tracking players only), so an
+///   absent ARMOR is the registered 0 and vanilla draws nothing for it.
+/// * `getArmorValue()` is `Mth.floor` of the attribute
+///   (`LivingEntity.java:1879`).
+/// * The heart type and the HUNGER / REGENERATION tests read the effects map
+///   by id, and the ids are the generated table's positions, which a
+///   `rewo-data` test pins against the registry report.
+/// * The vehicle's MAX_HEALTH resolves like any tracked entity's, against its
+///   own type's supplier; its health is metadata index 9.
+pub(crate) fn survival_inputs_from(
+    src: SurvivalSources<'_>,
+    hud: &mut rewo_net::hud_state::HudState,
 ) -> rewo_gpu::survival_hud::SurvivalInputs {
     use rewo_data::mob_effect_table as fx;
     use rewo_gpu::survival_hud as sh;
-    let can_hurt = session
-        .own_game_mode()
+    let can_hurt = src
+        .game_mode
         .map(rewo_net::play::GameMode::is_survival)
         .unwrap_or(true);
-    let reg = session.attribute_registry.clone();
     let player_attr = |name: &str, default: f32| -> f32 {
-        reg.as_deref()
+        src.attribute_registry
             .and_then(|r| {
                 rewo_world::attributes::resolve(
-                    Some(session.local_attributes()),
+                    Some(src.local_attributes),
                     Some("minecraft:player"),
                     name,
                     r,
@@ -11712,89 +11767,114 @@ pub(crate) fn resolve_survival_inputs(
     };
     let max_health_attr = player_attr("max_health", 20.0);
     let armor = player_attr("armor", 0.0).floor() as i32;
-    let effects = session.visual_effects();
-    let has = |name: &str| fx::id_of(name).is_some_and(|id| effects.has(id));
-    let local = *session.local_player_data();
-    let heart_type =
-        sh::HeartKind::for_player(has("poison"), has("wither"), local.is_fully_frozen());
-    let regeneration = has("regeneration");
-    let hunger_effect = has("hunger");
-    let effect_inputs: Vec<sh::EffectInput> = effects
-        .active()
-        .iter()
-        .map(|e| {
-            let def = fx::def(e.effect_id);
-            sh::EffectInput {
-                id: e.effect_id,
-                duration: e.duration,
-                ambient: e.ambient,
-                show_icon: e.show_icon,
-                beneficial: def.is_some_and(|d| d.category.is_beneficial()),
-                color: def.map_or(0, |d| d.color),
-            }
-        })
-        .collect();
-    let eye_in_water = session.local_player_view().is_some_and(|v| v.underwater);
-    let vehicle = session.local_vehicle().and_then(|vid| {
-        let e = session.world.entities.get(vid)?;
-        let living = session
-            .entity_classes
-            .as_deref()
-            .is_some_and(|c| c.is_living(e.type_id));
-        if !living {
-            return None;
-        }
-        let health = session.world.entities.death_state(vid).health;
-        let max_health = reg
-            .as_deref()
+    let has = |name: &str| fx::id_of(name).is_some_and(|id| src.effects.has(id));
+    let heart_type = sh::HeartKind::for_player(
+        has("poison"),
+        has("wither"),
+        src.local.is_fully_frozen(),
+    );
+    let vehicle = src.vehicle.as_ref().map(|v| {
+        let max_health = src
+            .attribute_registry
             .and_then(|r| {
-                rewo_world::attributes::resolve(
-                    session.world.entities.attributes(vid),
-                    etypes.name(e.type_id),
-                    "max_health",
-                    r,
-                )
+                rewo_world::attributes::resolve(v.attributes, v.type_name, "max_health", r)
             })
-            .map(|(v, _)| v as f32)
+            .map(|(x, _)| x as f32)
             .unwrap_or(20.0);
-        Some(sh::VehicleInput { max_health, health })
+        sh::VehicleInput {
+            max_health,
+            health: v.health,
+        }
     });
-    let health = session.health;
-    let food = session.food;
-    let saturation = session.saturation;
-    let hardcore = session.hardcore;
-    let air_supply = local.air_supply();
-    let absorption = local.absorption();
-    let tick_count = session.hud.gui_tick;
-    let invulnerable = session.hud.local_hurt.is_invulnerable();
-    let frame = session
-        .hud
-        .health_display
-        .update(health.ceil() as i32, invulnerable, tick_count, millis);
+    let tick_count = hud.gui_tick;
+    let invulnerable = hud.local_hurt.is_invulnerable();
+    let frame = hud.health_display.update(
+        src.health.ceil() as i32,
+        invulnerable,
+        tick_count,
+        src.millis,
+    );
     sh::SurvivalInputs {
         can_hurt,
-        health,
+        health: src.health,
         max_health_attr,
-        absorption,
+        absorption: src.local.absorption(),
         display_health: frame.display_health,
         blink: frame.blink,
         heart_type,
-        hardcore,
-        regeneration,
+        hardcore: src.hardcore,
+        regeneration: has("regeneration"),
         armor,
-        food,
-        saturation,
-        hunger_effect,
-        air_supply,
+        food: src.food,
+        saturation: src.saturation,
+        hunger_effect: has("hunger"),
+        air_supply: src.local.air_supply(),
         max_air: sh::MAX_AIR_SUPPLY,
-        eye_in_water,
+        eye_in_water: src.underwater,
         vehicle,
-        effects: effect_inputs,
+        effects: effect_inputs(src.effects),
         tick_count,
         // M168e — the jump bar needs the saddle, the jump-riding ramp and
         // `player_command`, none of which exist yet; `None` is the XP bar.
         jump: None,
     }
+}
+
+/// The session adapter for [`survival_inputs_from`]: where each source
+/// lives. The vehicle is `getVehicle()` — the DIRECT vehicle, not the root —
+/// and counts only if its type `instanceof LivingEntity`
+/// (`getPlayerVehicleWithHealth`, `Hud.java:728-742`); `isEyeInFluid(WATER)`
+/// is the same eye test the ambient handlers use (`local_player_view`).
+///
+/// The two clones are of a handful of entries each: the session's accessors
+/// borrow all of it, and `hud` has to be borrowed mutably beside them.
+pub(crate) fn resolve_survival_inputs(
+    session: &mut PlaySession,
+    etypes: &EntityTypes,
+    millis: u64,
+) -> rewo_gpu::survival_hud::SurvivalInputs {
+    let game_mode = session.own_game_mode();
+    let local_attributes = session.local_attributes().clone();
+    let registry = session.attribute_registry.clone();
+    let effects = session.visual_effects().clone();
+    let local = *session.local_player_data();
+    let underwater = session.local_player_view().is_some_and(|v| v.underwater);
+    let vehicle_id = session.local_vehicle().filter(|&vid| {
+        session.world.entities.get(vid).is_some_and(|e| {
+            session
+                .entity_classes
+                .as_deref()
+                .is_some_and(|c| c.is_living(e.type_id))
+        })
+    });
+    let (health, food, saturation, hardcore) =
+        (session.health, session.food, session.saturation, session.hardcore);
+    let PlaySession { hud, world, .. } = session;
+    let vehicle = vehicle_id.and_then(|vid| {
+        let e = world.entities.get(vid)?;
+        Some(VehicleSource {
+            type_name: etypes.name(e.type_id),
+            attributes: world.entities.attributes(vid),
+            health: world.entities.death_state(vid).health,
+        })
+    });
+    survival_inputs_from(
+        SurvivalSources {
+            game_mode,
+            local_attributes: &local_attributes,
+            attribute_registry: registry.as_deref(),
+            effects: &effects,
+            local,
+            underwater,
+            vehicle,
+            health,
+            food,
+            saturation,
+            hardcore,
+            millis,
+        },
+        hud,
+    )
 }
 
 /// M79's two HUD gauges, resolved from the session once per frame.
