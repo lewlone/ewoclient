@@ -562,12 +562,190 @@ impl ItemCooldowns {
 // The three together.
 // ---------------------------------------------------------------------------
 
+/// `Hud`'s own health bookkeeping (M168): the four fields at the top of
+/// `extractPlayerHealth` (`Hud.java:765-779`) that decide whether the hearts
+/// BLINK and which health the blink shows underneath.
+///
+/// ```java
+/// int currentHealth = Mth.ceil(player.getHealth());
+/// boolean blink = this.healthBlinkTime > this.tickCount
+///     && (this.healthBlinkTime - this.tickCount) / 3L % 2L == 1L;
+/// long timeMillis = Util.getMillis();
+/// if (currentHealth < this.lastHealth && player.invulnerableTime > 0) {
+///    this.lastHealthTime = timeMillis;
+///    this.healthBlinkTime = this.tickCount + 20;
+/// } else if (currentHealth > this.lastHealth && player.invulnerableTime > 0) {
+///    this.lastHealthTime = timeMillis;
+///    this.healthBlinkTime = this.tickCount + 10;
+/// }
+/// if (timeMillis - this.lastHealthTime > 1000L) {
+///    this.displayHealth = currentHealth;
+///    this.lastHealthTime = timeMillis;
+/// }
+/// this.lastHealth = currentHealth;
+/// int oldHealth = this.displayHealth;
+/// ```
+///
+/// Three things a tidy rewrite gets wrong. **`blink` is computed before
+/// the clock is re-armed**, so the frame a hit lands on is never a blink
+/// frame. **Both arms need `invulnerableTime > 0`** — a health change that
+/// arrives outside the hurt window (regeneration, a `/effect` heal) re-arms
+/// nothing and `displayHealth` simply follows a second later. And the
+/// **display health is wall-clock**, not tick-clock: the ghost of the old
+/// health persists for 1000 ms of real time after the last re-arm,
+/// whatever the tick rate — which is why this takes `millis` rather than
+/// deriving it.
+///
+/// Runs once per FRAME, as vanilla does (it is inside the extract), with
+/// `tick_count` being `Hud.tickCount` — this struct's own tick, not the
+/// player's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HealthDisplay {
+    last_health: i32,
+    display_health: i32,
+    last_health_time: u64,
+    health_blink_time: i64,
+}
+
+/// What one frame of [`HealthDisplay::update`] decided.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HealthFrame {
+    /// The hearts draw their `_blinking` sprites this frame.
+    pub blink: bool,
+    /// `oldHealth` — the health the blink shows ghosted underneath.
+    pub display_health: i32,
+}
+
+impl HealthDisplay {
+    /// `current_health` is already `Mth.ceil(player.getHealth())`;
+    /// `invulnerable` is `player.invulnerableTime > 0`; `tick_count` is
+    /// `Hud.tickCount`; `millis` is `Util.getMillis()`.
+    pub fn update(
+        &mut self,
+        current_health: i32,
+        invulnerable: bool,
+        tick_count: i32,
+        millis: u64,
+    ) -> HealthFrame {
+        let tick = i64::from(tick_count);
+        let blink = self.health_blink_time > tick && (self.health_blink_time - tick) / 3 % 2 == 1;
+        if current_health < self.last_health && invulnerable {
+            self.last_health_time = millis;
+            self.health_blink_time = tick + 20;
+        } else if current_health > self.last_health && invulnerable {
+            self.last_health_time = millis;
+            self.health_blink_time = tick + 10;
+        }
+        if millis.wrapping_sub(self.last_health_time) > 1000 {
+            self.display_health = current_health;
+            self.last_health_time = millis;
+        }
+        self.last_health = current_health;
+        HealthFrame {
+            blink,
+            display_health: self.display_health,
+        }
+    }
+}
+
+/// `LocalPlayer.hurtTo` and the `invulnerableTime` it arms (M168) — the
+/// local player's half of what `extractPlayerHealth` reads as
+/// `player.invulnerableTime > 0`.
+///
+/// ```java
+/// public void hurtTo(final float newHealth) {
+///    if (this.flashOnSetHealth) {
+///       float dmg = this.getHealth() - newHealth;
+///       if (dmg <= 0.0F) {
+///          this.setHealth(newHealth);
+///          if (dmg < 0.0F) { this.invulnerableTime = 10; }
+///       } else {
+///          this.lastHurt = dmg;
+///          this.invulnerableTime = 20;
+///          this.setHealth(newHealth);
+///          this.hurtDuration = 10;
+///          this.hurtTime = this.hurtDuration;
+///       }
+///    } else {
+///       this.setHealth(newHealth);
+///       this.flashOnSetHealth = true;
+///    }
+/// }
+/// ```
+/// (`LocalPlayer.java:343-361`.) **The first `set_health` of a life arms
+/// nothing** — it only flips `flashOnSetHealth` — so the join-time sync
+/// never blinks, and a HEAL arms a 10-tick window where a hit arms 20.
+/// `LivingEntity.handleDamageEvent` (`:2044-2048`) also sets 20 when a
+/// `damage_event` names you, and `baseTick` (`:471-472`) counts it down
+/// once per tick.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LocalHurt {
+    flash_on_set_health: bool,
+    invulnerable_time: i32,
+}
+
+impl LocalHurt {
+    /// `hurtTo(newHealth)` with the health the player had before the packet.
+    pub fn hurt_to(&mut self, old_health: f32, new_health: f32) {
+        if self.flash_on_set_health {
+            let dmg = old_health - new_health;
+            if dmg <= 0.0 {
+                if dmg < 0.0 {
+                    self.invulnerable_time = 10;
+                }
+            } else {
+                self.invulnerable_time = 20;
+            }
+        } else {
+            self.flash_on_set_health = true;
+        }
+    }
+
+    /// `LivingEntity.handleDamageEvent`'s `this.invulnerableTime = 20`.
+    pub fn damage_event(&mut self) {
+        self.invulnerable_time = 20;
+    }
+
+    /// `LivingEntity.baseTick`: `if (invulnerableTime > 0) invulnerableTime--`.
+    pub fn tick(&mut self) {
+        if self.invulnerable_time > 0 {
+            self.invulnerable_time -= 1;
+        }
+    }
+
+    /// `player.invulnerableTime > 0`.
+    pub fn is_invulnerable(&self) -> bool {
+        self.invulnerable_time > 0
+    }
+
+    pub fn invulnerable_time(&self) -> i32 {
+        self.invulnerable_time
+    }
+
+    /// `handleRespawn` builds a fresh `LocalPlayer`, whose
+    /// `flashOnSetHealth` is false again — so the respawn's own
+    /// `set_health` is a non-flashing first sync.
+    pub fn reset_for_respawn(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Everything M79's seven packets write.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HudState {
     pub titles: TitleOverlay,
     pub experience: ExperienceState,
     pub cooldowns: ItemCooldowns,
+    /// `Hud.tickCount` (M168) — the `Hud` class's OWN counter
+    /// (`Hud.java:149`, `:1184`), distinct from the player's `tickCount`
+    /// the cooldowns run on. It seeds the heart jitter's random
+    /// (`tickCount * 312871`), phases the regeneration wave and the
+    /// saturation wobble, and is the clock the blink is measured against.
+    pub gui_tick: i32,
+    /// The blink / display-health state machine (M168).
+    pub health_display: HealthDisplay,
+    /// `LocalPlayer.hurtTo`'s window (M168).
+    pub local_hurt: LocalHurt,
 }
 
 impl HudState {
@@ -578,6 +756,8 @@ impl HudState {
         self.titles.tick();
         self.experience.tick();
         self.cooldowns.tick();
+        self.gui_tick = self.gui_tick.wrapping_add(1);
+        self.local_hurt.tick();
     }
 
     /// `handleRespawn`'s asymmetry, and it runs the *opposite* way for the two
@@ -597,6 +777,10 @@ impl HudState {
     pub fn reset_for_respawn(&mut self) {
         self.experience = ExperienceState::default();
         self.cooldowns = ItemCooldowns::default();
+        // `LocalPlayer` state, rebuilt with the player; `Hud`'s own
+        // `tickCount`, `lastHealth` and blink clock are the client's and
+        // survive (`handleRespawn` never touches `Minecraft.gui.hud`).
+        self.local_hurt.reset_for_respawn();
     }
 }
 
@@ -1191,5 +1375,91 @@ mod tests {
             ),
         ]);
         assert_eq!(plain(&tag), "abc");
+    }
+}
+
+#[cfg(test)]
+mod health_display_tests {
+    use super::*;
+
+    /// The blink clock, tick by tick, against `(healthBlinkTime - tickCount) / 3L % 2L == 1L`
+    /// with `healthBlinkTime = tickCount + 20` armed at tick 10.
+    #[test]
+    fn a_hit_arms_twenty_ticks_and_the_landing_frame_never_blinks() {
+        let mut d = HealthDisplay::default();
+        // Join-time sync: no window, display follows after 1000 ms (first frame: 0 -> 20).
+        assert_eq!(d.update(20, false, 0, 5000), HealthFrame { blink: false, display_health: 20 });
+        // The hit: current < last with the window open. Re-arms, but `blink`
+        // was computed before the re-arm, so this frame is not a blink frame.
+        assert_eq!(d.update(14, true, 10, 5100), HealthFrame { blink: false, display_health: 20 });
+        let expect = |t: i64| 30 > t && (30 - t) / 3 % 2 == 1;
+        for t in 11..=30 {
+            let f = d.update(14, t < 30, t as i32, 5100 + (t as u64 - 10) * 50);
+            assert_eq!(f.blink, expect(t), "tick {t}");
+            assert_eq!(f.display_health, 20, "ghost of the old health holds for 1000 ms");
+        }
+        // 13, 19 and 25 blink; 11, 12, 16, 28 and 30 do not — pinned
+        // individually so the closure above cannot be the only witness.
+        assert!(expect(13) && expect(19) && expect(25));
+        assert!(!expect(11) && !expect(12) && !expect(16) && !expect(28) && !expect(30));
+        // STRICTLY more than 1000 ms of wall clock after the last re-arm, the
+        // display catches up: 6100 (exactly 1000) held it above; 6150 does not.
+        assert_eq!(d.update(14, false, 31, 6150).display_health, 14);
+    }
+
+    /// Both arms need `invulnerableTime > 0`: a change outside the window
+    /// arms nothing, and a heal inside it arms the SHORTER 10-tick window.
+    #[test]
+    fn a_heal_arms_ten_and_a_change_outside_the_window_arms_nothing() {
+        let mut d = HealthDisplay::default();
+        d.update(20, false, 0, 5000);
+        d.update(14, false, 1, 5050); // not invulnerable: no window
+        assert!(!d.update(14, false, 2, 5100).blink);
+        assert!(!d.update(14, false, 4, 5200).blink, "no clock was armed");
+        // Heal while invulnerable: +10, so tick 3 of the window (7 left) is
+        // a blink frame and tick 13 (0 left) is not.
+        d.update(18, true, 10, 5300);
+        assert!(d.update(18, false, 11, 5350).blink, "armed at 10 + 10 = 20; (20 - 11) / 3 = 3, odd");
+        assert!(!d.update(18, false, 13, 5450).blink, "(20 - 13) / 3 = 2, even");
+        assert!(!d.update(18, false, 20, 5800).blink, "20 > 20 is false: the window is over");
+    }
+
+    /// `LocalPlayer.hurtTo`: the first sync only flips the flag; a hit arms 20,
+    /// a heal 10, an unchanged health nothing; `baseTick` counts down.
+    #[test]
+    fn hurt_to_arms_the_window_like_the_local_player_does() {
+        let mut h = LocalHurt::default();
+        h.hurt_to(20.0, 20.0);
+        assert!(!h.is_invulnerable(), "the join-time sync arms nothing");
+        h.hurt_to(20.0, 14.0);
+        assert_eq!(h.invulnerable_time(), 20);
+        for _ in 0..20 {
+            h.tick();
+        }
+        assert!(!h.is_invulnerable());
+        h.tick();
+        assert_eq!(h.invulnerable_time(), 0, "never negative");
+        h.hurt_to(14.0, 18.0);
+        assert_eq!(h.invulnerable_time(), 10, "a heal is the 10-tick arm");
+        h.hurt_to(18.0, 18.0);
+        assert_eq!(h.invulnerable_time(), 10, "dmg == 0 touches nothing");
+        h.damage_event();
+        assert_eq!(h.invulnerable_time(), 20);
+        h.reset_for_respawn();
+        h.hurt_to(20.0, 1.0);
+        assert!(!h.is_invulnerable(), "a respawn's first sync is a first sync again");
+    }
+
+    /// `HudState::tick` advances `Hud.tickCount` and the hurt window together.
+    #[test]
+    fn the_gui_tick_and_the_hurt_window_run_on_the_hud_tick() {
+        let mut s = HudState::default();
+        s.local_hurt.damage_event();
+        s.tick();
+        s.tick();
+        assert_eq!((s.gui_tick, s.local_hurt.invulnerable_time()), (2, 18));
+        s.reset_for_respawn();
+        assert_eq!(s.gui_tick, 2, "Hud's own counter survives a respawn");
+        assert_eq!(s.local_hurt.invulnerable_time(), 0, "LocalPlayer's does not");
     }
 }

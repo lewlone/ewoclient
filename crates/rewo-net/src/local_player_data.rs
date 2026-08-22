@@ -64,20 +64,73 @@ use rewo_proto::reader::PacketReader;
 /// `Entity.FLAG_FALL_FLYING`.
 pub const FLAG_FALL_FLYING: u8 = 7;
 
+/// `Entity.getMaxAirSupply()` — a literal 300 (`Entity.java:2805-2807`),
+/// with no `Player` or `LivingEntity` override (grep: 0 hits). Also the
+/// `define` default of `DATA_AIR_SUPPLY_ID` (`Entity.java:319`), so an
+/// entity never told its air is full.
+pub const MAX_AIR_SUPPLY: i32 = 300;
+
+/// `Entity.getTicksRequiredToFreeze()` — 140 (`Entity.java:2838-2840`).
+pub const TICKS_REQUIRED_TO_FREEZE: i32 = 140;
+
 /// The local player's synced data, kept beside the entity table.
 ///
 /// Only the shared flags so far: they are what the sound path needs, and a
 /// field nothing reads would be indistinguishable from a field nothing
 /// *writes*.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LocalPlayerData {
     /// `DATA_SHARED_FLAGS_ID` — index 0, BYTE.
     shared_flags: u8,
     /// `LocalPlayer.wasFallFlying`, sampled once per `aiStep`.
     was_fall_flying: bool,
+    /// `DATA_AIR_SUPPLY_ID` — index 1, INT (M168). Starts at
+    /// [`MAX_AIR_SUPPLY`] because that is the accessor's `define` default,
+    /// and the server only sends a metadata entry when it changes — a
+    /// player who has never dived has never been told.
+    air_supply: i32,
+    /// `DATA_TICKS_FROZEN` — index 7, INT (M168).
+    ticks_frozen: i32,
+    /// `DATA_PLAYER_ABSORPTION_ID` — index 17, FLOAT (M168). Defined 0.0
+    /// (`Player.java:225`).
+    absorption: f32,
+}
+
+impl Default for LocalPlayerData {
+    fn default() -> Self {
+        Self {
+            shared_flags: 0,
+            was_fall_flying: false,
+            air_supply: MAX_AIR_SUPPLY,
+            ticks_frozen: 0,
+            absorption: 0.0,
+        }
+    }
 }
 
 impl LocalPlayerData {
+    /// `Entity.getAirSupply()` — the RAW value, which is negative while
+    /// drowning. `extractAirBubbles` clamps it (`Hud.java:908`); a consumer
+    /// that wants the display value clamps there, not here.
+    pub fn air_supply(&self) -> i32 {
+        self.air_supply
+    }
+
+    /// `Entity.getTicksFrozen()`.
+    pub fn ticks_frozen(&self) -> i32 {
+        self.ticks_frozen
+    }
+
+    /// `Entity.isFullyFrozen()` — `getTicksFrozen() >= getTicksRequiredToFreeze()`.
+    pub fn is_fully_frozen(&self) -> bool {
+        self.ticks_frozen >= TICKS_REQUIRED_TO_FREEZE
+    }
+
+    /// `Player.getAbsorptionAmount()`.
+    pub fn absorption(&self) -> f32 {
+        self.absorption
+    }
+
     /// `getSharedFlag(flag)`.
     pub fn shared_flag(&self, flag: u8) -> bool {
         self.shared_flags & (1 << flag) != 0
@@ -149,6 +202,18 @@ pub fn apply_local_metadata(
             ..Default::default()
         },
     );
+    // M168 — the three HUD inputs, copied BEFORE the flags guard below: a
+    // packet carrying only the air supply (the common one while diving)
+    // mentions no index 0, and the early return would drop it.
+    if let Some(air) = meta.air_supply {
+        data.air_supply = air;
+    }
+    if let Some(frozen) = meta.ticks_frozen {
+        data.ticks_frozen = frozen;
+    }
+    if let Some(absorption) = meta.absorption {
+        data.absorption = absorption;
+    }
     let Some(flags) = meta.flags else {
         // The packet did not mention index 0, so `onSyncedDataUpdated` never
         // ran for that accessor and the elytra test is not reached — however
@@ -195,6 +260,44 @@ mod tests {
     }
 
     const FLYING: u8 = 1 << FLAG_FALL_FLYING;
+
+    /// A body carrying the three M168 entries and NO shared flags — the
+    /// shape a diving player actually receives.
+    fn hud_body(eid: i32, air: i32, frozen: i32, absorption: f32) -> Vec<u8> {
+        let mut w = PacketWriter::default();
+        w.varint(eid);
+        w.u8(1); // DATA_AIR_SUPPLY_ID
+        w.varint(1); // INT
+        w.varint(air);
+        w.u8(7); // DATA_TICKS_FROZEN
+        w.varint(1); // INT
+        w.varint(frozen);
+        w.u8(17); // DATA_PLAYER_ABSORPTION_ID
+        w.varint(3); // FLOAT
+        w.f32(absorption);
+        w.u8(0xFF);
+        w.into_bytes()
+    }
+
+    /// M168: the HUD inputs land even when the packet carries no index 0 —
+    /// the guard that protects the elytra edge must not eat them.
+    #[test]
+    fn air_frozen_and_absorption_survive_a_packet_with_no_flags() {
+        let mut d = LocalPlayerData::default();
+        assert_eq!(d.air_supply(), MAX_AIR_SUPPLY, "define default is getMaxAirSupply()");
+        assert!(!d.is_fully_frozen());
+        assert_eq!(d.absorption(), 0.0);
+        let out = apply_local_metadata(&hud_body(1, -7, 140, 4.0), Some(1), None, &mut d);
+        assert!(!out.flags_updated, "no index 0 in the packet");
+        assert_eq!(d.air_supply(), -7, "raw, not clamped: drowning is negative");
+        assert!(d.is_fully_frozen(), "140 is the threshold, inclusive");
+        assert_eq!(d.absorption(), 4.0);
+        // 139 is not frozen; another entity's packet changes nothing.
+        apply_local_metadata(&hud_body(1, 300, 139, 0.0), Some(1), None, &mut d);
+        assert!(!d.is_fully_frozen());
+        apply_local_metadata(&hud_body(2, 0, 999, 9.0), Some(1), None, &mut d);
+        assert_eq!((d.air_supply(), d.ticks_frozen(), d.absorption()), (300, 139, 0.0));
+    }
 
     #[test]
     fn the_flag_is_bit_seven_and_nothing_else() {

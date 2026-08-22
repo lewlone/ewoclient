@@ -52,6 +52,7 @@ pub mod particle_types;
 pub mod server_jar;
 pub mod sign_states;
 pub mod sign_text;
+pub mod mob_effect_table;
 pub mod mob_effects;
 pub mod recipe_display;
 pub mod sound_events;
