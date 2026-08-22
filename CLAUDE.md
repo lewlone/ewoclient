@@ -2171,17 +2171,42 @@ default build (**28** witnesses) and adds decode and the mixer under
 does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
-**Everything is shipped and gated** as of 2026-08-23 (M168) —
-**3382 tests / 0 failures** (world 1201, net 1218, gpu 311, data 233, app 231,
+**Everything is shipped and gated** as of 2026-08-23 (M169) —
+**3391 tests / 0 failures** (world 1203, net 1224, gpu 312, data 233, app 231,
 mesh 52, proto 16, **audio 120** — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **109/109**, `inventoryshot` **165/165**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, `tablistshot` **42/42**, `soundshot` 37/57,
-**`gaugeshot` 29/29** (the 38th gate), all **38** serverless gates green with 0
-validation errors, `live --render-check` **58/58** with validation ON and 0
-validation errors (r57/r58 arrived with M168), demo PNG
+**`gaugeshot` 35/35** (the 38th gate), all **38** serverless gates green with 0
+validation errors, `live --render-check` **59/59** with validation ON and 0
+validation errors (r59 arrived with M169), demo PNG
 `2cc56b4acbfb92cb`.
+
+**M169 (2026-08-23) fed the jump bar M168 could only draw.** M168 laid the
+jump bar out and rendered it and passed `jump: None`; M169 is the whole
+`LocalPlayer.aiStep` jump-riding meter (`rewo_net::jump_riding`), the
+`START_RIDING_JUMP` packet (the first serverbound `player_command` Rewo has
+sent), the SADDLE equipment slot (ordinal 7, which `apply_set_equipment`
+discarded — it is the whole of `isSaddled()`), the class sets for
+`PlayerRideableJumping` / `Camel` / `AbstractNautilus`, the camel/nautilus dash
+cooldowns armed from their DASH metadata, and `Hud.nextContextualInfoState`'s
+four-way selector threaded once per frame so the XP / locator / jump bars
+cannot disagree about the slot. Five meter inversions a tidy rewrite loses:
+the ramp has NO 1.0 cap (tick 10 is 1.0, then it DECAYS toward 0.8); the
+release parks at -10 and the bar holds full through the jump; the PRESS zeroes
+the scale; a release during a dash cooldown is lost; the packet data is
+`Mth.floor(scale * 100)`. And the selector arm that reads backwards: WITHOUT
+waypoints a jumpable vehicle ALWAYS wins, scale 0 or not. r59 drives the chain
+live — and the `/ride` command did NOT survive the render check (the server
+never sent `set_passengers` naming the bot, so `mounts` stayed empty; a
+diagnostic read `mounted 0 jumpkey 1115` before the fix), so it INJECTS the
+horse + saddle + set_passengers like every other r-witness. Two battery
+survivors were weak fixtures, not equivalent mutants: the press-zero shows
+only on a re-press mid-park, and the saddle wire path is caught by a living-
+entity unit test rather than the gate. Open: the camel's
+`LAST_POSE_CHANGE_TICK` decodes but no metadata path arms it, so
+`refuseToMove()` is unit-tested only.
 
 **M168 (2026-08-23) rebuilt the survival HUD, and the handoff item that named
 it was five gauges short of the truth.** §0.0 listed armour, air, effects,

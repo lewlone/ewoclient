@@ -340,11 +340,11 @@ witnesses are mostly self-driven can look healthy against nothing.
 > version of this box listed has shipped. What follows is measured on the merged
 > tree, not carried forward.
 >
-> **The state (re-measured 2026-08-23 after M168):** **38** serverless gates
-> green with 0 validation errors (`gaugeshot` is the 38th, 29/29), **3382
-> tests** (world 1201, net 1218, gpu 311, data 233, app 231, mesh 52, proto
-> 16, audio 120), `live --render-check` **58/58** exit 0 (r57/r58 arrived
-> with M168), demo PNG `2cc56b4acbfb92cb` byte-identical.
+> **The state (re-measured 2026-08-23 after M169):** **38** serverless gates
+> green with 0 validation errors (`gaugeshot` 35/35), **3391 tests** (world
+> 1203, net 1224, gpu 312, data 233, app 231, mesh 52, proto 16, audio 120),
+> `live --render-check` **59/59** exit 0 (r59 arrived with M169), demo PNG
+> `2cc56b4acbfb92cb` byte-identical.
 >
 > *(superseded — the 2026-08-21 line, kept for the diff:)* 37 serverless gates green
 > with 0 validation errors, **3355 tests**, `live --render-check` **56/56** exit
@@ -410,21 +410,23 @@ witnesses are mostly self-driven can look healthy against nothing.
 > #### Ready, specced, unblocked
 >
 > * ~~**The HUD's real gaps** — armour bar, air bubbles, mob-effect icons, vehicle
->   health, jump bar.~~ **DONE (M168, 2026-08-23) — and the item undersold it:
+>   health, jump bar.~~ **DONE — M168 the five gauges as a layout, M169 the
+>   jump bar's inputs (2026-08-23).** M168 undersold the item:
 >   the hearts and food that were already there were an M3 approximation**
 >   (rounded where vanilla ceils, one row, no absorption / blink / heart types,
 >   the hunger row filled from the wrong end), so the whole survival HUD is a
 >   pure layout now (`rewo_gpu::survival_hud`), graded by the new `gaugeshot`
->   gate and by r57/r58 live. **One piece is geometry only: the jump bar.**
->   `survival_hud` lays it out and `gaugeshot` renders it, but the frame passes
->   `jump: None` because nothing feeds it — it needs the SADDLE equipment slot
->   (which `apply_set_equipment` discards), `LocalPlayer.aiStep`'s jump-riding
->   ramp (`LocalPlayer.java:882-906`) in the mounted tick, and the serverbound
->   `player_command` `START_RIDING_JUMP`, which Rewo has never sent. That is the
->   natural next milestone and is specced in §15's M168 entry. Also open from
->   M168: the bubble-pop sound (`Hud.playAirBubblePoppedSound`), and
+>   gate and by r57/r58 live. **M169 then fed the jump bar** — the whole
+>   `LocalPlayer.aiStep` jump-riding meter, the `START_RIDING_JUMP` packet, the
+>   SADDLE equipment slot, the camel/nautilus dash cooldowns, and the four-way
+>   `nextContextualInfoState` selector — graded by `gaugeshot`'s j-witnesses
+>   and r59 live. **Still open from M168/M169:** the bubble-pop sound
+>   (`Hud.playAirBubblePoppedSound` — a layout has no sound channel);
 >   `MissingTextureAtlasSprite` for an effect id past the table (Rewo draws
->   nothing where vanilla draws the magenta checker).
+>   nothing where vanilla draws the magenta checker); and the camel's
+>   `LAST_POSE_CHANGE_TICK` decodes but no metadata path calls
+>   `set_last_pose_change_tick`, so `refuseToMove()` is exercised only by unit
+>   tests — a real sitting camel is not yet un-jumpable live.
 > * **`p4-leash`** (the rope), **`sub-book`**, **`sub-sign`**, **`sub-map`**,
 >   **`options`' volume sliders**, **`render-misc [INTERP]`**. Each has a
 >   verified spec with its traps; see §15's wave entries for the corrections.
@@ -1874,7 +1876,8 @@ this shape once.
 | M165 — the real-texture mob gate | **r54** | — | `mobtexshot` |
 | M166 — the two blocking configuration tasks | **r55, r56** | — | (live only; `render_check.py` stages the tasks) |
 | M168 — the survival HUD | **r57, r58** | HUD atlas y 80..218: player hearts y 80 + 90 (24 per row, 10 px pitch), armour / air / vehicle / hunger-food x 0..120 y 100, effect backgrounds (130,100) + (160,100), effect icons y 125..201 (13 per row, 19 px pitch), jump bar y 201/207/213; `ATLAS_H` 80 -> 224 | `gaugeshot` t0-t7, w0-w3, d0-d4, p0-p11 |
-| *(next free)* | **r59** | — | — |
+| M169 — the jump bar's inputs | **r59** | — | `gaugeshot` j0-j5 |
+| *(next free)* | **r60** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table
@@ -3695,6 +3698,132 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M169 — the jump bar's inputs: the meter, the packet, the vehicles, and the selector that seats them all (2026-08-23)
+
+M168 laid the jump bar out and rendered it and fed it `None`, and named exactly
+what feeding it would take. This is that: the whole `LocalPlayer.aiStep`
+jump-riding meter, the one serverbound packet it sends, the three vehicle facts
+`jumpableVehicle()` reads, and `Hud.nextContextualInfoState`'s four-way slot
+selector.
+
+#### The meter (`rewo_net::jump_riding`)
+
+Verbatim from `LocalPlayer.java:882-908`, with five inversions a tidy rewrite
+loses:
+
+* **No 1.0 cap and no 0.1 floor.** The ramp is `ticks < 10 ? ticks * 0.1F :
+  0.8F + 2.0F / (ticks - 9) * 0.1F` — tick 1 is 0.1, tick 9 is 0.9, tick 10 is
+  `0.8 + 2/1 * 0.1 = 1.0`, and from there it DECAYS toward 0.8 (tick 11 is 0.9,
+  tick 19 is 0.82). A bar that clamps at full after ten ticks is wrong for every
+  tick after the tenth.
+* **The release does not zero the scale.** It parks `jumpRidingTicks` at -10,
+  and the scale drops to 0 only when that counter climbs back to zero ten ticks
+  later — so the bar holds full through the jump.
+* **The PRESS zeroes the scale**, on the rising edge, not the release. Observable
+  only on a re-press mid-park, which is the fixture the mutation battery needed
+  (every earlier fixture pressed from scale 0).
+* **The cooldown branch is the `else`.** While a camel's dash cooldown runs,
+  nothing in the block happens — no edge detection, no send — so a release during
+  the cooldown is simply lost.
+* **The packet data is `Mth.floor(scale * 100)`**, sent on the release only.
+
+The release sends `ServerboundPlayerCommandPacket(START_RIDING_JUMP, data)` —
+the FIRST serverbound `player_command` Rewo has ever sent, action ordinal **3**
+(the enum's fourth constant), written as three var-ints.
+
+#### `jumpableVehicle()`, and the three facts it needed
+
+`LocalPlayer.jumpableVehicle()` is `getControlledVehicle() instanceof
+PlayerRideableJumping && canJump()`, and every piece of that was missing:
+
+* **The SADDLE equipment slot.** `apply_set_equipment` decoded slot 7 and threw
+  it away; it is `Mob.isSaddled()` (`hasValidEquippableItemForSlot(SADDLE)`) and
+  half of `getControllingPassenger()` (`isSaddled() && getFirstPassenger()
+  instanceof Player`). The client takes the slot being non-empty, since the
+  server only equips a valid item there.
+* **The class sets.** `PlayerRideableJumping` is an interface with exactly two
+  implementors — the horse family (camel included) and the nautilus pair — so
+  the set is the union of the `AbstractHorse` and `AbstractNautilus` subtrees,
+  the same shape as `Leashable` (M77). `Camel` and `AbstractNautilus` are their
+  own sets, for the two below. `gen_entity_classes.py` grew all three; the
+  resolver asserts the union is a strict superset of the two dash subtrees, so
+  an `implements` scan that matched nothing fails loud.
+* **The dash cooldown.** `getJumpCooldown()` is a camel's or nautilus's
+  `dashCooldown` (a horse's is the interface default 0). It arms from the DASH
+  metadata — index 19 BOOLEAN on the camel, 20 on the nautilus — through
+  `onSyncedDataUpdated`'s `dashCooldown == 0 ? 55 : dashCooldown`, which reads
+  backwards three ways: it fires on ANY DASH entry, true or false (no change
+  guard); it does NOT restart a running cooldown; and it is gated on
+  `!firstTick`, so the entity's spawn-time metadata arms nothing. `tick`
+  decrements it. The camel's `canJump()` additionally excludes `refuseToMove()`
+  — `LAST_POSE_CHANGE_TICK < 0` (sitting) or within the 40-tick (sitting) /
+  52-tick (standing) pose transition, measured from `|lastPoseChangeTick|`.
+
+#### The selector (`next_contextual_info`)
+
+`Hud.nextContextualInfoState` is transcribed in full — all four arms — and
+threaded once per frame through `live_cmd::contextual_info` to the XP gauge, the
+locator bar and the survival layout's jump input, so the three can never each
+decide differently who owns the slot above the hotbar (the M89/M90/M112 finding,
+avoided by construction this time). The two-way `contextual_bar` M83 shipped is
+now that function with no vehicle. The arm that reads backwards:
+`willPrioritizeJumpInfo()` is `scale > 0 || cooldown > 0`, and it only breaks
+the tie WITH waypoints — **without waypoints a jumpable vehicle always wins,
+scale 0 or not**, because that path is the unconditional `else if
+jumpable.is_some()`.
+
+The XP bar's own draw was gated to `contextual == Experience` (it drew whenever
+`hasExperience()` before), and the XP LEVEL number stays on `hasExperience()`
+alone, which is vanilla's split.
+
+#### The gate, and the live chain
+
+`gaugeshot` gains six j-witnesses (29 -> 35): the ramp against its literals, the
+release's floor-and-park-and-hold, the else branch, the four-way selector with
+the scale tie-break, the packet's three var-ints, and the camel/nautilus dash
+arming driven through the REAL router and the real class table (a horse's
+index-19 boolean, not a camel's, arms nothing).
+
+**r59 drives the whole chain live, and the `/ride` command did not survive the
+render check.** The first cut staged `summon minecraft:horse {...saddle...}` and
+`ride @s mount @e[horse]`; r59 read `mounted 0` for all 7396 frames. A three-
+counter diagnostic (`mounted 0 jumpable 0 jumpkey 1115 of 7396`) settled it: the
+jump key was held perfectly and the bot was never a passenger — the server never
+sent `set_passengers` naming it. So r59 INJECTS the horse's `add_entity`, its
+saddle's `set_equipment` and a `set_passengers` seating the bot, through the
+production router, the way r48's crowd and r19's chest are staged (M17:
+injection is the deterministic proof where a live encounter depends on the
+server). It then holds Space over 0.32..0.46 of the run and asserts the bar
+draws two blits, the meter peaks at 1.00, and one START_RIDING_JUMP reaches the
+wire.
+
+A load-bearing find under that: `set_passengers` feeds BOTH riding graphs — the
+entity table (M70, for `isVehicle()`) and `self.mounts` (M68, via
+`apply_set_passengers`) — and `is_mounted()` / `jumpable_vehicle()` read
+`self.mounts`. If the mount never happens server-side, `mounts` stays empty,
+which is exactly what the diagnostic showed; the injection populates it.
+
+#### The battery
+
+`tools/m169_mutate.py`: **17 mutations, 17 killed, control survives**, each
+routed through the checker it claims coverage from (the gate by exit code, a
+crate's unit tests otherwise), with a **reap before every build** — the control
+runs three `cargo test` checkers whose test binaries hold the exe, and the next
+mutant's `cargo build` failed with linker error 1104 until the reaper cleared
+them (a false-kill that read as 17/17 the first time, corrected to honest
+verdicts). Two survivors were closed rather than reported: the press-zero (a
+weak fixture — a re-press-mid-park test now pins it) and the saddle wire path
+(caught by a living-entity unit test, not the gate — the one mutation whose
+checker was mislabeled).
+
+**Measured:** rewo-net 1218 -> 1224, rewo-world 1201 -> 1203, rewo-gpu 311 ->
+312 (**3391 tests**); `gaugeshot` 35/35; all 38 serverless gates green, 0
+validation errors; `live --render-check` 59/59 with validation ON; demo PNG
+`2cc56b4acbfb92cb` byte-identical. Open: the camel's `LAST_POSE_CHANGE_TICK`
+decodes but no metadata path calls `set_last_pose_change_tick`, so
+`refuseToMove()` is exercised only by unit tests — a real sitting camel is not
+yet un-jumpable live.
 
 ### M168 — the survival HUD, exact: the five gauges the handoff named and the two it did not (2026-08-23)
 
