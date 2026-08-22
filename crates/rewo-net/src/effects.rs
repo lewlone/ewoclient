@@ -248,12 +248,75 @@ pub struct VisualEffectSnapshot {
     pub tick_count: i32,
 }
 
+/// One of the local player's `activeEffects` as the HUD reads it (M168):
+/// `MobEffectInstance`'s five synced fields. The blend state the lightmap
+/// needs stays on [`EffectInstance`] for the two effects that have one;
+/// this is the whole list, for `extractEffects` and `hasEffect`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActiveEffect {
+    /// Raw `minecraft:mob_effect` registry id.
+    pub effect_id: i32,
+    pub amplifier: i32,
+    /// `-1` is `INFINITE_DURATION`; otherwise a tick countdown that
+    /// `tickClient` decrements and `mapDuration` stops at 0.
+    pub duration: i32,
+    /// `FLAG_AMBIENT = 1` — the beacon's teal-rimmed background.
+    pub ambient: bool,
+    /// `FLAG_VISIBLE = 2` — particles, not the icon.
+    pub visible: bool,
+    /// `FLAG_SHOW_ICON = 4` — the HUD's own gate (`Hud.java:494`).
+    pub show_icon: bool,
+}
+
+impl ActiveEffect {
+    fn from_update(u: &UpdateEffect) -> Self {
+        Self {
+            effect_id: u.effect_id,
+            amplifier: u.amplifier,
+            duration: u.duration,
+            ambient: u.flags & 1 != 0,
+            visible: u.flags & 2 != 0,
+            show_icon: u.flags & 4 != 0,
+        }
+    }
+
+    /// `isInfiniteDuration` — `duration == -1`.
+    pub fn is_infinite(&self) -> bool {
+        self.duration == -1
+    }
+
+    /// `endsWithin(ticks)` — `!isInfiniteDuration() && duration <= ticks`.
+    /// An infinite effect never ends within anything, so its icon never
+    /// fades.
+    pub fn ends_within(&self, ticks: i32) -> bool {
+        !self.is_infinite() && self.duration <= ticks
+    }
+
+    /// `tickClient`'s duration half: `if (hasRemainingDuration())
+    /// tickDownDuration()`, where `mapDuration` leaves `-1` and `0` alone.
+    fn tick_client(&mut self) {
+        if !self.is_infinite() && self.duration > 0 {
+            self.duration -= 1;
+        }
+    }
+}
+
 /// Tracks night vision + darkness for the local player, driven by the two
 /// effect packets and one client tick per 20 Hz step.
+///
+/// **M168 made it the whole `activeEffects` map**, not just the two the
+/// lightmap reads: [`Self::active`] is every effect the server has put on
+/// the local player, which is what `extractEffects` iterates and what
+/// `hasEffect(POISON)` / `hasEffect(REGENERATION)` / `hasEffect(HUNGER)`
+/// ask. The two blend-tracked slots are unchanged.
 #[derive(Clone, Debug)]
 pub struct VisualEffects {
     night_vision: Option<EffectInstance>,
     darkness: Option<EffectInstance>,
+    /// `LivingEntity.activeEffects` — keyed by effect id, one entry each.
+    /// A `Vec` because it is at most a few dozen and the HUD sorts a copy
+    /// anyway (`Ordering.natural().reverse().sortedCopy`).
+    active: Vec<ActiveEffect>,
     /// Raw `minecraft:mob_effect` registry ids, captured from `registry_data`
     /// (never assumed from bootstrap order). `None` until config syncs them.
     night_vision_id: Option<i32>,
@@ -273,6 +336,7 @@ impl VisualEffects {
         Self {
             night_vision: None,
             darkness: None,
+            active: Vec::new(),
             night_vision_id,
             darkness_id,
             player_id: None,
@@ -310,7 +374,24 @@ impl VisualEffects {
     pub fn reset_for_respawn(&mut self) {
         self.night_vision = None;
         self.darkness = None;
+        self.active.clear();
         self.tick_count = 0;
+    }
+
+    /// `LivingEntity.getActiveEffects()` for the local player, in storage
+    /// order — the HUD sorts its own copy.
+    pub fn active(&self) -> &[ActiveEffect] {
+        &self.active
+    }
+
+    /// `LivingEntity.hasEffect(effect)` — `activeEffects.containsKey`.
+    pub fn has(&self, effect_id: i32) -> bool {
+        self.active.iter().any(|e| e.effect_id == effect_id)
+    }
+
+    /// `getEffect(effect)`, or `None`.
+    pub fn get(&self, effect_id: i32) -> Option<&ActiveEffect> {
+        self.active.iter().find(|e| e.effect_id == effect_id)
     }
 
     /// Which tracked slot (if any) a raw registry id maps to.
@@ -346,6 +427,15 @@ impl VisualEffects {
         if self.player_id != Some(u.entity_id) {
             return;
         }
+        // `forceAddEffect` is `activeEffects.put(effect, newEffect)` — a
+        // wholesale replacement keyed by the effect, for EVERY effect
+        // (M168); the two blend-tracked slots below are a view of the same
+        // map, not a filter on it.
+        let next = ActiveEffect::from_update(&u);
+        match self.active.iter_mut().find(|e| e.effect_id == u.effect_id) {
+            Some(e) => *e = next,
+            None => self.active.push(next),
+        }
         let Some(slot) = self.slot_of(u.effect_id) else {
             return;
         };
@@ -370,6 +460,7 @@ impl VisualEffects {
         if self.player_id != Some(rem.entity_id) {
             return;
         }
+        self.active.retain(|e| e.effect_id != rem.effect_id);
         if let Some(slot) = self.slot_of(rem.effect_id) {
             *self.slot_mut(slot) = None;
         }
@@ -404,6 +495,13 @@ impl VisualEffects {
             return;
         }
         self.tick_count = self.tick_count.wrapping_add(1);
+        // `tickEffects`' client branch: `effect.tickClient()` for every
+        // value (`LivingEntity.java:866-868`). An expired one stays in the
+        // map until the server's `remove_mob_effect` — the client never
+        // removes on its own.
+        for e in &mut self.active {
+            e.tick_client();
+        }
         if let Some(nv) = &mut self.night_vision {
             nv.tick_client();
         }
@@ -461,6 +559,48 @@ mod tests {
         let mut t = VisualEffects::new(Some(NV_ID), Some(DARK_ID));
         t.set_player_id(PLAYER);
         t
+    }
+
+    /// M168: every effect on the player is kept, not only the two the
+    /// lightmap reads; the three wire flags land; a repeat replaces in
+    /// place; a remove drops exactly one; the client ticks durations down
+    /// and stops at 0 without removing.
+    #[test]
+    fn the_whole_active_map_is_kept_for_the_hud() {
+        let mut t = tracker();
+        const SPEED: i32 = 0; // neither tracked slot
+        t.apply_update(&update_body(PLAYER, SPEED, 1, 3, 0b0101)); // ambient + icon
+        t.apply_update(&update_body(PLAYER, NV_ID, 0, -1, 0b0010)); // infinite, visible
+        t.apply_update(&update_body(OTHER_ENTITY, SPEED, 0, 100, 0b0111));
+        assert_eq!(t.active().len(), 2, "the other entity's effect is not ours");
+        let speed = *t.get(SPEED).expect("speed kept");
+        assert_eq!(
+            (speed.amplifier, speed.duration, speed.ambient, speed.visible, speed.show_icon),
+            (1, 3, true, false, true)
+        );
+        assert!(t.has(NV_ID) && t.get(NV_ID).unwrap().is_infinite());
+        assert!(!t.get(NV_ID).unwrap().ends_within(200), "infinite never ends within");
+        assert!(t.get(SPEED).unwrap().ends_within(200));
+        // Replace in place, no duplicate row.
+        t.apply_update(&update_body(PLAYER, SPEED, 2, 10, 0));
+        assert_eq!(t.active().len(), 2);
+        assert_eq!(t.get(SPEED).unwrap().amplifier, 2);
+        // Ticks: 10 -> 0 and stays; -1 stays.
+        for _ in 0..15 {
+            t.tick();
+        }
+        assert_eq!(t.get(SPEED).unwrap().duration, 0, "mapDuration stops at 0");
+        assert_eq!(t.get(NV_ID).unwrap().duration, -1);
+        assert!(t.has(SPEED), "an expired effect waits for the server's remove");
+        t.apply_remove(&{
+            let mut b = Vec::new();
+            write_varint(&mut b, PLAYER);
+            write_varint(&mut b, SPEED);
+            b
+        });
+        assert!(!t.has(SPEED) && t.has(NV_ID));
+        t.reset_for_respawn();
+        assert!(t.active().is_empty());
     }
 
     fn update_body(entity: i32, effect: i32, amp: i32, dur: i32, flags: u8) -> Vec<u8> {

@@ -1045,6 +1045,11 @@ pub struct PlaySession {
     pub health: f32,
     /// Food level 0..20 (Set Health packet), for the HUD hunger bar.
     pub food: i32,
+    /// `FoodData.saturationLevel` (M168) — the third field of `set_health`,
+    /// read and discarded until the hunger row's wobble needed
+    /// `getSaturationLevel() <= 0.0F` (`Hud.java:977`). `FoodData`'s
+    /// initialiser is 5.0F.
+    pub saturation: f32,
     pub dead: bool,
     /// `ClientboundLoginPacket.hardcore` (M82) — the death screen's title and
     /// respawn-button labels branch on it. `handlePlayerCombatKill` reads it
@@ -1845,6 +1850,7 @@ impl<'a> Connection<'a> {
             chat_overlay: None,
             health: 20.0,
             food: 20,
+            saturation: 5.0,
             dead: false,
             hardcore: false,
             score: 0,
@@ -3014,6 +3020,17 @@ impl PlaySession {
         ) {
             // M21: the damage response — arms the hurt clock (red overlay) and
             // kicks the walk animation, for a tracked living entity only.
+            //
+            // M168: and the local player's own `invulnerableTime = 20`
+            // (`LivingEntity.handleDamageEvent`, `:2044-2048`), which the
+            // line above cannot store for M73's reason — the table has no
+            // row for you. The body opens with the entity id (VarInt).
+            let mut r = PacketReader::new(body);
+            if let (Ok(eid), Some(me)) = (r.varint(), self.player_id) {
+                if eid == me {
+                    self.hud.local_hurt.damage_event();
+                }
+            }
         } else if crate::route_hurt_animation(
             id,
             body,
@@ -3443,10 +3460,17 @@ impl PlaySession {
         } else if Some(id) == ids.cb_play_set_health {
             let mut r = PacketReader::new(body);
             if let Ok(h) = r.f32() {
+                // `handleSetHealth` is `player.hurtTo(health)` then the two
+                // food setters (`ClientPacketListener.java:1235-1240`); the
+                // hurt window is armed against the health we HAD (M168).
+                self.hud.local_hurt.hurt_to(self.health, h);
                 self.health = h;
                 // food (VarInt) + saturation (f32) follow.
                 if let Ok(f) = r.varint() {
                     self.food = f;
+                    if let Ok(s) = r.f32() {
+                        self.saturation = s;
+                    }
                 }
                 // `Player.isDeadOrDying()`'s health half. **This used to send
                 // `PERFORM_RESPAWN` from here** (M3, so the headless bot could

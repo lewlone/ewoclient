@@ -58,7 +58,17 @@ REWO = os.path.join(ROOT, "target", "debug", "rewo.exe")
 PRECMD = (
     "give @s minecraft:diamond_sword 1;"
     "give @s minecraft:dirt 64;"
-    "recipe give @s *"
+    "recipe give @s *;"
+    # M168 -- r57 / r58. An iron chestplate is 6 armour (three full icons);
+    # the effect is INFINITE so it never reaches the 200-tick fade. The
+    # `hideParticles` argument is deliberately NOT passed: `/effect give`
+    # builds `new MobEffectInstance(effect, duration, amplifier, false,
+    # particles)` (EffectCommands.java:186), and that five-argument
+    # constructor is `this(.., visible, visible)` (MobEffectInstance.java:61)
+    # -- so hiding the particles hides the ICON too. The first cut staged
+    # `... 0 true` and r58 correctly measured zero icons.
+    "item replace entity @s armor.chest with minecraft:iron_chestplate;"
+    "effect give @s minecraft:speed infinite 0"
 )
 
 # M166 -- the two BLOCKING configuration tasks, staged so the gate exercises the

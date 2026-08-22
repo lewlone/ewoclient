@@ -17,14 +17,25 @@ use crate::world::DEPTH_FORMAT;
 use crate::Gpu;
 
 const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
-const MAX_VERTS: usize = 4096;
+/// M168 raised this 4096 -> 16384. The survival gauges add up to ~120
+/// quads on their own, and the overflow guard below is SILENT — a
+/// truncated frame simply loses its last blits — so the budget is sized
+/// well past the worst case an 80-row tab list with hearts can reach.
+const MAX_VERTS: usize = 16384;
 const RING: usize = 2;
 const ATLAS_W: u32 = 256;
 /// M155 raised this from 64 to make room for the tab list's face pool at
 /// y=64..80. **Safe because every `Rect` divides by this constant** and every
 /// placement is an absolute pixel position, so a taller atlas re-normalises
 /// each existing UV onto the same texels rather than moving them.
-const ATLAS_H: u32 = 80;
+/// M168 raised this 80 -> 224 for the survival gauges: two rows of the
+/// 48 player hearts (y 80, 90), the armour / air / vehicle / hunger-food
+/// sprites and the two effect backgrounds (y 100), the 40 effect icons
+/// in four rows of 13 at a 19 px pitch (y 125..201), and the three jump
+/// bar strips (y 201..218). Every `Rect` is normalised by this constant,
+/// so the placements above y=80 do not move — only the face pool is
+/// addressed absolutely, and it stays at `FACE_ATLAS_Y`.
+const ATLAS_H: u32 = 224;
 
 /// Where the face pool starts, and how big it is (M155).
 ///
@@ -67,6 +78,28 @@ pub struct HudSpritesData<'a> {
     /// The tab list's six `icon/ping_*` sprites (M151), in
     /// `rewo_data::assets::PING_SPRITES` order: unknown, then one to five bars.
     pub ping: [HudSpriteData<'a>; 6],
+    /// M168 — `Hud.HeartType`'s 6 kinds x 8 sprites, in the enum's
+    /// declaration order and each constructor's argument order, so
+    /// `crate::survival_hud::heart_sprite_index` indexes it directly.
+    /// CONTAINER has four distinct files repeated to fill its eight.
+    pub player_hearts: [HudSpriteData<'a>; 48],
+    /// `hud/armor_{full,half,empty}` (M168).
+    pub armor: [HudSpriteData<'a>; 3],
+    /// `hud/air`, `hud/air_bursting`, `hud/air_empty` (M168).
+    pub air: [HudSpriteData<'a>; 3],
+    /// `hud/heart/vehicle_{container,full,half}` (M168).
+    pub vehicle_hearts: [HudSpriteData<'a>; 3],
+    /// `hud/food_{full,half,empty}_hunger` (M168).
+    pub food_hunger: [HudSpriteData<'a>; 3],
+    /// `hud/effect_background` and `hud/effect_background_ambient` (M168),
+    /// 24x24 each.
+    pub effect_background: HudSpriteData<'a>,
+    pub effect_background_ambient: HudSpriteData<'a>,
+    /// `hud/jump_bar_{background,cooldown,progress}` (M168), 182x5 each.
+    pub jump_bar: [HudSpriteData<'a>; 3],
+    /// `mob_effect/<name>.png`, one per registry id IN REGISTRY ORDER
+    /// (M168) — `HudIcon::Effect(id)` is an index into this.
+    pub effect_icons: Vec<HudSpriteData<'a>>,
 }
 
 /// A sprite the HUD pass blits at a position the caller chooses, in **GUI
@@ -87,6 +120,10 @@ pub struct HudBlit {
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    /// Vertex tint alpha (M168). `1.0` for everything but a fading
+    /// effect icon, whose `ARGB.white(alpha)` is a per-draw colour the
+    /// atlas cannot carry.
+    pub alpha: f32,
     pub icon: HudIcon,
 }
 
@@ -113,6 +150,30 @@ pub enum HudIcon {
     /// column emits these in draw order, and the order of the `icons` slice IS
     /// the draw order — which is what the container-then-fill layering needs.
     Heart(crate::tab_list::HeartSprite),
+    /// The player's own health bar (M168): one of the 48 `HeartType`
+    /// sprites, selected exactly as `HeartType.getSprite` does.
+    PlayerHeart {
+        kind: crate::survival_hud::HeartKind,
+        hardcore: bool,
+        half: bool,
+        blink: bool,
+    },
+    Armor(crate::survival_hud::ArmorSprite),
+    Food(crate::survival_hud::FoodSprite),
+    Air(crate::survival_hud::AirSprite),
+    VehicleHeart(crate::survival_hud::VehicleHeartSprite),
+    EffectBackground {
+        ambient: bool,
+    },
+    /// A `mob_effect/<name>` icon by registry id. An id past the table
+    /// draws nothing — vanilla draws `MissingTextureAtlasSprite`, the
+    /// magenta checker, for an effect with no sprite; Rewo has no such
+    /// sprite and draws nothing, which is recorded rather than hidden.
+    Effect(i32),
+    /// `Progress` is a sub-rectangle: the blit's `w` is the filled width
+    /// and the UV is clipped to `w / 182`, `blitSprite(.., 182, 5, 0, 0,
+    /// left, top, progress, 5)`'s ten-argument form.
+    JumpBar(crate::survival_hud::JumpBarSprite),
 }
 
 /// This frame's M79 gauges, as the renderer needs them.
@@ -230,6 +291,16 @@ pub struct HudPass {
     white_fill: Rect,
     /// The six `icon/ping_*` placements (M151), in `PING_SPRITES` order.
     ping: [Rect; 6],
+    /// M168 — the survival gauges' sprites. See `HudSpritesData`.
+    player_hearts: [Rect; 48],
+    armor: [Rect; 3],
+    air: [Rect; 3],
+    vehicle_hearts: [Rect; 3],
+    food_hunger: [Rect; 3],
+    effect_background: Rect,
+    effect_background_ambient: Rect,
+    jump_bar: [Rect; 3],
+    effect_icons: Vec<Rect>,
     /// Next face slot to hand out (M155). Round-robin with no eviction
     /// bookkeeping, exactly like the four dynamic pools in `entities.rs`: a
     /// wrapped slot is silently reused, which shows as a stale face rather
@@ -323,6 +394,57 @@ impl HudPass {
             }
             out
         };
+        // ── M168: the survival gauges, all at y >= 80, below the face pool
+        // (y 64..80). Same running-cursor discipline as the two rows above.
+        // Claimed in REWO_PLAN §0.0's allocation table as M168.
+        let mut row = |dst: &mut [u8], items: &[HudSpriteData<'_>], x0: u32, y: u32| -> Vec<Rect> {
+            let mut x = x0;
+            let mut out = Vec::with_capacity(items.len());
+            for s in items {
+                out.push(place(dst, s, x, y));
+                x += s.w + 1;
+            }
+            out
+        };
+        let player_hearts: [Rect; 48] = {
+            // 24 per row (24 * 10 = 240 <= 256); y 80 and 90.
+            let mut v = row(&mut atlas, &sprites.player_hearts[..24], 0, 80);
+            v.extend(row(&mut atlas, &sprites.player_hearts[24..], 0, 90));
+            v.try_into().unwrap_or_else(|_| unreachable!("48 hearts"))
+        };
+        let armor: [Rect; 3] = row(&mut atlas, &sprites.armor, 0, 100)
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("3 armour"));
+        let air: [Rect; 3] = row(&mut atlas, &sprites.air, 30, 100)
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("3 air"));
+        let vehicle_hearts: [Rect; 3] = row(&mut atlas, &sprites.vehicle_hearts, 60, 100)
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("3 vehicle hearts"));
+        let food_hunger: [Rect; 3] = row(&mut atlas, &sprites.food_hunger, 90, 100)
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("3 hunger food"));
+        // Through `row` rather than `place` directly: the closure holds the
+        // packer for as long as it is used, and it is used again below.
+        let effect_background = row(&mut atlas, std::slice::from_ref(&sprites.effect_background), 130, 100)[0];
+        let effect_background_ambient =
+            row(&mut atlas, std::slice::from_ref(&sprites.effect_background_ambient), 160, 100)[0];
+        // 40 icons of 18x18: 13 per row at a 19 px pitch (13 * 19 = 247),
+        // rows at y = 125 + 19 * r. Sized by the slice, not assumed 40.
+        let effect_icons: Vec<Rect> = {
+            let mut out = Vec::with_capacity(sprites.effect_icons.len());
+            for (r, chunk) in sprites.effect_icons.chunks(13).enumerate() {
+                out.extend(row(&mut atlas, chunk, 0, 125 + 19 * r as u32));
+            }
+            out
+        };
+        let jump_bar: [Rect; 3] = {
+            let mut out = [Rect::default(); 3];
+            for (i, (slot, s)) in out.iter_mut().zip(sprites.jump_bar.iter()).enumerate() {
+                *slot = row(&mut atlas, std::slice::from_ref(s), 0, 201 + 6 * i as u32)[0];
+            }
+            out
+        };
         // `GuiGraphicsExtractor.itemCooldown` fills with `Integer.MAX_VALUE`,
         // which as ARGB is a half-transparent white. Nothing in the jar carries
         // that texel, so it is written here — 4×4 so nearest sampling has room
@@ -384,7 +506,11 @@ impl HudPass {
         // `upload_face` and must not be packed into either.
         placed.push((fill_x, fill_y, COOLDOWN_FILL_PX, COOLDOWN_FILL_PX));
         placed.push((white_x, white_y, COOLDOWN_FILL_PX, COOLDOWN_FILL_PX));
-        placed.push((0, FACE_ATLAS_Y, ATLAS_W, ATLAS_H - FACE_ATLAS_Y));
+        // The pool is `FACE_SLOTS / FACE_COLS` rows of `FACE_SLOT_H` — two
+        // rows, 16 px. This line used to claim `ATLAS_H - FACE_ATLAS_Y`,
+        // which was the same number while the pool was the bottom of the
+        // atlas and would have claimed everything M168 placed below it.
+        placed.push((0, FACE_ATLAS_Y, ATLAS_W, (FACE_SLOTS / FACE_COLS) * FACE_SLOT_H));
         for (i, a) in placed.iter().enumerate() {
             for b in placed.iter().skip(i + 1) {
                 let disjoint = a.0 + a.2 <= b.0
@@ -533,6 +659,15 @@ impl HudPass {
                 cooldown_fill,
                 white_fill,
                 ping,
+                player_hearts,
+                armor,
+                air,
+                vehicle_hearts,
+                food_hunger,
+                effect_background,
+                effect_background_ambient,
+                jump_bar,
+                effect_icons,
             })
         }
     }
@@ -567,13 +702,18 @@ impl HudPass {
         Ok(slot as u8)
     }
 
+    /// `survival` is [`crate::survival_hud::layout`]'s output — the hearts,
+    /// armour, food, air, vehicle hearts, jump bar and effect icons, in
+    /// GUI pixels and in draw order (M168). Drawn right after the hotbar
+    /// chrome and before the XP bar, which is where
+    /// `extractHotbarAndDecorations` puts them.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         gpu: &Gpu,
         cb: vk::CommandBuffer,
         extent: vk::Extent2D,
-        health: f32,
-        food: i32,
+        survival: &[HudBlit],
         slot: u8,
         gauges: HudGauges,
         chat: &[HudFill],
@@ -639,36 +779,6 @@ impl HudPass {
         let sel_x = bar_x - 1.0 + slot.min(8) as f32 * 20.0;
         quad!(sel_x, bar_y - 1.0, &self.selection);
 
-        // Hearts (left) + hunger (right), same fill logic, mirrored origins.
-        let row_top = sh - 39.0;
-        let health_left = (sw - self.hotbar.w) / 2.0;
-        let hunger_left = sw / 2.0 + 10.0;
-        for j in 0..10u32 {
-            let hp = health.round() as i32;
-            let heart = if hp >= (j as i32 + 1) * 2 {
-                &self.heart_full
-            } else if hp > j as i32 * 2 {
-                &self.heart_half
-            } else {
-                &self.heart_container
-            };
-            quad!(health_left + j as f32 * 8.0, row_top, &self.heart_container);
-            if hp > j as i32 * 2 {
-                quad!(health_left + j as f32 * 8.0, row_top, heart);
-            }
-
-            let drum = if food >= (j as i32 + 1) * 2 {
-                &self.food_full
-            } else if food > j as i32 * 2 {
-                &self.food_half
-            } else {
-                &self.food_empty
-            };
-            quad!(hunger_left + j as f32 * 8.0, row_top, &self.food_empty);
-            if food > j as i32 * 2 {
-                quad!(hunger_left + j as f32 * 8.0, row_top, drum);
-            }
-        }
 
         // M79's XP gauge — `ExperienceBar.extractBackground`. The bar is
         // positioned by `ContextualBar`'s own `left`/`top`, not by the hotbar,
@@ -713,6 +823,37 @@ impl HudPass {
             }
         }
 
+        // M168 — the survival gauges, already laid out in GUI pixels. The
+        // M3 heart/food loop that used to live between the selection frame
+        // and the XP bar rounded where vanilla ceils and filled the hunger
+        // row from the wrong end; see `survival_hud`'s module doc.
+        //
+        // Drawn AFTER the XP bar and the cooldown washes, where vanilla's
+        // `extractPlayerHealth` runs before its contextual bar. The two
+        // orders are pixel-identical: the lowest gauge row is the hearts at
+        // `guiHeight - 39` (nine tall, so ending at `- 30`, or `- 29` with
+        // the low-health jitter's +1), the bar starts at `- 29` and the
+        // washes sit on the hotbar below it; the jump bar occupies the bar's
+        // own slot and is never drawn in the same frame. The placement is
+        // the borrow checker's — `sub_quad` holds `tinted_quad` until its
+        // last use, and every blit here needs the alpha only `tinted_quad`
+        // takes. A jump-bar progress blit is the one sub-rectangle: its `w`
+        // is the filled width against a 182 px sprite.
+        for b in survival {
+            let Some(r) = self.icon_rect(b.icon) else {
+                continue;
+            };
+            let uw = if matches!(
+                b.icon,
+                HudIcon::JumpBar(crate::survival_hud::JumpBarSprite::Progress)
+            ) {
+                b.w / r.w
+            } else {
+                1.0
+            };
+            tinted_quad(b.x, b.y, b.w, b.h, &r, uw, [1.0, 1.0, 1.0, b.alpha]);
+        }
+
         // The chat backdrops go LAST (M109), and the order is transcribed
         // rather than chosen. `Hud.extractRenderState` calls
         // `extractHotbarAndDecorations` at line 225 and `extractChat` at 236,
@@ -755,56 +896,14 @@ impl HudPass {
         // widest name. Recorded rather than worked around: reordering the two
         // passes for this would put every chat glyph under its own backdrop.
         for b in icons {
-            let r = match b.icon {
-                HudIcon::Ping(i) => match self.ping.get(i as usize) {
-                    Some(r) => *r,
-                    None => continue,
-                },
-                HudIcon::Face { slot, hat, flip } => {
-                    if u32::from(slot) >= FACE_SLOTS {
-                        continue;
-                    }
-                    let col = u32::from(slot) % FACE_COLS;
-                    let row = u32::from(slot) / FACE_COLS;
-                    let x = col * FACE_SLOT_W + if hat { 8 } else { 0 };
-                    let y = FACE_ATLAS_Y + row * FACE_SLOT_H;
-                    let (v0, v1) = if flip {
-                        // The SOURCE v inverts and the destination does not.
-                        (
-                            (y + 8) as f32 / ATLAS_H as f32,
-                            y as f32 / ATLAS_H as f32,
-                        )
-                    } else {
-                        (y as f32 / ATLAS_H as f32, (y + 8) as f32 / ATLAS_H as f32)
-                    };
-                    Rect {
-                        u0: x as f32 / ATLAS_W as f32,
-                        v0,
-                        u1: (x + 8) as f32 / ATLAS_W as f32,
-                        v1,
-                        w: 8.0,
-                        h: 8.0,
-                    }
-                }
-                HudIcon::Heart(h) => {
-                    use crate::tab_list::HeartSprite as H;
-                    match h {
-                        H::Full => self.heart_full,
-                        H::Half => self.heart_half,
-                        H::Container => self.heart_container,
-                        H::ContainerBlinking => self.heart_extra[0],
-                        H::FullBlinking => self.heart_extra[1],
-                        H::HalfBlinking => self.heart_extra[2],
-                        H::AbsorbingFull => self.heart_extra[3],
-                        H::AbsorbingHalf => self.heart_extra[4],
-                    }
-                }
+            let Some(r) = self.icon_rect(b.icon) else {
+                continue;
             };
-            // `tinted_quad` with an identity colour rather than `sub_quad`:
-            // the chat loop above already borrowed `tinted_quad` directly, so
+            // `tinted_quad` with the blit's alpha rather than `sub_quad`: the
+            // chat loop above already borrowed `tinted_quad` directly, so
             // `sub_quad` — which holds a mutable borrow of it — cannot be used
             // after that point. The two are the same call.
-            tinted_quad(b.x, b.y, b.w, b.h, &r, 1.0, [1.0; 4]);
+            tinted_quad(b.x, b.y, b.w, b.h, &r, 1.0, [1.0, 1.0, 1.0, b.alpha]);
         }
 
         v.rotate_right(0);
@@ -860,6 +959,94 @@ impl HudPass {
             device.cmd_bind_vertex_buffers(cb, 0, &[self.bufs[self.cursor]], &[0]);
             device.cmd_draw(cb, self.verts, 1, 0, 0);
         }
+    }
+
+    /// The atlas rect a [`HudIcon`] names, or `None` for an index past its
+    /// table — the reading that loses one blit rather than sampling some
+    /// other sprite over it.
+    fn icon_rect(&self, icon: HudIcon) -> Option<Rect> {
+        use crate::survival_hud::{AirSprite, ArmorSprite, FoodSprite, JumpBarSprite, VehicleHeartSprite};
+        Some(match icon {
+            HudIcon::Ping(i) => *self.ping.get(i as usize)?,
+            HudIcon::Face { slot, hat, flip } => {
+                if u32::from(slot) >= FACE_SLOTS {
+                    return None;
+                }
+                let col = u32::from(slot) % FACE_COLS;
+                let row = u32::from(slot) / FACE_COLS;
+                let x = col * FACE_SLOT_W + if hat { 8 } else { 0 };
+                let y = FACE_ATLAS_Y + row * FACE_SLOT_H;
+                let (v0, v1) = if flip {
+                    // The SOURCE v inverts and the destination does not.
+                    (
+                        (y + 8) as f32 / ATLAS_H as f32,
+                        y as f32 / ATLAS_H as f32,
+                    )
+                } else {
+                    (y as f32 / ATLAS_H as f32, (y + 8) as f32 / ATLAS_H as f32)
+                };
+                Rect {
+                    u0: x as f32 / ATLAS_W as f32,
+                    v0,
+                    u1: (x + 8) as f32 / ATLAS_W as f32,
+                    v1,
+                    w: 8.0,
+                    h: 8.0,
+                }
+            }
+            HudIcon::Heart(h) => {
+                use crate::tab_list::HeartSprite as H;
+                match h {
+                    H::Full => self.heart_full,
+                    H::Half => self.heart_half,
+                    H::Container => self.heart_container,
+                    H::ContainerBlinking => self.heart_extra[0],
+                    H::FullBlinking => self.heart_extra[1],
+                    H::HalfBlinking => self.heart_extra[2],
+                    H::AbsorbingFull => self.heart_extra[3],
+                    H::AbsorbingHalf => self.heart_extra[4],
+                }
+            }
+            HudIcon::PlayerHeart { kind, hardcore, half, blink } => {
+                self.player_hearts[crate::survival_hud::heart_sprite_index(kind, hardcore, half, blink)]
+            }
+            HudIcon::Armor(a) => match a {
+                ArmorSprite::Full => self.armor[0],
+                ArmorSprite::Half => self.armor[1],
+                ArmorSprite::Empty => self.armor[2],
+            },
+            HudIcon::Food(f) => match f {
+                FoodSprite::Full => self.food_full,
+                FoodSprite::Half => self.food_half,
+                FoodSprite::Empty => self.food_empty,
+                FoodSprite::FullHunger => self.food_hunger[0],
+                FoodSprite::HalfHunger => self.food_hunger[1],
+                FoodSprite::EmptyHunger => self.food_hunger[2],
+            },
+            HudIcon::Air(a) => match a {
+                AirSprite::Full => self.air[0],
+                AirSprite::Bursting => self.air[1],
+                AirSprite::Empty => self.air[2],
+            },
+            HudIcon::VehicleHeart(v) => match v {
+                VehicleHeartSprite::Container => self.vehicle_hearts[0],
+                VehicleHeartSprite::Full => self.vehicle_hearts[1],
+                VehicleHeartSprite::Half => self.vehicle_hearts[2],
+            },
+            HudIcon::EffectBackground { ambient } => {
+                if ambient {
+                    self.effect_background_ambient
+                } else {
+                    self.effect_background
+                }
+            }
+            HudIcon::Effect(id) => *self.effect_icons.get(usize::try_from(id).ok()?)?,
+            HudIcon::JumpBar(j) => match j {
+                JumpBarSprite::Background => self.jump_bar[0],
+                JumpBarSprite::Cooldown => self.jump_bar[1],
+                JumpBarSprite::Progress => self.jump_bar[2],
+            },
+        })
     }
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {

@@ -103,6 +103,30 @@ pub struct EntityMeta {
     /// what starts the death clock for an entity the client watches die rather
     /// than being told about.
     pub health: Option<f32>,
+    /// `Entity.DATA_AIR_SUPPLY_ID` — index **1**, INT (M168). The second
+    /// `Entity` accessor after the shared flags (`Entity.java:260`, `:268`),
+    /// defined as `getMaxAirSupply()` = 300 (`:319`, `:2805-2807`), and
+    /// **negative while drowning** (`LivingEntity.java:507` tests `<= -20`) —
+    /// `extractAirBubbles` clamps it to `[0, max]` for display, so the raw
+    /// value is kept and the clamp is the consumer's. `Entity` owns 0..7, so
+    /// no kind gate is possible or needed.
+    pub air_supply: Option<i32>,
+    /// `Entity.DATA_TICKS_FROZEN` — index **7**, INT (M168), the last
+    /// `Entity`-owned slot (`Entity.java:276`). `isFullyFrozen()` is
+    /// `getTicksFrozen() >= getTicksRequiredToFreeze()` (140), which is what
+    /// selects `HeartType.FROZEN`.
+    pub ticks_frozen: Option<i32>,
+    /// `Player.DATA_PLAYER_ABSORPTION_ID` — index **17**, FLOAT (M168).
+    ///
+    /// `Player extends Avatar extends LivingEntity`: Entity 0..7,
+    /// LivingEntity 8..14, `Avatar` 15 (`DATA_PLAYER_MAIN_HAND`) and 16
+    /// (`DATA_PLAYER_MODE_CUSTOMISATION`), so `Player`'s first own accessor
+    /// is 17 and absorption is declared first (`Player.java:135`), the score
+    /// second (18 — which the existing local-score decode already pins).
+    /// Only the local player reads it (`extractPlayerHealth`'s
+    /// `getAbsorptionAmount()`), and the FLOAT serializer separates it from
+    /// the BYTE / BOOLEAN / INT / enum readings of index 17 above.
+    pub absorption: Option<f32>,
     /// Mob gesture state (index 17 on sniffer/armadillo/copper golem —
     /// their SNIFFER_STATE/ARMADILLO_STATE/… enum ordinal). Which enum it
     /// is depends on the entity type; the caller knows the kind.
@@ -263,6 +287,12 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
         };
         match (index, ty) {
             (0, 0) => meta.flags = r.u8().ok(), // shared flags (BYTE)
+            // INT at 1 = `Entity.DATA_AIR_SUPPLY_ID` (M168). Before this arm
+            // the skip table consumed it correctly and kept nothing; the air
+            // bubbles are the first consumer.
+            (1, 1) => meta.air_supply = r.varint().ok(),
+            // INT at 7 = `Entity.DATA_TICKS_FROZEN` (M168) — `HeartType.FROZEN`.
+            (7, 1) => meta.ticks_frozen = r.varint().ok(),
             (2, 6) => {
                 // custom name (OPTIONAL_COMPONENT): bool + text component.
                 //
@@ -355,6 +385,9 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             // M68: `TropicalFish.DATA_ID_TYPE_VARIANT` — the third serializer
             // at index 17.
             (17, 1) => meta.int17 = r.varint().ok(),
+            // FLOAT at 17 = `Player.DATA_PLAYER_ABSORPTION_ID` (M168) — the
+            // fourth serializer at this index, and the only FLOAT.
+            (17, 3) => meta.absorption = r.f32().ok(),
             (18, 0) => meta.byte18 = r.u8().ok(),
             // M64's variant slots. Index 18 now has three readings — BYTE
             // (sheep wool / tamable flags), INT (axolotl) and FROG_VARIANT —
@@ -645,5 +678,50 @@ mod m20_mob_metadata_tests {
         let m = parse_nc(&mut PacketReader::new(&body));
         assert_eq!(m.mob_flags, Some(0b0000_0100));
         assert_eq!(m.bool16, Some(true), "the entry after the flags byte was lost");
+    }
+}
+
+#[cfg(test)]
+mod m168_tests {
+    use super::*;
+    use rewo_proto::writer::PacketWriter;
+
+    /// The three arms M168 added, in one body, with a skipped stranger
+    /// between them so the stream's alignment is graded too.
+    #[test]
+    fn air_frozen_and_absorption_parse_and_the_rest_still_aligns() {
+        let mut w = PacketWriter::default();
+        w.u8(1);
+        w.varint(1); // INT
+        w.varint(-7);
+        w.u8(5); // DATA_NO_GRAVITY — BOOLEAN, still skipped
+        w.varint(8);
+        w.u8(1);
+        w.u8(7);
+        w.varint(1);
+        w.varint(140);
+        w.u8(17);
+        w.varint(3); // FLOAT
+        w.f32(2.5);
+        w.u8(9); // health, after everything — proves alignment
+        w.varint(3);
+        w.f32(7.0);
+        w.u8(0xFF);
+        let bytes = w.into_bytes();
+        let mut r = PacketReader::new(&bytes);
+        let m = parse(&mut r, MetaKinds::default());
+        assert_eq!(m.air_supply, Some(-7), "raw, negative while drowning");
+        assert_eq!(m.ticks_frozen, Some(140));
+        assert_eq!(m.absorption, Some(2.5));
+        assert_eq!(m.health, Some(7.0));
+        // A FLOAT at 17 is absorption; an INT at 17 is still `int17`.
+        let mut w = PacketWriter::default();
+        w.u8(17);
+        w.varint(1);
+        w.varint(99);
+        w.u8(0xFF);
+        let bytes = w.into_bytes();
+        let m = parse(&mut PacketReader::new(&bytes), MetaKinds::default());
+        assert_eq!((m.int17, m.absorption), (Some(99), None));
     }
 }

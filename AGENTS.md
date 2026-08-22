@@ -2187,17 +2187,49 @@ default build (**28** witnesses) and adds decode and the mixer under
 does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
-**Everything is shipped and gated** as of 2026-08-21 (M167) —
-**3355 tests / 0 failures** (world 1201, net 1211, gpu 293, data 231, app 231,
+**Everything is shipped and gated** as of 2026-08-23 (M168) —
+**3382 tests / 0 failures** (world 1201, net 1218, gpu 311, data 233, app 231,
 mesh 52, proto 16, **audio 120** — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
-`containershot` **109/109**, `inventoryshot` **158/158**, `itemshot` 75/75,
+`containershot` **109/109**, `inventoryshot` **165/165**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, `tablistshot` **42/42**, `soundshot` 37/57,
-all **37** serverless gates green with 0
-validation errors, `live --render-check` **56/56** with validation ON and 0
-validation errors (r55/r56 arrived with M166), demo PNG
+**`gaugeshot` 29/29** (the 38th gate), all **38** serverless gates green with 0
+validation errors, `live --render-check` **58/58** with validation ON and 0
+validation errors (r57/r58 arrived with M168), demo PNG
 `2cc56b4acbfb92cb`.
+
+**M168 (2026-08-23) rebuilt the survival HUD, and the handoff item that named
+it was five gauges short of the truth.** §0.0 listed armour, air, effects,
+vehicle hearts and the jump bar as the HUD's gaps; the hearts and food already
+on screen were an M3 approximation nobody could test, because a draw inside a
+Vulkan pass has no unit test — rounded where vanilla `Mth.ceil`s (0.3 hp drew
+nothing), one row, no absorption / blink / heart types / regeneration wave /
+low-health jitter, and a hunger row filled from the LEFT where `extractFood`
+fills from the right, identical pixels only because ten cells of eight mirror
+exactly. The whole thing is the tab list's pattern now: `SurvivalInputs` ->
+`rewo_gpu::survival_hud::layout` -> `Vec<HudBlit>` in vanilla's draw order,
+and the pass draws what it is handed. Inputs that were parsed and discarded
+became real — `DATA_AIR_SUPPLY_ID` (index 1), `DATA_TICKS_FROZEN` (7),
+`DATA_PLAYER_ABSORPTION_ID` (17 in 26.2: `Avatar` owns 15 and 16), the
+saturation, every active effect rather than the two the lightmap reads, and
+`LocalPlayer.hurtTo`'s window, whose FIRST call of a life arms nothing. The
+effect category is not on the wire (the report carries only `protocol_id`),
+so `tools/gen_mob_effects.py` extracts it with the colour from
+`MobEffects.java` — 40 effects, **20 / 16 / 4** by a direct grep (a reader
+had reported 22 / 14 and the test caught it). Transcription facts that
+invert: `compareFalseFirst(ambient)` under `Ordering.natural().reverse()`
+draws the AMBIENT effect first; NEUTRAL effects share the harmful row because
+the only test is `isBeneficial()`; `getAirBubbleYLine`'s `(rows - 1) * 10` moves
+the line DOWN when there is no vehicle; the jitter is one LCG reseeded
+`tickCount * 312871` per frame whose draws are consumed in draw order; and
+`/effect give ... true` hides the ICON along with the particles, because the
+five-argument `MobEffectInstance` constructor is `this(.., visible, visible)`
+— the live witness r58 measured zero icons until the staging dropped the
+argument. **Five witnesses were wrong before any code was**, including the
+one that assumed the ambient effect sorts last. **The jump bar is geometry
+only** — laid out and rendered, never fed: it needs the saddle slot, the
+jump-riding ramp and a serverbound `player_command` Rewo has never sent.
 
 **M166 (2026-08-21) fixed a hang, and the handoff item that named it was half
 the bug.** A server setting `resource-pack=` **or** `enable-code-of-conduct=true`

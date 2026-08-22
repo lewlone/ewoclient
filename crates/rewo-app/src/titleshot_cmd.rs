@@ -1236,7 +1236,15 @@ fn check_pixels(
                     lines: Vec<rewo_gpu::world::OwnedTextLine>,
                     gauges: HudGauges|
      -> Result<Vec<u8>, String> {
-        wr.set_hud(20.0, 20, 0, gauges);
+        wr.set_hud(
+            0,
+            gauges,
+            rewo_gpu::survival_hud::layout_for_screen(
+                &rewo_gpu::survival_hud::SurvivalInputs::simple(20.0, 20),
+                W as f32,
+                H as f32,
+            ),
+        );
         wr.set_text(lines);
         off.render(gpu, Some((&mut *wr, vp)), &overlay_draw, clear)?;
         off.read_rgba(gpu)

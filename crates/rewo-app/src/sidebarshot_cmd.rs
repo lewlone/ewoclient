@@ -573,7 +573,15 @@ fn check_pixels(
         // centre and the crosshair at the middle; every probe below is in the
         // right-hand column band, clear of both, and `p1` proves the control
         // frame carries no magenta with all of it drawn.
-        wr.set_hud(0.0, 0, 0, rewo_gpu::hud::HudGauges::default());
+        wr.set_hud(
+            0,
+            rewo_gpu::hud::HudGauges::default(),
+            rewo_gpu::survival_hud::layout_for_screen(
+                &rewo_gpu::survival_hud::SurvivalInputs::simple(0.0, 0),
+                W as f32,
+                H as f32,
+            ),
+        );
         wr.set_hud_fills(fills);
         wr.set_text(lines);
         off.render(gpu, Some((&mut *wr, vp)), &overlay_draw, clear)?;

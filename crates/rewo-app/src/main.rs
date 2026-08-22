@@ -35,6 +35,7 @@ mod tintshot_cmd;
 mod locatorshot_cmd;
 mod sidebarshot_cmd;
 mod titleshot_cmd;
+mod gaugeshot_cmd;
 mod mobshot_cmd;
 mod mobtexshot_cmd;
 mod modules;
@@ -205,6 +206,15 @@ enum Command {
     /// assert the pixels against a synthetic magenta subject with `--check`
     /// (no server; Vulkan required).
     Titleshot(titleshot_cmd::TitleshotArgs),
+    /// M168 survival-HUD oracle: drive raw `set_entity_data`,
+    /// `update_mob_effect`, `update_attributes` and `set_health`-shaped
+    /// inputs through the real decoders, the real `LocalPlayer.hurtTo` /
+    /// `Hud` blink clock and the SAME `survival_inputs_from` the frame calls,
+    /// grade `survival_hud::layout` against literals transcribed from
+    /// `Hud.java`, then render hearts, armour, food, air, vehicle hearts,
+    /// effect icons and the jump bar offscreen and assert the pixels against
+    /// the jar's own sprite bytes with `--check` (no server; Vulkan required).
+    Gaugeshot(gaugeshot_cmd::GaugeshotArgs),
     /// M132 scoreboard-sidebar oracle: drive raw `set_objective`, `set_score`
     /// and `set_display_objective` bodies through the real parsers and the
     /// real `Scoreboard`, resolve the panel with the SAME `resolve_sidebar`
@@ -372,6 +382,7 @@ fn main() {
         Some(Command::Eventshot(ev_args)) => eventshot_cmd::run(ev_args),
         Some(Command::Abilityshot(ab_args)) => abilityshot_cmd::run(ab_args),
         Some(Command::Titleshot(t_args)) => titleshot_cmd::run(t_args),
+        Some(Command::Gaugeshot(g_args)) => gaugeshot_cmd::run(g_args),
         Some(Command::Sidebarshot(sb_args)) => sidebarshot_cmd::run(sb_args),
         Some(Command::Tablistshot(tl_args)) => tablistshot_cmd::run(tl_args),
         Some(Command::Locatorshot(l_args)) => locatorshot_cmd::run(l_args),

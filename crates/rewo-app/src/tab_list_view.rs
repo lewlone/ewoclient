@@ -440,6 +440,7 @@ pub fn icons(view: &TabListView, layout: &tab_list::TabListLayout) -> Vec<rewo_g
                 y: slot.ping_icon.y as f32,
                 w: slot.ping_icon.w as f32,
                 h: slot.ping_icon.h as f32,
+                alpha: 1.0,
                 icon: rewo_gpu::hud::HudIcon::Ping(ping_slot(row.ping)),
             })
         })
@@ -491,6 +492,7 @@ pub fn faces(
             y: rect.y as f32,
             w: rect.w as f32,
             h: rect.h as f32,
+            alpha: 1.0,
             icon: rewo_gpu::hud::HudIcon::Face { slot: face, hat, flip },
         };
         out.push(blit(false));
@@ -548,6 +550,7 @@ pub fn hearts(
                 y: slot.name.1 as f32,
                 w: tab_list::HEART_SPRITE_SIZE as f32,
                 h: tab_list::HEART_SPRITE_SIZE as f32,
+                alpha: 1.0,
                 icon: rewo_gpu::hud::HudIcon::Heart(b.sprite),
             });
         }

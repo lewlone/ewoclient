@@ -340,7 +340,13 @@ witnesses are mostly self-driven can look healthy against nothing.
 > version of this box listed has shipped. What follows is measured on the merged
 > tree, not carried forward.
 >
-> **The state (re-measured 2026-08-21 after M167):** 37 serverless gates green
+> **The state (re-measured 2026-08-23 after M168):** **38** serverless gates
+> green with 0 validation errors (`gaugeshot` is the 38th, 29/29), **3382
+> tests** (world 1201, net 1218, gpu 311, data 233, app 231, mesh 52, proto
+> 16, audio 120), `live --render-check` **58/58** exit 0 (r57/r58 arrived
+> with M168), demo PNG `2cc56b4acbfb92cb` byte-identical.
+>
+> *(superseded — the 2026-08-21 line, kept for the diff:)* 37 serverless gates green
 > with 0 validation errors, **3355 tests**, `live --render-check` **56/56** exit
 > 0, `soundshot` 37 default / 57 under `--features audio`, demo PNG
 > `2cc56b4acbfb92cb` byte-identical, packet coverage **120 / 0 / 21** with
@@ -403,14 +409,22 @@ witnesses are mostly self-driven can look healthy against nothing.
 >
 > #### Ready, specced, unblocked
 >
-> * **The HUD's real gaps** — armour bar, air bubbles, mob-effect icons, vehicle
->   health, jump bar. Zero mentions each in `hud.rs`. Exact vanilla oracle.
->   Traps already paid for: there is no `ArmorLevelBar` or `Gui.renderArmor` in
->   26.2 (the site is `Hud.java:815 extractArmor`); no `AirLevelBar` either, and
->   air is ten independently-sprited 9x9 bubbles rather than a bar; the jump bar
->   replaces the **XP** bar, not the food column; and `hudshot_cmd.rs` is the
->   VELVET gate and contains zero `Gpu`/`Offscreen`, so it cannot host a HUD
->   pixel witness.
+> * ~~**The HUD's real gaps** — armour bar, air bubbles, mob-effect icons, vehicle
+>   health, jump bar.~~ **DONE (M168, 2026-08-23) — and the item undersold it:
+>   the hearts and food that were already there were an M3 approximation**
+>   (rounded where vanilla ceils, one row, no absorption / blink / heart types,
+>   the hunger row filled from the wrong end), so the whole survival HUD is a
+>   pure layout now (`rewo_gpu::survival_hud`), graded by the new `gaugeshot`
+>   gate and by r57/r58 live. **One piece is geometry only: the jump bar.**
+>   `survival_hud` lays it out and `gaugeshot` renders it, but the frame passes
+>   `jump: None` because nothing feeds it — it needs the SADDLE equipment slot
+>   (which `apply_set_equipment` discards), `LocalPlayer.aiStep`'s jump-riding
+>   ramp (`LocalPlayer.java:882-906`) in the mounted tick, and the serverbound
+>   `player_command` `START_RIDING_JUMP`, which Rewo has never sent. That is the
+>   natural next milestone and is specced in §15's M168 entry. Also open from
+>   M168: the bubble-pop sound (`Hud.playAirBubblePoppedSound`), and
+>   `MissingTextureAtlasSprite` for an effect id past the table (Rewo draws
+>   nothing where vanilla draws the magenta checker).
 > * **`p4-leash`** (the rope), **`sub-book`**, **`sub-sign`**, **`sub-map`**,
 >   **`options`' volume sliders**, **`render-misc [INTERP]`**. Each has a
 >   verified spec with its traps; see §15's wave entries for the corrections.
@@ -1859,7 +1873,8 @@ this shape once.
 | M164 — waterlogged water in the windowed client | **r53** | — | — |
 | M165 — the real-texture mob gate | **r54** | — | `mobtexshot` |
 | M166 — the two blocking configuration tasks | **r55, r56** | — | (live only; `render_check.py` stages the tasks) |
-| *(next free)* | **r57** | — | — |
+| M168 — the survival HUD | **r57, r58** | HUD atlas y 80..218: player hearts y 80 + 90 (24 per row, 10 px pitch), armour / air / vehicle / hunger-food x 0..120 y 100, effect backgrounds (130,100) + (160,100), effect icons y 125..201 (13 per row, 19 px pitch), jump bar y 201/207/213; `ATLAS_H` 80 -> 224 | `gaugeshot` t0-t7, w0-w3, d0-d4, p0-p11 |
+| *(next free)* | **r59** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table
@@ -3680,6 +3695,213 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M168 — the survival HUD, exact: the five gauges the handoff named and the two it did not (2026-08-23)
+
+§0.0's "ready, specced, unblocked" list opened with *"the HUD's real gaps —
+armour bar, air bubbles, mob-effect icons, vehicle health, jump bar. Zero
+mentions each in `hud.rs`."* The count was right and the framing was short by
+two: **the hearts and food already on screen were an M3 approximation**, and
+nothing could say so because they were drawn inside `HudPass::draw` from two
+integers, where no unit test reaches. Measured against `Hud.java:762-1020`
+before any new gauge was written:
+
+* `health.round()` where vanilla is `Mth.ceil(player.getHealth())` — 0.3 hp
+  drew nothing; vanilla shows a half heart.
+* One row, always. `healthRowHeight = max(10 - (rows - 2), 3)` and the
+  armour row rides on top of it, so a 40-hp player's second row and every
+  armour icon were unreachable.
+* No absorption, no blink, no heart types, no regeneration wave, no
+  low-health jitter, no hardcore sprites — the `HeartType` table is 48
+  sprites and Rewo loaded three.
+* The hunger row filled from the **left** at `guiWidth/2 + 10 + i * 8`.
+  `extractFood` is `xRight - i * 8 - 9`: the first drumstick is the rightmost
+  cell. Identical pixels only because ten cells of eight mirror exactly, and
+  wrong the moment anything else used the same shape — which the air row,
+  drawn at the same x with a different count, immediately would have.
+
+So the milestone is the whole survival HUD as **a pure layout**, the tab
+list's pattern (M151): `SurvivalInputs` (plain values) ->
+`rewo_gpu::survival_hud::layout` -> `Vec<HudBlit>` in vanilla's draw order,
+and the pass draws what it is handed. A witness asks the function a question
+with no GPU; the gate renders the same list and reads the pixels back.
+
+#### The inputs were parsed and discarded — five of them (M168a)
+
+* `DATA_AIR_SUPPLY_ID` (index 1, INT) and `DATA_TICKS_FROZEN` (7, INT) fell
+  through the metadata skip table; `DATA_PLAYER_ABSORPTION_ID` was never an arm.
+  **It is index 17 in 26.2**, not 1.21's 15: `Avatar` sits between
+  `LivingEntity` and `Player` and owns 15 (`DATA_PLAYER_MAIN_HAND`) and 16
+  (`DATA_PLAYER_MODE_CUSTOMISATION`), so `Player`'s first own accessor is 17 —
+  which the existing score decode at 18 independently confirms. All three land
+  on `LocalPlayerData` **before** the shared-flags guard that protects the
+  elytra edge, because a diving player's packet carries the air and no index 0,
+  and the early return would have dropped it (a witness pins exactly that
+  packet).
+* `set_health`'s saturation was a comment (`// food (VarInt) + saturation
+  (f32) follow.`). The hunger wobble needs `getSaturationLevel() <= 0.0F`.
+* `VisualEffects` kept night vision and darkness and dropped every other effect
+  on the player. It is the whole `activeEffects` map now, with the three flag
+  bits (`FLAG_AMBIENT` 1, `FLAG_VISIBLE` 2, `FLAG_SHOW_ICON` 4) and
+  `tickClient`'s rule: `mapDuration` leaves `-1` and `0` alone, and **the client
+  never removes an expired effect on its own** — it waits for the server's
+  `remove_mob_effect`.
+* The blink is `Hud`'s own four fields, and `player.invulnerableTime` is armed
+  by `LocalPlayer.hurtTo` — whose **first call of a life arms nothing** (it only
+  flips `flashOnSetHealth`), a heal arms 10 and a hit 20 — plus the local
+  player's own `damage_event`, which the table-keyed route could not store (M73's
+  asymmetry, again). `blink` is computed **before** the clock is re-armed, so
+  the frame a hit lands on never blinks; the ghosted health is **wall-clock**
+  (1000 ms), which is why `HealthDisplay::update` takes millis.
+
+The effect **category** is not on the wire: the registry report carries only
+`protocol_id`, and the registry is built-in and never synced (M92c). So
+`tools/gen_mob_effects.py` extracts category and colour from `MobEffects.java`
+into `rewo-data/src/mob_effect_table.rs`, in declaration order — which IS the
+registry's protocol-id order, and a unit test pins that against
+`registries.json` on any machine with the report, so a version that inserts an
+effect mid-list fails rather than shifting every icon one slot (M64's trap in
+a table). **A reader had reported 22 BENEFICIAL / 14 HARMFUL; a direct grep of
+the decompile gives 20 / 16 / 4, and the test caught it on its first run.**
+
+#### The layout (M168b), and the things that invert
+
+* **The jitter is a seeded LCG, not noise.** `random.setSeed(tickCount *
+  312871)` once per frame — an `int` multiply that WRAPS before it widens —
+  and every `nextInt` after it is consumed in draw order: hearts first (one
+  draw per container while `health + absorption <= 4`), then the food's
+  `nextInt(3)` per icon on the wobble ticks, then the air's `nextInt(2)` per
+  empty bubble when all ten are empty. Draw one out of order and every later
+  offset changes. `HudRandom` is a fourth copy of `java.util.Random` in the
+  workspace, and deliberately so: the other three are private to their
+  modules, and it is pinned against the algorithm's own definition rather
+  than a sibling.
+* Absorption hearts are **WITHERED when withered, else ABSORBING** — never the
+  player's own type; poison does not recolour them.
+* Food is skipped entirely while a living vehicle has hearts, and the air line
+  moves to where the food was: `getAirBubbleYLine` subtracts `(rows - 1) * 10`
+  with `rows = ceil(hearts / 10.0)`, so **with no vehicle `rows - 1 == -1` and
+  the line moves DOWN ten** — cancelling the ten the food branch took off.
+  Transcribed, not simplified.
+* **Three different `ceil`s decide the bubbles**: full ones with `-2` ticks of
+  slack, the popping one with `0`, the empty count with `+1` only while
+  underwater with air left. At 150 of 300 that leaves bubble 6 neither full
+  nor popping nor empty — a gap, which the gate asserts as 81 black pixels.
+* Vehicle hearts are `(int)(maxHealth + 0.5F) / 2`, capped at 30 — the cast
+  BEFORE the integer divide. A "halve first" mutation was considered for the
+  battery and is **provably equivalent** (`floor(floor(x) / 2) == floor(x / 2)`
+  for every `x >= 0`), so it is not in the table; dropping the `+ 0.5F` is, and
+  `t6` grew the 29.5 case that sees it.
+* `MobEffectInstance.compareTo` is not a total order (two branches keyed on
+  duration <= 32147 and both-ambient), and `extractEffects` iterates
+  `Ordering.natural().reverse()` of it: **`compareFalseFirst(ambient)` puts
+  the ambient effect last ascending, so it is drawn FIRST**. NEUTRAL effects
+  (glowing, the three omens) share the harmful row, because the only test is
+  `isBeneficial()`. An infinite effect never `endsWithin(200)`, so its icon
+  never fades. Ties on all four keys (`instant_health` and `saturation` share
+  colour 16262179) are `HashMap` order in vanilla, which nothing can
+  reproduce; Rewo keeps its own insertion order.
+* `Mth.lerpDiscrete(alpha, 0, 182)` is `floor(alpha * 181) + (alpha > 0)`: a
+  barely-pressed jump already shows one pixel.
+
+The atlas grew 80 -> 224 for the 48 player hearts (two rows of 24 at a 10 px
+pitch), the nine small gauges and three hunger drumsticks, the two effect
+backgrounds, the 40 effect icons (four rows of 13 at a 19 px pitch, indexed by
+registry id) and the three jump-bar strips. **The face pool's overlap claim was
+`ATLAS_H - FACE_ATLAS_Y`** — the rest of the atlas — which was the pool's exact
+size only while the pool was the bottom of the atlas; it claims its two rows
+now, and `debug_assert` would have fired on the first placement below it.
+`MAX_VERTS` went 4096 -> 16384 because the overflow guard is silent and an
+80-row tab list with hearts already exceeded it.
+
+The survival blits are drawn **after** the XP bar where vanilla draws them
+before its contextual bar. Pixel-identical — the hearts end at `guiHeight - 30`
+(`- 29` with the jitter's +1), the bar starts at `- 29`, and the jump bar is
+the bar's mutually-exclusive replacement — and the placement is the borrow
+checker's: `sub_quad` holds `tinted_quad` until its last use, and every blit
+here needs the alpha only `tinted_quad` takes. The comment says so.
+
+#### The gate (M168c) and the derivation it can reach
+
+`rewo gaugeshot --check`, the 38th serverless gate, **29 witnesses**: literals
+re-declared from `Hud.java` against the layout (t0-t7), the real decoders
+driven by raw bodies (w0-w3), `live_cmd::survival_inputs_from` (d0-d4), and
+twelve pixel witnesses (p0-p11). The derivation is session-free on M97's
+rule — the assembler `resolve_survival_inputs` is forty lines of "where does
+each field live" and `survival_inputs_from` is what the gate drives — so a
+mutation in the armour floor, the game-mode default or the vehicle's
+attribute resolution dies in the gate rather than surviving in a function
+nothing can reach.
+
+**Every pixel position is re-derived from the decompile's numbers and every
+colour is read out of the jar's own PNG at the sprite's own texel**, so
+neither the layout nor the atlas packer can influence what is expected (M93q).
+Four colours were avoided as degenerate **by measurement**: `air.png`'s centre
+is transparent (its nine blue texels are counted instead), the two effect
+backgrounds share their centre and differ only on a 168-pixel rim,
+`armor_half`'s middle column is black like the clear, and `vehicle_half`
+shares its centre column with `vehicle_full`.
+
+#### Live (M168d): r57 and r58, and what the second one found
+
+`render_check.py` stages `item replace entity @s armor.chest with
+minecraft:iron_chestplate` and `effect give @s minecraft:speed infinite 0`.
+**r57** — ten armour icons, three full — passed on its first live run, which is
+also the proof that the server sends the player's OWN attributes through
+`sendToTrackingPlayersAndSelf` on a dirty set (the initial pairing never goes
+to the player, so an absent ARMOR is the registered 0 and vanilla draws
+nothing for it — the fallback the resolver takes).
+
+**r58 measured zero icons on its first run, and the witness was right.** The
+staging was `effect give ... infinite 0 true` — `hideParticles` — on the
+reasoning that it hides the particles and keeps the icon. It does not:
+`EffectCommands.giveEffect` builds `new MobEffectInstance(effect, duration,
+amplifier, false, particles)` (`EffectCommands.java:186`), and that
+five-argument constructor is `this(.., visible, visible)`
+(`MobEffectInstance.java:61`), so **`/effect give`'s hide-particles flag also
+clears `showIcon`**. The argument is dropped and the comment on the witness
+says why. 58/58.
+
+#### The battery, and the witnesses that were wrong first
+
+`tools/m168_mutate.py`: **27 mutations, 27 killed, control survived**, each
+routed through the checker it claims coverage from (the gate by exit code, or
+a crate's unit tests with the `test result:` line required), rebuilt before the
+check and after the restore, with a reaper on timeout. One verdict was weaker
+than it read and was re-run: the wrong-serializer mutant first died on a
+**build failure** (`varlong` is an `i64`), which is the type system's kill and
+not a witness's; made compilable, it dies in the gate.
+
+**Five witnesses were wrong before any code was**, and the shapes repeat: a
+display-health fixture that asked the ghost to hold at 1050 ms (the rule is
+strictly more than 1000); a blink fixture that called tick 13 of a ten-tick
+window odd (`(20 - 13) / 3 = 2`); the effect-order fixture that assumed the
+ambient effect sorts last; a background probe at the sprite's centre, which is
+under the icon; and an equal-health "first sync" that could not tell
+`flashOnSetHealth` from `dmg <= 0` — a LOWER first sync can, and both the unit
+test and w3 use one now.
+
+#### What is geometry only, stated rather than hidden
+
+**The jump bar is laid out and rendered and never fed.** `survival_hud` emits
+it, `gaugeshot`'s p7 grades its pixels, and the frame passes `jump: None`,
+because three things it needs do not exist: the SADDLE equipment slot
+(`apply_set_equipment` discards slot 7, and `canJump()` is `isSaddled()`),
+`LocalPlayer.aiStep`'s jump-riding ramp in the mounted tick
+(`LocalPlayer.java:882-906` — release sends, press resets, hold is
+`ticks < 10 ? ticks * 0.1 : 0.8 + 2 / (ticks - 9) * 0.1`, so there is no
+literal 1.0 cap), and the serverbound `player_command` `START_RIDING_JUMP`,
+which Rewo has never sent. Also open: `playAirBubblePoppedSound` (a layout has
+no sound channel), and `MissingTextureAtlasSprite` for an effect id past the
+table (Rewo draws nothing where vanilla draws the magenta checker).
+
+**Measured:** rewo-net 1211 -> 1218, rewo-data 231 -> 233, rewo-gpu 293 ->
+311 (**3382 tests**); `gaugeshot` 29/29; the five gates that host the HUD pass
+unchanged (titleshot 58, sidebarshot 17, tablistshot 42, locatorshot 49,
+inventoryshot 165) — the rewrite draws the same pixels where the old loop was
+right; all 38 serverless gates green, 0 validation errors; `live
+--render-check` 58/58 with validation ON; demo PNG `2cc56b4acbfb92cb`
+byte-identical.
 
 ### M167 — the witness-name namespace, and the item above it that was already fixed (2026-08-21)
 
