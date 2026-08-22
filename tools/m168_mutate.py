@@ -145,7 +145,7 @@ MUTATIONS = [
     # ---- the wire ---------------------------------------------------------
     ("the air arm wants a different serializer", META,
      "            (1, 1) => meta.air_supply = r.varint().ok(),",
-     "            (1, 2) => meta.air_supply = r.varlong().ok(),",
+     "            (1, 2) => meta.air_supply = r.varlong().ok().map(|v| v as i32),",
      ["gate"], "INT is serializer 1"),
     ("the ambient bit is the visible bit", FX,
      "            ambient: u.flags & 1 != 0,",

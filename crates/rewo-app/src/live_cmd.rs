@@ -274,9 +274,11 @@ struct RenderCheck {
     armor_full_max: usize,
     /// M168 — the most EFFECT icons emitted in any frame, and whether one
     /// of them sat on the beneficial row at the first slot. The staged
-    /// `effect give @s minecraft:speed infinite 0 true` hides the
-    /// particles and keeps the icon, which is the `showIcon` bit the
-    /// layout gates on.
+    /// `effect give @s minecraft:speed infinite 0` — WITHOUT the
+    /// `hideParticles` argument: `/effect give` builds its instance with the
+    /// five-argument constructor, whose `visible` doubles as `showIcon`
+    /// (`MobEffectInstance.java:61`), so hiding the particles hides the
+    /// icon the layout gates on. The first staging did, and measured zero.
     effect_icons_max: usize,
     effect_first_beneficial: bool,
     /// `self.baked.is_some()` observed at the top of a frame. The witness whose
@@ -1520,9 +1522,7 @@ impl RenderCheck {
             "r58 the staged speed effect drew one icon at the first beneficial slot",
             self.effect_icons_max == 1 && self.effect_first_beneficial,
             format!(
-                "max effect icons {}, first beneficial slot seen {}. `effect give ... \
-                 infinite 0 true` hides particles and keeps the icon; the icon sits at \
-                 (guiWidth - 25 + 3, 4)",
+                "max effect icons {}, first beneficial slot seen {}. `effect give ... \n                 infinite 0` with particles ON: the `hideParticles` argument also clears \n                 showIcon (MobEffectInstance.java:61); the icon sits at (guiWidth - 25 + 3, 4)",
                 self.effect_icons_max, self.effect_first_beneficial
             ),
         );
