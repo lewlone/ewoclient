@@ -175,6 +175,13 @@ pub struct EntityClasses {
     /// The one set here derived from an `implements` edge rather than an
     /// `extends` chain; see [`crate::entity_classes::LEASHABLE`].
     leashable: std::collections::HashSet<i32>,
+    /// M169 — `instanceof PlayerRideableJumping`, the jump bar's vehicles.
+    rideable_jumping: std::collections::HashSet<i32>,
+    /// M169 — `Camel`: the 55-tick dash cooldown off index 19, and the
+    /// `refuseToMove()` clause in `canJump()`.
+    camel: std::collections::HashSet<i32>,
+    /// M169 — `AbstractNautilus`: the 40-tick dash cooldown off index 20.
+    nautilus: std::collections::HashSet<i32>,
 }
 
 impl EntityClasses {
@@ -220,6 +227,9 @@ impl EntityClasses {
         let hurting_projectile =
             resolve_set(table::ABSTRACT_HURTING_PROJECTILE, "hurting-projectile")?;
         let leashable = resolve_set(table::LEASHABLE, "leashable")?;
+        let rideable_jumping = resolve_set(table::PLAYER_RIDEABLE_JUMPING, "rideable-jumping")?;
+        let camel = resolve_set(table::CAMEL, "camel")?;
+        let nautilus = resolve_set(table::ABSTRACT_NAUTILUS, "nautilus")?;
         // A swing-ticking type that is not living would mean the generator's
         // own invariant broke between generation and resolution.
         if let Some(bad) = swing_ticking.iter().find(|id| !living.contains(id)) {
@@ -292,6 +302,31 @@ impl EntityClasses {
                 "entity_classes: type {bad} is a hurting projectile and living"
             ));
         }
+        // M169. The camel and the nautilus pair each arm a dash cooldown the
+        // jump bar reads, and both are rideable-jumping; the horses are the
+        // rest of that set. All three are living. An `implements` scan that
+        // matched nothing would make every saddled horse un-jumpable, which
+        // reads exactly like a server that never saddles anything.
+        if let Some(bad) = rideable_jumping.iter().find(|id| !living.contains(id)) {
+            return Err(format!(
+                "entity_classes: type {bad} is rideable-jumping but not living"
+            ));
+        }
+        if let Some(bad) = camel.iter().chain(nautilus.iter()).find(|id| !rideable_jumping.contains(id)) {
+            return Err(format!(
+                "entity_classes: type {bad} dashes but is not rideable-jumping"
+            ));
+        }
+        if rideable_jumping.len() <= camel.len() + nautilus.len() {
+            return Err(format!(
+                "entity_classes: {} rideable-jumping types against {} camels and {} \
+                 nautiluses — the horses are missing, so the `implements` scan lost \
+                 a subtree",
+                rideable_jumping.len(),
+                camel.len(),
+                nautilus.len()
+            ));
+        }
         Ok(Self {
             living,
             swing_ticking,
@@ -303,6 +338,9 @@ impl EntityClasses {
             minecart,
             hurting_projectile,
             leashable,
+            rideable_jumping,
+            camel,
+            nautilus,
         })
     }
 
@@ -325,6 +363,9 @@ impl EntityClasses {
             minecart: Default::default(),
             hurting_projectile: Default::default(),
             leashable: Default::default(),
+            rideable_jumping: Default::default(),
+            camel: Default::default(),
+            nautilus: Default::default(),
         }
     }
 
@@ -348,6 +389,9 @@ impl EntityClasses {
             minecart: Default::default(),
             hurting_projectile: Default::default(),
             leashable: Default::default(),
+            rideable_jumping: Default::default(),
+            camel: Default::default(),
+            nautilus: Default::default(),
         }
     }
 
@@ -412,6 +456,23 @@ impl EntityClasses {
     /// `AbstractBoat`'s subtrees rather than one ancestry walk.
     pub fn is_leashable(&self, type_id: i32) -> bool {
         self.leashable.contains(&type_id)
+    }
+
+    /// `entity instanceof PlayerRideableJumping` (M169) — what
+    /// `LocalPlayer.jumpableVehicle()` casts to. The horse family and the
+    /// nautilus pair; a union of two subtrees, like `is_leashable`.
+    pub fn is_rideable_jumping(&self, type_id: i32) -> bool {
+        self.rideable_jumping.contains(&type_id)
+    }
+
+    /// `entity instanceof Camel` (M169).
+    pub fn is_camel(&self, type_id: i32) -> bool {
+        self.camel.contains(&type_id)
+    }
+
+    /// `entity instanceof AbstractNautilus` (M169).
+    pub fn is_nautilus(&self, type_id: i32) -> bool {
+        self.nautilus.contains(&type_id)
     }
 
     /// Whether this type's client class advances `updateSwingTime` each tick.

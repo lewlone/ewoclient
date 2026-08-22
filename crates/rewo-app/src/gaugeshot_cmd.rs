@@ -45,7 +45,7 @@ use rewo_proto::writer::PacketWriter;
 
 /// Total named properties this gate asserts. Locked so a skipped property
 /// fails the run even when nothing mismatched.
-const EXPECTED_WITNESSES: usize = 29;
+const EXPECTED_WITNESSES: usize = 35;
 
 const W: u32 = 640;
 const H: u32 = 480;
@@ -118,6 +118,7 @@ pub fn run(args: GaugeshotArgs) -> Result<(), String> {
     check_transcription(&mut c);
     check_wire(&mut c, &registry);
     check_derivation(&mut c, &registry);
+    check_jump(&mut c, &paths);
     check_pixels(&mut c, &args, &baked)?;
 
     println!(
@@ -490,6 +491,7 @@ impl Sources {
                 saturation: 5.0,
                 hardcore: false,
                 millis,
+                jump: None,
             },
             &mut self.hud,
         )
@@ -753,6 +755,168 @@ fn check_derivation(c: &mut Checker, reg: &rewo_data::attributes::AttributeRegis
         format!(
             "none -> ({}, {}), both -> ({}, {})",
             none.regeneration, none.hunger_effect, both.regeneration, both.hunger_effect
+        ),
+    );
+}
+
+
+// ---------------------------------------------------------------------------
+// M169 — the jump bar's inputs: the meter, the selector, the packet, the
+// vehicle's cooldown through the real metadata router.
+// ---------------------------------------------------------------------------
+
+fn check_jump(c: &mut Checker, paths: &DataPaths) {
+    use rewo_gpu::locator_bar::{next_contextual_info, ContextualInfo};
+    use rewo_net::jump_riding::{player_command_body, riding_jump_data, JumpRiding, JumpableVehicle, START_RIDING_JUMP};
+
+    let horse = Some(JumpableVehicle { cooldown: 0 });
+
+    // j0 — the ramp, against the literals: ticks * 0.1, then 0.8 + 2/(t-9) * 0.1.
+    let mut j = JumpRiding::default();
+    let mut scales = Vec::new();
+    for _ in 0..20 {
+        j.tick(true, horse);
+        scales.push(j.scale());
+    }
+    let ref_scale = |t: i32| -> f32 {
+        if t < 10 {
+            t as f32 * 0.1
+        } else {
+            0.8 + 2.0 / (t - 9) as f32 * 0.1
+        }
+    };
+    let ramp_ok = scales
+        .iter()
+        .enumerate()
+        .all(|(t, s)| (s - ref_scale(t as i32)).abs() < 1e-6);
+    c.record(
+        "j0.the_jump_meter_is_the_ai_step_formula_with_no_cap",
+        ramp_ok && (scales[10] - 1.0).abs() < 1e-6 && scales[19] < 0.83 && scales[19] > 0.8,
+        format!(
+            "held 20 ticks: {:?} — tick 10 is exactly 1.0, tick 19 is 0.82, and the decay \
+             goes toward 0.8. `jumpRidingTicks < 10 ? ticks * 0.1F : 0.8F + 2.0F / (ticks - 9) * 0.1F`",
+            scales.iter().map(|s| format!("{s:.2}")).collect::<Vec<_>>()
+        ),
+    );
+
+    // j1 — release: sends floor(scale * 100), parks at -10, holds the scale ten ticks.
+    let mut j = JumpRiding::default();
+    for _ in 0..6 {
+        j.tick(true, horse);
+    }
+    let sent = j.tick(false, horse);
+    let mut held = 0;
+    for _ in 0..9 {
+        j.tick(false, horse);
+        held += usize::from((j.scale() - 0.5).abs() < 1e-6);
+    }
+    j.tick(false, horse);
+    c.record(
+        "j1.the_release_sends_floor_scale_times_a_hundred_and_the_bar_holds_ten_ticks",
+        sent == Some(50) && held == 9 && j.scale() == 0.0 && riding_jump_data(0.999) == 99,
+        format!(
+            "release at 0.5 sent {sent:?} (Mth.floor), scale held on {held}/9 park ticks, \
+             then {} at the tenth; 0.999 -> {} (floor, not round)",
+            j.scale(),
+            riding_jump_data(0.999)
+        ),
+    );
+
+    // j2 — the else branch: no vehicle, or a cooldown, zeroes and sends nothing.
+    let mut j = JumpRiding::default();
+    for _ in 0..6 {
+        j.tick(true, horse);
+    }
+    let lost = j.tick(false, Some(JumpableVehicle { cooldown: 3 }));
+    let zeroed = j.scale();
+    let mut k = JumpRiding::default();
+    for _ in 0..6 {
+        k.tick(true, horse);
+    }
+    let dismount = k.tick(true, None);
+    c.record(
+        "j2.a_cooldown_or_no_vehicle_is_the_else_branch_and_a_release_there_is_lost",
+        lost.is_none() && zeroed == 0.0 && dismount.is_none() && k.scale() == 0.0,
+        format!(
+            "release on a 3-tick cooldown sent {lost:?} and left scale {zeroed}; dismounting \
+             mid-hold sent {dismount:?} and left {}",
+            k.scale()
+        ),
+    );
+
+    // j3 — the selector's four arms, with the tie-break the scale decides.
+    use ContextualInfo::*;
+    let table = [
+        ((false, None, false, false), Empty),
+        ((false, None, true, true), Experience),
+        ((false, Some((0.0, 0)), true, true), JumpableVehicle),
+        ((true, None, true, false), Locator),
+        ((true, None, true, true), Experience),
+        ((true, Some((0.0, 0)), true, true), Experience),
+        ((true, Some((0.1, 0)), true, true), JumpableVehicle),
+        ((true, Some((0.0, 5)), false, false), JumpableVehicle),
+        ((true, Some((0.0, 0)), false, false), Locator),
+    ];
+    let got: Vec<ContextualInfo> = table
+        .iter()
+        .map(|((w, j, e, x), _)| next_contextual_info(*w, *j, *e, *x))
+        .collect();
+    let want: Vec<ContextualInfo> = table.iter().map(|(_, r)| *r).collect();
+    c.record(
+        "j3.the_contextual_slot_goes_to_the_vehicle_always_without_waypoints_and_only_when_charging_with_them",
+        got == want,
+        format!("{got:?} vs {want:?} — `willPrioritizeJumpInfo` is `scale > 0 || cooldown > 0`"),
+    );
+
+    // j4 — the packet: three VarInts, action ordinal 3.
+    let body = player_command_body(7, START_RIDING_JUMP, riding_jump_data(1.0));
+    c.record(
+        "j4.start_riding_jump_is_entity_then_ordinal_three_then_the_data",
+        body == vec![7, 3, 100] && START_RIDING_JUMP == 3,
+        format!("{body:?}; `writeVarInt(id); writeEnum(action); writeVarInt(data)`"),
+    );
+
+    // j5 — the camel's DASH arms 55 through the REAL metadata router and the
+    // real class table, only after the first tick, and the nautilus's arms
+    // 40; a horse's index-19 boolean (not a camel) arms nothing.
+    let routed = (|| -> Option<(i32, i32, i32, i32)> {
+        let etypes = rewo_data::entity_types::EntityTypes::load(&paths.registries_json()).ok()?;
+        let classes = rewo_data::entity_types::EntityClasses::resolve(&etypes).ok()?;
+        let camel = etypes.id_of("minecraft:camel")?;
+        let nautilus = etypes.id_of("minecraft:nautilus")?;
+        let horse = etypes.id_of("minecraft:horse")?;
+        let mut t = rewo_world::entities::EntityTable::default();
+        t.add(1, rewo_world::entities::EntityState::new(0, camel, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(2, rewo_world::entities::EntityState::new(0, nautilus, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(3, rewo_world::entities::EntityState::new(0, horse, 0.0, 0.0, 0.0, 0.0, 0.0));
+        let dash = |eid: i32, index: u8| {
+            let mut w = PacketWriter::default();
+            w.varint(eid);
+            w.u8(index);
+            w.varint(8);
+            w.u8(1);
+            w.u8(0xFF);
+            w.into_bytes()
+        };
+        let kinds = rewo_net::MetaKinds {
+            classes: Some(&classes),
+            ..Default::default()
+        };
+        rewo_net::apply_set_entity_data_for_gate(&dash(1, 19), &mut t, kinds);
+        let before_tick = t.dash_cooldown(1);
+        t.tick_lerp();
+        rewo_net::apply_set_entity_data_for_gate(&dash(1, 19), &mut t, kinds);
+        rewo_net::apply_set_entity_data_for_gate(&dash(2, 20), &mut t, kinds);
+        rewo_net::apply_set_entity_data_for_gate(&dash(3, 19), &mut t, kinds);
+        Some((before_tick, t.dash_cooldown(1), t.dash_cooldown(2), t.dash_cooldown(3)))
+    })();
+    c.record(
+        "j5.the_dash_flags_arm_their_literals_through_the_real_router_after_the_first_tick",
+        routed == Some((0, 55, 40, 0)),
+        format!(
+            "(camel before its first tick, camel after, nautilus, horse@19): {routed:?}, \
+             want (0, 55, 40, 0) — `!this.firstTick && DASH.equals(accessor)`, 55 / 40, \
+             and a horse has no index-19 boolean of its own"
         ),
     );
 }

@@ -806,7 +806,62 @@ pub fn markers(
 /// The XP bar takes the slot for 100 ticks after every XP change, so on a
 /// server that does both, the strip blinks out on each orb pickup.
 pub fn contextual_bar(has_waypoints: bool, has_experience: bool, xp_prioritised: bool) -> bool {
-    has_waypoints && !(has_experience && xp_prioritised)
+    next_contextual_info(has_waypoints, None, has_experience, xp_prioritised)
+        == ContextualInfo::Locator
+}
+
+/// `Hud.ContextualInfo` (M169) — which bar owns the slot above the hotbar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextualInfo {
+    Empty,
+    Experience,
+    Locator,
+    JumpableVehicle,
+}
+
+/// `Hud.nextContextualInfoState` (`Hud.java:1332-1347`), all four arms:
+///
+/// ```java
+/// boolean canShowLocatorInfo = ...hasWaypoints();
+/// boolean canShowVehicleJumpInfo = this.minecraft.player.jumpableVehicle() != null;
+/// boolean canShowExperienceInfo = this.minecraft.gameMode.hasExperience();
+/// if (canShowLocatorInfo) {
+///    if (canShowVehicleJumpInfo && this.willPrioritizeJumpInfo()) return JUMPABLE_VEHICLE;
+///    return canShowExperienceInfo && this.willPrioritizeExperienceInfo() ? EXPERIENCE : LOCATOR;
+/// } else if (canShowVehicleJumpInfo) {
+///    return JUMPABLE_VEHICLE;
+/// } else {
+///    return canShowExperienceInfo ? EXPERIENCE : EMPTY;
+/// }
+/// ```
+/// `willPrioritizeJumpInfo()` is `getJumpRidingScale() > 0.0F ||
+/// vehicle.getJumpCooldown() > 0` (`:1327-1330`). **Without waypoints a
+/// jumpable vehicle ALWAYS wins** — the scale does not matter there; it
+/// only breaks the tie against the locator bar. `jumpable` is
+/// `(jumpRidingScale, getJumpCooldown())`, present iff `jumpableVehicle()`
+/// is non-null.
+pub fn next_contextual_info(
+    has_waypoints: bool,
+    jumpable: Option<(f32, i32)>,
+    has_experience: bool,
+    xp_prioritised: bool,
+) -> ContextualInfo {
+    let prioritise_jump = jumpable.is_some_and(|(scale, cooldown)| scale > 0.0 || cooldown > 0);
+    if has_waypoints {
+        if jumpable.is_some() && prioritise_jump {
+            ContextualInfo::JumpableVehicle
+        } else if has_experience && xp_prioritised {
+            ContextualInfo::Experience
+        } else {
+            ContextualInfo::Locator
+        }
+    } else if jumpable.is_some() {
+        ContextualInfo::JumpableVehicle
+    } else if has_experience {
+        ContextualInfo::Experience
+    } else {
+        ContextualInfo::Empty
+    }
 }
 
 /// The two-frame arrow animation from
@@ -1730,5 +1785,34 @@ mod tests {
         );
         // `distanceSquared` reads `this.vector`, never the entity.
         assert_eq!(distance_squared(&raw, &c), distance_squared(&with_eye, &c));
+    }
+}
+
+#[cfg(test)]
+mod contextual_info_tests {
+    use super::*;
+
+    /// All eight reachable arms of `nextContextualInfoState`, plus the one
+    /// that is easy to get backwards: a jumpable vehicle at scale 0 with no
+    /// cooldown still WINS when there are no waypoints, and LOSES to the
+    /// locator bar when there are.
+    #[test]
+    fn the_four_way_selector_is_the_decompiles() {
+        use ContextualInfo::*;
+        let idle = Some((0.0, 0));
+        let charging = Some((0.3, 0));
+        let cooling = Some((0.0, 12));
+        assert_eq!(next_contextual_info(false, None, false, false), Empty);
+        assert_eq!(next_contextual_info(false, None, true, false), Experience);
+        assert_eq!(next_contextual_info(false, idle, true, true), JumpableVehicle, "no waypoints: the vehicle wins at ANY scale");
+        assert_eq!(next_contextual_info(true, None, false, false), Locator);
+        assert_eq!(next_contextual_info(true, None, true, false), Locator);
+        assert_eq!(next_contextual_info(true, None, true, true), Experience);
+        assert_eq!(next_contextual_info(true, idle, true, true), Experience, "an idle vehicle does not outrank the others");
+        assert_eq!(next_contextual_info(true, charging, true, true), JumpableVehicle, "scale > 0 does");
+        assert_eq!(next_contextual_info(true, cooling, false, false), JumpableVehicle, "and so does a cooldown");
+        assert_eq!(next_contextual_info(true, idle, false, false), Locator);
+        // The M83 two-way wrapper is the same function with no vehicle.
+        assert!(contextual_bar(true, false, false) && !contextual_bar(true, true, true));
     }
 }

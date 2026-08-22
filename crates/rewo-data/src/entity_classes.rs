@@ -486,6 +486,15 @@ pub const CAMEL: &[&str] = &[
     "minecraft:camel_husk",
 ];
 
+/// Registry names whose class descends from `AbstractNautilus` (M169),
+/// which declares `DASH` at **index 20, BOOLEAN** (TamableAnimal owns 18
+/// and 19) and arms a 40-tick `dashCooldown` from it in
+/// `onSyncedDataUpdated` — the `getJumpCooldown()` the jump bar reads.
+pub const ABSTRACT_NAUTILUS: &[&str] = &[
+    "minecraft:nautilus",
+    "minecraft:zombie_nautilus",
+];
+
 /// Registry names whose class descends from `AbstractHurtingProjectile` —
 /// the only entities `handleProjectilePowerPacket` writes
 /// `accelerationPower` onto. An arrow is an `AbstractArrow` and NOT one of
@@ -497,6 +506,29 @@ pub const ABSTRACT_HURTING_PROJECTILE: &[&str] = &[
     "minecraft:small_fireball",
     "minecraft:wind_charge",
     "minecraft:wither_skull",
+];
+
+/// Registry names whose class implements `PlayerRideableJumping` (M169)
+/// — the vehicles `LocalPlayer.jumpableVehicle()` can return, and so the
+/// only ones whose rider ever sees the jump bar. The union of the
+/// `AbstractHorse` and `AbstractNautilus` subtrees; pinning the implementor
+/// pair is what stops a 26.3 that makes a pig jumpable from shipping a
+/// set one subtree short.
+///
+/// Implementing classes at generation time: `AbstractHorse`, `AbstractNautilus`. The
+/// generator asserts that set rather than trusting it.
+pub const PLAYER_RIDEABLE_JUMPING: &[&str] = &[
+    "minecraft:camel",
+    "minecraft:camel_husk",
+    "minecraft:donkey",
+    "minecraft:horse",
+    "minecraft:llama",
+    "minecraft:mule",
+    "minecraft:nautilus",
+    "minecraft:skeleton_horse",
+    "minecraft:trader_llama",
+    "minecraft:zombie_horse",
+    "minecraft:zombie_nautilus",
 ];
 
 /// Registry names whose class implements `Leashable`, which is what

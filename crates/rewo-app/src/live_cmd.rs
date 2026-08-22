@@ -281,6 +281,15 @@ struct RenderCheck {
     /// icon the layout gates on. The first staging did, and measured zero.
     effect_icons_max: usize,
     effect_first_beneficial: bool,
+    /// M169 — the jump bar's whole chain, live: the most JumpBar blits in
+    /// any frame (2 = background + progress while charging), the highest
+    /// `getJumpRidingScale()` seen, and the `START_RIDING_JUMP`s sent.
+    /// `render_check.py` summons a tamed, saddled horse, mounts the bot on
+    /// it, and the run holds Space over 0.32..0.46 of its length (clear of the
+    /// 0.5 inventory), which charges the meter to 1.0 and releases it.
+    jump_bar_blits_max: usize,
+    jump_scale_max: f32,
+    riding_jumps_sent: u64,
     /// `self.baked.is_some()` observed at the top of a frame. The witness whose
     /// absence let the bug live from M3 to M86.
     baked_frames: u64,
@@ -770,7 +779,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 58;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 59;
 
     fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1524,6 +1533,17 @@ impl RenderCheck {
             format!(
                 "max effect icons {}, first beneficial slot seen {}. `effect give ... \n                 infinite 0` with particles ON: the `hideParticles` argument also clears \n                 showIcon (MobEffectInstance.java:61); the icon sits at (guiWidth - 25 + 3, 4)",
                 self.effect_icons_max, self.effect_first_beneficial
+            ),
+        );
+        row(
+            "r59 the staged saddled horse put the jump bar up and the release sent START_RIDING_JUMP",
+            self.jump_bar_blits_max >= 2 && self.jump_scale_max >= 0.9 && self.riding_jumps_sent >= 1,
+            format!(
+                "max jump-bar blits {} (2 = background + progress), max scale {:.2} \
+                 (a 16-tick hold peaks at 1.0 and decays toward 0.8), START_RIDING_JUMPs \
+                 sent {}. Needs: the saddle off equipment slot 7, the bot as the horse's \
+                 first passenger, the ramp in the mounted tick, and the packet",
+                self.jump_bar_blits_max, self.jump_scale_max, self.riding_jumps_sent
             ),
         );
         row(
@@ -5446,8 +5466,9 @@ fn run_headless(
         cu,
         start.elapsed().as_secs_f32(),
     );
+    let contextual = contextual_info(&session);
     let survival = rewo_gpu::survival_hud::layout_for_screen(
-        &resolve_survival_inputs(&mut session, &etypes, start.elapsed().as_millis() as u64),
+        &resolve_survival_inputs(&mut session, &etypes, start.elapsed().as_millis() as u64, contextual),
         off.extent.width as f32,
         off.extent.height as f32,
     );
@@ -5457,7 +5478,9 @@ fn run_headless(
             &session.hud,
             &session.inventory,
             &items,
-            has_experience(&session),
+            // M169: the XP bar draws only when it OWNS the slot; the level
+            // number is gated separately, on `hasExperience()` alone.
+            has_experience(&session) && contextual == rewo_gpu::locator_bar::ContextualInfo::Experience,
             0.0,
         ),
         survival,
@@ -5774,6 +5797,8 @@ struct LiveApp {
     play_pack_injected: bool,
     /// Whether the two-of-one-kind mob injection has happened (r54).
     crowd_injected: bool,
+    /// M169 — the injected horse + saddle + set_passengers that mounts the bot.
+    jump_injected: bool,
     /// Whether `--render-check` has force-opened the chat screen yet (M110).
     chat_injected: bool,
     /// Whether it has typed a `/`-command yet (M116).
@@ -8336,9 +8361,62 @@ impl LiveApp {
                     }
                     self.crowd_injected = true;
                 }
+                // M169 — mount the bot on a saddled horse by INJECTION, the way
+                // r48's crowd and r19's chest are staged (M17: injection is the
+                // deterministic proof where a live encounter depends on the
+                // server). The `/ride` command does not survive the render check
+                // — the server never sent `set_passengers` naming the bot, so
+                // `mounts` stayed empty and `jumpable_vehicle()` was always None.
+                // Three packets through the production router: add the horse,
+                // give it a saddle (slot 7), seat the bot on it. Before the
+                // 0.32 hold so the meter has a vehicle to charge against.
+                if !self.jump_injected && elapsed >= limit * 0.28 {
+                    if let Some(session) = self.session.as_mut() {
+                        let types = session.entity_types.clone();
+                        if let (Some(types), Some(me)) = (types, session.player_id) {
+                            if let Some(horse) = types.id_of("minecraft:horse") {
+                                const HORSE_EID: i32 = 0x00A9_0000;
+                                let p = &session.player;
+                                let mut add: Vec<u8> = Vec::new();
+                                rewo_proto::varint::write_varint(&mut add, HORSE_EID);
+                                let uuid = 0xC0D0_0000_0000_0000_0000_0000_00A9_0000u128;
+                                add.extend_from_slice(&uuid.to_be_bytes());
+                                rewo_proto::varint::write_varint(&mut add, horse);
+                                add.extend_from_slice(&p.x.to_be_bytes());
+                                add.extend_from_slice(&p.y.to_be_bytes());
+                                add.extend_from_slice(&p.z.to_be_bytes());
+                                add.push(0); // LpVec3 zero sentinel — no motion
+                                add.extend_from_slice(&[0, 0, 0]); // pitch, yaw, head yaw
+                                session.inject_packet(session.ids.cb_play_add_entity, &add);
+                                // set_equipment: the saddle in slot 7. A minimal
+                                // present stack (count 1, an arbitrary valid id,
+                                // an empty patch); `saddled` only tests non-empty.
+                                let mut eq: Vec<u8> = Vec::new();
+                                rewo_proto::varint::write_varint(&mut eq, HORSE_EID);
+                                eq.push(7); // SADDLE ordinal, top bit clear = last
+                                rewo_proto::varint::write_varint(&mut eq, 1); // count
+                                rewo_proto::varint::write_varint(&mut eq, 1); // item id (any)
+                                rewo_proto::varint::write_varint(&mut eq, 0); // added
+                                rewo_proto::varint::write_varint(&mut eq, 0); // removed
+                                session.inject_packet(session.ids.cb_play_set_equipment, &eq);
+                                // set_passengers: seat the bot on the horse.
+                                let mut pass: Vec<u8> = Vec::new();
+                                rewo_proto::varint::write_varint(&mut pass, HORSE_EID);
+                                rewo_proto::varint::write_varint(&mut pass, 1);
+                                rewo_proto::varint::write_varint(&mut pass, me);
+                                session.inject_packet(session.ids.cb_play_set_passengers, &pass);
+                            }
+                        }
+                    }
+                    self.jump_injected = true;
+                }
                 // The hold. Assigned every frame rather than latched, so it is
                 // the same "read the key state fresh" the real gate does.
                 self.keys.tab_list = elapsed >= limit * 0.5;
+                // M169 — hold Space for a tenth of the run while mounted on
+                // the staged horse: the meter climbs for ~16 ticks and the
+                // release sends `START_RIDING_JUMP`. A level, like Tab.
+                self.keys.jump = elapsed >= limit * 0.32 && elapsed < limit * 0.46;
             }
             // M162 — the two packet tails that carry a sound. Both call sites
             // live inside `PlaySession`, which owns a socket and cannot be
@@ -9733,11 +9811,13 @@ impl LiveApp {
                 player_eye(session),
             );
         }
+        let contextual = contextual_info(session);
         let survival = rewo_gpu::survival_hud::layout_for_screen(
             &resolve_survival_inputs(
                 session,
                 &self.etypes,
                 self.started.elapsed().as_millis() as u64,
+                contextual,
             ),
             extent.width as f32,
             extent.height as f32,
@@ -9768,6 +9848,13 @@ impl LiveApp {
             c.effect_first_beneficial |= effects
                 .iter()
                 .any(|b| b.x as i32 == gui_w - 25 + 3 && b.y as i32 == 4);
+            let jump = survival
+                .iter()
+                .filter(|b| matches!(b.icon, HudIcon::JumpBar(_)))
+                .count();
+            c.jump_bar_blits_max = c.jump_bar_blits_max.max(jump);
+            c.jump_scale_max = c.jump_scale_max.max(session.jump_riding_scale());
+            c.riding_jumps_sent = session.riding_jumps_sent();
         }
         state.world_renderer.set_hud(
             self.hotbar_slot,
@@ -9775,7 +9862,8 @@ impl LiveApp {
                 &session.hud,
                 &session.inventory,
                 &self.items,
-                has_experience(session),
+                has_experience(session)
+                    && contextual == rewo_gpu::locator_bar::ContextualInfo::Experience,
                 alpha,
             ),
             survival,
@@ -10514,6 +10602,7 @@ fn run_windowed(
         sound_tails_injected: false,
         play_pack_injected: false,
         crowd_injected: false,
+        jump_injected: false,
         username,
         chat_parse: None,
         drag: DragState::default(),
@@ -11761,6 +11850,9 @@ pub(crate) struct SurvivalSources<'a> {
     pub hardcore: bool,
     /// `Util.getMillis()`.
     pub millis: u64,
+    /// The jump bar's inputs when it is the contextual bar this frame
+    /// (M169): `(getJumpRidingScale(), vehicle.getJumpCooldown())`.
+    pub jump: Option<rewo_gpu::survival_hud::JumpInput>,
 }
 
 /// The living vehicle under the player, as the table knows it.
@@ -11888,9 +11980,7 @@ pub(crate) fn survival_inputs_from(
         vehicle,
         effects: effect_inputs(src.effects),
         tick_count,
-        // M168e — the jump bar needs the saddle, the jump-riding ramp and
-        // `player_command`, none of which exist yet; `None` is the XP bar.
-        jump: None,
+        jump: src.jump,
     }
 }
 
@@ -11906,7 +11996,16 @@ pub(crate) fn resolve_survival_inputs(
     session: &mut PlaySession,
     etypes: &EntityTypes,
     millis: u64,
+    contextual: rewo_gpu::locator_bar::ContextualInfo,
 ) -> rewo_gpu::survival_hud::SurvivalInputs {
+    // M169 — the jump bar draws only when it owns the slot, and then its
+    // inputs are the meter's scale and the vehicle's dash cooldown.
+    let jump = (contextual == rewo_gpu::locator_bar::ContextualInfo::JumpableVehicle).then(|| {
+        rewo_gpu::survival_hud::JumpInput {
+            scale: session.jump_riding_scale(),
+            cooldown: session.jumpable_vehicle().map_or(0, |v| v.cooldown),
+        }
+    });
     let game_mode = session.own_game_mode();
     let local_attributes = session.local_attributes().clone();
     let registry = session.attribute_registry.clone();
@@ -11946,6 +12045,7 @@ pub(crate) fn resolve_survival_inputs(
             saturation,
             hardcore,
             millis,
+            jump,
         },
         hud,
     )
@@ -12060,8 +12160,11 @@ pub(crate) struct LocatorInputs<'a> {
     pub yaw: f32,
     pub pitch: f32,
     pub fov: f32,
-    pub has_experience: bool,
-    pub xp_prioritised: bool,
+    /// `Hud.nextContextualInfoState()` for this frame (M169) — resolved once
+    /// by [`contextual_info`] and handed to every consumer of the slot, so
+    /// the XP bar, the locator bar and the jump bar cannot disagree about
+    /// who owns it.
+    pub contextual: rewo_gpu::locator_bar::ContextualInfo,
     pub ticks: u64,
 }
 
@@ -12091,8 +12194,7 @@ pub(crate) fn resolve_locator_bar(
             yaw: session.player.yaw,
             pitch: session.player.pitch,
             fov: fov_deg,
-            has_experience: has_experience(session),
-            xp_prioritised: session.hud.experience.will_prioritize(),
+            contextual: contextual_info(session),
             ticks: session.ticks,
         },
         gui_w,
@@ -12120,12 +12222,11 @@ pub(crate) fn locator_bar_state(
         yaw,
         pitch,
         fov,
-        has_experience,
-        xp_prioritised,
+        contextual,
         ticks,
     } = input;
 
-    if !lb::contextual_bar(!waypoints.is_empty(), has_experience, xp_prioritised) {
+    if contextual != lb::ContextualInfo::Locator {
         return None;
     }
 
@@ -12234,6 +12335,21 @@ pub(crate) fn has_experience(session: &PlaySession) -> bool {
         .own_game_mode()
         .map(rewo_net::play::GameMode::is_survival)
         .unwrap_or(true)
+}
+
+/// `Hud.nextContextualInfoState()` for this frame (M169). One call per
+/// frame, threaded to the XP gauge, the locator bar and the survival
+/// layout's jump input, so the three can never each decide differently.
+pub(crate) fn contextual_info(session: &PlaySession) -> rewo_gpu::locator_bar::ContextualInfo {
+    let jumpable = session
+        .jumpable_vehicle()
+        .map(|v| (session.jump_riding_scale(), v.cooldown));
+    rewo_gpu::locator_bar::next_contextual_info(
+        !session.waypoints.is_empty(),
+        jumpable,
+        has_experience(session),
+        session.hud.experience.will_prioritize(),
+    )
 }
 
 /// The XP level number — `ContextualBar.extractExperienceLevel` (M79).

@@ -49,6 +49,7 @@ pub mod item_stack;
 pub mod merchant;
 pub mod recipe_book;
 pub mod menu;
+pub mod jump_riding;
 pub mod local_player_data;
 pub mod metadata;
 pub mod motion;
@@ -2738,6 +2739,18 @@ pub(crate) fn apply_set_passengers(body: &[u8], entities: &mut rewo_world::entit
     }
 }
 
+/// The gate's door to [`apply_set_entity_data`] (M169): `gaugeshot` drives a
+/// DASH entry through the real parser, the real kind gate and the real
+/// `arm_dash_cooldown`, which `route_set_entity_data` would also do but
+/// only with resolved packet ids in hand.
+pub fn apply_set_entity_data_for_gate<'a>(
+    body: &[u8],
+    entities: &mut rewo_world::entities::EntityTable,
+    kinds: impl Into<MetaKinds<'a>>,
+) {
+    apply_set_entity_data(body, entities, kinds)
+}
+
 pub(crate) fn apply_set_entity_data<'a>(
     body: &[u8],
     entities: &mut rewo_world::entities::EntityTable,
@@ -2780,6 +2793,20 @@ pub(crate) fn apply_set_entity_data<'a>(
                 rewo_world::entities::HumanoidArm::Left
             },
         );
+    }
+    // M169 — the DASH flags arm a dash cooldown on the vehicle they name,
+    // and nothing else: `Camel.onSyncedDataUpdated` fires on the accessor,
+    // not on a value change, so the flag's value is deliberately not read.
+    if meta.bool19.is_some() && kinds.classes.is_some_and(|c| c.is_camel(type_id)) {
+        entities.arm_dash_cooldown(eid, 55);
+    }
+    if meta.bool20.is_some() && kinds.classes.is_some_and(|c| c.is_nautilus(type_id)) {
+        entities.arm_dash_cooldown(eid, 40);
+    }
+    if let Some(t) = meta.long20 {
+        if kinds.classes.is_some_and(|c| c.is_camel(type_id)) {
+            entities.set_last_pose_change_tick(eid, t);
+        }
     }
     if let Some(b) = meta.bool16 {
         // Slot 16 BOOLEAN → `DATA_DANCING` on an Allay, `IS_CELEBRATING` on a
@@ -3445,6 +3472,12 @@ pub(crate) fn apply_set_equipment(
                 }),
             };
             entities.set_armor(eid, index, worn);
+        }
+        // M169: slot 7 is SADDLE — `Mob.isSaddled()`, the whole of a horse's
+        // `canJump()` and half of `getControllingPassenger()`. Read here
+        // because the client has no other source for it.
+        if slot_id & 127 == 7 {
+            entities.set_saddled(eid, !matches!(slot, WireSlot::Empty));
         }
         if let Some(hand) = hand {
             let item = match slot {
@@ -5149,6 +5182,25 @@ mod animate_tests {
         };
         apply_set_equipment(&equipment_body(5, 0, 949), &mut t, &data, Some(&classes()));
         assert_eq!(t.hand_item(5, InteractionHand::MainHand), HandItem::Empty);
+        // M169 — a non-living entity is inert for the saddle too: slot 7
+        // (SADDLE) on a non-living id changes nothing, because
+        // `apply_set_equipment` returns before it reads any slot.
+        apply_set_equipment(&equipment_body(5, 7, 949), &mut t, &data, Some(&classes()));
+        assert!(!t.saddled(5), "a non-living entity is not saddled");
+        // …while a LIVING entity (the cow, id 2) DOES read slot 7 (M169):
+        // a stack there is `isSaddled()`, and an empty stack un-saddles.
+        assert!(!t.saddled(2));
+        apply_set_equipment(&equipment_body(2, 7, 949), &mut t, &data, Some(&classes()));
+        assert!(t.saddled(2), "a stack in slot 7 is isSaddled()");
+        let mut empty = Vec::new();
+        varint(2, &mut empty);
+        empty.push(7);
+        varint(0, &mut empty); // count 0 = the OPTIONAL codec's empty stack
+        apply_set_equipment(&empty, &mut t, &data, Some(&classes()));
+        assert!(!t.saddled(2), "an empty slot 7 un-saddles");
+        // slot 6 (BODY) is still discarded and never touches the saddle bit.
+        apply_set_equipment(&equipment_body(2, 6, 949), &mut t, &data, Some(&classes()));
+        assert!(!t.saddled(2));
     }
 
     /// The equipment path needs a prototype table, which only exists with a
