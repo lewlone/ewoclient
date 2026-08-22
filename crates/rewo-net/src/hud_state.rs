@@ -1429,8 +1429,13 @@ mod health_display_tests {
     #[test]
     fn hurt_to_arms_the_window_like_the_local_player_does() {
         let mut h = LocalHurt::default();
-        h.hurt_to(20.0, 20.0);
+        // A first sync that LOWERS the health — joining at 14 against the
+        // client's default 20 — still arms nothing; an equal-health first
+        // sync could not tell `flashOnSetHealth` from `dmg <= 0`.
+        h.hurt_to(20.0, 14.0);
         assert!(!h.is_invulnerable(), "the join-time sync arms nothing");
+        h.hurt_to(14.0, 20.0);
+        assert_eq!(h.invulnerable_time(), 10, "a heal after the first sync arms 10");
         h.hurt_to(20.0, 14.0);
         assert_eq!(h.invulnerable_time(), 20);
         for _ in 0..20 {

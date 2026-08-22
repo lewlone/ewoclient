@@ -591,9 +591,13 @@ fn check_wire(c: &mut Checker, reg: &rewo_data::attributes::AttributeRegistry) {
 
     // w3 — the hurt window and the blink clock, through the same function.
     let mut s = Sources::new();
-    s.hud.local_hurt.hurt_to(20.0, 20.0); // the join-time sync
-    let join = s.inputs(reg, Some(GameMode::Survival), 20.0, 5000, None);
-    s.hud.local_hurt.hurt_to(20.0, 14.0); // the hit, as `set_health` applies it
+    // The join-time sync LOWERS the health (the client's default is 20)
+    // and must still arm nothing — equal health could not tell the
+    // `flashOnSetHealth` guard from `dmg <= 0`.
+    s.hud.local_hurt.hurt_to(20.0, 18.0);
+    let join = s.inputs(reg, Some(GameMode::Survival), 18.0, 5000, None);
+    let join_armed = s.hud.local_hurt.is_invulnerable();
+    s.hud.local_hurt.hurt_to(18.0, 14.0); // the hit, as `set_health` applies it
     s.hud.gui_tick = 10;
     let landing = s.inputs(reg, Some(GameMode::Survival), 14.0, 5100, None);
     s.hud.gui_tick = 13;
@@ -603,11 +607,12 @@ fn check_wire(c: &mut Checker, reg: &rewo_data::attributes::AttributeRegistry) {
     c.record(
         "w3.a_hit_ghosts_the_old_health_and_blinks_on_the_odd_thirds_of_twenty_ticks",
         !join.blink
-            && join.display_health == 20
+            && join.display_health == 18
+            && !join_armed
             && !landing.blink
-            && landing.display_health == 20
+            && landing.display_health == 18
             && later.blink
-            && later.display_health == 20
+            && later.display_health == 18
             && !later2.blink,
         format!(
             "join (blink {}, display {}), landing frame at tick 10 (blink {}, display {}), \n             tick 13 (blink {}, display {}), tick 16 (blink {}). The first `hurtTo` of a life \n             arms nothing; the hit arms `tickCount + 20`; `blink` is computed BEFORE the re-arm; \n             `(30 - 13) / 3 = 5` is odd (blink) and `(30 - 16) / 3 = 4` is even (dark)",

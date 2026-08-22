@@ -58,7 +58,12 @@ REWO = os.path.join(ROOT, "target", "debug", "rewo.exe")
 PRECMD = (
     "give @s minecraft:diamond_sword 1;"
     "give @s minecraft:dirt 64;"
-    "recipe give @s *"
+    "recipe give @s *;"
+    # M168 -- r57 / r58. An iron chestplate is 6 armour (three full icons);
+    # the effect is INFINITE so it never reaches the 200-tick fade, and
+    # `true` hides the particles while keeping the icon (showIcon).
+    "item replace entity @s armor.chest with minecraft:iron_chestplate;"
+    "effect give @s minecraft:speed infinite 0 true"
 )
 
 # M166 -- the two BLOCKING configuration tasks, staged so the gate exercises the

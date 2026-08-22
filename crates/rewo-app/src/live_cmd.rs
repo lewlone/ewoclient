@@ -261,6 +261,24 @@ const SIGN_WITNESS_RESOLVED: &str = "Dirt";
 #[derive(Default)]
 struct RenderCheck {
     frames: u64,
+    /// M168 — the most ARMOUR icons the survival layout emitted in any
+    /// frame, and how many of them were FULL. `render_check.py` stages an
+    /// iron chestplate (`item replace entity @s armor.chest`), so the
+    /// server has to mark the player's own ARMOR attribute dirty and send
+    /// it to the player itself — `sendToTrackingPlayersAndSelf`, the path
+    /// the initial pairing never takes — for this to move off zero. A
+    /// count AND a value: armour draws ten icons whenever it draws any,
+    /// so the count alone is "some attribute arrived", and the three
+    /// full ones are `6 / 2` of an iron chestplate specifically.
+    armor_icons_max: usize,
+    armor_full_max: usize,
+    /// M168 — the most EFFECT icons emitted in any frame, and whether one
+    /// of them sat on the beneficial row at the first slot. The staged
+    /// `effect give @s minecraft:speed infinite 0 true` hides the
+    /// particles and keeps the icon, which is the `showIcon` bit the
+    /// layout gates on.
+    effect_icons_max: usize,
+    effect_first_beneficial: bool,
     /// `self.baked.is_some()` observed at the top of a frame. The witness whose
     /// absence let the bug live from M3 to M86.
     baked_frames: u64,
@@ -750,7 +768,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 56;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 58;
 
     fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1477,6 +1495,35 @@ impl RenderCheck {
             format!(
                 "staged {:?}, accepted {:?}. This task is queued AHEAD of the                  resource pack (`addOptionalTasks`), so on a server with both                  it is the one that hangs first and r55 can never be reached                  without it.",
                 want_coc, self.config_tasks.codes_of_conduct
+            ),
+        );
+        // M168 — the survival HUD's two live inputs that only a server can
+        // supply. Both are COUNT-plus-VALUE: ten armour icons is "an ARMOR
+        // attribute reached the local store" and three full ones is "it was
+        // the staged iron chestplate's 6"; one effect icon at the first
+        // beneficial slot is "`update_mob_effect` for YOU was kept, its
+        // showIcon bit read, and the table called speed beneficial". The
+        // server sends the player's own attributes only through
+        // `sendToTrackingPlayersAndSelf` on a dirty set, never in the initial
+        // pairing, so a green r57 is also the proof that path exists.
+        row(
+            "r57 the staged iron chestplate reached the armour row as three full icons of ten",
+            self.armor_icons_max == 10 && self.armor_full_max == 3,
+            format!(
+                "max armour icons {} (10 when any armour is drawn), max full {} \
+                 (iron chestplate = 6 armour = 3 full). Zero means the player's own \
+                 `update_attributes` never arrived or never reached `local_attributes`",
+                self.armor_icons_max, self.armor_full_max
+            ),
+        );
+        row(
+            "r58 the staged speed effect drew one icon at the first beneficial slot",
+            self.effect_icons_max == 1 && self.effect_first_beneficial,
+            format!(
+                "max effect icons {}, first beneficial slot seen {}. `effect give ... \
+                 infinite 0 true` hides particles and keeps the icon; the icon sits at \
+                 (guiWidth - 25 + 3, 4)",
+                self.effect_icons_max, self.effect_first_beneficial
             ),
         );
         row(
@@ -9695,6 +9742,33 @@ impl LiveApp {
             extent.width as f32,
             extent.height as f32,
         );
+        if let Some(c) = self.check.as_mut() {
+            use rewo_gpu::hud::HudIcon;
+            use rewo_gpu::survival_hud::ArmorSprite;
+            let armor = survival
+                .iter()
+                .filter(|b| matches!(b.icon, HudIcon::Armor(_)))
+                .count();
+            let full = survival
+                .iter()
+                .filter(|b| b.icon == HudIcon::Armor(ArmorSprite::Full))
+                .count();
+            c.armor_icons_max = c.armor_icons_max.max(armor);
+            c.armor_full_max = c.armor_full_max.max(full);
+            let effects: Vec<&rewo_gpu::hud::HudBlit> = survival
+                .iter()
+                .filter(|b| matches!(b.icon, HudIcon::Effect(_)))
+                .collect();
+            c.effect_icons_max = c.effect_icons_max.max(effects.len());
+            // The beneficial row is y = 1 + 3; the first slot is
+            // `guiWidth - 25 + 3`, read off the layout's own GUI size.
+            let gui_w = (extent.width as f32
+                / rewo_gpu::hud::gui_scale(extent.width as f32, extent.height as f32))
+                as i32;
+            c.effect_first_beneficial |= effects
+                .iter()
+                .any(|b| b.x as i32 == gui_w - 25 + 3 && b.y as i32 == 4);
+        }
         state.world_renderer.set_hud(
             self.hotbar_slot,
             resolve_hud_gauges(
