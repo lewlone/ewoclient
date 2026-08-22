@@ -91,10 +91,12 @@ MUTATIONS = [
      "        Some(v) => ((v.max_health + 0.5) as i32 / 2).min(30),",
      "        Some(v) => ((v.max_health + 0.5) as i32 / 2).min(40),",
      ["gate"], "the cap is 30 — three rows"),
-    ("vehicle hearts halve before the cast", SH,
+    ("vehicle hearts drop the half", SH,
      "        Some(v) => ((v.max_health + 0.5) as i32 / 2).min(30),",
-     "        Some(v) => (((v.max_health + 0.5) / 2.0) as i32).min(30),",
-     ["gate"], "29 -> 14 (cast first) vs 14 either way? no: 29.5 / 2 = 14.75 -> 14 too; 30 -> 15 both. 31: (31.5 as i32)/2 = 15; 31.5/2 = 15.75 -> 15. Hmm — see the why of t6: 29 is graded; this may be EQUIVALENT on integer maxima and is kept to find out"),
+     "        Some(v) => ((v.max_health + 0.0) as i32 / 2).min(30),",
+     ["gate"], "`(int)(maxHealth + 0.5F) / 2`: 29.5 -> 15 with it, 14 without. (A 'halve "
+     "before the cast' mutation was considered and is EQUIVALENT: floor(floor(x) / 2) == "
+     "floor(x / 2) for every x >= 0, so it is not in the table)"),
     ("the effect order is the natural one", SH,
      "    sorted.sort_by(|a, b| effect_compare(b, a));",
      "    sorted.sort_by(|a, b| effect_compare(a, b));",

@@ -376,11 +376,11 @@ fn check_transcription(c: &mut Checker) {
     };
     c.record(
         "t6.vehicle_hearts_cast_before_the_halving_and_cap_at_thirty",
-        vmh(29.0) == 14 && vmh(30.0) == 15 && vmh(200.0) == 30 && vmh(1.0) == 0,
+        vmh(29.0) == 14 && vmh(29.5) == 15 && vmh(30.0) == 15 && vmh(200.0) == 30 && vmh(1.0) == 0,
         format!(
-            "29 -> {} ((int)29.5 = 29, / 2 = 14; halving first would give 15), 30 -> {}, \
-             200 -> {} (cap), 1 -> {} (no bar at all)",
+            "29 -> {} ((int)29.5 = 29, / 2 = 14), 29.5 -> {} ((int)30.0 = 30, / 2 = 15: the              `+ 0.5F` is what a fractional max health rounds through), 30 -> {}, 200 -> {}              (cap), 1 -> {} (no bar at all)",
             vmh(29.0),
+            vmh(29.5),
             vmh(30.0),
             vmh(200.0),
             vmh(1.0)
