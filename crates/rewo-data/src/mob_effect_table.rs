@@ -86,6 +86,13 @@ pub fn def(id: i32) -> Option<&'static MobEffectDef> {
     usize::try_from(id).ok().and_then(|i| MOB_EFFECTS.get(i))
 }
 
+/// The protocol id of a registry path (without `minecraft:`), or `None`
+/// for a name this version does not register. Valid as an id because the
+/// table order is pinned against the report (the test below).
+pub fn id_of(name: &str) -> Option<i32> {
+    MOB_EFFECTS.iter().position(|d| d.name == name).map(|i| i as i32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1545,7 +1545,15 @@ fn check_pixels(
             0.0,
         );
         wr.set_locator_bar(state);
-        wr.set_hud(20.0, 20, 0, rewo_gpu::hud::HudGauges::default());
+        wr.set_hud(
+            0,
+            rewo_gpu::hud::HudGauges::default(),
+            rewo_gpu::survival_hud::layout_for_screen(
+                &rewo_gpu::survival_hud::SurvivalInputs::simple(20.0, 20),
+                W as f32,
+                H as f32,
+            ),
+        );
         off.render(gpu, Some((&mut *wr, vp)), &overlay_draw, clear)?;
         off.read_rgba(gpu)
     };

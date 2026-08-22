@@ -778,7 +778,102 @@ pub struct HudSprites {
     /// from outside the HUD's own directory. All six are 10×8 in 26.2, which
     /// the renderer does **not** assume: each keeps its own dimensions.
     pub ping: [HudSprite; 6],
+    /// M168 — `Hud.HeartType`'s six kinds x eight sprites, kind-major in
+    /// the enum's declaration order (container, normal, poisoned,
+    /// withered, absorbing, frozen) and each in `getSprite`'s order (full,
+    /// full_blinking, half, half_blinking, then the four hardcore ones).
+    /// CONTAINER's constructor repeats its four files to fill eight, and so
+    /// does this array — the index arithmetic is then one formula for all
+    /// six. See [`PLAYER_HEART_SPRITES`].
+    pub player_hearts: [HudSprite; 48],
+    /// `hud/armor_{full,half,empty}` (M168).
+    pub armor: [HudSprite; 3],
+    /// `hud/air`, `hud/air_bursting`, `hud/air_empty` (M168). The field in
+    /// `Hud.java` is `AIR_POPPING_SPRITE`; the identifier literal is
+    /// `hud/air_bursting` and there is no `air_popping.png`.
+    pub air: [HudSprite; 3],
+    /// `hud/heart/vehicle_{container,full,half}` (M168).
+    pub vehicle_hearts: [HudSprite; 3],
+    /// `hud/food_{full,half,empty}_hunger` (M168) — the sprites
+    /// `extractFood` swaps in under `MobEffects.HUNGER`.
+    pub food_hunger: [HudSprite; 3],
+    /// `hud/effect_background` (M168), 24x24.
+    pub effect_background: HudSprite,
+    /// `hud/effect_background_ambient` (M168) — identical to the plain one
+    /// except for its 168-pixel teal rim.
+    pub effect_background_ambient: HudSprite,
+    /// `hud/jump_bar_{background,cooldown,progress}` (M168), 182x5 each —
+    /// THREE, not the two a background/progress pair would suggest.
+    pub jump_bar: [HudSprite; 3],
+    /// `mob_effect/<name>.png` for every row of
+    /// [`crate::mob_effect_table::MOB_EFFECTS`], in that order — which is
+    /// the registry's protocol-id order, so the index IS the wire id.
+    ///
+    /// **Not under `gui/sprites/`.** `atlases/gui.json` declares a second
+    /// source, `{prefix: "mob_effect/", source: "mob_effect"}`, so
+    /// `getMobEffectSprite`'s `mob_effect/speed` resolves to
+    /// `textures/mob_effect/speed.png`.
+    pub effect_icons: Vec<HudSprite>,
 }
+
+/// The 48 `hud/heart/*` files of `Hud.HeartType`, in the order
+/// [`HudSprites::player_hearts`] describes.
+pub const PLAYER_HEART_SPRITES: [&str; 48] = [
+    // CONTAINER — four files, repeated as the constructor repeats them.
+    "container",
+    "container_blinking",
+    "container",
+    "container_blinking",
+    "container_hardcore",
+    "container_hardcore_blinking",
+    "container_hardcore",
+    "container_hardcore_blinking",
+    // NORMAL
+    "full",
+    "full_blinking",
+    "half",
+    "half_blinking",
+    "hardcore_full",
+    "hardcore_full_blinking",
+    "hardcore_half",
+    "hardcore_half_blinking",
+    // POISIONED (sic)
+    "poisoned_full",
+    "poisoned_full_blinking",
+    "poisoned_half",
+    "poisoned_half_blinking",
+    "poisoned_hardcore_full",
+    "poisoned_hardcore_full_blinking",
+    "poisoned_hardcore_half",
+    "poisoned_hardcore_half_blinking",
+    // WITHERED
+    "withered_full",
+    "withered_full_blinking",
+    "withered_half",
+    "withered_half_blinking",
+    "withered_hardcore_full",
+    "withered_hardcore_full_blinking",
+    "withered_hardcore_half",
+    "withered_hardcore_half_blinking",
+    // ABSORBING
+    "absorbing_full",
+    "absorbing_full_blinking",
+    "absorbing_half",
+    "absorbing_half_blinking",
+    "absorbing_hardcore_full",
+    "absorbing_hardcore_full_blinking",
+    "absorbing_hardcore_half",
+    "absorbing_hardcore_half_blinking",
+    // FROZEN
+    "frozen_full",
+    "frozen_full_blinking",
+    "frozen_half",
+    "frozen_half_blinking",
+    "frozen_hardcore_full",
+    "frozen_hardcore_full_blinking",
+    "frozen_hardcore_half",
+    "frozen_hardcore_half_blinking",
+];
 
 /// `PlayerTabOverlay`'s six `PING_*_SPRITE` identifiers, in the order
 /// `rewo_gpu::tab_list::PingIcon` enumerates them.
@@ -2376,6 +2471,49 @@ fn bake_hud(jar: Jar) -> Option<HudSprites> {
                 out.push(get(jar, rel)?);
             }
             out.try_into().ok()?
+        },
+        // M168 — fail-closed like everything above: one missing file and
+        // there is no HUD, rather than a health bar with a hole in it.
+        player_hearts: {
+            let mut out: Vec<HudSprite> = Vec::with_capacity(48);
+            for name in PLAYER_HEART_SPRITES {
+                out.push(get(jar, &format!("gui/sprites/hud/heart/{name}.png"))?);
+            }
+            out.try_into().ok()?
+        },
+        armor: [
+            get(jar, "gui/sprites/hud/armor_full.png")?,
+            get(jar, "gui/sprites/hud/armor_half.png")?,
+            get(jar, "gui/sprites/hud/armor_empty.png")?,
+        ],
+        air: [
+            get(jar, "gui/sprites/hud/air.png")?,
+            get(jar, "gui/sprites/hud/air_bursting.png")?,
+            get(jar, "gui/sprites/hud/air_empty.png")?,
+        ],
+        vehicle_hearts: [
+            get(jar, "gui/sprites/hud/heart/vehicle_container.png")?,
+            get(jar, "gui/sprites/hud/heart/vehicle_full.png")?,
+            get(jar, "gui/sprites/hud/heart/vehicle_half.png")?,
+        ],
+        food_hunger: [
+            get(jar, "gui/sprites/hud/food_full_hunger.png")?,
+            get(jar, "gui/sprites/hud/food_half_hunger.png")?,
+            get(jar, "gui/sprites/hud/food_empty_hunger.png")?,
+        ],
+        effect_background: get(jar, "gui/sprites/hud/effect_background.png")?,
+        effect_background_ambient: get(jar, "gui/sprites/hud/effect_background_ambient.png")?,
+        jump_bar: [
+            get(jar, "gui/sprites/hud/jump_bar_background.png")?,
+            get(jar, "gui/sprites/hud/jump_bar_cooldown.png")?,
+            get(jar, "gui/sprites/hud/jump_bar_progress.png")?,
+        ],
+        effect_icons: {
+            let mut out = Vec::with_capacity(crate::mob_effect_table::MOB_EFFECTS.len());
+            for d in crate::mob_effect_table::MOB_EFFECTS.iter() {
+                out.push(get(jar, &format!("mob_effect/{}.png", d.name))?);
+            }
+            out
         },
     })
 }

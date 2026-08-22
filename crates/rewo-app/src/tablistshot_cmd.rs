@@ -916,7 +916,15 @@ fn check_pixels(
         // The hotbar it turns on sits at the bottom centre; the tab list is at
         // the top, and `p1` proves the control frame carries no magenta with all
         // of it drawn.
-        wr.set_hud(0.0, 0, 0, rewo_gpu::hud::HudGauges::default());
+        wr.set_hud(
+            0,
+            rewo_gpu::hud::HudGauges::default(),
+            rewo_gpu::survival_hud::layout_for_screen(
+                &rewo_gpu::survival_hud::SurvivalInputs::simple(0.0, 0),
+                W as f32,
+                H as f32,
+            ),
+        );
         wr.set_hud_fills(fills);
         wr.set_hud_icons(icons);
         wr.set_text(lines);
@@ -1822,7 +1830,15 @@ fn check_pixels(
 
     if let Some(dir) = args.out_dir.as_ref() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{e}"))?;
-        wr.set_hud(0.0, 0, 0, rewo_gpu::hud::HudGauges::default());
+        wr.set_hud(
+            0,
+            rewo_gpu::hud::HudGauges::default(),
+            rewo_gpu::survival_hud::layout_for_screen(
+                &rewo_gpu::survival_hud::SurvivalInputs::simple(0.0, 0),
+                W as f32,
+                H as f32,
+            ),
+        );
         wr.set_hud_fills(tab_list_view::fills(&hlayout));
         wr.set_hud_icons(tab_list_view::icons(&hview, &hlayout));
         wr.set_text(tab_list_view::text(&hview, &hlayout, px, &width_of));

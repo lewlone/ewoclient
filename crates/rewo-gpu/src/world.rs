@@ -614,7 +614,10 @@ pub struct WorldRenderer {
     locator_state: Option<crate::locator_bar::LocatorBarState>,
     /// Live HUD state (health 0..20, food 0..20, selected slot 0..8); when
     /// `None`, no HUD draws (view/demo/bench aren't "playing").
-    hud_state: Option<(f32, i32, u8, crate::hud::HudGauges)>,
+    hud_state: Option<(u8, crate::hud::HudGauges)>,
+    /// M168 — this frame's survival gauges (`survival_hud::layout`), in GUI
+    /// pixels. Replaced every frame with the rest of `hud_state`.
+    hud_survival: Vec<crate::hud::HudBlit>,
     /// This frame's chat backdrops (M109). A separate field from
     /// [`Self::hud_state`] because it is set on a different cadence — the HUD
     /// state comes from the packet stream and this comes from the chat store's
@@ -1156,6 +1159,7 @@ impl WorldRenderer {
                 locator: None,
                 locator_state: None,
                 hud_state: None,
+                hud_survival: Vec::new(),
                 hud_fills: Vec::new(),
                 hud_icons: Vec::new(),
                 text: None,
@@ -2292,10 +2296,17 @@ impl WorldRenderer {
         Ok(())
     }
 
-    /// Set this frame's HUD state (health/food 0..20, selected slot 0..8) and
-    /// M79's two gauges. Never called → no HUD (view/demo/bench).
-    pub fn set_hud(&mut self, health: f32, food: i32, slot: u8, gauges: crate::hud::HudGauges) {
-        self.hud_state = Some((health, food, slot, gauges));
+    /// Set this frame's HUD state: the selected slot 0..8, M79's two gauges,
+    /// and M168's survival gauges (`survival_hud::layout`'s output, in GUI
+    /// pixels). Never called → no HUD (view/demo/bench).
+    pub fn set_hud(
+        &mut self,
+        slot: u8,
+        gauges: crate::hud::HudGauges,
+        survival: Vec<crate::hud::HudBlit>,
+    ) {
+        self.hud_state = Some((slot, gauges));
+        self.hud_survival = survival;
     }
 
     /// Set this frame's chat backdrops (M109), in GUI pixels.
@@ -2957,14 +2968,12 @@ impl WorldRenderer {
                 self.recipe_book.as_ref(),
             );
         }
-        if let (Some(hud), Some((health, food, slot, gauges))) = (self.hud.as_mut(), self.hud_state)
-        {
+        if let (Some(hud), Some((slot, gauges))) = (self.hud.as_mut(), self.hud_state) {
             hud.draw(
                 gpu,
                 cb,
                 extent,
-                health,
-                food,
+                &self.hud_survival,
                 slot,
                 gauges,
                 &self.hud_fills,

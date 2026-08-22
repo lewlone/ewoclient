@@ -4260,6 +4260,16 @@ pub(crate) fn hud_sprites(baked: &assets::BakedAssets) -> Option<rewo_gpu::hud::
         // pass's own field is a `[Rect; 6]` and a length mismatch should be a
         // compile error rather than a runtime one.
         ping: std::array::from_fn(|i| hud_sprite(&h.ping[i])),
+        // M168 — same discipline for every fixed-size set.
+        player_hearts: std::array::from_fn(|i| hud_sprite(&h.player_hearts[i])),
+        armor: std::array::from_fn(|i| hud_sprite(&h.armor[i])),
+        air: std::array::from_fn(|i| hud_sprite(&h.air[i])),
+        vehicle_hearts: std::array::from_fn(|i| hud_sprite(&h.vehicle_hearts[i])),
+        food_hunger: std::array::from_fn(|i| hud_sprite(&h.food_hunger[i])),
+        effect_background: hud_sprite(&h.effect_background),
+        effect_background_ambient: hud_sprite(&h.effect_background_ambient),
+        jump_bar: std::array::from_fn(|i| hud_sprite(&h.jump_bar[i])),
+        effect_icons: h.effect_icons.iter().map(hud_sprite).collect(),
     })
 }
 
@@ -5389,9 +5399,12 @@ fn run_headless(
         cu,
         start.elapsed().as_secs_f32(),
     );
+    let survival = rewo_gpu::survival_hud::layout_for_screen(
+        &resolve_survival_inputs(&mut session, &etypes, start.elapsed().as_millis() as u64),
+        off.extent.width as f32,
+        off.extent.height as f32,
+    );
     world_renderer.set_hud(
-        session.health,
-        session.food,
         0,
         resolve_hud_gauges(
             &session.hud,
@@ -5400,6 +5413,7 @@ fn run_headless(
             has_experience(&session),
             0.0,
         ),
+        survival,
     );
     {
         let scale = rewo_gpu::hud::gui_scale(1280.0, 720.0);
@@ -9672,20 +9686,26 @@ impl LiveApp {
                 player_eye(session),
             );
         }
-        state
-            .world_renderer
-            .set_hud(
-                session.health,
-                session.food,
-                self.hotbar_slot,
-                resolve_hud_gauges(
-                    &session.hud,
-                    &session.inventory,
-                    &self.items,
-                    has_experience(session),
-                    alpha,
-                ),
-            );
+        let survival = rewo_gpu::survival_hud::layout_for_screen(
+            &resolve_survival_inputs(
+                session,
+                &self.etypes,
+                self.started.elapsed().as_millis() as u64,
+            ),
+            extent.width as f32,
+            extent.height as f32,
+        );
+        state.world_renderer.set_hud(
+            self.hotbar_slot,
+            resolve_hud_gauges(
+                &session.hud,
+                &session.inventory,
+                &self.items,
+                has_experience(session),
+                alpha,
+            ),
+            survival,
+        );
         let px = gui_px(extent.width, extent.height);
         // Drain the frame's chat events into the store *before* building the
         // text, or a message that arrived this frame is a frame late. The
@@ -11638,6 +11658,143 @@ fn selected_item_name_line(
         style: rewo_gpu::text::TextStyle::PLAIN,
         text: name.to_string(),
     })
+}
+
+/// M168 — everything `extractPlayerHealth`, `extractVehicleHealth` and
+/// `extractEffects` read, resolved from the session once per frame, and the
+/// one piece of per-frame STATE the HUD owns (`Hud.displayHealth` and its
+/// blink clock) advanced in the same call, which is why this takes `&mut`.
+///
+/// Session-free except for that update: every input is a plain read, so a
+/// gate can build the same `SurvivalInputs` by hand and grade the layout,
+/// and a unit test can drive [`rewo_gpu::survival_hud::layout`] with no
+/// socket. What only this function knows is WHERE each input lives:
+///
+/// * the two attributes come from `PlaySession::local_attributes` through
+///   `rewo_world::attributes::resolve` with `"minecraft:player"`, falling
+///   back to the supplier's default (20 / 0) — the local player never
+///   receives the initial pairing packet (`ServerEntity.java:286-290` goes to
+///   tracking players only), so an absent ARMOR is the registered 0 and
+///   vanilla draws nothing for it;
+/// * `getArmorValue()` is `Mth.floor` of the attribute (`LivingEntity.java:1879`);
+/// * the heart type and the HUNGER / REGENERATION tests read the active-
+///   effects map by id, and the ids are the generated table's positions,
+///   which a `rewo-data` test pins against the registry report;
+/// * the vehicle is `getVehicle()` — the DIRECT vehicle, not the root — and
+///   counts only if its type `instanceof LivingEntity`, with its health off
+///   metadata index 9 and its MAX_HEALTH resolved like any tracked entity's;
+/// * `isEyeInFluid(WATER)` is the same eye test the ambient handlers use
+///   (`local_player_view`).
+pub(crate) fn resolve_survival_inputs(
+    session: &mut PlaySession,
+    etypes: &EntityTypes,
+    millis: u64,
+) -> rewo_gpu::survival_hud::SurvivalInputs {
+    use rewo_data::mob_effect_table as fx;
+    use rewo_gpu::survival_hud as sh;
+    let can_hurt = session
+        .own_game_mode()
+        .map(rewo_net::play::GameMode::is_survival)
+        .unwrap_or(true);
+    let reg = session.attribute_registry.clone();
+    let player_attr = |name: &str, default: f32| -> f32 {
+        reg.as_deref()
+            .and_then(|r| {
+                rewo_world::attributes::resolve(
+                    Some(session.local_attributes()),
+                    Some("minecraft:player"),
+                    name,
+                    r,
+                )
+            })
+            .map(|(v, _)| v as f32)
+            .unwrap_or(default)
+    };
+    let max_health_attr = player_attr("max_health", 20.0);
+    let armor = player_attr("armor", 0.0).floor() as i32;
+    let effects = session.visual_effects();
+    let has = |name: &str| fx::id_of(name).is_some_and(|id| effects.has(id));
+    let local = *session.local_player_data();
+    let heart_type =
+        sh::HeartKind::for_player(has("poison"), has("wither"), local.is_fully_frozen());
+    let regeneration = has("regeneration");
+    let hunger_effect = has("hunger");
+    let effect_inputs: Vec<sh::EffectInput> = effects
+        .active()
+        .iter()
+        .map(|e| {
+            let def = fx::def(e.effect_id);
+            sh::EffectInput {
+                id: e.effect_id,
+                duration: e.duration,
+                ambient: e.ambient,
+                show_icon: e.show_icon,
+                beneficial: def.is_some_and(|d| d.category.is_beneficial()),
+                color: def.map_or(0, |d| d.color),
+            }
+        })
+        .collect();
+    let eye_in_water = session.local_player_view().is_some_and(|v| v.underwater);
+    let vehicle = session.local_vehicle().and_then(|vid| {
+        let e = session.world.entities.get(vid)?;
+        let living = session
+            .entity_classes
+            .as_deref()
+            .is_some_and(|c| c.is_living(e.type_id));
+        if !living {
+            return None;
+        }
+        let health = session.world.entities.death_state(vid).health;
+        let max_health = reg
+            .as_deref()
+            .and_then(|r| {
+                rewo_world::attributes::resolve(
+                    session.world.entities.attributes(vid),
+                    etypes.name(e.type_id),
+                    "max_health",
+                    r,
+                )
+            })
+            .map(|(v, _)| v as f32)
+            .unwrap_or(20.0);
+        Some(sh::VehicleInput { max_health, health })
+    });
+    let health = session.health;
+    let food = session.food;
+    let saturation = session.saturation;
+    let hardcore = session.hardcore;
+    let air_supply = local.air_supply();
+    let absorption = local.absorption();
+    let tick_count = session.hud.gui_tick;
+    let invulnerable = session.hud.local_hurt.is_invulnerable();
+    let frame = session
+        .hud
+        .health_display
+        .update(health.ceil() as i32, invulnerable, tick_count, millis);
+    sh::SurvivalInputs {
+        can_hurt,
+        health,
+        max_health_attr,
+        absorption,
+        display_health: frame.display_health,
+        blink: frame.blink,
+        heart_type,
+        hardcore,
+        regeneration,
+        armor,
+        food,
+        saturation,
+        hunger_effect,
+        air_supply,
+        max_air: sh::MAX_AIR_SUPPLY,
+        eye_in_water,
+        vehicle,
+        effects: effect_inputs,
+        tick_count,
+        // M168e — the jump bar needs the saddle, the jump-riding ramp and
+        // `player_command`, none of which exist yet; `None` is the XP bar.
+        jump: None,
+    }
 }
 
 /// M79's two HUD gauges, resolved from the session once per frame.

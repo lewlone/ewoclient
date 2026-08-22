@@ -3954,7 +3954,15 @@ fn pixels_inner(
     // M79 added the two gauges; this gate owns neither, so it passes the
     // default (no XP bar, no cooldown sweep) and its measurements are
     // unchanged.
-    wr.set_hud(20.0, 20, 0, rewo_gpu::hud::HudGauges::default());
+    wr.set_hud(
+        0,
+        rewo_gpu::hud::HudGauges::default(),
+        rewo_gpu::survival_hud::layout_for_screen(
+            &rewo_gpu::survival_hud::SurvivalInputs::simple(20.0, 20),
+            W as f32,
+            H as f32,
+        ),
+    );
     wr.init_gui_items(gpu, &atlas.rgba, 512, 512)?;
 
     // The GUI pass works in screen pixels and ignores the world's matrix
