@@ -47,6 +47,16 @@ pub struct EntityMeta {
     /// caller: 19 is Bee's own slot, and another class's nineteenth accessor
     /// could be a LONG too.
     pub long19: Option<i64>,
+    /// Index 19 **BOOLEAN** — `Camel.DASH` (M169). `Camel extends
+    /// AbstractHorse`, whose only accessor is `DATA_ID_FLAGS` at 18, so the
+    /// camel's first own slot is 19. Kind-gated by the caller.
+    pub bool19: Option<bool>,
+    /// Index 20 **BOOLEAN** — `AbstractNautilus.DASH` (M169). It extends
+    /// `TamableAnimal`, which owns 18 and 19, so its first own is 20.
+    pub bool20: Option<bool>,
+    /// Index 20 **LONG** — `Camel.LAST_POSE_CHANGE_TICK` (M169), the
+    /// camel's second own accessor, a `VAR_LONG` like the bee's at 19.
+    pub long20: Option<i64>,
     /// `Entity.DATA_CUSTOM_NAME_VISIBLE` — index **3**, BOOLEAN (M70).
     ///
     /// This is `Entity.shouldShowName()` for everything except a player
@@ -406,6 +416,12 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             // the arity saves us here, and would not on a slot whose neighbour
             // shared its type.
             (19, 2) => meta.long19 = r.varlong().ok(),
+            // M169 — the two DASH flags and the camel's pose clock; BOOLEAN is
+            // serializer 8 and LONG is 2, so none collides with the INT / LONG /
+            // CAT_VARIANT readings already at 19 and 20.
+            (19, 8) => meta.bool19 = r.u8().ok().map(|b| b != 0),
+            (20, 8) => meta.bool20 = r.u8().ok().map(|b| b != 0),
+            (20, 2) => meta.long20 = r.varlong().ok(),
             (20, 21) => meta.cat_variant = r.varint().ok(),
             (21, 1) => meta.int21 = r.varint().ok(),
             (23, 25) => meta.wolf_variant = r.varint().ok(),
@@ -723,5 +739,32 @@ mod m168_tests {
         let bytes = w.into_bytes();
         let m = parse(&mut PacketReader::new(&bytes), MetaKinds::default());
         assert_eq!((m.int17, m.absorption), (Some(99), None));
+    }
+
+    /// M169: the two DASH booleans and the camel's pose clock, in one body
+    /// with the bee's LONG at 19 beside them so the serializers are what
+    /// separate the slots.
+    #[test]
+    fn the_dash_flags_and_the_pose_clock_parse_by_serializer() {
+        let mut w = PacketWriter::default();
+        w.u8(19);
+        w.varint(8); // BOOLEAN — Camel.DASH
+        w.u8(1);
+        w.u8(20);
+        w.varint(2); // LONG — Camel.LAST_POSE_CHANGE_TICK
+        w.varlong(-123);
+        w.u8(20);
+        w.varint(8); // BOOLEAN — AbstractNautilus.DASH
+        w.u8(0);
+        w.u8(19);
+        w.varint(2); // LONG — Bee.DATA_ANGER_END_TIME, still its own field
+        w.varlong(77);
+        w.u8(0xFF);
+        let bytes = w.into_bytes();
+        let m = parse(&mut PacketReader::new(&bytes), MetaKinds::default());
+        assert_eq!(m.bool19, Some(true));
+        assert_eq!(m.long20, Some(-123));
+        assert_eq!(m.bool20, Some(false), "a FALSE dash entry is still an entry");
+        assert_eq!(m.long19, Some(77));
     }
 }

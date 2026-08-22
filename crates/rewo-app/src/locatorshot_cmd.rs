@@ -1536,8 +1536,16 @@ fn check_pixels(
                 yaw,
                 pitch,
                 fov: 70.0,
-                has_experience: false,
-                xp_prioritised: false,
+                // M169 — the selector, computed from the store as the real
+                // frame does, so the empty-store frame (p1) resolves to
+                // `Empty` and draws no strip. Hard-coding `Locator` here made
+                // `locator_bar_state` return `Some` even with no waypoints.
+                contextual: rewo_gpu::locator_bar::next_contextual_info(
+                    !store.is_empty(),
+                    None,
+                    false,
+                    false,
+                ),
                 ticks: 0,
             },
             GUI_W,

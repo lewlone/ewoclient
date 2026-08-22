@@ -439,6 +439,23 @@ pub struct EntityState {
     /// sends only the flag), and the cape's `fallFlyingScale` is its only
     /// consumer.
     fall_fly_ticks: i32,
+    /// M169 — `Mob.isSaddled()`, read off the SADDLE equipment slot (7).
+    /// Vanilla's is `hasItemInSlot(slot) && isEquippableInSlot(item, slot)`
+    /// (`Mob.java:860-862`); the client takes the slot being non-empty, since
+    /// the server only ever equips a valid item there.
+    saddled: bool,
+    /// M169 — `Camel.dashCooldown` / `AbstractNautilus.dashCooldown`, the
+    /// client-side counter `getJumpCooldown()` returns. Armed by the DASH
+    /// metadata (see [`EntityTable::arm_dash_cooldown`]), decremented per
+    /// tick.
+    dash_cooldown: i32,
+    /// M169 — `Camel.LAST_POSE_CHANGE_TICK` (index 20, LONG), the input
+    /// to `isCamelSitting()` (`< 0`) and `isInPoseTransition()`.
+    last_pose_change_tick: i64,
+    /// M169 — `!Entity.firstTick`: set once this entity has been ticked.
+    /// `onSyncedDataUpdated`'s dash arming is gated on `!this.firstTick`,
+    /// so the spawn-time metadata never arms a cooldown.
+    ticked: bool,
 }
 
 /// `Sniffer.State.SEARCHING` — ordinal 4.
@@ -515,6 +532,10 @@ impl EntityState {
             motion_player: false,
             cloak: CloakAnchor::default(),
             fall_fly_ticks: 0,
+            saddled: false,
+            dash_cooldown: 0,
+            last_pose_change_tick: 0,
+            ticked: false,
         }
     }
 
@@ -1355,6 +1376,72 @@ impl EntityTable {
 
     pub fn gesture_state(&self, id: i32) -> u8 {
         self.gesture_states.get(&id).copied().unwrap_or(0)
+    }
+
+    /// M169 — the SADDLE equipment slot changed.
+    pub fn set_saddled(&mut self, id: i32, saddled: bool) {
+        if let Some(e) = self.map.get_mut(&id) {
+            e.saddled = saddled;
+        }
+    }
+
+    /// `Mob.isSaddled()` (M169). An untracked entity is not saddled.
+    pub fn saddled(&self, id: i32) -> bool {
+        self.map.get(&id).is_some_and(|e| e.saddled)
+    }
+
+    /// `Camel.onSyncedDataUpdated` / `AbstractNautilus.onSyncedDataUpdated`
+    /// for the DASH accessor (M169):
+    ///
+    /// ```java
+    /// if (!this.firstTick && DASH.equals(accessor)) {
+    ///    this.dashCooldown = this.dashCooldown == 0 ? 55 : this.dashCooldown;
+    /// }
+    /// ```
+    /// (`Camel.java:645-647`; the nautilus's literal is 40.) Three things
+    /// that invert: it fires on ANY DASH entry, true or false, because
+    /// `assignValues` has no change guard; it does NOT restart a running
+    /// cooldown; and the entity's spawn-time metadata arrives before its
+    /// first tick and arms nothing.
+    pub fn arm_dash_cooldown(&mut self, id: i32, ticks: i32) {
+        if let Some(e) = self.map.get_mut(&id) {
+            if e.ticked && e.dash_cooldown == 0 {
+                e.dash_cooldown = ticks;
+            }
+        }
+    }
+
+    /// `getJumpCooldown()` for a camel or nautilus (M169); 0 otherwise.
+    pub fn dash_cooldown(&self, id: i32) -> i32 {
+        self.map.get(&id).map_or(0, |e| e.dash_cooldown)
+    }
+
+    /// `Camel.LAST_POSE_CHANGE_TICK` arrived (M169).
+    pub fn set_last_pose_change_tick(&mut self, id: i32, tick: i64) {
+        if let Some(e) = self.map.get_mut(&id) {
+            e.last_pose_change_tick = tick;
+        }
+    }
+
+    /// `Camel.refuseToMove()` — `isCamelSitting() || isInPoseTransition()`
+    /// (M169): sitting is `LAST_POSE_CHANGE_TICK < 0`, and the transition
+    /// is `getPoseTime() < (sitting ? 40 : 52)` with `getPoseTime =
+    /// gameTime - abs(lastPoseChangeTick)` (`Camel.java:267-269`,
+    /// `:572-583`, `:630-632`). The `!refuseToMove()` half of the camel's
+    /// `canJump()`.
+    pub fn camel_refuse_to_move(&self, id: i32, game_time: i64) -> bool {
+        let Some(e) = self.map.get(&id) else {
+            return false;
+        };
+        let sitting = e.last_pose_change_tick < 0;
+        let pose_time = game_time.wrapping_sub(e.last_pose_change_tick.wrapping_abs());
+        let in_transition = pose_time < if sitting { 40 } else { 52 };
+        sitting || in_transition
+    }
+
+    /// `!Entity.firstTick` (M169), for tests.
+    pub fn has_ticked(&self, id: i32) -> bool {
+        self.map.get(&id).is_some_and(|e| e.ticked)
     }
 
     /// Slime / magma-cube size (index 16). Vanilla default is 1; callers
@@ -2293,6 +2380,12 @@ impl EntityTable {
                     == Some(p)
             });
             e.tick(fall_flying, authoritative);
+            // M169 — `Camel.tick` / `AbstractNautilus.tick`: `if (dashCooldown
+            // > 0) dashCooldown--`, and `Entity.baseTick`'s `firstTick = false`.
+            if e.dash_cooldown > 0 {
+                e.dash_cooldown -= 1;
+            }
+            e.ticked = true;
         }
         for d in self.dances.values_mut() {
             d.tick();
@@ -3754,5 +3847,64 @@ mod m21_hurt_tests {
             e.tick(false, false);
             assert!(e.limb().1 <= 1.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod jump_vehicle_tests {
+    use super::*;
+
+    fn table_with(id: i32) -> EntityTable {
+        let mut t = EntityTable::default();
+        t.add(id, EntityState::new(0, 1, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t
+    }
+
+    /// `onSyncedDataUpdated(DASH)`: gated on `!firstTick`, arms only from
+    /// zero, never restarts; `tick()` counts it down.
+    #[test]
+    fn the_dash_cooldown_arms_after_the_first_tick_from_zero_only() {
+        let mut t = table_with(9);
+        t.arm_dash_cooldown(9, 55);
+        assert_eq!(t.dash_cooldown(9), 0, "the spawn-time DASH entry arrives before the first tick");
+        t.tick_lerp();
+        assert!(t.has_ticked(9));
+        t.arm_dash_cooldown(9, 55);
+        assert_eq!(t.dash_cooldown(9), 55);
+        for _ in 0..10 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.dash_cooldown(9), 45);
+        t.arm_dash_cooldown(9, 55);
+        assert_eq!(t.dash_cooldown(9), 45, "`dashCooldown == 0 ? 55 : dashCooldown` does not restart");
+        for _ in 0..50 {
+            t.tick_lerp();
+        }
+        assert_eq!(t.dash_cooldown(9), 0, "never negative");
+        t.arm_dash_cooldown(9, 40);
+        assert_eq!(t.dash_cooldown(9), 40, "the nautilus literal");
+        assert_eq!(t.dash_cooldown(8), 0, "an untracked entity has no cooldown");
+    }
+
+    /// `Camel.refuseToMove()` — sitting is a NEGATIVE pose-change tick, and
+    /// the transition window is 40 ticks when sitting and 52 when standing,
+    /// measured from `|lastPoseChangeTick|`.
+    #[test]
+    fn the_camel_refuses_while_sitting_or_changing_pose() {
+        let mut t = table_with(9);
+        assert!(!t.camel_refuse_to_move(9, 1000), "default 0: standing, long settled");
+        t.set_last_pose_change_tick(9, -900);
+        assert!(t.camel_refuse_to_move(9, 1000), "negative = sitting, always refuses");
+        t.set_last_pose_change_tick(9, 900);
+        assert!(t.camel_refuse_to_move(9, 951), "standing up: 51 < 52 is still the transition");
+        assert!(!t.camel_refuse_to_move(9, 952), "52 is not");
+        t.set_last_pose_change_tick(9, -900);
+        assert!(t.camel_refuse_to_move(9, 939) && t.camel_refuse_to_move(9, 940), "sitting refuses regardless of the 40");
+        assert!(!t.camel_refuse_to_move(8, 1000), "an untracked entity refuses nothing");
+        // Saddled defaults to false and follows the setter.
+        assert!(!t.saddled(9));
+        t.set_saddled(9, true);
+        assert!(t.saddled(9));
+        assert!(!t.saddled(8));
     }
 }

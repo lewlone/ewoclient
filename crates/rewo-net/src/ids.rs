@@ -279,6 +279,10 @@ pub struct Ids {
     pub sb_play_interact: Option<i32>,
     pub sb_play_swing: Option<i32>,
     pub sb_play_client_command: Option<i32>,
+    /// `ServerboundPlayerCommandPacket` (M169) — `START_RIDING_JUMP` is the
+    /// first action Rewo sends; the others (sprint, sleep, inventory,
+    /// fall-flying) are not sent yet.
+    pub sb_play_player_command: Option<i32>,
     pub sb_play_container_click: Option<i32>,
     /// `ServerboundContainerButtonClickPacket` (M92f) — the one input the
     /// bespoke-widget screens share. Optional for the same reason its sibling
@@ -726,6 +730,7 @@ impl Ids {
             sb_play_interact: opt!(p, P, S, "interact"),
             sb_play_swing: opt!(p, P, S, "swing"),
             sb_play_client_command: opt!(p, P, S, "client_command"),
+            sb_play_player_command: opt!(p, P, S, "player_command"),
             sb_play_container_click: opt!(p, P, S, "container_click"),
             sb_play_container_button_click: opt!(p, P, S, "container_button_click"),
             sb_play_recipe_book_change_settings: opt!(p, P, S, "recipe_book_change_settings"),

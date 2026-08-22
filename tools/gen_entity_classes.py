@@ -217,6 +217,17 @@ ANCESTRY_SETS = [
         "`passengerAttachments`, so falling back to the default would put a",
         "rider at the top of its bounding box rather than on its back.",
     ]),
+    # ---- M169: the jump bar's vehicle. `Camel` and `AbstractNautilus` both
+    # keep a client-side `dashCooldown` armed from their DASH metadata and
+    # read back by `getJumpCooldown()`; `AbstractHorse`'s is the interface
+    # default, 0. The camel's `canJump()` additionally requires
+    # `!refuseToMove()` (sitting or mid-pose-change).
+    ("ABSTRACT_NAUTILUS", "AbstractNautilus", [
+        "Registry names whose class descends from `AbstractNautilus` (M169),",
+        "which declares `DASH` at **index 20, BOOLEAN** (TamableAnimal owns 18",
+        "and 19) and arms a 40-tick `dashCooldown` from it in",
+        "`onSyncedDataUpdated` — the `getJumpCooldown()` the jump bar reads.",
+    ]),
     # ---- M77: `handleProjectilePowerPacket` casts to this and nothing else.
     ("ABSTRACT_HURTING_PROJECTILE", "AbstractHurtingProjectile", [
         "Registry names whose class descends from `AbstractHurtingProjectile` —",
@@ -236,6 +247,17 @@ ANCESTRY_SETS = [
 # the implementor set is the point: if 26.3 makes `AbstractMinecart` leashable,
 # this stops rather than silently shipping a set that is one subtree short.
 INTERFACE_SETS = [
+    # ---- M169: `LocalPlayer.jumpableVehicle()` is `getControlledVehicle()
+    # instanceof PlayerRideableJumping` — an interface with exactly two
+    # implementors, the horse family (camel included) and the nautilus pair.
+    ("PLAYER_RIDEABLE_JUMPING", "PlayerRideableJumping", ("AbstractHorse", "AbstractNautilus"), [
+        "Registry names whose class implements `PlayerRideableJumping` (M169)",
+        "— the vehicles `LocalPlayer.jumpableVehicle()` can return, and so the",
+        "only ones whose rider ever sees the jump bar. The union of the",
+        "`AbstractHorse` and `AbstractNautilus` subtrees; pinning the implementor",
+        "pair is what stops a 26.3 that makes a pig jumpable from shipping a",
+        "set one subtree short.",
+    ]),
     ("LEASHABLE", "Leashable", ("Mob", "AbstractBoat"), [
         "Registry names whose class implements `Leashable`, which is what",
         "`handleEntityLinkPacket` casts to before calling",

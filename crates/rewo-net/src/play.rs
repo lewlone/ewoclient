@@ -822,6 +822,11 @@ pub struct PlaySession {
     pub block_updates: u32,
     /// Who is riding what (M68), from `set_passengers`.
     pub mounts: crate::motion::Mounts,
+    /// M169 — `LocalPlayer.jumpRidingTicks` / `jumpRidingScale`.
+    jump_riding: crate::jump_riding::JumpRiding,
+    /// M169 — how many `START_RIDING_JUMP`s this session has sent; the
+    /// render-check's witness that the whole chain reached the wire.
+    riding_jumps_sent: u64,
     /// The **local player's** `update_attributes` snapshots (M73).
     ///
     /// Kept beside the entity table rather than in it: the server sends no
@@ -1805,6 +1810,8 @@ impl<'a> Connection<'a> {
             teleports: 0,
             block_updates: 0,
             mounts: crate::motion::Mounts::new(),
+            jump_riding: Default::default(),
+            riding_jumps_sent: 0,
             local_attributes: rewo_world::attributes::EntityAttributes::default(),
             local_player_data: crate::local_player_data::LocalPlayerData::default(),
             ambient_underwater: Default::default(),
@@ -2262,6 +2269,15 @@ impl PlaySession {
             let local = self.local_collector();
             let (entities, pickups) = (&self.world.entities, &mut self.world.pickups);
             pickups.tick(|id| crate::collector_chest(entities, id, local));
+        }
+        // M169 — `LocalPlayer.aiStep`'s jump-riding meter, which runs whether
+        // or not the player is mounted (the `else` zeroes the scale). The
+        // release sends `START_RIDING_JUMP`; vanilla's `onPlayerJump` on the
+        // vehicle is the client's own cosmetic pending scale and is not
+        // modelled.
+        let jumpable = self.jumpable_vehicle();
+        if let Some(data) = self.jump_riding.tick(input.jump, jumpable) {
+            self.send_riding_jump(data)?;
         }
         if self.spawned && self.is_mounted() {
             // M68. A passenger does not travel under its own power: vanilla's
@@ -3798,6 +3814,71 @@ impl PlaySession {
     /// does not run its own physics — see [`PlaySession::tick`].
     pub fn is_mounted(&self) -> bool {
         self.local_vehicle().is_some()
+    }
+
+    /// `LocalPlayer.jumpableVehicle()` (M169):
+    ///
+    /// ```java
+    /// return this.getControlledVehicle() instanceof PlayerRideableJumping v && v.canJump() ? v : null;
+    /// ```
+    /// `getControlledVehicle()` is the vehicle iff
+    /// `vehicle.getControllingPassenger() == this` (`Entity.java:3632`),
+    /// and BOTH implementors answer that with `isSaddled() &&
+    /// getFirstPassenger() instanceof Player` (`AbstractHorse.java:962`,
+    /// `AbstractNautilus.java:170`). `canJump()` is `isSaddled()` for both,
+    /// and the camel adds `!refuseToMove()` (`Camel.java:288-290`).
+    /// `getJumpCooldown()` is the dash cooldown for a camel or nautilus
+    /// and the interface default 0 for a horse.
+    pub fn jumpable_vehicle(&self) -> Option<crate::jump_riding::JumpableVehicle> {
+        let me = self.player_id?;
+        let vid = self.local_vehicle()?;
+        let classes = self.entity_classes.as_deref()?;
+        let e = self.world.entities.get(vid)?;
+        if !classes.is_rideable_jumping(e.type_id) {
+            return None;
+        }
+        let controlled = self.world.entities.saddled(vid)
+            && self.mounts.passengers(vid).first() == Some(&me);
+        if !controlled {
+            return None;
+        }
+        let is_camel = classes.is_camel(e.type_id);
+        if is_camel && self.world.entities.camel_refuse_to_move(vid, self.game_time()) {
+            return None;
+        }
+        let cooldown = if is_camel || classes.is_nautilus(e.type_id) {
+            self.world.entities.dash_cooldown(vid)
+        } else {
+            0
+        };
+        Some(crate::jump_riding::JumpableVehicle { cooldown })
+    }
+
+    /// `getJumpRidingScale()` (M169).
+    pub fn jump_riding_scale(&self) -> f32 {
+        self.jump_riding.scale()
+    }
+
+    /// How many `START_RIDING_JUMP`s have been sent (M169).
+    pub fn riding_jumps_sent(&self) -> u64 {
+        self.riding_jumps_sent
+    }
+
+    /// `LocalPlayer.sendRidingJump` (M169): `ServerboundPlayerCommandPacket(
+    /// this, START_RIDING_JUMP, Mth.floor(getJumpRidingScale() * 100))`.
+    fn send_riding_jump(&mut self, data: i32) -> Result<(), String> {
+        let (Some(id), Some(me)) = (self.ids.sb_play_player_command, self.player_id) else {
+            return Ok(());
+        };
+        let mut p = PacketWriter::packet(id);
+        p.raw(&crate::jump_riding::player_command_body(
+            me,
+            crate::jump_riding::START_RIDING_JUMP,
+            data,
+        ));
+        self.send(p)?;
+        self.riding_jumps_sent += 1;
+        Ok(())
     }
 
     /// `handleExplosion`'s FIRST statement, which M68 dropped on the floor
