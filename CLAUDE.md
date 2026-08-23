@@ -2171,17 +2171,18 @@ default build (**28** witnesses) and adds decode and the mixer under
 does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
-**Everything is shipped and gated** as of 2026-08-23 (M173) —
-**3424 tests / 0 failures** (world 1217, net 1235, gpu 320, data 233, app 231,
-mesh 52, proto 16, **audio 120** — EIGHT crates now, read off the runner per
+**Everything is shipped and gated** as of 2026-08-23 (M174) —
+**3446 tests / 0 failures** (world 1238, net 1236, gpu 320, data 233, app 231,
+mesh 52, proto 16, audio 120 — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **109/109**, `inventoryshot` **165/165**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, `tablistshot` **42/42**, `soundshot` 37/57,
-`bookshot` 21/21, **`optionshot` 12/12** (the 41st gate), all **41** serverless
-gates green with 0 validation errors, `live --render-check` **62/62** with
-validation ON and 0 validation errors (r62 arrived with M173), packet coverage
-**121 / 0 / 20**, demo PNG `2cc56b4acbfb92cb`.
+`bookshot` 21/21, **`optionshot` 12/12**, **`signshot` 23/23** (the 42nd gate),
+all **42** serverless
+gates green with 0 validation errors, `live --render-check` **64/64** with
+validation ON and 0 validation errors (r63/r64 arrived with M174), packet coverage
+**122 / 0 / 19**, demo PNG `2cc56b4acbfb92cb`.
 
 **M173 (2026-08-23) built the volume sliders — and the options wiring that
 never existed.** The research fan-out's sharpest finding was about M157, not
@@ -7064,3 +7065,21 @@ gained `widgets/liquid_glass.rs` (SkSL SDF refraction glass used by the HUD's `.
 `ewo-jni/src/audio.rs` is a WASAPI process-loopback spectrum visualiser feeding the media widget;
 and `dist/EwoClient` had gone partial (exe only — no fonts/icon/rewo.exe, breaking its own
 self-contained contract) until `package.ps1` was re-run this session.*
+
+*Update (2026-08-23 session, M174 landed — the sign editor): the m174 worktree's
+mid-flight WIP (it did not compile; the app-side pump/close, render arm, key
+routing, gate and battery were all absent) was finished and merged. The editor
+is complete: `open_sign_editor`/`sign_update` decode,
+`rewo_world::sign_edit_screen` (`TextFieldHelper` over the current line with a
+whole-candidate PIXEL-width validator that rejects rather than truncates), flat
+GUI-blit boards (`gui/signs` + `gui/hanging_signs`, wall = top 12 rows), the
+per-keystroke local echo through `set_sign_messages`, and the load-bearing
+vanilla rule that **every exit commits** — `removed()` sends `sign_update` on
+Done, Esc, the validity tick AND on being replaced by another screen
+(`Minecraft.setScreen` calls it), which r64 drives live. Gate:
+**`rewo signshot --check`** (the 42nd, 23 witnesses — five of which were wrong
+before the code was, down to a p5 band derived from a zero-width origin);
+battery **15/15 + control + one proven-equivalent survivor** (the paste arm's
+own selection collapse is dead code — `insert_text` collapses both paths).
+`--render-check` **64/64**; coverage **122 / 0 / 19**, class C **8**. Full
+detail in REWO_PLAN §15 (M174).*

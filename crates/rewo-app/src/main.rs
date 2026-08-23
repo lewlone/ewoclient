@@ -36,6 +36,7 @@ mod locatorshot_cmd;
 mod sidebarshot_cmd;
 mod titleshot_cmd;
 mod bookshot_cmd;
+mod signshot_cmd;
 mod optionshot_cmd;
 mod gaugeshot_cmd;
 mod leashshot_cmd;
@@ -219,6 +220,11 @@ enum Command {
     /// the jar's own sprite bytes with `--check` (no server; Vulkan required).
     /// The written-book reader gate (M172).
     Bookshot(bookshot_cmd::BookshotArgs),
+    /// The sign-editor gate (M174): the `TextFieldHelper` model, the three
+    /// board blits and the caret/selection rendering, with pixel witnesses
+    /// against the jar's own `gui/signs` sheets (`--check`; no server; Vulkan
+    /// validation required).
+    Signshot(signshot_cmd::SignshotArgs),
     /// The options screens + volume sliders gate (M173).
     Optionshot(optionshot_cmd::OptionshotArgs),
     Gaugeshot(gaugeshot_cmd::GaugeshotArgs),
@@ -392,6 +398,7 @@ fn main() {
         Some(Command::Abilityshot(ab_args)) => abilityshot_cmd::run(ab_args),
         Some(Command::Titleshot(t_args)) => titleshot_cmd::run(t_args),
         Some(Command::Bookshot(b_args)) => bookshot_cmd::run(b_args),
+            Some(Command::Signshot(s_args)) => signshot_cmd::run(s_args),
         Some(Command::Optionshot(o_args)) => optionshot_cmd::run(o_args),
         Some(Command::Gaugeshot(g_args)) => gaugeshot_cmd::run(g_args),
         Some(Command::Leashshot(l_args)) => leashshot_cmd::run(l_args),

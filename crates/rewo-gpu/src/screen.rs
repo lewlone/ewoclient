@@ -149,6 +149,15 @@ pub enum Sheet {
     /// (200×20, nine-slice border 1), 2 handle, 3 handle_highlighted (8×20,
     /// nine-slice border `{2, 2, 2, 3}`).
     SliderSheet(u8),
+    /// A `gui/signs/<wood>.png` sheet (M174), 24x26, indexed by
+    /// `rewo_data::assets::SIGN_WOODS` order. The edit screen blits the top
+    /// 26 rows (standing) or the top 12 (wall — the board without the post)
+    /// at scale 3.9, so a wall board is drawn via [`Fill::Crop`]-less partial
+    /// height: the sprite rect samples `v 0..12/26` of the sheet.
+    SignBoard(u8),
+    /// A `gui/hanging_signs/<wood>.png` sheet (M174), 16x16, scale 4.5 —
+    /// chains baked in.
+    HangingSignBoard(u8),
 }
 
 /// One blit, in **GUI space** (the app multiplies nothing; this pass applies
@@ -179,6 +188,10 @@ pub enum Fill {
     /// `(tile_w, tile_h)` GUI pixels. The tile size is the **declared**
     /// texture size at the call site, which is not always the file's own.
     Tiled(i32, i32),
+    /// Vanilla's eight-arg `blit(x, y, u, v, w, h, texW, texH)` sampling only
+    /// a texel sub-rect of the sheet (M174 — a wall sign board is the top
+    /// `24x12` of the 24x26 texture). `(u, v, w, h)` in sheet texels.
+    SubRect(i32, i32, i32, i32),
 }
 
 /// `Screen.extractMenuBackground`'s tiled texture (M85).
@@ -271,6 +284,10 @@ pub struct WidgetSpriteData<'a> {
     pub page_buttons: [crate::hud::HudSpriteData<'a>; 4],
     /// track, track_highlighted, handle, handle_highlighted (M173).
     pub slider: [crate::hud::HudSpriteData<'a>; 4],
+    /// The 12 standing/wall sign boards (M174), `SIGN_WOODS` order.
+    pub sign_boards: [crate::hud::HudSpriteData<'a>; 12],
+    /// The 12 hanging sign boards (M174), `SIGN_WOODS` order.
+    pub hanging_sign_boards: [crate::hud::HudSpriteData<'a>; 12],
 }
 
 pub struct ScreenPass {
@@ -321,9 +338,11 @@ fn sheet_index(s: Sheet) -> usize {
         Sheet::BookBackground => 25,
         Sheet::PageArrow(i) => 26 + (i as usize).min(3),
         Sheet::SliderSheet(i) => 30 + (i as usize).min(3),
+        Sheet::SignBoard(i) => 34 + (i as usize).min(11),
+        Sheet::HangingSignBoard(i) => 46 + (i as usize).min(11),
     }
 }
-const SHEET_COUNT: usize = 34;
+const SHEET_COUNT: usize = 58;
 
 impl ScreenPass {
     pub fn new(
@@ -490,6 +509,26 @@ impl ScreenPass {
         put(&mut atlas, &mut sheets, Sheet::SliderSheet(1), &sprites.slider[1], 200, 300);
         put(&mut atlas, &mut sheets, Sheet::SliderSheet(2), &sprites.slider[2], 404, 280);
         put(&mut atlas, &mut sheets, Sheet::SliderSheet(3), &sprites.slider[3], 414, 280);
+        // M174 — the sign-board shelves: the 12 standing boards (24x26) in a
+        // row at y 320, the 12 hanging boards (16x16) below them at y 352.
+        for i in 0..12 {
+            put(
+                &mut atlas,
+                &mut sheets,
+                Sheet::SignBoard(i as u8),
+                &sprites.sign_boards[i],
+                200 + 24 * i as u32,
+                320,
+            );
+            put(
+                &mut atlas,
+                &mut sheets,
+                Sheet::HangingSignBoard(i as u8),
+                &sprites.hanging_sign_boards[i],
+                200 + 16 * i as u32,
+                352,
+            );
+        }
         // One opaque white texel so the untextured backdrop can share this
         // pipeline — the fragment shader's `texture * color` then leaves the
         // gradient alone. Parked in the empty bottom-right of the atlas.
@@ -689,6 +728,14 @@ impl ScreenPass {
                 Fill::NineSlice(border) => {
                     nine_slice(&mut v, scale, (s.x, s.y, s.width, s.height), src, border, s.color)
                 }
+                Fill::SubRect(u, sv, sw, sh) => push_src(
+                    &mut v,
+                    scale,
+                    (s.x, s.y, s.width, s.height),
+                    src,
+                    (u, sv, sw, sh),
+                    s.color,
+                ),
                 Fill::Tiled(tw, th) => push_tiled(
                     &mut v,
                     scale,

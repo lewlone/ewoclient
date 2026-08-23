@@ -68,6 +68,14 @@ pub struct SignState {
     /// from the same pair of block-entity classes, and a hanging sign is both
     /// narrower *and* tighter-lined.
     pub max_line_width: f32,
+    /// Whether this is a hanging sign (M174) — the edit-screen dispatch, and
+    /// vanilla's is on the block-ENTITY class, which for signs is 1:1 with
+    /// the block-name shape this builder already parses.
+    pub hanging: bool,
+    /// The wood's index into [`crate::assets::SIGN_WOODS`] (M174) — which
+    /// `gui/signs/<wood>.png` sheet the edit screen blits. A wood not in the
+    /// table maps to oak, which is `SignBlock.getWoodType`'s own fallback.
+    pub wood_index: u8,
 }
 
 impl SignState {
@@ -127,6 +135,17 @@ impl SignStates {
             } else {
                 (SIGN_LINE_HEIGHT, SIGN_MAX_WIDTH)
             };
+            // The wood is the short name minus the shape suffix — the four
+            // shapes share the wood prefix (`spruce_wall_hanging_sign` →
+            // `spruce`).
+            let wood = short
+                .trim_end_matches("_sign")
+                .trim_end_matches("_hanging")
+                .trim_end_matches("_wall");
+            let wood_index = crate::assets::SIGN_WOODS
+                .iter()
+                .position(|w| *w == wood)
+                .unwrap_or(0) as u8;
             let Some(states) = def.get("states").and_then(|s| s.as_array()) else {
                 continue;
             };
@@ -161,6 +180,8 @@ impl SignStates {
                         angle,
                         line_height,
                         max_line_width,
+                        hanging,
+                        wood_index,
                     },
                 );
             }
@@ -202,6 +223,8 @@ mod tests {
         angle: 0.0,
         line_height: SIGN_LINE_HEIGHT,
         max_line_width: SIGN_MAX_WIDTH,
+        hanging: false,
+        wood_index: 0,
     };
 
     #[test]

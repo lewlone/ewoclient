@@ -464,6 +464,40 @@ impl BlockEntity {
                 .and_then(|t| SignFace::from_nbt(t, lang)),
         )
     }
+
+    /// The sign editor's per-keystroke local echo (M174) — vanilla's
+    /// `setMessage` rebuilds the face's `SignText` with `Component.literal`
+    /// per line, **preserving `color` and `hasGlowingText`**
+    /// (SignText.java:89-99), and `SignBlockEntity.setText` replaces only
+    /// that face (SignBlockEntity.java:161-181). So: replace the edited
+    /// face's `messages` with four plain strings, keep its other keys and
+    /// the whole other face. A face compound absent from the data (a sign
+    /// whose chunk payload never carried one) is created bare.
+    pub fn set_sign_messages(&mut self, front: bool, lines: &[String; 4]) {
+        let key = if front { "front_text" } else { "back_text" };
+        let messages = Nbt::List(lines.iter().map(|l| Nbt::String(l.clone())).collect());
+        let Nbt::Compound(entries) = &mut self.data else {
+            return;
+        };
+        for (k, v) in entries.iter_mut() {
+            if k == key {
+                if let Nbt::Compound(face) = v {
+                    if let Some((_, m)) = face.iter_mut().find(|(k, _)| k == "messages") {
+                        *m = messages;
+                    } else {
+                        face.push(("messages".to_string(), messages));
+                    }
+                    return;
+                }
+                *v = Nbt::Compound(vec![("messages".to_string(), messages)]);
+                return;
+            }
+        }
+        entries.push((
+            key.to_string(),
+            Nbt::Compound(vec![("messages".to_string(), messages)]),
+        ));
+    }
 }
 
 /// `ChestLidController` — the client-side lid clock, verbatim.
@@ -739,6 +773,12 @@ impl BlockEntities {
 
     pub fn get(&self, pos: BlockEntityPos) -> Option<&BlockEntity> {
         self.map.get(&pos)
+    }
+
+    /// Mutable lookup — the sign editor's per-edit local echo writes the
+    /// edited face through this (M174).
+    pub fn get_mut(&mut self, pos: BlockEntityPos) -> Option<&mut BlockEntity> {
+        self.map.get_mut(&pos)
     }
 
     pub fn remove(&mut self, pos: BlockEntityPos) -> Option<BlockEntity> {
@@ -1168,5 +1208,58 @@ mod tests {
         let entries = vec![("minecraft:chest".to_string(), 1)];
         let err = BlockEntityRegistry::resolve(&entries).unwrap_err();
         assert!(err.contains("drifted"), "{err}");
+    }
+
+    #[test]
+    fn the_sign_echo_replaces_one_faces_messages_and_keeps_everything_else() {
+        use rewo_proto::nbt::Nbt;
+        let mut be = BlockEntity {
+            type_id: 7,
+            data: Nbt::Compound(vec![
+                (
+                    "front_text".into(),
+                    Nbt::Compound(vec![
+                        (
+                            "messages".into(),
+                            Nbt::List(vec![Nbt::String("old".into()); 4]),
+                        ),
+                        ("color".into(), Nbt::String("red".into())),
+                        ("has_glowing_text".into(), Nbt::Byte(1)),
+                    ]),
+                ),
+                (
+                    "back_text".into(),
+                    Nbt::Compound(vec![(
+                        "messages".into(),
+                        Nbt::List(vec![Nbt::String("back".into()); 4]),
+                    )]),
+                ),
+            ]),
+        };
+        let lines = ["a".to_string(), "b".into(), String::new(), String::new()];
+        be.set_sign_messages(true, &lines);
+        let (front, back) = be.sign_text(None);
+        let front = front.unwrap();
+        assert_eq!(front.lines[0], "a");
+        assert_eq!(front.lines[1], "b");
+        // `SignText.setMessage` preserves color + glowing.
+        assert_eq!(front.color.as_deref(), Some("red"));
+        assert!(front.glowing);
+        // The OTHER face is untouched — `setText` replaces one face only.
+        assert_eq!(back.unwrap().lines[0], "back");
+    }
+
+    #[test]
+    fn the_sign_echo_creates_an_absent_face_bare() {
+        use rewo_proto::nbt::Nbt;
+        let mut be = BlockEntity { type_id: 7, data: Nbt::Compound(vec![]) };
+        let lines = ["x".to_string(), String::new(), String::new(), String::new()];
+        be.set_sign_messages(false, &lines);
+        let (front, back) = be.sign_text(None);
+        assert!(front.is_none());
+        let back = back.unwrap();
+        assert_eq!(back.lines[0], "x");
+        assert_eq!(back.color, None, "no color key was invented");
+        assert!(!back.glowing);
     }
 }

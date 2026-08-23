@@ -74,6 +74,10 @@ pub enum ScreenKind {
     Options,
     /// `BookViewScreen` (M171) — the written-book reader, opened by `open_book`.
     BookView,
+    /// `SignEditScreen` / `HangingSignEditScreen` (M174) — opened by
+    /// `open_sign_editor`. Every exit commits (`removed()` sends
+    /// `sign_update`); see [`crate::sign_edit_screen`].
+    SignEdit,
 }
 
 /// A widget's identity within its screen. The screen's own module owns the
