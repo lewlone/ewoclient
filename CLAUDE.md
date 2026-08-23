@@ -2171,17 +2171,42 @@ default build (**28** witnesses) and adds decode and the mixer under
 does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
-**Everything is shipped and gated** as of 2026-08-23 (M169) —
-**3391 tests / 0 failures** (world 1203, net 1224, gpu 312, data 233, app 231,
+**Everything is shipped and gated** as of 2026-08-23 (M170) —
+**3399 tests / 0 failures** (world 1203, net 1224, gpu 320, data 233, app 231,
 mesh 52, proto 16, **audio 120** — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **109/109**, `inventoryshot` **165/165**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, `tablistshot` **42/42**, `soundshot` 37/57,
-**`gaugeshot` 35/35** (the 38th gate), all **38** serverless gates green with 0
-validation errors, `live --render-check` **59/59** with validation ON and 0
-validation errors (r59 arrived with M169), demo PNG
+**`leashshot` 5/5** (the 39th gate), all **39** serverless gates green with 0
+validation errors, `live --render-check` **60/60** with validation ON and 0
+validation errors (r60 arrived with M170), demo PNG
 `2cc56b4acbfb92cb`.
+
+**M170 (2026-08-23) drew the leash rope.** The decode has been complete and
+gated since M77 (`set_entity_link` -> `is_leashable` -> `set_leash_holder`,
+graded by `rideshot`); nothing drew the rope. M170 is `rewo_gpu::leash`
+(a verbatim port of `LeashFeatureRenderer`), a `WorldRenderer::draw_leash`
+pass (a colour-only POSITION_COLOR triangle list, depth-tested GREATER no-write
+against terrain and entities), and `collect_leashes` in `live_cmd` gathering
+the endpoints. Five inversions a tidy rewrite loses: the two-pass forward/
+backward ribbon (fudge 0.05/0.0) is two-sided; the slack curve is asymmetric
+in `dy` (up sags `dy·p²`, down `dy - dy·(1-p)²`); the alternating dim keys to
+`backwards` so the twist lines up; `offset` is already folded into `start`
+(re-adding it doubles the attach point); and the light interpolates per vertex.
+The gather is faithful to `EntityRenderer`'s single-leash branch —
+`start = pos + (0, eyeHeight, bbWidth·0.4).yRot(-bodyYaw)`, `end =
+holder.getRopeHoldPosition` (a fence knot's is `pos + (0, 0.2, 0)`), `slack =
+true` (the `LeashState` default the branch never sets). The colour is folded
+LINEAR on the CPU because the world attachment expects linear (the selection
+outline's convention). `leashshot` renders `build_ribbon`'s output through the
+real pass and reads the frame back (empty/line/sag/dim/fade); r60 drives the
+live `collect_leashes` path — a staged cow + fence knot + `set_entity_link`
+builds exactly one 294-vertex ribbon into the pass. Two battery survivors were
+weak fixtures (the width-collapse hid in the camera's view axis; the edge-fudge
+in a loose tolerance), closed with unit witnesses. Open: the light is an RGB
+interpolation of the two endpoints rather than the packed coords, and the
+happy-ghast quad-leash is not drawn.
 
 **M169 (2026-08-23) fed the jump bar M168 could only draw.** M168 laid the
 jump bar out and rendered it and passed `jump: None`; M169 is the whole
