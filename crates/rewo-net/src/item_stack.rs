@@ -246,6 +246,16 @@ pub struct StackComponents {
     /// page, raw NBT, resolved to styled text by the book-view screen. Empty
     /// for everything but a written book.
     pub book_pages: Vec<rewo_proto::nbt::Nbt>,
+    /// The `written_book_content` component was PRESENT (M172) — distinct
+    /// from `book_pages` being non-empty, because `BookAccess.fromItem` tries
+    /// the written component FIRST: a zero-page written book opens an empty
+    /// reader rather than falling through to the writable pages.
+    pub has_written_book: bool,
+    /// `minecraft:writable_book_content` pages (M172) — plain strings, shown
+    /// as literals when the stack has no written content.
+    pub writable_pages: Vec<String>,
+    /// The `writable_book_content` component was present (M172).
+    pub has_writable_book: bool,
     /// `minecraft:rarity`'s id — the name's colour.
     pub rarity: Option<i32>,
     /// `(enchantment registry id, level)`, from **both**
@@ -856,6 +866,26 @@ fn read_interpreted(
             }
         }
         r.bool().map_err(|_| ())?; // resolved
+        out.has_written_book = true;
+        return Ok(true);
+    }
+    if ty == ids.writable_book_content {
+        // `WritableBookContent.STREAM_CODEC` (M172) — a bare
+        // `List<Filterable<String>>`. The raw string is the page; the
+        // optional filtered variant is read and dropped, exactly as the
+        // written pages' is, because the walk must stay aligned.
+        let n = r.varint().map_err(|_| ())?;
+        if !(0..=1024).contains(&n) {
+            return Err(());
+        }
+        for _ in 0..n {
+            let page = r.string(32767).map_err(|_| ())?;
+            out.writable_pages.push(page);
+            if r.bool().map_err(|_| ())? {
+                r.string(32767).map_err(|_| ())?;
+            }
+        }
+        out.has_writable_book = true;
         return Ok(true);
     }
     if ty == ids.trim {
@@ -1072,6 +1102,7 @@ mod tests {
         container: 17,
         use_cooldown: 18,
         written_book_content: 22,
+        writable_book_content: 23,
     };
 
     /// The walk is table-driven now, and the table is keyed by *name* against
@@ -1102,6 +1133,7 @@ mod tests {
             ("minecraft:dye", 20),
             ("minecraft:provides_banner_patterns", 21),
             ("minecraft:written_book_content", 22),
+            ("minecraft:writable_book_content", 23),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -1236,6 +1268,61 @@ mod tests {
         );
         // The whole component was consumed — the walk stays aligned, which is
         // load-bearing because the patch has no length prefix.
+        assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn writable_book_content_captures_plain_pages_and_stays_aligned() {
+        install_test_shapes();
+        fn pstr(text: &str, out: &mut Vec<u8>) {
+            varint(text.len() as i32, out);
+            out.extend_from_slice(text.as_bytes());
+        }
+        // Two pages, the second carrying a filtered variant that must be
+        // read and dropped.
+        let mut value: Vec<u8> = Vec::new();
+        varint(2, &mut value);
+        pstr("draft one", &mut value);
+        value.push(0);
+        pstr("draft two", &mut value);
+        value.push(1);
+        pstr("censored", &mut value);
+        let raw = stack(16, 1, &[(23, value)], &[]);
+        let mut r = PacketReader::new(&raw);
+        let WireSlot::Stack(s) = read_optional(&mut r, IDS).expect("decodes") else {
+            panic!("expected a stack");
+        };
+        assert_eq!(s.components.writable_pages, vec!["draft one", "draft two"]);
+        assert!(s.components.has_writable_book);
+        assert!(!s.components.has_written_book, "the two flags are independent");
+        assert_eq!(r.remaining(), 0, "the filtered variant was consumed");
+    }
+
+    /// `BookAccess.fromItem` tries the WRITTEN component first, so its
+    /// presence must be knowable even with zero pages — a zero-page written
+    /// book opens an empty reader, it does not fall through to the writable
+    /// pages or to nothing.
+    #[test]
+    fn a_zero_page_written_book_still_reports_the_component_present() {
+        install_test_shapes();
+        fn pstr(text: &str, out: &mut Vec<u8>) {
+            varint(text.len() as i32, out);
+            out.extend_from_slice(text.as_bytes());
+        }
+        let mut value: Vec<u8> = Vec::new();
+        pstr("T", &mut value);
+        value.push(0);
+        pstr("A", &mut value);
+        varint(0, &mut value); // generation
+        varint(0, &mut value); // zero pages
+        value.push(0); // resolved
+        let raw = stack(16, 1, &[(22, value)], &[]);
+        let mut r = PacketReader::new(&raw);
+        let WireSlot::Stack(s) = read_optional(&mut r, IDS).expect("decodes") else {
+            panic!("expected a stack");
+        };
+        assert!(s.components.has_written_book);
+        assert!(s.components.book_pages.is_empty());
         assert_eq!(r.remaining(), 0);
     }
 

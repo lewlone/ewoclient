@@ -289,6 +289,8 @@ struct RenderCheck {
     /// 0.5 inventory), which charges the meter to 1.0 and releases it.
     jump_bar_blits_max: usize,
     leash_verts_max: usize,
+    book_frames: u64,
+    book_pages_seen: usize,
     jump_scale_max: f32,
     riding_jumps_sent: u64,
     /// `self.baked.is_some()` observed at the top of a frame. The witness whose
@@ -780,7 +782,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 60;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 61;
 
     fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1555,6 +1557,17 @@ impl RenderCheck {
                  Needs: the cow + fence-knot in the table, the set_entity_link \
                  holder, and collect_leashes building the ribbon into the pass",
                 self.leash_verts_max
+            ),
+        );
+        row(
+            "r61 the injected written book opened the reader with its pages",
+            self.book_frames > 0 && self.book_pages_seen == 2,
+            format!(
+                "book-screen frames {} (needs set_player_inventory recording the \
+                 SlotText, open_book resolving hand 0 off the app's hotbar slot, \
+                 and the screen opening), pages {} (want 2 — the resolve read the \
+                 written_book_content off the wire)",
+                self.book_frames, self.book_pages_seen
             ),
         );
         row(
@@ -4378,6 +4391,8 @@ pub(crate) fn widget_sprites(
         tab_header_background: hud_sprite(&w.tab_header_background),
         inworld_header_separator: hud_sprite(&w.inworld_header_separator),
         inworld_footer_separator: hud_sprite(&w.inworld_footer_separator),
+        book_background: hud_sprite(&w.book_background),
+        page_buttons: std::array::from_fn(|i| hud_sprite(&w.page_buttons[i])),
     })
 }
 
@@ -5881,9 +5896,16 @@ struct LiveApp {
     play_pack_injected: bool,
     /// Whether the two-of-one-kind mob injection has happened (r54).
     crowd_injected: bool,
+    /// M172 — the open written-book reader, `None` when no book is up. The
+    /// app-side view state the frame's render arm keys on (the M84 pattern);
+    /// the framework `Screen` in `screens` carries only the Done button.
+    book: Option<rewo_world::book_view_screen::BookViewScreen>,
     /// M169 — the injected horse + saddle + set_passengers that mounts the bot.
     jump_injected: bool,
     leash_injected: bool,
+    /// M172 — the injected written book + open_book (r61). NOT M94's
+    /// `book_injected`, which is the RECIPE book's force-open flag.
+    book_view_injected: bool,
     /// Whether `--render-check` has force-opened the chat screen yet (M110).
     chat_injected: bool,
     /// Whether it has typed a `/`-command yet (M116).
@@ -6276,6 +6298,19 @@ impl ApplicationHandler for LiveApp {
                 // list**, so a death screen (`shouldCloseOnEsc() == false`)
                 // swallows it and `rewo live` does not quit.
                 if self.screen.any_open() && !self.screen.inventory_open() {
+                    // M172: the book's page keys — GLFW 266 PageUp -> BACK,
+                    // 267 PageDown -> FORWARD (the pairing reads inverted and
+                    // is vanilla's). Only these two; the arrows are NOT bound.
+                    // Checked before the generic dispatch, which never
+                    // consumes them (it handles Esc / Enter / Space / Tab).
+                    if p && self.book.is_some() {
+                        if let Some(k @ (266 | 267)) = glfw_key(event.physical_key) {
+                            if let Some(b) = self.book.as_mut() {
+                                b.key(k);
+                            }
+                            return;
+                        }
+                    }
                     if p {
                         let shift = self.shift;
                         let result = glfw_key(event.physical_key).and_then(|k| {
@@ -6302,6 +6337,10 @@ impl ApplicationHandler for LiveApp {
                                     // drop it here too, or `pump_stats_screen`
                                     // re-opens the screen Esc just closed.
                                     self.close_stats();
+                                } else if kind == rewo_world::screen::ScreenKind::BookView {
+                                    // M172: same rule — the render arm keys on
+                                    // `self.book`, so it drops with the screen.
+                                    self.close_book();
                                 } else {
                                     self.close_view_screen();
                                 }
@@ -6516,6 +6555,17 @@ impl ApplicationHandler for LiveApp {
                     .map(|s| (s.kind, s.mouse_clicked(mx, my, b)));
                 if let Some((kind, rewo_world::screen::MouseResult::Pressed(id))) = pressed {
                     self.press_widget(kind, id);
+                } else if b == 0
+                    && matches!(pressed, Some((rewo_world::screen::ScreenKind::BookView, _)))
+                {
+                    // M172: the page arrows are not framework widgets (a
+                    // `PageButton` draws its own sprites, not button chrome),
+                    // so a left click the framework did not press lands here.
+                    // `BookViewScreen::click` only turns on a VISIBLE arrow.
+                    let gw = self.gui_size().0;
+                    if let Some(book) = self.book.as_mut() {
+                        book.click(mx as i32, my as i32, gw);
+                    }
                 }
             }
             WindowEvent::MouseInput {
@@ -7686,6 +7736,10 @@ impl LiveApp {
                 // `KeyMapping.resetToggleKeys()`.
                 self.keys = Keys::default();
             }
+            // M172: the book's Done button is `onClose()`.
+            (ScreenKind::BookView, rewo_world::book_view_screen::DONE) => {
+                self.close_book();
+            }
             // M85's three screens.
             (ScreenKind::Pause, rewo_world::pause_screen::RETURN_TO_GAME) => {
                 // `this.minecraft.gui.setScreen(null); mouseHandler.grabMouse();`
@@ -7920,6 +7974,98 @@ impl LiveApp {
                 log::warn!("live: request_stats: {e}");
             }
         }
+    }
+
+    /// M172 — an `open_book` arrived: resolve the held book's pages and open
+    /// the reader. `ClientPacketListener.handleOpenBook` reads
+    /// `player.getItemInHand(hand)`; `BookAccess.fromItem` tries the WRITTEN
+    /// component FIRST (so a zero-page written book opens an empty reader),
+    /// then the WRITABLE one (plain strings shown as literals — there is no
+    /// WritableBookViewScreen in 26.2), and with neither opens NOTHING.
+    ///
+    /// Pages are resolved + wrapped ONCE here, never per frame — vanilla
+    /// caches per page too, and `parse_component` walks up to 65,536 nodes.
+    /// The wrap is `StringSplitter.splitLines` (`split_lines_wrapped`), NOT
+    /// the chat's `wrap_components`, which would prepend an indent space to
+    /// every continuation line vanilla's book pages do not have.
+    fn pump_book_screen(&mut self) {
+        let Some(hand) = self
+            .session
+            .as_mut()
+            .and_then(|s| s.open_book_request.take())
+        else {
+            // `Screens` is ONE slot (vanilla's `Minecraft.screen`): anything
+            // that opens over the reader — the death screen, the pause menu,
+            // an `open_screen` — REPLACES the book's `Screen` but not this
+            // app-side state, and a stale `self.book` would hijack the render
+            // arm the moment the other screen closed. Drop it when the slot
+            // no longer holds the reader.
+            if self.book.is_some()
+                && !self
+                    .screen
+                    .screens
+                    .current()
+                    .is_some_and(|s| s.kind == rewo_world::screen::ScreenKind::BookView)
+            {
+                self.book = None;
+            }
+            // Resize: the framework screen's widgets re-centre. The model
+            // itself is size-independent, so only the `Screen` rebuilds — and
+            // only on a change, or `ticks`/focus reset every frame (M82).
+            if self.book.is_some() {
+                let (gw, gh) = self.gui_size();
+                let stale = self.screen.screens.current().is_some_and(|s| {
+                    s.kind == rewo_world::screen::ScreenKind::BookView
+                        && (s.width != gw || s.height != gh)
+                });
+                if stale {
+                    let done = self.lang.get_or_default("gui.done", "Done").to_string();
+                    self.screen
+                        .screens
+                        .open(rewo_world::book_view_screen::build_screen(gw, gh, &done));
+                }
+            }
+            return;
+        };
+        let advance = self.advance();
+        let lang = self.lang.clone();
+        let hotbar = self.hotbar_slot as usize;
+        let pages: Option<Vec<Vec<rewo_world::chat_style::ChatLine>>> =
+            self.session.as_ref().and_then(|session| {
+                // Hand 0 reads the slot the server last heard
+                // (`set_carried_item`), which is the app's local selection —
+                // `Inventory.selected` lags it, because its only writer is the
+                // server's own `set_held_slot` (M172's survey).
+                let stack = if hand == 1 {
+                    session.inventory.offhand()
+                } else {
+                    session.inventory.hotbar(hotbar)
+                }?;
+                let text = session.inventory.text_of(stack)?;
+                resolve_book_pages(text, advance.as_ref(), Some(&lang))
+            });
+        if let Some(pages) = pages {
+            self.open_book_screen(rewo_world::book_view_screen::BookViewScreen::new(pages));
+        }
+    }
+
+    fn open_book_screen(&mut self, view: rewo_world::book_view_screen::BookViewScreen) {
+        let (gw, gh) = self.gui_size();
+        let done = self.lang.get_or_default("gui.done", "Done").to_string();
+        self.book = Some(view);
+        self.screen
+            .screens
+            .open(rewo_world::book_view_screen::build_screen(gw, gh, &done));
+        self.grab_for_screen(true);
+    }
+
+    /// The per-screen close (M84's rule): drop the app-side view state WITH
+    /// the framework screen, or the render arm keys on a book that no longer
+    /// has a `Screen` behind it.
+    fn close_book(&mut self) {
+        self.book = None;
+        self.screen.screens.close();
+        self.grab_for_screen(false);
     }
 
     fn close_stats(&mut self) {
@@ -8537,6 +8683,63 @@ impl LiveApp {
                         }
                     }
                     self.leash_injected = true;
+                }
+                // M172 — a written book into hotbar slot 0 + an `open_book`,
+                // both through the production router. The window is
+                // 0.465..0.5: after the jump hold (ends 0.46), before the
+                // 0.5 inventory force-open — which then REPLACES the reader
+                // (`Screens` is one slot) and exercises the stale-book sync,
+                // so every later screen-dependent witness (r22-r25 at
+                // 0.90-0.95) keeps its stage. The first cut injected at 0.93
+                // and r24's overlay lost its inventory.
+                if !self.book_view_injected && elapsed >= limit * 0.465 {
+                    if let Some(session) = self.session.as_mut() {
+                        let book_item = self.items.id("minecraft:written_book");
+                        let comp = session.swing_data.as_ref().map(|d| d.components);
+                        if let (Some(item), Some(comp)) = (book_item, comp) {
+                            let pstr = |b: &mut Vec<u8>, t: &str| {
+                                rewo_proto::varint::write_varint(b, t.len() as i32);
+                                b.extend_from_slice(t.as_bytes());
+                            };
+                            let snbt = |b: &mut Vec<u8>, t: &str| {
+                                b.push(8); // TAG_String
+                                b.extend_from_slice(&(t.len() as u16).to_be_bytes());
+                                b.extend_from_slice(t.as_bytes());
+                            };
+                            // written_book_content: Filterable<title>, author,
+                            // generation, pages, resolved.
+                            let mut value: Vec<u8> = Vec::new();
+                            pstr(&mut value, "Gate Book");
+                            value.push(0);
+                            pstr(&mut value, "r61");
+                            rewo_proto::varint::write_varint(&mut value, 0);
+                            rewo_proto::varint::write_varint(&mut value, 2);
+                            snbt(&mut value, "the first page");
+                            value.push(0);
+                            snbt(&mut value, "the second page");
+                            value.push(0);
+                            value.push(0);
+                            // set_player_inventory: VarInt INVENTORY slot 0
+                            // (hotbar 0 = menu 36 — the app's hotbar_slot is 0,
+                            // which is the slot hand 0 resolves), then the stack.
+                            let mut body: Vec<u8> = Vec::new();
+                            rewo_proto::varint::write_varint(&mut body, 0);
+                            rewo_proto::varint::write_varint(&mut body, 1); // count
+                            rewo_proto::varint::write_varint(&mut body, item);
+                            rewo_proto::varint::write_varint(&mut body, 1); // added
+                            rewo_proto::varint::write_varint(&mut body, 0); // removed
+                            rewo_proto::varint::write_varint(
+                                &mut body,
+                                comp.written_book_content,
+                            );
+                            body.extend_from_slice(&value);
+                            session.inject_packet(session.ids.cb_play_set_player_inventory, &body);
+                            // open_book: one enum ordinal — hand 0.
+                            session
+                                .inject_packet(session.ids.cb_play_open_book, &[0]);
+                        }
+                    }
+                    self.book_view_injected = true;
                 }
                 // The hold. Assigned every frame rather than latched, so it is
                 // the same "read the key state fresh" the real gate does.
@@ -9164,6 +9367,7 @@ impl LiveApp {
         // below, for the same reason `container_close` is.
         self.pump_death_screen();
         self.pump_stats_screen();
+        self.pump_book_screen();
         if self.exit_requested {
             event_loop.exit();
             return;
@@ -9985,6 +10189,17 @@ impl LiveApp {
                 .count();
             c.jump_bar_blits_max = c.jump_bar_blits_max.max(jump);
             c.leash_verts_max = c.leash_verts_max.max(state.world_renderer.leash_vert_count());
+            if let Some(book) = self.book.as_ref() {
+                if self
+                    .screen
+                    .screens
+                    .current()
+                    .is_some_and(|s| s.kind == rewo_world::screen::ScreenKind::BookView)
+                {
+                    c.book_frames += 1;
+                    c.book_pages_seen = c.book_pages_seen.max(book.page_count());
+                }
+            }
             c.jump_scale_max = c.jump_scale_max.max(session.jump_riding_scale());
             c.riding_jumps_sent = session.riding_jumps_sent();
         }
@@ -10509,6 +10724,30 @@ impl LiveApp {
                         ));
                     }
                 }
+            } else if let (Some(book), Some(screen)) =
+                (self.book.as_ref(), self.screen.screens.current())
+            {
+                // M172: the written-book reader. Generic chrome carries the
+                // transparent gradient + the Done button; the book art rides
+                // `ScreenDraw::sprites`, which the pass draws AFTER the
+                // backdrop and BEFORE the buttons — vanilla's stratum order
+                // (gradient, then book.png in the same stratum; widgets and
+                // text in the next).
+                chrome = screen_chrome(screen, Some(mouse_gui));
+                let gw = (extent.width as f32 / px) as i32;
+                let m = (mouse_gui.0 as i32, mouse_gui.1 as i32);
+                for d in rewo_world::book_view_screen::draws(book, gw, Some(m)) {
+                    chrome.sprites.push(book_sprite(d));
+                }
+                if let Some(advance) = state.world_renderer.font_advance() {
+                    // The Done button's LABEL rides the generic widget-text
+                    // builder; the first cut pushed only the page text and the
+                    // eyeball pass found an unlabeled button (bookshot's
+                    // witnesses probed chrome and page text, not the label —
+                    // p9 counts changed pixels and the chrome alone passes it).
+                    text.extend(screen_text_lines(screen, &advance, px));
+                    text.extend(book_text_lines(book, gw, &advance, px, &self.lang));
+                }
             } else if !matches!(self.view, ScreenView::None) {
                 // M85's three screens. All of their text is on their widgets,
                 // so one generic builder serves all three — the death screen
@@ -10734,8 +10973,10 @@ fn run_windowed(
         sound_tails_injected: false,
         play_pack_injected: false,
         crowd_injected: false,
+        book: None,
         jump_injected: false,
         leash_injected: false,
+        book_view_injected: false,
         username,
         chat_parse: None,
         drag: DragState::default(),
@@ -11729,6 +11970,163 @@ pub(crate) fn resolve_tab_list(
 /// Beside [`srgb_bytes_to_linear`] rather than folded into it because the
 /// input is a triple that has already been divided, not a packed `u32` — and
 /// both go through `rewo_gpu`'s one transfer function for M111's reason.
+/// `BookAccess.fromItem` + the per-page resolve + wrap (M172), extracted from
+/// `pump_book_screen` so the gate can drive the SAME code (the M97 rule —
+/// logic in a place with no test seam is untestable, so move it).
+///
+/// The written component wins even with zero pages; the writable pages are
+/// plain strings shown as literals; NEITHER present resolves to `None` and no
+/// screen opens. The wrap is `StringSplitter.splitLines`
+/// (`split_lines_wrapped`) at `TEXT_WIDTH` — NOT the chat's
+/// `wrap_components`, which would prepend an indent space to every
+/// continuation line vanilla's book pages do not have.
+pub(crate) fn resolve_book_pages(
+    text: &rewo_world::inventory::SlotText,
+    advance: Option<&[u8; 256]>,
+    lang: Option<&rewo_data::lang::Language>,
+) -> Option<Vec<Vec<rewo_world::chat_style::ChatLine>>> {
+    use rewo_world::book_view_screen::{PAGE_TEXT_COLOR, TEXT_WIDTH};
+    use rewo_world::chat_style::{self, ChatStyle};
+    let base = ChatStyle::plain(chat_style::rgb_f32(PAGE_TEXT_COLOR));
+    let advance = advance.copied();
+    let width_of = move |t: &str, st: ChatStyle| match &advance {
+        Some(a) => rewo_gpu::text::width_styled(t, a, st.bold),
+        None => 0,
+    };
+    let wrap = |spans: &rewo_world::chat_style::ChatLine| {
+        rewo_world::string_splitter::split_lines_wrapped(spans, TEXT_WIDTH, &width_of)
+            .into_iter()
+            .map(|l| l.spans)
+            .collect::<Vec<_>>()
+    };
+    if text.has_written_book {
+        Some(
+            text.book_pages
+                .iter()
+                .map(|tag| wrap(&chat_style::parse_component(tag, base.clone(), lang)))
+                .collect(),
+        )
+    } else if text.has_writable_book {
+        Some(
+            text.writable_pages
+                .iter()
+                .map(|page| wrap(&vec![base.clone().span(page.clone())]))
+                .collect(),
+        )
+    } else {
+        None
+    }
+}
+
+/// Map one [`rewo_world::book_view_screen::BookDraw`] to the screen pass's
+/// sprite (M172). The `PageArrow` index order is the bake's declared one:
+/// 0 forward, 1 forward_highlighted, 2 backward, 3 backward_highlighted.
+pub(crate) fn book_sprite(d: rewo_world::book_view_screen::BookDraw) -> rewo_gpu::screen::SpriteDraw {
+    use rewo_gpu::screen::{Fill, Sheet, SpriteDraw};
+    use rewo_world::book_view_screen::BookDraw;
+    match d {
+        BookDraw::Background { x, y } => SpriteDraw {
+            x,
+            y,
+            width: rewo_world::book_view_screen::IMAGE_W,
+            height: rewo_world::book_view_screen::IMAGE_H,
+            sheet: Sheet::BookBackground,
+            // The bake cropped `book.png` to exactly the 192x192 the blit
+            // samples, so whole-sheet Stretch IS the 1:1 blit.
+            fill: Fill::Stretch,
+            color: [1.0; 4],
+        },
+        BookDraw::Arrow {
+            forward,
+            highlighted,
+            x,
+            y,
+        } => SpriteDraw {
+            x,
+            y,
+            width: rewo_world::book_view_screen::PAGE_BUTTON_W,
+            height: rewo_world::book_view_screen::PAGE_BUTTON_H,
+            sheet: Sheet::PageArrow(match (forward, highlighted) {
+                (true, false) => 0,
+                (true, true) => 1,
+                (false, false) => 2,
+                (false, true) => 3,
+            }),
+            fill: Fill::Stretch,
+            color: [1.0; 4],
+        },
+    }
+}
+
+/// The book's text for one frame (M172): the current page's styled lines,
+/// left-aligned from `(left + 36, top + 30)` at the 9 px pitch, and the
+/// right-aligned page indicator whose RIGHT edge sits at `left + 148` —
+/// `TextAlignment.RIGHT` is `anchor - width`, so anchoring the left edge
+/// there would push it into the margin. Everything draws `shadow: false`:
+/// `PAGE_TEXT_STYLE` is `withoutShadow()`, and the black must NOT be painted
+/// over the spans — a page span with its own colour keeps it
+/// (`mergeStyles` = component-present wins), which the resolve already did.
+pub(crate) fn book_text_lines(
+    book: &rewo_world::book_view_screen::BookViewScreen,
+    gui_w: i32,
+    advance: &[u8; 256],
+    px: f32,
+    lang: &rewo_data::lang::Language,
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
+    use rewo_world::book_view_screen as bv;
+    let mut out = Vec::new();
+    let (tx, ty) = bv::BookViewScreen::text_origin(gui_w);
+    for (i, line) in book.current_lines().iter().enumerate() {
+        let mut pen = tx;
+        for span in line {
+            out.push(rewo_gpu::world::OwnedTextLine {
+                x: pen as f32 * px,
+                y: (ty + i as i32 * bv::LINE_HEIGHT) as f32 * px,
+                px,
+                color_linear: srgb_bytes_to_linear_f(span.color),
+                alpha: 1.0,
+                shadow: false,
+                style: text_style_of(span),
+                text: span.text.clone(),
+            });
+            pen += rewo_gpu::text::width_styled(&span.text, advance, span.bold);
+        }
+    }
+    // `book.pageIndicator` is `Page %1$s of %2$s` — POSITIONAL specifiers,
+    // so this goes through the real `decomposeTemplate` (M125) rather than a
+    // sequential `%s` substitution. The first cut used the latter and
+    // bookshot's p8 caught it: both indicators rendered the raw pattern,
+    // identically, and the diff witness measured zero.
+    let (cur, total) = book.indicator();
+    let template = lang.get_or_default("book.pageIndicator", "Page %s of %s");
+    let args = [cur.to_string(), total.to_string()];
+    let msg = match rewo_data::lang::decompose_template(template, args.len()) {
+        Some(parts) => parts
+            .into_iter()
+            .map(|p| match p {
+                rewo_data::lang::Part::Literal(t) => t.to_string(),
+                rewo_data::lang::Part::Arg(i) => args.get(i).cloned().unwrap_or_default(),
+            })
+            .collect::<String>(),
+        // An undecomposable pattern renders literally — vanilla's
+        // `insertNumber` fallback shape.
+        None => template.to_string(),
+    };
+    let (ax, ay) = bv::BookViewScreen::indicator_right(gui_w);
+    let w = rewo_gpu::text::width_styled(&msg, advance, false);
+    out.push(rewo_gpu::world::OwnedTextLine {
+        x: (ax - w) as f32 * px,
+        y: ay as f32 * px,
+        px,
+        color_linear: [0.0, 0.0, 0.0],
+        alpha: 1.0,
+        shadow: false,
+        style: rewo_gpu::text::TextStyle::default(),
+        text: msg,
+    });
+    out
+}
+
 pub(crate) fn srgb_bytes_to_linear_f(rgb: [f32; 3]) -> [f32; 3] {
     [
         srgb_to_linear(rgb[0]),

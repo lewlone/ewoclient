@@ -340,11 +340,11 @@ witnesses are mostly self-driven can look healthy against nothing.
 > version of this box listed has shipped. What follows is measured on the merged
 > tree, not carried forward.
 >
-> **The state (re-measured 2026-08-23 after M171):** **39** serverless gates
-> green with 0 validation errors, **3407 tests** (world 1210, net 1225, gpu
-> 320, data 233, app 231, mesh 52, proto 16, audio 120), `live --render-check`
-> **60/60** exit 0, packet coverage **121 / 0 / 20** (M171 consumed `open_book`),
-> demo PNG `2cc56b4acbfb92cb` byte-identical.
+> **The state (re-measured 2026-08-23 after M172):** **40** serverless gates
+> green with 0 validation errors (`bookshot` is the 40th, 21/21), **3411
+> tests**, `live --render-check` **61/61** exit 0 (r61 arrived with M172),
+> packet coverage **121 / 0 / 20**, demo PNG `2cc56b4acbfb92cb`
+> byte-identical.
 >
 > *(superseded — the 2026-08-21 line, kept for the diff:)* 37 serverless gates green
 > with 0 validation errors, **3355 tests**, `live --render-check` **56/56** exit
@@ -433,16 +433,16 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   from it: the block/sky light is an RGB interpolation of the two endpoints
 >   (vanilla interpolates the packed coords), and the happy-ghast quad-leash
 >   branch is not drawn (nothing Rewo renders takes it).
-> * **`sub-book`** — **the DECODE + model shipped (M171); the RENDER is the
->   open half.** `open_book` is consumed and the pages are captured through to
->   the inventory; `BookViewScreen` (`rewo_world::book_view_screen`) is the
->   tested layout + navigation, and `ScreenKind::BookView` is the seam. What is
->   left is the render: `book.png` into a GUI atlas, the styled page text
->   (black, no shadow) via M126 spans + M100 wrap, the `PageButton` sprites,
->   and the open/input wiring. `sub-sign` and `sub-map` are the same
->   shape (decode + a screen); **`options`' volume sliders** and
->   **`render-misc [INTERP]`** each have a verified spec — see §15's wave
->   entries for the corrections.
+> * ~~**`sub-book`**~~ **DONE — M171 the decode + model, M172 the render
+>   (2026-08-23).** The reader draws pixel-faithfully (`bookshot` 21/21, r61
+>   live), including the writable-book fallback (`BookAccess.fromItem` — there
+>   is no WritableBookViewScreen in 26.2). Open from it: page-text CLICK
+>   events (`change_page`/`run_command` need M128's per-glyph active-text hit
+>   test wired to the book), the lectern's menu-backed reader, and the
+>   page-turn sound (Rewo's screens play no UI sounds at all yet — one
+>   family). **`sub-sign`** and **`sub-map`** are the same decode+screen
+>   shape; **`options`' volume sliders** and **`render-misc [INTERP]`** each
+>   have a verified spec — see §15's wave entries for the corrections.
 >
 > #### Deliberately NOT next, with the measurement
 >
@@ -1891,7 +1891,8 @@ this shape once.
 | M168 — the survival HUD | **r57, r58** | HUD atlas y 80..218: player hearts y 80 + 90 (24 per row, 10 px pitch), armour / air / vehicle / hunger-food x 0..120 y 100, effect backgrounds (130,100) + (160,100), effect icons y 125..201 (13 per row, 19 px pitch), jump bar y 201/207/213; `ATLAS_H` 80 -> 224 | `gaugeshot` t0-t7, w0-w3, d0-d4, p0-p11 |
 | M169 — the jump bar's inputs | **r59** | — | `gaugeshot` j0-j5 |
 | M170 — the leash rope | **r60** | HUD/world: no atlas — a colour-only `leash` pipeline (POSITION_COLOR triangle list, depth GREATER no-write) | `leashshot` g0-g4 |
-| *(next free)* | **r61** | — | — |
+| M172 — the written-book reader | **r61** | screen-pass atlas 512x256 -> 512x512; `Sheet::BookBackground` (cropped 192x192 `book.png`) at (0,256), `Sheet::PageArrow(0..4)` (23x13 `widget/page_*`) at (200..296, 256) | `bookshot` m0-m5, p0-p13 |
+| *(next free)* | **r62** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table
@@ -3712,6 +3713,118 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M172 — the written-book reader renders, and the two things the pixels caught (2026-08-23)
+
+M171 shipped the decode and the model; this draws the screen, wires the input,
+and closes the `sub-book` item. A 4-agent research fan-out over the repo and
+the decompile preceded the code, and its findings shaped everything below.
+
+#### The decompile facts that correct M171's assumptions
+
+* **A writable book opens the same reader.** `BookAccess.fromItem` tries
+  `WRITTEN_BOOK_CONTENT` first, then `WRITABLE_BOOK_CONTENT` (plain strings as
+  `Component::literal`) — there is **no WritableBookViewScreen in 26.2**; the
+  editor (`BookEditScreen`) is only reachable through client-side item use,
+  never the packet. So M172 also captures `writable_book_content` (a bare
+  `List<Filterable<String>>`) plus **presence flags for both components**:
+  the written component wins *even with zero pages* (an empty reader, not the
+  draft), and with **neither** present `handleOpenBook` opens nothing at all.
+* **The dim is ONLY the gradient.** `BookViewScreen.isInGameUi()` is true, so
+  `extractBackground` takes the `extractTransparentBackground` branch — the
+  `0xC0101010 -> 0xD0101010` fillGradient, no blur, no tiled menu background.
+* **Stratum order**: gradient, then `book.png` in the SAME stratum; widgets
+  and all text in the next. Rewo's `ScreenDraw` draws backdrop → sprites →
+  buttons, which is exactly that order, so the book art rides
+  `ScreenDraw::sprites` and no new pass exists.
+* **The blit samples only (0,0)..(192,192) of the 256x256 `book.png`**, so
+  the bake CROPS it and the screen pass's whole-sheet `Fill::Stretch` becomes
+  the exact 1:1 blit — `SpriteDraw` needed no source-rect.
+* **PageUp goes BACK** (GLFW 266 → backButton), PageDown forward — the pairing
+  reads inverted and is vanilla's. The arrows are 23x13 `widget/page_*`
+  sprites — distinct files from the recipe book's 12x17 `recipe_book/page_*`.
+* There is a **Done button**: 200 wide, centred, at `menuControlsTop() =
+  2 + 192 + 2 = 196` — a standard widget, so it rides the Screen framework
+  and closes via `press_widget`.
+
+#### The build
+
+The screen-pass atlas grew 512x256 → **512x512** (the 192x192 book background
+did not fit); every pre-M172 placement is unchanged in texels and the UV
+closure divides by the const, so the old sheets render pixel-identically —
+`deathshot`/`statshot`/`serverlinkshot` stayed green untouched. New sheets:
+`Sheet::BookBackground` + `Sheet::PageArrow(0..4)`, placed on the fresh y=256
+shelf. The model grew `build_screen` (BookView kind, TRANSPARENT backdrop, the
+Done widget) and `draws()` (background + only the VISIBLE arrows, hover →
+highlighted). The app: `pump_book_screen` drains `open_book_request`, reads
+hand 0 off **the app's hotbar slot** (the server resolves against the slot the
+client last sent — `Inventory.selected` lags it, its only writer being the
+server's own `set_held_slot`), resolves through `resolve_book_pages` —
+extracted as a free function so the gate drives the same code (M97's rule) —
+and opens the screen. Esc/Done close through `close_book` (M84's rule: the
+app-side view state drops WITH the screen); PageUp/PageDown are handled before
+the generic key dispatch; arrow clicks land in the click arm's else-branch,
+because a `PageButton` is not a framework widget.
+
+**The wrap is `split_lines_wrapped`, NOT `wrap_components`** — the research
+flagged it and the battery pins it: the chat wrapper prepends a one-space
+INDENT to every width-wrapped continuation and coerces an empty result to one
+empty line; vanilla's book uses `font.split` = `StringSplitter.splitLines`,
+which does neither.
+
+#### The two things the pixels caught
+
+Both were bugs in MY code that every model-level witness passed:
+
+1. **The indicator rendered its raw pattern.** `book.pageIndicator` is
+   `Page %1$s of %2$s` — POSITIONAL specifiers — and the first cut substituted
+   sequentially on `"%s"`, which matches nothing, so both fixtures rendered
+   the identical literal pattern. The gate's p8 witness (which diffs two
+   frames whose indicators differ only in the last digit) measured a zero
+   diff and failed. The fix routes through M125's real `decompose_template`.
+2. **The Done button was unlabeled.** The frame arm pushed `book_text_lines`
+   but never `screen_text_lines` (which carries widget labels) — and the
+   EYEBALL of the gate's dump caught it, not a witness: p9 counts changed
+   pixels and bare chrome passes it. p12 now pins the label.
+
+A third correction went the other way — the witness was wrong before the code
+was (the pattern's fifth instance): m1 asserted a `red` page's green channel
+`< 0.2`, and Minecraft `red` is ChatFormatting.RED `0xFF5555`, green 0.333.
+And p2's parchment probe at (96,20) landed inside the indicator row and read
+back a glyph pixel of the *correctly rendered* indicator once the fix landed —
+a probe must avoid every region the screen draws over its background.
+
+#### The gate, r61, and the one-slot rule
+
+`rewo bookshot --check` (the 40th gate): 21 witnesses — 6 model (the fromItem
+precedence chain, the no-indent wrap) + 15 pixel (parchment texel-for-texel
+against the bake's own crop, arrow show/hide/highlight against the sprite
+bytes, black glyphs, the digit-diff right-alignment, the labeled Done, the
+gradient, the styled page keeping its colour end to end).
+
+r61 injects a written book via `set_player_inventory` (which records the
+`SlotText`) + `open_book`, and asserts the reader opened with both pages
+through the production chain. **Its first placement (0.93) broke r24** — the
+which-of-these overlay injects at 0.95 into the inventory screen the book had
+replaced, because `Screens` is ONE slot. The fix is the window 0.465..0.5
+(after the jump hold, before the inventory force-open), and the force-open
+then REPLACES the reader — exercising a sync the takeover made necessary and
+that is real-world load-bearing: anything opening over the reader (the death
+screen, an `open_screen`) replaces the book's `Screen` but not the app-side
+`self.book`, which would hijack the render arm when the other screen closed.
+`pump_book_screen` now drops `self.book` whenever the slot no longer holds the
+reader.
+
+**Measured:** 3411 tests; `bookshot` 21/21; all 40 serverless gates green,
+0 validation errors; `live --render-check` **61/61**; demo PNG
+`2cc56b4acbfb92cb` byte-identical. **Open:** page-text CLICK events
+(`change_page` is 1-based via `forcePage(page - 1)`; `run_command` passes a
+null return-screen — needs the per-glyph active-text hit test M128 built for
+chat, wired to the book's `visitText`); the lectern (its `open_screen` menu is
+a `BookViewScreen` subclass with a menu — slot 0's book + a PAGE data slot +
+Take Book — recorded, not wired); the page-turn sound (`BOOK_PAGE_TURN` via
+`SimpleSoundInstance.forUI` — Rewo's screens play no UI sounds at all yet, so
+it is recorded with that family).
 
 ### M171 — the written-book decode and the BookViewScreen model (2026-08-23)
 

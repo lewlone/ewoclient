@@ -549,6 +549,15 @@ pub struct SlotText {
     /// `minecraft:written_book_content` pages (M171) — raw NBT per page, for the
     /// book-view screen. A book with pages is not textless.
     pub book_pages: Vec<rewo_proto::nbt::Nbt>,
+    /// The written component was present (M172) — `BookAccess.fromItem`
+    /// tries it FIRST, so a zero-page written book opens empty rather than
+    /// falling through to the writable pages.
+    pub has_written_book: bool,
+    /// `minecraft:writable_book_content` pages (M172), plain strings shown
+    /// as literals; and whether that component was present at all — with
+    /// NEITHER component `open_book` opens nothing.
+    pub writable_pages: Vec<String>,
+    pub has_writable_book: bool,
 }
 
 impl SlotText {
@@ -575,6 +584,9 @@ impl SlotText {
             is_enchanted,
             cooldown_group,
             book_pages,
+            has_written_book,
+            writable_pages,
+            has_writable_book,
         } = self;
         custom_name.is_none()
             && item_name.is_none()
@@ -585,6 +597,9 @@ impl SlotText {
             && !*is_enchanted
             && cooldown_group.is_none()
             && book_pages.is_empty()
+            && !*has_written_book
+            && writable_pages.is_empty()
+            && !*has_writable_book
     }
 }
 

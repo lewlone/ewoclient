@@ -176,6 +176,82 @@ impl BookViewScreen {
     }
 }
 
+/// `menuControlsTop()` — `backgroundTop() + 192 + 2`, where the Done button
+/// sits.
+pub const MENU_CONTROLS_TOP: i32 = BACKGROUND_TOP + IMAGE_H + 2; // 196
+
+/// The Done button's widget id.
+pub const DONE: crate::screen::WidgetId = 0;
+
+/// Build the framework [`crate::screen::Screen`] for the reader (M172): the
+/// transparent-gradient backdrop (`isInGameUi()` is true, so vanilla draws
+/// ONLY the `0xC0101010 -> 0xD0101010` gradient — no blur, no tiled menu
+/// background) and the one standard widget, the 200-wide centred Done button
+/// at `menuControlsTop()`. The page ARROWS are deliberately NOT widgets: a
+/// `PageButton` draws its own 23x13 sprites rather than the nine-sliced
+/// button chrome, so they render through [`draws`] and hit-test through
+/// [`BookViewScreen::click`].
+pub fn build_screen(gui_w: i32, gui_h: i32, done_label: &str) -> crate::screen::Screen {
+    crate::screen::Screen::new(crate::screen::ScreenKind::BookView, gui_w, gui_h)
+        .with_backdrop(crate::screen::Backdrop::TRANSPARENT)
+        .with_widgets(vec![crate::screen::Widget::button(
+            DONE,
+            (gui_w - crate::screen::BUTTON_WIDTH) / 2,
+            MENU_CONTROLS_TOP,
+            crate::screen::BUTTON_WIDTH,
+            crate::screen::BUTTON_HEIGHT,
+            done_label,
+        )])
+}
+
+/// One book-chrome blit for the render, in GUI pixels. World-typed rather
+/// than a `rewo_gpu` sprite so this stays testable with no GPU — the app maps
+/// each to a `SpriteDraw` (the `screen_chrome` pattern).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BookDraw {
+    /// The 192x192 `book.png` crop at `(x, BACKGROUND_TOP)`.
+    Background { x: i32, y: i32 },
+    /// A 23x13 `PageButton` sprite. `highlighted` is `isHoveredOrFocused()`
+    /// — hover only here, since the arrows never take keyboard focus
+    /// (`shouldTakeFocusAfterInteraction()` is false).
+    Arrow {
+        forward: bool,
+        highlighted: bool,
+        x: i32,
+        y: i32,
+    },
+}
+
+/// The book chrome to draw this frame: the background, then only the VISIBLE
+/// arrows — `updateButtonVisibility` hides forward on the last page and back
+/// on the first, and a hidden `PageButton` draws nothing at all.
+pub fn draws(book: &BookViewScreen, gui_w: i32, mouse: Option<(i32, i32)>) -> Vec<BookDraw> {
+    let mut out = vec![BookDraw::Background {
+        x: BookViewScreen::background_left(gui_w),
+        y: BACKGROUND_TOP,
+    }];
+    let hover = |r: Rect| mouse.is_some_and(|(mx, my)| in_rect(mx, my, r));
+    if book.forward_visible() {
+        let r = BookViewScreen::forward_rect(gui_w);
+        out.push(BookDraw::Arrow {
+            forward: true,
+            highlighted: hover(r),
+            x: r.0,
+            y: r.1,
+        });
+    }
+    if book.back_visible() {
+        let r = BookViewScreen::back_rect(gui_w);
+        out.push(BookDraw::Arrow {
+            forward: false,
+            highlighted: hover(r),
+            x: r.0,
+            y: r.1,
+        });
+    }
+    out
+}
+
 fn in_rect(x: i32, y: i32, r: Rect) -> bool {
     x >= r.0 && x < r.0 + r.2 && y >= r.1 && y < r.1 + r.3
 }
@@ -271,6 +347,44 @@ mod tests {
         // Now back is visible, forward is not.
         assert!(b.click(bx + 1, by + 1, w));
         assert_eq!(b.current_page(), 0);
+    }
+
+    #[test]
+    fn the_draw_list_shows_only_visible_arrows_and_hover_highlights() {
+        let w = 320;
+        let mut b = book(3);
+        // Page 0: background + forward only.
+        let d = draws(&b, w, None);
+        assert_eq!(d.len(), 2);
+        assert!(matches!(d[0], BookDraw::Background { .. }));
+        assert!(matches!(
+            d[1],
+            BookDraw::Arrow { forward: true, highlighted: false, .. }
+        ));
+        // Hover over the forward rect highlights it.
+        let (fx, fy, _, _) = BookViewScreen::forward_rect(w);
+        let d = draws(&b, w, Some((fx + 1, fy + 1)));
+        assert!(matches!(
+            d[1],
+            BookDraw::Arrow { forward: true, highlighted: true, .. }
+        ));
+        // Last page: background + back only.
+        b.page_forward();
+        b.page_forward();
+        let d = draws(&b, w, None);
+        assert_eq!(d.len(), 2);
+        assert!(matches!(d[1], BookDraw::Arrow { forward: false, .. }));
+    }
+
+    #[test]
+    fn the_screen_has_one_done_button_at_menu_controls_top() {
+        let s = build_screen(320, 240, "Done");
+        assert_eq!(s.kind, crate::screen::ScreenKind::BookView);
+        assert_eq!(s.widgets.len(), 1);
+        let w = &s.widgets[0];
+        assert_eq!(w.id, DONE);
+        assert_eq!((w.x, w.y), ((320 - 200) / 2, 196), "menuControlsTop = 2 + 192 + 2");
+        assert_eq!((w.width, w.height), (200, 20));
     }
 
     #[test]

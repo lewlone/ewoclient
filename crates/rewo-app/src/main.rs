@@ -35,6 +35,7 @@ mod tintshot_cmd;
 mod locatorshot_cmd;
 mod sidebarshot_cmd;
 mod titleshot_cmd;
+mod bookshot_cmd;
 mod gaugeshot_cmd;
 mod leashshot_cmd;
 mod mobshot_cmd;
@@ -215,6 +216,8 @@ enum Command {
     /// `Hud.java`, then render hearts, armour, food, air, vehicle hearts,
     /// effect icons and the jump bar offscreen and assert the pixels against
     /// the jar's own sprite bytes with `--check` (no server; Vulkan required).
+    /// The written-book reader gate (M172).
+    Bookshot(bookshot_cmd::BookshotArgs),
     Gaugeshot(gaugeshot_cmd::GaugeshotArgs),
     /// The leash rope gate (M170).
     Leashshot(leashshot_cmd::LeashshotArgs),
@@ -385,6 +388,7 @@ fn main() {
         Some(Command::Eventshot(ev_args)) => eventshot_cmd::run(ev_args),
         Some(Command::Abilityshot(ab_args)) => abilityshot_cmd::run(ab_args),
         Some(Command::Titleshot(t_args)) => titleshot_cmd::run(t_args),
+        Some(Command::Bookshot(b_args)) => bookshot_cmd::run(b_args),
         Some(Command::Gaugeshot(g_args)) => gaugeshot_cmd::run(g_args),
         Some(Command::Leashshot(l_args)) => leashshot_cmd::run(l_args),
         Some(Command::Sidebarshot(sb_args)) => sidebarshot_cmd::run(sb_args),

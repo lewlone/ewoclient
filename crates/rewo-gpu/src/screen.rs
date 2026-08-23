@@ -85,7 +85,10 @@ const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
 const MAX_VERTS: usize = 16384;
 const RING: usize = 2;
 const ATLAS_W: u32 = 512;
-const ATLAS_H: u32 = 256;
+// 512 as of M172: the 192x192 book background did not fit the 256-tall
+// atlas. Every pre-M172 placement is unchanged in TEXELS, and the `uv`
+// closure divides by the const, so the old sheets render pixel-identically.
+const ATLAS_H: u32 = 512;
 
 /// `Button.BIG_WIDTH` / `Button.DEFAULT_HEIGHT`, and the three sheets' own
 /// size. Mirrored from `rewo_world::screen` rather than imported: `rewo-gpu`
@@ -136,6 +139,12 @@ pub enum Sheet {
     /// One opaque white texel — `GuiGraphicsExtractor.fill`, which is how a
     /// selected tab draws its focus underline.
     White,
+    /// `textures/gui/book.png` cropped to the 192×192 the blit samples (M172).
+    BookBackground,
+    /// The four `widget/page_*` arrows (M172), indexed in the bake's declared
+    /// order: 0 forward, 1 forward_highlighted, 2 backward,
+    /// 3 backward_highlighted. 23×13, `Stretch` at native size = a 1:1 blit.
+    PageArrow(u8),
 }
 
 /// One blit, in **GUI space** (the app multiplies nothing; this pass applies
@@ -252,6 +261,10 @@ pub struct WidgetSpriteData<'a> {
     pub menu_background: crate::hud::HudSpriteData<'a>,
     pub inworld_header_separator: crate::hud::HudSpriteData<'a>,
     pub inworld_footer_separator: crate::hud::HudSpriteData<'a>,
+    /// The cropped 192×192 book background (M172).
+    pub book_background: crate::hud::HudSpriteData<'a>,
+    /// forward, forward_highlighted, backward, backward_highlighted (M172).
+    pub page_buttons: [crate::hud::HudSpriteData<'a>; 4],
 }
 
 pub struct ScreenPass {
@@ -299,9 +312,11 @@ fn sheet_index(s: Sheet) -> usize {
         Sheet::InworldFooterSeparator => 22,
         Sheet::MenuBackground => 23,
         Sheet::White => 24,
+        Sheet::BookBackground => 25,
+        Sheet::PageArrow(i) => 26 + (i as usize).min(3),
     }
 }
-const SHEET_COUNT: usize = 25;
+const SHEET_COUNT: usize = 30;
 
 impl ScreenPass {
     pub fn new(
@@ -442,6 +457,26 @@ impl ScreenPass {
             112,
             128,
         );
+        // M172 — the book shelf, below everything pre-M172 so no old texel
+        // moves. The background at (0, 256); the four 23×13 arrows beside it.
+        put(
+            &mut atlas,
+            &mut sheets,
+            Sheet::BookBackground,
+            &sprites.book_background,
+            0,
+            256,
+        );
+        for (i, a) in sprites.page_buttons.iter().enumerate() {
+            put(
+                &mut atlas,
+                &mut sheets,
+                Sheet::PageArrow(i as u8),
+                a,
+                200 + 24 * i as u32,
+                256,
+            );
+        }
         // One opaque white texel so the untextured backdrop can share this
         // pipeline — the fragment shader's `texture * color` then leaves the
         // gradient alone. Parked in the empty bottom-right of the atlas.

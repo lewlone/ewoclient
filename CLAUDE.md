@@ -2171,17 +2171,42 @@ default build (**28** witnesses) and adds decode and the mixer under
 does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
-**Everything is shipped and gated** as of 2026-08-23 (M171) —
-**3407 tests / 0 failures** (world 1210, net 1225, gpu 320, data 233, app 231,
+**Everything is shipped and gated** as of 2026-08-23 (M172) —
+**3411 tests / 0 failures** (world 1212, net 1227, gpu 320, data 233, app 231,
 mesh 52, proto 16, **audio 120** — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **109/109**, `inventoryshot` **165/165**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, `tablistshot` **42/42**, `soundshot` 37/57,
-**`leashshot` 5/5** (the 39th gate), all **39** serverless gates green with 0
-validation errors, `live --render-check` **60/60** with validation ON and 0
-validation errors, packet coverage **121 / 0 / 20**, demo PNG
-`2cc56b4acbfb92cb`.
+**`bookshot` 21/21** (the 40th gate), all **40** serverless gates green with 0
+validation errors, `live --render-check` **61/61** with validation ON and 0
+validation errors (r61 arrived with M172), packet coverage **121 / 0 / 20**,
+demo PNG `2cc56b4acbfb92cb`.
+
+**M172 (2026-08-23) rendered the written-book reader M171 modeled — the
+`sub-book` item is closed.** A 4-agent research fan-out preceded the code and
+its decompile findings corrected M171 twice: `BookAccess.fromItem` falls back
+to `WRITABLE_BOOK_CONTENT` (a book-and-quill opens read-only in the same
+reader — there is NO WritableBookViewScreen in 26.2), and with NEITHER
+component the packet opens nothing — so the capture grew writable pages plus
+presence flags for both components (a zero-page written book opens EMPTY, not
+the draft). The screen-pass atlas grew 512x256 -> 512x512 (old placements
+unchanged in texels — the pre-M172 screen gates stayed green untouched);
+`book.png` is CROPPED at bake to the 192x192 the blit samples, making
+`Fill::Stretch` the exact 1:1 blit. The wrap is `split_lines_wrapped`, NOT
+the chat's `wrap_components` (which prepends an indent space vanilla book
+pages don't have). Two of my bugs were caught by pixels, not witnesses:
+`book.pageIndicator` is `Page %1$s of %2$s` — POSITIONAL — and a sequential
+`%s` substitution rendered the raw pattern identically in both fixtures (the
+digit-diff witness measured zero); and the Done button drew unlabeled because
+the frame arm pushed `book_text_lines` but not `screen_text_lines` — the
+EYEBALL caught it, p12 now pins it. r61's first placement (0.93) broke r24
+because `Screens` is ONE slot and the book replaced the inventory the overlay
+needed — moved to 0.465..0.5, where the inventory force-open then replaces
+the reader and exercises a real-world-load-bearing sync (anything opening
+over the reader must drop the stale `self.book`). Open: page-text click
+events (M128's active-text hit test, unwired), the lectern's menu-backed
+reader, the page-turn sound (Rewo's screens play no UI sounds at all).
 
 **M171 (2026-08-23) is the written-book decode + screen model; the render is
 M172.** `open_book` (58) was absent; the written-book reader is a genuine
