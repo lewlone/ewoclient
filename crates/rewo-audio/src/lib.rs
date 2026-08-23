@@ -1,18 +1,24 @@
-//! Rewo's audio crate — M138b.
+//! Rewo's audio crate — M138b through M144.
 //!
-//! **Nothing here opens a device or makes a noise.** The plan
-//! ([`REWO_AUDIO_PLAN.md`](../../../REWO_AUDIO_PLAN.md)) splits audio into four
-//! steps so each ships and is graded on its own; this crate is where the second
-//! and third live, and the device is the fourth. What is here now is the part of
-//! the decode path with an **exact** vanilla answer, plus the buffer library's
-//! caching rules — both of which are pure logic and need no decoder, which is
-//! why they are in before one.
+//! **Only `cpal_sink` opens a device; nothing else makes a noise.** The plan
+//! ([`REWO_AUDIO_PLAN.md`](../../../REWO_AUDIO_PLAN.md)) split audio into four
+//! steps so each ships and is graded on its own; all four have shipped:
+//! - [`quantise`] + [`buffers`] — the parts with an **exact** vanilla answer
+//!   (`32767.5/-0.5/truncate-toward-zero` PCM conversion; the buffer library's
+//!   caching rules).
+//! - [`mixer`] — caller-driven `Mixer::render` in the `alcRenderSamplesSOFT`
+//!   shape: the attenuation curve is a transcription (OpenAL 1.1 linear), the
+//!   pan law and resampler are stated approximations, HRTF is absent.
+//! - [`device`] + [`live_sink`] — the SPSC command ring (a full ring drops the
+//!   NEWEST command and never blocks) and the channel pools over it.
+//! - [`cpal_sink`] — the device binding. Deliberately the only noise-making
+//!   code, reached from `rewo-app` under its off-by-default `audio` feature,
+//!   and the one thing no gate can grade (see below).
 //!
-//! **It deliberately has no dependencies yet.** The plan lists `rewo-net`,
-//! `rewo-data` and `symphonia`; none of them is needed by what is here, and
-//! adding them early would put a build cost on 34 gates that decode packets and
-//! render frames without ever wanting audio. `rewo-net` in particular must never
-//! gain a device dependency.
+//! Dependencies are directional on purpose: this crate may depend on
+//! `rewo-net` (for `ListenerTransform` and the gain curve), but `rewo-net`
+//! must never depend back — a default build of every other crate links no
+//! audio stack, which is what keeps the gates free of cpal/symphonia.
 //!
 //! ## What this is NOT evidence of
 //!

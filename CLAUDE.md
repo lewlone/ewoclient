@@ -28,7 +28,7 @@ The two dead directories have tombstone `CLAUDE.md` files redirecting here. If y
 
 ## Sibling project: EwoLoader
 
-EwoClient depends on a sibling project **EwoLoader** — a friendly fork of `fabric-loader` living at `C:\Users\valtteri\Desktop\EwoLoaderV1` (private repo `lewlone/ewo-loader`). It's where the actual mod-loading happens at JVM time. Eight strip passes have shipped (see `STRIP_PLAN.md` in that repo) removing ~17k LoC of upstream cruft we don't need. The current bundle ships 16 user-toggleable mods + 5 infrastructure libs (Fabric API, fabric-language-kotlin, YACL, placeholder-api, Cloth Config) via the loader manifest at `EwoLoaderV1/manifest/0.1.0/26.1.json`.
+EwoClient depends on a sibling project **EwoLoader** — a friendly fork of `fabric-loader` living at `C:\Users\valtteri\Desktop\EwoLoaderV1` (private repo `lewlone/ewo-loader`). It's where the actual mod-loading happens at JVM time. Eight strip passes have shipped (see `STRIP_PLAN.md` in that repo) removing ~17k LoC of upstream cruft we don't need. The current bundle ships 17 user-toggleable mods + 5 infrastructure libs (Fabric API, fabric-language-kotlin, YACL, placeholder-api, Cloth Config) via the loader manifest at `EwoLoaderV1/manifest/0.1.0/<version>.json` — there are two manifests now, `26.1.json` and `26.2.json`, picked per Minecraft version line; the canonical catalog lives in `crates/ewo-launcher/src/bundled.rs::CATALOG`.
 
 **If you're working on launcher code that touches loader integration** (`crates/ewo-launcher/src/loaders/`, `downloads/job.rs::ensure_libraries`, `launch::merge`, instance loader handling), open EwoLoader in a second window. The two repos are tightly coupled at the loader-manifest contract.
 
@@ -7029,3 +7029,38 @@ read the unmutated number. It builds now, and r47 is verified three ways: the
 key ignored gives 7277 of 7277 frames, `listed` ignored gives 5 rows where 3 is
 correct, and no resolver at all gives 0. 3200 tests, 35 gates, `--render-check`
 47/47, demo PNG byte-identical.*
+
+*Update (2026-08-23 session, launcher-side bug pass — read-only orientation first, then fixes): the
+**`EwoModuleData` schema mismatch is closed, and it was hiding a second bug.** The 2026-05-26 post-ban
+bump to `SCHEMA_VERSION = 3` was applied Java-side only (`EwoModuleData.java`) while the Rust writer
+(`crates/ewo-jni/src/modules.rs`) kept writing **2** — so `ready()` sat permanently false for three
+months. Nothing failed because no read gates on `ready()` (only `EwoModules`' startup announcement);
+the drift guard was inert, which is exactly what a drift guard exists to prevent. The buffer geometry
+was verified field-by-field and matches (header `i32 schema + i32 count`, records at offset 8,
+stride 40, dynamic count at offset 4) — only the version integer lagged; Rust now writes 3 and a new
+test pins the pairing so a one-sided bump fails loud. **The sharper find: that module's layout test
+had been corrupting memory since `MAX_SETTINGS` grew** — `buffer_layout_matches_the_schema` wrote
+12 records × 40 B + header = 488 bytes into a `[0u8; 256]` stack array through raw pointers and then
+sliced reads up to offset 452; running `cargo test -p ewo-jni --lib` killed the process abnormally
+(`0xe06d7363`, not even a clean panic). It went unnoticed because verification counts only ever ran
+the eight `rewo-*` crates — **the `ewo-*` crates' tests are in nobody's loop**, which is worth
+remembering whenever an `ewo-*` change lands. Fixed with a CAPACITY-sized fixture plus an explicit
+`needed <= CAPACITY` assert. Both fixes deployed via `ingame-mod/build.ps1` (jar redeployed past the
+file:// cache; fresh `target/debug/ewo_jni.dll`, which is what the mod loads first).
+
+Also this session: four verified-stale comments corrected (`skin.rs` claimed wide-only though slim
+ships; `window/mod.rs` + `win32.rs` headers still described the dead `DWMWCP_ROUND` approach;
+`ewo-jni/src/lib.rs`'s JNI contract listed 7 of 13 exports; `rewo-audio/src/lib.rs` still said
+"deliberately has no dependencies yet" and "M138b scope" — rewritten for the shipped crate).
+An orientation sweep also confirmed several shipped-but-undocumented things, recorded here so the
+next session does not re-derive them: the **PvP-Utils layer** (intentional, separate from legit/pvp:
+launcher `SettingsTab::PvpUtils`, `ewo_core::pvp.rs` + per-profile `pvp.toml`, Java
+`dev.lewlone.ewohud.pvp.*` ships in BOTH builds and `EwoHitRange` is called from the *legit*
+PlayerAttackMixin — do not "clean up" that call); the ingame-mod **26.2 support layer**
+(`EwoMixinPlugin` picks 26.1-vs-26.2 mixin variants via `-Dewo.mc.version`; build compiles against
+the 26.2 jar — Phase E prose describing the 26.1 toolchain is historical); `bundled.rs` catalog is
+now 17 toggleable (Iris Shaders and Force Crawl joined after the "16" was written); `ewo-render`
+gained `widgets/liquid_glass.rs` (SkSL SDF refraction glass used by the HUD's `.iw-shell`);
+`ewo-jni/src/audio.rs` is a WASAPI process-loopback spectrum visualiser feeding the media widget;
+and `dist/EwoClient` had gone partial (exe only — no fonts/icon/rewo.exe, breaking its own
+self-contained contract) until `package.ps1` was re-run this session.*

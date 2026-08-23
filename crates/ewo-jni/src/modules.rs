@@ -22,7 +22,16 @@ use ewo_core::modules as catalog;
 /// and the buffer `CAPACITY` 256 → 4096 on the Java side. Schema 1 was over-
 /// capacity at 17 modules (the 17th record landed past the 256-byte limit
 /// causing UB in the unsafe pointer write).
-pub const SCHEMA_VERSION: i32 = 2;
+///
+/// Schema 3 (2026-05-26, the post-ban refactor): the catalog rebalanced —
+/// legit slots 0..11 first, assist slots 12..25 second, deleted three ids,
+/// renamed triggerbot → swing_cadence, and the module count became dynamic
+/// (offset 4). Record geometry is unchanged from schema 2; what changed is
+/// which entries exist and in what order. The Java side was bumped at the
+/// time and this side was not, so `EwoModuleData.ready()` sat permanently
+/// false for ~3 months (reads are not gated on `ready()`, which is why
+/// nothing failed). Aligned to 3 on 2026-08-23.
+pub const SCHEMA_VERSION: i32 = 3;
 
 /// First record offset — past the `i32 schema` + `i32 count` header.
 const OFF_RECORDS: usize = 8;
@@ -196,8 +205,21 @@ mod tests {
     #[test]
     fn buffer_layout_matches_the_schema() {
         let cfg = ModuleConfig::defaults();
-        let mut buf = [0u8; 256];
+        // write_buffer's safety contract requires at least the Java side's
+        // `EwoModuleData.CAPACITY` (4096). The old 256-byte fixture overflowed
+        // twice over — 12 legit records × 40 B + header = 488 bytes written,
+        // and reads up to offset 448 — which corrupted the stack and killed
+        // the test process abnormally rather than failing an assert.
+        const CAPACITY: usize = 4096;
+        let mut buf = [0u8; CAPACITY];
         unsafe { cfg.write_buffer(buf.as_mut_ptr()) };
+        let needed = OFF_RECORDS + catalog::REGISTRY.len() * RECORD;
+        assert!(
+            needed <= CAPACITY,
+            "registry outgrew the Java-side capacity: {} > {}",
+            needed,
+            CAPACITY
+        );
         let i32_at = |o: usize| i32::from_ne_bytes(buf[o..o + 4].try_into().unwrap());
         assert_eq!(i32_at(0), SCHEMA_VERSION);
         assert_eq!(i32_at(4), catalog::REGISTRY.len() as i32);
@@ -205,6 +227,16 @@ mod tests {
             let rec = OFF_RECORDS + i * RECORD;
             assert_eq!(i32_at(rec) != 0, m.default_enabled, "module {}", m.id);
         }
+    }
+
+    /// The Java reader (`ingame-mod/src/main/java/dev/lewlone/ewohud/
+    /// EwoModuleData.java`) hard-codes the matching constant in `ready()`.
+    /// Bump BOTH sides together: this pin exists because the 2026-05-26
+    /// post-ban bump was applied Java-side only, and nothing failed for three
+    /// months — a unilateral bump here would silently do it again.
+    #[test]
+    fn schema_version_matches_the_java_mirror() {
+        assert_eq!(SCHEMA_VERSION, 3);
     }
 
     #[test]

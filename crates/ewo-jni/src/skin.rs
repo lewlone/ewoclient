@@ -8,7 +8,8 @@
 //! as an image shader. A player model never self-intersects, so per-face
 //! depth sort is exact — no z-buffer needed.
 //!
-//! Wide ("Steve") proportions only for now — slim arms are a follow-up.
+//! Both proportions — wide ("Steve") and slim 3px-arm ("Alex"), selected by
+//! the caller via the `ewo-skin-slim` marker file the mod writes.
 
 use skia_safe::{
     vertices::VertexMode, BlendMode, Canvas, Color, FilterMode, Image, Paint, Point, Rect,

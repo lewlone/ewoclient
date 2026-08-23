@@ -1,9 +1,9 @@
 //! Windows custom-frame implementation.
 //!
-//! Step 1 implementation: applies `DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND`
-//! so DWM rounds the outer corners on Win11. Combined with
-//! `Window::with_decorations(false)`, this gives us a borderless rounded window
-//! with the OS-provided shadow.
+//! Applies `DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_DONOTROUND`: the launcher
+//! paints its own 22px rounded corners through per-pixel alpha (the DComp
+//! presentation backend — see `ewo-render/src/gl_backend.rs`), and DWM's ~8px
+//! rounding would clip them and add a rectangular shadow that fights ours.
 //!
 //! Drag and resize hit-testing live in `main.rs` and route through
 //! `Window::drag_window()` / `Window::drag_resize_window(dir)`, which winit

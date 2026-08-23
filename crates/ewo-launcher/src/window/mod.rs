@@ -5,8 +5,10 @@
 //! resize through OS-specific APIs:
 //!
 //! - **Windows:** `WM_NCHITTEST` (zone reporting), `WM_NCCALCSIZE` (strip non-
-//!   client area), `DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE, ROUND)`
-//!   for free Win11 corner rounding + DWM shadow.
+//!   client area), `DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE,
+//!   DWMWCP_DONOTROUND)` so DWM does NOT round over the 22px corners we paint
+//!   ourselves (its ~8px rounding would clip ours and add a competing
+//!   rectangular shadow).
 //! - **Linux/Hyprland:** `xdg-decoration` mode `client-side`, `xdg_toplevel.move()`
 //!   / `resize()` requests for drag and edge-resize. Hyprland (wlroots) honors
 //!   these cleanly.

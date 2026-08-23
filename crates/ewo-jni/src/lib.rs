@@ -54,10 +54,16 @@
 //! JNI contract — must match `dev.lewlone.ewohud.EwoHudNative`:
 //! ```text
 //!   static native void nativeHello();              // bridge liveness check
-//!   static native void nativeInit(ByteBuffer buf); // register the shared data block
+//!   static native void nativeInit(ByteBuffer buf); // register EwoHudData (JVM→Rust)
 //!   static native void nativeRender();             // paint + composite one frame
 //!   static native void nativeMouseMove / nativeMouseButton / nativeMouseScroll
 //!   static native void nativeKey                   // overlay input (E4)
+//!   static native void nativeQuickEdit(boolean on) // quick-edit mode toggle
+//!   static native void nativeForceExit();          // teardown from JVM shutdown
+//!   static native void nativeInitModules(ByteBuffer buf);  // register EwoModuleData (Rust→JVM)
+//!   static native void nativeModuleToggle(int index);      // keybind round-trip through Rust
+//!   static native byte nativeMediaTryClick(int button, double x, double y); // SMTC transport hit-test
+//!   static native byte nativeIsCustomCrosshairEnabled();   // GuiCrosshairMixin gate (crosshair.rs)
 //! ```
 //! All are invoked on Minecraft's render thread.
 
