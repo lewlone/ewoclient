@@ -145,6 +145,10 @@ pub enum Sheet {
     /// order: 0 forward, 1 forward_highlighted, 2 backward,
     /// 3 backward_highlighted. 23×13, `Stretch` at native size = a 1:1 blit.
     PageArrow(u8),
+    /// The `AbstractSliderButton` sheets (M173): 0 track, 1 track_highlighted
+    /// (200×20, nine-slice border 1), 2 handle, 3 handle_highlighted (8×20,
+    /// nine-slice border `{2, 2, 2, 3}`).
+    SliderSheet(u8),
 }
 
 /// One blit, in **GUI space** (the app multiplies nothing; this pass applies
@@ -265,6 +269,8 @@ pub struct WidgetSpriteData<'a> {
     pub book_background: crate::hud::HudSpriteData<'a>,
     /// forward, forward_highlighted, backward, backward_highlighted (M172).
     pub page_buttons: [crate::hud::HudSpriteData<'a>; 4],
+    /// track, track_highlighted, handle, handle_highlighted (M173).
+    pub slider: [crate::hud::HudSpriteData<'a>; 4],
 }
 
 pub struct ScreenPass {
@@ -314,9 +320,10 @@ fn sheet_index(s: Sheet) -> usize {
         Sheet::White => 24,
         Sheet::BookBackground => 25,
         Sheet::PageArrow(i) => 26 + (i as usize).min(3),
+        Sheet::SliderSheet(i) => 30 + (i as usize).min(3),
     }
 }
-const SHEET_COUNT: usize = 30;
+const SHEET_COUNT: usize = 34;
 
 impl ScreenPass {
     pub fn new(
@@ -477,6 +484,12 @@ impl ScreenPass {
                 256,
             );
         }
+        // M173 — the slider shelf, under the arrows: the two 200x20 tracks
+        // stacked, then the two 8x20 handles beside them.
+        put(&mut atlas, &mut sheets, Sheet::SliderSheet(0), &sprites.slider[0], 200, 280);
+        put(&mut atlas, &mut sheets, Sheet::SliderSheet(1), &sprites.slider[1], 200, 300);
+        put(&mut atlas, &mut sheets, Sheet::SliderSheet(2), &sprites.slider[2], 404, 280);
+        put(&mut atlas, &mut sheets, Sheet::SliderSheet(3), &sprites.slider[3], 414, 280);
         // One opaque white texel so the untextured backdrop can share this
         // pipeline — the fragment shader's `texture * color` then leaves the
         // gradient alone. Parked in the empty bottom-right of the atlas.

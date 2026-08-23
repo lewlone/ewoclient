@@ -2386,6 +2386,12 @@ pub struct WidgetSprites {
     /// 23×13, no `.mcmeta` — distinct files from the recipe book's 12×17
     /// `recipe_book/page_*` arrows.
     pub page_buttons: [HudSprite; 4],
+    /// The four `AbstractSliderButton` sheets (M173), in the order track,
+    /// track_highlighted, handle, handle_highlighted. Tracks 200×20
+    /// (nine-slice border 1), handles 8×20 (nine-slice border
+    /// `{left 2, top 2, right 2, bottom 3}` — ASYMMETRIC, so it can never be
+    /// a single border number).
+    pub slider: [HudSprite; 4],
 }
 
 /// Extract the button, background, tab and statistics sheets. Any missing one
@@ -2446,6 +2452,16 @@ fn bake_widgets(jar: Jar) -> Option<WidgetSprites> {
         Some(HudSprite { rgba, w, h })
     };
     let book_background = crop(&book_full, 192, 192)?;
+    const SLIDERS: [&str; 4] = [
+        "slider",
+        "slider_highlighted",
+        "slider_handle",
+        "slider_handle_highlighted",
+    ];
+    let mut sliders = Vec::with_capacity(4);
+    for name in SLIDERS {
+        sliders.push(get(jar, &format!("gui/sprites/widget/{name}.png"))?);
+    }
     Some(WidgetSprites {
         button: get(jar, "gui/sprites/widget/button.png")?,
         button_disabled: get(jar, "gui/sprites/widget/button_disabled.png")?,
@@ -2465,6 +2481,7 @@ fn bake_widgets(jar: Jar) -> Option<WidgetSprites> {
         inworld_footer_separator: get(jar, "gui/inworld_footer_separator.png")?,
         book_background,
         page_buttons: pages.try_into().ok()?,
+        slider: sliders.try_into().ok()?,
     })
 }
 
