@@ -288,6 +288,7 @@ struct RenderCheck {
     /// it, and the run holds Space over 0.32..0.46 of its length (clear of the
     /// 0.5 inventory), which charges the meter to 1.0 and releases it.
     jump_bar_blits_max: usize,
+    leash_verts_max: usize,
     jump_scale_max: f32,
     riding_jumps_sent: u64,
     /// `self.baked.is_some()` observed at the top of a frame. The witness whose
@@ -779,7 +780,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 59;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 60;
 
     fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1544,6 +1545,16 @@ impl RenderCheck {
                  sent {}. Needs: the saddle off equipment slot 7, the bot as the horse's \
                  first passenger, the ramp in the mounted tick, and the packet",
                 self.jump_bar_blits_max, self.jump_scale_max, self.riding_jumps_sent
+            ),
+        );
+        row(
+            "r60 the staged leashed cow drew a rope through collect_leashes",
+            self.leash_verts_max >= 3,
+            format!(
+                "max leash ribbon verts {} (a ribbon is 98 triangles = 294 verts). \
+                 Needs: the cow + fence-knot in the table, the set_entity_link \
+                 holder, and collect_leashes building the ribbon into the pass",
+                self.leash_verts_max
             ),
         );
         row(
@@ -3778,6 +3789,78 @@ pub(crate) fn vanilla_variant(
     }
 }
 
+/// The leash ribbons to draw this frame (M170), one per leashed entity that
+/// has a resolvable holder. Faithful to `EntityRenderer`'s single-leash branch:
+/// `start = entity.pos + leashOffset.yRot(-bodyYaw)`, `end =
+/// holder.getRopeHoldPosition`, `slack = true` (the `LeashState` default the
+/// branch never overrides), light sampled at each end's eye. The quad-leash
+/// (happy-ghast) branch is not modelled; nothing Rewo renders takes it.
+///
+/// Eye height is `height * 0.85` — the `EntityDimensions.of` default. Vanilla
+/// carries per-type overrides (a player's is 1.62, not 1.53); the leashables
+/// are mobs where the default is exact or near it, so the divergence is a small
+/// vertical shift of one rope end, documented rather than tabulated.
+fn collect_leashes(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    alpha: f32,
+    lightmap: &LightmapState,
+) -> Vec<rewo_gpu::leash::LeashVertex> {
+    // `Vec3.yRot(angle)`: x' = x·cos + z·sin, z' = z·cos - x·sin.
+    fn yrot(v: [f64; 3], angle: f32) -> [f64; 3] {
+        let (s, c) = (angle.sin() as f64, angle.cos() as f64);
+        [v[0] * c + v[2] * s, v[1], v[2] * c - v[0] * s]
+    }
+    // A holder's `getRopeHoldPosition` and the world point to sample its light
+    // at (its eye). Returns `None` when the holder is not tracked.
+    let hold = |holder: i32| -> Option<([f64; 3], [f64; 3])> {
+        if Some(holder) == session.player_id {
+            let feet = [session.player.x, session.player.y, session.player.z];
+            let eye = session.player.eye_y();
+            return Some((
+                [feet[0], feet[1] + (eye - feet[1]) * 0.7, feet[2]],
+                [feet[0], eye, feet[2]],
+            ));
+        }
+        let h = session.world.entities.get(holder)?;
+        let pos = h.render_pos(alpha);
+        if etypes.name(h.type_id) == Some("minecraft:leash_knot") {
+            // LeashFenceKnotEntity.getRopeHoldPosition = pos + (0, 0.2, 0).
+            Some(([pos[0], pos[1] + 0.2, pos[2]], [pos[0], pos[1] + 0.2, pos[2]]))
+        } else {
+            let (_, hh) = etypes.dimensions(h.type_id);
+            let heye = (hh * 0.85) as f64;
+            Some((
+                [pos[0], pos[1] + heye * 0.7, pos[2]],
+                [pos[0], pos[1] + heye, pos[2]],
+            ))
+        }
+    };
+
+    let mut verts: Vec<rewo_gpu::leash::LeashVertex> = Vec::new();
+    for (id, e) in session.world.entities.iter() {
+        let Some(holder) = session.world.entities.leash_holder(id) else {
+            continue;
+        };
+        let Some((end, end_eye)) = hold(holder) else {
+            continue;
+        };
+        let pos = e.render_pos(alpha);
+        let (w, ht) = etypes.dimensions(e.type_id);
+        let eye = (ht * 0.85) as f64;
+        // leashOffset = (0, eyeHeight, bbWidth * 0.4), rotated by -bodyYaw.
+        let offset = yrot([0.0, eye, (w * 0.4) as f64], -e.yaw.to_radians());
+        let start = [pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2]];
+        // Light at each eye (vanilla samples `getEyePosition`, not the rope end).
+        let start_light = entity_light(&session.world, pos[0], pos[1] + eye, pos[2], lightmap);
+        let end_light = entity_light(&session.world, end_eye[0], end_eye[1], end_eye[2], lightmap);
+        verts.extend(rewo_gpu::leash::build_ribbon(
+            start, end, true, start_light, end_light,
+        ));
+    }
+    verts
+}
+
 fn collect_entities<'a>(
     session: &'a PlaySession,
     etypes: &EntityTypes,
@@ -5230,6 +5313,7 @@ fn run_headless(
         log::info!("live: targeting block {:?} face {:?}", h.block, h.face);
     }
     world_renderer.set_selection(hit.map(|h| h.block));
+    world_renderer.set_leash(&collect_leashes(&session, &etypes, 1.0, &lightmap));
     let (cr, cu) = camera_basis(yaw, pitch);
     // Before `set_entities`: the entity pass reads the eye as the CEM
     // `player_pos_*`, which FA aims mob eyes/heads with.
@@ -5799,6 +5883,7 @@ struct LiveApp {
     crowd_injected: bool,
     /// M169 — the injected horse + saddle + set_passengers that mounts the bot.
     jump_injected: bool,
+    leash_injected: bool,
     /// Whether `--render-check` has force-opened the chat screen yet (M110).
     chat_injected: bool,
     /// Whether it has typed a `/`-command yet (M116).
@@ -8410,6 +8495,49 @@ impl LiveApp {
                     }
                     self.jump_injected = true;
                 }
+                // M170 — a leashed cow tied to a fence knot, injected so
+                // `collect_leashes` builds a ribbon and the pass draws it.
+                // The leash decode (`set_entity_link`) is graded by
+                // `rideshot`; this proves the render path only a live frame
+                // reaches. Same injection technique as the horse above.
+                if !self.leash_injected && elapsed >= limit * 0.28 {
+                    if let Some(session) = self.session.as_mut() {
+                        let types = session.entity_types.clone();
+                        if let Some(types) = types {
+                            if let (Some(cow), Some(knot)) = (
+                                types.id_of("minecraft:cow"),
+                                types.id_of("minecraft:leash_knot"),
+                            ) {
+                                const COW_EID: i32 = 0x00C0_0000;
+                                const KNOT_EID: i32 = 0x00C0_0001;
+                                let p = &session.player;
+                                let add = |eid: i32, tid: i32, x: f64, y: f64, z: f64| {
+                                    let mut b: Vec<u8> = Vec::new();
+                                    rewo_proto::varint::write_varint(&mut b, eid);
+                                    b.extend_from_slice(&((eid as u128) << 8).to_be_bytes());
+                                    rewo_proto::varint::write_varint(&mut b, tid);
+                                    b.extend_from_slice(&x.to_be_bytes());
+                                    b.extend_from_slice(&y.to_be_bytes());
+                                    b.extend_from_slice(&z.to_be_bytes());
+                                    b.push(0);
+                                    b.extend_from_slice(&[0, 0, 0]);
+                                    b
+                                };
+                                let cow_body = add(COW_EID, cow, p.x + 2.0, p.y, p.z);
+                                let knot_body = add(KNOT_EID, knot, p.x + 3.0, p.y + 1.0, p.z);
+                                session.inject_packet(session.ids.cb_play_add_entity, &cow_body);
+                                session.inject_packet(session.ids.cb_play_add_entity, &knot_body);
+                                // set_entity_link: source cow, dest knot —
+                                // two fixed BE i32s.
+                                let mut link: Vec<u8> = Vec::new();
+                                link.extend_from_slice(&COW_EID.to_be_bytes());
+                                link.extend_from_slice(&KNOT_EID.to_be_bytes());
+                                session.inject_packet(session.ids.cb_play_set_entity_link, &link);
+                            }
+                        }
+                    }
+                    self.leash_injected = true;
+                }
                 // The hold. Assigned every frame rather than latched, so it is
                 // the same "read the key state fresh" the real gate does.
                 self.keys.tab_list = elapsed >= limit * 0.5;
@@ -9557,6 +9685,9 @@ impl LiveApp {
             REACH,
         );
         state.world_renderer.set_selection(hit.map(|h| h.block));
+        state
+            .world_renderer
+            .set_leash(&collect_leashes(session, &self.etypes, alpha, &lightmap));
         // Camera + lightmap were already set above from the same eye/state this
         // frame — don't duplicate them. Celestial still tracks the world clock.
         state
@@ -9853,6 +9984,7 @@ impl LiveApp {
                 .filter(|b| matches!(b.icon, HudIcon::JumpBar(_)))
                 .count();
             c.jump_bar_blits_max = c.jump_bar_blits_max.max(jump);
+            c.leash_verts_max = c.leash_verts_max.max(state.world_renderer.leash_vert_count());
             c.jump_scale_max = c.jump_scale_max.max(session.jump_riding_scale());
             c.riding_jumps_sent = session.riding_jumps_sent();
         }
@@ -10603,6 +10735,7 @@ fn run_windowed(
         play_pack_injected: false,
         crowd_injected: false,
         jump_injected: false,
+        leash_injected: false,
         username,
         chat_parse: None,
         drag: DragState::default(),

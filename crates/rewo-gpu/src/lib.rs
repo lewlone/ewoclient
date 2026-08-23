@@ -48,6 +48,7 @@ pub mod tooltip;
 pub mod overlay;
 pub mod renderer;
 pub mod swapchain;
+pub mod leash;
 pub mod world;
 
 use std::ffi::{c_char, c_void, CStr};
