@@ -190,7 +190,11 @@ pub fn chrome(
             // construction and the statistics screen builds none of them; they
             // are named rather than caught by a wildcard so a screen that does
             // start using one fails here instead of drawing nothing.
-            WidgetKind::Label { .. } | WidgetKind::MultiLabel { .. } | WidgetKind::Reserved => {}
+            WidgetKind::Label { .. }
+            | WidgetKind::MultiLabel { .. }
+            | WidgetKind::Reserved
+            // M173: the statistics screen builds no sliders either.
+            | WidgetKind::Slider { .. } => {}
             WidgetKind::Button => buttons.push(ButtonDraw {
                 x: w.x,
                 y: w.y,
@@ -422,7 +426,10 @@ pub fn lines(
             WidgetKind::Button => true,
             WidgetKind::Sprites { label, .. } => *label,
             // See `chrome`: the statistics screen builds none of M85's three.
-            WidgetKind::Label { .. } | WidgetKind::MultiLabel { .. } | WidgetKind::Reserved => false,
+            WidgetKind::Label { .. }
+            | WidgetKind::MultiLabel { .. }
+            | WidgetKind::Reserved
+            | WidgetKind::Slider { .. } => false,
         };
         if !draws_label {
             continue;

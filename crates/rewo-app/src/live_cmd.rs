@@ -291,6 +291,7 @@ struct RenderCheck {
     leash_verts_max: usize,
     book_frames: u64,
     book_pages_seen: usize,
+    options_slider_sprites_max: usize,
     jump_scale_max: f32,
     riding_jumps_sent: u64,
     /// `self.baked.is_some()` observed at the top of a frame. The witness whose
@@ -782,7 +783,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 61;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 62;
 
     fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1568,6 +1569,14 @@ impl RenderCheck {
                  and the screen opening), pages {} (want 2 — the resolve read the \
                  written_book_content off the wire)",
                 self.book_frames, self.book_pages_seen
+            ),
+        );
+        row(
+            "r62 the sound options page drew its eleven sliders in the windowed client",
+            self.options_slider_sprites_max == 22,
+            format!(
+                "max slider sprites {} (11 sliders x track+handle = 22; fewer means a                  lowering was dropped, more a stray widget). The page was opened and                  closed through the production paths — Sound, root, pause, game",
+                self.options_slider_sprites_max
             ),
         );
         row(
@@ -4393,6 +4402,7 @@ pub(crate) fn widget_sprites(
         inworld_footer_separator: hud_sprite(&w.inworld_footer_separator),
         book_background: hud_sprite(&w.book_background),
         page_buttons: std::array::from_fn(|i| hud_sprite(&w.page_buttons[i])),
+        slider: std::array::from_fn(|i| hud_sprite(&w.slider[i])),
     })
 }
 
@@ -4765,7 +4775,14 @@ pub(crate) fn build_sounds(
     // start-up fires no callbacks, and `MusicManager`'s constructor reads the
     // option itself (`MusicManager.java:30`). A client that waited for the
     // callback would start every session at DEFAULT whatever the file said.
-    live.set_music_frequency(load_options().music_frequency);
+    let opts = load_options();
+    live.set_music_frequency(opts.music_frequency);
+    // M173 — seed the eleven volume sliders the same way: the store WITHOUT
+    // the refresh (file load fires no callbacks — the M161 rule; nothing is
+    // playing yet anyway).
+    for source in rewo_net::sounds::SoundSource::ALL {
+        live.seed_category_volume(source, opts.sound_volume(source));
+    }
     if audio {
         attach_backend(&mut live, crate::audio_backend::open(version));
     }
@@ -5900,12 +5917,23 @@ struct LiveApp {
     /// app-side view state the frame's render arm keys on (the M84 pattern);
     /// the framework `Screen` in `screens` carries only the Done button.
     book: Option<rewo_world::book_view_screen::BookViewScreen>,
+    /// M173 — which options page is open, `None` when none. The app-side
+    /// view state the frame's render arm keys on (the M84 pattern) — the
+    /// options were model-only end to end until now (the pause OPTIONS
+    /// button logged "not implemented").
+    options_view: Option<rewo_world::options_screen::OptionsPage>,
+    /// M173 — the slider being dragged, if any. App-side (the stonecutter
+    /// pattern): armed by the press, driven from CursorMoved, cleared on
+    /// release. UNLIKE the stonecutter's grab, a slider press CONSUMES.
+    options_drag: Option<rewo_world::screen::WidgetId>,
     /// M169 — the injected horse + saddle + set_passengers that mounts the bot.
     jump_injected: bool,
     leash_injected: bool,
     /// M172 — the injected written book + open_book (r61). NOT M94's
     /// `book_injected`, which is the RECIPE book's force-open flag.
     book_view_injected: bool,
+    /// M173 — the staged walk through the options pages (r62).
+    options_staged: u8,
     /// Whether `--render-check` has force-opened the chat screen yet (M110).
     chat_injected: bool,
     /// Whether it has typed a `/`-command yet (M116).
@@ -6298,6 +6326,27 @@ impl ApplicationHandler for LiveApp {
                 // list**, so a death screen (`shouldCloseOnEsc() == false`)
                 // swallows it and `rewo live` does not quit.
                 if self.screen.any_open() && !self.screen.inventory_open() {
+                    // M173: Left/Right on a FOCUSED options slider steps by
+                    // one handle-pixel (`1/(width-8)` — the 310- and 150-wide
+                    // sliders step differently by design). Before the generic
+                    // dispatch, which never consumes the arrows.
+                    if p && self.options_view.is_some() {
+                        if let Some(right) = match glfw_key(event.physical_key) {
+                            Some(263) => Some(false),
+                            Some(262) => Some(true),
+                            _ => None,
+                        } {
+                            let changed = self
+                                .screen
+                                .screens
+                                .current_mut()
+                                .and_then(|sc| sc.slider_key(right));
+                            if let Some((id, v)) = changed {
+                                self.options_slider_changed(id, v);
+                            }
+                            return;
+                        }
+                    }
                     // M172: the book's page keys — GLFW 266 PageUp -> BACK,
                     // 267 PageDown -> FORWARD (the pairing reads inverted and
                     // is vanilla's). Only these two; the arrows are NOT bound.
@@ -6341,6 +6390,13 @@ impl ApplicationHandler for LiveApp {
                                     // M172: same rule — the render arm keys on
                                     // `self.book`, so it drops with the screen.
                                     self.close_book();
+                                } else if kind == rewo_world::screen::ScreenKind::Options
+                                    && self.options_view.is_some()
+                                {
+                                    // M173: Esc = onClose — a sub-page returns
+                                    // to the root, the root to the pause
+                                    // screen, and leaving a sub-page saves.
+                                    self.close_options();
                                 } else {
                                     self.close_view_screen();
                                 }
@@ -6555,6 +6611,11 @@ impl ApplicationHandler for LiveApp {
                     .map(|s| (s.kind, s.mouse_clicked(mx, my, b)));
                 if let Some((kind, rewo_world::screen::MouseResult::Pressed(id))) = pressed {
                     self.press_widget(kind, id);
+                } else if let Some((_, rewo_world::screen::MouseResult::Slider(id, v))) = pressed {
+                    // M173: `onClick` -> `setValueFromMouse` — the press IS
+                    // the first value change, and it arms the drag.
+                    self.options_slider_changed(id, v);
+                    self.options_drag = Some(id);
                 } else if b == 0
                     && matches!(pressed, Some((rewo_world::screen::ScreenKind::BookView, _)))
                 {
@@ -6704,6 +6765,16 @@ impl ApplicationHandler for LiveApp {
                     );
                 }
             }
+            // M173 — releasing ends a slider drag, unconditionally (the
+            // M93s rule: a screen that vanished mid-drag must not strand the
+            // grab). Vanilla's `onRelease` plays the click sound here; Rewo's
+            // screens play no UI sounds at all (recorded with that family).
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                ..
+            } if self.options_drag.is_some() => {
+                self.options_drag = None;
+            }
             // Releasing a button over the open screen ends any drag (M40).
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -6774,6 +6845,20 @@ impl ApplicationHandler for LiveApp {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.screen.mouse = (position.x, position.y);
+                // M173 — `onDrag` -> `setValueFromMouse`, continuous: every
+                // moved pixel applies (vanilla's `applyValueImmediately` is
+                // true for a volume slider; release does NOT re-apply).
+                if let Some(id) = self.options_drag {
+                    let (mx, _) = self.mouse_gui();
+                    let changed = self
+                        .screen
+                        .screens
+                        .current_mut()
+                        .and_then(|sc| sc.slider_drag(id, mx));
+                    if let Some(v) = changed {
+                        self.options_slider_changed(id, v);
+                    }
+                }
                 // M93s — `mouseDragged` while the stonecutter's thumb is held.
                 // Guarded on `isScrollBarActive` as well as `scrolling`, so a
                 // list that shrinks under a held thumb stops moving.
@@ -7740,10 +7825,19 @@ impl LiveApp {
             (ScreenKind::BookView, rewo_world::book_view_screen::DONE) => {
                 self.close_book();
             }
+            // M173: the options pages.
+            (ScreenKind::Options, id) if self.options_view.is_some() => {
+                self.options_press(id);
+            }
             // M85's three screens.
             (ScreenKind::Pause, rewo_world::pause_screen::RETURN_TO_GAME) => {
                 // `this.minecraft.gui.setScreen(null); mouseHandler.grabMouse();`
                 self.close_view_screen();
+            }
+            (ScreenKind::Pause, rewo_world::pause_screen::OPTIONS) => {
+                // M173: the options are real now — the root page, whose Done
+                // and Esc return here.
+                self.open_options_screen(rewo_world::options_screen::OptionsPage::Root);
             }
             (ScreenKind::Pause, rewo_world::pause_screen::SERVER_LINKS) => {
                 // `minecraft.player.connection.showDialog(dialog, this)`.
@@ -8066,6 +8160,143 @@ impl LiveApp {
         self.book = None;
         self.screen.screens.close();
         self.grab_for_screen(false);
+    }
+
+    /// M173 — open an options page. `Screens` is one slot, so this both
+    /// opens and navigates; the durable values live on `self.options` and the
+    /// widgets are rebuilt from them (the M82 resize rule).
+    fn open_options_screen(&mut self, page: rewo_world::options_screen::OptionsPage) {
+        self.options_view = Some(page);
+        self.options_drag = None;
+        self.rebuild_options_screen();
+        self.grab_for_screen(true);
+    }
+
+    fn rebuild_options_screen(&mut self) {
+        use rewo_world::options_screen as os;
+        let Some(page) = self.options_view else { return };
+        let (gw, gh) = self.gui_size();
+        if gw <= 0 || gh <= 0 {
+            return;
+        }
+        let rows = match page {
+            os::OptionsPage::Root => root_rows(&self.lang),
+            os::OptionsPage::Sound => sound_rows(&self.options, &self.lang),
+            os::OptionsPage::Accessibility => accessibility_rows(&self.options, &self.lang),
+        };
+        // The list content starts under the 33-px header; the title sits
+        // centred inside the header, as `HeaderAndFooterLayout` places it.
+        let mut screen = os::build(page, &rows, gw, gh, os::FOOTER_HEIGHT + 3);
+        let title = match page {
+            os::OptionsPage::Root => self.lang.get_or_default("options.title", "Options"),
+            os::OptionsPage::Sound => self
+                .lang
+                .get_or_default("options.sounds.title", "Music & Sound Options"),
+            os::OptionsPage::Accessibility => self
+                .lang
+                .get_or_default("options.accessibility.title", "Accessibility Settings"),
+        }
+        .to_string();
+        let tw = self.text_width(&title);
+        screen.widgets.push(rewo_world::screen::Widget::label(
+            os::DONE + 1,
+            (gw - tw) / 2,
+            (os::FOOTER_HEIGHT - 9) / 2,
+            tw,
+            title,
+        ));
+        self.screen.screens.open(screen);
+    }
+
+    /// M173 — leaving a page. A sub-page's Done/Esc returns to the ROOT
+    /// (vanilla's `lastScreen`), the root's to the pause screen — and leaving
+    /// a sub-page SAVES `options.txt`, which is `OptionsSubScreen.removed()`
+    /// (a slider never saves per drag; the cycle buttons saved per click
+    /// already).
+    fn close_options(&mut self) {
+        use rewo_world::options_screen::OptionsPage;
+        let page = self.options_view.take();
+        self.options_drag = None;
+        save_options(self.options);
+        match page {
+            Some(OptionsPage::Sound) | Some(OptionsPage::Accessibility) => {
+                self.open_options_screen(OptionsPage::Root);
+            }
+            _ => {
+                self.screen.screens.close();
+                self.grab_for_screen(false);
+                self.open_pause_screen();
+            }
+        }
+    }
+
+    /// M173 — one press on an options page's widget.
+    fn options_press(&mut self, id: rewo_world::screen::WidgetId) {
+        use rewo_world::options_screen as os;
+        let Some(page) = self.options_view else { return };
+        match page {
+            os::OptionsPage::Root => match id {
+                0 => self.open_options_screen(os::OptionsPage::Sound),
+                1 => self.open_options_screen(os::OptionsPage::Accessibility),
+                os::DONE => self.close_options(),
+                _ => {}
+            },
+            os::OptionsPage::Sound => match os::sound_slot(id) {
+                Some(os::SoundSlot::MusicFrequency) => {
+                    // The CALLBACK path (M161): a live change re-rolls
+                    // `nextSongDelay` from the CURRENT situational track —
+                    // `setMinutesBetweenSongs`, not the constructor's store.
+                    self.options.cycle_frequency();
+                    let situational = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.situational_music());
+                    self.sounds
+                        .change_music_frequency(self.options.music_frequency, situational.as_ref());
+                    // A cycle button saves on every click (vanilla's
+                    // `CycleableValueSet.createButton` -> `options.save()`).
+                    save_options(self.options);
+                    self.rebuild_options_screen();
+                }
+                Some(os::SoundSlot::Done) => self.close_options(),
+                _ => {}
+            },
+            os::OptionsPage::Accessibility => match id {
+                0 => {
+                    self.options.hide_lightning_flash = !self.options.hide_lightning_flash;
+                    save_options(self.options);
+                    self.rebuild_options_screen();
+                }
+                os::DONE => self.close_options(),
+                _ => {}
+            },
+        }
+    }
+
+    /// M173 — a slider's value changed (press, drag, or arrow key): apply it
+    /// to the option, the live engine, and the widget's own label.
+    fn options_slider_changed(&mut self, id: rewo_world::screen::WidgetId, value: f32) {
+        use rewo_world::options_screen as os;
+        if self.options_view != Some(os::OptionsPage::Sound) {
+            return;
+        }
+        let Some(os::SoundSlot::Volume(ordinal)) = os::sound_slot(id) else {
+            return;
+        };
+        let source = rewo_net::sounds::SoundSource::ALL[ordinal as usize];
+        self.options.set_sound_volume(source, value);
+        // The slider's `onValueUpdate` — store + `refreshCategoryVolume`,
+        // never `gainBySource` (that channel belongs to the music fade).
+        self.sounds.set_category_volume(source, value);
+        // `updateMessage()` — the label tracks the LIVE drag value.
+        let caption_key = format!("soundCategory.{}", source.name());
+        let caption = self.lang.get_or_default(&caption_key, source.name()).to_string();
+        let off = self.lang.get_or_default("options.off", "OFF").to_string();
+        if let Some(sc) = self.screen.screens.current_mut() {
+            if let Some(w) = sc.widget_mut(id) {
+                w.message = os::percent_label(&caption, value, &off);
+            }
+        }
     }
 
     fn close_stats(&mut self) {
@@ -8591,6 +8822,28 @@ impl LiveApp {
                         }
                     }
                     self.crowd_injected = true;
+                }
+                // M173 — walk the options pages through the PRODUCTION open
+                // and close paths (r62): the Sound page at 0.06 (sliders
+                // sampled while it is up), Done-equivalent closes at 0.12
+                // (to the root), 0.14 (to the pause screen) and 0.16 (back
+                // to the game), so nothing later meets a leftover screen or
+                // a stale `self.view`.
+                if self.options_staged == 0 && elapsed >= limit * 0.06 {
+                    self.options_staged = 1;
+                    self.open_options_screen(rewo_world::options_screen::OptionsPage::Sound);
+                }
+                if self.options_staged == 1 && elapsed >= limit * 0.12 {
+                    self.options_staged = 2;
+                    self.close_options(); // Sound -> Root, saving options.txt
+                }
+                if self.options_staged == 2 && elapsed >= limit * 0.14 {
+                    self.options_staged = 3;
+                    self.close_options(); // Root -> the pause screen
+                }
+                if self.options_staged == 3 && elapsed >= limit * 0.16 {
+                    self.options_staged = 4;
+                    self.close_view_screen(); // pause -> the game
                 }
                 // M169 — mount the bot on a saddled horse by INJECTION, the way
                 // r48's crowd and r19's chest are staged (M17: injection is the
@@ -9368,6 +9621,30 @@ impl LiveApp {
         self.pump_death_screen();
         self.pump_stats_screen();
         self.pump_book_screen();
+        // M173 — the options screens rebuild on resize (the Done and the
+        // band re-centre); only on a CHANGE, or ticks/focus reset every
+        // frame (M82's rule).
+        if self.options_view.is_some() {
+            let (gw, gh) = self.gui_size();
+            let stale = self.screen.screens.current().is_some_and(|s| {
+                s.kind == rewo_world::screen::ScreenKind::Options
+                    && (s.width != gw || s.height != gh)
+            });
+            if stale {
+                self.rebuild_options_screen();
+            }
+            // The one-slot rule (M172): anything replacing the options
+            // screen drops the app-side view state with it.
+            if !self
+                .screen
+                .screens
+                .current()
+                .is_some_and(|s| s.kind == rewo_world::screen::ScreenKind::Options)
+            {
+                self.options_view = None;
+                self.options_drag = None;
+            }
+        }
         if self.exit_requested {
             event_loop.exit();
             return;
@@ -10189,6 +10466,13 @@ impl LiveApp {
                 .count();
             c.jump_bar_blits_max = c.jump_bar_blits_max.max(jump);
             c.leash_verts_max = c.leash_verts_max.max(state.world_renderer.leash_vert_count());
+            if self.options_view == Some(rewo_world::options_screen::OptionsPage::Sound) {
+                if let Some(sc) = self.screen.screens.current() {
+                    c.options_slider_sprites_max = c
+                        .options_slider_sprites_max
+                        .max(slider_sprites(sc, None, None).len());
+                }
+            }
             if let Some(book) = self.book.as_ref() {
                 if self
                     .screen
@@ -10748,6 +11032,23 @@ impl LiveApp {
                     text.extend(screen_text_lines(screen, &advance, px));
                     text.extend(book_text_lines(book, gw, &advance, px, &self.lang));
                 }
+            } else if let (Some(_page), Some(screen)) =
+                (self.options_view, self.screen.screens.current())
+            {
+                // M173: an options page. The buttons and labels ride the
+                // generic builders; the SLIDERS need their own sprite
+                // lowering, because `screen_chrome` lowers only
+                // `WidgetKind::Button` and a missing branch is an invisible
+                // widget with no error.
+                chrome = screen_chrome(screen, Some(mouse_gui));
+                chrome.sprites.extend(slider_sprites(
+                    screen,
+                    Some(mouse_gui),
+                    self.options_drag,
+                ));
+                if let Some(advance) = state.world_renderer.font_advance() {
+                    text.extend(screen_text_lines(screen, &advance, px));
+                }
             } else if !matches!(self.view, ScreenView::None) {
                 // M85's three screens. All of their text is on their widgets,
                 // so one generic builder serves all three — the death screen
@@ -10974,9 +11275,12 @@ fn run_windowed(
         play_pack_injected: false,
         crowd_injected: false,
         book: None,
+        options_view: None,
+        options_drag: None,
         jump_injected: false,
         leash_injected: false,
         book_view_injected: false,
+        options_staged: 0,
         username,
         chat_parse: None,
         drag: DragState::default(),
@@ -12016,6 +12320,117 @@ pub(crate) fn resolve_book_pages(
     } else {
         None
     }
+}
+
+/// The ROOT options page's rows (M173): links to the two sub-pages.
+pub(crate) fn root_rows(lang: &rewo_data::lang::Language) -> Vec<rewo_world::options_screen::OptionRow> {
+    use rewo_world::options_screen::{OptionRow, RowItem};
+    vec![OptionRow::small(
+        RowItem::Button(lang.get_or_default("options.sounds", "Music & Sounds...").to_string()),
+        Some(RowItem::Button(
+            lang.get_or_default("options.accessibility", "Accessibility Settings...").to_string(),
+        )),
+    )]
+}
+
+/// The SOUND page's rows (M173), in vanilla `SoundOptionsScreen.addOptions`
+/// order: `addBig(MASTER)`, five `addSmall` pairs of the ten non-master
+/// sources in `SoundSource.values()` order, then the music-frequency cycle
+/// button alone in the left column. The rows vanilla has that Rewo does not
+/// model — the sound DEVICE, Closed Captions, Directional Audio, the music
+/// toast — are absent rather than stubbed.
+pub(crate) fn sound_rows(
+    options: &rewo_net::options::Options,
+    lang: &rewo_data::lang::Language,
+) -> Vec<rewo_world::options_screen::OptionRow> {
+    use rewo_net::sounds::SoundSource;
+    use rewo_world::options_screen::{percent_label, OptionRow, RowItem};
+    let off = lang.get_or_default("options.off", "OFF");
+    let item = |source: SoundSource| {
+        let caption_key = format!("soundCategory.{}", source.name());
+        let caption = lang.get_or_default(&caption_key, source.name());
+        let value = options.sound_volume(source);
+        RowItem::Slider {
+            label: percent_label(caption, value, off),
+            value,
+        }
+    };
+    let mut rows = vec![OptionRow::big(item(SoundSource::Master))];
+    let rest = &SoundSource::ALL[1..];
+    for pair in rest.chunks(2) {
+        rows.push(OptionRow::small(item(pair[0]), pair.get(1).map(|s| item(*s))));
+    }
+    let caption = lang.get_or_default("options.music_frequency", "Music Frequency");
+    let value_key = format!(
+        "options.music_frequency.{}",
+        rewo_net::options::frequency_name(options.music_frequency).to_lowercase()
+    );
+    let value =
+        lang.get_or_default(&value_key, rewo_net::options::frequency_name(options.music_frequency));
+    rows.push(OptionRow::small(
+        RowItem::Button(rewo_world::options_screen::cycle_label(caption, value)),
+        None,
+    ));
+    rows
+}
+
+/// The ACCESSIBILITY page's rows (M173): the one option Rewo models there.
+pub(crate) fn accessibility_rows(
+    options: &rewo_net::options::Options,
+    lang: &rewo_data::lang::Language,
+) -> Vec<rewo_world::options_screen::OptionRow> {
+    use rewo_world::options_screen::{bool_label, cycle_label, OptionRow, RowItem};
+    let caption = lang.get_or_default("options.hideLightningFlashes", "Hide Lightning Flashes");
+    vec![OptionRow::small(
+        RowItem::Button(cycle_label(caption, bool_label(options.hide_lightning_flash))),
+        None,
+    )]
+}
+
+/// The slider sprite lowering (M173) — `screen_chrome` lowers only buttons,
+/// and a missing branch is an invisible widget with no error.
+///
+/// Track: nine-slice border 1, never highlighted — vanilla's highlighted
+/// track shows only when focused-but-NOT-engaged, a state reachable only
+/// through arrow-key list navigation this framework does not have (tab-focus
+/// auto-engages, `AbstractSliderButton.setFocused`). Handle: at
+/// `x + (int)(value * (width - 8))`, 8 wide, nine-slice `{2, 2, 2, 3}`
+/// (ASYMMETRIC — it can never be a single border number), highlighted when
+/// hovered or dragging (`canChangeValue`).
+pub(crate) fn slider_sprites(
+    screen: &rewo_world::screen::Screen,
+    mouse: Option<(f64, f64)>,
+    dragging: Option<rewo_world::screen::WidgetId>,
+) -> Vec<rewo_gpu::screen::SpriteDraw> {
+    use rewo_gpu::screen::{Fill, Sheet, SpriteDraw};
+    use rewo_world::screen::{slider_handle_x, WidgetKind};
+    let mut out = Vec::new();
+    for w in screen.widgets.iter().filter(|w| w.visible) {
+        let WidgetKind::Slider { value } = w.kind else {
+            continue;
+        };
+        out.push(SpriteDraw {
+            x: w.x,
+            y: w.y,
+            width: w.width,
+            height: w.height,
+            sheet: Sheet::SliderSheet(0),
+            fill: Fill::NineSlice([1, 1, 1, 1]),
+            color: [1.0; 4],
+        });
+        let engaged = dragging == Some(w.id);
+        let highlighted = w.active && (w.is_hovered(mouse) || engaged);
+        out.push(SpriteDraw {
+            x: slider_handle_x(w.x, w.width, value),
+            y: w.y,
+            width: 8,
+            height: w.height,
+            sheet: Sheet::SliderSheet(if highlighted { 3 } else { 2 }),
+            fill: Fill::NineSlice([2, 2, 2, 3]),
+            color: [1.0; 4],
+        });
+    }
+    out
 }
 
 /// Map one [`rewo_world::book_view_screen::BookDraw`] to the screen pass's
@@ -14416,8 +14831,10 @@ fn load_options() -> rewo_net::options::Options {
     }
 }
 
-/// Write the two options back, preserving every line Rewo does not model.
-#[allow(dead_code)]
+/// Write the modelled options back, preserving every line Rewo does not
+/// model. Dead code from M157 until M173 gave it callers (the cycle buttons
+/// per click, the sliders on screen exit — vanilla's `OptionsSubScreen.
+/// removed()`).
 fn save_options(o: rewo_net::options::Options) {
     let existing = std::fs::read_to_string(options_path()).unwrap_or_default();
     if let Err(e) = std::fs::write(options_path(), o.merge_into(&existing)) {
@@ -19407,7 +19824,10 @@ pub(crate) fn screen_text_lines(
             // rather than by `defaultScrollingHelper` — the two differ by the
             // 3-px drop an unselected tab takes.
             WidgetKind::Sprites { .. } => {}
-            WidgetKind::Button => {
+            // M173: a slider's label is the button's — centred, and the
+            // inactive greying flows through `label_color` the same way
+            // (`AbstractSliderButton` inherits `WithInactiveMessage`).
+            WidgetKind::Button | WidgetKind::Slider { .. } => {
                 let w = rewo_gpu::text::width(&widget.message, advance);
                 let (anchor, top) = widget.label_anchor(w);
                 push(&widget.message, anchor - w / 2, top, widget.label_color());

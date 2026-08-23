@@ -21,10 +21,13 @@
 //! `hideLightningFlashes` on `AccessibilityOptionsScreen`. Both are rendered
 //! as **cycle buttons**, which is `OptionInstance.Enum`'s widget.
 //!
-//! Vanilla's sliders are absent because neither of Rewo's options is one. That
-//! is a scope statement rather than a gap being papered over: the volume
-//! sliders it would need are `Options.soundSourceVolumes`, which Rewo already
-//! models as `CategoryVolumes` and does not yet surface.
+//! The volume sliders arrived with M173: the Sound page is vanilla
+//! `SoundOptionsScreen`'s `addBig(MASTER)` + five `addSmall` category pairs +
+//! the music-frequency cycle button. `addBig` is one 310-wide widget spanning
+//! both columns; `addSmall` pairs two 150-wide ones at the 160 pitch. The
+//! rows vanilla has that Rewo does not model — the sound DEVICE (no device
+//! enumeration), Closed Captions, Directional Audio and the music toast —
+//! are absent rather than stubbed.
 
 use crate::screen::{Screen, ScreenKind, Widget, WidgetId};
 
@@ -53,11 +56,32 @@ pub enum OptionsPage {
     Accessibility,
 }
 
-/// One row of the list: one or two widgets.
+/// One widget of a row (M173).
+#[derive(Clone, Debug, PartialEq)]
+pub enum RowItem {
+    /// A cycle/link button with this label.
+    Button(String),
+    /// An `AbstractSliderButton` with this label and value.
+    Slider { label: String, value: f32 },
+}
+
+/// One row of the list: one or two widgets, or one BIG widget spanning the
+/// whole 310 band (`OptionsList.addBig` — the master volume, the device).
 #[derive(Clone, Debug, PartialEq)]
 pub struct OptionRow {
-    pub left: String,
-    pub right: Option<String>,
+    pub left: RowItem,
+    pub right: Option<RowItem>,
+    /// `addBig` — `left` spans [`BAND_WIDTH`]; `right` must be `None`.
+    pub big: bool,
+}
+
+impl OptionRow {
+    pub fn small(left: RowItem, right: Option<RowItem>) -> Self {
+        Self { left, right, big: false }
+    }
+    pub fn big(item: RowItem) -> Self {
+        Self { left: item, right: None, big: true }
+    }
 }
 
 /// Where a widget in the list lands.
@@ -108,28 +132,89 @@ pub fn build(
 ) -> Screen {
     let _ = page;
     let mut widgets = Vec::new();
+    let place = |widgets: &mut Vec<Widget>, item: &RowItem, id, x, y, w| match item {
+        RowItem::Button(label) => {
+            widgets.push(Widget::button(id, x, y, w, BUTTON_HEIGHT, label.clone()));
+        }
+        RowItem::Slider { label, value } => {
+            widgets.push(Widget::slider(id, x, y, w, BUTTON_HEIGHT, label.clone(), *value));
+        }
+    };
     for (i, row) in rows.iter().enumerate() {
         let y = header_h + i as i32 * ROW_HEIGHT;
-        widgets.push(Widget::button(
-            widget_id(i, 0),
-            widget_x(screen_w, 0),
-            y,
-            SMALL_BUTTON_WIDTH,
-            BUTTON_HEIGHT,
-            row.left.clone(),
-        ));
+        let w0 = if row.big { BAND_WIDTH } else { SMALL_BUTTON_WIDTH };
+        place(&mut widgets, &row.left, widget_id(i, 0), widget_x(screen_w, 0), y, w0);
         if let Some(r) = &row.right {
-            widgets.push(Widget::button(
-                widget_id(i, 1),
-                widget_x(screen_w, 1),
-                y,
-                SMALL_BUTTON_WIDTH,
-                BUTTON_HEIGHT,
-                r.clone(),
-            ));
+            debug_assert!(!row.big, "a big row spans the band; it has no right column");
+            place(&mut widgets, r, widget_id(i, 1), widget_x(screen_w, 1), y, SMALL_BUTTON_WIDTH);
         }
     }
+    // The footer Done — `OptionsSubScreen`'s `HeaderAndFooterLayout` puts a
+    // 200-wide Done centred in the 33-px footer band.
+    widgets.push(Widget::button(
+        DONE,
+        (screen_w - 200) / 2,
+        screen_h - FOOTER_HEIGHT + (FOOTER_HEIGHT - BUTTON_HEIGHT) / 2,
+        200,
+        BUTTON_HEIGHT,
+        "Done",
+    ));
     Screen::new(ScreenKind::Options, screen_w, screen_h).with_widgets(widgets)
+}
+
+/// `HeaderAndFooterLayout`'s default header/footer height (`:11`).
+pub const FOOTER_HEIGHT: i32 = 33;
+
+/// The footer Done's widget id — clear of every `widget_id(row, col)` value.
+pub const DONE: WidgetId = 10_000;
+
+/// What a widget id on the SOUND page means (M173). The page's rows, in
+/// vanilla's order: `addBig(MASTER)`, five `addSmall` category pairs in
+/// `SoundSource.values()` order with MASTER filtered out (MUSIC+RECORDS,
+/// WEATHER+BLOCKS, HOSTILE+NEUTRAL, PLAYERS+AMBIENT, VOICE+UI), then the
+/// music-frequency cycle button alone in the left column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SoundSlot {
+    /// A volume slider, by `SoundSource` ordinal (0 = MASTER).
+    Volume(i32),
+    /// The `musicFrequency` cycle button.
+    MusicFrequency,
+    /// The footer Done.
+    Done,
+}
+
+/// Row layout of the sound page: id -> slot. `None` for an id the page does
+/// not place.
+pub fn sound_slot(id: WidgetId) -> Option<SoundSlot> {
+    if id == DONE {
+        return Some(SoundSlot::Done);
+    }
+    let (row, col) = (id / 2, id % 2);
+    match row {
+        0 if col == 0 => Some(SoundSlot::Volume(0)), // MASTER, addBig
+        1..=5 => {
+            // Pairs of the ten non-master sources, in enum order: the row's
+            // left is ordinal `1 + (row-1)*2`, its right one past that.
+            let ordinal = 1 + (row as i32 - 1) * 2 + col as i32;
+            Some(SoundSlot::Volume(ordinal))
+        }
+        6 if col == 0 => Some(SoundSlot::MusicFrequency),
+        _ => None,
+    }
+}
+
+/// `Options.percentValueOrOffLabel` — `caption: NN%` with INT TRUNCATION
+/// (`(int)(value * 100.0)`, so 0.699999 renders `69%`), and exactly 0.0 —
+/// not 0.004 — renders `caption: OFF`. The caller passes the translated
+/// caption and the translated OFF; the `%s: %s%%` / `%s: %s` templates
+/// reduce to this shape for every locale that keeps the order, which is the
+/// same approximation the cycle label makes.
+pub fn percent_label(caption: &str, value: f32, off: &str) -> String {
+    if value == 0.0 {
+        format!("{caption}: {off}")
+    } else {
+        format!("{caption}: {}%", (value * 100.0) as i32)
+    }
 }
 
 #[cfg(test)]
@@ -170,13 +255,14 @@ mod tests {
     /// A row with one option places one widget, not two with an empty label.
     #[test]
     fn an_odd_row_places_one_widget() {
-        let rows = [OptionRow {
-            left: "Music Frequency: Default".into(),
-            right: None,
-        }];
+        let rows = [OptionRow::small(
+            RowItem::Button("Music Frequency: Default".into()),
+            None,
+        )];
         let s = build(OptionsPage::Sound, &rows, 640, 480, 32);
-        assert_eq!(s.widgets.len(), 1);
+        assert_eq!(s.widgets.len(), 2, "the row plus the footer Done");
         assert_eq!(s.widgets[0].y, 32);
+        assert_eq!(s.widgets[1].id, DONE);
     }
 
     /// Rows advance on the 25-px pitch, which is `DEFAULT_ITEM_HEIGHT` and NOT
@@ -184,17 +270,11 @@ mod tests {
     #[test]
     fn rows_advance_on_the_item_pitch_not_the_button_height() {
         let rows = vec![
-            OptionRow {
-                left: "a".into(),
-                right: Some("b".into()),
-            },
-            OptionRow {
-                left: "c".into(),
-                right: None,
-            },
+            OptionRow::small(RowItem::Button("a".into()), Some(RowItem::Button("b".into()))),
+            OptionRow::small(RowItem::Button("c".into()), None),
         ];
         let s = build(OptionsPage::Sound, &rows, 640, 480, 0);
-        assert_eq!(s.widgets.len(), 3);
+        assert_eq!(s.widgets.len(), 4, "three row widgets plus the footer Done");
         assert_eq!(s.widgets[0].y, 0);
         assert_eq!(s.widgets[1].y, 0, "both columns share a row");
         assert_eq!(s.widgets[2].y, ROW_HEIGHT);
@@ -202,6 +282,63 @@ mod tests {
             ROW_HEIGHT, BUTTON_HEIGHT,
             "the pitch is the ITEM height; equating them removes the gap"
         );
+    }
+
+    /// `addBig` spans the whole 310 band; the sound page's master slider is
+    /// one, and the row's widget carries the slider VALUE.
+    #[test]
+    fn a_big_slider_row_spans_the_band() {
+        let rows = [OptionRow::big(RowItem::Slider {
+            label: "Master Volume: 50%".into(),
+            value: 0.5,
+        })];
+        let s = build(OptionsPage::Sound, &rows, 640, 480, 32);
+        let w = &s.widgets[0];
+        assert_eq!(w.width, BAND_WIDTH);
+        assert_eq!(w.x, 640 / 2 - BAND_HALF);
+        assert!(matches!(w.kind, crate::screen::WidgetKind::Slider { value } if value == 0.5));
+    }
+
+    /// The sound page's id -> slot map, in vanilla's row order: `addBig`
+    /// MASTER, five pairs in `SoundSource.values()` order with MASTER
+    /// filtered out, then musicFrequency alone in the left column.
+    #[test]
+    fn the_sound_page_slots_follow_vanillas_row_order() {
+        assert_eq!(sound_slot(widget_id(0, 0)), Some(SoundSlot::Volume(0)), "MASTER");
+        assert_eq!(sound_slot(widget_id(1, 0)), Some(SoundSlot::Volume(1)), "MUSIC");
+        assert_eq!(sound_slot(widget_id(1, 1)), Some(SoundSlot::Volume(2)), "RECORDS");
+        assert_eq!(sound_slot(widget_id(3, 1)), Some(SoundSlot::Volume(6)), "NEUTRAL");
+        assert_eq!(sound_slot(widget_id(5, 1)), Some(SoundSlot::Volume(10)), "UI");
+        assert_eq!(sound_slot(widget_id(6, 0)), Some(SoundSlot::MusicFrequency));
+        assert_eq!(sound_slot(widget_id(6, 1)), None, "no music toast in Rewo");
+        assert_eq!(sound_slot(DONE), Some(SoundSlot::Done));
+    }
+
+    /// `percentValueOrOffLabel`: INT TRUNCATION (`0.699999` renders 69%),
+    /// and only EXACTLY 0.0 is OFF — 0.004 is `0%`.
+    #[test]
+    fn the_percent_label_truncates_and_only_exact_zero_is_off() {
+        assert_eq!(percent_label("Music", 0.699999, "OFF"), "Music: 69%");
+        assert_eq!(percent_label("Music", 1.0, "OFF"), "Music: 100%");
+        assert_eq!(percent_label("Music", 0.0, "OFF"), "Music: OFF");
+        assert_eq!(percent_label("Music", 0.004, "OFF"), "Music: 0%");
+    }
+
+    /// The slider mouse math: `(mx - (x + 4)) / (width - 8)` clamped — the
+    /// +4 is the handle HALF width; and the arrow step is one handle-pixel,
+    /// `1/(width-8)`, which differs between the 310- and 150-wide sliders by
+    /// design.
+    #[test]
+    fn the_slider_math_matches_abstract_slider_button() {
+        use crate::screen::{slider_handle_x, slider_value_from_mouse};
+        // Click dead centre of a 310-wide slider at x=165: mx = 165+4+151.
+        assert!((slider_value_from_mouse(165, 310, 320.0) - 0.5).abs() < 0.01);
+        assert_eq!(slider_value_from_mouse(165, 310, 0.0), 0.0, "clamped left");
+        assert_eq!(slider_value_from_mouse(165, 310, 9999.0), 1.0, "clamped right");
+        // The handle: x + (int)(value * (width - 8)).
+        assert_eq!(slider_handle_x(165, 310, 0.0), 165);
+        assert_eq!(slider_handle_x(165, 310, 1.0), 165 + 302);
+        assert_eq!(slider_handle_x(165, 310, 0.5), 165 + 151);
     }
 
     /// The label is `caption: value`, which is what both of Rewo's options use.

@@ -2171,17 +2171,43 @@ default build (**28** witnesses) and adds decode and the mixer under
 does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
-**Everything is shipped and gated** as of 2026-08-23 (M172) —
-**3411 tests / 0 failures** (world 1212, net 1227, gpu 320, data 233, app 231,
+**Everything is shipped and gated** as of 2026-08-23 (M173) —
+**3424 tests / 0 failures** (world 1217, net 1235, gpu 320, data 233, app 231,
 mesh 52, proto 16, **audio 120** — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **109/109**, `inventoryshot` **165/165**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, `tablistshot` **42/42**, `soundshot` 37/57,
-**`bookshot` 21/21** (the 40th gate), all **40** serverless gates green with 0
-validation errors, `live --render-check` **61/61** with validation ON and 0
-validation errors (r61 arrived with M172), packet coverage **121 / 0 / 20**,
-demo PNG `2cc56b4acbfb92cb`.
+`bookshot` 21/21, **`optionshot` 12/12** (the 41st gate), all **41** serverless
+gates green with 0 validation errors, `live --render-check` **62/62** with
+validation ON and 0 validation errors (r62 arrived with M173), packet coverage
+**121 / 0 / 20**, demo PNG `2cc56b4acbfb92cb`.
+
+**M173 (2026-08-23) built the volume sliders — and the options wiring that
+never existed.** The research fan-out's sharpest finding was about M157, not
+the sliders: the options framework was model-only end to end — `build()` had
+zero production callers, the pause OPTIONS button logged "not implemented",
+`save_options` was `#[allow(dead_code)]`. M173 wired the whole thing (open,
+navigate, press, drag, save) with the eleven `soundCategory_*` sliders and
+the music-frequency cycle inside it. The engine half fixed a real audible
+divergence: the slider's `onValueUpdate` is `refreshCategoryVolume` — NOT
+`updateCategoryVolume`, whose `gainBySource` is the music crossfade's own
+channel — and Rewo had no refresh at all, so vanilla's put-PLUS-refresh had
+shipped as the put alone since M140b and the music fade's gain never reached
+the playing channel. Under it, `instance.getVolume()` folds the
+`sounds.json` entry volume INSIDE the getter, so `Live` now carries
+`resolved_volume` and the tick loop's recompute agrees with play. File
+codec: the SINGULAR `getName()` keys, JSON double `{:?}` (writes `1.0`),
+legacy BOOL alternative, out-of-range REJECTED not clamped (the SCREEN's
+setter clamps). Widget: press = `(mx - (x+4)) / (width-8)`; arrow step is
+one handle-pixel `1/(width-8)` — 1/302 vs 1/142 by design; labels TRUNCATE
+(`0.699999` -> `69%`) and only exactly 0.0 is OFF; a slider never saves the
+file (page exit does). The handle's nine-slice border is the ASYMMETRIC
+`{2,2,2,3}`; the highlighted TRACK state is deliberately unmodelled (it
+needs arrow-key list navigation). `optionshot` is the 41st gate; its o6
+probe was wrong three times before the code was once — a value-0 slider
+parks its handle AT the left edge, and a probe must avoid everything the
+widget draws over its chrome.
 
 **M172 (2026-08-23) rendered the written-book reader M171 modeled — the
 `sub-book` item is closed.** A 4-agent research fan-out preceded the code and

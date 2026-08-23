@@ -253,6 +253,17 @@ pub enum WidgetKind {
     MultiLabel { lines: Vec<String>, centered: bool },
     /// **Geometry with nothing drawn** — see [`Widget::reserved`].
     Reserved,
+    /// `AbstractSliderButton` (M173) — a nine-sliced track with an 8-wide
+    /// nine-sliced handle at `x + value * (width - 8)`, and a centred label.
+    ///
+    /// The VALUE lives here only as what this frame draws — the durable copy
+    /// is the app's `Options`, because `Screen::new` on every resize resets
+    /// the widget list (the M82 rebuild rule) and a value stored only here
+    /// would snap back to the build-time one.
+    Slider {
+        /// `0..=1`, `OptionInstance.UnitDouble`.
+        value: f32,
+    },
     /// Anything drawn from a `WidgetSprites` record: a tab, an image button
     /// (M84).
     Sprites {
@@ -290,6 +301,21 @@ pub struct Widget {
 
 impl Widget {
     /// `Button.builder(message, …).bounds(x, y, width, height).build()`.
+    /// An `AbstractSliderButton` (M173). Active by default, like a button.
+    pub fn slider(
+        id: WidgetId,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        message: impl Into<String>,
+        value: f32,
+    ) -> Self {
+        let mut w = Self::button(id, x, y, width, height, message);
+        w.kind = WidgetKind::Slider { value };
+        w
+    }
+
     pub fn button(
         id: WidgetId,
         x: i32,
@@ -525,9 +551,23 @@ impl Widget {
         (center_x.clamp(lo.min(hi), hi.max(lo)), text_top)
     }
 }
+/// `AbstractSliderButton.setValueFromMouse` — `(mx - (x + 4)) / (width - 8)`,
+/// clamped by `setValue`. The `+ 4` is the handle's HALF width, so the handle
+/// centres under the cursor; using `width` or `width - 4` in the divisor is
+/// off by a few pixels at the right edge and invisible at value 0.
+pub fn slider_value_from_mouse(x: i32, width: i32, mx: f64) -> f32 {
+    (((mx - (x as f64 + 4.0)) / (width as f64 - 8.0)) as f32).clamp(0.0, 1.0)
+}
+
+/// The handle's left edge — `x + (int)(value * (width - 8))`, int truncation.
+pub fn slider_handle_x(x: i32, width: i32, value: f32) -> i32 {
+    x + (value * (width - 8) as f32) as i32
+}
+
+
 
 /// What a click did.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum MouseResult {
     /// A widget was pressed. The app acts on the id.
     Pressed(WidgetId),
@@ -543,6 +583,12 @@ pub enum MouseResult {
     /// the app supplies — the inventory's slot handling is exactly this) gets
     /// the click.
     Ignored,
+    /// A slider took the press (M173): `AbstractSliderButton.onClick` runs
+    /// `setValueFromMouse` immediately, so the press IS the first value
+    /// change. The app applies the value and arms its drag state — the drag
+    /// itself is app-side (the stonecutter pattern), because the framework
+    /// has no cursor-moved event.
+    Slider(WidgetId, f32),
 }
 
 /// What a key press did.
@@ -793,9 +839,58 @@ impl Screen {
         // remaining gate is the button number.
         if button == 0 {
             self.set_focused(Some(i));
+            if let WidgetKind::Slider { .. } = self.widgets[i].kind {
+                // `onClick` -> `setValueFromMouse`: the press is the first
+                // value change, computed against the HANDLE's half-width
+                // inset — `(x - (getX() + 4)) / (width - 8)`.
+                let w = &mut self.widgets[i];
+                let v = slider_value_from_mouse(w.x, w.width, x);
+                w.kind = WidgetKind::Slider { value: v };
+                return MouseResult::Slider(w.id, v);
+            }
             MouseResult::Pressed(self.widgets[i].id)
         } else {
             MouseResult::Consumed
+        }
+    }
+
+    /// Continue a drag on slider `id` at screen-GUI `mx` (M173):
+    /// `onDrag` -> `setValueFromMouse`, unclamped in x — dragging past either
+    /// end pins the value at that end. Returns the new value, or `None` when
+    /// the id is not a slider on this screen.
+    pub fn slider_drag(&mut self, id: WidgetId, mx: f64) -> Option<f32> {
+        let w = self.widgets.iter_mut().find(|w| w.id == id)?;
+        if let WidgetKind::Slider { .. } = w.kind {
+            let v = slider_value_from_mouse(w.x, w.width, mx);
+            w.kind = WidgetKind::Slider { value: v };
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    /// A Left/Right arrow on a FOCUSED slider (M173) — vanilla steps by one
+    /// handle-pixel, `1 / (width - 8)` (`AbstractSliderButton.keyPressed`;
+    /// `UnitDouble` has no `previous()`/`next()` so the fall-through is the
+    /// geometric step: 1/302 on the 310-wide master, 1/142 on a 150-wide
+    /// category slider — the two sizes step differently by design). Returns
+    /// the changed `(id, value)`, or `None` when the focus is not a slider.
+    ///
+    /// The Enter/Space `canChangeValue` toggle and the highlighted-track
+    /// state are NOT modelled: they are only reachable through arrow-key
+    /// list navigation, which this framework does not have (tab-focus
+    /// auto-engages in vanilla, `setFocused`'s `lastInputType` branch).
+    pub fn slider_key(&mut self, right: bool) -> Option<(WidgetId, f32)> {
+        let id = self.focused()?;
+        let i = self.widgets.iter().position(|w| w.id == id)?;
+        let w = &mut self.widgets[i];
+        if let WidgetKind::Slider { value } = w.kind {
+            let step = 1.0 / (w.width - 8) as f32;
+            let v = (value + if right { step } else { -step }).clamp(0.0, 1.0);
+            w.kind = WidgetKind::Slider { value: v };
+            Some((w.id, v))
+        } else {
+            None
         }
     }
 
@@ -1563,5 +1658,30 @@ mod tests {
         assert!(!s.is(ScreenKind::Inventory), "there is no stack to pop back to");
         s.close();
         assert_eq!(s.kind(), None);
+    }
+
+    /// M173 — the slider's three input paths: the press computes the value
+    /// from the mouse against the half-handle inset, the drag follows, and a
+    /// Left/Right on the FOCUSED slider steps by ONE HANDLE-PIXEL —
+    /// `1/(width-8)`, so the 310-wide master steps 1/302 and a 150-wide
+    /// category slider 1/142 (a fixed percent is wrong for both).
+    #[test]
+    fn a_slider_presses_drags_and_steps_by_one_handle_pixel() {
+        let mut s = Screen::new(ScreenKind::Options, 640, 480)
+            .with_widgets(vec![Widget::slider(7, 165, 40, 310, 20, "Master", 0.5)]);
+        // Press at the 3/4 point.
+        let r = s.mouse_clicked(165.0 + 4.0 + 0.75 * 302.0, 50.0, 0);
+        assert!(matches!(r, MouseResult::Slider(7, v) if (v - 0.75).abs() < 0.01), "{r:?}");
+        // Drag past the right end pins at 1.0.
+        assert_eq!(s.slider_drag(7, 9_999.0), Some(1.0));
+        // The arrow step: exactly one handle-pixel of a 310-wide slider.
+        let (_, v) = s.slider_key(false).expect("focused by the press");
+        assert!((v - (1.0 - 1.0 / 302.0)).abs() < 1e-6, "step 1/302, got {v}");
+        // …and a 150-wide slider steps 1/142: the two differ by design.
+        let mut small = Screen::new(ScreenKind::Options, 640, 480)
+            .with_widgets(vec![Widget::slider(8, 165, 40, 150, 20, "Music", 0.5)]);
+        small.mouse_clicked(165.0 + 4.0 + 0.5 * 142.0, 50.0, 0);
+        let (_, v) = small.slider_key(true).expect("focused");
+        assert!((v - (0.5 + 1.0 / 142.0)).abs() < 0.01, "step 1/142, got {v}");
     }
 }

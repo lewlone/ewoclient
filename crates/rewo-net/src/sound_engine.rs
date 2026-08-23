@@ -773,6 +773,17 @@ struct Live {
     /// *is* that test, which is the same partition by construction rather than
     /// by two collections agreeing.
     ramp: Option<crate::tickable::Ramp>,
+    /// The `sounds.json` entry volume this play resolved (M173).
+    ///
+    /// `AbstractSoundInstance.getVolume()` is `this.volume *
+    /// this.sound.getVolume().sample(random)` (`:79-81`) — the entry volume
+    /// folds INSIDE the instance getter, so every recompute vanilla does
+    /// after play (`refreshCategoryVolume`'s `calculateVolume(instance)`,
+    /// `tickNonPaused`'s) uses the folded value. A recompute from the raw
+    /// instance volume disagrees with play for every entry whose declared
+    /// volume is not 1 — which is why this rides on `Live` rather than being
+    /// re-derived.
+    resolved_volume: f32,
 }
 
 /// A handle standing in for vanilla's object identity.
@@ -936,10 +947,57 @@ impl SoundEngine {
     }
 
     /// `SoundEngine.updateCategoryVolume(source, gain)` — the runtime gain,
-    /// **clamped on the way in**, which is why `calculate_volume` reads it raw.
-    pub fn update_category_volume(&mut self, source: SoundSource, gain: f32) {
+    /// **clamped on the way in**, which is why `calculate_volume` reads it
+    /// raw — **followed by the refresh** (`SoundEngine.java:152-155`), so the
+    /// new gain reaches every channel already playing. Until M173 Rewo had
+    /// the PUT without the REFRESH, and the music crossfade's gain never
+    /// travelled to the live music channel — the test that documents the old
+    /// behaviour now asserts the SetVolume arrives.
+    pub fn update_category_volume(
+        &mut self,
+        source: SoundSource,
+        gain: f32,
+        device: &mut dyn AudioDevice,
+    ) {
         self.gain_by_source[source.ordinal() as usize] =
             crate::sound_instance::mth_clamp(gain, 0.0, 1.0);
+        self.refresh_category_volume(source, device);
+    }
+
+    /// `SoundEngine.refreshCategoryVolume(source)` (`:117-125`) — push a
+    /// recomputed gain to every LIVE channel whose source matches, or to
+    /// EVERY channel when `source == MASTER` (the filter is
+    /// `source == instance.getSource() || source == SoundSource.MASTER`).
+    ///
+    /// This is what the options slider's `onValueUpdate` calls — directly,
+    /// NOT through [`Self::update_category_volume`]: the slider never touches
+    /// `gainBySource`, which is the music crossfade's channel
+    /// (`Options.java:1317-1330` vs `MusicManager.java:133`).
+    ///
+    /// Vanilla does **not** stop a channel refreshed to zero — it just sets
+    /// volume 0 and the channel keeps playing silently.
+    pub fn refresh_category_volume(
+        &mut self,
+        source: SoundSource,
+        device: &mut dyn AudioDevice,
+    ) {
+        let mut updates: Vec<(ChannelId, f32)> = Vec::new();
+        for l in &self.live {
+            if source == l.instance.source || source == SoundSource::Master {
+                updates.push((
+                    l.channel,
+                    calculate_volume(
+                        instance_volume(l.instance.volume, l.resolved_volume),
+                        l.instance.source,
+                        &self.options,
+                        self.category_gain(l.instance.source),
+                    ),
+                ));
+            }
+        }
+        for (ch, vol) in updates {
+            device.submit(ch, ChannelCall::SetVolume(vol));
+        }
     }
 
     pub fn category_gain(&self, source: SoundSource) -> f32 {
@@ -1114,6 +1172,7 @@ impl SoundEngine {
             delete_time: self.tick_count + MIN_SOURCE_LIFETIME,
             handle_stopped: false,
             ramp,
+            resolved_volume: resolved.volume,
         });
 
         (
@@ -1341,8 +1400,12 @@ impl SoundEngine {
             }
             updates.push((
                 l.channel,
+                // `calculateVolume(instance)` — the getter folds the entry
+                // volume (see `Live::resolved_volume`), so the recompute must
+                // too or a ticked sound with a declared volume under 1 jumps
+                // louder on its first tick.
                 calculate_volume(
-                    l.instance.volume,
+                    instance_volume(l.instance.volume, l.resolved_volume),
                     l.instance.source,
                     &options,
                     gains[l.instance.source.ordinal() as usize],
@@ -2203,6 +2266,46 @@ impl SoundSystem {
         }
     }
 
+    /// The volume slider's `onValueUpdate` (M173) — store, then
+    /// `soundManager.refreshCategoryVolume(category)` (`Options.java:1317-1330`).
+    ///
+    /// **Refresh, NOT [`SoundEngine::update_category_volume`]**: the slider
+    /// never touches `gainBySource`, which is the music crossfade's channel —
+    /// writing it here would fight the fade every tick. The toast and the
+    /// title-screen preview vanilla also runs are absent with the features
+    /// they belong to.
+    pub fn set_category_volume(
+        &mut self,
+        source: SoundSource,
+        value: f32,
+        device: &mut dyn AudioDevice,
+    ) {
+        self.engine.options.set_slider(source, value);
+        self.engine.refresh_category_volume(source, device);
+    }
+
+    /// Startup seeding from `options.txt` (M173) — the store WITHOUT the
+    /// refresh, because loading the file fires no callbacks in vanilla
+    /// (`OptionInstance.set` skips `onValueUpdate` while `!isRunning()`, the
+    /// M161 rule). Nothing is playing at seed time, so a refresh would be a
+    /// no-op — but the shape matters: the callback's side effects must not
+    /// run at startup.
+    pub fn seed_category_volume(&mut self, source: SoundSource, value: f32) {
+        self.engine.options.set_slider(source, value);
+    }
+
+    /// The music-frequency option's LIVE change (M173) — the CALLBACK path,
+    /// `setMinutesBetweenSongs`: store + re-roll `nextSongDelay` from the
+    /// CURRENT situational track. The constructor-shaped
+    /// [`Self::set_music_frequency`] is the other half of the M161 pair.
+    pub fn change_music_frequency(
+        &mut self,
+        frequency: crate::music::MusicFrequency,
+        situational: Option<&rewo_world::music::Music>,
+    ) {
+        self.music.set_frequency(frequency, situational);
+    }
+
     /// `setMinutesBetweenSongs` — apply the `options.music_frequency` option
     /// (M157).
     ///
@@ -2384,8 +2487,10 @@ impl SoundSystem {
         if let Some(gain) = outcome.category_volume {
             // `updateCategoryVolume(MUSIC, gain)` — the crossfade's one writer
             // (M140b), and not the options slider, which arrives a factor
-            // earlier.
-            self.engine.update_category_volume(SoundSource::Music, gain);
+            // earlier. As of M173 the put REFRESHES too (vanilla
+            // `SoundEngine.java:152-155`), so the fade finally reaches the
+            // channel that is already playing.
+            self.engine.update_category_volume(SoundSource::Music, gain, device);
         }
         if let Some(music) = outcome.start {
             let instance = SoundInstance::for_music(music.sound);
@@ -2598,6 +2703,30 @@ impl LiveSounds {
     /// rather than a callback.
     pub fn set_music_frequency(&mut self, frequency: crate::music::MusicFrequency) {
         self.system.set_music_frequency(frequency);
+    }
+
+    /// A volume slider moved (M173) — store + refresh every live channel,
+    /// through the tee so an attached backend hears the re-gain.
+    pub fn set_category_volume(&mut self, source: SoundSource, value: f32) {
+        self.with_device(|system, _registry, device| {
+            system.set_category_volume(source, value, device);
+        });
+    }
+
+    /// Startup seeding from `options.txt` (M173) — the store without the
+    /// refresh; see [`SoundSystem::seed_category_volume`].
+    pub fn seed_category_volume(&mut self, source: SoundSource, value: f32) {
+        self.system.seed_category_volume(source, value);
+    }
+
+    /// The music-frequency option's LIVE change (M173) — see
+    /// [`SoundSystem::change_music_frequency`].
+    pub fn change_music_frequency(
+        &mut self,
+        frequency: crate::music::MusicFrequency,
+        situational: Option<&rewo_world::music::Music>,
+    ) {
+        self.system.change_music_frequency(frequency, situational);
     }
 
     /// Attach a backend. Until this is called the client is silent by
@@ -5123,7 +5252,7 @@ mod tests {
         // `this.gainBySource.clear()` on a map with `defaultReturnValue(1.0F)`.
         let mut eng = SoundEngine::new();
         let mut dev = RecordingDevice::default();
-        eng.update_category_volume(SoundSource::Music, 0.1);
+        eng.update_category_volume(SoundSource::Music, 0.1, &mut dev);
         assert_eq!(eng.category_gain(SoundSource::Music), 0.1);
         eng.stop_all(&mut dev);
         assert_eq!(eng.category_gain(SoundSource::Music), 1.0);
@@ -5132,10 +5261,110 @@ mod tests {
     #[test]
     fn update_category_volume_clamps_on_the_way_in() {
         let mut eng = SoundEngine::new();
-        eng.update_category_volume(SoundSource::Music, 5.0);
+        let mut dev = RecordingDevice::default();
+        eng.update_category_volume(SoundSource::Music, 5.0, &mut dev);
         assert_eq!(eng.category_gain(SoundSource::Music), 1.0);
-        eng.update_category_volume(SoundSource::Music, -1.0);
+        eng.update_category_volume(SoundSource::Music, -1.0, &mut dev);
         assert_eq!(eng.category_gain(SoundSource::Music), 0.0);
+    }
+
+    // ---- refreshCategoryVolume (M173) --------------------------------------
+
+    /// The slider's whole effect on a LIVE channel: store + refresh pushes a
+    /// recomputed `SetVolume` to a playing non-ramped sound — the class
+    /// `refreshCategoryVolume` exists for (tickables re-gain every tick
+    /// anyway, `SoundEngine.java:243`).
+    #[test]
+    fn a_refresh_re_gains_a_live_channel() {
+        let mut eng = SoundEngine::new();
+        let mut dev = RecordingDevice::default();
+        eng.play(stone(1.0, 1.0), &plain_index(), &EmptyWorld, &mut dev);
+        eng.options.set_slider(SoundSource::Blocks, 0.5);
+        eng.refresh_category_volume(SoundSource::Blocks, &mut dev);
+        assert_eq!(
+            dev.calls_to(0).last(),
+            Some(&ChannelCall::SetVolume(0.5)),
+            "blocks 0.5 x master 1.0"
+        );
+        // A refresh of an UNRELATED category touches nothing.
+        let before = dev.calls_to(0).len();
+        eng.refresh_category_volume(SoundSource::Weather, &mut dev);
+        assert_eq!(dev.calls_to(0).len(), before, "weather does not re-gain a blocks channel");
+    }
+
+    /// `source == MASTER` matches EVERY playing instance in the filter
+    /// (`SoundEngine.java:120`), and `final_volume` multiplies master into
+    /// each category.
+    #[test]
+    fn a_master_refresh_reaches_every_channel() {
+        let mut eng = SoundEngine::new();
+        let mut dev = RecordingDevice::default();
+        let idx = index_of(&["minecraft:block.stone.break", "minecraft:ui.button.click"]);
+        eng.play(stone(1.0, 1.0), &idx, &EmptyWorld, &mut dev);
+        let ui = SoundInstance::simple(
+            "minecraft:ui.button.click",
+            SoundSource::Ui,
+            1.0,
+            1.0,
+            0,
+            0.0,
+            0.0,
+            0.0,
+        );
+        eng.play(ui, &idx, &EmptyWorld, &mut dev);
+        eng.options.set_slider(SoundSource::Master, 0.5);
+        eng.refresh_category_volume(SoundSource::Master, &mut dev);
+        assert_eq!(dev.calls_to(0).last(), Some(&ChannelCall::SetVolume(0.5)));
+        assert_eq!(dev.calls_to(1).last(), Some(&ChannelCall::SetVolume(0.5)));
+    }
+
+    /// The recompute FOLDS the `sounds.json` entry volume, because vanilla's
+    /// `instance.getVolume()` does (`AbstractSoundInstance.java:79-81`) — a
+    /// refresh from the raw instance volume would disagree with play for
+    /// every entry whose declared volume is not 1.
+    #[test]
+    fn a_refresh_agrees_with_play_on_a_declared_entry_volume() {
+        let mut eng = SoundEngine::new();
+        let mut dev = RecordingDevice::default();
+        let mut sound = Sound::file("minecraft:block/stone/break1");
+        sound.volume = 0.5;
+        let idx = index_with("minecraft:block.stone.break", sound);
+        eng.play(stone(1.0, 1.0), &idx, &EmptyWorld, &mut dev);
+        let played: Vec<f32> = dev
+            .calls_to(0)
+            .iter()
+            .filter_map(|c| match c {
+                ChannelCall::SetVolume(v) => Some(*v),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(played, vec![0.5], "play folded the entry volume");
+        // Options unchanged: the refresh must reproduce play's own gain.
+        eng.refresh_category_volume(SoundSource::Blocks, &mut dev);
+        assert_eq!(
+            dev.calls_to(0).last(),
+            Some(&ChannelCall::SetVolume(0.5)),
+            "the refresh folds the entry volume too — 1.0 would be the raw instance volume"
+        );
+    }
+
+    /// The slider path writes `options` and refreshes; it NEVER touches
+    /// `gainBySource`, which is the music crossfade's channel.
+    #[test]
+    fn the_slider_path_never_touches_the_runtime_gain() {
+        let mut sys = SoundSystem::new(plain_index());
+        let mut dev = RecordingDevice::default();
+        sys.set_category_volume(SoundSource::Blocks, 0.3, &mut dev);
+        assert_eq!(sys.engine.options.slider(SoundSource::Blocks), 0.3);
+        assert_eq!(
+            sys.engine.category_gain(SoundSource::Blocks),
+            1.0,
+            "gainBySource untouched — writing it would fight the music fade"
+        );
+        // And the seed path stores without refreshing (nothing plays at
+        // startup; the callback must not run — the M161 rule).
+        sys.seed_category_volume(SoundSource::Ui, 0.7);
+        assert_eq!(sys.engine.options.slider(SoundSource::Ui), 0.7);
     }
 
     // ---- the wire adapter --------------------------------------------------
@@ -5452,11 +5681,27 @@ mod tests {
                 sys.accept(&[ev.clone()], &reg, world, &mut dev);
             }
             assert_eq!(sys.stats.started, 1, "the track must actually start");
-            // `updateCategoryVolume(MUSIC, gain)` — the crossfade's one writer,
-            // and NOT a per-channel `SetVolume`. Reading the channel call was
-            // the first draft of this witness and it measured 1.0 for both
-            // worlds, because the music gain never travels that way.
-            sys.engine.category_gain(SoundSource::Music)
+            // Before M173 this could ONLY be read off `category_gain` — the
+            // crossfade wrote `gainBySource` and no `SetVolume` ever travelled
+            // to the live channel ("it measured 1.0 for both worlds"). M173's
+            // `update_category_volume` refreshes (vanilla `SoundEngine.java:
+            // 152-155`), so the fade now reaches the channel too — asserted
+            // below alongside the gain read.
+            let last_volume = dev
+                .calls_to(0)
+                .iter()
+                .rev()
+                .find_map(|c| match c {
+                    ChannelCall::SetVolume(v) => Some(*v),
+                    _ => None,
+                })
+                .expect("a SetVolume reached the music channel");
+            let gain = sys.engine.category_gain(SoundSource::Music);
+            assert!(
+                (last_volume - gain).abs() < 1e-6,
+                "the refresh delivers the fade's own gain: channel {last_volume}, gainBySource {gain}"
+            );
+            gain
         };
 
         let loud = gain_after(&TestWorld::default());

@@ -32,9 +32,10 @@
 //! tested against each other rather than separately.
 
 use crate::music::MusicFrequency;
+use crate::sounds::SoundSource;
 
 /// `options.txt`'s two entries that Rewo has (M157).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Options {
     /// `options.music_frequency` — how often a music track starts.
     pub music_frequency: MusicFrequency,
@@ -47,6 +48,12 @@ pub struct Options {
     /// by `LightningBolt.tick` rather than by a packet. Rewo has no lightning
     /// entity, so the second is recorded rather than wired.
     pub hide_lightning_flash: bool,
+    /// `Options.soundSourceVolumes` (M173) — the eleven sliders, indexed by
+    /// [`SoundSource::ordinal`]. File keys are `soundCategory_<name>` with
+    /// the SINGULAR `getName()` strings (`soundCategory_block`, not
+    /// `_blocks`), values a JSON double with a legacy BOOL alternative
+    /// (`Codec.withAlternative(doubleRange(0,1), BOOL, b -> b ? 1 : 0)`).
+    pub sound_volumes: [f32; 11],
 }
 
 impl Default for Options {
@@ -55,6 +62,9 @@ impl Default for Options {
         Self {
             music_frequency: MusicFrequency::Default,
             hide_lightning_flash: false,
+            // `createSoundSliderOptionInstance(.., 1.0, ..)` — every slider
+            // starts at full.
+            sound_volumes: [1.0; 11],
         }
     }
 }
@@ -96,6 +106,18 @@ pub const FREQUENCY_CYCLE: [MusicFrequency; 3] = [
     MusicFrequency::Frequent,
     MusicFrequency::Constant,
 ];
+
+/// A volume line's key — `"soundCategory_" + source.getName()`
+/// (`Options.java:1627`). The names are the SINGULAR forms; see the test
+/// pinning case-sensitivity.
+pub fn volume_key(source: SoundSource) -> String {
+    format!("soundCategory_{}", source.name())
+}
+
+/// The inverse — `None` for a key that is not a volume line.
+pub fn volume_source(key: &str) -> Option<SoundSource> {
+    SoundSource::from_name(key.strip_prefix("soundCategory_")?)
+}
 
 /// `OPTION_SPLITTER = Splitter.on(':').limit(2)` (`Options.java:85`).
 ///
@@ -148,8 +170,41 @@ impl Options {
                 }
                 _ => false,
             },
-            _ => false,
+            key => match volume_source(key) {
+                Some(source) => {
+                    // `Codec.withAlternative(Codec.doubleRange(0.0, 1.0),
+                    // Codec.BOOL, b -> b ? 1.0 : 0.0)` — a legacy boolean
+                    // reads as full/off; an out-of-range double FAILS the
+                    // parse (vanilla logs and keeps the default), it is not
+                    // clamped.
+                    let v = match raw.trim() {
+                        "true" => Some(1.0),
+                        "false" => Some(0.0),
+                        t => t.parse::<f32>().ok().filter(|v| (0.0..=1.0).contains(v)),
+                    };
+                    match v {
+                        Some(v) => {
+                            self.sound_volumes[source.ordinal() as usize] = v;
+                            true
+                        }
+                        None => false,
+                    }
+                }
+                None => false,
+            },
         }
+    }
+
+    /// One slider, by source.
+    pub fn sound_volume(&self, source: SoundSource) -> f32 {
+        self.sound_volumes[source.ordinal() as usize]
+    }
+
+    /// Store a slider value (the screen's write path). Clamped here because
+    /// the mouse math can land epsilon outside `0..=1`; vanilla's
+    /// `setValue` clamps before `applyValue` the same way.
+    pub fn set_sound_volume(&mut self, source: SoundSource, v: f32) {
+        self.sound_volumes[source.ordinal() as usize] = v.clamp(0.0, 1.0);
     }
 
     /// Parse a whole file. Unknown and malformed lines are skipped.
@@ -169,13 +224,25 @@ impl Options {
     /// distance, its keybinds and its volumes. So the caller merges rather than
     /// replaces; see [`Options::merge_into`].
     pub fn to_lines(self) -> Vec<String> {
-        vec![
+        let mut out = vec![
             format!(
                 "{KEY_MUSIC_FREQUENCY}:\"{}\"",
                 frequency_name(self.music_frequency)
             ),
             format!("{KEY_HIDE_LIGHTNING}:{}", self.hide_lightning_flash),
-        ]
+        ];
+        for source in SoundSource::ALL {
+            // GSON prints a double with its decimal point (`1.0`, `0.5`);
+            // Rust's `{}` prints `1` for `1.0f32`, so `{:?}` — the shortest
+            // round-trip form, which for in-range volumes matches what a
+            // vanilla client can read back.
+            out.push(format!(
+                "{}:{:?}",
+                volume_key(source),
+                self.sound_volumes[source.ordinal() as usize]
+            ));
+        }
+        out
     }
 
     /// Rewrite `existing` with this option set, preserving every other line.
@@ -187,12 +254,16 @@ impl Options {
     /// file's order stable — and one it does not is copied through untouched.
     pub fn merge_into(self, existing: &str) -> String {
         let mine = self.to_lines();
-        let owned = [KEY_MUSIC_FREQUENCY, KEY_HIDE_LIGHTNING];
+        let mut owned: Vec<String> =
+            vec![KEY_MUSIC_FREQUENCY.to_string(), KEY_HIDE_LIGHTNING.to_string()];
+        for source in SoundSource::ALL {
+            owned.push(volume_key(source));
+        }
         let mut out: Vec<String> = Vec::new();
-        let mut written = [false; 2];
+        let mut written = vec![false; owned.len()];
         for line in existing.lines() {
             let key = line.split_once(':').map(|(k, _)| k);
-            match key.and_then(|k| owned.iter().position(|o| *o == k)) {
+            match key.and_then(|k| owned.iter().position(|o| o == k)) {
                 Some(i) => {
                     out.push(mine[i].clone());
                     written[i] = true;
@@ -313,6 +384,7 @@ mod tests {
                 let o = Options {
                     music_frequency: f,
                     hide_lightning_flash: hide,
+                    sound_volumes: [1.0; 11],
                 };
                 assert_eq!(Options::parse(&o.to_lines().join("\n")), o);
             }
@@ -325,6 +397,65 @@ mod tests {
     /// Vanilla's `save` regenerates the whole file from its own ~80 fields.
     /// Rewo models two of them, so a wholesale rewrite of a shared game
     /// directory would silently discard render distance, keybinds and volumes.
+    /// The file keys use the SINGULAR `getName()` strings, case-sensitively —
+    /// `soundCategory_block`, never `_blocks`/`_Block` (`Options.java:1627`;
+    /// the name table's own test pins the same fact from the other side).
+    #[test]
+    fn volume_keys_are_singular_and_case_sensitive() {
+        let mut o = Options::default();
+        assert!(o.apply_line("soundCategory_block:0.5"));
+        assert_eq!(o.sound_volume(SoundSource::Blocks), 0.5);
+        assert!(!o.apply_line("soundCategory_blocks:0.5"), "plural rejected");
+        assert!(!o.apply_line("soundCategory_Block:0.5"), "case-sensitive");
+    }
+
+    /// `Codec.withAlternative(doubleRange(0,1), BOOL, b -> b ? 1 : 0)` — a
+    /// legacy boolean reads as full/off; an out-of-range double FAILS the
+    /// parse and the default survives (vanilla logs + keeps default; it does
+    /// NOT clamp).
+    #[test]
+    fn volume_values_accept_legacy_bools_and_reject_out_of_range() {
+        let mut o = Options::default();
+        assert!(o.apply_line("soundCategory_music:false"));
+        assert_eq!(o.sound_volume(SoundSource::Music), 0.0);
+        assert!(o.apply_line("soundCategory_music:true"));
+        assert_eq!(o.sound_volume(SoundSource::Music), 1.0);
+        assert!(!o.apply_line("soundCategory_music:1.5"), "above range rejected");
+        assert_eq!(o.sound_volume(SoundSource::Music), 1.0, "default kept, not clamped");
+        assert!(!o.apply_line("soundCategory_music:-0.1"));
+    }
+
+    /// The eleven volumes round-trip through `to_lines` + `parse`, at values
+    /// with decimal points — the writer must print `1.0` (GSON's double
+    /// form), not Rust's bare `1`.
+    #[test]
+    fn volumes_round_trip_with_decimal_points() {
+        let mut o = Options::default();
+        o.set_sound_volume(SoundSource::Master, 0.5);
+        o.set_sound_volume(SoundSource::Ui, 0.25);
+        let text = o.to_lines().join("
+");
+        assert!(text.contains("soundCategory_master:0.5"), "{text}");
+        assert!(text.contains("soundCategory_ui:0.25"));
+        assert!(
+            text.contains("soundCategory_weather:1.0"),
+            "a full slider writes 1.0, not 1 — {text}"
+        );
+        assert_eq!(Options::parse(&text), o);
+    }
+
+    /// The screen's write path clamps (the mouse math can land epsilon
+    /// outside), where the FILE path rejects — two different rules on
+    /// purpose, vanilla's `setValue` vs its codec.
+    #[test]
+    fn set_sound_volume_clamps_where_the_file_rejects() {
+        let mut o = Options::default();
+        o.set_sound_volume(SoundSource::Voice, 1.2);
+        assert_eq!(o.sound_volume(SoundSource::Voice), 1.0);
+        o.set_sound_volume(SoundSource::Voice, -0.2);
+        assert_eq!(o.sound_volume(SoundSource::Voice), 0.0);
+    }
+
     #[test]
     fn saving_preserves_every_line_rewo_does_not_model() {
         let existing = "version:4189\n\
@@ -334,6 +465,7 @@ mod tests {
         let o = Options {
             music_frequency: MusicFrequency::Constant,
             hide_lightning_flash: true,
+            sound_volumes: [1.0; 11],
         };
         let out = o.merge_into(existing);
         assert!(out.contains("renderDistance:12"), "an unmodelled option survived");
