@@ -125,6 +125,11 @@ pub struct DataComponentIds {
     /// `minecraft:written_book_content` (M171) — the pages of a written
     /// book, captured so the book-view screen can render them.
     pub written_book_content: i32,
+    /// `minecraft:writable_book_content` (M172) — a book-and-quill's plain
+    /// string pages. `BookAccess.fromItem` falls back to these when the stack
+    /// has no written content, so `open_book` can show a writable book
+    /// read-only (there is NO WritableBookViewScreen in 26.2).
+    pub writable_book_content: i32,
 }
 
 /// Every `minecraft:data_component_type` the registry ships, by name (M41).
@@ -215,6 +220,7 @@ impl DataComponentIds {
             container: id("minecraft:container")?,
             use_cooldown: id("minecraft:use_cooldown")?,
             written_book_content: id("minecraft:written_book_content")?,
+            writable_book_content: id("minecraft:writable_book_content")?,
         };
         log::info!(
             "rewo-data: data components — swing_animation={} damage={} charged_projectiles={}",

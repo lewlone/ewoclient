@@ -2170,6 +2170,9 @@ fn read_slot(
                 is_enchanted: c.is_enchanted,
                 cooldown_group: c.use_cooldown_group.clone(),
                 book_pages: c.book_pages.clone(),
+                has_written_book: c.has_written_book,
+                writable_pages: c.writable_pages.clone(),
+                has_writable_book: c.has_writable_book,
             };
             (
                 Some(rewo_world::inventory::ItemSlot {
@@ -5176,6 +5179,7 @@ mod animate_tests {
             container: 17,
             use_cooldown: 18,
             written_book_content: 22,
+            writable_book_content: 23,
         };
         let data = super::item_stack::SwingWireData {
             prototypes: unreachable_prototypes(),

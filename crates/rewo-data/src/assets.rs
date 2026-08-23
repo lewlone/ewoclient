@@ -2375,6 +2375,17 @@ pub struct WidgetSprites {
     /// screen, so the `inworld_` pair is the one that draws.
     pub inworld_header_separator: HudSprite,
     pub inworld_footer_separator: HudSprite,
+    /// `textures/gui/book.png` (M172), CROPPED to the 192×192 region
+    /// `BookViewScreen.extractBackground` blits — `blit(.., 0.0F, 0.0F, 192,
+    /// 192, 256, 256)` samples (0,0)..(192,192) of the 256×256 file and
+    /// nothing else in 26.2 samples the rest, so the crop makes the screen
+    /// pass's whole-sheet `Fill::Stretch` the exact 1:1 blit.
+    pub book_background: HudSprite,
+    /// The four `widget/page_*` sprites (M172), in the declared order
+    /// forward, forward_highlighted, backward, backward_highlighted. All
+    /// 23×13, no `.mcmeta` — distinct files from the recipe book's 12×17
+    /// `recipe_book/page_*` arrows.
+    pub page_buttons: [HudSprite; 4],
 }
 
 /// Extract the button, background, tab and statistics sheets. Any missing one
@@ -2411,6 +2422,30 @@ fn bake_widgets(jar: Jar) -> Option<WidgetSprites> {
     for name in COLUMNS {
         columns.push(get(jar, &format!("gui/sprites/statistics/{name}.png"))?);
     }
+    const PAGES: [&str; 4] = [
+        "page_forward",
+        "page_forward_highlighted",
+        "page_backward",
+        "page_backward_highlighted",
+    ];
+    let mut pages = Vec::with_capacity(4);
+    for name in PAGES {
+        pages.push(get(jar, &format!("gui/sprites/widget/{name}.png"))?);
+    }
+    // Crop `book.png` to the 192×192 the blit samples (see the field doc).
+    let book_full = get(jar, "gui/book.png")?;
+    let crop = |s: &HudSprite, w: u32, h: u32| -> Option<HudSprite> {
+        if s.w < w || s.h < h {
+            return None;
+        }
+        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+        for row in 0..h {
+            let start = ((row * s.w) * 4) as usize;
+            rgba.extend_from_slice(&s.rgba[start..start + (w * 4) as usize]);
+        }
+        Some(HudSprite { rgba, w, h })
+    };
+    let book_background = crop(&book_full, 192, 192)?;
     Some(WidgetSprites {
         button: get(jar, "gui/sprites/widget/button.png")?,
         button_disabled: get(jar, "gui/sprites/widget/button_disabled.png")?,
@@ -2428,6 +2463,8 @@ fn bake_widgets(jar: Jar) -> Option<WidgetSprites> {
         tab_header_background: get(jar, "gui/tab_header_background.png")?,
         inworld_header_separator: get(jar, "gui/inworld_header_separator.png")?,
         inworld_footer_separator: get(jar, "gui/inworld_footer_separator.png")?,
+        book_background,
+        page_buttons: pages.try_into().ok()?,
     })
 }
 
