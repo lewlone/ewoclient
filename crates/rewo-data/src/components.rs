@@ -122,6 +122,9 @@ pub struct DataComponentIds {
     /// that does not set a group and silently wrong for one that does: the
     /// sweep would be drawn on the wrong hotbar slots, with no error anywhere.
     pub use_cooldown: i32,
+    /// `minecraft:written_book_content` (M171) — the pages of a written
+    /// book, captured so the book-view screen can render them.
+    pub written_book_content: i32,
 }
 
 /// Every `minecraft:data_component_type` the registry ships, by name (M41).
@@ -211,6 +214,7 @@ impl DataComponentIds {
             bundle_contents: id("minecraft:bundle_contents")?,
             container: id("minecraft:container")?,
             use_cooldown: id("minecraft:use_cooldown")?,
+            written_book_content: id("minecraft:written_book_content")?,
         };
         log::info!(
             "rewo-data: data components — swing_animation={} damage={} charged_projectiles={}",

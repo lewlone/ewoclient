@@ -242,6 +242,10 @@ pub struct StackComponents {
     pub item_name: Option<rewo_proto::nbt::Nbt>,
     /// `minecraft:lore`, one component per line, unflattened.
     pub lore: Vec<rewo_proto::nbt::Nbt>,
+    /// `minecraft:written_book_content` pages (M171) — one chat component per
+    /// page, raw NBT, resolved to styled text by the book-view screen. Empty
+    /// for everything but a written book.
+    pub book_pages: Vec<rewo_proto::nbt::Nbt>,
     /// `minecraft:rarity`'s id — the name's colour.
     pub rarity: Option<i32>,
     /// `(enchantment registry id, level)`, from **both**
@@ -828,6 +832,32 @@ fn read_interpreted(
         }
         return Ok(true);
     }
+    if ty == ids.written_book_content {
+        // `WrittenBookContent.STREAM_CODEC` (M171). A Tuple the generic walk
+        // could align on its own; the special-case captures the pages. Every
+        // field is read so the length-prefix-less patch stays aligned.
+        // Filterable<title>: raw string + Optional filtered string.
+        r.string(32767).map_err(|_| ())?;
+        if r.bool().map_err(|_| ())? {
+            r.string(32767).map_err(|_| ())?;
+        }
+        r.string(32767).map_err(|_| ())?; // author
+        r.varint().map_err(|_| ())?; // generation
+        let n = r.varint().map_err(|_| ())?;
+        if !(0..=1024).contains(&n) {
+            return Err(());
+        }
+        for _ in 0..n {
+            // Filterable<page>: raw NBT (captured) + Optional filtered NBT.
+            let tag = rewo_proto::nbt::Nbt::read_network(r).map_err(|_| ())?;
+            out.book_pages.push(tag);
+            if r.bool().map_err(|_| ())? {
+                rewo_proto::nbt::Nbt::read_network(r).map_err(|_| ())?;
+            }
+        }
+        r.bool().map_err(|_| ())?; // resolved
+        return Ok(true);
+    }
     if ty == ids.trim {
         // Two `ByteBufCodecs.holder`s: `id + 1`, 0 = inline. Peeked rather
         // than consumed — if either side is inline the generic walk has to see
@@ -1041,6 +1071,7 @@ mod tests {
         bundle_contents: 16,
         container: 17,
         use_cooldown: 18,
+        written_book_content: 22,
     };
 
     /// The walk is table-driven now, and the table is keyed by *name* against
@@ -1070,6 +1101,7 @@ mod tests {
             ("minecraft:map_id", 19),
             ("minecraft:dye", 20),
             ("minecraft:provides_banner_patterns", 21),
+            ("minecraft:written_book_content", 22),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -1163,6 +1195,48 @@ mod tests {
             panic!("expected a stack");
         };
         assert_eq!(s.components.cooldown_group("minecraft:chorus_fruit"), "minecraft:chorus_fruit");
+    }
+
+    #[test]
+    fn written_book_content_captures_its_pages_and_stays_aligned() {
+        install_test_shapes();
+        // Protocol string: varint length + bytes.
+        fn pstr(text: &str, out: &mut Vec<u8>) {
+            varint(text.len() as i32, out);
+            out.extend_from_slice(text.as_bytes());
+        }
+        // Network string NBT: 0x08 (TAG_String) + u16 length + bytes.
+        fn snbt(text: &str, out: &mut Vec<u8>) {
+            out.push(8);
+            out.extend_from_slice(&(text.len() as u16).to_be_bytes());
+            out.extend_from_slice(text.as_bytes());
+        }
+        let mut value: Vec<u8> = Vec::new();
+        pstr("A Title", &mut value); // filterable title: raw
+        value.push(0); // …optional filtered: absent
+        pstr("An Author", &mut value); // author
+        varint(3, &mut value); // generation
+        varint(2, &mut value); // two pages
+        snbt("page one", &mut value); // page 0 raw
+        value.push(0); // …optional filtered: absent
+        snbt("page two", &mut value); // page 1 raw
+        value.push(0);
+        value.push(0); // resolved
+
+        let raw = stack(16, 1, &[(22, value)], &[]);
+        let mut r = PacketReader::new(&raw);
+        let WireSlot::Stack(s) = read_optional(&mut r, IDS).expect("decodes") else {
+            panic!("expected a stack");
+        };
+        assert_eq!(s.components.book_pages.len(), 2, "two pages captured");
+        // The pages are the raw component NBT, resolvable to text.
+        assert_eq!(
+            s.components.book_pages[0].as_str().map(str::to_string),
+            Some("page one".to_string())
+        );
+        // The whole component was consumed — the walk stays aligned, which is
+        // load-bearing because the patch has no length prefix.
+        assert_eq!(r.remaining(), 0);
     }
 
     fn varint(v: i32, out: &mut Vec<u8>) {

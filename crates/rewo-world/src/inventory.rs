@@ -546,6 +546,9 @@ pub struct SlotText {
     /// `ItemSlot` is `Copy`, which is the same reason the tooltip text is not
     /// on the slot either.
     pub cooldown_group: Option<String>,
+    /// `minecraft:written_book_content` pages (M171) — raw NBT per page, for the
+    /// book-view screen. A book with pages is not textless.
+    pub book_pages: Vec<rewo_proto::nbt::Nbt>,
 }
 
 impl SlotText {
@@ -571,6 +574,7 @@ impl SlotText {
             enchantments,
             is_enchanted,
             cooldown_group,
+            book_pages,
         } = self;
         custom_name.is_none()
             && item_name.is_none()
@@ -580,6 +584,7 @@ impl SlotText {
             && enchantments.is_empty()
             && !*is_enchanted
             && cooldown_group.is_none()
+            && book_pages.is_empty()
     }
 }
 
