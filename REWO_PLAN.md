@@ -340,9 +340,9 @@ witnesses are mostly self-driven can look healthy against nothing.
 > version of this box listed has shipped. What follows is measured on the merged
 > tree, not carried forward.
 >
-> **The state (re-measured 2026-08-23 after M172):** **40** serverless gates
-> green with 0 validation errors (`bookshot` is the 40th, 21/21), **3411
-> tests**, `live --render-check` **61/61** exit 0 (r61 arrived with M172),
+> **The state (re-measured 2026-08-23 after M173):** **41** serverless gates
+> green with 0 validation errors (`optionshot` is the 41st, 12/12), **3424
+> tests**, `live --render-check` **62/62** exit 0 (r62 arrived with M173),
 > packet coverage **121 / 0 / 20**, demo PNG `2cc56b4acbfb92cb`
 > byte-identical.
 >
@@ -441,8 +441,12 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   test wired to the book), the lectern's menu-backed reader, and the
 >   page-turn sound (Rewo's screens play no UI sounds at all yet — one
 >   family). **`sub-sign`** and **`sub-map`** are the same decode+screen
->   shape; **`options`' volume sliders** and **`render-misc [INTERP]`** each
->   have a verified spec — see §15's wave entries for the corrections.
+>   shape; ~~**`options`' volume sliders**~~ **DONE — M173 (2026-08-23):**
+>   the eleven sliders, the whole options wiring (which was model-only end
+>   to end — the pause OPTIONS button logged "not implemented"), and
+>   `refreshCategoryVolume`, whose absence had kept the music fade's gain
+>   off the live channel. **`render-misc [INTERP]`** still has its verified
+>   spec — see §15's wave entries for the corrections.
 >
 > #### Deliberately NOT next, with the measurement
 >
@@ -1892,7 +1896,8 @@ this shape once.
 | M169 — the jump bar's inputs | **r59** | — | `gaugeshot` j0-j5 |
 | M170 — the leash rope | **r60** | HUD/world: no atlas — a colour-only `leash` pipeline (POSITION_COLOR triangle list, depth GREATER no-write) | `leashshot` g0-g4 |
 | M172 — the written-book reader | **r61** | screen-pass atlas 512x256 -> 512x512; `Sheet::BookBackground` (cropped 192x192 `book.png`) at (0,256), `Sheet::PageArrow(0..4)` (23x13 `widget/page_*`) at (200..296, 256) | `bookshot` m0-m5, p0-p13 |
-| *(next free)* | **r62** | — | — |
+| M173 — the volume sliders | **r62** | screen-pass atlas: `Sheet::SliderSheet(0..4)` — tracks (200x20) at (200,280) + (200,300), handles (8x20) at (404,280) + (414,280) | `optionshot` o0-o11 |
+| *(next free)* | **r63** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table
@@ -3713,6 +3718,120 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M173 — the volume sliders, the options wiring that never existed, and the refresh vanilla had and Rewo lacked (2026-08-23)
+
+§0.0's "options volume sliders" item; a 3-agent research fan-out preceded the
+code and its sharpest finding was about M157, not the sliders: **the options
+framework was model-only end to end** — `build()` had zero production callers,
+`ScreenKind::Options` never appeared in rewo-app, the pause OPTIONS button
+logged "not implemented", and `save_options` was `#[allow(dead_code)]`. So
+M173 built the whole wiring — open, navigate, press, drag, save — with the
+sliders inside it.
+
+#### The engine half: `refreshCategoryVolume`, and a real fix riding along
+
+The volume slider's `onValueUpdate` is `soundManager.refreshCategoryVolume
+(category)` — **the refresh, NOT `updateCategoryVolume`**: the slider never
+touches `gainBySource`, which is the music crossfade's channel
+(`Options.java:1317-1330` vs `MusicManager.java:133`). Rewo had no refresh at
+all — vanilla's `updateCategoryVolume` is a put **plus** a refresh
+(`SoundEngine.java:152-155`), and Rewo had shipped the put without it since
+M140b. The consequence was already documented in a test comment: the music
+crossfade's gain "never travels that way" — `gainBySource` moved and no
+`SetVolume` ever reached the playing music channel. **M173's
+`refresh_category_volume` closes both**: the slider's path and the fade's,
+and the music test now asserts the channel receives the fade's own gain.
+
+Two exactness findings under it:
+
+* **`instance.getVolume()` folds the `sounds.json` entry volume INSIDE the
+  getter** (`AbstractSoundInstance.java:79-81`: `this.volume *
+  this.sound.getVolume().sample(random)`), so every post-play recompute —
+  the refresh, the tick loop — uses the folded value and *agrees with play*.
+  `Live` now carries `resolved_volume`, and the tick loop's recompute (which
+  had used the raw instance volume — a real divergence for any ticked sound
+  whose declared volume is not 1) folds it too.
+* **MASTER is special twice in the refresh alone**: it matches every playing
+  instance in the filter, and `final_volume` multiplies it into every other
+  category while returning its own slider unsquared. And the seed path is
+  the M161 rule again: startup goes through the side-effect-free
+  `set_slider` (file load fires no callbacks), the screen's change through
+  store+refresh — while the music-frequency cycle now takes the CALLBACK
+  path (`change_music_frequency` = `setMinutesBetweenSongs`, re-rolling
+  `nextSongDelay` from the current situational track), completing the M161
+  pair whose seed half M161 fixed.
+
+#### The file half
+
+`options.txt` grows the eleven `soundCategory_<name>` keys — the SINGULAR
+`getName()` strings, case-sensitive (`_block`, never `_blocks`), values a
+JSON double whose reader also accepts the legacy BOOL alternative (true→1.0)
+and **rejects** an out-of-range double (vanilla logs and keeps the default —
+it does not clamp), while the SCREEN's write path clamps (the mouse math can
+land epsilon outside). The writer prints `{:?}` so a full slider writes `1.0`
+(GSON's double form), not Rust's bare `1`. `merge_into` grew from 2 owned
+keys to 13.
+
+#### The widget half
+
+`WidgetKind::Slider { value }` joins the framework: the press computes
+`(mx - (x + 4)) / (width - 8)` (the +4 is the handle's HALF width) and
+returns a new `MouseResult::Slider(id, value)`; the drag is app-side (the
+stonecutter pattern — but a slider press CONSUMES, and both existing
+Released-clear sites were inside inventory-gated arms, so framework screens
+got their first Released arm); Left/Right on a focused slider steps by one
+handle-pixel, `1/(width-8)` — 1/302 on the 310-wide master, 1/142 on a
+category slider, different by design. The four `widget/slider*` sheets join
+the screen-pass atlas (the handle's nine-slice border is the ASYMMETRIC
+`{2,2,2,3}`); the handle highlights on hovered-or-engaged, and the
+highlighted TRACK state is deliberately unmodelled — it shows only when
+focused-but-NOT-engaged, reachable solely through arrow-key list navigation
+this framework does not have (tab-focus auto-engages in vanilla).
+
+Labels: `percentValueOrOffLabel` TRUNCATES (`0.699999` renders `69%`) and
+only EXACTLY 0.0 is OFF (0.004 is `0%`); the label tracks the LIVE drag
+value; a slider never saves the file (the cycle buttons save per click;
+`OptionsSubScreen.removed()` saves once on leaving a page — Rewo saves in
+`close_options`).
+
+#### The screens
+
+The pause OPTIONS button opens the ROOT page (links to Sound and
+Accessibility + Done); the Sound page is vanilla's row order — `addBig
+(MASTER)`, five `addSmall` pairs in `SoundSource.values()` order
+(MUSIC+RECORDS … VOICE+UI), the music-frequency cycle alone in the left
+column; the rows vanilla has that Rewo does not model (the sound DEVICE,
+Closed Captions, Directional Audio, the music toast) are absent rather than
+stubbed. Done/Esc walk Sound → Root → pause, saving on each sub-page exit;
+resize rebuilds on the M82 watermark; the one-slot rule (M172) drops the
+view state when anything replaces the screen.
+
+#### The gate, r62, and the probes that kept being wrong
+
+`rewo optionshot --check` (the 41st gate): 12 witnesses driving the
+production chain (`sound_rows` → `build` → `screen_chrome` +
+`slider_sprites` + `screen_text_lines` → ScreenPass pixels). Its o6 witness
+was wrong three times before the code was once: a probe at the widget centre
+read a white glyph of the records label; moved to the edge it read the
+8-wide handle a value-0 slider parks at the LEFT edge; moved above the label
+band it sat 3 bytes off the declared texel (a NEAREST half-texel nudge in
+the track's vertical gradient). **A probe must avoid everything the widget
+draws over its chrome, and a value-0 slider's handle is part of that.**
+
+r62 walks the pages LIVE through the production open/close paths — Sound at
+0.06 (22 slider sprites sampled: 11 × track+handle), then Sound → Root →
+pause → game by 0.16, so no later witness meets a leftover screen or a stale
+`self.view`.
+
+**Measured:** 3424 tests; `optionshot` 12/12; all 41 serverless gates green,
+0 validation errors; `live --render-check` **62/62**; demo PNG
+`2cc56b4acbfb92cb` byte-identical. **Open:** the seeding call in
+`build_sounds` is a composition root (named, not hidden — the M97 note); the
+highlighted-track state and the Enter/Space engage toggle are excluded with
+the arrow-key list navigation they need; vanilla's title-screen
+`SoundPreviewHandler` previews and the now-playing toast are absent with the
+features they belong to.
 
 ### M172 — the written-book reader renders, and the two things the pixels caught (2026-08-23)
 
