@@ -306,6 +306,9 @@ pub struct Ids {
     pub sb_play_set_beacon: Option<i32>,
     /// `rename_item` (M93n) — the anvil's name field.
     pub sb_play_rename_item: Option<i32>,
+    /// `sign_update` (M174) — the editor's commit, sent from `removed()` on
+    /// EVERY exit path (Done, Esc, the validity tick), with no dirty check.
+    pub sb_play_sign_update: Option<i32>,
     /// `select_trade` (M93u) — one var-int, the offer's index.
     pub sb_play_select_trade: Option<i32>,
     pub sb_play_use_item: Option<i32>,
@@ -410,6 +413,10 @@ pub struct Ids {
     pub cb_play_merchant_offers: i32,
     /// `open_book` (M171) — opens the written-book view for a held book.
     pub cb_play_open_book: i32,
+    /// `open_sign_editor` (M174) — packed BlockPos + isFrontText bool. The
+    /// client opens the editor only if a SIGN block entity sits at the pos
+    /// (else warn-and-ignore — 26.2 does NOT construct a fresh one).
+    pub cb_play_open_sign_editor: i32,
     /// The recipe book's four (M93y).
     pub cb_play_recipe_book_add: i32,
     pub cb_play_recipe_book_remove: i32,
@@ -740,6 +747,7 @@ impl Ids {
             sb_play_container_slot_state_changed: opt!(p, P, S, "container_slot_state_changed"),
             sb_play_set_beacon: opt!(p, P, S, "set_beacon"),
             sb_play_rename_item: opt!(p, P, S, "rename_item"),
+            sb_play_sign_update: opt!(p, P, S, "sign_update"),
             sb_play_select_trade: opt!(p, P, S, "select_trade"),
             sb_play_use_item: opt!(p, P, S, "use_item"),
             cb_play_set_health: opt!(p, P, C, "set_health"),
@@ -770,6 +778,7 @@ impl Ids {
             cb_play_container_set_data: req!(p, P, C, "container_set_data"),
             cb_play_merchant_offers: req!(p, P, C, "merchant_offers"),
             cb_play_open_book: req!(p, P, C, "open_book"),
+            cb_play_open_sign_editor: req!(p, P, C, "open_sign_editor"),
             cb_play_recipe_book_add: req!(p, P, C, "recipe_book_add"),
             cb_play_recipe_book_remove: req!(p, P, C, "recipe_book_remove"),
             cb_play_recipe_book_settings: req!(p, P, C, "recipe_book_settings"),

@@ -519,6 +519,11 @@ pub struct PlaySession {
     /// M171 — an `open_book` arrived for this hand (0 main / 1 off); the app
     /// polls it, resolves the held book's pages, and opens the view screen.
     pub open_book_request: Option<i32>,
+    /// M174 — an `open_sign_editor` arrived: `(pos, is_front_text)`. The app
+    /// polls it and opens the editor IF a sign block entity sits at the pos
+    /// (`handleOpenSignEditor` warns and ignores otherwise — it does NOT
+    /// construct a fresh one; that was the ≤1.19 shape).
+    pub open_sign_editor_request: Option<((i32, i32, i32), bool)>,
     /// The unlocked recipes, by `RecipeDisplayId` (M93y). Decoded and held;
     /// nothing renders a recipe book yet.
     pub recipe_book: std::collections::BTreeMap<i32, crate::recipe_book::Entry>,
@@ -1730,6 +1735,7 @@ impl<'a> Connection<'a> {
             config_tasks: std::mem::take(&mut self.config_tasks),
             merchant: None,
             open_book_request: None,
+            open_sign_editor_request: None,
             recipe_book: Default::default(),
             recipe_book_settings: Default::default(),
             ghost_recipe: None,
@@ -3272,6 +3278,16 @@ impl PlaySession {
             match r.varint() {
                 Ok(hand) => self.open_book_request = Some(hand),
                 Err(e) => log::debug!("net: open_book decode: {e}"),
+            }
+        } else if id == ids.cb_play_open_sign_editor {
+            // M174. `ClientboundOpenSignEditorPacket` — one packed BlockPos
+            // (8 bytes) then one bool. No var-ints anywhere in the body.
+            let mut r = PacketReader::new(body);
+            match (|| -> rewo_proto::Result<((i32, i32, i32), bool)> {
+                Ok((r.position()?, r.u8()? != 0))
+            })() {
+                Ok((pos, front)) => self.open_sign_editor_request = Some((pos, front)),
+                Err(e) => log::debug!("net: open_sign_editor decode: {e}"),
             }
         } else if id == ids.cb_play_recipe_book_add
             || id == ids.cb_play_recipe_book_remove
@@ -5333,6 +5349,24 @@ impl PlaySession {
     ///
     /// `use_max_items` is shift-held. The container is the SHOWN menu's, on
     /// M89's rule: a book click belongs to whatever screen is up.
+    /// `AbstractSignEditScreen.removed()` (M174) — the editor's one commit.
+    /// Sent UNCONDITIONALLY on every exit (Done, Esc, the validity tick):
+    /// there is no dirty check and no cancel path in vanilla.
+    pub fn send_sign_update(
+        &mut self,
+        pos: (i32, i32, i32),
+        is_front_text: bool,
+        lines: &[String; 4],
+    ) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_sign_update else {
+            return Err("sign_update unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        p.buf
+            .extend_from_slice(&crate::sign_update_body(pos, is_front_text, lines));
+        self.send(p)
+    }
+
     pub fn place_recipe(&mut self, recipe: i32, use_max_items: bool) -> Result<(), String> {
         let Some(id) = self.ids.sb_play_place_recipe else {
             return Err("place_recipe unavailable".into());

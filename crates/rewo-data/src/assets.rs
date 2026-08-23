@@ -2392,7 +2392,34 @@ pub struct WidgetSprites {
     /// `{left 2, top 2, right 2, bottom 3}` — ASYMMETRIC, so it can never be
     /// a single border number).
     pub slider: [HudSprite; 4],
+    /// The 12 `gui/signs/<wood>.png` sheets (M174), 24x26, in [`SIGN_WOODS`]
+    /// order — the whole texture; the edit screen blits the top 26 rows for a
+    /// standing sign and the top 12 (the board without the post) for a wall
+    /// sign, both at scale 3.9.
+    pub sign_boards: [HudSprite; 12],
+    /// The 12 `gui/hanging_signs/<wood>.png` sheets (M174), 16x16, scale 4.5
+    /// — chains baked into the texture, no wall/ceiling split.
+    pub hanging_sign_boards: [HudSprite; 12],
 }
+
+/// The wood set, in the fixed order the sign-board sheet indices use
+/// (`Sheet::SignBoard(i)` / `HangingSignBoard(i)`). The order is this
+/// table's, not the jar's — an entry's INDEX is part of the screen-pass
+/// contract, so it is append-only like `sheet_index`.
+pub const SIGN_WOODS: [&str; 12] = [
+    "oak",
+    "spruce",
+    "birch",
+    "acacia",
+    "cherry",
+    "jungle",
+    "dark_oak",
+    "pale_oak",
+    "crimson",
+    "warped",
+    "mangrove",
+    "bamboo",
+];
 
 /// Extract the button, background, tab and statistics sheets. Any missing one
 /// → no widgets at all, which degrades to a screen with text and no chrome.
@@ -2462,6 +2489,12 @@ fn bake_widgets(jar: Jar) -> Option<WidgetSprites> {
     for name in SLIDERS {
         sliders.push(get(jar, &format!("gui/sprites/widget/{name}.png"))?);
     }
+    let mut sign_boards = Vec::with_capacity(12);
+    let mut hanging_sign_boards = Vec::with_capacity(12);
+    for wood in SIGN_WOODS {
+        sign_boards.push(get(jar, &format!("gui/signs/{wood}.png"))?);
+        hanging_sign_boards.push(get(jar, &format!("gui/hanging_signs/{wood}.png"))?);
+    }
     Some(WidgetSprites {
         button: get(jar, "gui/sprites/widget/button.png")?,
         button_disabled: get(jar, "gui/sprites/widget/button_disabled.png")?,
@@ -2482,6 +2515,8 @@ fn bake_widgets(jar: Jar) -> Option<WidgetSprites> {
         book_background,
         page_buttons: pages.try_into().ok()?,
         slider: sliders.try_into().ok()?,
+        sign_boards: sign_boards.try_into().ok()?,
+        hanging_sign_boards: hanging_sign_boards.try_into().ok()?,
     })
 }
 

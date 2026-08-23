@@ -1612,6 +1612,27 @@ pub fn recipe_book_change_settings_body(book_type: i32, open: bool, filtering: b
 /// `useMaxItems` is **shift-held**, from `event.hasShiftDown()`: a plain click
 /// lays out one, a shift-click as many as the inventory allows. It is a single
 /// boolean byte after two var-ints.
+/// `ServerboundSignUpdatePacket` (M174) — a packed BlockPos, the
+/// `isFrontText` bool, then exactly four `writeUtf` strings.
+///
+/// The length cap is **asymmetric in vanilla**: `MAX_STRING_LENGTH = 384` is
+/// enforced only on the READ side (`readUtf(384)`, in UTF-16 code units);
+/// the write path uses the default 32767 cap. The editor's width validator
+/// keeps real lines far below either.
+pub fn sign_update_body(pos: (i32, i32, i32), is_front_text: bool, lines: &[String; 4]) -> Vec<u8> {
+    let (x, y, z) = pos;
+    let packed: u64 = (((x as i64 & 0x3ff_ffff) as u64) << 38)
+        | (((z as i64 & 0x3ff_ffff) as u64) << 12)
+        | ((y as i64 & 0xfff) as u64);
+    let mut w = rewo_proto::writer::PacketWriter::default();
+    w.i64(packed as i64);
+    w.bool(is_front_text);
+    for line in lines {
+        w.string(line);
+    }
+    w.buf
+}
+
 pub fn place_recipe_body(container_id: i32, recipe: i32, use_max_items: bool) -> Vec<u8> {
     let mut w = rewo_proto::writer::PacketWriter::default();
     w.varint(container_id);
@@ -5743,6 +5764,31 @@ mod award_stats_tests {
         assert_eq!(recipe_book_change_settings_body(0, false, true), vec![0u8, 0, 1]);
         assert_eq!(recipe_book_change_settings_body(0, false, false), vec![0u8, 0, 0]);
         assert_eq!(recipe_book_change_settings_body(0, true, true), vec![0u8, 1, 1]);
+    }
+
+    #[test]
+    fn sign_update_body_is_a_packed_pos_a_bool_and_exactly_four_utf_lines() {
+        let lines = [
+            "ab".to_string(),
+            String::new(),
+            "c".to_string(),
+            String::new(),
+        ];
+        let body = sign_update_body((100, -60, -100), true, &lines);
+        // The packed pos matches the reader's own encoding (x<<38|z<<12|y,
+        // 26/26/12 signed bits) — round-trip through PacketReader::position.
+        let mut r = rewo_proto::reader::PacketReader::new(&body);
+        assert_eq!(r.position().unwrap(), (100, -60, -100));
+        assert_eq!(r.u8().unwrap(), 1, "isFrontText");
+        // Then four var-int-length UTF strings, EMPTY ONES INCLUDED — a
+        // writer that skipped blank lines would desync the server's read.
+        assert_eq!(r.string(1024).unwrap(), "ab");
+        assert_eq!(r.string(1024).unwrap(), "");
+        assert_eq!(r.string(1024).unwrap(), "c");
+        assert_eq!(r.string(1024).unwrap(), "");
+        assert_eq!(r.remaining(), 0);
+        // And the exact bytes: 8-byte BE packed long, 0x01, then 4 strings.
+        assert_eq!(&body[8..], &[1, 2, b'a', b'b', 0, 1, b'c', 0]);
     }
 
     /// `useMaxItems` is shift-held, and it is the LAST field — after both

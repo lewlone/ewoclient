@@ -82,7 +82,15 @@ mobshot 246/246, soundshot 37 default/57 audio.
 6. dist/EwoClient refreshed via package.ps1 — full bundle again (exe +
    rewo.exe + icon + 6 fonts); Desktop shortcut repointed.
 7. LEAK_HUNT_INSTRUMENT diagnostics intentionally left in (strip at ship time).
-8. M174 worktree WIP = sign-edit screen; NOT touched by this session.
+8. M174 worktree WIP = sign-edit screen; **landed 2026-08-23** on this session's
+   watch: finished app integration (pump/close/echo/commit-on-replace, input
+   routing, render arm), `signshot` gate (42nd, 23 witnesses), battery
+   (15 killed / control / 1 equivalent), r63/r64 → render-check 64/64,
+   coverage 122/0/19 class C 8. Merged --no-ff to main. **Gotchas added to
+   the personal set:** PowerShell `Get-Content` reads UTF-8 as ANSI — mojibake
+   + a whole-file CRLF rewrite on WriteAllLines; use `[IO.File]::ReadAllText`
+   + Edit tool for docs with em dashes. PowerShell `>` redirect writes
+   UTF-16 patches git cannot read — use `git diff --output`.
 
 ## Process rules I must follow here (from AGENT_LOOP_BRIEF + HANDOFF)
 

@@ -143,8 +143,8 @@ not close the listening pass, and its module doc carries §4's "What the gate
 does NOT assert" paragraph verbatim** so a future session reading only the gate
 still learns that a green run is not evidence this client makes a sound.
 
-Current measurement, re-taken **2026-08-21 after M167**:
-**3355 tests, 0 failures** (**world 1201, net 1211, gpu 293, data 231, app 231,
+Current measurement, re-taken **2026-08-23 after M174**:
+**3446 tests, 0 failures** (**world 1238, net 1236, gpu 320, data 233, app 231,
 mesh 52, proto 16, audio 120** — read off the runner per crate).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
@@ -163,9 +163,10 @@ were each written with a guessed split and corrected a step later, which is
 three occurrences of the same habit. `containershot` **109/109**, `inventoryshot`
 **158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
 34/34, `mobshot` 246/246, `sidebarshot` 17/17, **`tablistshot` 42/42** (M151,
-raised by M155 and M158), **`live --render-check` **56/56** with validation ON and 0
+raised by M155 and M158), **`live --render-check` **64/64** with validation ON and 0
 validation errors** — r46 arrived with M147, r47 with M151, r48-r50 with M162,
-r51/r52 with M163, r53 with M164, r54 with M165 and **r55/r56 with M166**, and the whole
+r51/r52 with M163, r53 with M164, r54 with M165, r55/r56 with M166,
+r57-r60 with M168-M170, r61 with M172, r62 with M173 and **r63/r64 with M174**, and the whole
 thing reproduces with `python tools/render_check.py`, which stands up a fresh
 server, **builds first** (it used only to check the binary existed, so a source
 change not followed by a manual `cargo build` was graded against the previous
@@ -174,11 +175,11 @@ caller requirements, **has a timeout as of M166** (an untimed `subprocess.run`
 inherited the client's worst failure mode — a hung client hung the gate with no
 exit code and nothing to read), and **stages the two blocking configuration
 tasks**, without which the run scores nothing at all; demo PNG
-`2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at **120 / 0 / 21**, class C
-**10** (M152 took `update_recipes`, M166 `resource_pack_push`) — M96–M107 consume packets M93y already decoded, M108 resolved
+`2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at **122 / 0 / 19**, class C
+**8** (M171/M172 took the book viewer, M174 the sign editor; M152 `update_recipes`, M166 `resource_pack_push`) — M96–M107 consume packets M93y already decoded, M108 resolved
 `delete_chat`, M113 the Brigadier tree and M114 the two suggestion packets.
 
-**There are 37 serverless gate commands, not the "fourteen" older paragraphs in
+**There are **42** serverless gate commands, not the "fourteen" older paragraphs in
 this file say** — those sentences are historical records of the count *at the
 time* and are correct as such. Re-measured from a cold start on 2026-08-08 by
 running every one, and again after M125, M126 and the M127–M134 integration:
@@ -340,17 +341,17 @@ witnesses are mostly self-driven can look healthy against nothing.
 > version of this box listed has shipped. What follows is measured on the merged
 > tree, not carried forward.
 >
-> **The state (re-measured 2026-08-23 after M173):** **41** serverless gates
+> **The state (re-measured 2026-08-23 after M174):** **42** serverless gates
+> green with 0 validation errors (`signshot` is the 42nd, 23/23), **3446
+> tests**, `live --render-check` **64/64** exit 0 (r63/r64 arrived with M174),
+> packet coverage **122 / 0 / 19** with classes A and B empty, demo PNG
+> `2cc56b4acbfb92cb` byte-identical.
+>
+> *(superseded — the post-M173 line, kept for the diff:)* **41** serverless gates
 > green with 0 validation errors (`optionshot` is the 41st, 12/12), **3424
 > tests**, `live --render-check` **62/62** exit 0 (r62 arrived with M173),
-> packet coverage **121 / 0 / 20**, demo PNG `2cc56b4acbfb92cb`
-> byte-identical.
->
-> *(superseded — the 2026-08-21 line, kept for the diff:)* 37 serverless gates green
-> with 0 validation errors, **3355 tests**, `live --render-check` **56/56** exit
-> 0, `soundshot` 37 default / 57 under `--features audio`, demo PNG
-> `2cc56b4acbfb92cb` byte-identical, packet coverage **120 / 0 / 21** with
-> classes A and B empty.
+> packet coverage **121 / 0 / 20** with classes A and B empty, demo PNG
+> `2cc56b4acbfb92cb` byte-identical.
 >
 > **A 20-agent survey (2026-08-17) specced every open gap and every one of the
 > twenty specs came back `needs-revision`.** The verified specs are the best
@@ -1897,7 +1898,8 @@ this shape once.
 | M170 — the leash rope | **r60** | HUD/world: no atlas — a colour-only `leash` pipeline (POSITION_COLOR triangle list, depth GREATER no-write) | `leashshot` g0-g4 |
 | M172 — the written-book reader | **r61** | screen-pass atlas 512x256 -> 512x512; `Sheet::BookBackground` (cropped 192x192 `book.png`) at (0,256), `Sheet::PageArrow(0..4)` (23x13 `widget/page_*`) at (200..296, 256) | `bookshot` m0-m5, p0-p13 |
 | M173 — the volume sliders | **r62** | screen-pass atlas: `Sheet::SliderSheet(0..4)` — tracks (200x20) at (200,280) + (200,300), handles (8x20) at (404,280) + (414,280) | `optionshot` o0-o11 |
-| *(next free)* | **r63** | — | — |
+| M174 — the sign editor | **r63, r64** | screen-pass atlas (512x512 unchanged): `Sheet::SignBoard(0..12)` (24x26 `gui/signs/<wood>`) at (200..488, 320), `Sheet::HangingSignBoard(0..12)` (16x16 `gui/hanging_signs/<wood>`) at (200..392, 352); `SHEET_COUNT` 56 -> 58 | `signshot` m1-m7b, m9-m15, p0-p6 |
+| *(next free)* | **r65** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table
@@ -3718,6 +3720,86 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M174 — the sign editor: `TextFieldHelper` over the current line, and the commit that lives in `removed()` (2026-08-23)
+
+`open_sign_editor` (60) was the last screen packet Rewo decoded none of, and it
+closes class C's editor entry the way M171/M172 closed the book's. Four pieces:
+the decode (`open_sign_editor` = one packed BlockPos + one bool;
+`sign_update` = pos + bool + exactly four `writeUtf`s), the model
+(`rewo_world::sign_edit_screen`: `AbstractSignEditScreen` +
+`TextFieldHelper` + `TextCursorUtils`), the render (flat GUI blits of
+`gui/signs/<wood>.png` / `gui/hanging_signs/<wood>.png` — NOT a 3D
+`SignRenderer` port; 26.x moved the board into the GUI layer), and the app
+wiring (open, per-keystroke echo, commit). Gate: **`rewo signshot --check`**
+(the 42nd), 22 → **23** witnesses after its own battery found a hole; live
+witnesses **r63/r64**, taking `--render-check` to **64/64**.
+
+Findings that invert, each witnessed:
+
+- **The editor opens only through an EXISTING sign block entity.**
+  `handleOpenSignEditor` warns and ignores otherwise — 26.2 does NOT construct
+  a fresh one (that was the ≤1.19 shape), so a packet naming an empty cell is
+  silence.
+- **The validator tests the WHOLE candidate against a PIXEL width**
+  (`font.width(s) <= getMaxTextLineWidth()`, 90 standing / 60 hanging), and a
+  failing insert — paste included — is rejected IN ITS ENTIRETY, never
+  truncated. This is why `EditBox` is not reused: EditBox truncates. The
+  boundary is load-bearing: `<=` accepts a candidate of exactly the max, and
+  the battery's strict-validator mutation survived until m7b drove a
+  deterministic measure through production `insert_text`.
+- **A failed insert over a selection keeps the text but collapses the
+  selection** to the span's start — `deleteSelection` runs before the
+  candidate is built and only the commit is gated. Odd, transcribed, and m5's
+  witness exists because no earlier fixture had ever looked at that state.
+- **Delete acts AND falls through**: vanilla's `case 261` has no
+  `return true`, so the key both edits the line and reaches `super`.
+  Transcribed literally; m7 pins text-changed AND `Unhandled`.
+- **Every exit COMMITS.** `removed()` sends `sign_update` with no dirty check
+  and no cancel — Esc included, and being REPLACED by another screen too:
+  vanilla's `setScreen` calls `removed()` on the old screen. The first cut
+  dropped app-side state silently on replacement; r64 now drives that path
+  (the 0.90 book-menu injection replaces the 0.80-opened editor) and fails if
+  the commit did not send. The per-keystroke local echo is faithful too:
+  `TextFieldHelper`'s messager writes through as you type, preserving the
+  face's dye + glow (`SignText.setMessage`; `block_entities::
+  set_sign_messages`).
+- **A wall sign blits only the top 12 of the sheet's 26 rows** at the same
+  origin — the other 14 are the post. p3 proves the CROP three ways: plaque
+  probes match, below-the-wall-board equals a chrome-only frame at the same
+  point, and a STANDING board there differs (its post is still being drawn).
+- **Cursor indices are UTF-16 code units in Java and bytes stepped by char
+  here**; both step by codepoints, so the observable split matches. One
+  transcription kept because it reads like a bug: word motion re-expresses
+  the span as a UTF-16 delta handed to a codepoint stepper, which deletes
+  PAST astral word boundaries.
+
+Process, which is most of this milestone:
+
+- **The handoff WIP was mid-flight, not near-done**: it did not compile
+  (`TextStyle` had moved, the app-side pump/close methods were referenced but
+  absent), the render arm and key routing were never wired, and the gate,
+  battery and docs halves were missing. Landed by finishing those; the decode
+  and model needed no changes beyond what their own tests already pinned.
+- **Five of the gate's witnesses were wrong before the code was** — the
+  pattern again, five-for-five inside one milestone: Down is GLFW 264 (265 is
+  Up); forward-delete of `"ab"@1` yields `"a"` (the first cut asserted
+  `"b"`); `getWordPosition` lands at 4/6/4, not the guessed 5/0; p3's "post
+  row" probe mapped INTO the plaque rect (a control that cannot fail proves
+  nothing); and p5 derived its band from a zero-width origin — a two-pixel
+  window between "hello" and "sign" that measured nothing while the ink sat
+  either side of it.
+- **One real divergence was caught by WRITING r64**, not by any test that
+  existed: the silent drop on screen replacement above.
+- **The battery**: 16 mutations + control — **15 killed, control green, one
+  PROVEN-EQUIVALENT survivor kept with its proof**: the paste arm's own
+  `selection = cursor` after `insert_text` is dead code, because
+  `insert_text` collapses the selection on BOTH its paths (success directly,
+  failure via `deleteSelection`) — vanilla carries the same redundancy.
+- **r16's regression taught an injection-timing rule**: opening the editor at
+  0.55 starved the inventory (force-opened at 0.5) to 21% of frames against
+  r16's 25% floor; 0.80 keeps every earlier latch intact and still leaves a
+  full window for the replacement.
 
 ### M173 — the volume sliders, the options wiring that never existed, and the refresh vanilla had and Rewo lacked (2026-08-23)
 

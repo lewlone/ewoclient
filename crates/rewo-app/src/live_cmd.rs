@@ -511,6 +511,13 @@ struct RenderCheck {
     /// force-opens the screen a fifth of the way in, the same way it injects a
     /// container for r19 — a windowed run has no keyboard.
     chat_screen_frames: u64,
+    /// M174 — frames on which the sign editor's board was actually pushed
+    /// into the screen pass (read where the draw reads it, the r20 rule), and
+    /// whether a replacement commit sent `sign_update`. The staged injection
+    /// opens the editor at 0.55; the 0.90 book-menu injection REPLACES it,
+    /// which is exactly vanilla's `setScreen` → `removed()` → commit path.
+    sign_edit_frames: u64,
+    sign_update_sent: bool,
     /// M115 — frames on which the SUGGESTION POPUP put fills in the list.
     ///
     /// A strictly narrower claim than r27's: the screen can be open with no
@@ -783,7 +790,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 62;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 64;
 
     fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1583,6 +1590,24 @@ impl RenderCheck {
             "r17 validation was enabled",
             self.validation,
             format!("{}", self.validation),
+        );
+        row(
+            "r63 the injected open_sign_editor opened the editor in the windowed client",
+            self.sign_edit_frames > 0,
+            format!(
+                "{} editor frames (needs the staged oak_sign BE, the production decode \
+                 opening the screen, and the board reaching the screen pass)",
+                self.sign_edit_frames
+            ),
+        );
+        row(
+            "r64 the editor's replacement committed sign_update",
+            self.sign_update_sent,
+            format!(
+                "sent {} (vanilla's setScreen calls removed() on the old screen, which \
+                 IS the commit — the 0.90 book-menu injection replaces the editor)",
+                self.sign_update_sent
+            ),
         );
         row(
             "r18 the session was validation-clean",
@@ -4403,6 +4428,8 @@ pub(crate) fn widget_sprites(
         book_background: hud_sprite(&w.book_background),
         page_buttons: std::array::from_fn(|i| hud_sprite(&w.page_buttons[i])),
         slider: std::array::from_fn(|i| hud_sprite(&w.slider[i])),
+        sign_boards: std::array::from_fn(|i| hud_sprite(&w.sign_boards[i])),
+        hanging_sign_boards: std::array::from_fn(|i| hud_sprite(&w.hanging_sign_boards[i])),
     })
 }
 
@@ -5900,6 +5927,7 @@ struct LiveApp {
     /// Latched so the inject happens once rather than every frame past the
     /// threshold, which would re-open the menu and reset its state each frame.
     container_injected: bool,
+    sign_editor_injected: bool,
     /// M132 — whether the scoreboard sidebar injection has happened.
     sidebar_injected: bool,
     /// M151 — whether the tab-list player injection has happened.
@@ -5917,6 +5945,12 @@ struct LiveApp {
     /// app-side view state the frame's render arm keys on (the M84 pattern);
     /// the framework `Screen` in `screens` carries only the Done button.
     book: Option<rewo_world::book_view_screen::BookViewScreen>,
+    /// M174 — the sign editor's app-side state, `None` when closed. Same
+    /// one-slot discipline as the book, with one difference: anything that
+    /// REPLACES the editor's screen still COMMITS the edit, because
+    /// vanilla's `Gui.setScreen` calls `removed()` on the outgoing screen
+    /// unconditionally and `removed()` is where the packet lives.
+    sign_edit: Option<SignEditView>,
     /// M173 — which options page is open, `None` when none. The app-side
     /// view state the frame's render arm keys on (the M84 pattern) — the
     /// options were model-only end to end until now (the pause OPTIONS
@@ -6390,6 +6424,11 @@ impl ApplicationHandler for LiveApp {
                                     // M172: same rule — the render arm keys on
                                     // `self.book`, so it drops with the screen.
                                     self.close_book();
+                                } else if kind == rewo_world::screen::ScreenKind::SignEdit {
+                                    // M174: Esc COMMITS (belt-and-braces — the
+                                    // sign arm consumes Esc before this
+                                    // dispatch can see it).
+                                    self.close_sign_edit();
                                 } else if kind == rewo_world::screen::ScreenKind::Options
                                     && self.options_view.is_some()
                                 {
@@ -6467,7 +6506,70 @@ impl ApplicationHandler for LiveApp {
                     // screen closes on Esc and the death and disconnect
                     // screens do not.
                     PhysicalKey::Code(KeyCode::Escape) if p => {
-                        if self.screen.inventory_open() {
+                // M174 — the sign editor owns the keyboard entirely while it
+                // is open (`Screens` is ONE slot; there is no inventory behind
+                // it to route to). Its own bindings run first, then the field,
+                // then Esc → `onClose()`; a key nothing wanted is swallowed,
+                // which is the anvil's arrangement and vanilla's.
+                if self.sign_edit.is_some() {
+                    if p {
+                        let advance = self.advance();
+                        if let (Some(key), Some(advance)) =
+                            (glfw_key(event.physical_key), advance.as_ref())
+                        {
+                            let mods = (i32::from(self.shift))
+                                | (i32::from(self.ctrl) << 1)
+                                | (i32::from(self.alt) << 2);
+                            let width_fn =
+                                |t: &str| rewo_gpu::text::width(t, advance);
+                            let mut clip = std::mem::take(&mut self.clipboard);
+                            let outcome = self.sign_edit.as_mut().map(|v| {
+                                v.state.key_pressed(
+                                    rewo_world::edit_box::Input::new(key, mods),
+                                    &width_fn,
+                                    &mut clip,
+                                )
+                            });
+                            self.clipboard = clip;
+                            match outcome {
+                                Some(rewo_world::sign_edit_screen::SignKey::Handled) => {
+                                    self.echo_sign_edit();
+                                    return;
+                                }
+                                Some(rewo_world::sign_edit_screen::SignKey::Close) => {
+                                    self.close_sign_edit();
+                                    return;
+                                }
+                                _ => {}
+                            }
+                        }
+                        // `charTyped` — the screen returns true EITHER WAY, so
+                        // every typed character is consumed whether or not it
+                        // was an allowed chat character (the insert itself is
+                        // gated inside the model).
+                        if let Some(text) = event.text.as_ref() {
+                            if let Some(advance) = self.advance() {
+                                let width_fn =
+                                    |t: &str| rewo_gpu::text::width(t, &advance);
+                                for ch in text.chars() {
+                                    if let Some(v) = self.sign_edit.as_mut() {
+                                        v.state.char_typed(ch, &width_fn);
+                                    }
+                                }
+                                self.echo_sign_edit();
+                            }
+                        }
+                    }
+                    // Shift is tracked either way (Ctrl/Alt above).
+                    if !matches!(
+                        event.physical_key,
+                        PhysicalKey::Code(KeyCode::ShiftLeft)
+                            | PhysicalKey::Code(KeyCode::ShiftRight)
+                    ) {
+                        return;
+                    }
+                }
+                if self.screen.inventory_open() {
                             self.set_screen_open(false);
                         } else if self.session.is_some() {
                             self.open_pause_screen();
@@ -7825,6 +7927,11 @@ impl LiveApp {
             (ScreenKind::BookView, rewo_world::book_view_screen::DONE) => {
                 self.close_book();
             }
+            // M174: the sign editor's Done is `onDone()` — which COMMITS
+            // (the packet is in `removed()`, reached by every exit).
+            (ScreenKind::SignEdit, rewo_world::sign_edit_screen::DONE) => {
+                self.close_sign_edit();
+            }
             // M173: the options pages.
             (ScreenKind::Options, id) if self.options_view.is_some() => {
                 self.options_press(id);
@@ -8160,6 +8267,153 @@ impl LiveApp {
         self.book = None;
         self.screen.screens.close();
         self.grab_for_screen(false);
+    }
+
+    /// M174 — poll an `open_sign_editor` request and open the editor.
+    ///
+    /// Vanilla's `handleOpenSignEditor` warns and ignores unless a SIGN block
+    /// entity sits at the packet's pos (26.2 does NOT construct a fresh one —
+    /// that was the ≤1.19 shape), and the screen class is chosen by the
+    /// block-ENTITY kind: hanging vs not. Wall-vs-ground for a standing sign
+    /// comes from the block state, which is what decides whether the board
+    /// blit samples the whole 24×26 sheet or only its top 12 rows.
+    fn pump_sign_editor(&mut self) {
+        let Some((pos, front)) = self
+            .session
+            .as_mut()
+            .and_then(|s| s.open_sign_editor_request.take())
+        else {
+            // Screens is ONE slot; drop the app-side view with it (the book's
+            // stale-state rule — a stale `sign_edit` would hijack the render
+            // arm when some other screen closed).
+            if self.sign_edit.is_some()
+                && !self
+                    .screen
+                    .screens
+                    .current()
+                    .is_some_and(|s| s.kind == rewo_world::screen::ScreenKind::SignEdit)
+            {
+                // Vanilla's `Minecraft.setScreen` calls `removed()` on the OLD
+                // screen, and the sign editor's `removed()` IS the commit — so
+                // a screen REPLACING the editor sends too (this is what r64
+                // observes). The framework screen is already gone; only the
+                // packet and the view state are ours to settle.
+                self.commit_sign_edit();
+                self.sign_edit = None;
+            }
+            return;
+        };
+        let Some(session) = self.session.as_ref() else { return };
+        let be_pos = rewo_world::block_entities::BlockEntityPos { x: pos.0, y: pos.1, z: pos.2 };
+        let Some(be) = session.world.block_entities.get(be_pos) else {
+            log::warn!(
+                "live: open_sign_editor at ({}, {}, {}): no block entity there - ignored",
+                pos.0,
+                pos.1,
+                pos.2
+            );
+            return;
+        };
+        let state_id = session.world.block_state_at(pos.0, pos.1, pos.2);
+        let Some(sign) = self.sign_states.get(state_id) else {
+            log::warn!("live: open_sign_editor at {:?}: not a sign state", pos);
+            return;
+        };
+        // Seed the field with the face's current lines — vanilla edits read
+        // `SignText.getMessage(i, true)` (the plain literal), and setMessage
+        // preserves colour + glow, so those are captured once at open.
+        let (face, _) = be.sign_text(session.lang.as_deref());
+        use rewo_world::sign_edit_screen::SignKind;
+        let kind = if sign.hanging {
+            SignKind::Hanging
+        } else if sign.attachment == rewo_data::sign_states::SignAttachment::Wall {
+            SignKind::Wall
+        } else {
+            SignKind::Standing
+        };
+        let (face, _) = be.sign_text(session.lang.as_deref());
+        let initial = face.as_ref().map(|f| f.lines.clone()).unwrap_or_default();
+        let dye =
+            rewo_data::sign_text::dye_text_color(face.as_ref().and_then(|f| f.color.clone()).as_deref());
+        let glowing = face.map(|f| f.glowing).unwrap_or(false);
+        let done = self.lang.get_or_default("gui.done", "Done").to_string();
+        let (gw, gh) = self.gui_size();
+        self.sign_edit = Some(SignEditView {
+            state: rewo_world::sign_edit_screen::SignEditState::new(initial, kind),
+            pos,
+            is_front: front,
+            dye,
+            glowing,
+            wood: sign.wood_index,
+            opened: std::time::Instant::now(),
+        });
+        let mut screen = rewo_world::sign_edit_screen::build_screen(gw, gh, &done);
+        // The heading is `centeredText(font, title, width/2, 40, -1)` with
+        // `title = Component.translatable("sign.edit")`; the label widget
+        // needs its width, so the app builds it like the options titles do.
+        let title = self.lang.get_or_default("sign.edit", "Edit sign message").to_string();
+        let tw = self.text_width(&title);
+        screen.widgets.push(rewo_world::screen::Widget::label(
+            rewo_world::sign_edit_screen::TITLE_LABEL,
+            (gw - tw) / 2,
+            rewo_world::sign_edit_screen::TITLE_Y,
+            tw,
+            title,
+        ));
+        self.screen.screens.open(screen);
+        self.grab_for_screen(true);
+    }
+
+    /// M174 — the editor's ONE commit path. Every exit (Done, Esc, the
+    /// validity tick, being REPLACED by another screen) reaches `removed()`,
+    /// which sends `sign_update` unconditionally: there is no dirty check and
+    /// no cancel. The live local echo has already been applied per edit, so
+    /// the send is re-stated here as belt-and-braces before the view drops.
+    fn commit_sign_edit(&mut self) {
+        if let Some(view) = self.sign_edit.as_ref() {
+            if let Some(session) = self.session.as_mut() {
+                match session.send_sign_update(view.pos, view.is_front, &view.state.lines) {
+                    Ok(()) => {
+                        if let Some(c) = self.check.as_mut() {
+                            c.sign_update_sent = true;
+                        }
+                    }
+                    Err(e) => log::warn!("live: sign_update send failed: {e}"),
+                }
+                // Keep the echo's invariant: the committed face is what the
+                // packet carried, even if a keystroke's echo was missed.
+                let be_pos =
+                    rewo_world::block_entities::BlockEntityPos { x: view.pos.0, y: view.pos.1, z: view.pos.2 };
+                if let Some(be) = session.world.block_entities.get_mut(be_pos) {
+                    be.set_sign_messages(view.is_front, &view.state.lines);
+                }
+            }
+        }
+    }
+
+    fn close_sign_edit(&mut self) {
+        self.commit_sign_edit();
+        self.sign_edit = None;
+        self.screen.screens.close();
+        self.grab_for_screen(false);
+    }
+
+    /// M174 — the per-keystroke local echo. Vanilla's field writes through to
+    /// the block entity as you type (`TextFieldHelper`'s messager is
+    /// `sign.setMessage(line, literal)`), so the world renderer shows the text
+    /// updating live behind the editor. `setMessage` replaces one face's
+    /// messages and preserves that face's colour + glow.
+    fn echo_sign_edit(&mut self) {
+        let Some(view) = self.sign_edit.as_ref() else { return };
+        let lines = view.state.lines.clone();
+        let (pos, front) = (view.pos, view.is_front);
+        if let Some(session) = self.session.as_mut() {
+            let be_pos =
+                rewo_world::block_entities::BlockEntityPos { x: pos.0, y: pos.1, z: pos.2 };
+            if let Some(be) = session.world.block_entities.get_mut(be_pos) {
+                be.set_sign_messages(front, &lines);
+            }
+        }
     }
 
     /// M173 — open an options page. `Screens` is one slot, so this both
@@ -9448,6 +9702,36 @@ impl LiveApp {
                     }
                 }
             }
+            // M174 — open the staged oak_sign's editor through the PRODUCTION
+            // decode (`inject_packet` -> the play dispatch), at 0.80: after
+            // the container's r19/r20 have latched, late enough that the
+            // inventory (force-opened at 0.5) keeps the >25%-of-frames
+            // window r16 requires — the first cut injected at 0.55 and
+            // starved it to 21% — and before the 0.90 book-menu injection
+            // whose replacement exercises r64's commit.
+            if !self.sign_editor_injected {
+                let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
+                if self.started.elapsed().as_secs_f32() >= limit * 0.80 {
+                    if let Some(session) = self.session.as_mut() {
+                        let (dx, dy, dz) = SIGN_WITNESS_OFFSET;
+                        let (x, y, z) = (
+                            session.player.x.floor() as i32 + dx,
+                            session.player.y.floor() as i32 + dy,
+                            session.player.z.floor() as i32 + dz,
+                        );
+                        // Packed BlockPos: x<<38 | z<<12 | y — the packing
+                        // `sign_update_body` writes and `position()` reads.
+                        let packed: u64 = (((x as i64 & 0x3ff_ffff) as u64) << 38)
+                            | (((z as i64 & 0x3ff_ffff) as u64) << 12)
+                            | ((y as i64 & 0xfff) as u64);
+                        let mut body = Vec::new();
+                        body.extend_from_slice(&packed.to_be_bytes());
+                        body.push(1); // isFrontText
+                        session.inject_packet(session.ids.cb_play_open_sign_editor, &body);
+                        self.sign_editor_injected = true;
+                    }
+                }
+            }
             // M94 — last of all, a CRAFTING TABLE, because the book only draws
             // while a book menu is on screen and neither of the two injections
             // below is one: `book_type_of` answers for the player's own
@@ -9621,6 +9905,7 @@ impl LiveApp {
         self.pump_death_screen();
         self.pump_stats_screen();
         self.pump_book_screen();
+        self.pump_sign_editor();
         // M173 — the options screens rebuild on resize (the Done and the
         // band re-centre); only on a CHANGE, or ticks/focus reset every
         // frame (M82's rule).
@@ -11032,6 +11317,31 @@ impl LiveApp {
                     text.extend(screen_text_lines(screen, &advance, px));
                     text.extend(book_text_lines(book, gw, &advance, px, &self.lang));
                 }
+            } else if let (Some(view), Some(screen)) =
+                (self.sign_edit.as_ref(), self.screen.screens.current())
+            {
+                // M174: the sign editor. Generic chrome carries the gradient +
+                // the Done button; the board is a sprite blit riding
+                // `chrome.sprites` (the book art's stratum — backdrop, then
+                // board, then widgets/text), then selection/caret fills, then
+                // the four centred lines.
+                if let Some(c) = self.check.as_mut() {
+                    c.sign_edit_frames += 1;
+                }
+                chrome = screen_chrome(screen, Some(mouse_gui));
+                let gw = (extent.width as f32 / px) as i32;
+                chrome
+                    .sprites
+                    .push(sign_board_sprite(view.state.kind, view.wood, gw));
+                if let Some(advance) = state.world_renderer.font_advance() {
+                    let (mut sign_text, fills) = sign_edit_draws(view, gw, &advance, px);
+                    chrome.sprites.extend(fills);
+                    text.append(&mut sign_text);
+                    // The Done button's label rides the generic widget-text
+                    // builder (M172's lesson: an unlabeled button passed a
+                    // probe that only watched chrome).
+                    text.extend(screen_text_lines(screen, &advance, px));
+                }
             } else if let (Some(_page), Some(screen)) =
                 (self.options_view, self.screen.screens.current())
             {
@@ -11275,6 +11585,7 @@ fn run_windowed(
         play_pack_injected: false,
         crowd_injected: false,
         book: None,
+        sign_edit: None,
         options_view: None,
         options_drag: None,
         jump_injected: false,
@@ -11320,6 +11631,7 @@ fn run_windowed(
         f3_used_as_modifier: false,
         advanced_tooltips: false,
         container_injected: false,
+        sign_editor_injected: false,
         book_injected: false,
         book_overlay_injected: false,
         book_menu_injected: false,
@@ -12433,7 +12745,135 @@ pub(crate) fn slider_sprites(
     out
 }
 
-/// Map one [`rewo_world::book_view_screen::BookDraw`] to the screen pass's
+/// M174 — the sign editor's app-side state. The model lives in
+/// `rewo_world::sign_edit_screen`; this carries what the model cannot know:
+/// where the sign is, which face, its dye + glowing (captured at open —
+/// `setMessage` preserves both), which wood sheet, and the blink epoch
+/// (vanilla stamps `cursorBlinkStartTime = Util.getMillis()` in `init()`).
+pub(crate) struct SignEditView {
+    pub state: rewo_world::sign_edit_screen::SignEditState,
+    pub pos: (i32, i32, i32),
+    pub is_front: bool,
+    /// The face's dye text colour, `0xRRGGBB`.
+    pub dye: u32,
+    pub glowing: bool,
+    pub wood: u8,
+    pub opened: std::time::Instant,
+}
+
+/// The sign editor's board blit (M174): the standing board is the whole
+/// 24x26 sheet; the WALL board samples only the top 12 rows (the plaque —
+/// the other 14 are the post) at the same origin; the hanging board is its
+/// whole 16x16. All through [`rewo_world::sign_edit_screen::board_sprite`]'s
+/// nearest-integer rounding of the fractional pose rect (a stated ≤0.6-px
+/// deviation — vanilla rasterises the exact rect).
+pub(crate) fn sign_board_sprite(
+    kind: rewo_world::sign_edit_screen::SignKind,
+    wood: u8,
+    gui_w: i32,
+) -> rewo_gpu::screen::SpriteDraw {
+    use rewo_gpu::screen::{Fill, Sheet, SpriteDraw};
+    use rewo_world::sign_edit_screen::SignKind;
+    let (x, y, w, h) = rewo_world::sign_edit_screen::board_sprite(kind, gui_w);
+    let (sheet, fill) = match kind {
+        SignKind::Standing => (Sheet::SignBoard(wood), Fill::Stretch),
+        SignKind::Wall => (Sheet::SignBoard(wood), Fill::SubRect(0, 0, 24, 12)),
+        SignKind::Hanging => (Sheet::HangingSignBoard(wood), Fill::Stretch),
+    };
+    SpriteDraw { x, y, width: w, height: h, sheet, fill, color: [1.0; 4] }
+}
+
+/// The editor's line colour (M174):
+/// `hasGlowingText ? dye : getDarkColor(text)` — and since the ternary only
+/// reaches `getDarkColor` when glowing is FALSE, its `BLACK && glowing →
+/// 0xF0EBCC` special is DEAD in this screen (it is live in the world
+/// renderer, where the dark colour is the glowing text's outline). So:
+/// glowing → the dye at full strength; else the dye scaled 0.4, truncating.
+pub(crate) fn sign_edit_line_color(dye: u32, glowing: bool) -> u32 {
+    if glowing {
+        dye
+    } else {
+        rewo_data::sign_text::scale_rgb(dye, 0.4)
+    }
+}
+
+/// The sign editor's text + caret + selection for one frame (M174), lowered
+/// to physical-px text lines and GUI-px fills. The selection is drawn UNDER
+/// the text (vanilla inverts the glyphs through a GUI_INVERT pipeline this
+/// pass does not have — a stated approximation: a blue box with the line's
+/// own dark text instead of inverted white).
+pub(crate) fn sign_edit_draws(
+    view: &SignEditView,
+    gui_w: i32,
+    advance: &[u8; 256],
+    px: f32,
+) -> (Vec<rewo_gpu::world::OwnedTextLine>, Vec<rewo_gpu::screen::SpriteDraw>) {
+    use rewo_gpu::screen::{Fill, Sheet, SpriteDraw};
+    use rewo_world::sign_edit_screen as se;
+    let width_fn = |t: &str| rewo_gpu::text::width(t, advance);
+    let kind = view.state.kind;
+    let ts = kind.text_scale();
+    let color = sign_edit_line_color(view.dye, view.glowing);
+    let color_f = srgb_bytes_to_linear(color);
+    let mut text = Vec::new();
+    let mut fills = Vec::new();
+    // The selection first — under the text.
+    if let Some((x, y, w, h)) = se::selection_rect(&view.state, gui_w, &width_fn) {
+        fills.push(SpriteDraw {
+            x: x.round() as i32,
+            y: y.round() as i32,
+            width: (w.round() as i32).max(1),
+            height: h.round() as i32,
+            sheet: Sheet::White,
+            fill: Fill::Stretch,
+            color: se::SELECTION_BLUE,
+        });
+    }
+    // The four lines, each centred independently, `shadow: false`.
+    for (i, line) in view.state.lines.iter().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let (x, y) = se::line_origin(kind, gui_w, i, width_fn(line));
+        text.push(rewo_gpu::world::OwnedTextLine {
+            x: x * px,
+            y: y * px,
+            px: px * ts,
+            color_linear: color_f,
+            alpha: 1.0,
+            shadow: false,
+            style: rewo_gpu::text::TextStyle::PLAIN,
+            text: line.clone(),
+        });
+    }
+    // The caret, blink-gated on the wall clock since open.
+    if se::cursor_visible(view.opened.elapsed().as_millis() as u64) {
+        match se::caret_draw(&view.state, gui_w, &width_fn) {
+            se::CaretDraw::Underscore { x, y } => text.push(rewo_gpu::world::OwnedTextLine {
+                x: x * px,
+                y: y * px,
+                px: px * ts,
+                color_linear: color_f,
+                alpha: 1.0,
+                shadow: false,
+                style: rewo_gpu::text::TextStyle::PLAIN,
+                text: "_".to_string(),
+            }),
+            se::CaretDraw::Bar { x, y, w, h } => fills.push(SpriteDraw {
+                x: x.round() as i32,
+                y: y.round() as i32,
+                width: (w.round() as i32).max(1),
+                height: h.round() as i32,
+                sheet: Sheet::White,
+                fill: Fill::Stretch,
+                // `ARGB.opaque(color)` — the bar is the line colour, opaque.
+                color: [color_f[0], color_f[1], color_f[2], 1.0],
+            }),
+        }
+    }
+    (text, fills)
+}
+
 /// sprite (M172). The `PageArrow` index order is the bake's declared one:
 /// 0 forward, 1 forward_highlighted, 2 backward, 3 backward_highlighted.
 pub(crate) fn book_sprite(d: rewo_world::book_view_screen::BookDraw) -> rewo_gpu::screen::SpriteDraw {
@@ -12536,7 +12976,7 @@ pub(crate) fn book_text_lines(
         color_linear: [0.0, 0.0, 0.0],
         alpha: 1.0,
         shadow: false,
-        style: rewo_gpu::text::TextStyle::default(),
+        style: rewo_gpu::text::TextStyle::PLAIN,
         text: msg,
     });
     out

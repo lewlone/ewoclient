@@ -181,7 +181,7 @@ take**, not about how much anyone wants it:
 |---|---|
 | **A** — pure state | Decoding it changes a value Rewo could act or gate on **without drawing anything new**. A witness can prove the decode; no human has to look at it. This is the class the M52–M74 batches drew from. |
 | **B** — needs rendering | The decode is possible today, but the packet's purpose is a visual Rewo does not have (a title overlay, an XP bar, the damage camera tilt). Landing the *feature* needs an eyeball; landing the *decode* does not. |
-| **C** — needs a subsystem Rewo lacks | The **11** remaining are, exactly: a horse/mount screen (41), a map image pipeline (51), a book viewer (58), a sign editor (60), a resource-pack fetcher (80, 81), an advancement tree (85 and 130), a server-transfer/reconnect flow (129), and a dialog framework (139, 140). *(This sentence said **12** and listed `133 update_recipes` until 2026-08-20 — which line 630 of this same file records as `handled` (M152) and which §2's machine-checked table has never counted. Third recurrence of this file's own documented failure mode, now on the class table.)* The decode is not the hard part and shipping it alone buys nothing. **Three subsystems have come OFF this list**: the screen/menu framework (M82/M87), the recipe book (M93y–M107) and the chat-input path (M110 + M114–M124). |
+| **C** — needs a subsystem Rewo lacks | The **8** remaining are, exactly: a horse/mount screen (41), a map image pipeline (51), a resource-pack download/apply pipeline (80 `resource_pack_pop` — the push's decode and reply are M166's, on row 81), an advancement tree (85 and 130), a server-transfer/reconnect flow (129), and a dialog framework (139, 140). *(This sentence said **11** and still listed the book viewer (58, closed M171/M172) and the sign editor (60, closed M174) until 2026-08-23 — fourth recurrence of this file's own documented failure mode on the class table.)* *(This sentence said **12** and listed `133 update_recipes` until 2026-08-20 — which line 630 of this same file records as `handled` (M152) and which §2's machine-checked table has never counted. Third recurrence of this file's own documented failure mode, now on the class table.)* The decode is not the hard part and shipping it alone buys nothing. **Three subsystems have come OFF this list**: the screen/menu framework (M82/M87), the recipe book (M93y–M107), the chat-input path (M110 + M114–M124), the book viewer (M171/M172) and the sign editor (M174). |
 | **D** — not applicable | Debug/dev tooling, integrated-server-only warnings, or a reply to a serverbound request Rewo never sends. Each row states which. |
 
 The A/B line is drawn at *what the decode itself unlocks*, so a packet whose
@@ -209,19 +209,19 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **121** |
+| Resolved **and** consumed | **122** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **20** |
+| Not resolved at all | **19** |
 | **Total clientbound-play** | **141** |
 
-The 20 gaps, by class:
+The 19 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
 | **B** needs rendering | **0** | 0% |
-| **C** needs a subsystem Rewo lacks | **9** | 45% |
-| **D** not applicable | **11** | 55% |
+| **C** needs a subsystem Rewo lacks | **8** | 42% |
+| **D** not applicable | **11** | 58% |
 
 **M87 was the first bite out of class C** — which has since gone 23 -> 11, the
 rest of it taken by M91 (the furnace family), M93s (the stonecutter), M93u (the
@@ -565,7 +565,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 57 | `move_vehicle` | handled | `req!` → `cb_play_move_vehicle` | **M68.** Carries **no entity id** — the client resolves `getRootVehicle()`. Sent only as a rejection of a serverbound vehicle move, so a passenger-only client never receives one. |
 | 58 | `open_book` | handled | **C** | Book screen (M171) — decode + the `BookViewScreen` model; the render is deferred. |
 | 59 | `open_screen` | handled | — | M87. VarInt container id, the `minecraft:menu` id as a **raw 0-based** `registry` (not `holder`'s `id + 1`), then an NBT title. All 25 layouts resolve; an unregistered type opens nothing, as `MenuScreens.create` does. M87k/M88/M89 render it: the packet opens the screen, the panel is the menu's own (r19/r20 in `live --render-check`), and clicks route to the shown menu. |
-| 60 | `open_sign_editor` | absent | **C** | Sign edit screen. |
+| 60 | `open_sign_editor` | handled | `req!` → `cb_play_open_sign_editor` | M174. Packed BlockPos + isFrontText bool. Opens the editor only when a SIGN block entity sits at the pos (`handleOpenSignEditor` warns and ignores otherwise — 26.2 does NOT construct a fresh one); dispatch on the block-entity TYPE (hanging vs not). The commit is serverbound `sign_update`, sent from `removed()` on EVERY exit — Esc included. |
 | 61 | `ping` | handled | `req!` → `cb_play_ping` | |
 | 62 | `pong_response` | absent | **D** | The reply to a serverbound `ping_request` Rewo never sends (`pingDebugMonitor`). |
 | 63 | `place_ghost_recipe` | handled | — | Decoded in M93y and **drawn in M103** — the ghost item sandwiched between a red wash under and a white wash over, only the lower of which widens for a big result slot. The book itself was built by M93z–M107. |
