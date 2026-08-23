@@ -72,6 +72,8 @@ pub enum ScreenKind {
     /// another in it — see [`crate::options_screen::OptionsPage`], which is
     /// what distinguishes them.
     Options,
+    /// `BookViewScreen` (M171) — the written-book reader, opened by `open_book`.
+    BookView,
 }
 
 /// A widget's identity within its screen. The screen's own module owns the

@@ -209,19 +209,19 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **120** |
+| Resolved **and** consumed | **121** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **21** |
+| Not resolved at all | **20** |
 | **Total clientbound-play** | **141** |
 
-The 21 gaps, by class:
+The 20 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
 | **B** needs rendering | **0** | 0% |
-| **C** needs a subsystem Rewo lacks | **10** | 48% |
-| **D** not applicable | **11** | 52% |
+| **C** needs a subsystem Rewo lacks | **9** | 45% |
+| **D** not applicable | **11** | 55% |
 
 **M87 was the first bite out of class C** — which has since gone 23 -> 11, the
 rest of it taken by M91 (the furnace family), M93s (the stonecutter), M93u (the
@@ -563,7 +563,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 55 | `move_minecart_along_track` | handled | `req!` → `cb_play_move_minecart_along_track` | **M77.** The **only** movement channel an experimental-movement cart has: `ServerEntity.sendChanges` routes such a cart down `handleMinecartPosRot` instead of the generic position branch entirely, so it is never sent `move_entity_pos` / `teleport_entity` / `entity_position_sync`. The steps are two **full-double** `Vec3`s each (`Vec3.STREAM_CODEC`, not `LP_STREAM_CODEC`), two rotation bytes and an f32 weight. The second client guard (`getBehavior() instanceof NewMinecartBehavior`) is **not** enforced — it depends on the `minecart_improvements` feature flag, which needs `update_enabled_features` (configuration; out of this survey's scope). |
 | 56 | `move_entity_rot` | handled | `req!` → `cb_play_move_entity_rot` | |
 | 57 | `move_vehicle` | handled | `req!` → `cb_play_move_vehicle` | **M68.** Carries **no entity id** — the client resolves `getRootVehicle()`. Sent only as a rejection of a serverbound vehicle move, so a passenger-only client never receives one. |
-| 58 | `open_book` | absent | **C** | Book screen. |
+| 58 | `open_book` | handled | **C** | Book screen (M171) — decode + the `BookViewScreen` model; the render is deferred. |
 | 59 | `open_screen` | handled | — | M87. VarInt container id, the `minecraft:menu` id as a **raw 0-based** `registry` (not `holder`'s `id + 1`), then an NBT title. All 25 layouts resolve; an unregistered type opens nothing, as `MenuScreens.create` does. M87k/M88/M89 render it: the packet opens the screen, the panel is the menu's own (r19/r20 in `live --render-check`), and clicks route to the shown menu. |
 | 60 | `open_sign_editor` | absent | **C** | Sign edit screen. |
 | 61 | `ping` | handled | `req!` → `cb_play_ping` | |

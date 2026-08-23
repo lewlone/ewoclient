@@ -340,11 +340,11 @@ witnesses are mostly self-driven can look healthy against nothing.
 > version of this box listed has shipped. What follows is measured on the merged
 > tree, not carried forward.
 >
-> **The state (re-measured 2026-08-23 after M170):** **39** serverless gates
-> green with 0 validation errors (`leashshot` is the 39th, 5/5), **3399 tests**
-> (world 1203, net 1224, gpu 320, data 233, app 231, mesh 52, proto 16, audio
-> 120), `live --render-check` **60/60** exit 0 (r60 arrived with M170), demo
-> PNG `2cc56b4acbfb92cb` byte-identical.
+> **The state (re-measured 2026-08-23 after M171):** **39** serverless gates
+> green with 0 validation errors, **3407 tests** (world 1210, net 1225, gpu
+> 320, data 233, app 231, mesh 52, proto 16, audio 120), `live --render-check`
+> **60/60** exit 0, packet coverage **121 / 0 / 20** (M171 consumed `open_book`),
+> demo PNG `2cc56b4acbfb92cb` byte-identical.
 >
 > *(superseded — the 2026-08-21 line, kept for the diff:)* 37 serverless gates green
 > with 0 validation errors, **3355 tests**, `live --render-check` **56/56** exit
@@ -433,9 +433,16 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   from it: the block/sky light is an RGB interpolation of the two endpoints
 >   (vanilla interpolates the packed coords), and the happy-ghast quad-leash
 >   branch is not drawn (nothing Rewo renders takes it).
-> * **`sub-book`**, **`sub-sign`**, **`sub-map`**, **`options`' volume
->   sliders**, **`render-misc [INTERP]`**. Each has a verified spec with its
->   traps; see §15's wave entries for the corrections.
+> * **`sub-book`** — **the DECODE + model shipped (M171); the RENDER is the
+>   open half.** `open_book` is consumed and the pages are captured through to
+>   the inventory; `BookViewScreen` (`rewo_world::book_view_screen`) is the
+>   tested layout + navigation, and `ScreenKind::BookView` is the seam. What is
+>   left is the render: `book.png` into a GUI atlas, the styled page text
+>   (black, no shadow) via M126 spans + M100 wrap, the `PageButton` sprites,
+>   and the open/input wiring. `sub-sign` and `sub-map` are the same
+>   shape (decode + a screen); **`options`' volume sliders** and
+>   **`render-misc [INTERP]`** each have a verified spec — see §15's wave
+>   entries for the corrections.
 >
 > #### Deliberately NOT next, with the measurement
 >
@@ -3705,6 +3712,69 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M171 — the written-book decode and the BookViewScreen model (2026-08-23)
+
+`open_book` (58) was absent, and the written-book reader is a genuine
+decode+render milestone. M171 lands the decode and the tested model; the render
+is M172. This is the M52f/M93z pattern — a screen's model shipping before its
+render — and it moves coverage 120/0/21 -> 121/0/20 (class C 10 -> 9).
+
+#### The decode
+
+`open_book` is one enum ordinal (the hand). It cannot do anything on its own,
+because the pages live on the held item's `written_book_content` component, so
+the packet is recorded as a request (`PlaySession::open_book_request`) the app
+polls. The pages are captured the way `lore` is — a special-case in
+`read_interpreted` rather than the generic tuple walk — into
+`StackComponents::book_pages`. Two things are load-bearing there: every field of
+the tuple is read (title, author, generation, pages, resolved) because the patch
+has no length prefix and a skipped value desynchronises the rest of the packet,
+and each page is a `Filterable`, so its optional filtered NBT is read and
+dropped after the raw is captured. The pages thread to the inventory through a
+new `SlotText::book_pages`, included in the `is_empty` destructure so a book
+carrying only pages is not recorded as textless (M42's finding).
+
+Adding `written_book_content` to `DataComponentIds` broke the three literal
+construction sites (the M14 pattern) — the `load` builder plus two test IDS and
+one in `lib.rs` — all updated.
+
+#### The model
+
+`rewo_world::book_view_screen::BookViewScreen`, verbatim from the decompile's
+layout: the `book.png` background is `192 x 192` at `((width - 192) / 2, 2)` —
+**top is a fixed 2, not centred**; the page text starts at `(left + 36, top +
+30)` and steps `9` px, at most `128 / 9 = 14` lines; the right-aligned page
+indicator is at `(left + 148, top + 16)`; the `23 x 13` back/forward
+`PageButton`s are at `(left + 43, top + 157)` and `(left + 116, top + 157)`.
+Navigation clamps at both ends, the buttons hide at the ends
+(`updateButtonVisibility`), the indicator floors at `max(count, 1)` so it never
+shows 0, and only `PageUp`/`PageDown` turn the page — **not the arrow keys**.
+The pages are pre-wrapped styled lines (the wrap needs the font width provider,
+which the app has), so the model holds `Vec<Vec<ChatLine>>` and does the
+navigation. `ScreenKind::BookView` is the render's seam.
+
+#### Verification, and a process slip
+
+`rewo-world` 1203 -> 1210, `rewo-net` 1224 -> 1225 (**3407 tests**); all 39
+serverless gates green; demo PNG `2cc56b4acbfb92cb` byte-identical. The battery
+(`tools/m171_mutate.py`) is 11 mutations, all killed, control survives — one
+survived first (a click blind to button visibility, invisible because the test
+only clicked a *visible* forward button; a click on the last page's hidden
+forward button pins it).
+
+A process slip worth recording: `git commit` was run while the background
+battery was still mutating the same files, so the commit captured a mutated
+`forward_visible` returning `true`. Caught by re-reading the committed content
+(`git show HEAD:...`) against the restored working tree and amended. **Never run
+git operations while a mutation battery is modifying the tree** — the battery
+restores files in a `finally`, but a `git add` mid-run captures whatever is on
+disk at that instant.
+
+**M172 is the render**: `book.png` into a GUI atlas, the styled page text
+(black, no shadow) via M126 spans + M100's `wrap_components`, the `PageButton`
+sprites (`widget/page_forward` / `_backward` and their highlighted variants),
+and the open/close/input wiring off `open_book_request`.
 
 ### M170 — the leash rope: LeashFeatureRenderer, ported (2026-08-23)
 

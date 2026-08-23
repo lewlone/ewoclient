@@ -208,6 +208,7 @@ mod tests {
         bundle_contents: 117,
         container: 118,
         use_cooldown: 119,
+        written_book_content: 122,
     };
 
     /// A hand-built body, to pin the wire ORDER.

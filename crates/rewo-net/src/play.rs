@@ -516,6 +516,9 @@ pub struct PlaySession {
     pub config_tasks: crate::config_tasks::ConfigTaskLog,
     /// The villager trade list, when a merchant screen is open (M93u).
     pub merchant: Option<crate::merchant::MerchantOffers>,
+    /// M171 — an `open_book` arrived for this hand (0 main / 1 off); the app
+    /// polls it, resolves the held book's pages, and opens the view screen.
+    pub open_book_request: Option<i32>,
     /// The unlocked recipes, by `RecipeDisplayId` (M93y). Decoded and held;
     /// nothing renders a recipe book yet.
     pub recipe_book: std::collections::BTreeMap<i32, crate::recipe_book::Entry>,
@@ -1726,6 +1729,7 @@ impl<'a> Connection<'a> {
         let mut session = PlaySession {
             config_tasks: std::mem::take(&mut self.config_tasks),
             merchant: None,
+            open_book_request: None,
             recipe_book: Default::default(),
             recipe_book_settings: Default::default(),
             ghost_recipe: None,
@@ -3258,6 +3262,16 @@ impl PlaySession {
                 // applied in part: half a trade list is worse than none, since
                 // the index a click sends addresses the list by position.
                 Err(e) => log::warn!("net: {e}"),
+            }
+        } else if id == ids.cb_play_open_book {
+            // M171. `ClientboundOpenBookPacket(InteractionHand)` — one
+            // enum ordinal. The pages live on the held item's
+            // `written_book_content` (captured in `StackComponents`), so
+            // the app resolves the stack; here we only record the hand.
+            let mut r = PacketReader::new(body);
+            match r.varint() {
+                Ok(hand) => self.open_book_request = Some(hand),
+                Err(e) => log::debug!("net: open_book decode: {e}"),
             }
         } else if id == ids.cb_play_recipe_book_add
             || id == ids.cb_play_recipe_book_remove

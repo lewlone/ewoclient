@@ -408,6 +408,8 @@ pub struct Ids {
     pub cb_play_container_set_data: i32,
     /// `merchant_offers` (M93u) — the villager trade list.
     pub cb_play_merchant_offers: i32,
+    /// `open_book` (M171) — opens the written-book view for a held book.
+    pub cb_play_open_book: i32,
     /// The recipe book's four (M93y).
     pub cb_play_recipe_book_add: i32,
     pub cb_play_recipe_book_remove: i32,
@@ -767,6 +769,7 @@ impl Ids {
             cb_play_open_screen: req!(p, P, C, "open_screen"),
             cb_play_container_set_data: req!(p, P, C, "container_set_data"),
             cb_play_merchant_offers: req!(p, P, C, "merchant_offers"),
+            cb_play_open_book: req!(p, P, C, "open_book"),
             cb_play_recipe_book_add: req!(p, P, C, "recipe_book_add"),
             cb_play_recipe_book_remove: req!(p, P, C, "recipe_book_remove"),
             cb_play_recipe_book_settings: req!(p, P, C, "recipe_book_settings"),

@@ -12,6 +12,7 @@ pub mod anvil;
 pub mod edit_box;
 pub mod merchant_screen;
 pub mod ghost_slots;
+pub mod book_view_screen;
 pub mod recipe_book_screen;
 pub mod recipe_overlay;
 pub mod recipe_search;

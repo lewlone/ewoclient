@@ -2187,8 +2187,8 @@ default build (**28** witnesses) and adds decode and the mixer under
 does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
-**Everything is shipped and gated** as of 2026-08-23 (M170) —
-**3399 tests / 0 failures** (world 1203, net 1224, gpu 320, data 233, app 231,
+**Everything is shipped and gated** as of 2026-08-23 (M171) —
+**3407 tests / 0 failures** (world 1210, net 1225, gpu 320, data 233, app 231,
 mesh 52, proto 16, **audio 120** — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
@@ -2196,8 +2196,27 @@ crate; a loop written against the old seven drops the new one silently),
 `handshot` 34/34, `swingshot` 97/97, `tablistshot` **42/42**, `soundshot` 37/57,
 **`leashshot` 5/5** (the 39th gate), all **39** serverless gates green with 0
 validation errors, `live --render-check` **60/60** with validation ON and 0
-validation errors (r60 arrived with M170), demo PNG
+validation errors, packet coverage **121 / 0 / 20**, demo PNG
 `2cc56b4acbfb92cb`.
+
+**M171 (2026-08-23) is the written-book decode + screen model; the render is
+M172.** `open_book` (58) was absent; the written-book reader is a genuine
+decode+render milestone, so M171 lands the decode and the tested model — the
+M52f/M93z pattern of a screen's model shipping before its render. `open_book`
+is consumed (the hand, recorded as a request the app polls), the held book's
+pages are captured as `StackComponents::book_pages` (the way `lore` is) and
+threaded to the inventory via `SlotText::book_pages`, and
+`rewo_world::book_view_screen::BookViewScreen` is the layout + navigation,
+verbatim from the decompile (192x192 background at `((width-192)/2, 2)` — top
+a fixed 2; page text at `(left+36, top+30)` stepping 9 px, at most `128/9 = 14`
+lines; the 23x13 back/forward buttons that hide at the ends; only
+PageUp/PageDown turn the page). `ScreenKind::BookView` is the render's seam.
+Coverage 120/0/21 -> 121/0/20 (class C 10 -> 9). **M172 is the render**:
+`book.png` into a GUI atlas, the styled page text via M126 spans + M100 wrap,
+the `PageButton` sprites, and the open/input wiring. (A git/battery race
+briefly committed a mutated `forward_visible`; caught by re-reading the
+committed content and amended — never run git ops while a mutation battery
+modifies the same files.)
 
 **M170 (2026-08-23) drew the leash rope.** The decode has been complete and
 gated since M77 (`set_entity_link` -> `is_leashable` -> `set_leash_holder`,
