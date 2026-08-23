@@ -3215,8 +3215,8 @@ pub fn parse_set_entity_link(body: &[u8]) -> rewo_proto::Result<(i32, i32)> {
 /// [`rewo_data::entity_types::EntityClasses::is_leashable`]. A `set_entity_link`
 /// naming an armour stand, a minecart or an item entity mutates nothing.
 ///
-/// **Rendering the rope is out of scope.** This decodes and stores the holder
-/// id and nothing else.
+/// This decodes and stores the holder id; the rope itself is drawn by M170's
+/// `leash::build_ribbon` + `WorldRenderer::draw_leash`, fed by `collect_leashes`.
 pub(crate) fn apply_set_entity_link(
     body: &[u8],
     entities: &mut rewo_world::entities::EntityTable,

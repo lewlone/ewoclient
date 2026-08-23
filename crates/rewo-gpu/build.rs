@@ -58,6 +58,8 @@ fn main() {
         ("shaders/velvet_chrome.vert", "velvet_chrome.vert.spv"),
         ("shaders/velvet_chrome.frag", "velvet_chrome.frag.spv"),
         ("shaders/text.frag", "text.frag.spv"),
+        ("shaders/leash.vert", "leash.vert.spv"),
+        ("shaders/leash.frag", "leash.frag.spv"),
         ("shaders/cull.comp", "cull.comp.spv"),
     ] {
         println!("cargo:rerun-if-changed=shaders/lightmap.glsl");

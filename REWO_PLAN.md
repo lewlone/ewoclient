@@ -340,11 +340,11 @@ witnesses are mostly self-driven can look healthy against nothing.
 > version of this box listed has shipped. What follows is measured on the merged
 > tree, not carried forward.
 >
-> **The state (re-measured 2026-08-23 after M169):** **38** serverless gates
-> green with 0 validation errors (`gaugeshot` 35/35), **3391 tests** (world
-> 1203, net 1224, gpu 312, data 233, app 231, mesh 52, proto 16, audio 120),
-> `live --render-check` **59/59** exit 0 (r59 arrived with M169), demo PNG
-> `2cc56b4acbfb92cb` byte-identical.
+> **The state (re-measured 2026-08-23 after M170):** **39** serverless gates
+> green with 0 validation errors (`leashshot` is the 39th, 5/5), **3399 tests**
+> (world 1203, net 1224, gpu 320, data 233, app 231, mesh 52, proto 16, audio
+> 120), `live --render-check` **60/60** exit 0 (r60 arrived with M170), demo
+> PNG `2cc56b4acbfb92cb` byte-identical.
 >
 > *(superseded — the 2026-08-21 line, kept for the diff:)* 37 serverless gates green
 > with 0 validation errors, **3355 tests**, `live --render-check` **56/56** exit
@@ -427,9 +427,15 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   `LAST_POSE_CHANGE_TICK` decodes but no metadata path calls
 >   `set_last_pose_change_tick`, so `refuseToMove()` is exercised only by unit
 >   tests — a real sitting camel is not yet un-jumpable live.
-> * **`p4-leash`** (the rope), **`sub-book`**, **`sub-sign`**, **`sub-map`**,
->   **`options`' volume sliders**, **`render-misc [INTERP]`**. Each has a
->   verified spec with its traps; see §15's wave entries for the corrections.
+> * ~~**`p4-leash`** (the rope).~~ **DONE (M170)** — the decode was gated since
+>   M77; M170 drew it (`leash::build_ribbon` + `WorldRenderer::draw_leash` +
+>   `collect_leashes`), graded by the new `leashshot` gate and r60 live. Open
+>   from it: the block/sky light is an RGB interpolation of the two endpoints
+>   (vanilla interpolates the packed coords), and the happy-ghast quad-leash
+>   branch is not drawn (nothing Rewo renders takes it).
+> * **`sub-book`**, **`sub-sign`**, **`sub-map`**, **`options`' volume
+>   sliders**, **`render-misc [INTERP]`**. Each has a verified spec with its
+>   traps; see §15's wave entries for the corrections.
 >
 > #### Deliberately NOT next, with the measurement
 >
@@ -1877,7 +1883,8 @@ this shape once.
 | M166 — the two blocking configuration tasks | **r55, r56** | — | (live only; `render_check.py` stages the tasks) |
 | M168 — the survival HUD | **r57, r58** | HUD atlas y 80..218: player hearts y 80 + 90 (24 per row, 10 px pitch), armour / air / vehicle / hunger-food x 0..120 y 100, effect backgrounds (130,100) + (160,100), effect icons y 125..201 (13 per row, 19 px pitch), jump bar y 201/207/213; `ATLAS_H` 80 -> 224 | `gaugeshot` t0-t7, w0-w3, d0-d4, p0-p11 |
 | M169 — the jump bar's inputs | **r59** | — | `gaugeshot` j0-j5 |
-| *(next free)* | **r60** | — | — |
+| M170 — the leash rope | **r60** | HUD/world: no atlas — a colour-only `leash` pipeline (POSITION_COLOR triangle list, depth GREATER no-write) | `leashshot` g0-g4 |
+| *(next free)* | **r61** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table
@@ -3698,6 +3705,103 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M170 — the leash rope: LeashFeatureRenderer, ported (2026-08-23)
+
+`Leashable` decode has been complete and gated since M77 — `set_entity_link`
+resolves the holder, `is_leashable` gates it, `set_leash_holder` stores it, all
+graded by `rideshot`. Every doc since called the rope "out of scope". M170 draws
+it, and it is a clean bite because the decode was already there: the work is a
+geometry port, a small Vulkan pass, and a CPU gather.
+
+#### The geometry (`rewo_gpu::leash::build_ribbon`)
+
+A verbatim port of `LeashFeatureRenderer.prepare` + `addVertexPair`. Five things
+a tidy rewrite gets wrong, each pinned by a unit test and (bar the last) the
+gate:
+
+* **Two passes, one ribbon.** The forward pass (`fudge = 0.05`) and the backward
+  pass (`fudge = 0.0`) trace the same catenary down one edge and back up the
+  other, so it is visible from both sides. The vanilla primitive is a
+  `TRIANGLE_STRIP`; Rewo expands it to a list (leashes are rare, and a list needs
+  no per-leash draw or primitive restart).
+* **The slack curve is asymmetric in `dy`.** A rope to something *above*
+  (`dy > 0`) sags `dy·p²` (near-flat at the mob, rising late); to something
+  *below* it is `dy - dy·(1-p)²` (the mirror). One `p²` for both bows an upward
+  rope the wrong way.
+* **The alternating dim keys to `backwards`.** `k % 2 == (backwards ? 1 : 0) ?
+  0.7 : 1` dims the even segments outward and the odd ones back, so the two
+  edges' twist lines up rather than cancelling.
+* **`offset` is already in `start`.** Vanilla translates the pose by
+  `leashState.offset` and draws vertices relative to it; `start = entity.pos +
+  offset`, so in absolute world space the vertices are `start + relative`. Adding
+  `offset` again doubles the attach displacement.
+* **The light is interpolated per vertex.** `Mth.lerp(progress, startLight,
+  endLight)` — a rope from a lit barn into a dark field fades along its length.
+  Rewo interpolates the already-resolved lightmap RGB (`entity_light`) rather
+  than the packed coords, the same approximation the entity pass makes; a scalar
+  block/sky tint is the one deliberate divergence.
+
+`Mth.invSqrt` is ported verbatim (one Newton step, within 2e-3 of `1/sqrt`)
+because it scales the ribbon's half-width and a bit-faithful geometry is cheap.
+
+#### The pass (`WorldRenderer::draw_leash`)
+
+Modelled on the selection-outline pass but a triangle list with a per-vertex
+colour, no texture: `POSITION_COLOR` (stride 24), `TRIANGLE_LIST`, depth
+`GREATER` (reversed-Z) with **no write** so a rope is occluded by terrain and
+closer mobs but composites over the sky, blend on, **cull off** (the strip's
+winding alternates and the ribbon is two-sided). One `LeashPush` (the camera
+only — colour is per-vertex). The colour is folded **LINEAR** on the CPU —
+`srgb_to_linear(base·mod) * light` — because the world attachment expects linear,
+the convention the selection outline already documents; `LeashVertex` derives
+`Pod`/`Zeroable` so the ribbon uploads through `bytemuck::cast_slice`.
+
+#### The gather (`collect_leashes`, live_cmd)
+
+Faithful to `EntityRenderer`'s single-leash branch. For each entity with a
+resolvable holder: `start = pos + (0, eyeHeight, bbWidth·0.4).yRot(-bodyYaw)`,
+`end = holder.getRopeHoldPosition` — a **fence knot's** is `pos + (0, 0.2, 0)`
+(its own override), everything else's `pos + (0, eyeHeight·0.7, 0)`, and the
+**local player** is resolved separately because it is not in the entity table
+(the M73 self-skip). `slack = true`, the `LeashState` default the branch never
+overrides (the quad-leash branch is the only one that sets it false, and nothing
+Rewo renders takes it). Eye height is `height·0.85`, the `EntityDimensions`
+default — exact or near it for the mobs that are leashable, a documented small
+vertical shift for a player holder. Light is sampled at each end's eye, as
+vanilla samples `getEyePosition`.
+
+#### The gate, and r60
+
+`rewo leashshot --check` (the 39th gate) renders `build_ribbon`'s output through
+the real `draw_leash` pass into an offscreen target and reads the pixels back,
+so it grades the whole GPU path — pipeline, vertex format, depth/blend — not just
+the geometry. Five witnesses over black-clear frames (the world sky draws over
+it, but the rope is the only brown): an empty frame draws no rope; a level rope
+is a thin brown line; a slack rope sags below a taut one; the alternating
+segments carry two brown shades; the light fades along a one-end-lit rope. r60
+drives the live `collect_leashes` path — a staged cow + fence knot +
+`set_entity_link` (injected through the production router, r59's technique)
+builds exactly one **294-vertex** ribbon into the pass.
+
+#### The battery, and its two weak fixtures
+
+`tools/m170_mutate.py`: 9 mutations, all killed, control survives. Two survived
+the first run and **both were weak fixtures, not equivalent mutants** — the
+recurring finding. The **width-collapse** (`offset_factor = 0`) survived the gate
+because the gate's level rope carries its perpendicular offset in `dz_off = dx·f`
+— along the +Z the camera looks down, so the width was in the *view axis* and
+invisible; a unit test asserting a real Z spread pins it. The **edge-fudge**
+(dropping the `0.05 -` on the second edge) survived a `abs() <= 0.051` tolerance
+that swallowed the resulting `y - 0.05` verts; a tightened lower bound catches
+it. Both are the sort of gap a green suite hides until you ask what the test rope
+cannot see.
+
+**Measured:** rewo-gpu 312 -> 320 (**3399 tests**); all 39 serverless gates green,
+0 validation errors; `live --render-check` 60/60 with validation ON; demo PNG
+`2cc56b4acbfb92cb` byte-identical. Open: the light is an RGB interpolation of the
+two endpoints (vanilla interpolates the packed coords, then samples the
+lightmap), and the happy-ghast quad-leash connection is not drawn.
 
 ### M169 — the jump bar's inputs: the meter, the packet, the vehicles, and the selector that seats them all (2026-08-23)
 

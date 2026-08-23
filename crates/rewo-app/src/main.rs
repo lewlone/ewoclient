@@ -36,6 +36,7 @@ mod locatorshot_cmd;
 mod sidebarshot_cmd;
 mod titleshot_cmd;
 mod gaugeshot_cmd;
+mod leashshot_cmd;
 mod mobshot_cmd;
 mod mobtexshot_cmd;
 mod modules;
@@ -215,6 +216,8 @@ enum Command {
     /// effect icons and the jump bar offscreen and assert the pixels against
     /// the jar's own sprite bytes with `--check` (no server; Vulkan required).
     Gaugeshot(gaugeshot_cmd::GaugeshotArgs),
+    /// The leash rope gate (M170).
+    Leashshot(leashshot_cmd::LeashshotArgs),
     /// M132 scoreboard-sidebar oracle: drive raw `set_objective`, `set_score`
     /// and `set_display_objective` bodies through the real parsers and the
     /// real `Scoreboard`, resolve the panel with the SAME `resolve_sidebar`
@@ -383,6 +386,7 @@ fn main() {
         Some(Command::Abilityshot(ab_args)) => abilityshot_cmd::run(ab_args),
         Some(Command::Titleshot(t_args)) => titleshot_cmd::run(t_args),
         Some(Command::Gaugeshot(g_args)) => gaugeshot_cmd::run(g_args),
+        Some(Command::Leashshot(l_args)) => leashshot_cmd::run(l_args),
         Some(Command::Sidebarshot(sb_args)) => sidebarshot_cmd::run(sb_args),
         Some(Command::Tablistshot(tl_args)) => tablistshot_cmd::run(tl_args),
         Some(Command::Locatorshot(l_args)) => locatorshot_cmd::run(l_args),

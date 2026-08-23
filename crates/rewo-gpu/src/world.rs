@@ -202,6 +202,13 @@ struct LinePush {
     color: [f32; 4],
 }
 
+/// The leash ribbon's push (M170) — colour is per-vertex, so only the camera.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LeashPush {
+    view_proj: [[f32; 4]; 4],
+}
+
 /// Is the [`LIGHTMAP_UBO_RING`] slot that a draw writes guaranteed to have been
 /// released by the GPU?
 ///
@@ -218,6 +225,12 @@ const fn ring_slot_is_retired(ring: usize, fif: usize) -> bool {
 }
 
 const SELECT_RING: usize = 2;
+
+/// Double-buffered like the selection outline, for the same reason.
+const LEASH_RING: usize = 2;
+/// Ribbon vertex budget: ~13 leashes at 294 verts each (98 triangles). A
+/// leash beyond the cap is dropped whole rather than torn.
+const LEASH_MAX_VERTS: usize = 4096;
 
 /// Sky gradient colors (linear; sRGB pale-blue horizon / deeper zenith).
 /// The horizon is also the terrain's fog color for a seamless far edge.
@@ -469,6 +482,14 @@ pub struct WorldRenderer {
     select_cursor: usize,
     /// The targeted block (world coords), or `None` — set each frame.
     selection: Option<[i32; 3]>,
+    /// Leash ribbons (M170): a TRIANGLE_LIST of position+colour verts, world
+    /// space, depth-tested against terrain and entities. Rebuilt each frame.
+    leash_layout: vk::PipelineLayout,
+    leash_pipeline: vk::Pipeline,
+    leash_bufs: [vk::Buffer; LEASH_RING],
+    leash_allocs: [Option<Allocation>; LEASH_RING],
+    leash_cursor: usize,
+    leash_verts: Vec<crate::leash::LeashVertex>,
     tex_pool: vk::DescriptorPool,
     /// One set per frame in flight: identical texture binding, but each points
     /// at its own `LightmapExtra` uniform slot (see [`LIGHTMAP_UBO_RING`]).
@@ -918,6 +939,30 @@ impl WorldRenderer {
                 )
                 .map_err(|e| format!("select layout: {e}"))?;
             let select_pipeline = build_line_pipeline(&device, select_layout, color_format)?;
+            // ---- leash ribbon (M170) ----
+            let leash_pc = [vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::VERTEX)
+                .offset(0)
+                .size(std::mem::size_of::<LeashPush>() as u32)];
+            let leash_layout = device
+                .create_pipeline_layout(
+                    &vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&leash_pc),
+                    None,
+                )
+                .map_err(|e| format!("leash layout: {e}"))?;
+            let leash_pipeline = build_leash_pipeline(&device, leash_layout, color_format)?;
+            let mut leash_bufs = [vk::Buffer::null(); LEASH_RING];
+            let mut leash_allocs: [Option<Allocation>; LEASH_RING] = [None, None];
+            for i in 0..LEASH_RING {
+                let (b, a) = create_host_buffer(
+                    gpu,
+                    (LEASH_MAX_VERTS * std::mem::size_of::<crate::leash::LeashVertex>()) as u64,
+                    vk::BufferUsageFlags::VERTEX_BUFFER,
+                    "leash-ribbon",
+                )?;
+                leash_bufs[i] = b;
+                leash_allocs[i] = Some(a);
+            }
             let mut select_bufs = [vk::Buffer::null(); SELECT_RING];
             let mut select_allocs: [Option<Allocation>; SELECT_RING] = [None, None];
             for i in 0..SELECT_RING {
@@ -1091,6 +1136,12 @@ impl WorldRenderer {
                 select_bufs,
                 select_allocs,
                 select_cursor: 0,
+                leash_layout,
+                leash_pipeline,
+                leash_bufs,
+                leash_allocs,
+                leash_cursor: 0,
+                leash_verts: Vec::new(),
                 selection: None,
                 tex_pool,
                 tex_sets,
@@ -2869,6 +2920,7 @@ impl WorldRenderer {
             }
         }
         // Selection outline over the terrain (depth-tested against it).
+        self.draw_leash(gpu, cb, view_proj, extent);
         self.draw_selection(gpu, cb, view_proj, extent);
         if let Some(pass) = &self.entities {
             pass.draw_solid(gpu, cb, view_proj, extent);
@@ -3068,6 +3120,69 @@ impl WorldRenderer {
 
     /// The block-selection wireframe: the 12 edges of the targeted block,
     /// slightly inflated to avoid z-fighting, depth-tested against terrain.
+    /// Replace this frame's leash ribbons. `verts` is a TRIANGLE_LIST already
+    /// folded (position + linear colour) by `leash::build_ribbon`, concatenated
+    /// across every visible leash. Truncated to the vertex budget.
+    pub fn set_leash(&mut self, verts: &[crate::leash::LeashVertex]) {
+        self.leash_verts.clear();
+        let n = verts.len().min(LEASH_MAX_VERTS);
+        self.leash_verts.extend_from_slice(&verts[..n]);
+    }
+
+    /// This frame's leash-ribbon vertex count — the render-check's r60
+    /// observable (a leash gathered by `collect_leashes` reached the pass).
+    pub fn leash_vert_count(&self) -> usize {
+        self.leash_verts.len()
+    }
+
+    /// Draw this frame's leash ribbons, if any. Depth-tested against the
+    /// terrain and entities (GREATER, reversed-Z, no write) so a rope is
+    /// occluded by blocks and closer mobs but composites over the sky.
+    fn draw_leash(
+        &mut self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
+        let count = self.leash_verts.len() as u32;
+        if count < 3 {
+            return;
+        }
+        self.leash_cursor = (self.leash_cursor + 1) % LEASH_RING;
+        if let Some(slice) = self.leash_allocs[self.leash_cursor]
+            .as_mut()
+            .and_then(|a| a.mapped_slice_mut())
+        {
+            let bytes: &[u8] = bytemuck::cast_slice(&self.leash_verts);
+            slice[..bytes.len()].copy_from_slice(bytes);
+        }
+        let push = LeashPush { view_proj };
+        let device = &gpu.device;
+        unsafe {
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.leash_pipeline);
+            let viewport = vk::Viewport::default()
+                .y(extent.height as f32)
+                .width(extent.width as f32)
+                .height(-(extent.height as f32))
+                .max_depth(1.0);
+            device.cmd_set_viewport(cb, 0, &[viewport]);
+            device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
+            device.cmd_push_constants(
+                cb,
+                self.leash_layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                std::slice::from_raw_parts(
+                    (&push as *const LeashPush) as *const u8,
+                    std::mem::size_of::<LeashPush>(),
+                ),
+            );
+            device.cmd_bind_vertex_buffers(cb, 0, &[self.leash_bufs[self.leash_cursor]], &[0]);
+            device.cmd_draw(cb, count, 1, 0, 0);
+        }
+    }
+
     fn draw_selection(
         &mut self,
         gpu: &Gpu,
@@ -3430,6 +3545,11 @@ impl WorldRenderer {
             for b in self.select_bufs {
                 device.destroy_buffer(b, None);
             }
+            device.destroy_pipeline(self.leash_pipeline, None);
+            device.destroy_pipeline_layout(self.leash_layout, None);
+            for b in self.leash_bufs {
+                device.destroy_buffer(b, None);
+            }
             for b in self.lm_bufs {
                 device.destroy_buffer(b, None);
             }
@@ -3644,6 +3764,108 @@ fn parse_fog_env() -> [f32; 2] {
 
 /// Line pipeline for the selection outline: LINE_LIST, depth-tested
 /// (reversed-Z GREATER) but no depth write, alpha-blended.
+fn build_leash_pipeline(
+    device: &ash::Device,
+    layout: vk::PipelineLayout,
+    color_format: vk::Format,
+) -> Result<vk::Pipeline, String> {
+    unsafe {
+        let vert = crate::overlay::create_shader(
+            device,
+            include_bytes!(concat!(env!("OUT_DIR"), "/leash.vert.spv")),
+        )?;
+        let frag = crate::overlay::create_shader(
+            device,
+            include_bytes!(concat!(env!("OUT_DIR"), "/leash.frag.spv")),
+        )?;
+        let entry = c"main";
+        let stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vert)
+                .name(entry),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(frag)
+                .name(entry),
+        ];
+        // pos vec3 @0, color vec3 @12; stride 24.
+        let bindings = [vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(24)
+            .input_rate(vk::VertexInputRate::VERTEX)];
+        let attrs = [
+            vk::VertexInputAttributeDescription::default()
+                .location(0)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(0),
+            vk::VertexInputAttributeDescription::default()
+                .location(1)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(12),
+        ];
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&bindings)
+            .vertex_attribute_descriptions(&attrs);
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let viewport = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        // Cull NONE: the strip's winding alternates, and the ribbon is meant to
+        // be seen from both sides.
+        let raster = vk::PipelineRasterizationStateCreateInfo::default()
+            .polygon_mode(vk::PolygonMode::FILL)
+            .cull_mode(vk::CullModeFlags::NONE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let depth = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(false)
+            .depth_compare_op(vk::CompareOp::GREATER); // reversed-Z
+        let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+            .alpha_blend_op(vk::BlendOp::ADD)
+            .color_write_mask(
+                vk::ColorComponentFlags::R
+                    | vk::ColorComponentFlags::G
+                    | vk::ColorComponentFlags::B,
+            )];
+        let blend =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let color_formats = [color_format];
+        let mut rendering = vk::PipelineRenderingCreateInfo::default()
+            .color_attachment_formats(&color_formats)
+            .depth_attachment_format(DEPTH_FORMAT);
+        let ci = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport)
+            .rasterization_state(&raster)
+            .multisample_state(&multisample)
+            .depth_stencil_state(&depth)
+            .color_blend_state(&blend)
+            .dynamic_state(&dynamic)
+            .layout(layout)
+            .push_next(&mut rendering);
+        let pipeline = device
+            .create_graphics_pipelines(vk::PipelineCache::null(), &[ci], None)
+            .map_err(|(_, e)| format!("leash pipeline: {e}"))?[0];
+        device.destroy_shader_module(vert, None);
+        device.destroy_shader_module(frag, None);
+        Ok(pipeline)
+    }
+}
+
 fn build_line_pipeline(
     device: &ash::Device,
     layout: vk::PipelineLayout,
