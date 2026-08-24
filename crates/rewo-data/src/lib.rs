@@ -57,6 +57,7 @@ pub mod mob_effects;
 pub mod recipe_display;
 pub mod sound_events;
 pub mod sounds_json;
+pub mod baby_texture_table;
 pub mod stats;
 pub mod stonecutter_table;
 pub mod swing_anim;

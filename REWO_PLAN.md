@@ -143,8 +143,8 @@ not close the listening pass, and its module doc carries §4's "What the gate
 does NOT assert" paragraph verbatim** so a future session reading only the gate
 still learns that a green run is not evidence this client makes a sound.
 
-Current measurement, re-taken **2026-08-23 after M174**:
-**3446 tests, 0 failures** (**world 1238, net 1236, gpu 320, data 233, app 231,
+Current measurement, re-taken **2026-08-24 after M175**:
+**3450 tests, 0 failures** (**world 1238, net 1238, gpu 320, data 235, app 231,
 mesh 52, proto 16, audio 120** — read off the runner per crate).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
@@ -341,16 +341,15 @@ witnesses are mostly self-driven can look healthy against nothing.
 > version of this box listed has shipped. What follows is measured on the merged
 > tree, not carried forward.
 >
-> **The state (re-measured 2026-08-23 after M174):** **42** serverless gates
+> **The state (re-measured 2026-08-24 after M175):** **42** serverless gates
+> green with 0 validation errors (`signshot` is the 42nd, 23/23), **3450
+> tests**, `live --render-check` **64/64** exit 0, packet coverage **122 / 0 / 19**
+> with classes A and B empty, demo PNG `2cc56b4acbfb92cb` byte-identical.
+>
+> *(superseded — the post-M174 line, kept for the diff:)* **42** serverless gates
 > green with 0 validation errors (`signshot` is the 42nd, 23/23), **3446
 > tests**, `live --render-check` **64/64** exit 0 (r63/r64 arrived with M174),
 > packet coverage **122 / 0 / 19** with classes A and B empty, demo PNG
-> `2cc56b4acbfb92cb` byte-identical.
->
-> *(superseded — the post-M173 line, kept for the diff:)* **41** serverless gates
-> green with 0 validation errors (`optionshot` is the 41st, 12/12), **3424
-> tests**, `live --render-check` **62/62** exit 0 (r62 arrived with M173),
-> packet coverage **121 / 0 / 20** with classes A and B empty, demo PNG
 > `2cc56b4acbfb92cb` byte-identical.
 >
 > **A 20-agent survey (2026-08-17) specced every open gap and every one of the
@@ -1899,6 +1898,7 @@ this shape once.
 | M172 — the written-book reader | **r61** | screen-pass atlas 512x256 -> 512x512; `Sheet::BookBackground` (cropped 192x192 `book.png`) at (0,256), `Sheet::PageArrow(0..4)` (23x13 `widget/page_*`) at (200..296, 256) | `bookshot` m0-m5, p0-p13 |
 | M173 — the volume sliders | **r62** | screen-pass atlas: `Sheet::SliderSheet(0..4)` — tracks (200x20) at (200,280) + (200,300), handles (8x20) at (404,280) + (414,280) | `optionshot` o0-o11 |
 | M174 — the sign editor | **r63, r64** | screen-pass atlas (512x512 unchanged): `Sheet::SignBoard(0..12)` (24x26 `gui/signs/<wood>`) at (200..488, 320), `Sheet::HangingSignBoard(0..12)` (16x16 `gui/hanging_signs/<wood>`) at (200..392, 352); `SHEET_COUNT` 56 -> 58 | `signshot` m1-m7b, m9-m15, p0-p6 |
+| M175 — the baby sheets | — | entity-atlas shelves gain the 10 same-size `*_baby` sheets; origins are computed by the packer at build time and consumed as normalized UV offsets, so there is nothing to claim | `mobtexshot` m8, n1-n4 |
 | *(next free)* | **r65** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3720,6 +3720,65 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M175 — the baby sheets: half of the isBaby gap closed exactly, the other half deferred on arithmetic (2026-08-24)
+
+M165's `mobtexshot` pinned the gap at "jar has 147 `*baby*.png`, Rewo bakes
+0". This closes the transcribable half of it. A new generator
+(`tools/gen_baby_textures.py`) reads the decompile's renderer classes —
+constants + `getTextureLocation` bodies, resolved up the `extends` chain,
+fanned out over `EntityRenderers`' map — and emits
+`rewo-data/src/baby_texture_table.rs`: **21 plain constant-pair swaps**, of
+which **10 are same-sized** with their adult sheet and therefore bakeable
+now; the other 11 need vanilla's separate BABY model layer
+(`ModelLayers.*_BABY`), because offsetting UVs across differently-sized
+sheets samples the wrong texels — those stay unbaked, counted by
+`BakedAssets::baby_swap_skips`, and named in the gate. The renderer applies a
+baked swap as a per-slot UV offset (`MobModel::baby_offsets`), gated on
+`MobCombat::is_baby`; only the ADULT sheet's slot moves, so secondary layers
+keep their own sheets as vanilla's non-swapping render layers do. Gate:
+`mobtexshot` 13 → **17 witnesses** (m8 rewritten per its own contract;
+n1–n4); battery **6/6 killed + control**. Coverage unchanged.
+
+The findings that earn the entry:
+
+- **The naive reading of the fan-out is wrong, and the decompile punishes
+  it twice.** `PiglinRenderer.getTextureLocation` is
+  `isBrute ? BRUTE : (isBaby ? BABY : PIGLIN)` — a NESTED conditional, so a
+  piglin_brute must NOT inherit piglin's baby sheet even though it shares
+  the class (the brute's own baby arm never fires). The generator demands
+  the body contain exactly ONE conditional before trusting an extraction;
+  piglin and piglin_brute are NAMED exclusions because of it. And
+  armor_stand/wolf initially landed in the exclusion list purely by
+  inheriting from renderers whose `isBaby` mentions were assignments or
+  model swaps, not texture swaps — the body-scoped rule fixed both
+  directions at once.
+- **147 ≠ what the swaps cover.** The remaining ~120 baby sheets belong to
+  variant systems (wolf/horse/cat/rabbit/villager-profession/axolotl/panda/
+  cow/bee/fox families) whose renderers select through variant records —
+  Rewo cannot evaluate those states yet, and each such entity is a NAMED
+  exclusion rather than a silent skip.
+- **THE bug this milestone shipped with, caught by its own battery's
+  discipline:** `mobs::kind_for_entity_name` wants the NAMESPACED wire name —
+  its whole lookup is a `strip_prefix("minecraft:")` — and the generated
+  table stores short names. The first cut passed the short name, every row
+  resolved to Capsule, all swaps went inert, and the gate caught it only
+  because n2 demanded a pixel the adult sheet cannot produce (a no-op swap
+  scores zero there). The battery now carries the exact regression as a
+  mutation ("the kind lookup loses its namespace").
+- **A destroyed stage resurrected itself as an access violation**: the
+  n-series re-shot the sweep's `stage` after m4 had called `destroy` on it —
+  no Rust panic, just `vkResetCommandPool` on a dead handle and exit
+  `0xC0000005`. Fixed by giving the block its own stage; the lesson is the
+  buf-ring rule one level up: GPU resources have lifecycles, and a gate that
+  outlives them must rebuild like the client does, not borrow a corpse.
+- **m6's ambiguity pin grew by one, on purpose**: dolphin/dolphin_baby share
+  a palette outright, so the baby sheet can explain every colour the adult
+  draws. MAX_AMBIGUOUS 5 → 6 with the reason recorded beside the const.
+- Two net unit tests pin the wire half (slot-16 fallthrough →
+  `EntityTable::set_baby`, set/clear/removal), which until now was graded
+  only by tests that constructed the flag directly — M141e's shape, found by
+  the battery's surviving mutant rather than by reading.
 
 ### M174 — the sign editor: `TextFieldHelper` over the current line, and the commit that lives in `removed()` (2026-08-23)
 

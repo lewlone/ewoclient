@@ -4279,6 +4279,44 @@ pub(crate) fn init_entities_maybe_cem(
     Ok(etf)
 }
 
+/// M175 — the generated isBaby swaps resolved to (kind index, adult key,
+/// baby key), filtered to pairs whose BOTH sheets are in this bake. The GPU
+/// side turns each into a per-slot UV offset.
+fn baby_swap_pairs(baked: &assets::BakedAssets) -> Vec<(u16, &'static str, &'static str)> {
+    rewo_data::baby_texture_table::BABY_SWAPS
+        .iter()
+        .filter_map(|swap| {
+            let baked_keys = || {
+                baked
+                    .mob_textures
+                    .iter()
+                    .any(|t| t.key == swap.baby_key)
+            };
+            let adult_key = adult_key_of(swap)?;
+            if !baked_keys() {
+                return None;
+            }
+            // `kind_for_entity_name` wants the NAMESPACED wire name (its
+            // strip_prefix is the whole lookup); the table stores short
+            // names, so re-namespace here — the first cut passed the short
+            // name, every row resolved to Capsule, and the swaps were inert.
+            let kind = rewo_gpu::mobs::kind_for_entity_name(&format!(
+                "minecraft:{}",
+                swap.entity
+            ));
+            Some((kind.index() as u16, adult_key, swap.baby_key))
+        })
+        .collect()
+}
+
+/// The MOB_TEXTURE_SPECS key of a swap's adult sheet — `None` when the adult
+/// path is not one Rewo bakes at all (then no model uses it and there is
+/// nothing to offset).
+pub(crate) fn adult_key_of(swap: &rewo_data::baby_texture_table::BabySwap) -> Option<&'static str> {
+    let rel = swap.adult_path.strip_prefix("textures/").unwrap_or(swap.adult_path);
+    rewo_data::assets::mob_texture_key(rel)
+}
+
 pub(crate) fn entity_textures(baked: &assets::BakedAssets) -> MobTextures<'_> {
     MobTextures {
         // M64: vanilla's own metadata-driven alternates are always present —
@@ -4286,6 +4324,7 @@ pub(crate) fn entity_textures(baked: &assets::BakedAssets) -> MobTextures<'_> {
         // `entity_textures_with` appends a pack's ETF alternates after these;
         // the two live in disjoint id bands.
         variants: vanilla_variants(baked),
+        baby_swaps: baby_swap_pairs(baked),
         entries: baked
             .mob_textures
             .iter()

@@ -878,6 +878,12 @@ pub struct MobTextures<'a> {
     pub entries: Vec<MobTexEntry<'a>>,
     /// Resource-pack alternates, if a pack supplied any.
     pub variants: Vec<VariantTexEntry<'a>>,
+    /// M175 — vanilla's `isBaby` whole-sheet swaps as
+    /// `(kind index, adult key, baby key)`. Both keys must already be baked
+    /// entries of the SAME dimensions; the caller (which sees both the
+    /// generated table and the bake) filters to those. Empty is the norm for
+    /// kinds whose swap is variant-mediated.
+    pub baby_swaps: Vec<(u16, &'static str, &'static str)>,
 }
 
 pub struct EntityPass {
@@ -1005,6 +1011,9 @@ pub struct MobModel {
     /// no entry for a slot leaves that slot on the vanilla texture, which is
     /// what a pack varying only one of a mob's textures wants.
     variants: std::collections::HashMap<u16, Vec<[f32; 2]>>,
+    /// M175 — per-slot UV offset to the isBaby sheet (see the build site).
+    /// `None` for kinds with no swap or whose swap was filtered out.
+    baby_offsets: Option<Vec<[f32; 2]>>,
     /// Vanilla emissive layers (`EyesLayer` / `LivingEntityEmissiveLayer`), in
     /// the renderer's `addLayer` order. Empty for most mobs.
     emissive: Vec<EmissiveDraw>,
@@ -1170,6 +1179,13 @@ impl EntityPass {
 
         // Build each registry mob whose textures are all present.
         let mut models: Vec<Option<MobModel>> = (0..EntityModelKind::COUNT).map(|_| None).collect();
+        // M175 — the isBaby swaps by kind index, for the per-model offset
+        // build below.
+        let baby_by_kind: std::collections::HashMap<u16, (&str, &str)> = tex
+            .baby_swaps
+            .iter()
+            .map(|(k, a, b)| (*k, (*a, *b)))
+            .collect();
         // Facelabel mode: textures where different face labels paint the
         // same texel (vanilla reuses some regions across faces — the breeze
         // wind funnel's concentric shells) can't be verified by color; the
@@ -1264,6 +1280,25 @@ impl EntityPass {
                     (vy as f32 - by as f32) / ATLAS_H as f32,
                 ];
             }
+            // M175 — the isBaby whole-sheet swap, as a per-slot UV offset to
+            // wherever the baby sheet packed. Exact only because the bake
+            // admitted same-size pairs; the offset rides the ADULT slot (the
+            // one `getTextureLocation` returns for adults) and every other
+            // slot stays at zero, so a mob's secondary layers keep their own
+            // sheets exactly as vanilla's non-swapping render layers do.
+            let baby_offsets = baby_by_kind
+                .get(&(def.kind.index() as u16))
+                .and_then(|(adult_key, baby_key)| {
+                    let slot = def.textures.iter().position(|k| *k == *adult_key)?;
+                    let (_, ax, ay) = slots.get(*adult_key).map(|(x, y, _, _)| ((), *x, *y))?;
+                    let (_, bx, by) = slots.get(*baby_key).map(|(x, y, _, _)| ((), *x, *y))?;
+                    let mut v = vec![[0.0f32, 0.0]; def.textures.len()];
+                    v[slot] = [
+                        (bx as f32 - ax as f32) / ATLAS_W as f32,
+                        (by as f32 - ay as f32) / ATLAS_H as f32,
+                    ];
+                    Some(v)
+                });
             models[def.kind.index()] = Some(MobModel {
                 quads,
                 tinted_slot: mobs::tinted_texture(def.kind)
@@ -1280,6 +1315,7 @@ impl EntityPass {
                     Some((f(b)?, f(p)?))
                 }),
                 variants,
+                baby_offsets,
                 emissive,
                 parts: m.parts,
                 keyframes: m.keyframes,
@@ -2609,6 +2645,16 @@ impl EntityPass {
             .then(|| model.variants.get(&d.variant))
             .flatten()
             .map(|v| v.as_slice());
+        // M175 — a baby mob whose kind has a whole-sheet swap re-points its
+        // main slot's UVs at the baby sheet. Additive with the pack variant
+        // (a pack alternate of an adult and a baby offset never both apply to
+        // one slot in practice; if they ever do, the sum is still the right
+        // composition of two atlas moves).
+        let baby_uv = model
+            .baby_offsets
+            .as_ref()
+            .filter(|_| d.mob.is_baby)
+            .map(|v| v.as_slice());
         // `EntityDraw::skin_uv`'s doc has always said "Ignored for non-player
         // models" and, until the real-texture gate (`mobtexshot`) asked, this
         // pass ignored nothing: a skin offset on a zombie relocated every one
@@ -2698,11 +2744,18 @@ impl EntityPass {
             // attachment encodes on store (render discipline #1).
             let t = slot_tint[q.tex as usize];
             let c = [q.shade * t[0], q.shade * t[1], q.shade * t[2]];
-            // Two things can move a quad's UVs onto a different texture of the
-            // same size: a player's uploaded skin, and a pack's ETF variant.
-            // They never apply to the same mob (skins are the player model's),
-            // so the variant wins where it exists.
-            let du = variant_uv.map_or(skin_du, |v| v[q.tex as usize]);
+            // Three things can move a quad's UVs onto a different texture of
+            // the same size: a player's uploaded skin, a pack's ETF variant,
+            // and (M175) a baby mob's whole-sheet swap. They never apply to
+            // the same mob (skins are the player model's), so the variant
+            // wins where it exists and the baby offset adds on top.
+            let du = {
+                let base = variant_uv.map_or(skin_du, |v| v[q.tex as usize]);
+                match baby_uv {
+                    Some(b) => [base[0] + b[q.tex as usize][0], base[1] + b[q.tex as usize][1]],
+                    None => base,
+                }
+            };
             let out: &mut Vec<Vertex> = if coplanar { trim_verts } else { verts };
             for &i in &[0usize, 1, 2, 0, 2, 3] {
                 out.push(Vertex {
