@@ -59,6 +59,8 @@ mod soundshot_cmd;
 mod stats;
 mod witness_names;
 mod stats_view;
+mod advancements_view;
+mod advshot_cmd;
 mod statshot_cmd;
 mod swingshot_cmd;
 mod tab_list_view;
@@ -227,6 +229,10 @@ enum Command {
     Signshot(signshot_cmd::SignshotArgs),
     /// The options screens + volume sliders gate (M173).
     Optionshot(optionshot_cmd::OptionshotArgs),
+    /// The advancements screen's gate (M178): the model, the scissored
+    /// contents, connectivity runs and hover tooltip, driven through the
+    /// production builders (`--check`; no server; Vulkan validation required).
+    Advshot(advshot_cmd::AdvshotArgs),
     Gaugeshot(gaugeshot_cmd::GaugeshotArgs),
     /// The leash rope gate (M170).
     Leashshot(leashshot_cmd::LeashshotArgs),
@@ -400,6 +406,7 @@ fn main() {
         Some(Command::Bookshot(b_args)) => bookshot_cmd::run(b_args),
             Some(Command::Signshot(s_args)) => signshot_cmd::run(s_args),
         Some(Command::Optionshot(o_args)) => optionshot_cmd::run(o_args),
+        Some(Command::Advshot(a_args)) => advshot_cmd::run(a_args),
         Some(Command::Gaugeshot(g_args)) => gaugeshot_cmd::run(g_args),
         Some(Command::Leashshot(l_args)) => leashshot_cmd::run(l_args),
         Some(Command::Sidebarshot(sb_args)) => sidebarshot_cmd::run(sb_args),

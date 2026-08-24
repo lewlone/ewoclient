@@ -88,7 +88,11 @@ const ATLAS_W: u32 = 512;
 // 512 as of M172: the 192x192 book background did not fit the 256-tall
 // atlas. Every pre-M172 placement is unchanged in TEXELS, and the `uv`
 // closure divides by the const, so the old sheets render pixel-identically.
-const ATLAS_H: u32 = 512;
+// 1024 as of M178: the advancements shelf (a 252x140 window crop, 24 tab
+// sprites, 6 frames, three nine-sliced boxes, five root backdrops) needs more
+// height than the post-M174 free space held. Same append-only rule as M172:
+// nothing below y=512 moves, so every older sheet renders identically.
+const ATLAS_H: u32 = 1024;
 
 /// `Button.BIG_WIDTH` / `Button.DEFAULT_HEIGHT`, and the three sheets' own
 /// size. Mirrored from `rewo_world::screen` rather than imported: `rewo-gpu`
@@ -158,6 +162,32 @@ pub enum Sheet {
     /// A `gui/hanging_signs/<wood>.png` sheet (M174), 16x16, scale 4.5 —
     /// chains baked in.
     HangingSignBoard(u8),
+    /// The advancements window (M178): `advancements/window.png` CROPPED to
+    /// the 252x140 the blit samples (`blit(.., 0, 0, 252, 140, 256, 256)`),
+    /// so a whole-sheet `Stretch` is the exact blit — M172's book rule.
+    AdvWindow,
+    /// One of the 24 `advancements/tab_*` sprites (M178), indexed
+    /// `kind * 6 + cap * 2 + selected` where `kind` is Above/Below/Left/Right
+    /// in declaration order and `cap` is First/Middle/Last. Above/Below are
+    /// 28x32; Left/Right are 32x28. The INDEX is part of the screen-pass
+    /// contract, append-only like the sign boards'.
+    AdvTab(u8),
+    /// One of the six frame sprites (M178): `type_ * 2 + obtained`, types in
+    /// Task/Challenge/Goal order. All 26x26.
+    AdvFrame(u8),
+    /// `advancements/box_obtained` (M178) — 200x26, nine-slice border 10,
+    /// the hover tooltip's progress bar's OBTAINED half-sheet.
+    AdvBoxObtained,
+    /// `advancements/box_unobtained` (M178) — same shape, the UNOBTAINED half.
+    AdvBoxUnobtained,
+    /// `advancements/title_box` (M178) — 200x26 nine-slice border 10, the
+    /// tooltip's background panel.
+    AdvTitleBox,
+    /// A root advancement's tiled backdrop (M178):
+    /// `advancements/backgrounds/<name>.png`, 16x16, indexed by the bake's
+    /// [`crate::ADV_BACKGROUNDS`] order. An identifier outside the table
+    /// draws nothing rather than guessing (the caller falls back).
+    AdvBackground(u8),
 }
 
 /// One blit, in **GUI space** (the app multiplies nothing; this pass applies
@@ -249,6 +279,20 @@ pub struct ScreenDraw {
     /// **before** the buttons, so a screen's tiled background sits under its
     /// widgets.
     pub sprites: Vec<SpriteDraw>,
+    /// Scissored batches (M178), drawn between `menu_background` and
+    /// `sprites` — `AdvancementsScreen.extractInside` runs BEFORE
+    /// `extractWindow`, so the clipped contents sit under the chrome that
+    /// frames them. Each batch is one `enableScissor` region: a
+    /// `cmd_set_scissor`, its sprites, then on to the next.
+    pub scissored: Vec<ScissorBatch>,
+}
+
+/// One `graphics.enableScissor` region and the sprites inside it (M178).
+#[derive(Clone, Debug, Default)]
+pub struct ScissorBatch {
+    /// GUI pixels, y-down: `(x, y, w, h)`.
+    pub rect: (i32, i32, i32, i32),
+    pub sprites: Vec<SpriteDraw>,
 }
 
 impl ScreenDraw {
@@ -257,6 +301,7 @@ impl ScreenDraw {
             && self.menu_background.is_none()
             && self.buttons.is_empty()
             && self.sprites.is_empty()
+            && self.scissored.is_empty()
     }
 }
 
@@ -288,6 +333,21 @@ pub struct WidgetSpriteData<'a> {
     pub sign_boards: [crate::hud::HudSpriteData<'a>; 12],
     /// The 12 hanging sign boards (M174), `SIGN_WOODS` order.
     pub hanging_sign_boards: [crate::hud::HudSpriteData<'a>; 12],
+    /// The advancements window, cropped to its sampled 252x140 (M178).
+    pub adv_window: crate::hud::HudSpriteData<'a>,
+    /// The 24 tab sprites (M178), indexed `kind*6 + cap*2 + selected` — see
+    /// [`Sheet::AdvTab`].
+    pub adv_tabs: [crate::hud::HudSpriteData<'a>; 24],
+    /// The six frame sprites (M178), `type*2 + obtained` — see
+    /// [`Sheet::AdvFrame`].
+    pub adv_frames: [crate::hud::HudSpriteData<'a>; 6],
+    /// box_obtained, box_unobtained, title_box (M178) — all 200x26 nine-slice
+    /// border 10.
+    pub adv_boxes: [crate::hud::HudSpriteData<'a>; 3],
+    /// The five vanilla root backdrops (M178), [`crate::ADV_BACKGROUNDS`]
+    /// order — wait, the table lives in `rewo_data`; this array is indexed by
+    /// the same order that file's bake uses.
+    pub adv_backgrounds: [crate::hud::HudSpriteData<'a>; 5],
 }
 
 pub struct ScreenPass {
@@ -303,7 +363,16 @@ pub struct ScreenPass {
     bufs: [vk::Buffer; RING],
     allocs: [Option<Allocation>; RING],
     cursor: usize,
+    /// The head segment's vertex count — backdrop + menu background, drawn
+    /// under the full-extent scissor before any batch.
+    head_verts: u32,
+    /// The unscissored vertex count — everything through `buttons`. The
+    /// scissored batches (M178) sit between the two, each drawn under its own
+    /// scissor.
     verts: u32,
+    /// `(first_vertex, vertex_count, ox, oy, w, h)` per scissored batch, in
+    /// queue order. Rebuilt each `set_state`.
+    scissor_batches: Vec<(u32, u32, i32, i32, u32, u32)>,
     enabled: Rect,
     disabled: Rect,
     highlighted: Rect,
@@ -340,9 +409,16 @@ fn sheet_index(s: Sheet) -> usize {
         Sheet::SliderSheet(i) => 30 + (i as usize).min(3),
         Sheet::SignBoard(i) => 34 + (i as usize).min(11),
         Sheet::HangingSignBoard(i) => 46 + (i as usize).min(11),
+        Sheet::AdvWindow => 58,
+        Sheet::AdvTab(i) => 59 + (i as usize).min(23),
+        Sheet::AdvFrame(i) => 83 + (i as usize).min(5),
+        Sheet::AdvBoxObtained => 89,
+        Sheet::AdvBoxUnobtained => 90,
+        Sheet::AdvTitleBox => 91,
+        Sheet::AdvBackground(i) => 92 + (i as usize).min(4),
     }
 }
-const SHEET_COUNT: usize = 58;
+const SHEET_COUNT: usize = 97;
 
 impl ScreenPass {
     pub fn new(
@@ -536,6 +612,50 @@ impl ScreenPass {
         atlas[w..w + 4].copy_from_slice(&[255, 255, 255, 255]);
         sheets[sheet_index(Sheet::White)] = ((500, 250), (1, 1));
 
+        // M178 — the advancements shelf, everything below y=512 so no older
+        // texel moves. The window crop at (0,512); then rows of tabs, frames,
+        // boxes and backdrops.
+        put(&mut atlas, &mut sheets, Sheet::AdvWindow, &sprites.adv_window, 0, 512);
+        for (i, t) in sprites.adv_tabs.iter().enumerate() {
+            let i = i as u32;
+            let (x, y) = if i < 12 {
+                (28 * i, 656) // Above/Below: 28x32, twelve to a row
+            } else {
+                (32 * (i - 12), 692) // Left/Right: 32x28
+            };
+            put(&mut atlas, &mut sheets, Sheet::AdvTab(i as u8), t, x, y);
+        }
+        for (i, f) in sprites.adv_frames.iter().enumerate() {
+            put(
+                &mut atlas,
+                &mut sheets,
+                Sheet::AdvFrame(i as u8),
+                f,
+                26 * i as u32,
+                724,
+            );
+        }
+        for (i, b) in sprites.adv_boxes.iter().enumerate() {
+            put(
+                &mut atlas,
+                &mut sheets,
+                [Sheet::AdvBoxObtained, Sheet::AdvBoxUnobtained, Sheet::AdvTitleBox][i],
+                b,
+                0,
+                754 + 28 * i as u32,
+            );
+        }
+        for (i, bg) in sprites.adv_backgrounds.iter().enumerate() {
+            put(
+                &mut atlas,
+                &mut sheets,
+                Sheet::AdvBackground(i as u8),
+                bg,
+                16 * i as u32,
+                840,
+            );
+        }
+
         let uv = |x: f32, y: f32, w: f32, h: f32| Rect {
             u0: x / ATLAS_W as f32,
             v0: y / ATLAS_H as f32,
@@ -649,7 +769,9 @@ impl ScreenPass {
             bufs,
             allocs,
             cursor: 0,
+            head_verts: 0,
             verts: 0,
+            scissor_batches: Vec::new(),
             enabled,
             disabled,
             highlighted,
@@ -702,50 +824,38 @@ impl ScreenPass {
                 [1.0; 4],
             );
         }
+        let head_end = v.len() as u32;
+
+        // 2.5 The scissored batches (M178), between the menu background and
+        //     the plain sprites — vanilla's extractInside runs before
+        //     extractWindow, so clipped contents sit under their chrome.
+        self.scissor_batches.clear();
+        for b in &draw.scissored {
+            let start = v.len() as u32;
+            for s in &b.sprites {
+                lower_sprite(&mut v, scale, s, &self.sheets);
+            }
+            let count = v.len() as u32 - start;
+            if count == 0 {
+                continue;
+            }
+            // Device pixels: floor the leading edge, ceil the trailing one,
+            // so a boundary pixel is inside exactly when vanilla's scissor
+            // includes it.
+            let (gx, gy, gw, gh) = b.rect;
+            let ox = (gx as f32 * scale).floor() as i32;
+            let oy = (gy as f32 * scale).floor() as i32;
+            let x1 = ((gx + gw).max(gx) as f32 * scale).ceil();
+            let y1 = ((gy + gh).max(gy) as f32 * scale).ceil();
+            let w = (x1.max(ox as f32 + 1.0) as u32).saturating_sub(ox as u32);
+            let h = (y1.max(oy as f32 + 1.0) as u32).saturating_sub(oy as u32);
+            self.scissor_batches.push((start, count, ox, oy, w, h));
+        }
 
         // 3. The screen's own chrome, in GUI space and in the order it was
         //    queued: a tiled background before the widgets that sit on it.
         for s in &draw.sprites {
-            let ((sx, sy), (sw, sh)) = self.sheets[sheet_index(s.sheet)];
-            if sw == 0 || sh == 0 {
-                continue;
-            }
-            let src = Src {
-                x: sx as i32,
-                y: sy as i32,
-                w: sw as i32,
-                h: sh as i32,
-            };
-            match s.fill {
-                Fill::Stretch => push_src(
-                    &mut v,
-                    scale,
-                    (s.x, s.y, s.width, s.height),
-                    src,
-                    (0, 0, src.w, src.h),
-                    s.color,
-                ),
-                Fill::NineSlice(border) => {
-                    nine_slice(&mut v, scale, (s.x, s.y, s.width, s.height), src, border, s.color)
-                }
-                Fill::SubRect(u, sv, sw, sh) => push_src(
-                    &mut v,
-                    scale,
-                    (s.x, s.y, s.width, s.height),
-                    src,
-                    (u, sv, sw, sh),
-                    s.color,
-                ),
-                Fill::Tiled(tw, th) => push_tiled(
-                    &mut v,
-                    scale,
-                    (s.x, s.y, s.width, s.height),
-                    src,
-                    (0, 0, src.w, src.h),
-                    (tw, th),
-                    s.color,
-                ),
-            }
+            lower_sprite(&mut v, scale, s, &self.sheets);
         }
 
         // 4. The buttons, in GUI space. Nine-sliced with `border: 3`, which
@@ -777,6 +887,7 @@ impl ScreenPass {
         }
 
         self.verts = v.len() as u32;
+        self.head_verts = head_end;
         if let Some(alloc) = self.allocs[self.cursor].as_ref() {
             if let Some(ptr) = alloc.mapped_ptr() {
                 unsafe {
@@ -820,7 +931,31 @@ impl ScreenPass {
                 bytemuck::cast_slice(&push),
             );
             device.cmd_bind_vertex_buffers(cb, 0, &[self.bufs[self.cursor]], &[0]);
-            device.cmd_draw(cb, self.verts, 1, 0, 0);
+            // The head (backdrop, menu background) under the full-extent
+            // scissor…
+            device.cmd_draw(cb, self.head_verts, 1, 0, 0);
+            let mut drawn = self.head_verts;
+            // …each batch under its own scissor…
+            for (start, count, ox, oy, w, h) in &self.scissor_batches {
+                if *count == 0 {
+                    continue;
+                }
+                device.cmd_set_scissor(
+                    cb,
+                    0,
+                    &[vk::Rect2D::default()
+                        .offset(vk::Offset2D::default().x(*ox).y(*oy))
+                        .extent(vk::Extent2D::default().width(*w).height(*h))],
+                );
+                device.cmd_draw(cb, *count, 1, *start, 0);
+                drawn += *count;
+            }
+            // …and the tail (sprites then buttons) back under the full one.
+            let tail = self.verts - drawn;
+            if tail > 0 {
+                device.cmd_set_scissor(cb, 0, &[vk::Rect2D::default().extent(extent)]);
+                device.cmd_draw(cb, tail, 1, drawn, 0);
+            }
         }
     }
 
@@ -895,6 +1030,56 @@ fn push_src(
 /// pixels, with the last row and column **clipped by shortening their UVs**
 /// rather than by overdrawing.
 #[allow(clippy::too_many_arguments)]
+/// Lower one [`SpriteDraw`] into quads — shared by the plain sprite list and
+/// the scissored batches (M178), so the two paths cannot drift.
+fn lower_sprite(
+    v: &mut Vec<Vertex>,
+    scale: f32,
+    s: &SpriteDraw,
+    sheets: &[((u32, u32), (u32, u32))],
+) {
+    let ((sx, sy), (sw, sh)) = sheets[sheet_index(s.sheet)];
+    if sw == 0 || sh == 0 {
+        return;
+    }
+    let src = Src {
+        x: sx as i32,
+        y: sy as i32,
+        w: sw as i32,
+        h: sh as i32,
+    };
+    match s.fill {
+        Fill::Stretch => push_src(
+            v,
+            scale,
+            (s.x, s.y, s.width, s.height),
+            src,
+            (0, 0, src.w, src.h),
+            s.color,
+        ),
+        Fill::NineSlice(border) => {
+            nine_slice(v, scale, (s.x, s.y, s.width, s.height), src, border, s.color)
+        }
+        Fill::SubRect(u, sv, sw, sh) => push_src(
+            v,
+            scale,
+            (s.x, s.y, s.width, s.height),
+            src,
+            (u, sv, sw, sh),
+            s.color,
+        ),
+        Fill::Tiled(tw, th) => push_tiled(
+            v,
+            scale,
+            (s.x, s.y, s.width, s.height),
+            src,
+            (0, 0, src.w, src.h),
+            (tw, th),
+            s.color,
+        ),
+    }
+}
+
 fn push_tiled(
     v: &mut Vec<Vertex>,
     scale: f32,

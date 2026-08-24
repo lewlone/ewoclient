@@ -359,6 +359,7 @@ pub fn chrome(
         menu_background: None,
         buttons,
         sprites,
+        scissored: Vec::new(),
     }
 }
 

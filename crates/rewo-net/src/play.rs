@@ -5614,6 +5614,31 @@ impl PlaySession {
         self.send(p)
     }
 
+    /// `ServerboundSeenAdvancementsPacket.openedTab` (M178) — the screen's
+    /// open/init path sends it for the tab it shows.
+    pub fn send_seen_advancements_opened_tab(&mut self, tab: &str) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_seen_advancements else {
+            return Err("seen_advancements unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        // Action enum ordinal 0 = OPENED_TAB; then the identifier. CLOSED_SCREEN
+        // writes the ordinal alone (`write`'s guard skips the tab).
+        p.varint(0);
+        p.string(tab);
+        self.send(p)
+    }
+
+    /// `ServerboundSeenAdvancementsPacket.closedScreen` — `removed()` sends it
+    /// unconditionally, no dirty check and no cancel path.
+    pub fn send_seen_advancements_closed_screen(&mut self) -> Result<(), String> {
+        let Some(id) = self.ids.sb_play_seen_advancements else {
+            return Err("seen_advancements unavailable".into());
+        };
+        let mut p = PacketWriter::packet(id);
+        p.varint(1); // CLOSED_SCREEN
+        self.send(p)
+    }
+
     /// Drain the pending death, if any (M82).
     ///
     /// Draining rather than peeking, because the consumer is "open a screen" —
