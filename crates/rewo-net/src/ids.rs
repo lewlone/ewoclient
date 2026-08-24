@@ -431,6 +431,15 @@ pub struct Ids {
     /// (`ClientboundUpdateRecipesPacket.java:17`) and the report lists it under
     /// clientbound-play alone, so there is no second copy to miss.
     pub cb_play_update_recipes: i32,
+    /// `ClientboundSelectAdvancementsTabPacket` (M177) — one **nullable**
+    /// identifier. The client resolves it against its tree: null, or an id the
+    /// tree does not know, both clear the selection (`get` returning null
+    /// feeds `setSelectedTab(null, false)`).
+    pub cb_play_select_advancements_tab: i32,
+    /// `ClientboundUpdateAdvancementsPacket` (M177) — the advancement tree's
+    /// whole feed: reset bool, added holders, removed ids, a progress map and
+    /// a trailing show-advancements bool. See [`crate::advancements`].
+    pub cb_play_update_advancements: i32,
     /// `ClientboundSetCameraPacket` — one VarInt entity id. An id the client
     /// cannot resolve leaves the camera where it is.
     pub cb_play_set_camera: i32,
@@ -784,6 +793,8 @@ impl Ids {
             cb_play_recipe_book_settings: req!(p, P, C, "recipe_book_settings"),
             cb_play_place_ghost_recipe: req!(p, P, C, "place_ghost_recipe"),
             cb_play_update_recipes: req!(p, P, C, "update_recipes"),
+            cb_play_select_advancements_tab: req!(p, P, C, "select_advancements_tab"),
+            cb_play_update_advancements: req!(p, P, C, "update_advancements"),
             cb_play_set_camera: req!(p, P, C, "set_camera"),
             cb_play_ticking_state: req!(p, P, C, "ticking_state"),
             cb_play_ticking_step: req!(p, P, C, "ticking_step"),

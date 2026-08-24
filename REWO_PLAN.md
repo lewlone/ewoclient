@@ -1901,6 +1901,9 @@ this shape once.
 | M173 — the volume sliders | **r62** | screen-pass atlas: `Sheet::SliderSheet(0..4)` — tracks (200x20) at (200,280) + (200,300), handles (8x20) at (404,280) + (414,280) | `optionshot` o0-o11 |
 | M174 — the sign editor | **r63, r64** | screen-pass atlas (512x512 unchanged): `Sheet::SignBoard(0..12)` (24x26 `gui/signs/<wood>`) at (200..488, 320), `Sheet::HangingSignBoard(0..12)` (16x16 `gui/hanging_signs/<wood>`) at (200..392, 352); `SHEET_COUNT` 56 -> 58 | `signshot` m1-m7b, m9-m15, p0-p6 |
 | M175 — the baby sheets | — | entity-atlas shelves gain the 10 same-size `*_baby` sheets; origins are computed by the packer at build time and consumed as normalized UV offsets, so there is nothing to claim | `mobtexshot` m8, n1-n4 |
+| M177 — advancements decode + model | — (no live witnesses yet) | — | `rewo-net` / `rewo-world` unit tests; the gate is M178's |
+| M178 — advancements render + gate *(planned, claims on starting)* | **r65** (+r66 if a second witness lands) | screen-pass atlas: `window.png` 252x140 + 24 tab sprites + 6 frames + 2 boxes + title_box + per-root background tiles — exact rows claimed in M178's first commit; the atlas likely needs to grow past 512 tall like M172 did | `advshot` (new), prefix `a*` |
+| M179 — advancement clicks *(planned)* | — | — | extends `advshot` |
 | *(next free)* | **r65** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

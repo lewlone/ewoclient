@@ -181,7 +181,7 @@ take**, not about how much anyone wants it:
 |---|---|
 | **A** — pure state | Decoding it changes a value Rewo could act or gate on **without drawing anything new**. A witness can prove the decode; no human has to look at it. This is the class the M52–M74 batches drew from. |
 | **B** — needs rendering | The decode is possible today, but the packet's purpose is a visual Rewo does not have (a title overlay, an XP bar, the damage camera tilt). Landing the *feature* needs an eyeball; landing the *decode* does not. |
-| **C** — needs a subsystem Rewo lacks | The **8** remaining are, exactly: a horse/mount screen (41), a map image pipeline (51), a resource-pack download/apply pipeline (80 `resource_pack_pop` — the push's decode and reply are M166's, on row 81), an advancement tree (85 and 130), a server-transfer/reconnect flow (129), and a dialog framework (139, 140). *(This sentence said **11** and still listed the book viewer (58, closed M171/M172) and the sign editor (60, closed M174) until 2026-08-23 — fourth recurrence of this file's own documented failure mode on the class table.)* *(This sentence said **12** and listed `133 update_recipes` until 2026-08-20 — which line 630 of this same file records as `handled` (M152) and which §2's machine-checked table has never counted. Third recurrence of this file's own documented failure mode, now on the class table.)* The decode is not the hard part and shipping it alone buys nothing. **Three subsystems have come OFF this list**: the screen/menu framework (M82/M87), the recipe book (M93y–M107), the chat-input path (M110 + M114–M124), the book viewer (M171/M172) and the sign editor (M174). |
+| **C** — needs a subsystem Rewo lacks | The **6** remaining are, exactly: a horse/mount screen (41), a map image pipeline (51), a resource-pack download/apply pipeline (80 `resource_pack_pop` — the push's decode and reply are M166's, on row 81), a server-transfer/reconnect flow (129), and a dialog framework (139, 140). *(This sentence said **11** and still listed the book viewer (58, closed M171/M172) and the sign editor (60, closed M174) until 2026-08-23 — fourth recurrence of this file's own documented failure mode on the class table.)* *(This sentence said **12** and listed `133 update_recipes` until 2026-08-20 — which line 630 of this same file records as `handled` (M152) and which §2's machine-checked table has never counted. Third recurrence of this file's own documented failure mode, now on the class table.)* *(And it said **8**, still listing the advancement tree (85 and 130), until M177 took them off — decode + tree state in `rewo_net::advancements`, screen model in `rewo_world::advancements_screen`; the render is M178.)* The decode is not the hard part and shipping it alone buys nothing. **Four subsystems have come OFF this list**: the screen/menu framework (M82/M87), the recipe book (M93y–M107), the chat-input path (M110 + M114–M124), the book viewer (M171/M172) and the sign editor (M174). |
 | **D** — not applicable | Debug/dev tooling, integrated-server-only warnings, or a reply to a serverbound request Rewo never sends. Each row states which. |
 
 The A/B line is drawn at *what the decode itself unlocks*, so a packet whose
@@ -209,19 +209,23 @@ Machine-checked — see §1. Change these together with §5 or the test fails.
 
 | Status | Count |
 |---|---|
-| Resolved **and** consumed | **122** |
+| Resolved **and** consumed | **124** |
 | Resolved but ignored | **0** |
-| Not resolved at all | **19** |
+| Not resolved at all | **17** |
 | **Total clientbound-play** | **141** |
 
-The 19 gaps, by class:
+The 17 gaps, by class:
 
 | Class | Count | Share of the gap |
 |---|---|---|
 | **A** pure state, no rendering | **0** | 0% |
 | **B** needs rendering | **0** | 0% |
-| **C** needs a subsystem Rewo lacks | **8** | 42% |
-| **D** not applicable | **11** | 58% |
+| **C** needs a subsystem Rewo lacks | **6** | 35% |
+| **D** not applicable | **11** | 65% |
+
+*(The counts above said 122 / 19 / C-8 until M177 took the two advancement
+packets (85 `select_advancements_tab`, 130 `update_advancements`) off the list.
+The class table's share column said 42%/58% with them.)*
 
 **M87 was the first bite out of class C** — which has since gone 23 -> 11, the
 rest of it taken by M91 (the furnace family), M93s (the stonecutter), M93u (the
@@ -237,15 +241,17 @@ own precisely because it is the small half: for a while the row above said
 "what is not" column exists to record, and which M87k/M88/M89 then closed.
 
 **Both actionable classes are now empty**, which changes what this document is
-for. It was written to enumerate what Rewo ignores; what remains is **12
+for. It was written to enumerate what Rewo ignores; what remains is **6
 packets that need a subsystem and 11 that do not apply** — §2's machine-checked
 table is the authority, and this sentence said 16 until 2026-08-10, which is the
 third time this narrative has drifted from the table above it. The subsystems are
-a map-image pipeline, a resource-pack fetcher, a reconnect flow, an advancement
-tree and a dialog framework; **the chat-input path was on that list and is no
+a horse/mount screen, a map-image pipeline, the resource-pack download half, a
+reconnect flow and a dialog framework; **the chat-input path was on that list and is no
 longer**, since M110 built the `ChatScreen` and M114–M124 the command line. **The recipe book was on that list and is
 no longer** — M93y decoded it, M93z–M107 built the UI (M107 closed it), and its
-four packets are `handled`. Picking work
+four packets are `handled`. **The advancement tree was on that list and is no
+longer** — M177 decoded both packets and built the client's tree/progress state;
+its screen render is M178. Picking work
 from here now means **choosing a subsystem**, not choosing a packet — and
 `REWO_FEATURE_SURVEY.md` is the better guide to that than a class-C count is.
 The one thing this document still adjudicates on its own is §4: "handled" is not
@@ -590,7 +596,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 82 | `respawn` | handled | `req!` → `cb_play_respawn` | |
 | 83 | `rotate_head` | handled | `req!` → `cb_play_rotate_head` | |
 | 84 | `section_blocks_update` | handled | `req!` → `cb_play_section_blocks_update` | |
-| 85 | `select_advancements_tab` | absent | **C** | Advancements screen. |
+| 85 | `select_advancements_tab` | handled | `req!` -> `cb_play_select_advancements_tab` | **M177**: one nullable identifier; the client resolves it against its tree — null, or an unknown id, both CLEAR the selection (`get` returning null feeds `setSelectedTab(null, false)`), and neither form tells the server anything. The screen it selects for is M178. |
 | 86 | `server_data` | handled | `req!` → `cb_play_server_data` | **M78.** MOTD flattened, icon kept as bytes. §4 partial — vanilla runs the icon through `ServerData.validateIcon` (a PNG parse capped at 1024²) and records only when the session came from the server list; Rewo does neither. |
 | 87 | `set_action_bar_text` | handled | `req!` → `cb_play_set_action_bar_text` | **M79.** `setOverlayMessage(text, **false**)` — the animated rainbow belongs to `setNowPlaying` (a jukebox) and is unreachable from this packet. Its 60-tick clock and its `/20.0F` fade are constants, unrelated to `set_titles_animation`. |
 | 88 | `set_border_center` | handled | `req!` → `cb_play_set_border_center` | **M80.** Two `f64`; moves the box without touching the size or a running lerp. |
@@ -635,7 +641,7 @@ new player but **not** `doLimitedCrafting`, so that one resets in vanilla too.
 | 127 | `ticking_state` | handled | `req!` → `cb_play_ticking_state` | **M74.** An f32 `tickRate` then a bool `isFrozen`. Decode and state only — the 20 Hz loop does not consult it yet. |
 | 128 | `ticking_step` | handled | `req!` → `cb_play_ticking_step` | **M74.** One VarInt. |
 | 129 | `transfer` | absent | **C** | Reconnect to another host — needs a transfer/reconnect flow. |
-| 130 | `update_advancements` | absent | **C** | Advancements screen. |
+| 130 | `update_advancements` | handled | `req!` -> `cb_play_update_advancements` | **M177**: reset / added holders / removed ids / progress map / show bool, applied through `rewo_net::advancements::ClientAdvancements` — tree insertion runs parent-before-child PASSES because one packet may list a child before its root; progress is reshaped against the tree node's requirements (prune unnamed criteria, fill missing slots) before storage. `announce_to_chat` never crosses the wire (fromNetwork hard-falses it). The screen that draws it is M178. |
 | 131 | `update_attributes` | handled | `req!` → `cb_play_update_attributes` | M52/M73. |
 | 132 | `update_mob_effect` | handled | `req!` → `cb_play_update_mob_effect` | M13. |
 | 133 | `update_recipes` | handled | `req!` → `cb_play_update_recipes` | **M152.** The `RecipePropertySet` map plus the stonecutter's `SingleInputSet`. **NOT the recipe book and NOT crafting** — `handleUpdateRecipes` builds a `ClientRecipeContainer` read only by the furnace family, smithing, campfire and stonecutter; the book is 74/75/76, handled since M93y. Its `smithing_*` sets are what `SmithingMenu.canMoveIntoInputSlots` tests, which was the last quick-move decline in the container arc. **Two item-collection encodings in one packet**: `RecipePropertySet` is `Item.STREAM_CODEC.apply(list())` — raw 0-based holder ids (`Item.java:103`) — while the stonecutter's `Ingredient` is a `holderSet`, `count + 1` with `0` meaning a tag name. Neither mistake errors; each desyncs. |

@@ -13,6 +13,7 @@
 pub mod music;
 pub mod options;
 pub mod abilities;
+pub mod advancements;
 pub mod ambient_handlers;
 pub mod attributes;
 pub mod biome_parse;
