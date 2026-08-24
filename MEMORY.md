@@ -82,6 +82,27 @@ mobshot 246/246, soundshot 37 default/57 audio.
 6. dist/EwoClient refreshed via package.ps1 — full bundle again (exe +
    rewo.exe + icon + 6 fonts); Desktop shortcut repointed.
 7. LEAK_HUNT_INSTRUMENT diagnostics intentionally left in (strip at ship time).
+## Lane-A progress this arc (2026-08-23/24)
+
+Landed on main (UNPUSHED as of close — ask user): e0b16fd fix-pass → M174
+sign editor (d60a621) → M175 baby sheets (f40e644) → M176 leash light
+(5829d07). 42 gates / 3450 tests / render-check 64/64 / coverage 122-0-19.
+
+**Lane-A remaining, best-next order:** (1) advancements screen — decode
+`update_advancements` (packets 85+130), tabbed-tree model, render, clicks;
+realistically a 2–3-milestone arc, biggest GUI surface left. (2) page-text
+click events (M172 leftover — verify BookViewScreen click semantics against
+the decompile BEFORE building; active_text.rs machinery exists). (3) lectern
+menu-backed reader. (4) ETF random/emissive textures (user runs Fresh
+Animations — high personal value). (5) ghast quad-leash. Farther: map
+pipeline, resource-pack fetch/apply, reconnect/transfer, dialog framework.
+
+**Watch-item:** three spontaneous `0xC0000005` exits this arc on heavy
+multi-stage GPU gates (mobtexshot ×2, leashshot ×1), each gate passing clean
+on re-runs (leashshot then 3/3). Suspect teardown/driver under memory
+pressure from long build sessions, NOT a code regression — but if it starts
+reproing, check pass destroy-vs-frames-in-flight first.
+
 8. M174 worktree WIP = sign-edit screen; **landed 2026-08-23**; **M175 baby
    sheets landed 2026-08-24** (generator + same-size UV-offset swaps +
    mobtexshot n-series + battery). New permanent lessons: (a)
