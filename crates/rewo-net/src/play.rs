@@ -543,6 +543,8 @@ pub struct PlaySession {
     /// is not the same as telling us the sets are empty. The smithing menu
     /// distinguishes them — see [`crate::recipe_book::UpdateRecipes`].
     pub recipes: Option<crate::recipe_book::UpdateRecipes>,
+    /// The advancement tree + progress (M177) — [`crate::advancements`].
+    pub advancements: crate::advancements::ClientAdvancements,
     /// Server-reported latency per player, in milliseconds (M52c).
     ///
     /// **This is the only ping a client can know**, and the reason is worth
@@ -1740,6 +1742,7 @@ impl<'a> Connection<'a> {
             recipe_book_settings: Default::default(),
             ghost_recipe: None,
             recipes: None,
+            advancements: crate::advancements::ClientAdvancements::default(),
             writer,
             codec,
             rx,
@@ -3322,6 +3325,30 @@ impl PlaySession {
                     }
                 }
                 None => log::warn!("net: update_recipes with no display registries"),
+            }
+        } else if id == ids.cb_play_update_advancements {
+            // M177. The whole feed — reset / added / removed / progress /
+            // show. Applied through `ClientAdvancements`, whose tree insertion
+            // runs in parent-before-child passes because a server may send a
+            // child before its parent inside one packet. A malformed body is
+            // dropped whole: half a tree is worse than a stale one.
+            match crate::advancements::parse_update(body) {
+                Ok(u) => self.advancements.apply_update(u),
+                Err(e) => log::warn!("net: {e}"),
+            }
+        } else if id == ids.cb_play_select_advancements_tab {
+            // M177. `handleSelectAdvancementsTab` resolves the id against the
+            // tree and NEVER tells the server: null clears the selection, an
+            // unknown id resolves to null and ALSO clears it.
+            match crate::advancements::parse_select_tab(body) {
+                Ok(Some(tab)) => {
+                    let resolved = self.advancements.node(&tab).map(|_| tab.clone());
+                    self.advancements.select_tab(resolved.as_deref());
+                }
+                Ok(None) => {
+                    self.advancements.select_tab(None);
+                }
+                Err(e) => log::warn!("net: {e}"),
             }
         } else if id == ids.cb_play_game_event {
             // M33 took the four weather ids; M71 took the other ten. One
