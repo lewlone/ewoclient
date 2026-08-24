@@ -429,10 +429,12 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   tests — a real sitting camel is not yet un-jumpable live.
 > * ~~**`p4-leash`** (the rope).~~ **DONE (M170)** — the decode was gated since
 >   M77; M170 drew it (`leash::build_ribbon` + `WorldRenderer::draw_leash` +
->   `collect_leashes`), graded by the new `leashshot` gate and r60 live. Open
->   from it: the block/sky light is an RGB interpolation of the two endpoints
->   (vanilla interpolates the packed coords), and the happy-ghast quad-leash
->   branch is not drawn (nothing Rewo renders takes it).
+>   `collect_leashes`), graded by the new `leashshot` gate and r60 live. ~~Open
+>   from it: the block/sky light is an RGB interpolation of the two endpoints~~
+>   **CLOSED (M176)** — the ribbon now carries PACKED `(block, sky)` per end,
+>   interpolates the components and evaluates the lightmap curve per vertex
+>   (`LeashFeatureRenderer.java:60-77`); the happy-ghast quad-leach branch is
+>   still not drawn (nothing Rewo renders takes it).
 > * ~~**`sub-book`**~~ **DONE — M171 the decode + model, M172 the render
 >   (2026-08-23).** The reader draws pixel-faithfully (`bookshot` 21/21, r61
 >   live), including the writable-book fallback (`BookAccess.fromItem` — there
@@ -3779,6 +3781,24 @@ The findings that earn the entry:
   `EntityTable::set_baby`, set/clear/removal), which until now was graded
   only by tests that constructed the flag directly — M141e's shape, found by
   the battery's surviving mutant rather than by reading.
+
+### M176 — the leash's light: packed components per vertex, not blended RGB (2026-08-24)
+
+M170's one recorded divergence, closed. `LeashFeatureRenderer.java:60-77`
+interpolates `startBlockLight`/`endBlockLight` and the sky pair SEPARATELY
+(`(int)Mth.lerp(progress, …)`), packs them, and sets the light coords PER
+VERTEX; Rewo was blending the two ends' final lightmap RGB down the rope,
+which flattens the curve's mid-tones. `build_ribbon` now takes PACKED
+`(block, sky)` at each end plus a lightmap-eval closure (the GPU crate stays
+world-agnostic) and evaluates `sample()` per vertex, with entity_light's
+NaN-to-zero guard. `collect_leashes` samples `world.light_at` at each eye;
+leashshot's fixtures pass packed pairs against a default lightmap state.
+`light_fades_along_the_rope` needed two rewrites the old signature had been
+hiding: a flat test lightmap lets the 0.7 dim alternation dominate (first
+vertex is k=0, a DIM one — the assertion inverted), and index slices into the
+strip re-cover the start because the second pass runs backward — position
+windows at each end are the robust read. leashshot 5/5, gpu 320/320,
+render-check 64/64 (r60 exercises the live path).
 
 ### M174 — the sign editor: `TextFieldHelper` over the current line, and the commit that lives in `removed()` (2026-08-23)
 

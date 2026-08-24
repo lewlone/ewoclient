@@ -3898,11 +3898,26 @@ fn collect_leashes(
         // leashOffset = (0, eyeHeight, bbWidth * 0.4), rotated by -bodyYaw.
         let offset = yrot([0.0, eye, (w * 0.4) as f64], -e.yaw.to_radians());
         let start = [pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2]];
-        // Light at each eye (vanilla samples `getEyePosition`, not the rope end).
-        let start_light = entity_light(&session.world, pos[0], pos[1] + eye, pos[2], lightmap);
-        let end_light = entity_light(&session.world, end_eye[0], end_eye[1], end_eye[2], lightmap);
+        // Light at each eye (vanilla samples `getEyePosition`, not the rope
+        // end), carried as PACKED components - the ribbon interpolates block
+        // and sky separately and evaluates the lightmap curve per vertex.
+        let start_packed = session.world.light_at(
+            pos[0].floor() as i32,
+            (pos[1] + eye).floor() as i32,
+            pos[2].floor() as i32,
+        );
+        let end_packed = session.world.light_at(
+            end_eye[0].floor() as i32,
+            end_eye[1].floor() as i32,
+            end_eye[2].floor() as i32,
+        );
         verts.extend(rewo_gpu::leash::build_ribbon(
-            start, end, true, start_light, end_light,
+            start,
+            end,
+            true,
+            start_packed,
+            end_packed,
+            &|b, s| rewo_world::lightmap::sample(b, s, lightmap),
         ));
     }
     verts

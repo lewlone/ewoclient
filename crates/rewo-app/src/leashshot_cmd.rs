@@ -28,8 +28,8 @@ use crate::stats::OverlayRing;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
-const LIT: [f32; 3] = [1.0, 1.0, 1.0];
-const DARK: [f32; 3] = [0.0, 0.0, 0.0];
+const LIT: (u8, u8) = (15, 15);
+const DARK: (u8, u8) = (0, 0);
 
 #[derive(ClapArgs)]
 pub struct LeashshotArgs {
@@ -117,6 +117,9 @@ fn run_check(
     let ring = OverlayRing::default();
     let draw = overlay_offscreen(&ring);
     let mut off = Offscreen::new(gpu, W, H)?;
+    // Daylight lightmap state: the witnesses reason about BLOCK levels, which
+    // sample() resolves against the same curve the world pass uses.
+    let lm = rewo_world::lightmap::LightmapState::default();
     let mut fails: Vec<String> = Vec::new();
 
     // A closure that renders `verts` and reads the frame back.
@@ -148,7 +151,7 @@ fn run_check(
     }
 
     // -- g1: a level rope draws a thin brown line -------------------------
-    let level = build_ribbon([-2.0, 0.0, 0.0], [2.0, 0.0, 0.0], false, LIT, LIT);
+    let level = build_ribbon([-2.0, 0.0, 0.0], [2.0, 0.0, 0.0], false, LIT, LIT, &|b, s| rewo_world::lightmap::sample(b, s, &lm));
     let f1 = frame(gpu, &mut off, &level, 5.0)?;
     dump(&mut off, gpu, "level");
     let p1 = rope_pixels(&f1);
@@ -170,8 +173,8 @@ fn run_check(
     // A rope to a point below: slack curves under the straight interpolation.
     let start = [-2.0, 1.5, 0.0];
     let end = [2.0, -1.5, 0.0];
-    let slack = build_ribbon(start, end, true, LIT, LIT);
-    let taut = build_ribbon(start, end, false, LIT, LIT);
+    let slack = build_ribbon(start, end, true, LIT, LIT, &|b, s| rewo_world::lightmap::sample(b, s, &lm));
+    let taut = build_ribbon(start, end, false, LIT, LIT, &|b, s| rewo_world::lightmap::sample(b, s, &lm));
     let fs = frame(gpu, &mut off, &slack, 5.0)?;
     dump(&mut off, gpu, "slack");
     let ft = frame(gpu, &mut off, &taut, 5.0)?;
@@ -212,7 +215,7 @@ fn run_check(
     }
 
     // -- g4: light fades along a rope lit at one end ----------------------
-    let faded = build_ribbon([-2.0, 0.0, 0.0], [2.0, 0.0, 0.0], false, LIT, DARK);
+    let faded = build_ribbon([-2.0, 0.0, 0.0], [2.0, 0.0, 0.0], false, LIT, DARK, &|b, s| rewo_world::lightmap::sample(b, s, &lm));
     let f4 = frame(gpu, &mut off, &faded, 5.0)?;
     dump(&mut off, gpu, "faded");
     let p4 = rope_pixels(&f4);

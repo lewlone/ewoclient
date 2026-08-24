@@ -2187,7 +2187,7 @@ default build (**28** witnesses) and adds decode and the mixer under
 does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
-**Everything is shipped and gated** as of 2026-08-24 (M175) —
+**Everything is shipped and gated** as of 2026-08-24 (M176) —
 **3450 tests / 0 failures** (world 1238, net 1238, gpu 320, data 235, app 231,
 mesh 52, proto 16, audio 120 — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
@@ -7115,3 +7115,13 @@ mobtexshot 13 -> **17** witnesses (m8 rewritten per contract + n1-n4);
 battery **6/6 + control**; MAX_AMBIGUOUS 5 -> 6 (dolphin/dolphin_baby share a
 palette). Two net tests pin slot-16 fallthrough -> set_baby. 42 gates,
 **3450 tests**, render-check 64/64, coverage unchanged at 122/0/19.*
+*Update (2026-08-24 session, M176 — the leash's light): M170's recorded
+divergence is closed — the ribbon now interpolates PACKED `(block, sky)`
+components per vertex and evaluates the lightmap curve (the vanilla
+`LeashFeatureRenderer.java:60-77` shape), instead of blending the two ends'
+final RGB. `build_ribbon` takes a lightmap-eval closure so rewo-gpu stays
+world-agnostic. Two test-side traps the old signature had been hiding: a flat
+test lightmap lets the 0.7 dim alternation dominate the fade witness, and
+index slices into the strip re-cover the start because the second pass runs
+backward — position windows at each end are the robust read. leashshot 5/5,
+gpu 320/320, render-check 64/64.*
