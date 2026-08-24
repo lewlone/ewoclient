@@ -7109,3 +7109,30 @@ test lightmap lets the 0.7 dim alternation dominate the fade witness, and
 index slices into the strip re-cover the start because the second pass runs
 backward — position windows at each end are the robust read. leashshot 5/5,
 gpu 320/320, render-check 64/64.*
+
+*Update (2026-08-24 session, M177 + M178 — the advancements screen, decode to
+pixels): the last dark GUI subsystem landed in two milestones. **M177**
+decoded `select_advancements_tab` (85) + `update_advancements` (130) and built
+`ClientAdvancements`' tree/progress state plus the pure screen model
+(`rewo_world::advancements_screen`) — coverage **122/0/19 → 124/0/17**, class
+C **8 → 6**. Load-bearing: tree insertion runs parent-before-child PASSES
+(one packet may list a child before its root); `announce_to_chat` never
+crosses the wire; **the battery's survivor** was a second copy of the
+AND-over-groups done rule with no caller and no witness — flipping it to ANY
+survived a full green suite, so one body now lives on
+`ClientAdvancements::is_done`, which also carries vanilla's
+empty-requirements-are-false rule. **M178** rendered it: the screen pass grew
+`ScreenDraw.scissored` batches (contents clip under chrome, vanilla's
+extractInside→extractWindow order) and the atlas grew 512→1024 tall under
+M172's append-only rule; `window.png` turned out paletted with per-index tRNS
+alphas (transparent interior — the first gate probes sat on transparent
+texels and "passed" against whatever was behind them); L opens/closes
+(vanilla's own default), opening sends `openedTab`, every close sends
+`CLOSED_SCREEN`. Gates: **`advshot` is the 43rd** (14 witnesses through the
+production builders). Process lessons: a mutation battery that doesn't rebuild
+between mutants grades a stale binary and reads all-SURVIVED (the control
+caught it); presence-only pixel counts can't see pass ORDER (zero
+black-on-core is what does). Battery 7 killed + control. All 36 counted gates
++ 5 prose gates exit 0, render-check 64/64, **3489 tests**, demo PNG
+byte-identical. Open from the arc: M179 tab clicks (+ live r-witnesses),
+mid-screen tree updates, item-icon scissor clipping.*

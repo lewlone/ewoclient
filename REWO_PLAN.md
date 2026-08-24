@@ -143,8 +143,8 @@ not close the listening pass, and its module doc carries §4's "What the gate
 does NOT assert" paragraph verbatim** so a future session reading only the gate
 still learns that a green run is not evidence this client makes a sound.
 
-Current measurement, re-taken **2026-08-24 after M175**:
-**3450 tests, 0 failures** (**world 1238, net 1238, gpu 320, data 235, app 231,
+Current measurement, re-taken **2026-08-24 after M178**:
+**3489 tests, 0 failures** (**world 1255, net 1257, gpu 320, data 235, app 231,
 mesh 52, proto 16, audio 120** — read off the runner per crate).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
@@ -179,7 +179,7 @@ tasks**, without which the run scores nothing at all; demo PNG
 **8** (M171/M172 took the book viewer, M174 the sign editor; M152 `update_recipes`, M166 `resource_pack_push`) — M96–M107 consume packets M93y already decoded, M108 resolved
 `delete_chat`, M113 the Brigadier tree and M114 the two suggestion packets.
 
-**There are **42** serverless gate commands, not the "fourteen" older paragraphs in
+**There are **43** serverless gate commands, not the "fourteen" older paragraphs in
 this file say** — those sentences are historical records of the count *at the
 time* and are correct as such. Re-measured from a cold start on 2026-08-08 by
 running every one, and again after M125, M126 and the M127–M134 integration:
@@ -187,7 +187,8 @@ all green, **0 validation errors**; re-measured again on 2026-08-20, when the
 count reached **37** (`mobtexshot`, M165) — `sidebarshot` (17) came from M132, **`soundshot`**
 (28 default / 48 under `--features audio`) and **`tablistshot`** (42, raised by M155 and M158) are the
 two newest, and `blockentityshot` reads **177** rather than the 172 the list
-below records. Enumerate them rather
+below records. **M178 added `advshot` (14), making 43 — all 41 Vulkan-oracle
+gates + advshot re-run exit 0 on 2026-08-24.** Enumerate them rather
 than trusting a list, since the list is what rots:
 
 ```
@@ -341,8 +342,8 @@ witnesses are mostly self-driven can look healthy against nothing.
 > version of this box listed has shipped. What follows is measured on the merged
 > tree, not carried forward.
 >
-> **The state (re-measured 2026-08-24 after M175):** **42** serverless gates
-> green with 0 validation errors (`signshot` is the 42nd, 23/23), **3450
+> **The state (re-measured 2026-08-24 after M178):** **43** serverless gates
+> green with 0 validation errors (`advshot` is the 43rd, 14/14), **3489
 > tests**, `live --render-check` **64/64** exit 0, packet coverage **122 / 0 / 19**
 > with classes A and B empty, demo PNG `2cc56b4acbfb92cb` byte-identical.
 >
@@ -455,9 +456,15 @@ witnesses are mostly self-driven can look healthy against nothing.
 > * **`sub-dialog`** — a real 26.2 server sends `show_dialog` **zero** times and
 >   both dialog tags arrive empty. Very-large, and unobservable except against a
 >   plugin server.
-> * **`sub-advancements`** — **1562 of 1688 vanilla advancements have no
+> * ~~**`sub-advancements`** — **1562 of 1688 vanilla advancements have no
 >   `display`**, so the screen would show 126. Also needs a per-draw scissor the
->   renderer has not got.
+>   renderer has not got.~~ **DONE — M177 the decode + tree state + model,
+>   M178 the render + `advshot` (2026-08-24).** The 126-display measurement
+>   held (the screen shows exactly what has a display); the "per-draw scissor"
+>   blocker closed generically — `ScreenDraw.scissored` batches, available to
+>   every future screen. Open from it, all named in §15's M178 entry:
+>   mid-screen tree updates (snapshot at open), item-icon scissor clipping,
+>   unknown-backdrop fallback, and M179's tab clicks.
 > * **`render-misc [AO]` and `[FLOW]`** — both need a decision the agents cannot
 >   make. `[AO]`: an exact `prepareQuadAmbientOcclusion` wants 8+8 bits of
 >   per-vertex light where `MeshVertex` has 4+4 and **11 spare bits**, reopening
@@ -1901,9 +1908,9 @@ this shape once.
 | M173 — the volume sliders | **r62** | screen-pass atlas: `Sheet::SliderSheet(0..4)` — tracks (200x20) at (200,280) + (200,300), handles (8x20) at (404,280) + (414,280) | `optionshot` o0-o11 |
 | M174 — the sign editor | **r63, r64** | screen-pass atlas (512x512 unchanged): `Sheet::SignBoard(0..12)` (24x26 `gui/signs/<wood>`) at (200..488, 320), `Sheet::HangingSignBoard(0..12)` (16x16 `gui/hanging_signs/<wood>`) at (200..392, 352); `SHEET_COUNT` 56 -> 58 | `signshot` m1-m7b, m9-m15, p0-p6 |
 | M175 — the baby sheets | — | entity-atlas shelves gain the 10 same-size `*_baby` sheets; origins are computed by the packer at build time and consumed as normalized UV offsets, so there is nothing to claim | `mobtexshot` m8, n1-n4 |
-| M177 — advancements decode + model | — (no live witnesses yet) | — | `rewo-net` / `rewo-world` unit tests; the gate is M178's |
-| M178 — advancements render + gate *(planned, claims on starting)* | **r65** (+r66 if a second witness lands) | screen-pass atlas: `window.png` 252x140 + 24 tab sprites + 6 frames + 2 boxes + title_box + per-root background tiles — exact rows claimed in M178's first commit; the atlas likely needs to grow past 512 tall like M172 did | `advshot` (new), prefix `a*` |
-| M179 — advancement clicks *(planned)* | — | — | extends `advshot` |
+| M177 — advancements decode + model | — (no live witnesses) | — | `rewo-net`/`rewo-world` unit tests; battery `tools/m177_mutate.py` |
+| M178 — advancements render + gate | — (planned r65/r66 NOT taken; the gate is serverless and no live witness landed) | screen-pass atlas 512 -> **1024 tall**; below y=512: `AdvWindow` (252x140 crop) at (0,512), `AdvTab(0..23)` rows y=656/692, `AdvFrame(0..5)` y=724, boxes y=754/782/810, `AdvBackground(0..4)` y=840; `SHEET_COUNT` 58 -> 97 | `advshot` a*/m*/p* (14), battery `tools/m178_mutate.py` |
+| M179 — advancement clicks *(planned, claims on starting)* | **r65** | — | extends `advshot`; live witnesses for tab clicks + CLOSED_SCREEN |
 | *(next free)* | **r65** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3725,6 +3732,106 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M177 — the advancements decode: two packets, the client tree, and the done rule that survived only once (2026-08-24)
+
+`select_advancements_tab` (85) and `update_advancements` (130) — the last GUI
+subsystem in class C with both packets still dark. Coverage **122/0/19 →
+124/0/17**, class C **8 → 6**; the screen's render is M178.
+
+Wire facts that invert, each pinned:
+
+- **`announce_to_chat` never crosses the wire** (`DisplayInfo.fromNetwork`,
+  `DisplayInfo.java:141` hard-falses it). The flags int carries
+  background-present / showToast / hidden and nothing else; the background
+  identifier and the two grid floats ride AFTER it, so inventing a fourth flag
+  desyncs every display.
+- **`AdvancementType` is `readEnum`** — out-of-range THROWS (M65's convention);
+  the flags word one field later is a fixed BE i32 in a mostly-var-int
+  protocol.
+- **The criteria map and rewards are NOT on the wire** (`Advancement.read`
+  decodes both empty) — what crosses is parent + display + requirement groups,
+  which is exactly what placing and drawing needs.
+
+State findings:
+
+- **Tree insertion runs parent-before-child PASSES**
+  (`AdvancementTree.addAll`'s `removeIf(tryInsert)` loop): one packet may list
+  a child before its root, and a single pass drops real advancements. Roots
+  and tasks are insertion-ORDERED (Java's `ObjectLinkedOpenHashSet`) because
+  the tab strip iterates exactly those orders; re-adding a removed root moves
+  it to the END.
+- Progress is reshaped against the TREE node's requirements before storage —
+  prune unnamed criteria, then fill missing named slots — so the raw wire map
+  is never queried. Unknown ids warn and drop whole.
+- **THE BATTERY'S SURVIVOR**: a second copy of the AND-over-groups done rule
+  lived on `WireAdvancement` with no caller and no witness; flipping it to ANY
+  survived a full green suite. Deleted — one body on `Progress` behind
+  `ClientAdvancements::is_done`, which also carries vanilla's
+  **empty-requirements-are-false** rule (`AdvancementRequirements.test:64`)
+  that deleting the duplicate had silently dropped, plus vanilla's
+  null-progress-is-not-done read (`progress == null ? 0.0F : …`).
+
+Screen model (`rewo_world::advancements_screen`, pure like book_view_screen)
+— inversions transcribed exactly: tab sprite caps compare against the TYPE'S
+max, not the live count (a lone ABOVE tab draws the left-cap sprite); the
+scroll clamp's lower bound is `-(maxX - 234)` under JAVA clamp semantics
+(min>max answers min — Rust's `f64::clamp` panics); widget bounds extend
+28x27 past each origin, not the frame's 26; widget hover boxes are inclusive
+where the tab strip's are strict; hidden widgets draw nothing until done but
+still route descendants' links (`getFirstVisibleParent` walks the NODE chain
+through undisplayed intermediates — the model keeps every node's chain even
+for nodes that never become widgets).
+
+Battery `tools/m177_mutate.py`: 16 killed + control SURVIVED. Tests 3450 →
+3489 (net 1257, world 1255).
+
+### M178 — the advancements screen renders: scissors for the screen pass, a paletted window, and a battery that graded a stale binary until it didn't (2026-08-24)
+
+The render half. Four pieces, each with its finding:
+
+- **The pass learns scissors.** `ScreenDraw.scissored` batches draw between
+  the head and the plain sprites — extractInside-then-extractWindow order, so
+  clipped contents sit UNDER the chrome that frames them. Device conversion
+  floors the leading edge and ceils the trailing one, so boundary pixels clip
+  exactly when vanilla's do. This was the coverage doc's old "needs a per-draw
+  scissor" gap, closed generically rather than advancement-specifically.
+- **The atlas grew 512 → 1024 tall** under M172's append-only rule; every
+  pre-M178 sheet renders identically (bookshot/signshot/optionshot/statshot
+  re-ran green untouched). The shelf holds the window CROPPED to its sampled
+  252x140, all 24 tabs (`kind*6+cap*2+selected`), six frames, three
+  nine-slice border-10 boxes, five backdrop tiles.
+- **`window.png` is paletted with per-index tRNS alphas** — a fully
+  transparent interior under an opaque grey border, which is why contents show
+  through it. `decode_png_any` honours this via normalize_to_color8. **The
+  first p2 probe set sat on transparent texels and passed against whatever was
+  behind them** — the fixture-equivalent-of-nothing failure — caught by
+  measuring the sheet directly (proper palette+tRNS decode) and rewritten onto
+  alpha-checked border texels. The gate now asserts `a == 255` beside every
+  texel match.
+- **The battery graded a stale binary on its first run**: the harness ran the
+  gate without rebuilding after each mutation, and eight real mutations all
+  "SURVIVED" against the un-mutated exe. The control-only-survives discipline
+  surfaced it immediately (control also green = nothing was tested). Fixed
+  with an explicit build step; final run **7 killed + control SURVIVED**.
+
+Live wiring: L opens/closes (vanilla's own `keyAdvancements` default — no
+Rewo-specific caveat needed, unlike F6); init()'s first-tab selection sends
+`openedTab` as part of OPENING (the stats screen's REQUEST_STATS precedent);
+every close path sends CLOSED_SCREEN; Done closes; icons ride the container
+path's exact `apply_gui_icons` call so atlas packing cannot drift.
+
+Gate: **`rewo advshot --check`** (43rd), 14 witnesses through the production
+builders — including connectivity-core whites EXCLUDING frame-covered pixels
+plus zero black-on-core, which is what makes the passes' ORDER observable at
+all (a presence-only count stayed green under a flipped-order mutant).
+Verification: 36 counted gates + 5 prose gates exit 0; live --render-check
+64/64 exit 0; 3489 tests across eight crates.
+
+Recorded gaps, stated: mid-screen tree updates (snapshot at open); item-icon
+scissor clipping (icons ride the item pass, which has no scissor — fixtures
+avoid straddling icons); unknown root-backdrop identifiers draw no tiles where
+vanilla falls back to its unbaked missing-texture.
 
 ### M175 — the baby sheets: half of the isBaby gap closed exactly, the other half deferred on arithmetic (2026-08-24)
 
