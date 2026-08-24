@@ -82,15 +82,16 @@ mobshot 246/246, soundshot 37 default/57 audio.
 6. dist/EwoClient refreshed via package.ps1 — full bundle again (exe +
    rewo.exe + icon + 6 fonts); Desktop shortcut repointed.
 7. LEAK_HUNT_INSTRUMENT diagnostics intentionally left in (strip at ship time).
-8. M174 worktree WIP = sign-edit screen; **landed 2026-08-23** on this session's
-   watch: finished app integration (pump/close/echo/commit-on-replace, input
-   routing, render arm), `signshot` gate (42nd, 23 witnesses), battery
-   (15 killed / control / 1 equivalent), r63/r64 → render-check 64/64,
-   coverage 122/0/19 class C 8. Merged --no-ff to main. **Gotchas added to
-   the personal set:** PowerShell `Get-Content` reads UTF-8 as ANSI — mojibake
-   + a whole-file CRLF rewrite on WriteAllLines; use `[IO.File]::ReadAllText`
-   + Edit tool for docs with em dashes. PowerShell `>` redirect writes
-   UTF-16 patches git cannot read — use `git diff --output`.
+8. M174 worktree WIP = sign-edit screen; **landed 2026-08-23**; **M175 baby
+   sheets landed 2026-08-24** (generator + same-size UV-offset swaps +
+   mobtexshot n-series + battery). New permanent lessons: (a)
+   `kind_for_entity_name` needs `minecraft:` NAMESPACED names — bare names
+   silently resolve to Capsule; (b) never re-shoot a Stage after its
+   destroy() — 0xC0000005, not a panic; (c) PowerShell `Get-Content` reads
+   UTF-8 as ANSI and `WriteAllLines` rewrites whole-file CRLF — docs edits
+   go through [IO.File]::*UTF8* or the Edit tool; (d) PowerShell `>`
+   redirect writes UTF-16 patches git cannot read — use
+   `git diff --output`.
 
 ## Process rules I must follow here (from AGENT_LOOP_BRIEF + HANDOFF)
 

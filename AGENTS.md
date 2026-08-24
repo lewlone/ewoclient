@@ -2187,8 +2187,8 @@ default build (**28** witnesses) and adds decode and the mixer under
 does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
-**Everything is shipped and gated** as of 2026-08-23 (M174) —
-**3446 tests / 0 failures** (world 1238, net 1236, gpu 320, data 233, app 231,
+**Everything is shipped and gated** as of 2026-08-24 (M175) —
+**3450 tests / 0 failures** (world 1238, net 1238, gpu 320, data 235, app 231,
 mesh 52, proto 16, audio 120 — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
@@ -7099,3 +7099,19 @@ battery **15/15 + control + one proven-equivalent survivor** (the paste arm's
 own selection collapse is dead code — `insert_text` collapses both paths).
 `--render-check` **64/64**; coverage **122 / 0 / 19**, class C **8**. Full
 detail in REWO_PLAN §15 (M174).*
+*Update (2026-08-24 session, M175 — the baby sheets): M165's pinned gap ("jar
+has 147 *baby*.png, Rewo bakes 0") is half closed, exactly. A new generator
+(`tools/gen_baby_textures.py`) extracts vanilla's `isBaby` whole-sheet swaps
+from the decompile into generated `baby_texture_table.rs` (21 swaps); the 10
+whose baby sheet tiles like its adult are baked and applied as a per-slot UV
+offset gated on `MobCombat::is_baby`; the other 11 need vanilla's separate
+BABY model layer and stay unbaked-by-arithmetic (`baby_swap_skips`, named in
+the gate). Load-bearing: PiglinRenderer's NESTED ternary means piglin_brute
+must not inherit piglin's baby sheet (both are named exclusions);
+kind_for_entity_name needs NAMESPACED names (bare names → Capsule → inert
+swaps — THE bug the battery's namespace mutation now guards); a gate witness
+that outlives its stage's destroy() dies as 0xC0000005, not a panic.
+mobtexshot 13 -> **17** witnesses (m8 rewritten per contract + n1-n4);
+battery **6/6 + control**; MAX_AMBIGUOUS 5 -> 6 (dolphin/dolphin_baby share a
+palette). Two net tests pin slot-16 fallthrough -> set_baby. 42 gates,
+**3450 tests**, render-check 64/64, coverage unchanged at 122/0/19.*

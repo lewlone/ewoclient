@@ -468,6 +468,12 @@ pub struct BakedAssets {
     /// carry no skin data, so every player wears it until online-mode
     /// profile fetching lands).
     pub mob_textures: Vec<MobTexture>,
+    /// M175 — how many of the generated `isBaby` swaps were baked (the
+    /// same-size ones) and how many were skipped because the baby sheet's
+    /// dimensions differ from its adult's (those need vanilla's separate BABY
+    /// model layer, which Rewo does not build yet). The gate pins both.
+    pub baby_swap_baked: usize,
+    pub baby_swap_skips: usize,
     /// Vanilla's metadata-driven alternates (M64) — the cat's ten other coats,
     /// the wolf's eight other variants and their tame sheets, and so on. Same
     /// shape as [`MobTexture`] plus the variant id that addresses it, because
@@ -1161,7 +1167,48 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             None => log::warn!("rewo-data: {path} missing — {key} renders as a capsule"),
         }
     }
-    // M64: vanilla's metadata-driven alternates. Each must be its base's size,
+    // M175: vanilla's `isBaby` whole-sheet swaps (generated from the
+    // decompile). Only swaps whose baby sheet is the ADULT's size are baked:
+    // the renderer re-points UVs by an atlas offset, which is only exact when
+    // the two sheets tile identically. A differently-sized baby sheet rides
+    // vanilla's separate BABY MODEL layer (`ModelLayers.*_BABY`), which Rewo
+    // does not build yet — those stay unbaked and are counted by
+    // `baby_swap_skips` so the gate can pin the split.
+    let mut baby_swap_skips = 0usize;
+    let mut baby_swap_baked = 0usize;
+    for swap in crate::baby_texture_table::BABY_SWAPS {
+        let adult_rel = swap
+            .adult_path
+            .strip_prefix("textures/")
+            .unwrap_or(swap.adult_path);
+        let same_size = MOB_TEXTURE_SPECS
+            .iter()
+            .any(|&(_, path, w, h)| path == adult_rel && w == swap.w && h == swap.h);
+        if !same_size {
+            baby_swap_skips += 1;
+            continue;
+        }
+        let baby_rel = swap
+            .baby_path
+            .strip_prefix("textures/")
+            .unwrap_or(swap.baby_path);
+        match bake_entity_tex(&mut jar, baby_rel, swap.w, swap.h) {
+            Some(rgba) => {
+                mob_textures.push(MobTexture {
+                    key: swap.baby_key,
+                    w: swap.w,
+                    h: swap.h,
+                    rgba,
+                });
+                baby_swap_baked += 1;
+            }
+            None => log::warn!(
+                "rewo-data: baby sheet {} missing — {} renders adult-textured when a baby",
+                swap.baby_path,
+                swap.entity
+            ),
+        }
+    }    // M64: vanilla's metadata-driven alternates. Each must be its base's size,
     // because it reuses the base's UVs — the same constraint M57b puts on a
     // pack's ETF alternates, and every vanilla one satisfies it by
     // construction. One that does not is dropped rather than rendered
@@ -1540,6 +1587,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         font,
         mob_textures,
         mob_variant_textures,
+        baby_swap_baked,
+        baby_swap_skips,
         hud,
         locator,
         container,

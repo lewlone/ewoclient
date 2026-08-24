@@ -5557,6 +5557,53 @@ mod custom_name_visible_tests {
 }
 
 #[cfg(test)]
+mod baby_routing_tests {
+    //! Slot-16 BOOLEAN's fallthrough arm — `AgeableMob`/`Zombie`
+    //! `DATA_BABY_ID` (M175). The Allay and Raider readings have their own
+    //! tests; this one pins that an ORDINARY mob's slot-16 bool reaches
+    //! [`EntityTable::set_baby`] at all, because the render side's whole-sheet
+    /// swap keys on exactly this and nothing else does.
+
+    use super::apply_set_entity_data;
+    use rewo_world::entities::{EntityState, EntityTable};
+
+    fn body(eid: u8, index: u8, serializer: u8, value: &[u8]) -> Vec<u8> {
+        let mut b = vec![eid, index, serializer];
+        b.extend_from_slice(value);
+        b.push(0xFF);
+        b
+    }
+
+    #[test]
+    fn an_ordinary_mobs_slot16_bool_is_its_baby_flag() {
+        let mut t = EntityTable::default();
+        // Type id chosen to be neither Allay nor any Raider: with no kind
+        // classes resolved (`None`) the router cannot take either special
+        // arm anyway, which is the fallthrough under test.
+        t.add(1, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
+        assert!(!t.is_baby(1), "the seeded default is false");
+
+        apply_set_entity_data(&body(1, 16, 8, &[0x01]), &mut t, None);
+        assert!(t.is_baby(1));
+
+        apply_set_entity_data(&body(1, 16, 8, &[0x00]), &mut t, None);
+        assert!(!t.is_baby(1), "not a latch - a grown-up animal must clear it");
+    }
+
+    #[test]
+    fn the_baby_flag_dies_with_the_entity() {
+        let mut t = EntityTable::default();
+        t.add(1, EntityState::new(0, 10, 0.0, 0.0, 0.0, 0.0, 0.0));
+        apply_set_entity_data(&body(1, 16, 8, &[0x01]), &mut t, None);
+        t.remove(1);
+        assert!(
+            !t.is_baby(1),
+            "a recycled id must not hatch as a baby"
+        );
+    }
+}
+
+#[cfg(test)]
 mod entity_silent_tests {
     //! `Entity.DATA_SILENT` — metadata index 4, BOOLEAN (M138a).
     //!

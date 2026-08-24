@@ -55,7 +55,8 @@
 //! It says a mob sampled *its own sheet*. It does not say it sampled the
 //! *right texel* of that sheet — that is `mobshot --check`'s facelabel job, and
 //! the two are complements. And it grades vanilla's **default** state only:
-//! Rewo bakes no baby sheet and no charging/suffocating/invulnerable/angry
+//! M175 closed the baby-sheet half of this gap (same-size swaps render via
+//! generated offsets); no charging/suffocating/invulnerable/angry
 //! sheet at all, which `m8` measures rather than hides.
 //!
 //! Two more limits, both structural rather than incidental:
@@ -103,7 +104,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 13;
+const EXPECTED_WITNESSES: usize = 17;
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
@@ -179,9 +180,11 @@ const MIN_DISCRIMINATING: usize = 70;
 const MAX_SMALL: usize = 9;
 /// Kinds whose whole render some *other* single sheet could also explain,
 /// measured: skeleton/skeleton_horse, enderman/ender_dragon, ghast<->happy_ghast
-/// (both directions) and piglin/piglin_brute. Sound but not discriminating, so
-/// the count is pinned rather than left to drift.
-const MAX_AMBIGUOUS: usize = 5;
+/// (both directions) and piglin/piglin_brute — plus, since M175 baked the
+/// same-size baby sheets, dolphin/dolphin_baby (the baby shares the adult's
+/// grey palette outright). Sound but not discriminating, so the count is
+/// pinned rather than left to drift.
+const MAX_AMBIGUOUS: usize = 6;
 
 #[derive(ClapArgs)]
 pub struct MobtexshotArgs {
@@ -434,6 +437,11 @@ struct Spec {
     kind: EntityModelKind,
     pos: [f32; 3],
     skin_uv: Option<[f32; 2]>,
+    /// M175 — draw the mob with `MobCombat::is_baby`, which is what selects
+    /// the whole-sheet swap (the texture half; the pose-scale half lives in
+    /// live_cmd and is deliberately NOT set here, so the graded pixel area
+    /// stays maximal).
+    baby: bool,
 }
 
 fn build(specs: &[Spec], skip: Option<usize>) -> Vec<EntityDraw<'static>> {
@@ -445,6 +453,7 @@ fn build(specs: &[Spec], skip: Option<usize>) -> Vec<EntityDraw<'static>> {
             let mut d = neutral_draw(s.kind);
             d.pos = s.pos;
             d.skin_uv = s.skin_uv;
+            d.mob.is_baby = s.baby;
             d
         })
         .collect()
@@ -860,25 +869,123 @@ fn run_check(
         },
     ));
 
-    // m8: the state-conditional gap, as a measurement rather than a sentence.
-    // 44 of vanilla's 91 `getTextureLocation` overrides switch sheet on render
-    // state, and the largest single family is `isBaby`
-    // (`AbstractZombieRenderer.java:25-27`). Rewo bakes none of those sheets,
-    // so a baby zombie is a half-scale adult wearing `zombie.png` where vanilla
-    // binds `zombie_baby.png`. This witness pins the size of that gap; when
-    // someone closes it, it goes red and must be updated on purpose.
+    // m8: the state-conditional gap, CLOSED in M175 and now pinned from both
+    // sides. 44 of vanilla's 91 `getTextureLocation` overrides switch sheet on
+    // render state, and the largest single family is `isBaby`
+    // (`AbstractZombieRenderer.java:25-27`). The generated
+    // `baby_texture_table` encodes exactly those swaps; only the ones whose
+    // baby sheet tiles like its adult are baked (the renderer re-points UVs by
+    // an atlas offset, exact only at equal size) — a differently-sized baby
+    // sheet rides vanilla's separate BABY model layer, which Rewo does not
+    // build yet, so those are counted as skips rather than rendered wrong.
     let jar_babies = count_jar_baby_sheets(jar)?;
-    let baked_babies = assets::mob_texture_specs()
-        .filter(|(k, p, _, _)| k.contains("baby") || p.contains("baby"))
+    let expected_same_size = rewo_data::baby_texture_table::BABY_SWAPS
+        .iter()
+        .filter(|s| {
+            let rel = s.adult_path.strip_prefix("textures/").unwrap_or(s.adult_path);
+            rewo_data::assets::mob_texture_specs()
+                .any(|(_, p, w, h)| p == rel && w == s.w && h == s.h)
+        })
         .count();
+    let baked_babies = baked
+        .mob_textures
+        .iter()
+        .filter(|t| t.key.ends_with("_baby"))
+        .count();
+    let total_swaps = rewo_data::baby_texture_table::BABY_SWAPS.len();
     w.push(wit(
-        "m8.the_baby_sheet_gap_is_exactly_this_size",
-        jar_babies == JAR_BABY_SHEETS && baked_babies == 0,
+        "m8.the_baby_swaps_are_baked_up_to_their_pinned_split",
+        jar_babies == JAR_BABY_SHEETS
+            && expected_same_size > 0
+            && baked_babies == expected_same_size
+            && baked.baby_swap_skips + baked_babies == total_swaps,
         format!(
-            "jar has {jar_babies} *baby*.png under textures/entity (pinned at \
-             {JAR_BABY_SHEETS}); Rewo bakes {baked_babies}"
+            "jar has {jar_babies} *baby*.png (pinned at {JAR_BABY_SHEETS}); table has \
+             {total_swaps} swaps -> {expected_same_size} same-size baked + \
+             {} deferred to the BABY-model milestone",
+            baked.baby_swap_skips
         ),
     ));
+
+    // n1/n2 — a BABY zombie wears `zombie_baby.png`, not a shrunken adult
+    // wearing `zombie.png`. Attribution is leave-one-out over one mob; the
+    // claim splits in two because either half alone can pass against a swap
+    // that silently did not happen: every attributed pixel must be PRODUCIBLE
+    // by the baby sheet (n1), and at least one must be IMPOSSIBLE for the
+    // adult sheet (n2 — zombie.png stays in the atlas for the adults). A OWN
+    // stage, because the sweep's `stage` was destroyed at m4's end and only
+    // `stack`/`pools` exist past it — the first cut re-shot the corpse and
+    // died on a destroyed command pool (0xC0000005, no Rust panic).
+    let mut baby_stage = stage_from(
+        gpu,
+        baked,
+        sw,
+        sh,
+        Vec3::new(0.0, 1.4, 12.0),
+        Vec3::new(0.0, 1.2, 0.0),
+    )?;
+    let zrow = row(EntityModelKind::Zombie, 0);
+    let full_a = baby_stage.shoot(gpu, &[zrow], None)?;
+    let sans_a = baby_stage.shoot(gpu, &[zrow], Some(0))?;
+    let adult_px = attributed(&full_a, &sans_a);
+    let mut zb = zrow;
+    zb.baby = true;
+    let full_b = baby_stage.shoot(gpu, &[zb], None)?;
+    let sans_b = baby_stage.shoot(gpu, &[zb], Some(0))?;
+    let baby_px = attributed(&full_b, &sans_b);
+    let baby_set = sheets
+        .get("zombie_baby")
+        .ok_or("zombie_baby not baked — m8's split says it should be")?;
+    let n1 = !baby_px.is_empty() && baby_px.iter().all(|c| explains(baby_set, *c));
+    w.push(wit(
+        "n1.a_baby_zombies_pixels_are_all_producible_by_its_own_baby_sheet",
+        n1,
+        format!(
+            "{} attributed px, {} unexplained by zombie_baby",
+            baby_px.len(),
+            baby_px.iter().filter(|c| !explains(baby_set, **c)).count()
+        ),
+    ));
+    let adult_set = sheets
+        .get("zombie")
+        .ok_or("zombie not baked")?;
+    let n2 = baby_px.iter().any(|c| !explains(adult_set, *c));
+    w.push(wit(
+        "n2.the_swap_actually_happened_adult_sheet_cannot_explain_the_baby",
+        n2,
+        format!(
+            "{} of {} baby px are impossible for zombie.png (a no-op swap would put this at 0)",
+            baby_px.iter().filter(|c| !explains(adult_set, **c)).count(),
+            baby_px.len()
+        ),
+    ));
+    // n3 — the ADULT control: the same scene without `baby` still grades
+    // clean against zombie.png, so n1/n2 cannot be satisfied by some global
+    // texture break.
+    let n3 = !adult_px.is_empty() && adult_px.iter().all(|c| explains(adult_set, *c));
+    w.push(wit(
+        "n3.the_adult_control_still_grades_against_zombie_png",
+        n3,
+        format!(
+            "{} attributed px, {} unexplained by zombie.png",
+            adult_px.len(),
+            adult_px.iter().filter(|c| !explains(adult_set, **c)).count()
+        ),
+    ));
+    // n4 — the DEFERRED half is deliberate: a size-mismatched swap (happy
+    // ghast's 64² baby against a 128² adult) is NOT baked, because offsetting
+    // UVs across different sheet sizes samples the wrong texels. Its absence
+    // from the atlas is the assertion.
+    let deferred_missing = !baked.mob_textures.iter().any(|t| t.key == "happy_ghast_baby");
+    w.push(wit(
+        "n4.size_mismatched_baby_sheets_stay_unbaked_on_purpose",
+        deferred_missing && baked.baby_swap_skips > 0,
+        format!(
+            "happy_ghast_baby absent: {deferred_missing}, skips {} (need the BABY model layer first)",
+            baked.baby_swap_skips
+        ),
+    ));
+    baby_stage.destroy(gpu);
 
     // m12: the recorded repro's own geometry and clock, which m1 did not have.
     //
@@ -906,16 +1013,19 @@ fn run_check(
             kind: EntityModelKind::Zombie,
             pos: [0.0, 0.0, 0.0],
             skin_uv: None,
+            baby: false,
         },
         Spec {
             kind: EntityModelKind::Zombie,
             pos: [PILE_SPACING, 0.0, -PILE_SPACING],
             skin_uv: None,
+            baby: false,
         },
         Spec {
             kind: EntityModelKind::Villager,
             pos: [2.0 * PILE_SPACING, 0.0, -2.0 * PILE_SPACING],
             skin_uv: None,
+            baby: false,
         },
     ];
     const SETTLED: f32 = 13.0;
@@ -1266,6 +1376,7 @@ fn row(kind: EntityModelKind, slot: usize) -> Spec {
         kind,
         pos: [(slot as f32 - 1.0) * ROW_X, 0.0, 0.0],
         skin_uv: None,
+        baby: false,
     }
 }
 
@@ -1275,10 +1386,11 @@ fn grid(kind: EntityModelKind, i: usize, cols: usize) -> Spec {
         kind,
         pos: [
             (c as f32 - (cols as f32 - 1.0) / 2.0) * GRID_X,
-            0.0,
-            -(r as f32) * GRID_Z,
-        ],
+        0.0,
+        -(r as f32) * GRID_Z,
+    ],
         skin_uv: None,
+        baby: false,
     }
 }
 
