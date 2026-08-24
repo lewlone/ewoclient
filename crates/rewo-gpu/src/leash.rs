@@ -74,14 +74,18 @@ pub fn inv_sqrt(x: f64) -> f64 {
 ///
 /// `start` is the leashed entity's attach point (`entity.pos + rotated leash
 /// offset`); `end` is the holder's `getRopeHoldPosition`. `slack` droops the
-/// rope; `start_light` / `end_light` are the resolved lightmap RGB (`0..1`) at
-/// each end. Colours come out LINEAR for the world attachment.
+/// rope; `start_packed` / `end_packed` are the PACKED light components
+/// `(block, sky)` at each end's eye — the rope interpolates the components and
+/// evaluates the lightmap curve per vertex, which is what
+/// `LeashFeatureRenderer.java:60-77` does. Colours come out LINEAR for the
+/// world attachment.
 pub fn build_ribbon(
     start: [f64; 3],
     end: [f64; 3],
     slack: bool,
-    start_light: [f32; 3],
-    end_light: [f32; 3],
+    start_packed: (u8, u8),
+    end_packed: (u8, u8),
+    lm: &dyn Fn(u8, u8) -> [f32; 3],
 ) -> Vec<LeashVertex> {
     let dx = (end[0] - start[0]) as f32;
     let dy = (end[1] - start[1]) as f32;
@@ -93,14 +97,12 @@ pub fn build_ribbon(
     let mut strip: Vec<LeashVertex> = Vec::with_capacity(((LEASH_STEPS + 1) * 4) as usize);
     for k in 0..=LEASH_STEPS {
         add_vertex_pair(
-            &mut strip, start, dx, dy, dz, 0.05, dx_off, dz_off, k, false, slack, start_light,
-            end_light,
+            &mut strip, start, dx, dy, dz, 0.05, dx_off, dz_off, k, false, slack, start_packed, end_packed, lm,
         );
     }
     for k in (0..=LEASH_STEPS).rev() {
         add_vertex_pair(
-            &mut strip, start, dx, dy, dz, 0.0, dx_off, dz_off, k, true, slack, start_light,
-            end_light,
+            &mut strip, start, dx, dy, dz, 0.0, dx_off, dz_off, k, true, slack, start_packed, end_packed, lm,
         );
     }
     strip_to_list(&strip)
@@ -119,15 +121,29 @@ fn add_vertex_pair(
     k: i32,
     backwards: bool,
     slack: bool,
-    start_light: [f32; 3],
-    end_light: [f32; 3],
+    start_packed: (u8, u8),
+    end_packed: (u8, u8),
+    lm: &dyn Fn(u8, u8) -> [f32; 3],
 ) {
     let progress = k as f32 / LEASH_STEPS as f32;
     let color_modifier = if k % 2 == i32::from(backwards) { 0.7 } else { 1.0 };
+    // Mth.lerp(progress, startBlockLight, endBlockLight) then (int) -
+    // truncation toward zero, exact on this non-negative range - and the same
+    // for sky, PACKED per vertex (LeashFeatureRenderer.java:60-62). The
+    // lightmap curve is evaluated on the CPU against the same state the
+    // entities use; interpolating the two ends' final RGB instead would
+    // flatten the curve's mid-tones (M170's recorded divergence).
+    let lerp_i = |a: u8, b: u8| -> u8 {
+        let f = a as f32 + (b as f32 - a as f32) * progress;
+        f.trunc().clamp(0.0, 15.0) as u8
+    };
+    let block = lerp_i(start_packed.0, end_packed.0);
+    let sky = lerp_i(start_packed.1, end_packed.1);
+    let mut light = lm(block, sky);
+
     let mut color = [0.0f32; 3];
     for c in 0..3 {
-        let light = start_light[c] + (end_light[c] - start_light[c]) * progress;
-        color[c] = crate::entities::srgb_to_linear(LEASH_BASE_SRGB[c] * color_modifier) * light;
+        color[c] = crate::entities::srgb_to_linear(LEASH_BASE_SRGB[c] * color_modifier) * light[c];
     }
     let x = dx * progress;
     let y = if slack {
@@ -173,7 +189,14 @@ fn strip_to_list(strip: &[LeashVertex]) -> Vec<LeashVertex> {
 mod tests {
     use super::*;
 
-    const LIT: [f32; 3] = [1.0, 1.0, 1.0];
+    /// Full block + sky tops the curve out at a constant for the geometry
+    /// witnesses; THIS one is monotonic in block level so the fade witness
+    /// can separate the curve from the 0.7 dim alternation.
+    const LIT: (u8, u8) = (15, 15);
+    fn lm(b: u8, _: u8) -> [f32; 3] {
+        let l = 0.2 + 0.8 * (b as f32 / 15.0);
+        [l; 3]
+    }
 
     #[test]
     fn inv_sqrt_is_close_to_the_real_thing() {
@@ -187,7 +210,7 @@ mod tests {
     #[test]
     fn the_strip_is_two_sided_and_expands_to_a_list() {
         // 2 passes × (24+1) steps × 2 verts = 100 strip verts -> 98 triangles.
-        let v = build_ribbon([0.0, 1.0, 0.0], [3.0, 1.0, 0.0], false, LIT, LIT);
+        let v = build_ribbon([0.0, 1.0, 0.0], [3.0, 1.0, 0.0], false, LIT, LIT, &lm);
         assert_eq!(v.len(), 98 * 3, "98 triangles");
     }
 
@@ -197,7 +220,7 @@ mod tests {
         // vertex is in [y - eps, y + 0.05 + eps]. The lower bound is TIGHT on
         // purpose: dropping the `0.05 -` on the second edge sinks half the
         // vertices to y - 0.05, which a loose `abs() <= 0.05` tolerance hides.
-        let v = build_ribbon([0.0, 5.0, 0.0], [4.0, 5.0, 0.0], false, LIT, LIT);
+        let v = build_ribbon([0.0, 5.0, 0.0], [4.0, 5.0, 0.0], false, LIT, LIT, &lm);
         for vert in &v {
             assert!(
                 vert.pos[1] >= 5.0 - 1e-4 && vert.pos[1] <= 5.0 + 0.05 + 1e-4,
@@ -213,7 +236,7 @@ mod tests {
         // offsetFactor`), so the ribbon has real thickness — this is what a
         // zero `offset_factor` collapses, and the gate cannot see it because
         // for this rope the width is along the camera's own view axis.
-        let v = build_ribbon([-2.0, 0.0, 0.0], [2.0, 0.0, 0.0], false, LIT, LIT);
+        let v = build_ribbon([-2.0, 0.0, 0.0], [2.0, 0.0, 0.0], false, LIT, LIT, &lm);
         let zmin = v.iter().map(|vt| vt.pos[2]).fold(f32::MAX, f32::min);
         let zmax = v.iter().map(|vt| vt.pos[2]).fold(f32::MIN, f32::max);
         assert!(zmax - zmin > 0.01, "ribbon has no perpendicular width: z span {}", zmax - zmin);
@@ -225,8 +248,8 @@ mod tests {
         // the straight interpolation between the endpoints.
         let start = [0.0f64, 10.0, 0.0];
         let end = [4.0f64, 6.0, 0.0]; // dy = -4
-        let slack = build_ribbon(start, end, true, LIT, LIT);
-        let taut = build_ribbon(start, end, false, LIT, LIT);
+        let slack = build_ribbon(start, end, true, LIT, LIT, &lm);
+        let taut = build_ribbon(start, end, false, LIT, LIT, &lm);
         // Both share their x positions (x = dx·progress), so pick the vertex
         // nearest the midpoint x = 2.0 in each and compare y there — the global
         // minima are equal, because both curves meet at the lower endpoint.
@@ -250,7 +273,7 @@ mod tests {
     fn an_upward_rope_sags_the_other_way() {
         // dy > 0 uses dy·p^2, so near the mob (p small) the rope stays low and
         // rises late — the min y is close to the start, not the end.
-        let v = build_ribbon([0.0, 2.0, 0.0], [0.0, 8.0, 4.0], true, LIT, LIT);
+        let v = build_ribbon([0.0, 2.0, 0.0], [0.0, 8.0, 4.0], true, LIT, LIT, &lm);
         let min_y = v.iter().map(|vt| vt.pos[1]).fold(f32::MAX, f32::min);
         assert!((min_y - 2.0).abs() < 0.1, "upward rope should hug the start y, got {min_y}");
     }
@@ -259,7 +282,7 @@ mod tests {
     fn the_base_is_brown_and_alternating_segments_dim() {
         // At full light the linear colour is srgb_to_linear(base·mod). r > g > b
         // (brown), and some verts carry the 0.7 dim.
-        let v = build_ribbon([0.0, 1.0, 0.0], [3.0, 1.0, 0.0], false, LIT, LIT);
+        let v = build_ribbon([0.0, 1.0, 0.0], [3.0, 1.0, 0.0], false, LIT, LIT, &lm);
         let bright = crate::entities::srgb_to_linear(0.5);
         let dim = crate::entities::srgb_to_linear(0.5 * 0.7);
         let reds: Vec<f32> = v.iter().map(|vt| vt.color[0]).collect();
@@ -273,19 +296,31 @@ mod tests {
     #[test]
     fn light_fades_along_the_rope() {
         // Lit at the start, dark at the end: the near and far reds differ.
+        // Packed components now — the fade comes from the lightmap CURVE
+        // between (15,15) and (0,0), evaluated per vertex.
         let v = build_ribbon(
             [0.0, 1.0, 0.0],
             [6.0, 1.0, 0.0],
             false,
-            [1.0, 1.0, 1.0],
-            [0.0, 0.0, 0.0],
+            LIT,
+            (0, 0),
+            &lm,
         );
         let near = v.first().unwrap().color[0];
-        let far = v
-            .iter()
-            .max_by(|a, b| a.pos[0].partial_cmp(&b.pos[0]).unwrap())
-            .unwrap()
-            .color[0];
-        assert!(near > far + 0.1, "near {near} should be brighter than far {far}");
+        // Envelope comparison within POSITION windows at each end: the strip
+        // runs forward then backward, so index slices re-cover the start, and
+        // single picks land on the 0.7 dim alternation. The brightest vertex
+        // in a window around each end separates curve-fade from stripes.
+        let win = |x: f32| {
+            v.iter()
+                .filter(|v| (v.pos[0] - x).abs() < 0.35)
+                .map(|v| v.color[0])
+                .fold(0.0f32, f32::max)
+        };
+        let (near_max, far_max) = (win(0.0), win(6.0));
+        assert!(
+            near_max > far_max + 0.05,
+            "near envelope {near_max} should beat far envelope {far_max} (single near was {near})"
+        );
     }
 }
