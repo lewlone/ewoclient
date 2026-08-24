@@ -4484,6 +4484,11 @@ pub(crate) fn widget_sprites(
         slider: std::array::from_fn(|i| hud_sprite(&w.slider[i])),
         sign_boards: std::array::from_fn(|i| hud_sprite(&w.sign_boards[i])),
         hanging_sign_boards: std::array::from_fn(|i| hud_sprite(&w.hanging_sign_boards[i])),
+        adv_window: hud_sprite(&w.adv_window),
+        adv_tabs: std::array::from_fn(|i| hud_sprite(&w.adv_tabs[i])),
+        adv_frames: std::array::from_fn(|i| hud_sprite(&w.adv_frames[i])),
+        adv_boxes: std::array::from_fn(|i| hud_sprite(&w.adv_boxes[i])),
+        adv_backgrounds: std::array::from_fn(|i| hud_sprite(&w.adv_backgrounds[i])),
     })
 }
 
@@ -6093,6 +6098,8 @@ struct LiveApp {
     /// as a Rewo-specific opener rather than smuggled in as if it were
     /// vanilla's.
     stats: Option<crate::stats_view::StatsView>,
+    /// The advancements screen's app-side state (M178) — `None` when shut.
+    advancements: Option<crate::advancements_view::AdvancementsView>,
     /// The death screen's own state (M82) — `None` while alive.
     death: Option<DeathView>,
     /// Whichever of M85's three screens is up, and the state it needs to be
@@ -6448,6 +6455,15 @@ impl ApplicationHandler for LiveApp {
                             return;
                         }
                     }
+                    // M178: the advancements key closes the screen while it is
+                    // up — `keyAdvancements.matches(event)` → `setScreen(null)`
+                    // + `grabMouse()`. Vanilla default IS L.
+                    if p && self.advancements.is_some() {
+                        if let Some(76) = glfw_key(event.physical_key) {
+                            self.close_advancements();
+                            return;
+                        }
+                    }
                     if p {
                         let shift = self.shift;
                         let result = glfw_key(event.physical_key).and_then(|k| {
@@ -6646,6 +6662,16 @@ impl ApplicationHandler for LiveApp {
                             self.close_stats();
                         } else {
                             self.open_stats();
+                        }
+                    }
+                    // M178: L opens the advancements screen — this one IS
+                    // vanilla's binding (`keyAdvancements`, default L), so no
+                    // Rewo-specific caveat is needed, unlike F6 above.
+                    PhysicalKey::Code(KeyCode::KeyL) if p && !event.repeat => {
+                        if self.advancements.is_some() {
+                            self.close_advancements();
+                        } else if self.session.is_some() {
+                            self.open_advancements();
                         }
                     }
                     // T and `/` open the chat screen (M110).
@@ -7981,6 +8007,11 @@ impl LiveApp {
             (ScreenKind::BookView, rewo_world::book_view_screen::DONE) => {
                 self.close_book();
             }
+            // M178: the advancements footer's Done is `onClose()` — which
+            // lands in `removed()`'s CLOSED_SCREEN send, as every exit does.
+            (ScreenKind::Advancements, rewo_world::advancements_screen::DONE) => {
+                self.close_advancements();
+            }
             // M174: the sign editor's Done is `onDone()` — which COMMITS
             // (the packet is in `removed()`, reached by every exit).
             (ScreenKind::SignEdit, rewo_world::sign_edit_screen::DONE) => {
@@ -8609,6 +8640,60 @@ impl LiveApp {
 
     fn close_stats(&mut self) {
         self.stats = None;
+        self.screen.screens.close();
+        self.grab_for_screen(false);
+    }
+
+    /// Open the advancements screen (M178). `AdvancementsScreen.init()`
+    /// auto-selects the first tab and tells the server via
+    /// `ServerboundSeenAdvancementsPacket.openedTab` — the send is part of
+    /// opening, exactly as the stats screen's REQUEST_STATS is.
+    fn open_advancements(&mut self) {
+        let Some(advance) = self
+            .baked
+            .as_ref()
+            .and_then(|b| b.font.as_ref())
+            .map(|f| f.advance)
+        else {
+            log::warn!("live: advancements screen needs the baked font");
+            return;
+        };
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let view =
+            crate::advancements_view::AdvancementsView::build(&session.advancements, &self.lang, &advance);
+        if view.screen.tabs.is_empty() {
+            // Vanilla opens onto an empty window with its two sad labels —
+            // that IS the screen; keep it rather than refusing to open.
+            log::info!("live: advancements screen — no displayed advancements");
+        }
+        let selected = view.selected_root_id().map(str::to_string);
+        let (gw, gh) = self.gui_size();
+        self.advancements = Some(view);
+        let done = self.lang.or_key("gui.done").to_string();
+        let screen = rewo_world::advancements_screen::build_screen(gw, gh, &done);
+        self.screen.screens.open(screen);
+        self.grab_for_screen(true);
+        if let Some(tab) = selected {
+            if let Some(session) = self.session.as_mut() {
+                if let Err(e) = session.send_seen_advancements_opened_tab(&tab) {
+                    log::warn!("live: opened_tab: {e}");
+                }
+            }
+        }
+    }
+
+    /// Close the advancements screen. `removed()` sends CLOSED_SCREEN
+    /// unconditionally — no dirty check, no cancel (M179 will reuse this for
+    /// every close path).
+    fn close_advancements(&mut self) {
+        if let Some(session) = self.session.as_mut() {
+            if let Err(e) = session.send_seen_advancements_closed_screen() {
+                log::warn!("live: closed_screen: {e}");
+            }
+        }
+        self.advancements = None;
         self.screen.screens.close();
         self.grab_for_screen(false);
     }
@@ -11307,6 +11392,8 @@ impl LiveApp {
         // everything a screen draws.
         {
             let mut chrome = rewo_gpu::screen::ScreenDraw::default();
+            // M178 — the advancements screen's icons, when its arm runs.
+            let mut adv_icons: Vec<crate::advancements_view::IconDraw> = Vec::new();
             // Every hover test wants the cursor in GUI space — see
             // `LiveApp::mouse_gui` for the M82 bug this fixes, and for why all
             // five screens share the one conversion.
@@ -11328,6 +11415,48 @@ impl LiveApp {
                 );
                 if let Some(advance) = advance {
                     text.extend(crate::stats_view::lines(view, screen, &advance, px));
+                }
+            } else if self.advancements.is_some()
+                && self.screen.screens.current().is_some_and(|s| {
+                    s.kind == rewo_world::screen::ScreenKind::Advancements
+                })
+            {
+                // M178: the advancements window. Generic chrome carries the
+                // transparent gradient + the Done button; our scissored
+                // batches draw between the pass's head and its sprites
+                // (vanilla: extractInside, then extractWindow), and our plain
+                // sprites join `chrome.sprites` ahead of the buttons.
+                let gw = (extent.width as f32 / px) as i32;
+                let gh = (extent.height as f32 / px) as i32;
+                let (win_x, win_y) =
+                    rewo_world::advancements_screen::window_origin(gw, gh);
+                // tick() runs here, contents-relative: the model owns the
+                // hover clock and this is its only per-frame driver.
+                if let Some(v) = self.advancements.as_mut() {
+                    v.ensure_centered();
+                    v.tick(Some((
+                        mouse_gui.0 as i32 - win_x - rewo_world::advancements_screen::INSIDE_X,
+                        mouse_gui.1 as i32 - win_y - rewo_world::advancements_screen::INSIDE_Y,
+                    )));
+                }
+                if let Some(view) = self.advancements.as_ref() {
+                    let mut adv = crate::advancements_view::chrome(view, gw, gh, gw);
+                    if let Some(advance) = state.world_renderer.font_advance() {
+                        text.extend(crate::advancements_view::lines(
+                            view,
+                            &self.lang,
+                            gw,
+                            gh,
+                            gw,
+                            px,
+                            &advance,
+                        ));
+                    }
+                    chrome.scissored.append(&mut adv.scissored);
+                    chrome.sprites.append(&mut adv.sprites);
+                    // Icons ride the item pass, fed beside the container
+                    // path's own icons further down.
+                    adv_icons = crate::advancements_view::icon_draws(view, gw, gh, px);
                 }
             } else if self.death.is_some() {
                 if let (Some(view), Some(screen)) =
@@ -11426,6 +11555,32 @@ impl LiveApp {
                 }
             }
             state.world_renderer.set_screen(chrome);
+            // M178 — the advancements screen's icons, when its arm collected
+            // any. `apply_gui_icons` is the exact call the container path
+            // makes, so atlas packing and shading cannot drift between them.
+            if !adv_icons.is_empty() {
+                if let Some(gui) = self.gui_items.as_mut() {
+                    let items: Vec<rewo_gpu::gui_item::GuiItem> = adv_icons
+                        .iter()
+                        .filter_map(|d| {
+                            icon_for(
+                                &self.items,
+                                &session.trim_materials,
+                                rewo_world::inventory::ItemSlot::plain(d.item, d.count.max(1)),
+                                d.x,
+                                d.y,
+                                d.size,
+                            )
+                        })
+                        .collect();
+                    apply_gui_icons(
+                        &mut state.world_renderer,
+                        &mut state.gpu,
+                        gui,
+                        &items,
+                    );
+                }
+            }
         }
         // M151 — the tab list's glyphs go LAST, matching its fills. `chat_range`
         // indexes into this vector and every screen builder above extends it,
@@ -11621,6 +11776,7 @@ fn run_windowed(
         screen: ScreenState::default(),
         stat_registries: std::sync::Arc::new(stat_registries),
         stats: None,
+        advancements: None,
         hand: None,
         shift: false,
         ctrl: false,
@@ -20273,6 +20429,7 @@ pub(crate) fn screen_chrome(
         // M84's statistics screen fills this; every other screen's chrome is
         // its backdrop and its buttons.
         sprites: Vec::new(),
+        scissored: Vec::new(),
     }
 }
 

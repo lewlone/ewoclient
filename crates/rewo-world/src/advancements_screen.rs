@@ -731,6 +731,32 @@ pub fn tooltip_geom(tab: &Tab, window_left: i32, screen_width: i32) -> Option<To
     })
 }
 
+// ─── The framework screen ────────────────────────────────────────────────────
+
+/// The footer `Done` button's widget id.
+pub const DONE: u32 = 0;
+
+/// `AdvancementsScreen.init()`'s framework half: a transparent backdrop (the
+/// window.png IS the screen) and the footer's Done button.
+///
+/// The layout is `HeaderAndFooterLayout`, whose header AND footer default to
+/// 33 px (`DEFAULT_HEADER_AND_FOOTER_HEIGHT`); the footer frame sits at
+/// `height - 33` and its 200x20 button centres in it → y = height - 33 + 6,
+/// x = (width - 200) / 2. The header's title text is drawn by the app's text
+/// builder, not as a widget.
+pub fn build_screen(gui_w: i32, gui_h: i32, done_label: &str) -> crate::screen::Screen {
+    crate::screen::Screen::new(crate::screen::ScreenKind::Advancements, gui_w, gui_h)
+        .with_backdrop(crate::screen::Backdrop::TRANSPARENT)
+        .with_widgets(vec![crate::screen::Widget::button(
+            DONE,
+            (gui_w - crate::screen::BUTTON_WIDTH) / 2,
+            gui_h - 33 + 6,
+            crate::screen::BUTTON_WIDTH,
+            crate::screen::BUTTON_HEIGHT,
+            done_label,
+        )])
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

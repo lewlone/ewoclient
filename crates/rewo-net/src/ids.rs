@@ -296,6 +296,11 @@ pub struct Ids {
     /// `ServerboundPlaceRecipePacket` (M98) — click a recipe, ask the server to
     /// lay it out on the grid.
     pub sb_play_place_recipe: Option<i32>,
+    /// `ServerboundSeenAdvancementsPacket` (M178) — the advancements screen's
+    /// lifecycle packet: `OPENED_TAB` carries a tab id, `CLOSED_SCREEN` is
+    /// bare. Optional like its siblings: a client that never opens the screen
+    /// never needs it.
+    pub sb_play_seen_advancements: Option<i32>,
     /// `container_slot_state_changed` (M93h) — the crafter's slot toggles.
     ///
     /// A **different packet** from `container_button_click`, not a mode of it:
@@ -753,6 +758,7 @@ impl Ids {
             sb_play_container_button_click: opt!(p, P, S, "container_button_click"),
             sb_play_recipe_book_change_settings: opt!(p, P, S, "recipe_book_change_settings"),
             sb_play_place_recipe: opt!(p, P, S, "place_recipe"),
+            sb_play_seen_advancements: opt!(p, P, S, "seen_advancements"),
             sb_play_container_slot_state_changed: opt!(p, P, S, "container_slot_state_changed"),
             sb_play_set_beacon: opt!(p, P, S, "set_beacon"),
             sb_play_rename_item: opt!(p, P, S, "rename_item"),

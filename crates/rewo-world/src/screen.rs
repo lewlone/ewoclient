@@ -78,6 +78,10 @@ pub enum ScreenKind {
     /// `open_sign_editor`. Every exit commits (`removed()` sends
     /// `sign_update`); see [`crate::sign_edit_screen`].
     SignEdit,
+    /// `AdvancementsScreen` (M177/M178) — opened by the advancements key
+    /// (vanilla default L). The tab strip, contents and tooltip are the
+    /// app-side model's; this framework slot carries the footer's Done.
+    Advancements,
 }
 
 /// A widget's identity within its screen. The screen's own module owns the

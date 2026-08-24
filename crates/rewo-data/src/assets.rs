@@ -2449,6 +2449,50 @@ pub struct WidgetSprites {
     /// The 12 `gui/hanging_signs/<wood>.png` sheets (M174), 16x16, scale 4.5
     /// — chains baked into the texture, no wall/ceiling split.
     pub hanging_sign_boards: [HudSprite; 12],
+    /// `advancements/window.png` (M178) CROPPED to the 252x140 the blit
+    /// samples of its 256x256 sheet — M172's book rule, so a whole-sheet
+    /// `Fill::Stretch` is the exact vanilla blit.
+    pub adv_window: HudSprite,
+    /// The 24 `advancements/tab_*` sprites (M178), indexed
+    /// `kind*6 + cap*2 + selected`: kinds Above/Below/Left/Right in declaration
+    /// order, caps First(left|top)/Middle/Last(right|bottom), selected last.
+    /// Above/Below are 28x32, Left/Right 32x28.
+    pub adv_tabs: [HudSprite; 24],
+    /// The six frame sprites (M178), `type*2 + obtained`: task, challenge,
+    /// goal x obtained/unobtained. All 26x26.
+    pub adv_frames: [HudSprite; 6],
+    /// box_obtained, box_unobtained, title_box (M178). All 200x26 with a
+    /// `.mcmeta` declaring nine-slice **border 10** — the tooltip's progress
+    /// bar and background panel stretch through it.
+    pub adv_boxes: [HudSprite; 3],
+    /// The five vanilla root backdrops (M178), [`ADV_BACKGROUNDS`] order. A
+    /// root whose wire identifier is not in this table has no baked tile: the
+    /// renderer draws nothing for it rather than guessing (vanilla falls back
+    /// to its intentional-missing texture, which Rewo does not bake).
+    pub adv_backgrounds: [HudSprite; 5],
+}
+
+/// The five vanilla advancement backdrop names, in bake order — the jar's
+/// `advancements/backgrounds/` directory, alphabetical.
+pub const ADV_BACKGROUNDS: [&str; 5] = ["adventure", "end", "husbandry", "nether", "stone"];
+
+/// One `advancements/tab_*` sprite's path from `(kind, cap, selected)`.
+/// Kinds: 0 above, 1 below, 2 left, 3 right. Caps: 0 left/top, 1 middle,
+/// 2 right/bottom. The kind word and cap word come straight off the file
+/// names (`tab_above_left.png`, `tab_left_top.png`, ...).
+pub fn adv_tab_path(kind: usize, cap: usize, selected: bool) -> String {
+    let kind_word = ["above", "below", "left", "right"][kind];
+    let cap_word = if kind < 2 {
+        ["left", "middle", "right"][cap]
+    } else {
+        ["top", "middle", "bottom"][cap]
+    };
+    format!(
+        "gui/sprites/advancements/tab_{}_{}{}.png",
+        kind_word,
+        cap_word,
+        if selected { "_selected" } else { "" }
+    )
 }
 
 /// The wood set, in the fixed order the sign-board sheet indices use
@@ -2544,6 +2588,41 @@ fn bake_widgets(jar: Jar) -> Option<WidgetSprites> {
         sign_boards.push(get(jar, &format!("gui/signs/{wood}.png"))?);
         hanging_sign_boards.push(get(jar, &format!("gui/hanging_signs/{wood}.png"))?);
     }
+    // M178 — the advancements shelf. The window is cropped to its sampled
+    // 252x140 (the field doc); the 24 tabs walk kind x cap x selected; the
+    // six frames walk type x obtained; the three boxes and five backdrops
+    // are flat tables.
+    let adv_window_full = get(jar, "gui/advancements/window.png")?;
+    let adv_window = crop(&adv_window_full, 252, 140)?;
+    let mut adv_tabs = Vec::with_capacity(24);
+    for kind in 0..4 {
+        for cap in 0..3 {
+            for selected in [false, true] {
+                adv_tabs.push(get(jar, &adv_tab_path(kind, cap, selected))?);
+            }
+        }
+    }
+    const FRAMES: [&str; 6] = [
+        "task_frame_obtained",
+        "task_frame_unobtained",
+        "challenge_frame_obtained",
+        "challenge_frame_unobtained",
+        "goal_frame_obtained",
+        "goal_frame_unobtained",
+    ];
+    let mut adv_frames = Vec::with_capacity(6);
+    for name in FRAMES {
+        adv_frames.push(get(jar, &format!("gui/sprites/advancements/{name}.png"))?);
+    }
+    const BOXES: [&str; 3] = ["box_obtained", "box_unobtained", "title_box"];
+    let mut adv_boxes = Vec::with_capacity(3);
+    for name in BOXES {
+        adv_boxes.push(get(jar, &format!("gui/sprites/advancements/{name}.png"))?);
+    }
+    let mut adv_backgrounds = Vec::with_capacity(5);
+    for name in ADV_BACKGROUNDS {
+        adv_backgrounds.push(get(jar, &format!("gui/advancements/backgrounds/{name}.png"))?);
+    }
     Some(WidgetSprites {
         button: get(jar, "gui/sprites/widget/button.png")?,
         button_disabled: get(jar, "gui/sprites/widget/button_disabled.png")?,
@@ -2566,6 +2645,11 @@ fn bake_widgets(jar: Jar) -> Option<WidgetSprites> {
         slider: sliders.try_into().ok()?,
         sign_boards: sign_boards.try_into().ok()?,
         hanging_sign_boards: hanging_sign_boards.try_into().ok()?,
+        adv_window,
+        adv_tabs: adv_tabs.try_into().ok()?,
+        adv_frames: adv_frames.try_into().ok()?,
+        adv_boxes: adv_boxes.try_into().ok()?,
+        adv_backgrounds: adv_backgrounds.try_into().ok()?,
     })
 }
 
