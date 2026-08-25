@@ -1,4 +1,4 @@
-# Next-session prompt — Rewo, Lane-A continuation (headless work)
+# Next-session prompt — Rewo continuation (headless work)
 
 Copy everything below the line into a fresh session.
 
@@ -13,107 +13,112 @@ This session's queue is **headless-only work**: nothing below needs a running
 server or the windowed client. Where an item *could* later take live
 r-witnesses, that is named as deferred, not skipped silently.
 
-**Read first, in this order:** `REWO_PLAN.md` §0.0 HANDOFF → §15's last three
-entries (M177 advancements decode, M178 advancements render, M176 leash light)
-→ `AGENT_LOOP_BRIEF.md` for process rules. `MEMORY.md` is an older orientation
+**Read first, in this order:** `REWO_PLAN.md` §0.0 HANDOFF → §15's newest
+entries (M180 book page-clicks, M179 advancement clicks) →
+`AGENT_LOOP_BRIEF.md` for process rules. `MEMORY.md` is an older orientation
 snapshot — read it, don't trust it over measurements.
 
-## State (verified 2026-08-24 on the pushed tree)
+## State (verified 2026-08-25 on the pushed tree)
 
 ```bash
 git status --short        # expect empty
 git rev-list --count origin/main..main   # expect 0 — everything is PUSHED
 ```
 
-* **main == origin/main at `cf7a8bd`.** The M174/M175/M176 batch AND the
-  M177+M178 advancements arc are all pushed.
-* **3489 tests / 0 failures** across EIGHT rewo crates — world 1255,
-  net 1257, gpu 320, data 235, app 231, mesh 52, proto 16, audio 120.
+* **main == origin/main at `c809caf`.** M179 (advancement clicks) and M180
+  (book page-text clicks) landed this session, merged `--no-ff`, pushed.
+* **3495 tests / 0 failures** across EIGHT rewo crates — world 1259,
+  net 1257, gpu 320, data 235, app 236, mesh 52, proto 16, audio 120.
   `rewo-app` takes `--bins`; the others take `--lib`.
-* **43 serverless gates green**, 0 validation errors. Newest is **`advshot`**
-  (14 witnesses) — enumerate via `rewo --help`, don't trust lists.
+* **43 serverless gates green**, 0 validation errors. This session raised
+  **`advshot` 14 → 20** and **`bookshot` 21 → 24**.
 * `live --render-check` **64/64** exit 0 via `python tools/render_check.py`
   (debug build required). No new rNN since r64.
-* `REWO_PACKET_COVERAGE.md` at **124 / 0 / 17**, classes A+B empty; its table
-  is machine-checked by ids.rs. Class C's remaining six: horse/mount screen
-  (41), map pipeline (51), resource_pack_pop download half (80), transfer (129),
-  dialog framework (139/140).
-* Demo PNG `2cc56b4acbfb92cb` byte-identical since M15.
+* `REWO_PACKET_COVERAGE.md` unchanged at **124 / 0 / 17** (both milestones
+  consumed packets already decoded).
+* Demo PNG `2cc56b4acbfb92cb` byte-identical.
 
 ## Work queue (headless-first, in priority order)
 
-1. **M179 — advancement clicks.** The model half exists:
-   `AdvancementsView::tab_click(gui_w, gui_h, mx, my)` returns the hit tab;
-   `asm::Tab::scroll(dx, dy)` + `tick()` exist; the session sends
-   `send_seen_advancements_opened_tab/closed_screen`. Missing: mouse-press
-   routing in `live_cmd` (the `(ScreenKind::Advancements, ...)` press arm has
-   only Done), tab-click → select + openedTab send, wheel/drag scroll feeding
-   `tab.scroll(SCROLL_SPEED * x, ...)`, and hover already ticks from the frame
-   loop. Gateable entirely through `advshot` extensions + unit tests — the
-   live r-witnesses for click paths can be DEFERRED and named.
-2. **Page-text click events** (M172 leftover). Written-book page components
-   can carry click events; M128's `active_text` machinery exists.
-   **Verify BookViewScreen's actual click semantics against the decompile
-   FIRST** (`BookViewScreen.mouseClicked` / `GuiGraphicsExtractor`'s click
-   chain) — every milestone the last arcs found the plan's premise half-wrong.
-3. **Lectern menu-backed reader** — M87 recorded the shape: the lectern is a
-   menu whose screen extends BookViewScreen, one slot, no player inventory.
-   Decode + model headless.
-4. **ETF random/emissive textures** — the user runs Fresh Animations;
+1. **Lectern menu-backed reader** — M87 recorded the shape: the lectern is a
+   menu whose screen extends BookViewScreen, one slot, no player inventory,
+   no container screen (`LecternMenu` never calls
+   `addStandardInventorySlots`). Decode (`open_screen` already carries menu
+   type lectern; verify what the lectern's `container_set_data`/slot packets
+   carry) + model headless. M180's `closeContainerOnServer()` seam is the
+   hook: only LecternScreen overrides it — find what its override SENDS.
+   Verify against `LecternScreen.java` / `LecternMenu.java` FIRST.
+2. **ETF random/emissive textures** — the user runs Fresh Animations;
    high personal value. `rewo_data/src/etf.rs` already parses weights/names/
    baby/sizes rules; textures land via the entity-atlas variant band.
    Verifiable headlessly with `rewo mobshot --pack <zip>` against the user's
    real FA pack.
-5. **Happy-ghast quad-leash** — check whether anything Rewo renders now takes
-   `LeashState`'s quad branch before building it.
+3. **Happy-ghast quad-leash — CHECKED, scoped, not built.** The branch IS
+   reachable now: `EntityRenderer.java:186-236` draws FOUR taut ropes
+   (`leashCount = quadConnection ? 4 : 1`) when the holder is a happy ghast
+   (`supportQuadLeashAsHolder`, HappyGhast.java:494, holder offsets
+   `createQuadLeashOffsets(this, -0.03125, 0.4375, 0.46875, 0.03125)` at
+   :499) and the LEASHEE supports quad leash (AbstractHorse.java:199,
+   Llama.java:418, Sniffer.java:153, AbstractBoat.java:366). Each rope:
+   `start = leashee pos + own attachment point yRot(-own bodyYaw)`,
+   `end = holder pos + holder point yRot(-holder bodyYaw)`,
+   **`slack = false`** (taut — no sag curve), lights shared across the four.
+   M170/M176's `collect_leashes` renders ONE sagging rope to
+   `getRopeHoldPosition` for every leash — wrong on all three counts for a
+   ghast-held mob. The old docs' claim "nothing Rewo renders takes the quad
+   branch" was true pre-M170 and is stale now. Gateable via `leashshot`
+   extensions; live witness would need a staged ghast + horse + link.
+4. **Advancement clicks' live r-witnesses** — r65 is CLAIMED in §0.0's
+   allocation table and DEFERRED: tab clicks re-sending `opened_tab`
+   (unconditionally, even when unchanged) and CLOSED_SCREEN on every close.
+   Needs a servered session alongside whatever else runs live.
 
-## Traps that cost the LAST arc real time (new ones only)
+## Traps that cost THIS session real time (new ones only)
 
-1. **A mutation battery must REBUILD between mutants.** m178's first run never
-   built, graded every mutation against the stale exe, and read 8 SURVIVED —
-   including mutations that were certainly lethal. The signature is "control
-   survives AND everything else survives"; put an explicit build step inside
-   the checker (m178_mutate.py now does) and treat all-survived as a broken
-   instrument, not a result.
-2. **Pixel probes on transparent texture texels pass vacuously against
-   whatever is behind them.** `window.png` is paletted with per-index tRNS
-   alphas (transparent interior); the first probe set "matched" by reading the
-   backdrop on both sides. When a texel witness matters, assert `alpha == 255`
-   beside the colour match, and measure the sheet directly (proper palette +
-   tRNS decode) before trusting any probe placement.
-3. **Presence-only pixel counts cannot see pass ORDER.** Flipping the
-   connectivity passes (white-under-black) left enough white pixels from other
-   sources to stay green. What killed it was asserting ZERO black-on-core
-   pixels alongside the white count — order violations show up as wrong
-   colours in expected places, not as missing pixels.
-4. **A duplicate rule with no caller and no witness survives ANY mutation of
-   it.** M177's battery flipped a second copy of the done rule to ANY with a
-   fully green suite. The fix is structural: delete duplicates, keep one body,
-   witness it where it lives.
-5. **Regenerating AGENTS.md needs the header re-added** (its first ~15 lines,
-   ending `-->`) and is safest through a temp `.py` file, not an inline
-   `python -c` — the inline form through PowerShell cost one mojibake scare
-   this arc. The diff after regen should be EXACTLY your CLAUDE.md paragraph.
-6. Standing set still applies: PowerShell vs repo bytes (Get-Content reads
-   UTF-8 as ANSI; `>` writes UTF-16 patches); `kind_for_entity_name` wants
-   NAMESPACED names; never re-shoot a destroyed Stage (0xC0000005, not a
-   panic); GPU-gate flake watch-item (three spontaneous 0xC0000005 exits last
-   arc, each clean on re-run — if one starts reproing, investigate
-   destroy-vs-frames-in-flight before touching code).
+1. **After a mutation battery, the exe IS THE LAST MUTANT.** Restore fixes
+   sources, not binaries. The post-battery 43-gate sweep graded a +3px drift
+   mutant and only the drifted-against witness went red — which read exactly
+   like the GPU flake until the re-run reproduced deterministically. All
+   three battery harnesses (`m178/m179/m180_mutate.py`) now rebuild after
+   the final restore; keep that property in any new harness.
+2. **A gate witness driving a COPY of production wiring proves nothing**
+   (M93b's shape, again, newest form): m179's m9 hand-rolled
+   `screen.select` beside production's handler, so deleting production's
+   select survived both instruments. Fix pattern: extract the decision into
+   a pure function (`tab_click_report`) that BOTH the handler and the gate
+   drive.
+3. **A state-machine rule can be dead code by construction of your own test**
+   — m179's drag latch was cleared at press, which vanilla never does, making
+   the non-left cancel arm unreachable and its test vacuous until the test
+   switched buttons MID-drag. When a mutant survives, ask whether the RULE
+   is reachable at all under your fixture sequences.
+4. **26.x component click events are snake_case on the wire** (`click_event`,
+   field `page` not `value`); the wiki's camelCase never arrives. And one
+   styled component inherits its event across every wrapped piece of its OWN
+   text — a plain-span control needs SIBLING components.
+5. Standing set still applies: PowerShell vs repo bytes (this session:
+   `Add-Content` appended one trailing CRLF into an LF file — normalize new
+   files as BYTES before committing); `kind_for_entity_name` wants NAMESPACED
+   names; never re-shoot a destroyed Stage; GPU-gate flake watch-item — but
+   FIRST rule out a stale/mutant binary (trap 1) before believing a flake,
+   because a flake does not reproduce while a stale binary does.
 
 ## Process (unchanged, non-negotiable)
 
 * Ground truth is the decompile at `%APPDATA%/EwoClient/rewo/26.2/decompiled`
   plus the datagen reports. Cite `file:line`; never a wiki.
-* Every milestone: headless gate or unit tests → mutation battery whose no-op
-  control must SURVIVE (and which rebuilds!) → `python tools/render_check.py`
-  after any render-path change → update §15 + §0.0 (+ allocation-table claims)
-  → CLAUDE.md, then regenerate AGENTS.md with the command in its header.
+* Every milestone: headless gate or unit tests → mutation battery whose
+  no-op control must SURVIVE (and which rebuilds — including AFTER the final
+  restore!) → `python tools/render_check.py` after any render-path change →
+  update §15 + §0.0 (+ allocation-table claims) → CLAUDE.md, then regenerate
+  AGENTS.md via `python tools/regen_agents_mirror.py` (preserves the header;
+  diff must be EXACTLY your CLAUDE.md paragraphs).
 * Branch off `main`, commit per logical step explaining the FINDING, merge
   `--no-ff`. End messages with `Co-Authored-By: ox-alpha <noreply@opencode.ai>`.
 * Never `cargo fmt`. Never hand-edit generated `*_table.rs` files.
 * Leave the tree clean; delete merged branches; claim witness ids / atlas rows
-  in §0.0's allocation table BEFORE writing code (**next free rNN is r65**).
+  in §0.0's allocation table BEFORE writing code (**next free rNN is r65** —
+  claimed by M179's deferred live witnesses; take r66 if you need one).
 * Read each crate's EXIT CODE, never substrings of gate output.
 
 ## Still yours, user
@@ -121,15 +126,14 @@ git rev-list --count origin/main..main   # expect 0 — everything is PUSHED
 The audio listening pass (`cargo run -p rewo-audio --example listen`, then
 `rewo live --audio` on an audio build; the 8-block-horn-quieter-than-0-blocks
 result is EXPECTED — M153's pinned divergence). Also un-eyeballed: the
-advancements screen renders headlessly verified but nobody has pressed L in
-the windowed client yet.
+advancements screen (press L — clicks now work too) and the book's page-text
+clicks, both rendered headlessly verified but never seen live.
 
 ## Standing lesson
 
-A green suite means the transcription agrees with itself. This arc: a
-duplicate done rule survived every mutation behind a full green suite; eight
-lethal mutants "survived" against a binary that was never rebuilt; three
-tooltip probes passed through transparent texels against whatever sat behind
-them. Prefer a measurement to a sentence, open the source beside every claim,
-and when a milestone's premise survives first contact, write down WHY you
-believe it — with a line number.
+A green suite means the transcription agrees with itself. This session: two
+milestones whose batteries caught their own gates' copies of production logic
+on the FIRST run, a latch rule made unreachable by its own press handler, and
+a full-gate sweep that graded a leftover mutant. Prefer a measurement to a
+sentence, open the source beside every claim, and when a premise survives
+first contact write down WHY you believe it — with a line number.
