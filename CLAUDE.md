@@ -2171,15 +2171,15 @@ default build (**28** witnesses) and adds decode and the mixer under
 does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
-**Everything is shipped and gated** as of 2026-08-25 (M179) —
-**3491 tests / 0 failures** (world 1255, net 1257, gpu 320, data 235, app 236,
+**Everything is shipped and gated** as of 2026-08-25 (M180) —
+**3495 tests / 0 failures** (world 1259, net 1257, gpu 320, data 235, app 236,
 mesh 52, proto 16, audio 120 — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **109/109**, `inventoryshot` **165/165**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, `tablistshot` **42/42**, `soundshot` 37/57,
-`bookshot` 21/21, **`optionshot` 12/12**, **`signshot` 23/23**,
-**`advshot` 20/20** (the 43rd gate, raised by M179),
+`bookshot` **24/24**, **`optionshot` 12/12**, **`signshot` 23/23**,
+**`advshot` 20/20**,
 all **43** serverless
 gates green with 0 validation errors, `live --render-check` **64/64** with
 validation ON and 0 validation errors (r63/r64 arrived with M174), packet coverage
@@ -7164,3 +7164,28 @@ servered session. Measured: **3491 tests / 0 failures** across eight crates
 (app 231 → 236; the old headline's splits summed 3486 against its own 3489 —
 unaccountable +3, today they agree), all 43 gates green, render-check 64/64,
 demo PNG byte-identical.*
+
+*Update (2026-08-25 session, M180 — the written-book page-text clicks): the
+M172 leftover, headless-only, premise verified first and it HELD this time:
+`BookViewScreen.mouseClicked` (java:215-226) walks a ClickableStyleFinder
+over the PAGE-TEXT lines only; `handleClickEvent` (:228-247) treats ChangePage
+as ONE-based (`forcePage(page - 1)`); RunCommand closes first (a no-op in the
+plain reader — only LecternScreen overrides) then sends unsigned; other events
+are declined-but-consumed (M85's no-URL rule). The rect test is half-open
+LEFT-INCLUSIVE. Structure: one layout walk (`layout_spans`) feeds both
+`book_text_lines` and `click_event_at`, with m6 pinning the agreement.
+Findings: my half-open witness was asserted backwards and failed against
+correct code; change_page reads field "page" not "value", and 26.x component
+events are snake_case on the wire ("click_event"); a styled component
+inherits its event across its whole wrapped text so plain-span controls need
+SIBLING components. The battery's one survivor was PROVEN EQUIVALENT (with
+disjoint rects plus and_then, an event gate is dead weight — vanilla needs
+its check only because its scanner overwrites last-wins), so the clause was
+deleted and the equivalence kept as a named survivor. **Process find worth
+its fix: after a battery, the exe IS THE LAST MUTANT** — restore fixes
+sources, not binaries; the post-battery gate sweep graded the drift mutant
+and only bookshot's m6 went red. All three battery harnesses now rebuild
+after the final restore. bookshot 21 → **24** witnesses; battery 7 killed +
+control + 1 named equivalent; **3495 tests** / 0 failures (world 1259); 43
+gates green on a tree-matching binary; render-check 64/64; demo PNG
+byte-identical.*

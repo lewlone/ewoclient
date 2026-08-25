@@ -143,11 +143,11 @@ not close the listening pass, and its module doc carries §4's "What the gate
 does NOT assert" paragraph verbatim** so a future session reading only the gate
 still learns that a green run is not evidence this client makes a sound.
 
-Current measurement, re-taken **2026-08-25 after M179**:
-**3491 tests, 0 failures** (**world 1255, net 1257, gpu 320, data 235, app 236,
+Current measurement, re-taken **2026-08-25 after M180**:
+**3495 tests, 0 failures** (**world 1259, net 1257, gpu 320, data 235, app 236,
 mesh 52, proto 16, audio 120** — read off the runner per crate; note the
 2026-08-24 writeup's splits summed to 3486 against a 3489 headline — the +3
-was never accountable, and today's headline and splits agree).
+was never accountable, and since 2026-08-25 the headline and splits agree).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -344,9 +344,9 @@ witnesses are mostly self-driven can look healthy against nothing.
 > version of this box listed has shipped. What follows is measured on the merged
 > tree, not carried forward.
 >
-> **The state (re-measured 2026-08-25 after M179):** **43** serverless gates
-> green with 0 validation errors (`advshot` is the 43rd, now **20/20**),
-> **3491
+> **The state (re-measured 2026-08-25 after M180):** **43** serverless gates
+> green with 0 validation errors (`advshot` is the 43rd, **20/20**;
+> `bookshot` raised to **24/24** by M180), **3495
 > tests**, `live --render-check` **64/64** exit 0, packet coverage **124 / 0 / 17**
 > with classes A and B empty, demo PNG `2cc56b4acbfb92cb` byte-identical.
 >
@@ -439,11 +439,13 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   (`LeashFeatureRenderer.java:60-77`); the happy-ghast quad-leach branch is
 >   still not drawn (nothing Rewo renders takes it).
 > * ~~**`sub-book`**~~ **DONE — M171 the decode + model, M172 the render
->   (2026-08-23).** The reader draws pixel-faithfully (`bookshot` 21/21, r61
+>   (2026-08-23).** The reader draws pixel-faithfully (`bookshot` 24/24, r61
 >   live), including the writable-book fallback (`BookAccess.fromItem` — there
->   is no WritableBookViewScreen in 26.2). Open from it: page-text CLICK
->   events (`change_page`/`run_command` need M128's per-glyph active-text hit
->   test wired to the book), the lectern's menu-backed reader, and the
+>   is no WritableBookViewScreen in 26.2). ~~Open from it: page-text CLICK
+>   events~~ **DONE (M180, 2026-08-25)** — the ClickableStyleFinder walk over
+>   a shared layout, one-based ChangePage through `force_page`, RunCommand
+>   sent unsigned after the (empty) close. Still open: the lectern's
+>   menu-backed reader, and the
 >   page-turn sound (Rewo's screens play no UI sounds at all yet — one
 >   family). **`sub-sign`** and **`sub-map`** are the same decode+screen
 >   shape; ~~**`options`' volume sliders**~~ **DONE — M173 (2026-08-23):**
@@ -3738,6 +3740,66 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M180 — the written-book page-text clicks: one layout walk, a backwards witness, and an equivalent survivor (2026-08-25)
+
+The M172 leftover, headless-only. **The premise check held this time**, and
+the semantics are worth their line numbers: `BookViewScreen.mouseClicked`
+(`java:215-226`) walks `ActiveTextCollector.ClickableStyleFinder` over the
+PAGE-TEXT lines only — the indicator is visited solely with
+`clickableOnly=false` (`visitText`, `:174-194`); `handleClickEvent`
+(`:228-247`) treats `ChangePage` as **ONE-based** (`forcePage(page - 1)`);
+`RunCommand` runs `closeContainerOnServer()` first — EMPTY in the plain
+reader, only `LecternScreen` overrides it — then sends the command; and every
+other event is `defaultHandleGameClickEvent`, which Rewo declines (M85: no
+URLs) **while still consuming the click** (vanilla returns true for every
+non-null event). The rect test is half-open LEFT-INCLUSIVE
+(`isPointInRectangle`: `x >= left && x < right`).
+
+Structure: ONE layout walk (`layout_spans` in `book_view_screen.rs`) feeds
+both `book_text_lines` and the new `click_event_at` — two copies of the pen
+arithmetic are three chances to drift by a pixel (M89's rule), and m6 pins
+the agreement so a revert of the renderer to its own loop dies in the gate.
+`force_page` transcribes `Mth.clamp(int)`'s `min(max())` shape exactly
+(`Mth.java:94-96`); the inverted-bounds case (zero pages answers `-1` in
+Java, panics in Rust) is unreachable through clicks — a zero-page book has no
+clickable text — and stated rather than faked.
+
+Three of my own premises failed against their witnesses, all fixture-side:
+
+1. The half-open test asserted BACKWARDS (left edge excluded) and failed
+   against correct code — `x >= left` means the left-top corner HITS.
+2. `change_page` reads the field `page` (I wrote `value`), and 26.x
+   component events are **snake_case on the wire** (`click_event`) —
+   `parse_events` reads what M128 verified; the wiki's camelCase never
+   arrives.
+3. One styled component inherits its event across every wrapped piece of its
+   OWN text, so there was no plain span to control against — the plain-span
+   control needs SIBLING components.
+
+The battery's one survivor was **PROVEN EQUIVALENT**: deleting the explicit
+carries-an-event gate changes nothing, because disjoint half-open rects plus
+`and_then` already decline plain spans — vanilla needs its
+`getClickEvent() != null` check ONLY because its scanner overwrites last-wins
+across every glyph, a different composition. The dead clause was deleted
+rather than kept unwitnessable (the M177 duplicate-rule lesson, inverted:
+don't keep code whose removal nothing can observe), and the battery keeps
+the equivalence as a named surviving row.
+
+**PROCESS FIND worth its own fix: after a battery,
+`target/debug/rewo.exe` IS THE LAST MUTANT.** Restore fixes sources, not the
+binary; the post-battery 43-gate sweep graded the +3px drift mutant and only
+bookshot's own m6 went red — which read exactly like the GPU flake until the
+re-run reproduced it deterministically. All three battery harnesses now
+rebuild after the final restore.
+
+bookshot 21 → **24 witnesses** (m6 renderer/walk agreement over the REAL
+advance table; m7 the ChangePage chain including the one-based decrement;
+m8 left-in/right-out/plain-declines). Battery `tools/m180_mutate.py`: 7
+killed + control SURVIVED + 1 named equivalent. Measured: 3495 tests / 0
+failures across eight crates (world 1255 → 1259); all 43 gates green on a
+tree-matching binary; render-check 64/64 exit 0; demo PNG `2cc56b4acbfb92cb`
+byte-identical.
 
 ### M179 — the advancement clicks: a premise fixed before wiring, and two survivors on the battery's first run (2026-08-25)
 
