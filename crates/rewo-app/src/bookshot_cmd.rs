@@ -27,7 +27,7 @@ use rewo_world::inventory::SlotText;
 
 /// Total named properties this gate asserts. Locked so a skipped property
 /// fails the run even when nothing mismatched.
-const EXPECTED_WITNESSES: usize = 21;
+const EXPECTED_WITNESSES: usize = 24;
 
 const W: u32 = 640;
 const H: u32 = 480;
@@ -240,6 +240,145 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
             pages.as_ref().map(|p| p[0].len())
         ),
     );
+
+    // ── M180: page-text click events ─────────────────────────────────────
+    // Two SIBLING components — a genuinely plain one and a clickable one.
+    // (One styled compound would inherit its event across every wrapped
+    // piece of its own text, leaving no plain span to test against.)
+    let clicky = SlotText {
+        has_written_book: true,
+        book_pages: vec![Nbt::List(vec![
+            Nbt::String("plain ".into()),
+            Nbt::Compound(vec![
+                ("text".into(), Nbt::String("clickme".into())),
+                (
+                    // 26.x component fields are snake_case on the wire —
+                    // `parse_events` reads "click_event", not the wiki's
+                    // camelCase "clickEvent".
+                    "click_event".into(),
+                    Nbt::Compound(vec![
+                        ("action".into(), Nbt::String("change_page".into())),
+                        ("page".into(), Nbt::Int(2)),
+                    ]),
+                ),
+            ]),
+        ])],
+        ..Default::default()
+    };
+    let pages = crate::live_cmd::resolve_book_pages(&clicky, advance.as_ref(), lang)
+        .expect("clicky resolves");
+    let book = BookViewScreen::new(pages);
+
+    // m6 — the renderer and the hit-test share ONE layout walk: every drawn
+    // page-text line sits exactly where layout_spans put it. This is the
+    // witness that kills a revert of book_text_lines to its own pen loop,
+    // which would render identically today and drift on the first edit.
+    {
+        let px = SCALE as f32;
+        let drawn = crate::live_cmd::book_text_lines(
+            &book,
+            GUI_W,
+            advance.as_ref().unwrap(),
+            px,
+            lang.expect("the bake carries a language"),
+        );
+        let measure = |s: &rewo_world::chat_style::ChatSpan| {
+            rewo_gpu::text::width_styled(&s.text, advance.as_ref().unwrap(), s.bold)
+        };
+        let laid = rewo_world::book_view_screen::layout_spans(&book, GUI_W, &measure);
+        let agree = drawn.len() > laid.len()
+            && laid.iter().zip(&drawn).all(|(ls, dl)| {
+                (dl.x - ls.x as f32 * px).abs() < 0.01 && (dl.y - ls.y as f32 * px).abs() < 0.01
+            });
+        c.record(
+            "m6.the_renderer_and_the_click_walk_agree",
+            agree,
+            format!(
+                "{} drawn lines vs {} laid spans (the tail line is the indicator)",
+                drawn.len(),
+                laid.len()
+            ),
+        );
+    }
+
+    // m7 — the full click chain: hit the span's centre with the REAL advance
+    // table, get ChangePage(2), apply vanilla's ONE-BASED decrement through
+    // force_page on a two-page book, and demand page index 1. (The fixture
+    // itself has one page, where the clamp correctly refuses the turn — a
+    // naive `page = value` model would panic there instead.)
+    {
+        let measure = |s: &rewo_world::chat_style::ChatSpan| {
+            rewo_gpu::text::width_styled(&s.text, advance.as_ref().unwrap(), s.bold)
+        };
+        let laid = rewo_world::book_view_screen::layout_spans(&book, GUI_W, &measure);
+        let clickable = laid
+            .iter()
+            .find(|ls| ls.span.click().is_some())
+            .expect("one clickable span");
+        let ev = rewo_world::book_view_screen::click_event_at(
+            &book,
+            GUI_W,
+            &measure,
+            clickable.x + clickable.w / 2,
+            clickable.y + 4,
+        );
+        let turned = match ev {
+            Some(rewo_world::chat_events::ClickEvent::ChangePage(page)) => {
+                let mut two = BookViewScreen::new(vec![vec![Vec::new()], vec![Vec::new()]]);
+                two.force_page(page - 1) && two.current_page() == 1
+            }
+            _ => false,
+        };
+        c.record(
+            "m7.a_change_page_event_turns_the_page_after_the_one_based_decrement",
+            turned,
+            format!("event at centre = {ev:?}"),
+        );
+    }
+
+    // m8 — half-open edges against the REAL advance table, plus a RunCommand
+    // event resolving through the same walk.
+    {
+        let measure = |s: &rewo_world::chat_style::ChatSpan| {
+            rewo_gpu::text::width_styled(&s.text, advance.as_ref().unwrap(), s.bold)
+        };
+        let laid = rewo_world::book_view_screen::layout_spans(&book, GUI_W, &measure);
+        let clickable = laid
+            .iter()
+            .find(|ls| ls.span.click().is_some())
+            .expect("one clickable span");
+        let left_in = rewo_world::book_view_screen::click_event_at(
+            &book,
+            GUI_W,
+            &measure,
+            clickable.x,
+            clickable.y + 4,
+        )
+        .is_some();
+        let right_out = rewo_world::book_view_screen::click_event_at(
+            &book,
+            GUI_W,
+            &measure,
+            clickable.x + clickable.w,
+            clickable.y + 4,
+        )
+        .is_none();
+        let plain_out = rewo_world::book_view_screen::click_event_at(
+            &book,
+            GUI_W,
+            &measure,
+            laid[0].x + laid[0].w / 2,
+            laid[0].y + 4,
+        )
+        .is_none();
+        c.record(
+            "m8.click_rects_are_left_in_right_exclusive_over_plain_spans",
+            left_in && right_out && plain_out,
+            format!(
+                "left-in={left_in} right-out={right_out} plain-declines={plain_out}"
+            ),
+        );
+    }
 }
 
 fn check_pixels(
