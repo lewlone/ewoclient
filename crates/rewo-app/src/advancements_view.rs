@@ -197,12 +197,17 @@ impl AdvancementsView {
         }
     }
 
-    /// A left-click on a tab cell — `mouseClicked`'s loop, which runs only
-    /// while MORE THAN ONE tab exists. Returns the tab-list index hit.
+    /// A left click on a tab cell — `mouseClicked`'s loop. Returns the
+    /// tab-list index hit.
+    ///
+    /// **The click loop has NO tab-count guard** (`AdvancementsScreen.java:113-127`
+    /// iterates `tabs.values()` unconditionally) — only the DRAW (`extractWindow`,
+    /// `:206`) and the tab TOOLTIPS (`:228`) gate on `tabs.size() > 1`. So with
+    /// exactly one tab the strip is invisible but its cell still selects and
+    /// RE-SENDS `opened_tab` (`ClientAdvancements.setSelectedTab` sends before
+    /// its change check, `:75-87`). An earlier draft refused clicks at ≤1 tabs —
+    /// that was the draw rule misread as the click rule; m8 pins the fix.
     pub fn tab_click(&self, gui_w: i32, gui_h: i32, mx: f64, my: f64) -> Option<usize> {
-        if self.screen.tabs.len() <= 1 {
-            return None;
-        }
         let (xo, yo) = asm::window_origin(gui_w, gui_h);
         for (i, t) in self.screen.tabs.iter().enumerate() {
             if t.kind.is_mouse_over(xo, yo, t.index, mx, my) {
@@ -210,6 +215,139 @@ impl AdvancementsView {
             }
         }
         None
+    }
+
+    /// `AdvancementsScreen.mouseScrolled` — both axes scale by
+    /// [`asm::SCROLL_SPEED`] and the screen consumes the wheel whenever a tab
+    /// is selected (`:183-190`), even when neither axis can move (`scroll`'s
+    /// `can_scroll_*` guards no-op it).
+    pub fn wheel(&mut self, dx: f64, dy: f64) -> bool {
+        let Some(sel) = self.screen.selected else {
+            return false;
+        };
+        let Some(tab) = self.screen.tabs.get_mut(sel) else {
+            return false;
+        };
+        tab.scroll(dx * asm::SCROLL_SPEED, dy * asm::SCROLL_SPEED);
+        true
+    }
+
+    /// `mouseDragged`'s scroll — RAW deltas, no [`asm::SCROLL_SPEED`] (that
+    /// multiplier belongs to the wheel path alone, `:185`). No return value:
+    /// vanilla returns true from `mouseDragged` for button 0 regardless of
+    /// whether anything could move.
+    pub fn drag_scroll(&mut self, dx: f64, dy: f64) {
+        let Some(sel) = self.screen.selected else {
+            return;
+        };
+        if let Some(tab) = self.screen.tabs.get_mut(sel) {
+            tab.scroll(dx, dy);
+        }
+    }
+
+    /// The scroll a tab change reports to the server — `opened_tab`'s
+    /// payload is the ROOT's holder id.
+    pub fn root_id_at(&self, i: usize) -> Option<&str> {
+        self.screen.tabs.get(i).map(|t| t.root_id.as_str())
+    }
+
+    /// The whole click decision, as one function both the event loop and the
+    /// gate drive: hit-test, select, and report the root id the
+    /// `opened_tab` packet carries (`None` = nothing hit, nothing sent).
+    ///
+    /// The SEND stays at the caller (the session is not reachable here), but
+    /// everything decidable without one happens inside — M93b's rule, learned
+    /// twice: m9 originally hand-rolled the select beside this path and a
+    /// mutation deleting production's select survived both instruments.
+    pub fn tab_click_report(&mut self, gui_w: i32, gui_h: i32, mx: f64, my: f64) -> Option<String> {
+        let i = self.tab_click(gui_w, gui_h, mx, my)?;
+        let root_id = self.root_id_at(i).map(str::to_string);
+        self.screen.select(Some(i));
+        // No change check: vanilla's send sits BEFORE its comparison
+        // (`ClientAdvancements.java:77-86`) — re-clicking the open tab
+        // re-tells the server. The caller does not filter either.
+        root_id
+    }
+}
+
+/// The advancements screen's app-side drag state — `MouseHandler.activeButton`
+/// + `AdvancementsScreen.isScrolling`, as a machine the event loop feeds.
+///
+/// Why a machine rather than inline arms: `LiveApp` has no test seam (the
+/// M71/M97 lesson), so every rule lives here where unit tests reach it and the
+/// wiring stays three one-line calls.
+///
+/// The rules, each from the decompile:
+/// - **Deltas are GUI px.** `handleAccumulatedMovement` scales the accumulated
+///   window-pixel delta by `guiScaledWidth / screenWidth` (`MouseHandler.java:306,
+///   :332-334`) — divide by the GUI scale — and resets the accumulator per frame
+///   (`:328-329`). Per-event delivery of the same totals sums identically
+///   through `Tab::scroll`'s clamped adds.
+/// - **The first drag event after a press is DEAD** (`AdvancementsScreen.java:167-171`):
+///   `if (!this.isScrolling) { this.isScrolling = true; }` scrolls nothing that
+///   event. Without it, the press-to-move transition would jump the contents by
+///   whatever moved between press and first motion.
+/// - **A non-left held button cancels the latch** (`:162-165`): moving under a
+///   right-drag sets `isScrolling = false` and returns.
+/// - **Any release clears everything** (`mouseReleased`, `:177-180`).
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct AdvDrag {
+    /// The button currently held, if any — `activeButton`.
+    held: Option<u8>,
+    /// `isScrolling` — true from the first drag event after a press.
+    latched: bool,
+    /// The previous cursor sample in WINDOW pixels. Updates on EVERY move so
+    /// the first delivered delta covers only new movement (vanilla's
+    /// accumulator resets per frame whether or not a drag delivers).
+    prev: (f64, f64),
+}
+
+impl AdvDrag {
+    /// A button went down over the open screen.
+    ///
+    /// NOTE: this deliberately does NOT clear the latch — vanilla's
+    /// `mouseClicked` never touches `isScrolling`. The case that matters is a
+    /// RIGHT press taken MID-left-drag: `isScrolling` survives it, and the
+    /// cancellation happens at the next MOVE, under the non-left button
+    /// (`mouseDragged`'s early-out). Clearing here would make that arm dead
+    /// code — which a mutation battery proves by surviving behind a green
+    /// suite.
+    pub fn press(&mut self, button: u8) {
+        self.held = Some(button);
+    }
+
+    /// A button came up. `mouseReleased` clears `isScrolling`
+    /// unconditionally — any button, pressed anywhere.
+    pub fn release(&mut self) {
+        self.held = None;
+        self.latched = false;
+    }
+
+    /// Seed the cursor sample (screen open / session start) so the first
+    /// delta cannot span the park position.
+    pub fn cursor_seed(&mut self, pos: (f64, f64)) {
+        self.prev = pos;
+    }
+
+    /// CursorMoved. Returns the `(dx, dy)` scroll in GUI px when THIS event
+    /// scrolls, `None` otherwise (button up, non-left held, or the dead latch
+    /// event). `scale` is the GUI scale — window px → GUI px.
+    pub fn cursor_moved(&mut self, pos: (f64, f64), scale: f64) -> Option<(f64, f64)> {
+        let dx = (pos.0 - self.prev.0) / scale;
+        let dy = (pos.1 - self.prev.1) / scale;
+        self.prev = pos;
+        let button = self.held?;
+        if button != 0 {
+            // mouseDragged's early-out: `isScrolling = false; return false`.
+            self.latched = false;
+            return None;
+        }
+        if !self.latched {
+            // The dead first event.
+            self.latched = true;
+            return None;
+        }
+        Some((dx, dy))
     }
 }
 
@@ -766,4 +904,84 @@ pub fn icon_draws(view: &AdvancementsView, gui_w: i32, gui_h: i32, px: f32) -> V
         });
     }
     out
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+//
+// The drag machine and the click premise are the two things a green gate
+// cannot grade on its own fixtures alone; they are pure enough to test here,
+// where no GPU and no baked font are needed (M97: logic in a place with no
+// test module is untested).
+
+#[cfg(test)]
+mod tests {
+    use super::AdvDrag;
+
+    /// The dead-first-event rule: press → move latches WITHOUT scrolling;
+    /// the next move delivers only ITS delta (the latch event's movement is
+    /// dropped, exactly like vanilla's per-frame accumulator reset).
+    #[test]
+    fn first_move_after_press_is_dead_then_deltas_apply() {
+        let mut d = AdvDrag::default();
+        d.cursor_seed((100.0, 100.0));
+        d.press(0);
+        assert_eq!(d.cursor_moved((110.0, 90.0), 2.0), None, "latch event");
+        // Only move #2's delta — not (10,-10) + (4,-2) together.
+        assert_eq!(d.cursor_moved((114.0, 88.0), 2.0), Some((2.0, -1.0)));
+    }
+
+    #[test]
+    fn deltas_are_gui_pixels_not_window_pixels() {
+        let mut d = AdvDrag::default();
+        d.cursor_seed((0.0, 0.0));
+        d.press(0);
+        let _ = d.cursor_moved((8.0, 8.0), 2.0);
+        assert_eq!(
+            d.cursor_moved((24.0, 40.0), 2.0),
+            Some((8.0, 16.0)),
+            "16 window px / scale 2 = 8 GUI px"
+        );
+    }
+
+    #[test]
+    fn moving_under_a_non_left_button_cancels_the_latch_and_delivers_nothing() {
+        let mut d = AdvDrag::default();
+        d.cursor_seed((0.0, 0.0));
+        d.press(0);
+        let _ = d.cursor_moved((10.0, 10.0), 1.0); // left drag latched
+        // RIGHT press taken MID-drag — vanilla's mouseClicked leaves
+        // isScrolling alone; the cancellation belongs to the next MOVE.
+        d.press(1);
+        assert_eq!(d.cursor_moved((20.0, 20.0), 1.0), None, "right-held move");
+        // Left takes over again: the latch was cleared UNDER THE RIGHT
+        // BUTTON, so one dead event precedes the deltas.
+        d.press(0);
+        assert_eq!(d.cursor_moved((30.0, 30.0), 1.0), None);
+        assert_eq!(d.cursor_moved((32.0, 31.0), 1.0), Some((2.0, 1.0)));
+    }
+
+    #[test]
+    fn any_release_clears_the_drag_whole() {
+        let mut d = AdvDrag::default();
+        d.cursor_seed((0.0, 0.0));
+        d.press(0);
+        let _ = d.cursor_moved((10.0, 10.0), 1.0);
+        d.release();
+        // Re-press begins with its own dead event — the observable proof the
+        // latch cleared (a surviving latch would deliver immediately).
+        d.press(0);
+        assert_eq!(d.cursor_moved((20.0, 20.0), 1.0), None);
+        assert_eq!(d.cursor_moved((25.0, 25.0), 1.0), Some((5.0, 5.0)));
+    }
+
+    #[test]
+    fn moves_without_a_held_button_never_scroll_but_still_track_the_cursor() {
+        let mut d = AdvDrag::default();
+        d.cursor_seed((0.0, 0.0));
+        assert_eq!(d.cursor_moved((50.0, 50.0), 1.0), None);
+        d.press(0);
+        // No dead-jump from the pre-press movement: prev was tracked.
+        assert_eq!(d.cursor_moved((52.0, 52.0), 1.0), None, "latch");
+        assert_eq!(d.cursor_moved((54.0, 54.0), 1.0), Some((2.0, 2.0)));
+    }
 }

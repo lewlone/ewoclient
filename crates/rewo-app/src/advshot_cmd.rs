@@ -24,7 +24,7 @@ use rewo_net::advancements::{
 };
 use rewo_proto::nbt::Nbt;
 
-const EXPECTED_WITNESSES: usize = 14;
+const EXPECTED_WITNESSES: usize = 20;
 
 #[derive(ClapArgs)]
 pub struct AdvshotArgs {
@@ -243,6 +243,150 @@ pub fn run(args: AdvshotArgs) -> Result<(), String> {
         "m4.centring_pulls_the_tree_left_of_centre",
         t2.scroll_x < 117.0,
         format!("scroll_x = {}", t2.scroll_x),
+    );
+
+    // ── M179: clicks, wheel and drag ──────────────────────────────────────
+    // Two roots make two ABOVE-row cells: tab i sits at window-relative
+    // (32*i .. 32*i+28, -28..4), i.e. absolute x 34+32i at this window size
+    // (xo = (320-252)/2 = 34, yo = (240-140)/2 = 50).
+    let mut two_roots = ClientAdvancements::default();
+    apply(
+        &mut two_roots,
+        true,
+        vec![
+            root(
+                "minecraft:story/root",
+                "Minecraft",
+                Some("minecraft:textures/gui/advancements/backgrounds/stone.png".into()),
+            ),
+            root("minecraft:adventure/root", "Adventure", None),
+        ],
+        vec![],
+    );
+    let vtabs = AdvancementsView::build(&two_roots, &lang, &advance);
+
+    // m7 — strict bounds, per cell. The centre hits its own index; every
+    // edge and the 4px gutter between cells miss (a strip-wide rect or an
+    // inclusive box would answer differently).
+    let hits = [
+        ((48.0, 38.0), Some(0)), // tab 0 centre
+        ((80.0, 38.0), Some(1)), // tab 1 centre
+        ((34.0, 38.0), None),    // tab 0's LEFT EDGE — strict >
+        ((62.0, 38.0), None),    // tab 0's RIGHT EDGE — strict <
+        ((64.0, 38.0), None),    // the gutter BETWEEN the cells
+        ((48.0, 22.0), None),    // top edge
+        ((48.0, 54.0), None),    // bottom edge
+    ];
+    let mut all = true;
+    let mut detail = String::new();
+    for ((mx, my), want) in hits {
+        let got = vtabs.tab_click(GUI_W, GUI_H, mx, my);
+        all &= got == want;
+        detail.push_str(&format!(" ({mx},{my}->{got:?})"));
+    }
+    c.record("m7.tab_click_cells_are_strict_and_separate", all, detail);
+
+    // m8 — ONE tab still clicks. `mouseClicked`'s loop has NO size guard
+    // (`AdvancementsScreen.java:113-127`); only the DRAW does (`:206`). An
+    // earlier draft refused clicks at ≤1 tabs — the draw rule misread as the
+    // click rule.
+    c.record(
+        "m8.a_single_tab_still_clicks",
+        view.tab_click(GUI_W, GUI_H, 48.0, 38.0) == Some(0),
+        format!(
+            "single-tab click = {:?}",
+            view.tab_click(GUI_W, GUI_H, 48.0, 38.0)
+        ),
+    );
+
+    // m9 — clicking selects and names the root the packet carries. Drives
+    // `tab_click_report` — the function production's handler runs — not a
+    // hand-rolled copy of it (the M93b rule; a copy let a select-deleting
+    // mutant survive the battery).
+    let mut vc = AdvancementsView::build(&two_roots, &lang, &advance);
+    let report = vc.tab_click_report(GUI_W, GUI_H, 80.0, 38.0);
+    c.record(
+        "m9.clicking_selects_and_names_the_root",
+        report.as_deref() == Some("minecraft:adventure/root")
+            && vc.screen.selected == Some(1),
+        format!(
+            "report {report:?}, selected {:?}",
+            vc.screen.selected
+        ),
+    );
+
+    // m10 — RE-clicking the already-selected tab reports it again. This is
+    // the observable half of `setSelectedTab` sending `opened_tab` BEFORE its
+    // change check (`ClientAdvancements.java:77-86`): the server hears about
+    // a tab that is already open.
+    c.record(
+        "m10.reclicking_the_selected_tab_reports_it_again",
+        vc.tab_click_report(GUI_W, GUI_H, 80.0, 38.0).is_some(),
+        "the click path never filters on change",
+    );
+
+    // m11 — the wheel scales by SCROLL_SPEED and clamps at the content edge.
+    // A child pushed to grid x=9 makes maxX = 9*28+28 = 280 > 234, so the
+    // horizontal clamp's lower bound is -(280-234) = -46; centring starts at
+    // 117-140 = -23.
+    let mut widetree = ClientAdvancements::default();
+    apply(
+        &mut widetree,
+        true,
+        vec![
+            root(
+                "minecraft:wide/root",
+                "Wide",
+                Some("minecraft:textures/gui/advancements/backgrounds/stone.png".into()),
+            ),
+            child("minecraft:wide/far", "minecraft:wide/root", 9.0, 0.0),
+        ],
+        vec![],
+    );
+    let mut vw = AdvancementsView::build(&widetree, &lang, &advance);
+    {
+        let t = &mut vw.screen.tabs[0];
+        t.ensure_centered();
+    }
+    let start = vw.screen.tabs[0].scroll_x; // -23 exactly
+    vw.wheel(1.0, 0.0); // one notch right
+    let after_one = vw.screen.tabs[0].scroll_x;
+    vw.wheel(1000.0, 0.0);
+    let hi = vw.screen.tabs[0].scroll_int().0;
+    vw.wheel(-10000.0, 0.0);
+    let lo = vw.screen.tabs[0].scroll_int().0;
+    let y_before = vw.screen.tabs[0].scroll_y;
+    vw.wheel(0.0, -1000.0); // vertical cannot move: maxY 27 <= 113
+    let y_after = vw.screen.tabs[0].scroll_y;
+    c.record(
+        "m11.wheel_scales_by_16_and_clamps_at_the_content_edge",
+        start == -23.0
+            && after_one == -7.0
+            && hi == 0
+            && lo == -46
+            && y_before == y_after,
+        format!(
+            "start {start}, one notch {after_one} (=x16), hi {hi}, lo {lo}, y {y_before}->{y_after}"
+        ),
+    );
+
+    // m12 — the DRAG path applies raw deltas (SCROLL_SPEED belongs to the
+    // wheel alone, `AdvancementsScreen.java:185` vs `:170`), and an empty
+    // screen declines the wheel entirely (`mouseScrolled`'s null-tab arm).
+    let mut vd = AdvancementsView::build(&widetree, &lang, &advance);
+    {
+        let t = &mut vd.screen.tabs[0];
+        t.ensure_centered();
+    }
+    let d_before = vd.screen.tabs[0].scroll_x;
+    vd.drag_scroll(2.0, 0.0);
+    let d_moved = vd.screen.tabs[0].scroll_x - d_before;
+    let mut empty = AdvancementsView::build(&ClientAdvancements::default(), &lang, &advance);
+    let declined = !empty.wheel(1.0, 1.0);
+    c.record(
+        "m12.drag_scrolls_raw_and_an_empty_screen_declines_the_wheel",
+        d_moved == 2.0 && declined,
+        format!("drag moved {d_moved} (want 2.0), empty declined={declined}"),
     );
 
     // ── Pixel witnesses (validation ON) ───────────────────────────────────

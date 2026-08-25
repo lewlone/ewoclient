@@ -2187,18 +2187,19 @@ default build (**28** witnesses) and adds decode and the mixer under
 does not close the listening pass** — its module doc says so verbatim.
 `tablistshot` is the other, and it grades a feature that had been finished and
 invisible: see the M151 entry.
-**Everything is shipped and gated** as of 2026-08-24 (M176) —
-**3450 tests / 0 failures** (world 1238, net 1238, gpu 320, data 235, app 231,
+**Everything is shipped and gated** as of 2026-08-25 (M179) —
+**3491 tests / 0 failures** (world 1255, net 1257, gpu 320, data 235, app 236,
 mesh 52, proto 16, audio 120 — EIGHT crates now, read off the runner per
 crate; a loop written against the old seven drops the new one silently),
 `mobshot` 246/246,
 `containershot` **109/109**, `inventoryshot` **165/165**, `itemshot` 75/75,
 `handshot` 34/34, `swingshot` 97/97, `tablistshot` **42/42**, `soundshot` 37/57,
-`bookshot` 21/21, **`optionshot` 12/12**, **`signshot` 23/23** (the 42nd gate),
-all **42** serverless
+`bookshot` 21/21, **`optionshot` 12/12**, **`signshot` 23/23**,
+**`advshot` 20/20** (the 43rd gate, raised by M179),
+all **43** serverless
 gates green with 0 validation errors, `live --render-check` **64/64** with
 validation ON and 0 validation errors (r63/r64 arrived with M174), packet coverage
-**122 / 0 / 19**, demo PNG `2cc56b4acbfb92cb`.
+**124 / 0 / 17**, demo PNG `2cc56b4acbfb92cb`.
 
 **M173 (2026-08-23) built the volume sliders — and the options wiring that
 never existed.** The research fan-out's sharpest finding was about M157, not
@@ -7152,3 +7153,30 @@ black-on-core is what does). Battery 7 killed + control. All 36 counted gates
 + 5 prose gates exit 0, render-check 64/64, **3489 tests**, demo PNG
 byte-identical. Open from the arc: M179 tab clicks (+ live r-witnesses),
 mid-screen tree updates, item-icon scissor clipping.*
+
+*Update (2026-08-25 session, M179 — the advancement clicks, headless): the
+premise check fixed the model half before any wiring landed — M178's
+`tab_click` refused clicks at ≤1 tabs, but that is the DRAW rule misread as
+the click rule: `AdvancementsScreen.mouseClicked` (java:113-127) iterates tabs
+unconditionally; only `extractWindow` (:206) and the tab tooltips (:228) gate
+on size > 1. And with one tab a click still RE-SENDS `opened_tab`, because
+`setSelectedTab` sends BEFORE its change check (`ClientAdvancements.java:77-86`)
+— re-clicking the open tab re-tells the server. Wired: tab click → select +
+`openedTab` through a pure `tab_click_report` (the gate drives exactly what
+production runs); wheel → both axes ×16 (`SCROLL_SPEED`), consumed iff a tab
+is selected; drag → RAW GUI-scaled deltas with vanilla's dead-first-event
+latch and the non-left cancel; any release clears. The drag machine is a pure
+`AdvDrag` because `LiveApp` has no test seam, so the unit tests are the only
+instrument that reaches it — the battery's checker runs both instruments.
+The battery's first run produced two real survivors: m9 hand-rolled
+`screen.select` beside production's handler so deleting production's select
+survived everything (M93b's shape, in the newest form — the copy was written
+by the same milestone as the gate); and my own `press()` cleared the latch,
+which `mouseClicked` never does, making the cancel arm unreachable and its
+test vacuous until the test was rewritten to press RIGHT mid-drag. advshot 14
+→ **20** witnesses; battery **8 killed + control SURVIVED**; live r65
+witnesses for the sends are claimed in the allocation table and DEFERRED to a
+servered session. Measured: **3491 tests / 0 failures** across eight crates
+(app 231 → 236; the old headline's splits summed 3486 against its own 3489 —
+unaccountable +3, today they agree), all 43 gates green, render-check 64/64,
+demo PNG byte-identical.*

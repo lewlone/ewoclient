@@ -6019,6 +6019,11 @@ struct LiveApp {
     /// pattern): armed by the press, driven from CursorMoved, cleared on
     /// release. UNLIKE the stonecutter's grab, a slider press CONSUMES.
     options_drag: Option<rewo_world::screen::WidgetId>,
+    /// M179 — the advancements screen's drag machine (`activeButton` +
+    /// `isScrolling`, [`crate::advancements_view::AdvDrag`]). Not an Option:
+    /// the machine is total, and the screen-open checks live at the call
+    /// sites where they already exist.
+    adv_drag: crate::advancements_view::AdvDrag,
     /// M169 — the injected horse + saddle + set_passengers that mounts the bot.
     jump_injected: bool,
     leash_injected: bool,
@@ -6791,6 +6796,12 @@ impl ApplicationHandler for LiveApp {
                     .screens
                     .current_mut()
                     .map(|s| (s.kind, s.mouse_clicked(mx, my, b)));
+                // M179 — the advancements drag arms on ANY press over the
+                // open screen (`activeButton` is set before the screen sees
+                // it), whatever the click went on to do.
+                if self.advancements.is_some() {
+                    self.adv_drag.press(b);
+                }
                 if let Some((kind, rewo_world::screen::MouseResult::Pressed(id))) = pressed {
                     self.press_widget(kind, id);
                 } else if let Some((_, rewo_world::screen::MouseResult::Slider(id, v))) = pressed {
@@ -6809,6 +6820,17 @@ impl ApplicationHandler for LiveApp {
                     if let Some(book) = self.book.as_mut() {
                         book.click(mx as i32, my as i32, gw);
                     }
+                } else if b == 0
+                    && matches!(pressed, Some((rewo_world::screen::ScreenKind::Advancements, _)))
+                {
+                    // M179: the tab strip. Not framework widgets (vanilla's
+                    // loop runs in the SCREEN's mouseClicked, ahead of
+                    // super's widget walk — `AdvancementsScreen.java:113-127`),
+                    // so a left click the framework did not press lands here,
+                    // exactly the book-arrow seam. Vanilla falls through to
+                    // super afterwards; the two never overlap (tabs sit
+                    // outside the window, Done inside its footer).
+                    self.advancements_tab_click(mx, my);
                 }
             }
             WindowEvent::MouseInput {
@@ -6957,6 +6979,18 @@ impl ApplicationHandler for LiveApp {
             } if self.options_drag.is_some() => {
                 self.options_drag = None;
             }
+            // M179 — any release ends the advancements drag
+            // (`AdvancementsScreen.mouseReleased`: `isScrolling = false`,
+            // unconditionally). Ahead of the right-button arm on purpose: a
+            // right-release with the screen up must still clear the state,
+            // and no `use` can be in flight because every press over an open
+            // screen is consumed before the world's arms are reached.
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                ..
+            } if self.advancements.is_some() => {
+                self.adv_drag.release();
+            }
             // Releasing a button over the open screen ends any drag (M40).
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -7046,6 +7080,27 @@ impl ApplicationHandler for LiveApp {
                 // list that shrinks under a held thumb stops moving.
                 self.cut_drag();
                 self.merchant_drag();
+                // M179 — the advancements drag. Every move feeds the machine
+                // (it tracks the previous sample whether or not it delivers,
+                // like vanilla's per-frame accumulator), and the delta it
+                // returns is already in GUI px.
+                if self.advancements.is_some() {
+                    let scale = self
+                        .state
+                        .as_ref()
+                        .map(|s| s.window.inner_size())
+                        .map(|sz| rewo_gpu::hud::gui_scale(sz.width as f32, sz.height as f32) as f64)
+                        .unwrap_or(1.0);
+                    if let Some((dx, dy)) =
+                        self.adv_drag.cursor_moved((position.x, position.y), scale)
+                    {
+                        if let Some(v) = self.advancements.as_mut() {
+                            // Raw deltas — `mouseScrolled` is the path that
+                            // scales by SCROLL_SPEED; `mouseDragged` does not.
+                            v.drag_scroll(dx, dy);
+                        }
+                    }
+                }
                 // Crossing a slot with the button down extends a drag. The
                 // slot only *joins* it if the server would accept it, and that
                 // is decided at release — this records the path.
@@ -7075,9 +7130,9 @@ impl ApplicationHandler for LiveApp {
             // no conversion; a trackpad's `PixelDelta` is divided by a line's
             // height first.
             WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => y as f64,
-                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y / 16.0,
+                let (dx, dy) = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => (x as f64, y as f64),
+                    winit::event::MouseScrollDelta::PixelDelta(p) => (p.x / 16.0, p.y / 16.0),
                 };
                 if let Some(view) = self.stats.as_mut() {
                     view.model.list_mut().mouse_scrolled(dy);
@@ -7087,6 +7142,12 @@ impl ApplicationHandler for LiveApp {
                 // swallows every notch; only an active bar moves.
                 self.cut_wheel(dy);
                 self.merchant_wheel(dy);
+                // M179 — `AdvancementsScreen.mouseScrolled`: both axes scale
+                // by SCROLL_SPEED inside `wheel`, and the screen consumes the
+                // notch whenever a tab is selected.
+                if let Some(v) = self.advancements.as_mut() {
+                    v.wheel(dx, dy);
+                }
             }
             WindowEvent::RedrawRequested => self.frame(event_loop),
             _ => {}
@@ -8671,6 +8732,10 @@ impl LiveApp {
         let selected = view.selected_root_id().map(str::to_string);
         let (gw, gh) = self.gui_size();
         self.advancements = Some(view);
+        // Seed the drag machine's cursor sample — a stale one would make the
+        // first post-latch delta span the whole park-to-window trip.
+        self.adv_drag
+            .cursor_seed((self.screen.mouse.0, self.screen.mouse.1));
         let done = self.lang.or_key("gui.done").to_string();
         let screen = rewo_world::advancements_screen::build_screen(gw, gh, &done);
         self.screen.screens.open(screen);
@@ -8693,9 +8758,36 @@ impl LiveApp {
                 log::warn!("live: closed_screen: {e}");
             }
         }
+        // A close mid-drag must not strand the machine (the L key and Done
+        // both land here while a button may be held).
+        self.adv_drag.release();
         self.advancements = None;
         self.screen.screens.close();
         self.grab_for_screen(false);
+    }
+
+    /// A left click on the tab strip (M179). Selects the hit tab and sends
+    /// `opened_tab` — UNCONDITIONALLY, including on the already-selected tab,
+    /// because `ClientAdvancements.setSelectedTab`'s send sits BEFORE its
+    /// change check (`ClientAdvancements.java:77-86`): re-clicking the open
+    /// tab re-tells the server. The listener notification is what is
+    /// change-gated, not the packet.
+    fn advancements_tab_click(&mut self, mx: f64, my: f64) {
+        if self.advancements.is_none() {
+            return;
+        }
+        let (gw, gh) = self.gui_size();
+        let report = self
+            .advancements
+            .as_mut()
+            .and_then(|v| v.tab_click_report(gw, gh, mx, my));
+        if let Some(root_id) = report {
+            if let Some(session) = self.session.as_mut() {
+                if let Err(e) = session.send_seen_advancements_opened_tab(&root_id) {
+                    log::warn!("live: opened_tab: {e}");
+                }
+            }
+        }
     }
 
     /// `repositionElements` — rebuild from the current counter, keeping the
@@ -11798,6 +11890,7 @@ fn run_windowed(
         sign_edit: None,
         options_view: None,
         options_drag: None,
+        adv_drag: crate::advancements_view::AdvDrag::default(),
         jump_injected: false,
         leash_injected: false,
         book_view_injected: false,
