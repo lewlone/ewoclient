@@ -6812,13 +6812,23 @@ impl ApplicationHandler for LiveApp {
                 } else if b == 0
                     && matches!(pressed, Some((rewo_world::screen::ScreenKind::BookView, _)))
                 {
-                    // M172: the page arrows are not framework widgets (a
-                    // `PageButton` draws its own sprites, not button chrome),
-                    // so a left click the framework did not press lands here.
-                    // `BookViewScreen::click` only turns on a VISIBLE arrow.
+                    // M180: the page-text click events run FIRST — vanilla's
+                    // `BookViewScreen.mouseClicked` walks the
+                    // `ClickableStyleFinder` ahead of super's widget pass
+                    // (`:215-226`). The two never overlap geometrically (text
+                    // sits above the arrow strip), so ordering is invisible,
+                    // but it is vanilla's order.
                     let gw = self.gui_size().0;
-                    if let Some(book) = self.book.as_mut() {
-                        book.click(mx as i32, my as i32, gw);
+                    if !self.book_page_click(mx, my, gw) {
+                        // M172: the page arrows are not framework widgets (a
+                        // `PageButton` draws its own sprites, not button
+                        // chrome), so a left click that is neither a text
+                        // event nor a framework press lands here.
+                        // `BookViewScreen::click` only turns on a VISIBLE
+                        // arrow.
+                        if let Some(book) = self.book.as_mut() {
+                            book.click(mx as i32, my as i32, gw);
+                        }
                     }
                 } else if b == 0
                     && matches!(pressed, Some((rewo_world::screen::ScreenKind::Advancements, _)))
@@ -8788,6 +8798,58 @@ impl LiveApp {
                 }
             }
         }
+    }
+
+    /// A left click on the book's page text (M180) — `handleClickEvent`'s
+    /// arms (`BookViewScreen.java:228-247`). Returns whether a clickable
+    /// span took the click.
+    fn book_page_click(&mut self, mx: f64, my: f64, gw: i32) -> bool {
+        let Some(book) = self.book.as_ref() else {
+            return false;
+        };
+        let Some(advance) = self
+            .baked
+            .as_ref()
+            .and_then(|b| b.font.as_ref())
+            .map(|f| f.advance)
+        else {
+            return false;
+        };
+        let measure = |s: &rewo_world::chat_style::ChatSpan| {
+            rewo_gpu::text::width_styled(&s.text, &advance, s.bold)
+        };
+        let Some(event) =
+            rewo_world::book_view_screen::click_event_at(book, gw, &measure, mx as i32, my as i32)
+        else {
+            return false;
+        };
+        match event {
+            // `ClickEvent.ChangePage(page)` is ONE-BASED — `forcePage(page - 1)`
+            // (`:235-237`). Local page turn only; no packet.
+            rewo_world::chat_events::ClickEvent::ChangePage(page) => {
+                if let Some(book) = self.book.as_mut() {
+                    book.force_page(page - 1);
+                }
+            }
+            // `RunCommand`: `closeContainerOnServer()` runs first — EMPTY in
+            // the plain reader (only LecternScreen overrides it, M87's
+            // finding) — then the command itself, which `send_command`
+            // already carries as the unsigned chat_command.
+            rewo_world::chat_events::ClickEvent::RunCommand(command) => {
+                if let Some(session) = self.session.as_mut() {
+                    if let Err(e) = session.send_command(&command) {
+                        log::warn!("live: book run_command({command}): {e}");
+                    }
+                }
+            }
+            // Everything else routes through
+            // `defaultHandleGameClickEvent` — open_url and friends. Rewo
+            // does not open URLs (M85's recorded rule); the click is still
+            // CONSUMED (vanilla returns true for every non-null event), it
+            // just does nothing.
+            other => log::info!("live: book click event {other:?} declined"),
+        }
+        true
     }
 
     /// `repositionElements` — rebuild from the current counter, keeping the
@@ -13233,22 +13295,23 @@ pub(crate) fn book_text_lines(
 ) -> Vec<rewo_gpu::world::OwnedTextLine> {
     use rewo_world::book_view_screen as bv;
     let mut out = Vec::new();
-    let (tx, ty) = bv::BookViewScreen::text_origin(gui_w);
-    for (i, line) in book.current_lines().iter().enumerate() {
-        let mut pen = tx;
-        for span in line {
-            out.push(rewo_gpu::world::OwnedTextLine {
-                x: pen as f32 * px,
-                y: (ty + i as i32 * bv::LINE_HEIGHT) as f32 * px,
-                px,
-                color_linear: srgb_bytes_to_linear_f(span.color),
-                alpha: 1.0,
-                shadow: false,
-                style: text_style_of(span),
-                text: span.text.clone(),
-            });
-            pen += rewo_gpu::text::width_styled(&span.text, advance, span.bold);
-        }
+    // The spans come from THE layout walk — the same one the click hit-test
+    // reads — so a drawn span and its clickable rect cannot disagree (M89's
+    // rule; M180's hit test was bolted onto this exact loop's replacement).
+    let measure = |s: &rewo_world::chat_style::ChatSpan| {
+        rewo_gpu::text::width_styled(&s.text, advance, s.bold)
+    };
+    for ls in bv::layout_spans(book, gui_w, &measure) {
+        out.push(rewo_gpu::world::OwnedTextLine {
+            x: ls.x as f32 * px,
+            y: ls.y as f32 * px,
+            px,
+            color_linear: srgb_bytes_to_linear_f(ls.span.color),
+            alpha: 1.0,
+            shadow: false,
+            style: text_style_of(ls.span),
+            text: ls.span.text.clone(),
+        });
     }
     // `book.pageIndicator` is `Page %1$s of %2$s` — POSITIONAL specifiers,
     // so this goes through the real `decomposeTemplate` (M125) rather than a

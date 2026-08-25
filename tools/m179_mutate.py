@@ -186,6 +186,12 @@ def main():
     killed = sum(1 for _, v in results if v == "KILLED")
     survived = [n for n, v in results if v == "SURVIVED"]
     bad = [n for n, v in results if v in ("FAILED", "TIMEOUT", "SKIP")]
+    # Leave the TREE's binary on disk, not the last mutant's (2026-08-25:
+    # a post-battery gate sweep graded the final restore's stale exe and
+    # only the drifted-against witness went red).
+    if not build():
+        print(f'[{tag}] FINAL REBUILD FAILED - the exe does not match the tree')
+        sys.exit(2)
     ctrl_ok = any(n.startswith("control") and v == "SURVIVED" for n, v in results)
     print(f"[m179] {killed} killed, control {'ok' if ctrl_ok else 'FAILED'}, "
           f"survivors: {survived}, problems: {bad}")

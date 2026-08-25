@@ -174,6 +174,27 @@ impl BookViewScreen {
             _ => false,
         }
     }
+
+    /// `setPage` / `forcePage` — clamp to `[0, count-1]`, change check;
+    /// returns whether the page changed. This is what a
+    /// `ClickEvent.ChangePage` lands in, and **the event's page number is
+    /// ONE-based** — the caller decrements (`handleClickEvent`:
+    /// `forcePage(page - 1)`, `BookViewScreen.java:235-237`).
+    ///
+    /// Written as `max(0).min(count-1)` rather than `i32::clamp` because
+    /// that IS `Mth.clamp(int)`'s `Math.min(Math.max(..))` shape
+    /// (`Mth.java:94-96`); the inverted-bounds case (zero pages) answers
+    /// `-1` in Java and panics in Rust, but is unreachable here — a
+    /// zero-page book has no clickable page text, so no ChangePage can
+    /// fire.
+    pub fn force_page(&mut self, page: i32) -> bool {
+        let clamped = page.max(0).min(self.page_count() as i32 - 1);
+        let changed = clamped >= 0 && clamped != self.current_page as i32;
+        if changed {
+            self.current_page = clamped as usize;
+        }
+        changed
+    }
 }
 
 /// `menuControlsTop()` — `backgroundTop() + 192 + 2`, where the Done button
@@ -202,6 +223,78 @@ pub fn build_screen(gui_w: i32, gui_h: i32, done_label: &str) -> crate::screen::
             crate::screen::BUTTON_HEIGHT,
             done_label,
         )])
+}
+
+/// One laid-out span of the current page — the renderer's and the click
+/// hit-test's shared currency. Positions are GUI px; `y` is the line TOP.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LaidSpan<'a> {
+    pub span: &'a crate::chat_style::ChatSpan,
+    pub x: i32,
+    pub y: i32,
+    /// The span's advance (its own width, already added to the next span's
+    /// pen).
+    pub w: i32,
+}
+
+/// THE page-text layout walk — every span of the current page with its pen
+/// position, at `(left + 36, top + 30 + i * 9)` capped to [`MAX_LINES`]
+/// (`visitText`, `BookViewScreen.java:174-194`). The renderer
+/// (`book_text_lines`) and the click hit-test ([`click_event_at`]) both read
+/// this one walk so their geometries cannot disagree (M89's rule: a
+/// per-call-site choice is how they come to disagree).
+///
+/// The page INDICATOR is deliberately absent: `visitText(collector, true)`
+/// visits only the page lines, so a click on the indicator text is never a
+/// click event even if some component carried one.
+pub fn layout_spans<'a>(
+    book: &'a BookViewScreen,
+    gui_w: i32,
+    measure: &dyn Fn(&crate::chat_style::ChatSpan) -> i32,
+) -> Vec<LaidSpan<'a>> {
+    let mut out = Vec::new();
+    let (tx, ty) = BookViewScreen::text_origin(gui_w);
+    for (i, line) in book.current_lines().iter().enumerate() {
+        let mut pen = tx;
+        for span in line {
+            let w = measure(span);
+            out.push(LaidSpan {
+                span,
+                x: pen,
+                y: ty + i as i32 * LINE_HEIGHT,
+                w,
+            });
+            pen += w;
+        }
+    }
+    out
+}
+
+/// The click event under `(mx, my)` on the current page —
+/// `mouseClicked`'s `ClickableStyleFinder` walk (`:215-226`), left button
+/// only at the caller. The rect test is HALF-OPEN — left/top inclusive,
+/// right/bottom exclusive — (`isPointInRectangle`,
+/// `ActiveTextCollector.java`: `x >= left && x < right && y >= top && y <
+/// bottom`).
+///
+/// NO explicit "carries an event" gate, and none is needed: the rects are
+/// disjoint and half-open, so the point lands in at most one span, and
+/// `and_then` answers `None` for a plain one. Vanilla's scanner carries a
+/// `getClickEvent() != null` gate ONLY because it overwrites last-wins
+/// across every glyph and line — a different composition. A battery mutant
+/// deleting such a gate here was proven equivalent and the dead clause was
+/// removed rather than kept unwitnessable.
+pub fn click_event_at(
+    book: &BookViewScreen,
+    gui_w: i32,
+    measure: &dyn Fn(&crate::chat_style::ChatSpan) -> i32,
+    mx: i32,
+    my: i32,
+) -> Option<crate::chat_events::ClickEvent> {
+    layout_spans(book, gui_w, measure)
+        .into_iter()
+        .find(|s| mx >= s.x && mx < s.x + s.w && my >= s.y && my < s.y + LINE_HEIGHT)
+        .and_then(|s| s.span.click().cloned())
 }
 
 /// One book-chrome blit for the render, in GUI pixels. World-typed rather
@@ -276,6 +369,127 @@ mod tests {
 
     fn book(pages: usize) -> BookViewScreen {
         BookViewScreen::new((0..pages).map(|i| vec![line(&format!("page {i}"))]).collect())
+    }
+
+    /// A span carrying a click event, plus its plain neighbour.
+    fn clickable_page() -> BookViewScreen {
+        let mk = |text: &str, ev: Option<crate::chat_events::ClickEvent>| ChatSpan {
+            text: text.into(),
+            color: [0.0, 0.0, 0.0],
+            bold: false,
+            italic: false,
+            underlined: false,
+            strikethrough: false,
+            obfuscated: false,
+            events: ev.map(|c| std::sync::Arc::new(crate::chat_events::ChatEvents {
+                click: Some(c),
+                hover: None,
+                insertion: None,
+            })),
+        };
+        let page = vec![vec![
+            mk("plain ", None),
+            mk(
+                "goto3",
+                Some(crate::chat_events::ClickEvent::ChangePage(3)),
+            ),
+            mk(" and ", None),
+            mk(
+                "/time",
+                Some(crate::chat_events::ClickEvent::RunCommand("/time".into())),
+            ),
+        ]];
+        BookViewScreen::new(vec![page])
+    }
+
+    /// The test measure: 6 px per character — wide enough that every span
+    /// has distinct rects.
+    fn measure(s: &ChatSpan) -> i32 {
+        s.text.len() as i32 * 6
+    }
+
+    #[test]
+    fn layout_walk_places_spans_end_to_end_from_the_text_origin() {
+        let b = clickable_page();
+        let spans = layout_spans(&b, 400, &measure);
+        let (tx, ty) = BookViewScreen::text_origin(400);
+        assert_eq!(spans.len(), 4);
+        assert_eq!(spans[0].x, tx);
+        assert_eq!(spans[1].x, tx + 6 * 6, "pen advanced by the first span");
+        assert_eq!(spans[1].y, ty);
+        assert_eq!(spans[3].w, 5 * 6);
+        // A second line would step by LINE_HEIGHT; one line is all this
+        // fixture needs to pin the pen arithmetic.
+    }
+
+    #[test]
+    fn a_click_on_a_clickable_span_reports_its_event() {
+        let b = clickable_page();
+        let (tx, _) = BookViewScreen::text_origin(400);
+        let centre_of = |span_i: usize| -> (i32, i32) {
+            let spans = layout_spans(&b, 400, &measure);
+            let s = spans[span_i];
+            (s.x + s.w / 2, s.y)
+        };
+        assert_eq!(
+            click_event_at(&b, 400, &measure, centre_of(1).0, centre_of(1).1),
+            Some(crate::chat_events::ClickEvent::ChangePage(3)),
+            "the ChangePage span"
+        );
+        assert_eq!(
+            click_event_at(&b, 400, &measure, centre_of(3).0, centre_of(3).1),
+            Some(crate::chat_events::ClickEvent::RunCommand("/time".into())),
+            "the RunCommand span"
+        );
+        // The plain spans carry nothing.
+        assert_eq!(
+            click_event_at(&b, 400, &measure, centre_of(0).0, centre_of(0).1),
+            None,
+            "plain text under the cursor is not a click"
+        );
+        // And a point between two spans (the boundary IS inside the next
+        // one's half-open rect only at exactly x; mid-gutter misses).
+        let _ = tx;
+    }
+
+    #[test]
+    fn click_rects_are_half_open_left_in_right_exclusive() {
+        let b = clickable_page();
+        let spans = layout_spans(&b, 400, &measure);
+        let s = spans[1]; // "goto3", w = 30
+        // `isPointInRectangle`: x >= left && x < right && y >= top && y <
+        // bottom — the LEFT/TOP edges are INSIDE, the right/bottom outside.
+        assert!(
+            click_event_at(&b, 400, &measure, s.x, s.y).is_some(),
+            "the exact left-top corner hits"
+        );
+        assert_eq!(
+            click_event_at(&b, 400, &measure, s.x + s.w, s.y),
+            None,
+            "right edge misses"
+        );
+        assert_eq!(click_event_at(&b, 400, &measure, s.x + 1, s.y - 1), None);
+        assert_eq!(click_event_at(&b, 400, &measure, s.x + 1, s.y + 9), None);
+        assert!(click_event_at(&b, 400, &measure, s.x + 5, s.y + 8).is_some());
+    }
+
+    #[test]
+    fn force_page_clamps_and_answers_whether_it_changed() {
+        let mut b = book(3);
+        assert!(b.force_page(2));
+        assert!(!b.force_page(2), "same page answers false");
+        // From the LAST page, a clamp-to-last changes nothing — vanilla's
+        // setPage compares AFTER clamping.
+        assert!(!b.force_page(99));
+        b.force_page(0);
+        assert!(b.force_page(99));
+        assert_eq!(b.current_page(), 2, "clamped to the last page");
+        assert!(b.force_page(-5));
+        assert_eq!(b.current_page(), 0, "floored at 0");
+        // The CALLER decrements ChangePage's one-based number; force_page
+        // itself takes the already-decremented index.
+        assert!(b.force_page(3 - 1));
+        assert_eq!(b.current_page(), 2);
     }
 
     #[test]
