@@ -143,9 +143,11 @@ not close the listening pass, and its module doc carries §4's "What the gate
 does NOT assert" paragraph verbatim** so a future session reading only the gate
 still learns that a green run is not evidence this client makes a sound.
 
-Current measurement, re-taken **2026-08-24 after M178**:
-**3489 tests, 0 failures** (**world 1255, net 1257, gpu 320, data 235, app 231,
-mesh 52, proto 16, audio 120** — read off the runner per crate).
+Current measurement, re-taken **2026-08-25 after M179**:
+**3491 tests, 0 failures** (**world 1255, net 1257, gpu 320, data 235, app 236,
+mesh 52, proto 16, audio 120** — read off the runner per crate; note the
+2026-08-24 writeup's splits summed to 3486 against a 3489 headline — the +3
+was never accountable, and today's headline and splits agree).
 **There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
 loop written against the old list drops its tests silently. Note the per-crate invocation is
 not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
@@ -175,8 +177,8 @@ caller requirements, **has a timeout as of M166** (an untimed `subprocess.run`
 inherited the client's worst failure mode — a hung client hung the gate with no
 exit code and nothing to read), and **stages the two blocking configuration
 tasks**, without which the run scores nothing at all; demo PNG
-`2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at **122 / 0 / 19**, class C
-**8** (M171/M172 took the book viewer, M174 the sign editor; M152 `update_recipes`, M166 `resource_pack_push`) — M96–M107 consume packets M93y already decoded, M108 resolved
+`2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at **124 / 0 / 17**, class C
+**6** (M177 took the advancements pair; M171/M172 the book viewer, M174 the sign editor; M152 `update_recipes`, M166 `resource_pack_push`) — M96–M107 consume packets M93y already decoded, M108 resolved
 `delete_chat`, M113 the Brigadier tree and M114 the two suggestion packets.
 
 **There are **43** serverless gate commands, not the "fourteen" older paragraphs in
@@ -187,8 +189,8 @@ all green, **0 validation errors**; re-measured again on 2026-08-20, when the
 count reached **37** (`mobtexshot`, M165) — `sidebarshot` (17) came from M132, **`soundshot`**
 (28 default / 48 under `--features audio`) and **`tablistshot`** (42, raised by M155 and M158) are the
 two newest, and `blockentityshot` reads **177** rather than the 172 the list
-below records. **M178 added `advshot` (14), making 43 — all 41 Vulkan-oracle
-gates + advshot re-run exit 0 on 2026-08-24.** Enumerate them rather
+below records. **M178 added `advshot`, making 43 — and M179 raised it to 20
+witnesses; all 43 re-run exit 0 on 2026-08-25.** Enumerate them rather
 than trusting a list, since the list is what rots:
 
 ```
@@ -342,16 +344,16 @@ witnesses are mostly self-driven can look healthy against nothing.
 > version of this box listed has shipped. What follows is measured on the merged
 > tree, not carried forward.
 >
-> **The state (re-measured 2026-08-24 after M178):** **43** serverless gates
+> **The state (re-measured 2026-08-25 after M179):** **43** serverless gates
+> green with 0 validation errors (`advshot` is the 43rd, now **20/20**),
+> **3491
+> tests**, `live --render-check` **64/64** exit 0, packet coverage **124 / 0 / 17**
+> with classes A and B empty, demo PNG `2cc56b4acbfb92cb` byte-identical.
+>
+> *(superseded — the post-M178 line, kept for the diff:)* **43** serverless gates
 > green with 0 validation errors (`advshot` is the 43rd, 14/14), **3489
 > tests**, `live --render-check` **64/64** exit 0, packet coverage **122 / 0 / 19**
 > with classes A and B empty, demo PNG `2cc56b4acbfb92cb` byte-identical.
->
-> *(superseded — the post-M174 line, kept for the diff:)* **42** serverless gates
-> green with 0 validation errors (`signshot` is the 42nd, 23/23), **3446
-> tests**, `live --render-check` **64/64** exit 0 (r63/r64 arrived with M174),
-> packet coverage **122 / 0 / 19** with classes A and B empty, demo PNG
-> `2cc56b4acbfb92cb` byte-identical.
 >
 > **A 20-agent survey (2026-08-17) specced every open gap and every one of the
 > twenty specs came back `needs-revision`.** The verified specs are the best
@@ -464,7 +466,11 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   blocker closed generically — `ScreenDraw.scissored` batches, available to
 >   every future screen. Open from it, all named in §15's M178 entry:
 >   mid-screen tree updates (snapshot at open), item-icon scissor clipping,
->   unknown-backdrop fallback, and M179's tab clicks.
+>   and the unknown-backdrop fallback — ~~and M179's tab clicks~~ **DONE
+>   (M179, 2026-08-25)**: clicks select + send `opened_tab` (unconditionally,
+>   per `ClientAdvancements.java:77-86`), wheel and drag scroll the tree; live
+>   r65 witnesses for the sends are claimed in the allocation table and
+>   deferred to a servered session.
 > * **`render-misc [AO]` and `[FLOW]`** — both need a decision the agents cannot
 >   make. `[AO]`: an exact `prepareQuadAmbientOcclusion` wants 8+8 bits of
 >   per-vertex light where `MeshVertex` has 4+4 and **11 spare bits**, reopening
@@ -1910,8 +1916,8 @@ this shape once.
 | M175 — the baby sheets | — | entity-atlas shelves gain the 10 same-size `*_baby` sheets; origins are computed by the packer at build time and consumed as normalized UV offsets, so there is nothing to claim | `mobtexshot` m8, n1-n4 |
 | M177 — advancements decode + model | — (no live witnesses) | — | `rewo-net`/`rewo-world` unit tests; battery `tools/m177_mutate.py` |
 | M178 — advancements render + gate | — (planned r65/r66 NOT taken; the gate is serverless and no live witness landed) | screen-pass atlas 512 -> **1024 tall**; below y=512: `AdvWindow` (252x140 crop) at (0,512), `AdvTab(0..23)` rows y=656/692, `AdvFrame(0..5)` y=724, boxes y=754/782/810, `AdvBackground(0..4)` y=840; `SHEET_COUNT` 58 -> 97 | `advshot` a*/m*/p* (14), battery `tools/m178_mutate.py` |
-| M179 — advancement clicks *(planned, claims on starting)* | **r65** | — | extends `advshot`; live witnesses for tab clicks + CLOSED_SCREEN |
-| *(next free)* | **r65** | — | — |
+| M179 — advancement clicks *(claimed 2026-08-25 at session start)* | **r65** (CLAIMED — live click witnesses DEFERRED to a servered session; named here so nothing else takes the id) | — | extends `advshot`; live witnesses for tab clicks + CLOSED_SCREEN |
+| *(next free)* | **r66** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table
@@ -3732,6 +3738,62 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M179 — the advancement clicks: a premise fixed before wiring, and two survivors on the battery's first run (2026-08-25)
+
+Tab clicks, wheel scroll and drag scroll, headless-only (live r65 witnesses
+for the sends are CLAIMED in the allocation table and DEFERRED to a servered
+session).
+
+**The premise check earned its keep before any code landed.** The model half
+shipped by M178 refused clicks at ≤1 tabs — but that is the DRAW rule misread
+as the click rule: `AdvancementsScreen.mouseClicked`
+(`java:113-127`) iterates `tabs.values()` **unconditionally**; only
+`extractWindow` (`:206`) and the tab tooltips (`:228`) gate on
+`tabs.size() > 1`. With exactly one tab the strip is invisible yet its cell
+still selects and RE-SENDS `opened_tab`, because
+`ClientAdvancements.setSelectedTab` sends BEFORE its change check
+(`ClientAdvancements.java:77-86`) — the listener notification is what is
+change-gated, never the packet. `tab_click`'s guard deleted, the quirk pinned
+by m8 (single tab still clicks) and m10 (re-click reports again).
+
+The rest is decompile-cited wiring: wheel →
+`scroll(scrollX * SCROLL_SPEED, scrollY * SCROLL_SPEED)` consumed iff a tab
+is selected (`:183-190`); drag → RAW deltas with no multiplier (`:170` vs
+`:185`), GUI-scaled per `MouseHandler.java:306,:332-334`; vanilla's
+dead-first-event latch (`:167-171`); the non-left cancel (`:162-165`); any
+release clears everything (`:177-180`). The drag machine lives as a pure
+`AdvDrag` in `advancements_view.rs` because `LiveApp` has no test seam (the
+M71/M97 lesson), so its unit tests are the ONLY instrument that reaches it —
+the battery's checker runs both instruments for exactly that reason.
+
+**Two real survivors on the first battery run, both process findings:**
+
+1. **m9 hand-rolled the select.** It built its own view and called
+   `screen.select` directly beside production's handler, so a mutation
+   deleting production's select survived BOTH instruments — M93b's shape
+   ("a gate that reimplements a slice misses what lives outside it") in the
+   newest form yet: the copy was written BY the same milestone that wrote
+   the gate. Fix: the decision moved into `tab_click_report` (hit-test +
+   select + report the root id), which the handler AND m9/m10 drive; the
+   send stays at the caller.
+2. **My own `press()` cleared the latch**, which vanilla's `mouseClicked`
+   never does. That made the non-left cancel arm UNREACHABLE (nothing could
+   ever reach a move with the latch set under a non-left button) and its
+   test vacuous — the mutant survived behind a green suite precisely
+   because the test exercised a release between presses. Removed; the test
+   rewritten to press RIGHT mid-left-drag, where the rule actually lives.
+   (A residual mutant — clearing the latch at press vs at move — is
+   equivalent on GLFW-reachable input and was left unfaked.)
+
+advshot 14 → **20 witnesses** (m7 strict separate cells; m8 single-tab
+clicks; m9 select+report through production; m10 re-click re-reports;
+m11 ×16 scaling + both clamp ends + inert vertical; m12 raw drag deltas +
+empty screen declines). Battery `tools/m179_mutate.py`: **8 killed +
+control SURVIVED**, rebuilding inside the checker (M178's stale-binary
+trap). Measured: 3491 tests / 0 failures across eight crates (app 231 →
+236); all 43 gates green; render-check 64/64 exit 0; demo PNG
+`2cc56b4acbfb92cb` byte-identical.
 
 ### M177 — the advancements decode: two packets, the client tree, and the done rule that survived only once (2026-08-24)
 
