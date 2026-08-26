@@ -19,14 +19,14 @@ entries (M180 book page-clicks, M179 advancement clicks) →
 snapshot — read it, don't trust it over measurements.
 
 ## State (verified 2026-08-25 on the pushed tree)
-
 ```bash
 git status --short        # expect empty
 git rev-list --count origin/main..main   # expect 0 — everything is PUSHED
 ```
 
-* **main == origin/main at `c809caf`.** M179 (advancement clicks) and M180
-  (book page-text clicks) landed this session, merged `--no-ff`, pushed.
+* **main == origin/main** (verify with the commands above — do not trust a
+  hash written here). The M179/M180 arc and every doc/memory refresh through
+  2026-08-25 are pushed.
 * **3495 tests / 0 failures** across EIGHT rewo crates — world 1259,
   net 1257, gpu 320, data 235, app 236, mesh 52, proto 16, audio 120.
   `rewo-app` takes `--bins`; the others take `--lib`.
