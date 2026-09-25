@@ -38,10 +38,10 @@ jobs:
           stripdown: true
 
       - name: Build
-        run: cargo build --workspace --all-targets
+        run: cargo build --workspace --all-targets --features rewo-app/gates
 
       - name: Test
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test --workspace --no-fail-fast --features rewo-app/gates
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --workspace --all-targets --features rewo-app/gates

@@ -64,6 +64,7 @@ python tools/gates.py --only mobshot,itemshot
 python tools/render_check.py                 # stages a fresh vanilla server, runs `rewo live --render-check`
 cargo run -p ewo-launcher                    # launcher (add --dev for the tweaks overlay)
 cargo run -p rewo-app -- live --host HOST:PORT
+cargo build -p rewo-app --features gates   # gate subcommands, `live --render-check`, `play`, REWO_* test knobs
 powershell ingame-mod/build.ps1 [-Pvp]       # builds ewo-jni + the mod jar AND deploys it (see traps)
 powershell package.ps1                       # release bundle into dist/EwoClient
 python tools/regen_agents_mirror.py          # after editing this file: regenerate AGENTS.md

@@ -48,11 +48,11 @@ def binary(release: bool) -> Path:
 
 
 def build(release: bool, audio: bool) -> None:
-    cmd = ["cargo", "build", "-p", "rewo-app"]
+    cmd = ["cargo", "build", "-p", "rewo-app", "--features", "gates"]
     if release:
         cmd.append("--release")
     if audio:
-        cmd += ["--features", "audio"]
+        cmd[-1] += ",audio"
     print("$", " ".join(cmd), flush=True)
     subprocess.run(cmd, cwd=ROOT, check=True)
 

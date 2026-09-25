@@ -1484,7 +1484,7 @@ impl RenderCheck {
         // They fail CLOSED when unstaged, on §5's rule — a witness that skips
         // itself when its precondition is absent is green on every machine
         // where the precondition is what matters.
-        let want_pack = std::env::var("REWO_RC_PACK_ID").ok();
+        let want_pack = crate::knobs::var("REWO_RC_PACK_ID").ok();
         row(
             "r55 both pushed resource packs were decoded and answered TERMINALLY",
             match (&want_pack, self.config_tasks.pack_replies.as_slice()) {
@@ -1507,7 +1507,7 @@ impl RenderCheck {
                     .collect::<Vec<_>>()
             ),
         );
-        let want_coc = std::env::var("REWO_RC_COC").ok();
+        let want_coc = crate::knobs::var("REWO_RC_COC").ok();
         row(
             "r56 the server's code of conduct was decoded and accepted",
             match (&want_coc, self.config_tasks.codes_of_conduct.as_slice()) {
@@ -1818,6 +1818,9 @@ fn validate_unit(name: &str, v: f32) -> Result<(), String> {
 }
 
 pub fn run(args: LiveArgs) -> Result<(), String> {
+    if args.render_check && !cfg!(feature = "gates") {
+        return Err("--render-check needs a build with `--features gates`".into());
+    }
     // M13 camera-lightmap options — validate BEFORE loading/baking/connecting
     // so a bad value fails fast without any side effects.
     validate_unit("gamma", args.gamma)?;
@@ -2042,7 +2045,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         // Headless: pump the session until spawn + a settle window, render
         // one frame from the eye, save. No window at all.
         Some(out) if args.run_seconds.is_none() => {
-            let settle = std::env::var("REWO_SETTLE")
+            let settle = crate::knobs::var("REWO_SETTLE")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(6.0);
@@ -3968,7 +3971,7 @@ fn collect_entities<'a>(
                                                   // pins every player's walk pose so a still-target PNG can prove the
                                                   // limb-swing mechanism deterministically (a live walker's phase at
                                                   // capture time is timing-dependent). One-shot; zero-cost when unset.
-    let force_limb: Option<(f32, f32)> = std::env::var("REWO_FORCE_LIMB").ok().and_then(|s| {
+    let force_limb: Option<(f32, f32)> = crate::knobs::var("REWO_FORCE_LIMB").ok().and_then(|s| {
         let mut it = s.split(',');
         Some((
             it.next()?.trim().parse().ok()?,
@@ -3978,14 +3981,14 @@ fn collect_entities<'a>(
     // Headless-only knob: `REWO_FORCE_HEAD=<degrees>` cranks every mob's head
     // yaw to body-yaw + this offset, so a PNG can prove head-look turns the
     // head independently of the body without depending on live server AI.
-    let force_head: Option<f32> = std::env::var("REWO_FORCE_HEAD")
+    let force_head: Option<f32> = crate::knobs::var("REWO_FORCE_HEAD")
         .ok()
         .and_then(|s| s.trim().parse().ok());
     // Headless-only knob: `REWO_FORCE_GESTURE=<name>[,<age_s>]` pins every
     // gesture-rigged mob into that state (mobshot names, e.g.
     // "warden_roar,1.5") — deterministic gesture PNGs without server AI.
     let force_gesture: Option<(rewo_gpu::mobs::Gesture, f32)> =
-        std::env::var("REWO_FORCE_GESTURE").ok().and_then(|s| {
+        crate::knobs::var("REWO_FORCE_GESTURE").ok().and_then(|s| {
             let mut it = s.split(',');
             let g = rewo_gpu::mobs::Gesture::from_name(it.next()?.trim())?;
             let age = it.next().and_then(|a| a.trim().parse().ok()).unwrap_or(0.0);
@@ -4254,7 +4257,7 @@ pub(crate) fn init_entities_maybe_cem(
         .or_else(|| std::env::var("REWO_PACK").ok().map(PathBuf::from));
     let etf = match pack {
         Some(path) => {
-            let cem = crate::mobshot_cmd::load_cem_overrides(&path)?;
+            let cem = crate::cem_pack::load_cem_overrides(&path)?;
             let etf = rewo_data::etf::load_pack(&path).unwrap_or_else(|e| {
                 // A pack with unreadable random-entity data still gets its
                 // models; the mobs simply keep vanilla textures.
@@ -4996,7 +4999,7 @@ fn run_headless(
             // REWO_PRECMD: run one op command before the summon (e.g. clear
             // prior test mobs with `kill @e[type=husk]`), so a re-run starts
             // from a clean scene.
-            if let Ok(cmd) = std::env::var("REWO_PRECMD") {
+            if let Ok(cmd) = crate::knobs::var("REWO_PRECMD") {
                 // Semicolon-separated, so a scene that needs several commands
                 // (a `clear` then a handful of `give`s) is still one knob.
                 for one in cmd.split(';').map(str::trim).filter(|c| !c.is_empty()) {
@@ -5007,15 +5010,15 @@ fn run_headless(
                     std::env::remove_var("REWO_PRECMD");
                 }
             }
-            if let Ok(mob) = std::env::var("REWO_SUMMON") {
+            if let Ok(mob) = crate::knobs::var("REWO_SUMMON") {
                 let dir = look_dir(session.player.yaw, 0.0);
-                let dist = std::env::var("REWO_SUMMON_DIST")
+                let dist = crate::knobs::var("REWO_SUMMON_DIST")
                     .ok()
                     .and_then(|s| s.trim().parse().ok())
                     .unwrap_or(3.0);
                 // Optional vertical offset — float the mob into empty sky so a
                 // verification shot isn't occluded by ground clutter.
-                let dy: f64 = std::env::var("REWO_SUMMON_DY")
+                let dy: f64 = crate::knobs::var("REWO_SUMMON_DY")
                     .ok()
                     .and_then(|s| s.trim().parse().ok())
                     .unwrap_or(0.0);
@@ -5025,7 +5028,7 @@ fn run_headless(
                     session.player.z + dir[2] * dist,
                 );
                 // Optional NBT tail (e.g. REWO_SUMMON_NBT={CustomName:'"Bo"'}).
-                let nbt = std::env::var("REWO_SUMMON_NBT").unwrap_or_default();
+                let nbt = crate::knobs::var("REWO_SUMMON_NBT").unwrap_or_default();
                 let cmd = format!("summon minecraft:{mob} {sx:.2} {sy:.2} {sz:.2} {nbt}");
                 if let Err(e) = session.send_command(&cmd) {
                     log::warn!("REWO_SUMMON: {e}");
@@ -5042,7 +5045,7 @@ fn run_headless(
         // through the signature cache, the trust level, the wrap and the
         // geometry, so the whole chain is exercised by the run itself.
         if summoned || session.spawned {
-            if let Ok(msg) = std::env::var("REWO_CHAT") {
+            if let Ok(msg) = crate::knobs::var("REWO_CHAT") {
                 if !msg.is_empty() {
                     let _ = session.send_chat(&msg);
                     std::env::remove_var("REWO_CHAT");
@@ -5064,7 +5067,7 @@ fn run_headless(
             // container has settled. The components are the point — a stack
             // that decoded at all proves the walk reached the end of its
             // patch, and the values prove it read the right bytes (M41).
-            if std::env::var("REWO_DUMP_INVENTORY").is_ok() {
+            if crate::knobs::var("REWO_DUMP_INVENTORY").is_ok() {
                 for i in 0..rewo_world::inventory::MENU_SLOTS {
                     if let Some(s) = session.inventory.menu_slot(i) {
                         println!(
@@ -5075,7 +5078,7 @@ fn run_headless(
                 }
                 std::env::remove_var("REWO_DUMP_INVENTORY");
             }
-            if let Ok(whole) = std::env::var("REWO_CLICK") {
+            if let Ok(whole) = crate::knobs::var("REWO_CLICK") {
               let before_all = session.inventory.content_updates();
               // Semicolon-separated, so a run can pick a stack up and then do
               // something with it — a drag needs a stack on the cursor, and no
@@ -5331,7 +5334,7 @@ fn run_headless(
         // The headless one-shot has no key handling, so the HUD is never
         // hidden. `REWO_HUD_HIDDEN=1` is the knob that lets a gate or a
         // scripted shot exercise F1's suppression without a keyboard.
-        std::env::var("REWO_HUD_HIDDEN").is_ok_and(|v| v.trim() == "1"),
+        crate::knobs::var("REWO_HUD_HIDDEN").is_ok_and(|v| v.trim() == "1"),
         frame_crosshair_pick(&session, &etypes, 1.0),
     );
     for (id, e) in session.world.entities.iter() {
@@ -5353,14 +5356,14 @@ fn run_headless(
     }
     println!("[rewo-entities] {} tracked", draws.len());
     let mut yaw = session.player.yaw;
-    let mut pitch = std::env::var("REWO_PITCH")
+    let mut pitch = crate::knobs::var("REWO_PITCH")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(10.0);
     // REWO_LOOK_AT="x,y,z": aim the camera at a fixed world point, bypassing
     // the entity search — deterministic framing for a summoned target even in
     // a scene full of other entities of the same kind.
-    if let Some(pt) = std::env::var("REWO_LOOK_AT").ok().and_then(|s| {
+    if let Some(pt) = crate::knobs::var("REWO_LOOK_AT").ok().and_then(|s| {
         let mut it = s.split(',');
         Some(Vec3::new(
             it.next()?.trim().parse().ok()?,
@@ -5378,13 +5381,13 @@ fn run_headless(
             eye.y,
             eye.z
         );
-    } else if std::env::var("REWO_LOOK_ENTITY").is_ok() {
+    } else if crate::knobs::var("REWO_LOOK_ENTITY").is_ok() {
         // Aim at the nearest interesting model: a player, or (REWO_LOOK=slime)
         // the nearest slime; else the nearest anything.
         let d = |e: &EntityDraw| {
             (e.pos[0] - eye.x).powi(2) + (e.pos[1] - eye.y).powi(2) + (e.pos[2] - eye.z).powi(2)
         };
-        let look = std::env::var("REWO_LOOK").ok();
+        let look = crate::knobs::var("REWO_LOOK").ok();
         let look_kind = look
             .as_deref()
             .map(|s| rewo_gpu::mobs::kind_for_entity_name(&format!("minecraft:{s}")));
@@ -5394,7 +5397,7 @@ fn run_headless(
         };
         // REWO_LOOK_HIGH: among the preferred kind, take the highest one
         // (a floated summon sits above all ground clutter — deterministic).
-        let high = std::env::var("REWO_LOOK_HIGH").is_ok();
+        let high = crate::knobs::var("REWO_LOOK_HIGH").is_ok();
         let nearest = if high {
             draws
                 .iter()
@@ -5469,13 +5472,13 @@ fn run_headless(
     // is parked at the window centre, which is where `set_screen_open` puts it.
     let mut headless_screen_labels: Vec<rewo_gpu::world::OwnedTextLine> = Vec::new();
     let (sw, sh) = (off.extent.width as f32, off.extent.height as f32);
-    let screen_open = std::env::var("REWO_OPEN_INVENTORY")
+    let screen_open = crate::knobs::var("REWO_OPEN_INVENTORY")
         .map(|v| v != "0")
         .unwrap_or(false);
     if screen_open {
         // `REWO_MOUSE=x,y` moves the cursor for the shot, which is the only way
         // to photograph the preview turning to follow it.
-        let mouse = std::env::var("REWO_MOUSE")
+        let mouse = crate::knobs::var("REWO_MOUSE")
             .ok()
             .and_then(|v| {
                 let (a, b) = v.split_once(',')?;
@@ -5486,7 +5489,7 @@ fn run_headless(
         // for the shot. Offline test servers carry no textures property, so
         // this is the only way to photograph the preview wearing a real skin
         // — or, since M64, a real cape.
-        let mut skin = std::env::var("REWO_PREVIEW_SKIN").ok().and_then(|spec| {
+        let mut skin = crate::knobs::var("REWO_PREVIEW_SKIN").ok().and_then(|spec| {
             let info = match crate::skin_fetch::resolve(&spec) {
                 Ok(i) => i,
                 Err(e) => {
@@ -5594,7 +5597,7 @@ fn run_headless(
         let mut hand = HandState::new(&baked);
         // Settle the equip clock, or the item is caught mid-dip on tick one.
         hand.settle(&session, &items);
-        hand.forced_attack = std::env::var("REWO_HAND_SWING")
+        hand.forced_attack = crate::knobs::var("REWO_HAND_SWING")
             .ok()
             .and_then(|v| v.trim().parse::<f32>().ok())
             .map(|v| v.clamp(0.0, 1.0));
@@ -10370,7 +10373,7 @@ impl LiveApp {
             // headless path has had since M64, wired into the windowed one
             // (M82) — without it a windowed run cannot stage anything that
             // needs a command, and the death screen needs `/kill`.
-            if let Ok(cmd) = std::env::var("REWO_PRECMD") {
+            if let Ok(cmd) = crate::knobs::var("REWO_PRECMD") {
                 for one in cmd.split(';').map(str::trim).filter(|c| !c.is_empty()) {
                     let _ = session.send_command(one);
                     log::info!("REWO_PRECMD: {one}");
@@ -11919,7 +11922,7 @@ fn run_windowed(
     // Forcing rain gives the band a finite value the sentinel cannot be
     // mistaken for, and makes `r8`/`r10` about drawn precipitation rather than
     // about a pass merely existing.
-    if args.render_check && std::env::var_os("REWO_FORCE_WEATHER").is_none() {
+    if args.render_check && crate::knobs::var_os("REWO_FORCE_WEATHER").is_none() {
         std::env::set_var("REWO_FORCE_WEATHER", "1.0");
     }
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
@@ -19229,7 +19232,14 @@ fn apply_border(
 /// session's levels so the live weather path can be shot without an op'd bot
 /// running `/weather`. The same shape as `REWO_FORCE_GESTURE` and `REWO_SUMMON`.
 fn forced_weather() -> Option<(f32, f32)> {
-    let raw = std::env::var("REWO_FORCE_WEATHER").ok()?;
+    // Read once: this runs several times per frame, and the knob is fixed at
+    // startup (render-check sets it before the event loop starts).
+    static FORCED: std::sync::OnceLock<Option<(f32, f32)>> = std::sync::OnceLock::new();
+    *FORCED.get_or_init(parse_forced_weather)
+}
+
+fn parse_forced_weather() -> Option<(f32, f32)> {
+    let raw = crate::knobs::var("REWO_FORCE_WEATHER").ok()?;
     let mut parts = raw.split(',');
     let rain: f32 = parts.next()?.trim().parse().ok()?;
     let thunder: f32 = parts.next().and_then(|t| t.trim().parse().ok()).unwrap_or(0.0);
@@ -23744,6 +23754,7 @@ pub(crate) fn hovered_menu_slot(
 /// 77 px placement shift and not from the guard it names. A mutation deleting
 /// that guard survived. This exists so the witness can say which of the two it
 /// is measuring.
+#[cfg(any(test, feature = "gates"))]
 pub(crate) fn hovered_menu_slot_for_gate(
     layout: &'static rewo_world::menu_layout::MenuLayout,
     mouse: (f64, f64),
@@ -24023,6 +24034,7 @@ pub(crate) fn recipe_book_panel(
 /// [`container_panel`] for `containershot`, which drives the production
 /// builder rather than a copy of it — M45's finding: a gate that reimplements
 /// a slice of the app's setup misses whatever the app adds to it.
+#[cfg(any(test, feature = "gates"))]
 pub(crate) fn container_panel_for_test(
     layout: &'static rewo_world::menu_layout::MenuLayout,
 ) -> Option<rewo_gpu::container::ContainerPanel> {
@@ -24034,6 +24046,7 @@ pub(crate) fn container_panel_for_test(
 ///
 /// Drives the production builder for M45's reason: a gate that reimplements a
 /// slice of the app's setup misses whatever the app adds to it.
+#[cfg(any(test, feature = "gates"))]
 pub(crate) fn container_panel_for_open_menu(
     open: &rewo_world::menu::OpenMenu,
     xp_level: i32,
@@ -24084,6 +24097,7 @@ pub(crate) fn container_panel_for_open_menu(
 }
 
 /// [`BeaconEffectIds::resolve`] for `containershot`.
+#[cfg(any(test, feature = "gates"))]
 pub(crate) fn beacon_effect_ids_for_test(
     m: &rewo_data::mob_effects::MobEffects,
 ) -> BeaconEffectIds {
@@ -24091,6 +24105,7 @@ pub(crate) fn beacon_effect_ids_for_test(
 }
 
 /// [`sheet_index`] for `containershot`.
+#[cfg(any(test, feature = "gates"))]
 pub(crate) fn sheet_index_for_test(texture: &str) -> Option<usize> {
     sheet_index(texture)
 }
@@ -25634,6 +25649,7 @@ fn edit_box_render(
 /// scene render two ways depending on when the gate ran, and a witness cannot
 /// hold that constant. At 0 the caret is visible, which is the state the
 /// existing anvil witnesses were written against.
+#[cfg(any(test, feature = "gates"))]
 pub(crate) fn anvil_field_render_for_test(
     local: &rewo_world::edit_box::EditBox,
     advance: &[u8; 256],

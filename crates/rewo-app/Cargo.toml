@@ -28,6 +28,11 @@ path = "src/main.rs"
 # same signature so a caller cannot tell them apart.
 audio = ["dep:rewo-audio"]
 
+# The `*shot` verification gates, `live --render-check`, and the REWO_* test
+# knobs (see src/knobs.rs). Off by default so a shipped `rewo` contains none of
+# them; `tools/gates.py` and `tools/render_check.py` build with it.
+gates = []
+
 [dependencies]
 # Optional; see the `audio` feature above.
 rewo-audio = { workspace = true, optional = true }

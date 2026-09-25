@@ -7,66 +7,115 @@
 //! Headless: `--headless N` renders N frames offscreen (no window at all)
 //! and writes a PNG — the self-check harness for machines/agents.
 
+#[cfg(feature = "gates")]
 mod abilityshot_cmd;
 mod audio_backend;
+#[cfg(feature = "gates")]
 mod bordershot_cmd;
 mod capture;
+mod cem_pack;
+#[cfg(feature = "gates")]
 mod captureshot_cmd;
 mod bench_cmd;
+#[cfg(feature = "gates")]
 mod attributeshot_cmd;
+#[cfg(feature = "gates")]
 mod danceshot_cmd;
+#[cfg(feature = "gates")]
 mod deathshot_cmd;
+#[cfg(feature = "gates")]
 mod serverlinkshot_cmd;
+#[cfg(feature = "gates")]
 mod rideshot_cmd;
+#[cfg(feature = "gates")]
 mod healthbarshot_cmd;
+#[cfg(feature = "gates")]
 mod breakshot_cmd;
+#[cfg(feature = "gates")]
 mod hurtshot_cmd;
+#[cfg(feature = "gates")]
 mod labelshot_cmd;
+#[cfg(feature = "gates")]
 mod itemshot_cmd;
 mod demo_cmd;
+#[cfg(feature = "gates")]
 mod dimension_check;
+#[cfg(feature = "gates")]
 mod dimension_json;
+#[cfg(feature = "gates")]
 mod dimensioncheck_cmd;
+#[cfg(feature = "gates")]
 mod blockentityshot_cmd;
+#[cfg(feature = "gates")]
 mod eventshot_cmd;
+#[cfg(feature = "gates")]
 mod lightmapshot_cmd;
+#[cfg(feature = "gates")]
 mod meshshot_cmd;
+#[cfg(feature = "gates")]
 mod tintshot_cmd;
+#[cfg(feature = "gates")]
 mod locatorshot_cmd;
+#[cfg(feature = "gates")]
 mod sidebarshot_cmd;
+#[cfg(feature = "gates")]
 mod titleshot_cmd;
+#[cfg(feature = "gates")]
 mod bookshot_cmd;
+#[cfg(feature = "gates")]
 mod signshot_cmd;
+#[cfg(feature = "gates")]
 mod optionshot_cmd;
+#[cfg(feature = "gates")]
 mod gaugeshot_cmd;
+#[cfg(feature = "gates")]
 mod leashshot_cmd;
+#[cfg(feature = "gates")]
 mod mobshot_cmd;
+#[cfg(feature = "gates")]
 mod mobtexshot_cmd;
+mod knobs;
 mod modules;
 mod live_cmd;
 mod net_cmd;
+#[cfg(feature = "gates")]
 mod play_cmd;
+#[cfg(feature = "gates")]
 mod capeshot_cmd;
+#[cfg(feature = "gates")]
 mod handshot_cmd;
+#[cfg(feature = "gates")]
 mod containershot_cmd;
+#[cfg(feature = "gates")]
 mod inventoryshot_cmd;
+#[cfg(feature = "gates")]
 mod particleshot_cmd;
+#[cfg(feature = "gates")]
 mod portalshot_cmd;
 mod skin_fetch;
 mod uri_open;
+#[cfg(feature = "gates")]
 mod skyshot_cmd;
+#[cfg(feature = "gates")]
 mod soundshot_cmd;
 mod stats;
+#[cfg(feature = "gates")]
 mod witness_names;
 mod stats_view;
 mod advancements_view;
+#[cfg(feature = "gates")]
 mod advshot_cmd;
+#[cfg(feature = "gates")]
 mod statshot_cmd;
+#[cfg(feature = "gates")]
 mod swingshot_cmd;
 mod tab_list_view;
+#[cfg(feature = "gates")]
 mod tablistshot_cmd;
 mod view_cmd;
+#[cfg(feature = "gates")]
 mod hudshot_cmd;
+#[cfg(feature = "gates")]
 mod weathershot_cmd;
 
 use std::path::PathBuf;
@@ -156,6 +205,7 @@ enum Command {
     View(view_cmd::ViewArgs),
     /// M3 be a player: headless bot — spawn, move, build, chat; report
     /// server position corrections (the physics-parity meter).
+    #[cfg(feature = "gates")]
     Play(play_cmd::PlayArgs),
     /// M3 capstone: connect + play in a real window (WASD/mouse), the live
     /// session feeding the renderer. `--out` writes the eye view headless.
@@ -168,35 +218,43 @@ enum Command {
     Bench(bench_cmd::BenchArgs),
     /// Mob-model verification: contact sheet of every mob (no server), or
     /// `--check` for the facelabel texture-correspondence gate.
+    #[cfg(feature = "gates")]
     Mobshot(mobshot_cmd::MobshotArgs),
     /// Real-texture, multi-entity mob gate: many mobs in ONE `set_entities`,
     /// each rendered pixel checked against the colours its own jar sheet can
     /// produce. The complement of `mobshot --check`, which substitutes debug
     /// colours and renders one entity per frame.
+    #[cfg(feature = "gates")]
     Mobtexshot(mobtexshot_cmd::MobtexshotArgs),
     /// M12 sky verification: render sun/moon/stars/sunrise + the zenith tint
     /// headless (no server) and assert their pixel properties with `--check`.
+    #[cfg(feature = "gates")]
     Skyshot(skyshot_cmd::SkyshotArgs),
     /// M13 lightmap verification: render terrain, water and entity cases
     /// through the production Vulkan paths (no server) and assert their pixel
     /// properties against independent CPU expectations with `--check`.
+    #[cfg(feature = "gates")]
     Lightmapshot(lightmapshot_cmd::LightmapshotArgs),
     /// M14 biome-tint verification: build a deterministic multi-biome scene,
     /// mesh it through the production `mesh_column`, render terrain + sky/fog
     /// through Vulkan (no server), and assert grass/foliage/water tint + sky/fog
     /// against independent expectations with `--check`.
+    #[cfg(feature = "gates")]
     Tintshot(tintshot_cmd::TintshotArgs),
     /// M15 geometry oracle: compare production greedy rectangles with the
     /// frozen unit-face reference and pin every merge boundary (no server).
+    #[cfg(feature = "gates")]
     Meshshot(meshshot_cmd::MeshshotArgs),
     /// M16 dimension oracle: grade a captured 26.2 `dimension_type` registry
     /// against the bundled built-ins and the decompiled JSON, and prove every
     /// entry binds to the world shape, sky channel and mesh shade (no server).
+    #[cfg(feature = "gates")]
     Dimensioncheck(dimensioncheck_cmd::DimensioncheckArgs),
     /// M17 entity-event oracle: drive raw `ClientboundEntityEventPacket` bodies
     /// through the real dispatch → receipt-tick → `resolve_mob_anim` → rig-oracle
     /// path and assert the warden attack/sonic and armadillo peek animations
     /// against independent decompiled literals with `--check` (no server, no GPU).
+    #[cfg(feature = "gates")]
     Eventshot(eventshot_cmd::EventshotArgs),
     /// M75 abilities oracle: drive raw `ClientboundPlayerAbilitiesPacket` bodies
     /// and `CommonPlayerSpawnInfo` gamemode fields through the real decoders,
@@ -204,6 +262,7 @@ enum Command {
     /// `LocalPlayer.aiStep` flight controller and the real `physics::tick_with`,
     /// and assert the flags byte, the flight constants, the double-tap window
     /// and the mode transitions with `--check` (no server, no GPU).
+    #[cfg(feature = "gates")]
     Abilityshot(abilityshot_cmd::AbilityshotArgs),
     /// M79 title-overlay + HUD-gauge oracle: drive raw `set_title_text`,
     /// `set_subtitle_text`, `set_action_bar_text`, `set_titles_animation`,
@@ -211,6 +270,7 @@ enum Command {
     /// router and the real line builders, then render the result offscreen and
     /// assert the pixels against a synthetic magenta subject with `--check`
     /// (no server; Vulkan required).
+    #[cfg(feature = "gates")]
     Titleshot(titleshot_cmd::TitleshotArgs),
     /// M168 survival-HUD oracle: drive raw `set_entity_data`,
     /// `update_mob_effect`, `update_attributes` and `set_health`-shaped
@@ -221,20 +281,26 @@ enum Command {
     /// effect icons and the jump bar offscreen and assert the pixels against
     /// the jar's own sprite bytes with `--check` (no server; Vulkan required).
     /// The written-book reader gate (M172).
+    #[cfg(feature = "gates")]
     Bookshot(bookshot_cmd::BookshotArgs),
     /// The sign-editor gate (M174): the `TextFieldHelper` model, the three
     /// board blits and the caret/selection rendering, with pixel witnesses
     /// against the jar's own `gui/signs` sheets (`--check`; no server; Vulkan
     /// validation required).
+    #[cfg(feature = "gates")]
     Signshot(signshot_cmd::SignshotArgs),
     /// The options screens + volume sliders gate (M173).
+    #[cfg(feature = "gates")]
     Optionshot(optionshot_cmd::OptionshotArgs),
     /// The advancements screen's gate (M178): the model, the scissored
     /// contents, connectivity runs and hover tooltip, driven through the
     /// production builders (`--check`; no server; Vulkan validation required).
+    #[cfg(feature = "gates")]
     Advshot(advshot_cmd::AdvshotArgs),
+    #[cfg(feature = "gates")]
     Gaugeshot(gaugeshot_cmd::GaugeshotArgs),
     /// The leash rope gate (M170).
+    #[cfg(feature = "gates")]
     Leashshot(leashshot_cmd::LeashshotArgs),
     /// M132 scoreboard-sidebar oracle: drive raw `set_objective`, `set_score`
     /// and `set_display_objective` bodies through the real parsers and the
@@ -242,10 +308,13 @@ enum Command {
     /// the windowed frame calls, then render its fills and text offscreen and
     /// assert the geometry against literals transcribed from
     /// `displayScoreboardSidebar` with `--check` (no server; Vulkan required).
+    #[cfg(feature = "gates")]
     Sidebarshot(sidebarshot_cmd::SidebarshotArgs),
     /// M151 tab-list oracle: rows, bands, ping icons, header/footer, score column.
+    #[cfg(feature = "gates")]
     Tablistshot(tablistshot_cmd::TablistshotArgs),
     /// M83's locator-bar oracle: the `waypoint` packet and the HUD strip.
+    #[cfg(feature = "gates")]
     Locatorshot(locatorshot_cmd::LocatorshotArgs),
     /// M82 screen-framework + death-screen oracle: drive a raw
     /// `player_combat_kill` body through the real router with **no entity
@@ -253,8 +322,10 @@ enum Command {
     /// and one-second guard against the decompile, then render the screen
     /// offscreen over a pure-green clear and assert the pixels with `--check`
     /// (no server; Vulkan required).
+    #[cfg(feature = "gates")]
     Deathshot(deathshot_cmd::DeathshotArgs),
     /// M84: the statistics screen + `award_stats` oracle.
+    #[cfg(feature = "gates")]
     Statshot(statshot_cmd::StatshotArgs),
     /// M85 `server_links` + pause/disconnect-screen oracle: drive a raw
     /// `server_links` body through the real `route_session`, grade the
@@ -263,55 +334,66 @@ enum Command {
     /// offscreen over a pure-magenta clear and assert the nine-slice, the
     /// tiled menu background and the reserved cells with `--check` (no server;
     /// Vulkan required).
+    #[cfg(feature = "gates")]
     Serverlinkshot(serverlinkshot_cmd::ServerLinkshotArgs),
     /// M25 block-entity oracle: drive a synthesised level-chunk payload and a
     /// `block_entity_data` body through the real decoders, prove the fail-closed
     /// type registry, and re-measure the invisible-block gap from the client
     /// jar's own model parent chains with `--check` (no server, no GPU).
+    #[cfg(feature = "gates")]
     Blockentityshot(blockentityshot_cmd::BlockentityshotArgs),
     /// M32b end-portal shader oracle: render the production end-portal /
     /// gateway pass offscreen through Vulkan (no server) and assert its pixels
     /// against an independent CPU prediction with `--check` — the analytic
     /// uniform-texture sum, screen-space sampling, and the column-major layer
     /// matrix.
+    #[cfg(feature = "gates")]
     Portalshot(portalshot_cmd::PortalshotArgs),
     /// M33 weather + cloud oracle: grade the `game_event` wire, the
     /// precipitation rule and the cloud mesh on the CPU, then render both
     /// production passes offscreen and assert their pixels with `--check`.
+    #[cfg(feature = "gates")]
     Weathershot(weathershot_cmd::WeathershotArgs),
     /// M52b Velvet UI oracle: grade the HUD layout chain, anchors, glyph
     /// metrics and the in-world shadow stack against the transcribed
     /// `ewo-jni/src/hud.rs` constants. CPU-only, serverless.
+    #[cfg(feature = "gates")]
     Hudshot(hudshot_cmd::HudshotArgs),
     /// M34 inventory + hotbar-icon oracle: drive the three inventory packets
     /// through the real router, grade the `display.gui` placement and the GUI
     /// diffuse on the CPU, then render real baked items into real hotbar slots
     /// offscreen and assert their pixels with `--check` (no server).
+    #[cfg(feature = "gates")]
     Inventoryshot(inventoryshot_cmd::InventoryshotArgs),
     /// M87 — the container-screen gate.
+    #[cfg(feature = "gates")]
     Containershot(containershot_cmd::ContainershotArgs),
     /// M38 first-person hand oracle: grade the two first-person display
     /// transforms on the real jar, the pose chain against a derivation from the
     /// decompile, and the pass's pixels — with a synthetic magenta texture, so
     /// the detector cannot match anything but the hand.
+    #[cfg(feature = "gates")]
     Handshot(handshot_cmd::HandshotArgs),
     /// M60 vanilla-cape oracle: the cube and its 64x32 UV space, the
     /// `Rx·Rz·Ry` composition the `PartPose` cancels into, the lagging cloak
     /// anchor and the three angles, `CapeLayer`'s four gates against real jar
     /// equipment, and the pass's pixels — with a marker-coloured cape, so the
     /// detector cannot match the player it hangs on.
+    #[cfg(feature = "gates")]
     Capeshot(capeshot_cmd::CapeshotArgs),
     /// M18 Allay-dance oracle: drive raw `set_entity_data` bodies through the
     /// real packet routing → kind-aware DANCING/BABY disambiguation → client
     /// counter lifecycle → `AllayRoot`/`AllayHead` pose oracle, asserting the
     /// dance transforms against independent decompiled formulas with `--check`
     /// (no server, no GPU).
+    #[cfg(feature = "gates")]
     Danceshot(danceshot_cmd::DanceshotArgs),
     /// M72 passenger-positioning oracle: drive raw `set_passengers` bodies
     /// through the real router → the riding graph → `tick_lerp`'s
     /// `positionRider` derivation, asserting every rider's position **relative
     /// to its vehicle** across sub-tick fractions and through every
     /// per-vehicle override, with `--check` (no server, no GPU).
+    #[cfg(feature = "gates")]
     Rideshot(rideshot_cmd::RideshotArgs),
     /// M52 entity-attribute oracle: drive raw `update_attributes` bodies
     /// through the real packet routing → `handleUpdateAttributes` receipt gates
@@ -319,24 +401,30 @@ enum Command {
     /// asserting the wire encoding, the operation order, the clamp and the
     /// fail-closed default resolution against independent decompiled literals
     /// with `--check` (no server, no GPU).
+    #[cfg(feature = "gates")]
     Attributeshot(attributeshot_cmd::AttributeshotArgs),
     /// M59: the floating health bar. The first Rewo feature with **no vanilla
     /// oracle** — vanilla renders no health bar over any entity — so this gate
     /// grades the render against `REWO_HEALTH_BAR_SPEC.md`, a written design
     /// decision, rather than against a decompile reading.
+    #[cfg(feature = "gates")]
     Healthbarshot(healthbarshot_cmd::HealthbarshotArgs),
     /// M70: entity-label visibility — the one predicate that decides whether a
     /// nametag or a health bar is drawn at all. The renderer ladder, the sneak
     /// cut-off, invisibility, the camera entity, `isVehicle`, F1 and the four
     /// `Team.Visibility` arms, plus the property that both labels agree.
+    #[cfg(feature = "gates")]
     Labelshot(labelshot_cmd::LabelshotArgs),
     /// M21: the combat damage response — hurt clock + the red flash. M81
     /// adds `hurt_animation` and the camera tilt it steers.
+    #[cfg(feature = "gates")]
     Hurtshot(hurtshot_cmd::HurtshotArgs),
     /// M81: the block-break crack overlay — `block_destruction`'s two
     /// indexes, the block's own decal geometry, and the multiply blend.
+    #[cfg(feature = "gates")]
     Breakshot(breakshot_cmd::BreakshotArgs),
     /// M22: held items — both geometry paths, placement and suppression.
+    #[cfg(feature = "gates")]
     Itemshot(itemshot_cmd::ItemshotArgs),
     /// M19 combat-swing oracle: drive raw `ClientboundAnimatePacket` bodies
     /// through the real dispatch → `LivingEntity` swing clock →
@@ -344,12 +432,14 @@ enum Command {
     /// with the equipment + main-arm packets that decide a swing's duration and
     /// animation type, asserting every value against independent decompiled
     /// transcriptions with `--check` (no server, no GPU).
+    #[cfg(feature = "gates")]
     Swingshot(swingshot_cmd::SwingshotArgs),
     /// M37 particle oracle: drive raw `level_particles` / `level_event` bodies
     /// through the production decoders, grade the spawn fan-out, and assert
     /// seeded particle trajectories bit-for-bit against vectors emitted by a
     /// Java harness copied verbatim from the decompile (`--check`, no server,
     /// no GPU).
+    #[cfg(feature = "gates")]
     Particleshot(particleshot_cmd::ParticleshotArgs),
     /// The sound oracle (`REWO_AUDIO_PLAN.md` §4): drive raw sound and
     /// `level_event` bodies through the production decoders, grade the seeded
@@ -361,12 +451,14 @@ enum Command {
     /// vectors, real Ogg Vorbis from the asset store, and the production `Mixer`
     /// through a `NullSink`. **A green run is not evidence that this client
     /// makes any sound** — see the module doc.
+    #[cfg(feature = "gates")]
     Soundshot(soundshot_cmd::SoundshotArgs),
     /// M51c screenshot-capture oracle: render through a **BGRA** `Offscreen` —
     /// the live swapchain's format, which no other gate exercises — and grade
     /// the saved PNG's channel order, opacity and row order, then drive
     /// production `capture::grab` end to end and pin vanilla's filename pattern
     /// and dedup ladder with `--check` (no server, no client jar).
+    #[cfg(feature = "gates")]
     Captureshot(captureshot_cmd::CaptureshotArgs),
     /// M80's world-border oracle: the lerp state machine, the six packets, the
     /// collision push, and a pixel read-back of the wall.
@@ -376,6 +468,7 @@ enum Command {
     /// as a measured displacement (a correction count cannot see a movement
     /// the client fails to *stop*), and the wall against a CPU prediction over
     /// a black clear.
+    #[cfg(feature = "gates")]
     Bordershot(bordershot_cmd::BordershotArgs),
 }
 
@@ -389,52 +482,96 @@ fn main() {
     let result = match args.command.take() {
         Some(Command::Net(net_args)) => net_cmd::run(net_args),
         Some(Command::View(view_args)) => view_cmd::run(view_args),
+        #[cfg(feature = "gates")]
         Some(Command::Play(play_args)) => play_cmd::run(play_args),
         Some(Command::Live(live_args)) => live_cmd::run(live_args),
         Some(Command::Demo(demo_args)) => demo_cmd::run(demo_args),
         Some(Command::Bench(bench_args)) => bench_cmd::run(bench_args),
+        #[cfg(feature = "gates")]
         Some(Command::Mobshot(mobshot_args)) => mobshot_cmd::run(mobshot_args),
+        #[cfg(feature = "gates")]
         Some(Command::Mobtexshot(mt_args)) => mobtexshot_cmd::run(mt_args),
+        #[cfg(feature = "gates")]
         Some(Command::Skyshot(skyshot_args)) => skyshot_cmd::run(skyshot_args),
+        #[cfg(feature = "gates")]
         Some(Command::Lightmapshot(lm_args)) => lightmapshot_cmd::run(lm_args),
+        #[cfg(feature = "gates")]
         Some(Command::Tintshot(ts_args)) => tintshot_cmd::run(ts_args),
+        #[cfg(feature = "gates")]
         Some(Command::Meshshot(ms_args)) => meshshot_cmd::run(ms_args),
+        #[cfg(feature = "gates")]
         Some(Command::Dimensioncheck(dc_args)) => dimensioncheck_cmd::run(dc_args),
+        #[cfg(feature = "gates")]
         Some(Command::Eventshot(ev_args)) => eventshot_cmd::run(ev_args),
+        #[cfg(feature = "gates")]
         Some(Command::Abilityshot(ab_args)) => abilityshot_cmd::run(ab_args),
+        #[cfg(feature = "gates")]
         Some(Command::Titleshot(t_args)) => titleshot_cmd::run(t_args),
+        #[cfg(feature = "gates")]
         Some(Command::Bookshot(b_args)) => bookshot_cmd::run(b_args),
+            #[cfg(feature = "gates")]
             Some(Command::Signshot(s_args)) => signshot_cmd::run(s_args),
+        #[cfg(feature = "gates")]
         Some(Command::Optionshot(o_args)) => optionshot_cmd::run(o_args),
+        #[cfg(feature = "gates")]
         Some(Command::Advshot(a_args)) => advshot_cmd::run(a_args),
+        #[cfg(feature = "gates")]
         Some(Command::Gaugeshot(g_args)) => gaugeshot_cmd::run(g_args),
+        #[cfg(feature = "gates")]
         Some(Command::Leashshot(l_args)) => leashshot_cmd::run(l_args),
+        #[cfg(feature = "gates")]
         Some(Command::Sidebarshot(sb_args)) => sidebarshot_cmd::run(sb_args),
+        #[cfg(feature = "gates")]
         Some(Command::Tablistshot(tl_args)) => tablistshot_cmd::run(tl_args),
+        #[cfg(feature = "gates")]
         Some(Command::Locatorshot(l_args)) => locatorshot_cmd::run(l_args),
+        #[cfg(feature = "gates")]
         Some(Command::Deathshot(d_args)) => deathshot_cmd::run(d_args),
+        #[cfg(feature = "gates")]
         Some(Command::Statshot(s_args)) => statshot_cmd::run(s_args),
+        #[cfg(feature = "gates")]
         Some(Command::Serverlinkshot(sl_args)) => serverlinkshot_cmd::run(sl_args),
+        #[cfg(feature = "gates")]
         Some(Command::Blockentityshot(be_args)) => blockentityshot_cmd::run(be_args),
+        #[cfg(feature = "gates")]
         Some(Command::Portalshot(ps_args)) => portalshot_cmd::run(ps_args),
+        #[cfg(feature = "gates")]
         Some(Command::Inventoryshot(iv_args)) => inventoryshot_cmd::run(iv_args),
+        #[cfg(feature = "gates")]
         Some(Command::Containershot(cs_args)) => containershot_cmd::run(cs_args),
+        #[cfg(feature = "gates")]
         Some(Command::Handshot(h_args)) => handshot_cmd::run(h_args),
+        #[cfg(feature = "gates")]
         Some(Command::Capeshot(cape_args)) => capeshot_cmd::run(cape_args),
+        #[cfg(feature = "gates")]
         Some(Command::Weathershot(ws_args)) => weathershot_cmd::run(ws_args),
+        #[cfg(feature = "gates")]
         Some(Command::Hudshot(hs_args)) => hudshot_cmd::run(hs_args),
+        #[cfg(feature = "gates")]
         Some(Command::Danceshot(dance_args)) => danceshot_cmd::run(dance_args),
+        #[cfg(feature = "gates")]
         Some(Command::Rideshot(ride_args)) => rideshot_cmd::run(ride_args),
+        #[cfg(feature = "gates")]
         Some(Command::Attributeshot(attr_args)) => attributeshot_cmd::run(attr_args),
+        #[cfg(feature = "gates")]
         Some(Command::Healthbarshot(hb_args)) => healthbarshot_cmd::run(hb_args),
+        #[cfg(feature = "gates")]
         Some(Command::Labelshot(label_args)) => labelshot_cmd::run(label_args),
+        #[cfg(feature = "gates")]
         Some(Command::Hurtshot(hurt_args)) => hurtshot_cmd::run(hurt_args),
+        #[cfg(feature = "gates")]
         Some(Command::Breakshot(a)) => breakshot_cmd::run(a),
+        #[cfg(feature = "gates")]
         Some(Command::Itemshot(item_args)) => itemshot_cmd::run(item_args),
+        #[cfg(feature = "gates")]
         Some(Command::Swingshot(sw_args)) => swingshot_cmd::run(sw_args),
+        #[cfg(feature = "gates")]
         Some(Command::Particleshot(pt_args)) => particleshot_cmd::run(pt_args),
+        #[cfg(feature = "gates")]
         Some(Command::Soundshot(snd_args)) => soundshot_cmd::run(snd_args),
+        #[cfg(feature = "gates")]
         Some(Command::Captureshot(cap_args)) => captureshot_cmd::run(cap_args),
+        #[cfg(feature = "gates")]
         Some(Command::Bordershot(b_args)) => bordershot_cmd::run(b_args),
         None => match args.headless {
             Some(frames) => run_headless(&args, frames),
