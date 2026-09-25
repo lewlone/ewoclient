@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "crates/ewo-core",
     "crates/ewo-render",
-    "crates/ewo-ui",
     "crates/ewo-launcher",
     "crates/ewo-jni",
     "crates/rewo-gpu",
@@ -109,7 +108,6 @@ rsa = { version = "0.9", features = ["sha2"] }
 # Internal
 ewo-core = { path = "crates/ewo-core" }
 ewo-render = { path = "crates/ewo-render" }
-ewo-ui = { path = "crates/ewo-ui" }
 rewo-gpu = { path = "crates/rewo-gpu" }
 rewo-proto = { path = "crates/rewo-proto" }
 rewo-data = { path = "crates/rewo-data" }
@@ -136,14 +134,9 @@ features = [
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_DirectComposition",
-    # LEAK_HUNT_INSTRUMENT — these two enable `GetProcessMemoryInfo` in
-    # `crates/ewo-launcher/src/window/win32.rs::process_memory`. Strip
-    # them when the leak-hunt instrumentation is removed.
+    # launch::reaper — OpenProcess / GetProcessTimes / TerminateProcess on
+    # the game processes this launcher spawned.
     "Win32_System_Threading",
-    "Win32_System_ProcessStatus",
-    # Process enumeration for launch::reaper — reap a windowless zombie
-    # java.exe holding an instance's natives dir locked before a relaunch.
-    "Win32_System_Diagnostics_ToolHelp",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_HiDpi",
 ]

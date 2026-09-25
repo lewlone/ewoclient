@@ -326,6 +326,10 @@ pub fn dropdown_options(slot: Slot) -> Option<&'static [&'static str]> {
 /// each, instead of treating those as global preferences.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Instance {
+    /// Stable on-disk key: the instance's folder is `instances/<id>/`.
+    /// Assigned by the launcher (empty until then); `name` is display-only.
+    #[serde(default)]
+    pub id: String,
     pub name: String,
     pub version: String,
     /// Human-readable last-played string ("moments ago", "yesterday")
@@ -410,6 +414,7 @@ fn default_status() -> InstanceStatus {
 impl Instance {
     pub fn new(name: String, version: String, last_played: String, mods: Vec<ModInfo>) -> Self {
         Self {
+            id: String::new(),
             name,
             version,
             last_played,

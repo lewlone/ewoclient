@@ -121,14 +121,14 @@ impl std::error::Error for BuildError {}
 /// + launch profile.
 pub fn build(
     pv: &PerVersion,
-    instance_name: &str,
+    instance_id: &str,
     ram_gb: u32,
     profile: &LaunchProfile,
     jvm_path: PathBuf,
 ) -> Result<LaunchPlan, BuildError> {
-    let game_dir = paths::instance_dir(instance_name).ok_or(BuildError::PathsUnresolvable)?;
+    let game_dir = paths::instance_dir(instance_id).ok_or(BuildError::PathsUnresolvable)?;
     let assets_root = paths::assets_dir().ok_or(BuildError::PathsUnresolvable)?;
-    let natives_dir = natives_dir_for(instance_name).ok_or(BuildError::PathsUnresolvable)?;
+    let natives_dir = natives_dir_for(instance_id).ok_or(BuildError::PathsUnresolvable)?;
 
     // Build classpath: every applicable library's main artifact + the
     // client jar. Order matters — Mojang puts libs first, client last.
@@ -196,8 +196,8 @@ pub fn build(
 /// Per-instance natives extraction dir. Distinct from `<game_dir>` so
 /// natives can be freshly extracted on each launch (in case a library
 /// changed) without polluting the user's saves/config.
-pub fn natives_dir_for(instance_name: &str) -> Option<PathBuf> {
-    let mut p = paths::instance_dir(instance_name)?;
+pub fn natives_dir_for(instance_id: &str) -> Option<PathBuf> {
+    let mut p = paths::instance_dir(instance_id)?;
     p.push("natives");
     Some(p)
 }
@@ -400,4 +400,78 @@ pub fn pick_native_classifier(lib: &Library) -> Option<String> {
         return Some(modern_key);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tokens() -> TokenMap {
+        TokenMap {
+            auth_player_name: "Vwyla".into(),
+            version_name: "26.2".into(),
+            game_directory: "/g".into(),
+            assets_root: "/a".into(),
+            assets_index_name: "30".into(),
+            auth_uuid: "uuid".into(),
+            auth_access_token: "tok".into(),
+            clientid: String::new(),
+            auth_xuid: String::new(),
+            user_type: "msa".into(),
+            version_type: "release".into(),
+            natives_directory: "/n".into(),
+            launcher_name: "EwoClient".into(),
+            launcher_version: "0.1".into(),
+            classpath: "a.jar;b.jar".into(),
+            user_properties: "{}".into(),
+        }
+    }
+
+    #[test]
+    fn substitutes_known_tokens_and_keeps_unknown_ones() {
+        let t = tokens();
+        assert_eq!(substitute_str("${auth_player_name}", &t), "Vwyla");
+        assert_eq!(
+            substitute_str("-Djava.library.path=${natives_directory}", &t),
+            "-Djava.library.path=/n"
+        );
+        assert_eq!(substitute_str("${auth_session}", &t), "tok", "legacy alias");
+        assert_eq!(substitute_str("${nope}", &t), "${nope}");
+        assert_eq!(substitute_str("a${version_name}b${user_type}", &t), "a26.2bmsa");
+        assert_eq!(substitute_str("$ {x} ${", &t), "$ {x} ${");
+    }
+
+    #[test]
+    fn modern_args_honour_rules_and_arrays() {
+        let t = tokens();
+        let args: Vec<Value> = serde_json::from_str(
+            r#"[
+                "--username", "${auth_player_name}",
+                "--accessToken", "${auth_access_token}",
+                {"rules":[{"action":"allow","features":{"is_demo_user":true}}],"value":"--demo"},
+                {"rules":[{"action":"allow"}],"value":["--width","${version_name}"]}
+            ]"#,
+        )
+        .unwrap();
+        let out = substitute_game_args(&args, &t);
+        assert_eq!(out[..4], ["--username", "Vwyla", "--accessToken", "tok"]);
+        assert!(out.iter().all(|a| a != "--demo"), "feature-gated arg must be skipped: {out:?}");
+        assert_eq!(out[4..], ["--width", "26.2"]);
+    }
+
+    #[test]
+    fn legacy_args_split_and_substitute() {
+        let t = tokens();
+        let out = substitute_legacy_game_args("--username ${auth_player_name}  --session ${auth_session}", &t);
+        assert_eq!(out, ["--username", "Vwyla", "--session", "tok"]);
+        let jvm = synthesize_legacy_jvm_args(&t);
+        assert_eq!(jvm, ["-Djava.library.path=/n", "-cp", "a.jar;b.jar"]);
+    }
+
+    #[test]
+    fn natives_dir_is_keyed_by_instance_id() {
+        let p = natives_dir_for("velvet-hours-abc123").unwrap();
+        assert!(p.ends_with("instances/velvet-hours-abc123/natives"));
+        assert!(natives_dir_for("../escape").is_none());
+    }
 }

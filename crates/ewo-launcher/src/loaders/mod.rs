@@ -21,7 +21,7 @@ pub use merge::merge;
 /// cache keying + log labels) and the manifest URL to fetch. Constructed
 /// from an `InstanceLoader::Ewo { manifest_url }` at the launcher boundary
 /// so neither `downloads` nor `loaders` depends on `ewo-render`'s model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoaderSpec {
     pub id: String,
     pub url: String,

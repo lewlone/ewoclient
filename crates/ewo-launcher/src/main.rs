@@ -42,6 +42,26 @@ struct PendingRelaunch {
     /// the runtime service emits `Done { major }` matching this value.
     waiting_for_major: u32,
 }
+
+/// What to do if a launch's background preparation fails.
+#[derive(Debug, Clone, Copy)]
+enum PrepareFail {
+    /// Fall back to the synthetic launch animation (plain Launch click).
+    Synthetic,
+    /// Show this line + an error exit on the launching screen (retries).
+    Error(&'static str),
+}
+
+/// A launch whose blocking preparation runs on a worker thread; the result
+/// arrives on `rx` and the UI thread finishes the launch (JRE pick, plan,
+/// spawn) — see `App::poll_prepare`.
+struct PendingPrepare {
+    rx: std::sync::mpsc::Receiver<Result<launch::prepare::Prepared, String>>,
+    idx: usize,
+    inst_name: String,
+    inst_meta: String,
+    fail: PrepareFail,
+}
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -86,9 +106,18 @@ const CAPTION_HEIGHT_LP: f64 = 32.0;
 /// project lives in a sibling repo on the developer's machine and
 /// doesn't yet publish a public meta endpoint, so we point straight at
 /// the on-disk manifests via `file://`. Becomes a config knob (or a real
-/// HTTPS URL) once the loader publishes a meta endpoint.
+/// HTTPS URL) once the loader publishes a meta endpoint. Override with the
+/// `EWO_LOADER_BASE` env var (a `file://` or `https://` base URL).
 const DEV_EWO_LOADER_BASE: &str =
     "file:///C:/Users/valtteri/Desktop/EwoLoaderV1/manifest/0.1.0";
+
+fn ewo_loader_base() -> String {
+    std::env::var("EWO_LOADER_BASE")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEV_EWO_LOADER_BASE.to_string())
+}
 
 /// Resolve the EwoLoader manifest URL for a Minecraft version id. The
 /// manifests are keyed by version *line* (major.minor), so patch releases
@@ -101,7 +130,7 @@ fn ewo_loader_manifest_url(version_id: &str) -> String {
         Some((second_dot, _)) => &version_id[..second_dot],
         None => version_id,
     };
-    format!("{}/{}.json", DEV_EWO_LOADER_BASE, line)
+    format!("{}/{}.json", ewo_loader_base(), line)
 }
 
 // Card inset (logical px). Mirrors `app_window::CARD_INSET`. Used to convert
@@ -233,11 +262,21 @@ struct App {
     /// C). `None` while no launch is running. Drained each frame in
     /// `RedrawRequested`.
     launch_rx: Option<std::sync::mpsc::Receiver<launch::LaunchEvent>>,
-    /// PID of the most-recent spawned game JVM, held so a lingering zombie
-    /// (JVM that deadlocks in native teardown on exit — see `launch::reaper`)
-    /// can be force-killed before the next launch. Set on `Started`, cleared
-    /// on a clean exit. `None` when no launch has run this session.
-    active_launch_pid: Option<u32>,
+    /// The running game process (PID + creation time), held so a lingering
+    /// zombie (JVM that deadlocks in native teardown on exit — see
+    /// `launch::reaper`) can be reaped before the next launch. Set on
+    /// `Started`, cleared on exit.
+    active_launch: Option<launch::reaper::Tracked>,
+    /// Wall-time the running game was spawned, and whether its window-ready
+    /// marker has been seen — together they tell a zombie from a game that
+    /// is still starting up.
+    active_launch_started_at: f32,
+    active_launch_window_seen: bool,
+    /// Folder id of the instance whose game is running (for its log dump).
+    active_launch_instance_id: Option<String>,
+    /// A launch whose blocking preparation (manifest/loader fetch, library
+    /// downloads, natives extraction) is running on a worker thread.
+    pending_prepare: Option<PendingPrepare>,
     /// While a launch is in flight, the wall-time deadline after which the
     /// launcher minimizes itself even if we haven't yet seen the game's
     /// window-ready log marker. `None` when no launch is pending a minimize.
@@ -372,7 +411,11 @@ impl App {
             versions: versions::VersionService::new(),
             downloads: downloads::DownloadService::new(),
             launch_rx: None,
-            active_launch_pid: None,
+            active_launch: None,
+            active_launch_started_at: 0.0,
+            active_launch_window_seen: false,
+            active_launch_instance_id: None,
+            pending_prepare: None,
             pending_minimize: None,
             runtime: runtime::RuntimeService::new(),
             pending_relaunch: None,
@@ -445,13 +488,20 @@ impl App {
         }
     }
 
-    /// Attempt a real JVM launch for the instance at `idx`. Returns
-    /// `true` if a real launch started; `false` if we should fall back
-    /// to the synthetic path (e.g. instance not Ready, manifest missing
-    /// from cache, plan-build failed). On success: stores the receiver
-    /// in `self.launch_rx`, transitions `self.launching` into real
-    /// mode, and the per-frame poll picks up subsequent events.
-    fn try_real_launch(&mut self, idx: usize, inst_name: &str, inst_meta: &str, time: f32) -> bool {
+    /// Attempt a real launch for the instance at `idx`. Returns `true` if a
+    /// real launch is under way (Native spawned, or a JVM launch handed to
+    /// the background preparer); `false` if we should fall back right away
+    /// (instance not Ready, manifest missing, …). A JVM launch finishes in
+    /// [`Self::poll_prepare`] once its preparation arrives; a failure there
+    /// is handled per `fail`.
+    fn try_real_launch(
+        &mut self,
+        idx: usize,
+        inst_name: &str,
+        inst_meta: &str,
+        time: f32,
+        fail: PrepareFail,
+    ) -> bool {
         // E6: apply any bundled-mod toggles made in the in-game overlay last
         // session, before we read the instance's mod state for this launch.
         if overlay_mods::apply_overrides(&mut self.instances, idx) {
@@ -471,7 +521,7 @@ impl App {
         // E6: refresh the in-game MODS view's snapshot of the bundled mods.
         overlay_mods::write_catalog(&inst);
         // F5c: resolve the active profile's keybinds for the in-game mod.
-        overlay_mods::write_keybinds(&inst.name);
+        overlay_mods::write_keybinds(&inst.id);
         // The version *string* comes from the meta, formatted as
         // "<LOADER> · <version>". Strip the loader prefix.
         let version_id = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
@@ -512,6 +562,7 @@ impl App {
             let (tx, rx) = std::sync::mpsc::channel::<launch::LaunchEvent>();
             let _ = launch::spawn_native(launch::NativePlan { program, args, envs }, tx);
             self.launch_rx = Some(rx);
+            self.active_launch_instance_id = Some(inst.id.clone());
             self.launching.enter_real(time, inst_name, inst_meta);
             log::info!("launch: rewo spawned for \"{}\" ({})", inst.name, version_id);
             return true;
@@ -530,120 +581,93 @@ impl App {
                 return false;
             }
         };
-        // Per-version manifest must be on disk (Phase B). If somehow
-        // it isn't, refuse to launch — caller falls back to synthetic.
-        let vanilla_pv = match versions::per_version_fetch::get_or_fetch(&entry) {
+        // The network + disk work (manifests, library downloads, natives
+        // extraction, zombie reaping) runs on a worker so the UI never
+        // blocks; `poll_prepare` finishes the launch.
+        let rx = launch::prepare::spawn(launch::prepare::PrepareJob {
+            entry,
+            version_id: version_id.to_string(),
+            instance_id: inst.id.clone(),
+            loader: inst.loader.clone(),
+            mods: inst.mods.clone(),
+        });
+        self.launching.enter_real(time, inst_name, inst_meta);
+        self.launching.push_real_line(
+            screens::RealSeverity::Info,
+            "[ewo] preparing game files…".into(),
+            time,
+        );
+        self.pending_prepare = Some(PendingPrepare {
+            rx,
+            idx,
+            inst_name: inst_name.to_string(),
+            inst_meta: inst_meta.to_string(),
+            fail,
+        });
+        true
+    }
+
+    /// Drain the background launch preparation, if any, and finish the
+    /// launch on success. Called once per frame.
+    fn poll_prepare(&mut self, time: f32) {
+        let result = match self.pending_prepare.as_ref().map(|p| p.rx.try_recv()) {
+            None | Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return,
+            Some(Ok(r)) => r,
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                Err("launch preparation thread died".to_string())
+            }
+        };
+        let Some(pending) = self.pending_prepare.take() else {
+            return;
+        };
+        let prepared = match result {
             Ok(p) => p,
-            Err(e) => {
-                log::warn!("launch: per-version fetch failed: {}", e);
-                return false;
+            Err(msg) => {
+                log::warn!("launch: {} — falling back", msg);
+                self.fail_launch(&pending, &msg, time);
+                return;
             }
         };
-        // Phase D: layer the instance's loader on top of vanilla, if any.
-        // Loader-fetch failures are non-fatal — we log + fall back to
-        // launching the vanilla profile so the user isn't blocked by a
-        // flaky local manifest.
-        let mut pv = match &inst.loader {
-            // Native never reaches here (early return above) — vanilla is
-            // the harmless arm the exhaustiveness check wants.
-            ewo_render::screens::instances::InstanceLoader::Vanilla
-            | ewo_render::screens::instances::InstanceLoader::Native => vanilla_pv,
-            ewo_render::screens::instances::InstanceLoader::Ewo { manifest_url } => {
-                match loaders::get_or_fetch("ewo", manifest_url) {
-                    Ok(loader_manifest) => {
-                        log::info!(
-                            "launch: merging EwoLoader manifest \"{}\" on top of {}",
-                            loader_manifest.id, version_id
-                        );
-                        loaders::merge(&vanilla_pv, &loader_manifest)
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "launch: EwoLoader fetch failed ({}) — launching vanilla {}",
-                            e, version_id
-                        );
-                        vanilla_pv
-                    }
-                }
-            }
-        };
-        // Phase D follow-on: download any library the merge added that
-        // wasn't in the vanilla `PerVersion` Phase B saw at instance-setup
-        // time (the EwoLoader fat jar + bundled mods). Idempotent —
-        // `ensure_libraries` skips files already on disk. Runs against the
-        // *full* merged library set so disabled mods stay downloaded — the
-        // user re-enabling a mod doesn't trigger a re-download.
-        if let Err(e) = downloads::ensure_libraries(&pv) {
-            log::warn!("launch: loader library fetch failed: {} — falling back", e);
-            return false;
+        if !self.finish_launch(&pending, prepared, time) {
+            self.fail_launch(&pending, "could not start the game — see log", time);
         }
-        // Per-instance mod toggles: strip libraries the user disabled from
-        // the merged classpath. The corresponding mod ids also feed the
-        // -Dfabric.debug.disableModIds JVM arg below so the loader's
-        // BundledMods verification skips them. Order matters — strip must
-        // happen after ensure_libraries (we still want disabled mods on
-        // disk for cheap re-enable) but before launch::build (which reads
-        // pv.libraries to assemble the classpath).
-        let mut disabled_mod_ids = bundled::disabled_mod_ids(&inst.mods);
-        if !disabled_mod_ids.is_empty() {
-            // Prefix match (`maven.modrinth:iris:`), not the full pinned
-            // coordinate — the catalog is version-agnostic across manifest
-            // lines (26.1 vs 26.2 pin different versions of the same mod).
-            let disabled_prefixes = bundled::library_prefixes_for_disabled(&disabled_mod_ids);
-            let before = pv.libraries.len();
-            pv.libraries
-                .retain(|l| !disabled_prefixes.iter().any(|p| l.name.starts_with(p)));
-            log::info!(
-                "launch: disabling {} mod(s) [{}] — stripped {} libraries from classpath",
-                disabled_mod_ids.len(),
-                disabled_mod_ids.join(","),
-                before - pv.libraries.len()
-            );
-        }
-        // Bundled mods this manifest line doesn't ship at all (BetterF3 has
-        // no MC 26.2 build, so 26.2.json omits it) were never on the
-        // classpath — but the loader-side BundledMods verification still
-        // expects them, so they must ride the same disableModIds subtraction.
-        if matches!(
-            inst.loader,
-            ewo_render::screens::instances::InstanceLoader::Ewo { .. }
-        ) {
-            let missing =
-                bundled::missing_bundled_ids(pv.libraries.iter().map(|l| l.name.as_str()));
-            for id in missing {
-                if !disabled_mod_ids.contains(&id) {
-                    log::info!(
-                        "launch: bundled mod \"{}\" absent from this manifest line — auto-disabling",
-                        id
-                    );
-                    disabled_mod_ids.push(id);
-                }
+    }
+
+    fn fail_launch(&mut self, pending: &PendingPrepare, msg: &str, time: f32) {
+        match pending.fail {
+            PrepareFail::Synthetic => {
+                log::info!("launch: falling back to synthetic for \"{}\"", pending.inst_name);
+                self.launching.enter(time, &pending.inst_name, &pending.inst_meta);
             }
-        }
-        if let Err(e) = launch::extract_all(&pv, &inst.name) {
-            // A locked natives dir almost always means a zombie game JVM
-            // (deadlocked in teardown on a previous exit) still holds a
-            // native .dll open. The PID reaper above only knows launches we
-            // recorded; an untracked zombie (e.g. left by an older launcher
-            // build) slips past it. Reap any windowless java and retry once
-            // — self-healing instead of silently falling back to synthetic.
-            log::warn!(
-                "launch: native extraction failed: {} — reaping windowless java and retrying",
-                e
-            );
-            let killed = launch::reaper::reap_windowless_java();
-            if killed > 0 {
-                std::thread::sleep(std::time::Duration::from_millis(300));
-            }
-            if let Err(e2) = launch::extract_all(&pv, &inst.name) {
-                log::warn!(
-                    "launch: native extraction still failing after reaping {} process(es): {} — falling back",
-                    killed, e2
+            PrepareFail::Error(line) => {
+                self.launching.push_real_line(
+                    screens::RealSeverity::Warn,
+                    format!("[ewo] {} ({})", line, msg),
+                    time,
                 );
-                return false;
+                self.launching.set_real_exit(Some(127), time);
             }
-            log::info!("launch: native extraction recovered after reaping {} zombie(s)", killed);
         }
+    }
+
+    /// UI-thread half of a JVM launch: pick a JRE (or start fetching one),
+    /// build the plan and spawn. Returns `false` on a failure the caller
+    /// should surface.
+    fn finish_launch(
+        &mut self,
+        pending: &PendingPrepare,
+        prepared: launch::prepare::Prepared,
+        time: f32,
+    ) -> bool {
+        let Some(inst) = self.instances.get(pending.idx).cloned() else {
+            return false;
+        };
+        let (inst_name, inst_meta) = (pending.inst_name.as_str(), pending.inst_meta.as_str());
+        let version_id = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
+        let launch::prepare::Prepared {
+            pv,
+            disabled_mod_ids,
+        } = prepared;
         // Pick a JRE matching the per-version manifest's
         // `javaVersion.majorVersion`. Falls back to whatever's first in
         // the detected list if the manifest doesn't specify (legacy
@@ -671,11 +695,9 @@ impl App {
                     required_major,
                     installed
                 );
-                // Kick off the bundled-JRE download, switch the
-                // launching screen into "downloading runtime" mode, and
-                // record this launch as pending. The per-frame runtime
-                // poll will retry once the fetch completes.
-                self.launching.enter_real(time, inst_name, inst_meta);
+                // Kick off the bundled-JRE download and record this launch
+                // as pending. The per-frame runtime poll retries once the
+                // fetch completes.
                 self.launching.push_real_line(
                     screens::RealSeverity::Info,
                     format!(
@@ -686,14 +708,11 @@ impl App {
                 );
                 self.runtime.start_fetch(required_major);
                 self.pending_relaunch = Some(PendingRelaunch {
-                    instance_idx: idx,
+                    instance_idx: pending.idx,
                     instance_name: inst_name.to_string(),
                     instance_meta: inst_meta.to_string(),
                     waiting_for_major: required_major,
                 });
-                // Treat this as a "real" launch path so the caller
-                // doesn't fall back to synthetic — we've already
-                // populated the launching screen with our own status.
                 return true;
             }
         };
@@ -719,10 +738,10 @@ impl App {
                 launch::LaunchProfile::offline(&inst.name)
             }
         };
-        let mut plan = match launch::build(&pv, &inst.name, inst.ram, &profile, jvm_path) {
+        let mut plan = match launch::build(&pv, &inst.id, inst.ram, &profile, jvm_path) {
             Ok(p) => p,
             Err(e) => {
-                log::warn!("launch: plan build failed: {} — falling back", e);
+                log::warn!("launch: plan build failed: {}", e);
                 return false;
             }
         };
@@ -742,6 +761,12 @@ impl App {
         // the plugin's Fabric-loader fallback probe.
         plan.jvm_args
             .push(format!("-Dewo.mc.version={}", version_id));
+        // A bundled HUD native next to the launcher (see package.ps1) wins
+        // over the mod's dev fallback (the repo's cargo target dir).
+        if let Some(dll) = launch::find_hud_native() {
+            plan.jvm_args
+                .push(format!("-Dewo.hud.nativePath={}", dll.display()));
+        }
         // H6: if this launch was initiated as a server-join (main-menu
         // server widget or a friend's "Join"), auto-connect on boot via the
         // modern quick-play arg. The address is `host:port`; the client
@@ -756,12 +781,59 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel::<launch::LaunchEvent>();
         let _ = launch::spawn_jvm(plan, tx);
         self.launch_rx = Some(rx);
-        self.launching.enter_real(time, inst_name, inst_meta);
+        self.active_launch_instance_id = Some(inst.id.clone());
+        self.launching.push_real_line(
+            screens::RealSeverity::Info,
+            "[ewo] starting jvm…".into(),
+            time,
+        );
         log::info!(
             "launch: real JVM spawned for \"{}\" ({})",
             inst.name, version_id
         );
         true
+    }
+
+    /// Whether a launch is already running or being prepared. When the
+    /// running game is a zombie (its window closed but the process lingers)
+    /// it's reaped here and the launch slot is freed; a live game is never
+    /// killed — the new launch is refused instead.
+    fn launch_slot_busy(&mut self, time: f32) -> bool {
+        if self.pending_prepare.is_some() || self.pending_relaunch.is_some() {
+            log::warn!("launch: a launch is already being prepared — ignoring launch request");
+            return true;
+        }
+        if self.launch_rx.is_none() {
+            return false;
+        }
+        let Some(tracked) = self.active_launch else {
+            // Spawned but not yet reported `Started`.
+            log::warn!("launch: a game is starting — ignoring launch request");
+            return true;
+        };
+        match launch::reaper::state(&tracked) {
+            launch::reaper::GameState::Gone => {}
+            launch::reaper::GameState::Running { visible_window } => {
+                let zombie = launch::reaper::is_zombie(
+                    visible_window,
+                    self.active_launch_window_seen,
+                    time - self.active_launch_started_at,
+                );
+                if !zombie {
+                    log::warn!(
+                        "launch: a game is already running (pid {}) — ignoring launch request",
+                        tracked.pid
+                    );
+                    return true;
+                }
+                launch::reaper::reap(&tracked);
+            }
+        }
+        launch::reaper::forget(&tracked);
+        self.launch_rx = None;
+        self.active_launch = None;
+        self.active_launch_instance_id = None;
+        false
     }
 
     /// Shared launch entry point for the Launch button and the H6 server-join
@@ -775,6 +847,11 @@ impl App {
     /// celebrate burst.
     fn start_launch(&mut self, idx: usize, server: Option<String>, time: f32) {
         use ewo_render::screens::instances::InstanceStatus;
+        // A still-downloading instance can't launch; clicking Launch on one
+        // whose download failed (or never started this session) retries it.
+        if matches!(self.instances.get(idx), Some(i) if i.status == InstanceStatus::Pending) {
+            self.retry_download(idx);
+        }
         // Resolve name + meta and gate Pending/missing instances. The
         // immutable borrow ends here so the rest can mutate `self`.
         let (inst_name, inst_meta) = match self.instances.get(idx) {
@@ -793,6 +870,11 @@ impl App {
                 return;
             }
         };
+        // One game at a time: a live game is never killed by a second
+        // launch click — the click is ignored. Only a zombie is reaped.
+        if self.launch_slot_busy(time) {
+            return;
+        }
         // Dev affordance: `EWO_DEV_SERVER=host:port` points plain Launch
         // clicks at a server without going through a join flow — e.g. the
         // local offline Rewo test server (127.0.0.1:25599) for eyeballing
@@ -814,25 +896,19 @@ impl App {
         }
         persistence::save_instances(&self.instances);
 
-        // Reap any lingering game JVM before spawning a new one. On Windows
-        // the previous JVM can deadlock in native teardown on exit and hang
-        // around as a headless zombie holding this instance's files + the
-        // ewo_jni.dll open — that lock is what makes a second launch fail.
-        // A cleanly-exited launch already cleared its record, so this is a
-        // no-op in the normal case; only a real zombie gets terminated.
-        if let Some(pid) = self.active_launch_pid.take() {
-            launch::reaper::reap(pid);
-            launch::reaper::clear();
-        } else {
-            // No live launch this session, but a previous launcher session
-            // may have left a zombie recorded on disk — reap that too.
-            launch::reaper::reap_recorded();
+        // A previous launcher session may have left a zombie game process
+        // recorded on disk; reap it (only if it's ours, still that exact
+        // process, and windowless — a live game is left alone).
+        let reaped = launch::reaper::reap_recorded_zombies();
+        if reaped > 0 {
+            log::info!("launch: reaped {} zombie game process(es) from an earlier run", reaped);
         }
 
         // Real launch fires only when the instance is Ready + the manifest
         // resolves; otherwise fall back to the synthetic animation so the
         // user still gets feedback.
-        let real_launched = self.try_real_launch(idx, &inst_name, &inst_meta, time);
+        let real_launched =
+            self.try_real_launch(idx, &inst_name, &inst_meta, time, PrepareFail::Synthetic);
         if !real_launched {
             log::info!("launch: falling back to synthetic for \"{}\"", inst_name);
             self.launching.enter(time, &inst_name, &inst_meta);
@@ -845,6 +921,25 @@ impl App {
             bd.celebrate(true);
         }
         self.celebrate_until = Some(time + 4.5);
+    }
+
+    /// (Re)start the download job for a Pending instance whose job failed or
+    /// never ran this session. No-op while a job for it is in flight.
+    fn retry_download(&mut self, idx: usize) {
+        let Some(inst) = self.instances.get(idx) else {
+            return;
+        };
+        let version_id = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
+        let loader_spec = loader_spec_for(&inst.loader);
+        let Some(manifest) = self.versions.manifest() else {
+            log::warn!("downloads: master manifest not loaded — can't retry {}", version_id);
+            return;
+        };
+        let Some(entry) = manifest.entry(version_id).cloned() else {
+            log::warn!("downloads: {} not in master manifest — can't retry", version_id);
+            return;
+        };
+        self.downloads.start(entry, loader_spec);
     }
 }
 
@@ -1024,20 +1119,25 @@ impl ApplicationHandler for App {
                         self.instance_prefs.renaming = false;
                         self.instance_prefs.rename_buffer.clear();
                     } else if logical_key == Key::Named(NamedKey::Enter) {
-                        let trimmed = self.instance_prefs.rename_buffer.trim();
-                        if !trimmed.is_empty() {
-                            if let Some(inst) =
-                                self.instances.get_mut(self.instance_prefs.selected)
-                            {
-                                log::info!(
-                                    "rename: \"{}\" → \"{}\"",
-                                    inst.name, trimmed
-                                );
-                                inst.name = trimmed.to_string();
+                        // Display name only — the folder is keyed by the
+                        // instance's stable `id`, so a rename moves nothing.
+                        match persistence::validate_instance_name(
+                            &self.instance_prefs.rename_buffer,
+                        ) {
+                            Ok(trimmed) => {
+                                let trimmed = trimmed.to_string();
+                                if let Some(inst) =
+                                    self.instances.get_mut(self.instance_prefs.selected)
+                                {
+                                    log::info!(
+                                        "rename: \"{}\" → \"{}\"",
+                                        inst.name, trimmed
+                                    );
+                                    inst.name = trimmed;
+                                }
+                                persistence::save_instances(&self.instances);
                             }
-                            persistence::save_instances(&self.instances);
-                        } else {
-                            log::info!("rename: empty → cancelled");
+                            Err(e) => log::info!("rename: rejected ({:?}) → cancelled", e),
                         }
                         self.instance_prefs.renaming = false;
                         self.instance_prefs.rename_buffer.clear();
@@ -1164,7 +1264,7 @@ impl ApplicationHandler for App {
                         }
                     } else if logical_key == Key::Named(NamedKey::Enter) {
                         // Enter commits — same as clicking Create.
-                        if let Some(form) = self.modal.try_submit() {
+                        if let Some(form) = try_submit_modal(&mut self.modal) {
                             commit_new_instance(
                                 &mut self.instances,
                                 &mut self.instance_prefs,
@@ -2395,13 +2495,16 @@ impl ApplicationHandler for App {
                         log::info!("launching: Retry clicked");
                         let inst_name = self.launching.instance_name.clone();
                         let inst_meta = self.launching.instance_meta.clone();
-                        self.launching.reset_for_retry();
-                        let ok = self.try_real_launch(
-                            self.instance_prefs.selected,
-                            &inst_name,
-                            &inst_meta,
-                            time,
-                        );
+                        let ok = self.launch_slot_busy(time) || {
+                            self.launching.reset_for_retry();
+                            self.try_real_launch(
+                                self.instance_prefs.selected,
+                                &inst_name,
+                                &inst_meta,
+                                time,
+                                PrepareFail::Error("retry could not start launch"),
+                            )
+                        };
                         if !ok {
                             // try_real_launch can return false silently
                             // when something's missing — surface that to
@@ -2494,43 +2597,6 @@ impl ApplicationHandler for App {
                     self.screen_enter_at = time;
                 }
 
-                // Periodic process-memory snapshot — pairs with the Skia
-                // GPU-cache log from `GlBackend::render` so we can tell at
-                // a glance whether memory growth is GPU-side (Skia) or
-                // CPU-side (everything else: log buffers, font caches,
-                // string allocations, leaked Vecs).
-                // LEAK_HUNT_INSTRUMENT — strip before release.
-                // Per-minute memory + allocator snapshot. Pairs with the
-                // Skia cache log from `GlBackend::render` so we can tell
-                // at a glance where memory is going. The `focused /
-                // occluded / minimized / foreground` tail line is the
-                // live state of the four signals we use to decide
-                // whether to skip rendering.
-                if self.clock.frame_count.is_multiple_of(3600) {
-                    if let Some((rss, private)) = window::process_memory() {
-                        log::info!(
-                            "mem: rss {:.1} MB, private {:.1} MB  (focused={} occluded={} minimized={} foreground={})",
-                            rss as f64 / (1024.0 * 1024.0),
-                            private as f64 / (1024.0 * 1024.0),
-                            self.focused,
-                            self.occluded,
-                            window.is_minimized().unwrap_or(false),
-                            window::is_foreground(&window),
-                        );
-                    }
-                    let (ac, ab, fc, fb) = alloc_stats();
-                    let net_count = ac.saturating_sub(fc);
-                    let net_bytes = ab.saturating_sub(fb);
-                    log::info!(
-                        "alloc: net {} live ({:.1} MB) — total {} allocs / {} frees",
-                        net_count,
-                        net_bytes as f64 / (1024.0 * 1024.0),
-                        ac,
-                        fc,
-                    );
-                }
-                // ── end LEAK_HUNT_INSTRUMENT ─────────────────────────────
-
                 // Auto-end celebrate after the configured duration.
                 if let Some(end) = self.celebrate_until {
                     if time >= end {
@@ -2568,8 +2634,17 @@ impl ApplicationHandler for App {
                 // `ensure_probed` is idempotent — already-probed UUIDs
                 // are a no-op.
                 self.social.poll();
-                for uuid in self.auth.account_uuids() {
-                    self.social.ensure_probed(&uuid);
+                // Only accounts that are actually signed in (a live token)
+                // are probed — none when signed out or offline.
+                let signed_in: Vec<String> = self
+                    .auth
+                    .accounts()
+                    .iter()
+                    .filter(|a| !a.minecraft_token.is_empty())
+                    .map(|a| a.uuid.clone())
+                    .collect();
+                for uuid in &signed_in {
+                    self.social.ensure_probed(uuid);
                 }
                 // FRIENDS overlay tab — when the friends list changes,
                 // rewrite the per-profile `ewo-friends.txt` snapshot the
@@ -2591,8 +2666,11 @@ impl ApplicationHandler for App {
                             );
                         }
                         if let Some(dir) = profile::active_dir() {
-                            let _ = std::fs::create_dir_all(&dir);
-                            let _ = std::fs::write(dir.join("ewo-friends.txt"), s);
+                            if let Err(e) =
+                                util::atomic_write(&dir.join("ewo-friends.txt"), s.as_bytes())
+                            {
+                                log::warn!("social: write ewo-friends.txt failed: {}", e);
+                            }
                         }
                     }
                 }
@@ -2647,7 +2725,9 @@ impl ApplicationHandler for App {
                 }
                 // H6 — poll the public network status only while it's on
                 // screen (the main-menu widget). 15s cadence inside the call.
-                if self.screen == Screen::MainMenu {
+                // Offline-first: a launcher with no signed-in account makes
+                // no social / server-status calls at all.
+                if self.screen == Screen::MainMenu && !signed_in.is_empty() {
                     self.social.maybe_refresh_server_status(time);
                 }
                 self.versions.poll();
@@ -2678,6 +2758,9 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
+
+                // Finish a JVM launch whose background preparation is done.
+                self.poll_prepare(time);
 
                 // Drain runtime (bundled-JRE) events. Surface progress
                 // as Info lines on the launching screen; on Done, kick
@@ -2746,6 +2829,7 @@ impl ApplicationHandler for App {
                                         &p.instance_name,
                                         &p.instance_meta,
                                         time,
+                                        PrepareFail::Error("retry failed after JRE install"),
                                     );
                                     if !ok {
                                         self.launching.push_real_line(
@@ -2780,13 +2864,19 @@ impl ApplicationHandler for App {
                 if let Some(rx) = self.launch_rx.as_ref() {
                     while let Ok(event) = rx.try_recv() {
                         match event {
-                            launch::LaunchEvent::Started { pid } => {
+                            launch::LaunchEvent::Started { pid, created } => {
                                 log::info!("launch: JVM started (pid {pid})");
-                                // Record the PID so a zombie JVM (deadlocked
-                                // in native teardown on exit) can be reaped
-                                // before the next launch — see launch::reaper.
-                                self.active_launch_pid = Some(pid);
-                                launch::reaper::record(pid);
+                                // Record PID + creation time so a zombie JVM
+                                // (deadlocked in native teardown on exit) can
+                                // be reaped before the next launch — and only
+                                // that exact process. See launch::reaper.
+                                self.active_launch_started_at = time;
+                                self.active_launch_window_seen = false;
+                                self.active_launch = created.map(|created| {
+                                    let t = launch::reaper::Tracked { pid, created };
+                                    launch::reaper::record(t);
+                                    t
+                                });
                                 // Don't minimize yet — the JVM has only just
                                 // spawned; Minecraft's window is ~10-30s away.
                                 // Arm a fallback deadline instead. We minimize
@@ -2797,6 +2887,9 @@ impl ApplicationHandler for App {
                                 self.pending_minimize = Some(time + MINIMIZE_FALLBACK_SECS);
                             }
                             launch::LaunchEvent::Line { severity, text } => {
+                                if is_window_ready_marker(&text) {
+                                    self.active_launch_window_seen = true;
+                                }
                                 // Minimize as soon as the game is visibly coming
                                 // up. These markers are logged right as the client
                                 // creates its render backend / window — the point
@@ -2826,6 +2919,7 @@ impl ApplicationHandler for App {
                                 // a crash). Best-effort: errors don't
                                 // surface to the UI.
                                 persist_launch_log(
+                                    self.active_launch_instance_id.as_deref().unwrap_or(""),
                                     &self.launching.instance_name,
                                     self.launching
                                         .real_log
@@ -2864,10 +2958,11 @@ impl ApplicationHandler for App {
 
                 if launch_finished {
                     self.launch_rx = None;
-                    // JVM reported exit — forget its PID so we don't reap a
-                    // recycled PID on the next launch (see launch::reaper).
-                    self.active_launch_pid = None;
-                    launch::reaper::clear();
+                    // JVM reported exit — forget its record (see launch::reaper).
+                    if let Some(t) = self.active_launch.take() {
+                        launch::reaper::forget(&t);
+                    }
+                    self.active_launch_instance_id = None;
                     // A launch that ends before it ever minimized (fast crash,
                     // spawn failure): disarm so we don't minimize after the fact.
                     self.pending_minimize = None;
@@ -3949,6 +4044,8 @@ fn handle_settings_press(
                     changed = true;
                 }
             }
+            // UI-only: there is no telemetry backend and nothing reads this
+            // flag — the launcher sends no telemetry either way.
             SettingsSlot::Telemetry => {
                 if prefs.telemetry.handle(mouse, rect, true) {
                     log::info!("telemetry: {}", prefs.telemetry.on);
@@ -4349,7 +4446,7 @@ fn handle_modal_press(
             }
             ModalSlot::Create => {
                 modal.create_btn.update(mouse, rect, true, 0.0);
-                if let Some(form) = modal.try_submit() {
+                if let Some(form) = try_submit_modal(modal) {
                     commit_new_instance(instances, instance_prefs, versions, downloads, form, time);
                     modal.close();
                 } else {
@@ -4379,6 +4476,26 @@ fn handle_modal_press(
 
     let _ = fonts;
     true
+}
+
+/// `modal.try_submit()` plus name validation: a name with path separators,
+/// `..`, a reserved device name or control characters is rejected the same
+/// way a blank one is (inline error, modal stays open).
+fn try_submit_modal(
+    modal: &mut NewInstanceModalState,
+) -> Option<screens::new_instance_modal::NewInstanceForm> {
+    let mut form = modal.try_submit()?;
+    match persistence::validate_instance_name(&form.name) {
+        Ok(name) => {
+            form.name = name.to_string();
+            Some(form)
+        }
+        Err(e) => {
+            log::info!("modal: Create blocked — invalid name ({:?})", e);
+            modal.name_error = true;
+            None
+        }
+    }
 }
 
 fn close_other_modal_dropdowns(modal: &mut NewInstanceModalState, keep: ModalSlot) {
@@ -4436,6 +4553,22 @@ fn sync_instance_config(instances: &mut Vec<Instance>, prefs: &InstancePrefs) {
     }
 }
 
+/// The download job's loader layer for an instance loader (`None` = vanilla).
+fn loader_spec_for(
+    loader: &ewo_render::screens::instances::InstanceLoader,
+) -> Option<loaders::LoaderSpec> {
+    match loader {
+        ewo_render::screens::instances::InstanceLoader::Vanilla
+        | ewo_render::screens::instances::InstanceLoader::Native => None,
+        ewo_render::screens::instances::InstanceLoader::Ewo { manifest_url } => {
+            Some(loaders::LoaderSpec {
+                id: "ewo".to_string(),
+                url: manifest_url.clone(),
+            })
+        }
+    }
+}
+
 /// Insert a new instance at the front of the launcher's list (so it
 /// shows first under the default "newest first" sort) and select it.
 /// `time` is the current wall-clock seconds; used to drive the row
@@ -4467,16 +4600,7 @@ fn commit_new_instance(
     // Derived before `loader` is moved into `Instance::with_loader` below.
     // The job needs the manifest URL up front so it can fetch + merge
     // before counting bytes for the progress bar.
-    let loader_spec = match &loader {
-        ewo_render::screens::instances::InstanceLoader::Vanilla
-        | ewo_render::screens::instances::InstanceLoader::Native => None,
-        ewo_render::screens::instances::InstanceLoader::Ewo { manifest_url } => {
-            Some(loaders::LoaderSpec {
-                id: "ewo".to_string(),
-                url: manifest_url.clone(),
-            })
-        }
-    };
+    let loader_spec = loader_spec_for(&loader);
     // Seed the instance's mods list from the bundled catalog so the
     // Instances UI shows real toggles immediately. Only Ewo instances get
     // mods — vanilla launches don't run any mods so the list stays empty.
@@ -4495,6 +4619,9 @@ fn commit_new_instance(
     )
     .with_config(form.ram, 16, 0)
     .with_loader(loader);
+    // A fresh folder id — never the name, so a new instance can't inherit
+    // a deleted same-named instance's folder.
+    new_inst.id = persistence::new_instance_id(&form.name, instances);
     // Stamp the new world as "just played" so it leads the list in both
     // newest-first and recently-played sorts until the user launches
     // anything else. New instances are Pending until the download job
@@ -4573,50 +4700,6 @@ fn update_cursor_icon(
     window.set_cursor(icon);
 }
 
-// ╔═══════════════════════════════════════════════════════════════════════╗
-// ║ LEAK_HUNT_INSTRUMENT — strip before release (CLAUDE.md "Leak-hunt    ║
-// ║ instrumentation"). This counting global allocator lets us separate   ║
-// ║ Rust-side from C++-side heap growth: a flat `alloc: net X B` while   ║
-// ║ `mem: rss` climbs proves the leak isn't in Rust. The wrap of         ║
-// ║ `System` is otherwise behaviour-preserving but every alloc / dealloc ║
-// ║ now goes through two atomic adds.                                    ║
-// ╚═══════════════════════════════════════════════════════════════════════╝
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-struct CountingAllocator;
-
-static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
-static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
-static FREE_COUNT: AtomicUsize = AtomicUsize::new(0);
-static FREE_BYTES: AtomicUsize = AtomicUsize::new(0);
-
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
-        System.alloc(layout)
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        FREE_COUNT.fetch_add(1, Ordering::Relaxed);
-        FREE_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
-        System.dealloc(ptr, layout)
-    }
-}
-
-#[global_allocator]
-static GLOBAL: CountingAllocator = CountingAllocator;
-
-fn alloc_stats() -> (usize, usize, usize, usize) {
-    (
-        ALLOC_COUNT.load(Ordering::Relaxed),
-        ALLOC_BYTES.load(Ordering::Relaxed),
-        FREE_COUNT.load(Ordering::Relaxed),
-        FREE_BYTES.load(Ordering::Relaxed),
-    )
-}
-// ── end LEAK_HUNT_INSTRUMENT ──────────────────────────────────────────────
-
 fn main() {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info"),
@@ -4628,15 +4711,6 @@ fn main() {
     if args.mint_rewo_env {
         std::process::exit(mint_rewo_env());
     }
-
-    // LEAK_HUNT_INSTRUMENT — strip before release.
-    // Cap Skia's process-wide CPU caches before any Skia work happens. The
-    // GPU-side cache lives on `DirectContext` and is set in `GlBackend::new`.
-    // Was added during leak-hunt as belt-and-braces; the actual leak turned
-    // out to be unrelated (driver-side present queue on hidden window).
-    ewo_render::gl_backend::cap_skia_global_caches();
-    // ── end LEAK_HUNT_INSTRUMENT ──────────────────────────────────────────
-
     let event_loop = EventLoop::new().expect("failed to create event loop");
     let mut app = App::new(args.dev);
     event_loop.run_app(&mut app).expect("event loop error");
@@ -4678,11 +4752,12 @@ fn mint_rewo_env() -> i32 {
 }
 
 /// Dump the launching screen's in-memory log to
-/// `<config>/EwoClient/instances/<name>/logs/<timestamp>.log`.
+/// `<config>/EwoClient/instances/<id>/logs/<timestamp>.log`.
 /// Best-effort — failures log a warning but don't surface. Each line is
 /// prefixed with its severity tag so stderr lines stay distinguishable
 /// from stdout when grepping.
 fn persist_launch_log(
+    instance_id: &str,
     instance_name: &str,
     lines: &[ewo_render::screens::launching::RealLogLine],
     exit_code: Option<i32>,
@@ -4691,7 +4766,7 @@ fn persist_launch_log(
     if lines.is_empty() {
         return;
     }
-    let Some(mut path) = downloads::paths::instance_dir(instance_name) else {
+    let Some(mut path) = downloads::paths::instance_dir(instance_id) else {
         log::warn!("logs: instance dir unresolvable for {}", instance_name);
         return;
     };

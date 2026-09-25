@@ -15,66 +15,14 @@
 //!
 //! The name `GlBackend` is kept on both so `main.rs` is platform-agnostic.
 
-// ╔═══════════════════════════════════════════════════════════════════════╗
-// ║ LEAK_HUNT_INSTRUMENT — strip before release.                         ║
-// ║                                                                       ║
-// ║ Skia cache caps + diagnostic helpers below were added during the     ║
-// ║ memory-leak hunt. The actual leak turned out to be unrelated —       ║
-// ║ `wglSwapBuffers` on a fullscreen-occluded window leaking driver-     ║
-// ║ side present queue memory (~6 KB/frame). Fix lives in                ║
-// ║ `main.rs::WindowEvent::RedrawRequested` (skip render when not the    ║
-// ║ foreground window). These caps are harmless insurance but not        ║
-// ║ needed for correctness. The periodic log in `render()` is the same.  ║
-// ╚═══════════════════════════════════════════════════════════════════════╝
+/// Cap on Skia's GPU resource cache (both backends). Skia's default is
+/// 256 MB; the launcher's working set is far smaller, so a tighter cap just
+/// bounds long-session growth.
+const GPU_RESOURCE_CACHE_BYTES: usize = 192 * 1024 * 1024;
 
-/// Cap Skia's *process-wide* (CPU-side) caches. These live in
-/// `SkGraphics::SetResourceCacheTotalByteLimit` / `SetFontCacheLimit` and
-/// are separate from the `DirectContext`'s GPU resource cache. Defaults
-/// in Skia are 32 MB / 256 MB respectively; cap tighter so a long-running
-/// session can't spend memory on bitmap/glyph rasterisation history we
-/// don't actually need.
-///
-/// Call once at process startup, before any `GlBackend::new`.
-pub fn cap_skia_global_caches() {
-    let prev_res =
-        skia_safe::graphics::set_resource_cache_total_bytes_limit(64 * 1024 * 1024);
-    let prev_font = skia_safe::graphics::set_font_cache_limit(96 * 1024 * 1024);
-    log::info!(
-        "skia globals: resource cache {} → 64 MB, font cache {} → 96 MB",
-        format_bytes(prev_res),
-        format_bytes(prev_font),
-    );
-}
-
-/// Log current Skia CPU-cache usage. The launcher's periodic memory
-/// diagnostic calls this alongside its RSS log so we can tell whether the
-/// global resource cache + font cache are climbing.
-pub fn log_skia_global_cache_state() {
-    let res_used = skia_safe::graphics::resource_cache_total_bytes_used();
-    let res_lim = skia_safe::graphics::resource_cache_total_bytes_limit();
-    let font_used = skia_safe::graphics::font_cache_used();
-    let font_lim = skia_safe::graphics::font_cache_limit();
-    let font_count = skia_safe::graphics::font_cache_count_used();
-    log::info!(
-        "skia globals: resource {}/{}, font {}/{} ({} strikes)",
-        format_bytes(res_used),
-        format_bytes(res_lim),
-        format_bytes(font_used),
-        format_bytes(font_lim),
-        font_count,
-    );
-}
-
-fn format_bytes(bytes: usize) -> String {
-    if bytes >= 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    } else if bytes >= 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-// ── end LEAK_HUNT_INSTRUMENT ──────────────────────────────────────────────
+/// Every this many frames, let Skia free GPU resources unused for a few
+/// seconds (it otherwise only purges when the cache limit is hit).
+const CLEANUP_EVERY_FRAMES: u64 = 300;
 
 #[cfg(not(target_os = "windows"))]
 pub use glutin_backend::GlBackend;
@@ -116,7 +64,8 @@ mod dcomp_backend {
         CreateDXGIFactory2, IDXGIAdapter1, IDXGIDevice, IDXGIFactory4, IDXGISwapChain1,
         IDXGISwapChain3,
         DXGI_ADAPTER_FLAG, DXGI_ADAPTER_FLAG_NONE, DXGI_ADAPTER_FLAG_SOFTWARE,
-        DXGI_CREATE_FACTORY_FLAGS, DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
+        DXGI_CREATE_FACTORY_FLAGS, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
+        DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
         DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT,
     };
 
@@ -148,9 +97,11 @@ mod dcomp_backend {
         width: u32,
         height: u32,
 
-        /// LEAK_HUNT_INSTRUMENT — strip before release. Frame counter for the
-        /// periodic GPU-cache cleanup + diagnostic log.
+        /// Frame counter for the periodic GPU-cache cleanup.
         frames: u64,
+        /// Set once presentation hits DEVICE_REMOVED/RESET (or a resize
+        /// failed) — rendering stops instead of panicking every frame.
+        device_lost: bool,
     }
 
     impl GlBackend {
@@ -177,6 +128,7 @@ mod dcomp_backend {
                 };
                 let mut gr_context =
                     DirectContext::new_d3d(&backend_context, None).expect("DirectContext::new_d3d");
+                gr_context.set_resource_cache_limit(super::GPU_RESOURCE_CACHE_BYTES);
 
                 // Composition swapchain — premultiplied alpha is what lets the
                 // transparent corners show the desktop through DComp.
@@ -214,7 +166,8 @@ mod dcomp_backend {
                 dcomp_target.SetRoot(&dcomp_visual).expect("SetRoot");
                 dcomp_device.Commit().expect("DComp Commit");
 
-                let surfaces = wrap_surfaces(&mut gr_context, &swap_chain, width, height);
+                let surfaces = wrap_surfaces(&mut gr_context, &swap_chain, width, height)
+                    .expect("wrap swapchain buffers");
 
                 log::info!(
                     "dcomp backend: D3D12 + DirectComposition swapchain {}×{}, {} buffers, premultiplied alpha",
@@ -235,6 +188,7 @@ mod dcomp_backend {
                     width,
                     height,
                     frames: 0,
+                    device_lost: false,
                 }
             }
         }
@@ -248,25 +202,47 @@ mod dcomp_backend {
             // first, then re-wrap the new buffers.
             self.surfaces.clear();
             self.gr_context.flush_submit_and_sync_cpu();
-            unsafe {
-                self.swap_chain
-                    .ResizeBuffers(BUFFER_COUNT, width, height, SWAP_FORMAT, DXGI_SWAP_CHAIN_FLAG(0))
-                    .expect("ResizeBuffers");
-                self.surfaces = wrap_surfaces(&mut self.gr_context, &self.swap_chain, width, height);
+            let resized = unsafe {
+                self.swap_chain.ResizeBuffers(
+                    BUFFER_COUNT,
+                    width,
+                    height,
+                    SWAP_FORMAT,
+                    DXGI_SWAP_CHAIN_FLAG(0),
+                )
+            };
+            if let Err(e) = resized {
+                // Typically DXGI_ERROR_DEVICE_REMOVED (driver reset / GPU
+                // unplugged). Keep the old buffers if they still wrap; else
+                // stop rendering rather than panic.
+                log::error!("dcomp backend: ResizeBuffers {}x{} failed: {}", width, height, e);
+                let old = unsafe {
+                    wrap_surfaces(&mut self.gr_context, &self.swap_chain, self.width, self.height)
+                };
+                match old {
+                    Some(s) => self.surfaces = s,
+                    None => self.mark_device_lost("resize"),
+                }
+                return;
+            }
+            match unsafe { wrap_surfaces(&mut self.gr_context, &self.swap_chain, width, height) } {
+                Some(s) => self.surfaces = s,
+                None => self.mark_device_lost("wrap after resize"),
             }
             self.width = width;
             self.height = height;
         }
 
         pub fn render<F: FnOnce(&Canvas, u32, u32)>(&mut self, draw: F) {
-            let index = unsafe { self.swap_chain.GetCurrentBackBufferIndex() } as usize;
-
-            {
-                let surface = &mut self.surfaces[index];
-                draw(surface.canvas(), self.width, self.height);
+            if self.device_lost {
+                return;
             }
+            let index = unsafe { self.swap_chain.GetCurrentBackBufferIndex() } as usize;
+            let Some(surface) = self.surfaces.get_mut(index) else {
+                return;
+            };
+            draw(surface.canvas(), self.width, self.height);
             // Flush + transition the buffer for present.
-            let surface = &mut self.surfaces[index];
             self.gr_context.flush_and_submit_surface(surface, None);
 
             // NOTE: under DirectComposition, presentation is always composited
@@ -275,26 +251,39 @@ mod dcomp_backend {
             // frame; it just can't exceed the refresh rate. The 500fps-OLED
             // target therefore means "present every 2ms vblank", not "tear".
             let sync = if self.vsync.get() { 1 } else { 0 };
-            let _ = unsafe { self.swap_chain.Present(sync, DXGI_PRESENT::default()) };
+            let hr = unsafe { self.swap_chain.Present(sync, DXGI_PRESENT::default()) };
+            if hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET {
+                let reason = unsafe { self._device.GetDeviceRemovedReason() };
+                log::error!(
+                    "dcomp backend: Present failed ({:?}, removed reason {:?})",
+                    hr,
+                    reason.err()
+                );
+                self.mark_device_lost("present");
+                return;
+            } else if hr.is_err() {
+                log::warn!("dcomp backend: Present returned {:?}", hr);
+            }
 
-            // LEAK_HUNT_INSTRUMENT — strip before release.
             self.frames = self.frames.wrapping_add(1);
-            if self.frames.is_multiple_of(300) {
+            if self.frames.is_multiple_of(super::CLEANUP_EVERY_FRAMES) {
                 self.gr_context
                     .perform_deferred_cleanup(std::time::Duration::from_secs(3), None);
             }
-            if self.frames.is_multiple_of(3600) {
-                let usage = self.gr_context.resource_cache_usage();
-                let limit = self.gr_context.resource_cache_limit();
-                log::info!(
-                    "skia gpu: cache {} resources, {:.1}/{:.0} MB",
-                    usage.resource_count,
-                    usage.resource_bytes as f64 / (1024.0 * 1024.0),
-                    limit as f64 / (1024.0 * 1024.0),
+        }
+
+        /// Stop rendering after an unrecoverable device error. Logged once;
+        /// recreating the D3D12 device + swapchain isn't implemented, so the
+        /// launcher needs a restart to draw again.
+        fn mark_device_lost(&mut self, when: &str) {
+            if !self.device_lost {
+                log::error!(
+                    "dcomp backend: GPU device lost during {} — rendering stopped (restart the launcher)",
+                    when
                 );
-                super::log_skia_global_cache_state();
             }
-            // ── end LEAK_HUNT_INSTRUMENT ──────────────────────────────────
+            self.device_lost = true;
+            self.surfaces.clear();
         }
 
         /// See the note in `render` — under DComp this only toggles the
@@ -338,10 +327,16 @@ mod dcomp_backend {
         swap_chain: &IDXGISwapChain3,
         width: u32,
         height: u32,
-    ) -> Vec<SkSurface> {
+    ) -> Option<Vec<SkSurface>> {
         (0..BUFFER_COUNT)
             .map(|i| {
-                let resource = swap_chain.GetBuffer(i).expect("swapchain GetBuffer");
+                let resource = match swap_chain.GetBuffer(i) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        log::error!("dcomp backend: swapchain GetBuffer({}) failed: {}", i, e);
+                        return None;
+                    }
+                };
                 let info = TextureResourceInfo {
                     resource,
                     alloc: None,
@@ -364,7 +359,6 @@ mod dcomp_backend {
                     None,
                     None,
                 )
-                .expect("wrap_backend_render_target (d3d)")
             })
             .collect()
     }
@@ -412,7 +406,7 @@ mod glutin_backend {
         width: u32,
         height: u32,
 
-        /// LEAK_HUNT_INSTRUMENT — strip before release.
+        /// Frame counter for the periodic GPU-cache cleanup.
         frames: u64,
     }
 
@@ -510,9 +504,7 @@ mod glutin_backend {
             let mut gr_context =
                 direct_contexts::make_gl(interface, None).expect("direct_contexts::make_gl");
 
-            // LEAK_HUNT_INSTRUMENT — strip before release.
-            gr_context.set_resource_cache_limit(192 * 1024 * 1024);
-            // ── end LEAK_HUNT_INSTRUMENT ──────────────────────────────────
+            gr_context.set_resource_cache_limit(super::GPU_RESOURCE_CACHE_BYTES);
 
             let fb_info = {
                 let mut fboid: gl::types::GLint = 0;
@@ -577,24 +569,11 @@ mod glutin_backend {
             self.gr_context.flush_and_submit();
             let _ = self.gl_surface.swap_buffers(&self.gl_context);
 
-            // LEAK_HUNT_INSTRUMENT — strip before release.
             self.frames = self.frames.wrapping_add(1);
-            if self.frames.is_multiple_of(300) {
+            if self.frames.is_multiple_of(super::CLEANUP_EVERY_FRAMES) {
                 self.gr_context
                     .perform_deferred_cleanup(std::time::Duration::from_secs(3), None);
             }
-            if self.frames.is_multiple_of(3600) {
-                let usage = self.gr_context.resource_cache_usage();
-                let limit = self.gr_context.resource_cache_limit();
-                log::info!(
-                    "skia gpu: cache {} resources, {:.1}/{:.0} MB",
-                    usage.resource_count,
-                    usage.resource_bytes as f64 / (1024.0 * 1024.0),
-                    limit as f64 / (1024.0 * 1024.0),
-                );
-                super::log_skia_global_cache_state();
-            }
-            // ── end LEAK_HUNT_INSTRUMENT ──────────────────────────────────
         }
 
         pub fn set_vsync(&self, enabled: bool) {

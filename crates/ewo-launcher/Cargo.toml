@@ -13,7 +13,6 @@ path = "src/main.rs"
 [dependencies]
 ewo-core.workspace = true
 ewo-render.workspace = true
-ewo-ui.workspace = true
 winit.workspace = true
 log.workspace = true
 env_logger.workspace = true

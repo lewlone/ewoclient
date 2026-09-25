@@ -134,6 +134,19 @@ fn run_fetch(tx: Sender<RuntimeEvent>, major: u32) {
         });
         return;
     }
+    // The archive name comes from the API response; it must be a bare file
+    // name so it can't place the download outside `runtime_dir`.
+    let name_ok = {
+        let p = std::path::Path::new(&info.archive_name);
+        p.components().count() == 1 && crate::launch::natives::is_contained_relative(p)
+    };
+    if !name_ok {
+        let _ = tx.send(RuntimeEvent::Failed {
+            major,
+            message: format!("unsafe archive name {:?}", info.archive_name),
+        });
+        return;
+    }
     let archive_path = runtime_dir.join(&info.archive_name);
 
     // Download stream-to-disk + sha256 verify.
@@ -164,16 +177,21 @@ fn download_verify(
     info: &ReleaseInfo,
     dest: &std::path::Path,
 ) -> Result<(), String> {
-    if let (Ok(meta), expected) = (fs::metadata(dest), info.size) {
-        if meta.len() == expected {
-            // File already present at expected size — assume OK; full
-            // sha256 verify happens regardless during extract step
-            // (zip parsing fails loudly on corruption).
-            let _ = tx.send(RuntimeEvent::Progress {
-                downloaded: expected,
-                total: expected,
-            });
-            return Ok(());
+    if info.sha256.is_empty() {
+        return Err("Adoptium returned no sha256 checksum — refusing unverified archive".into());
+    }
+    // An archive left over from an earlier run is reused only if its sha256
+    // still matches; anything else is re-downloaded.
+    if fs::metadata(dest).map(|m| m.len() == info.size).unwrap_or(false) {
+        match sha256_file(dest) {
+            Ok(h) if h.eq_ignore_ascii_case(&info.sha256) => {
+                let _ = tx.send(RuntimeEvent::Progress {
+                    downloaded: info.size,
+                    total: info.size,
+                });
+                return Ok(());
+            }
+            _ => log::warn!("runtime: cached {} failed sha256 — re-downloading", dest.display()),
         }
     }
     let agent = ureq::AgentBuilder::new()
@@ -185,20 +203,30 @@ fn download_verify(
         .call()
         .map_err(|e| format!("GET {}: {}", info.url, e))?;
     let mut reader = resp.into_reader();
-    let mut file = fs::File::create(dest)
-        .map_err(|e| format!("create {}: {}", dest.display(), e))?;
+    // Stream to `<archive>.part`; only a verified file is renamed into place.
+    let part = part_path(dest);
+    let mut file = fs::File::create(&part)
+        .map_err(|e| format!("create {}: {}", part.display(), e))?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     let mut written: u64 = 0;
     let mut next_progress_at: u64 = 256 * 1024;
     loop {
-        let n = reader.read(&mut buf).map_err(|e| format!("read: {}", e))?;
+        let n = match reader.read(&mut buf) {
+            Ok(n) => n,
+            Err(e) => {
+                let _ = fs::remove_file(&part);
+                return Err(format!("read: {}", e));
+            }
+        };
         if n == 0 {
             break;
         }
         hasher.update(&buf[..n]);
-        file.write_all(&buf[..n])
-            .map_err(|e| format!("write {}: {}", dest.display(), e))?;
+        if let Err(e) = file.write_all(&buf[..n]) {
+            let _ = fs::remove_file(&part);
+            return Err(format!("write {}: {}", part.display(), e));
+        }
         written += n as u64;
         // Throttle progress events — UI re-renders at most every 256KB
         // of download, plenty for a smooth progress bar.
@@ -210,19 +238,41 @@ fn download_verify(
             next_progress_at += 256 * 1024;
         }
     }
+    drop(file);
     let actual = hex_digest(&hasher.finalize());
-    if !info.sha256.is_empty() && actual != info.sha256 {
-        let _ = fs::remove_file(dest);
+    if !actual.eq_ignore_ascii_case(&info.sha256) {
+        let _ = fs::remove_file(&part);
         return Err(format!(
             "sha256 mismatch (got {}, expected {})",
             actual, info.sha256
         ));
     }
+    fs::rename(&part, dest).map_err(|e| format!("rename {}: {}", dest.display(), e))?;
     let _ = tx.send(RuntimeEvent::Progress {
         downloaded: written,
         total: info.size,
     });
     Ok(())
+}
+
+fn part_path(dest: &std::path::Path) -> PathBuf {
+    let mut name = dest.file_name().unwrap_or_default().to_os_string();
+    name.push(".part");
+    dest.with_file_name(name)
+}
+
+fn sha256_file(path: &std::path::Path) -> std::io::Result<String> {
+    let mut f = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex_digest(&hasher.finalize()))
 }
 
 fn hex_digest(bytes: &[u8]) -> String {
@@ -256,17 +306,24 @@ fn extract_tar_gz(file: fs::File, dest: &std::path::Path) -> Result<(), String> 
             .path()
             .map_err(|e| format!("tar path: {}", e))?
             .into_owned();
-        if raw_path.components().any(|c| c.as_os_str() == "..") {
+        // Links could point (or be followed) outside `dest`; the JRE runs
+        // without them (they're only duplicated legal notices).
+        let kind = entry.header().entry_type();
+        if kind.is_symlink() || kind.is_hard_link() {
+            log::debug!("runtime: skipping link entry {}", raw_path.display());
             continue;
         }
-        let out_path = dest.join(&raw_path);
-        if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
+        if !crate::launch::natives::is_contained_relative(&raw_path) {
+            log::warn!("runtime: skipping unsafe tar entry {}", raw_path.display());
+            continue;
         }
-        entry
-            .unpack(&out_path)
-            .map_err(|e| format!("unpack {}: {}", out_path.display(), e))?;
+        // `unpack_in` re-validates the path and refuses to write outside
+        // `dest` (including through a pre-existing symlinked directory).
+        match entry.unpack_in(dest) {
+            Ok(true) => {}
+            Ok(false) => log::warn!("runtime: tar refused entry {}", raw_path.display()),
+            Err(e) => return Err(format!("unpack {}: {}", raw_path.display(), e)),
+        }
     }
     Ok(())
 }
@@ -275,18 +332,22 @@ fn extract_zip(file: fs::File, dest: &std::path::Path) -> Result<(), String> {
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
-        let raw_name = entry.name().to_string();
-        // Defense against zip-traversal attacks.
-        if raw_name.contains("..") {
-            continue;
-        }
-        let safe = raw_name.replace('\\', "/");
-        let out_path = dest.join(&safe);
         if entry.is_dir() {
-            fs::create_dir_all(&out_path)
-                .map_err(|e| format!("mkdir {}: {}", out_path.display(), e))?;
+            if let Some(rel) = entry
+                .enclosed_name()
+                .filter(|p| crate::launch::natives::is_contained_relative(p))
+            {
+                let out_path = dest.join(rel);
+                fs::create_dir_all(&out_path)
+                    .map_err(|e| format!("mkdir {}: {}", out_path.display(), e))?;
+            }
             continue;
         }
+        let Some(rel) = crate::launch::natives::safe_zip_entry_path(&entry) else {
+            log::warn!("runtime: skipping unsafe zip entry {:?}", entry.name());
+            continue;
+        };
+        let out_path = dest.join(rel);
         if let Some(parent) = out_path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;

@@ -8,6 +8,7 @@
 pub mod jre;
 pub mod natives;
 pub mod plan;
+pub mod prepare;
 pub mod reaper;
 pub mod spawn;
 
@@ -24,6 +25,17 @@ pub fn find_rewo_binary() -> Option<std::path::PathBuf> {
     let name = if cfg!(windows) { "rewo.exe" } else { "rewo" };
     let candidate = dir.join(name);
     candidate.exists().then_some(candidate)
+}
+
+/// The in-game HUD native (`ewo_jni.dll`) shipped next to the launcher exe,
+/// if any — `package.ps1` puts it in the dist bundle.
+pub fn find_hud_native() -> Option<std::path::PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let candidate = exe.parent()?.join("ewo_jni.dll");
+    candidate.is_file().then_some(candidate)
 }
 
 /// Argv for launching Rewo as the real playable client against a server —

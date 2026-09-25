@@ -155,21 +155,13 @@ fn settings_path() -> Option<PathBuf> {
 }
 
 fn client_path(profile: &str) -> Option<PathBuf> {
-    let mut p = ewo_dir()?;
-    p.push(PROFILES_DIRNAME);
-    p.push(profile);
-    p.push(CLIENT_FILENAME);
-    Some(p)
+    Some(profile_dir(profile)?.join(CLIENT_FILENAME))
 }
 
 /// `profiles/<profile>/modules.toml` — the per-profile module config,
 /// shared with the in-game side (`ewo-jni` reads and writes the same file).
 fn modules_path(profile: &str) -> Option<PathBuf> {
-    let mut p = ewo_dir()?;
-    p.push(PROFILES_DIRNAME);
-    p.push(profile);
-    p.push(MODULES_FILENAME);
-    Some(p)
+    Some(profile_dir(profile)?.join(MODULES_FILENAME))
 }
 
 // ── split / merge ────────────────────────────────────────────────────────
@@ -233,7 +225,9 @@ fn read_toml<T: serde::de::DeserializeOwned + Default>(path: &PathBuf, what: &st
         Ok(s) => match toml::from_str::<T>(&s) {
             Ok(v) => v,
             Err(e) => {
-                log::warn!("profile: parse {} failed: {} — using defaults", what, e);
+                // Preserve the user's file before a later save overwrites it.
+                log::warn!("profile: parse {} failed — using defaults", what);
+                crate::util::backup_unparseable(path, &e);
                 T::default()
             }
         },
@@ -245,15 +239,9 @@ fn read_toml<T: serde::de::DeserializeOwned + Default>(path: &PathBuf, what: &st
 }
 
 fn write_toml<T: Serialize>(path: &PathBuf, value: &T, what: &str) {
-    if let Some(parent) = path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            log::warn!("profile: mkdir for {} failed: {}", what, e);
-            return;
-        }
-    }
     match toml::to_string_pretty(value) {
         Ok(s) => {
-            if let Err(e) = fs::write(path, s) {
+            if let Err(e) = crate::util::atomic_write(path, s.as_bytes()) {
                 log::warn!("profile: write {} failed: {}", what, e);
             }
         }
@@ -465,7 +453,7 @@ pub fn save_modules(enabled: &[bool], fov: f32) {
             s.push_str(&format!("fov = {}\n", fov));
         }
     }
-    if let Err(e) = fs::write(&path, s) {
+    if let Err(e) = crate::util::atomic_write(&path, s.as_bytes()) {
         log::warn!("profile: write modules.toml failed: {}", e);
     }
 }
@@ -535,14 +523,15 @@ pub const MAX_NAME_LEN: usize = 48;
 
 /// Whether `name` is usable as a profile name. It becomes a directory name
 /// under `profiles/`, so it must be non-empty, within the length cap, and
-/// free of path-unsafe characters.
+/// free of path-unsafe characters, `..` and reserved Windows device names.
 pub fn is_valid_name(name: &str) -> bool {
-    let name = name.trim();
-    !name.is_empty()
-        && name.chars().count() <= MAX_NAME_LEN
-        && name != "."
-        && name != ".."
-        && !name.contains(|c: char| "/\\:*?\"<>|".contains(c))
+    crate::util::validate_name(name, MAX_NAME_LEN).is_ok()
+}
+
+/// Profile names are directory names, and NTFS is case-insensitive, so
+/// uniqueness is compared case-insensitively.
+fn same_name(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
 }
 
 /// Rename profile `old` to `new`. No-op success if the names are equal.
@@ -560,7 +549,8 @@ pub fn rename(old: &str, new: &str) -> bool {
     if !index.profiles.iter().any(|p| p == old) {
         return false;
     }
-    if index.profiles.iter().any(|p| p == new) {
+    // A case-only rename of the same profile is allowed.
+    if index.profiles.iter().any(|p| p != old && same_name(p, new)) {
         log::warn!("profile: rename rejected — \"{}\" already exists", new);
         return false;
     }
@@ -607,7 +597,14 @@ pub fn delete(name: &str) -> Option<(SettingsConfig, Settings)> {
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
+/// `profiles/<name>/`. Names come back from `profiles.toml`, which is
+/// user-editable, so they're re-validated here: an unsafe name (`..`, a
+/// path separator, …) yields `None` and nothing touches the disk for it.
 fn profile_dir(name: &str) -> Option<PathBuf> {
+    if !is_valid_name(name) || name.trim() != name {
+        log::warn!("profile: ignoring unsafe profile name {:?}", name);
+        return None;
+    }
     let mut p = ewo_dir()?;
     p.push(PROFILES_DIRNAME);
     p.push(name);
@@ -630,13 +627,13 @@ fn write_profile(name: &str, client: &ClientProfile) {
 
 /// A name not already in `existing` — `base`, then `base 2`, `base 3`, …
 fn unique_name(existing: &[String], base: &str) -> String {
-    if !existing.iter().any(|p| p == base) {
+    if !existing.iter().any(|p| same_name(p, base)) {
         return base.to_string();
     }
     let mut n = 2;
     loop {
         let candidate = format!("{base} {n}");
-        if !existing.iter().any(|p| p == &candidate) {
+        if !existing.iter().any(|p| same_name(p, &candidate)) {
             return candidate;
         }
         n += 1;
@@ -725,6 +722,26 @@ mod tests {
         assert!(!is_valid_name("a/b"));
         assert!(!is_valid_name("c:\\bad"));
         assert!(!is_valid_name(&"x".repeat(MAX_NAME_LEN + 1)));
+        assert!(!is_valid_name("CON"));
+        assert!(!is_valid_name("a\u{0}b"));
+    }
+
+    #[test]
+    fn profile_names_are_unique_case_insensitively() {
+        let existing = vec!["Default".to_string(), "profile".to_string()];
+        assert_eq!(unique_name(&existing, "DEFAULT"), "DEFAULT 2");
+        assert_eq!(unique_name(&existing, "Profile"), "Profile 2");
+        assert_eq!(unique_name(&existing, "Other"), "Other");
+    }
+
+    #[test]
+    fn unsafe_names_from_profiles_toml_resolve_to_no_directory() {
+        assert!(profile_dir("Default").is_some());
+        for bad in ["..", "../..", "a/b", "a\\b", " padded", ""] {
+            assert!(profile_dir(bad).is_none(), "accepted {bad:?}");
+            assert!(client_path(bad).is_none());
+            assert!(modules_path(bad).is_none());
+        }
     }
 
     #[test]

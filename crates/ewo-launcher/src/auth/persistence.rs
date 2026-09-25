@@ -169,7 +169,12 @@ pub fn load_store() -> AccountStore {
             }
             store
         }
-        None => AccountStore::default(),
+        None => {
+            // Keep the unreadable file (it may hold every refresh token) —
+            // the next save would otherwise replace it with an empty store.
+            crate::util::backup_unparseable(&path, &"unparseable or unknown-version auth.toml");
+            AccountStore::default()
+        }
     }
 }
 
@@ -180,12 +185,6 @@ pub fn save_store(store: &AccountStore) {
         log::warn!("auth: config dir unresolvable — not persisting");
         return;
     };
-    if let Some(parent) = path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            log::warn!("auth: could not create {}: {}", parent.display(), e);
-            return;
-        }
-    }
     let file = AuthFile {
         version: CURRENT_VERSION,
         store: store.clone(),
@@ -193,7 +192,7 @@ pub fn save_store(store: &AccountStore) {
     };
     match toml::to_string_pretty(&file) {
         Ok(s) => {
-            if let Err(e) = fs::write(&path, s) {
+            if let Err(e) = crate::util::atomic_write_private(&path, s.as_bytes()) {
                 log::warn!("auth: write {} failed: {}", path.display(), e);
             } else {
                 log::info!("auth: saved {} account(s)", store.accounts.len());

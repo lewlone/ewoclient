@@ -119,20 +119,11 @@ fn sha1_hex(bytes: &[u8]) -> String {
     digest.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-fn versions_dir() -> Option<PathBuf> {
-    let mut p = dirs::config_dir()?;
-    p.push("EwoClient");
-    p.push("shared");
-    p.push("versions");
-    Some(p)
-}
-
 /// Path to a cached per-version manifest on disk:
 /// `<config>/EwoClient/shared/versions/<id>/<id>.json`. Mirrors the
-/// official launcher's layout exactly.
+/// official launcher's layout exactly. `None` for a path-unsafe id.
 pub fn cached_path(id: &str) -> Option<PathBuf> {
-    let mut p = versions_dir()?;
-    p.push(id);
+    let mut p = crate::downloads::paths::version_dir(id)?;
     p.push(format!("{}.json", id));
     Some(p)
 }
@@ -153,7 +144,7 @@ fn save_cached(id: &str, raw_body: &str) -> Result<(), FetchError> {
         fs::create_dir_all(parent)
             .map_err(|e| FetchError::Disk(format!("mkdir {}: {}", parent.display(), e)))?;
     }
-    fs::write(&path, raw_body)
+    crate::util::atomic_write(&path, raw_body.as_bytes())
         .map_err(|e| FetchError::Disk(format!("write {}: {}", path.display(), e)))?;
     log::info!("per-version: cached {} to {}", id, path.display());
     Ok(())

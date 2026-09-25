@@ -102,7 +102,7 @@ pub fn save(manifest: &VersionManifest) {
     };
     match serde_json::to_string_pretty(&file) {
         Ok(s) => {
-            if let Err(e) = fs::write(&path, s) {
+            if let Err(e) = crate::util::atomic_write(&path, s.as_bytes()) {
                 log::warn!("versions: cache write failed: {}", e);
             } else {
                 log::info!(
