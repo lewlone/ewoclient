@@ -87,12 +87,12 @@ pub fn wait_for_redirect(server: &Server, expected_state: &str) -> LoopbackResul
 
         let url = req.url().to_string();
         let (code, state, error) = parse_callback(&url);
+        let decision = classify(code, state.as_deref(), error, expected_state);
 
         // Reply to the browser before processing — closes the tab visually.
-        let body = if error.is_some() || code.is_none() {
-            FAIL_PAGE
-        } else {
-            SUCCESS_PAGE
+        let body = match decision {
+            Callback::Code(_) => SUCCESS_PAGE,
+            _ => FAIL_PAGE,
         };
         let resp = Response::from_string(body)
             .with_header(
@@ -102,31 +102,82 @@ pub fn wait_for_redirect(server: &Server, expected_state: &str) -> LoopbackResul
             );
         let _ = req.respond(resp);
 
-        if let Some(err) = error {
-            log::info!("auth: loopback received error={}", err);
-            return LoopbackResult::Cancelled;
+        match decision {
+            Callback::Code(code) => return LoopbackResult::Code(code),
+            Callback::Cancelled(err) => {
+                log::info!("auth: loopback received error={}", err);
+                return LoopbackResult::Cancelled;
+            }
+            Callback::Ignore(why) => {
+                log::warn!("auth: loopback callback ignored — {}", why);
+                continue;
+            }
         }
-        let Some(code) = code else {
-            log::warn!("auth: loopback request had neither code nor error");
-            continue;
-        };
+    }
+}
 
-        // CSRF guard — the state we sent must round-trip.
-        match state.as_deref() {
-            Some(s) if s == expected_state => return LoopbackResult::Code(code),
-            Some(s) => {
-                log::warn!(
-                    "auth: state mismatch (expected {}, got {}) — ignoring",
-                    expected_state,
-                    s,
-                );
-                continue;
-            }
-            None => {
-                log::warn!("auth: callback missing state — ignoring");
-                continue;
-            }
-        }
+/// What a loopback request means for the sign-in in progress.
+#[derive(Debug, PartialEq, Eq)]
+enum Callback {
+    Code(String),
+    Cancelled(String),
+    Ignore(&'static str),
+}
+
+/// CSRF guard first: nothing — not even an `error=` that would cancel the
+/// sign-in — is honoured unless the request carries the `state` we sent.
+fn classify(
+    code: Option<String>,
+    state: Option<&str>,
+    error: Option<String>,
+    expected_state: &str,
+) -> Callback {
+    match state {
+        None => return Callback::Ignore("missing state"),
+        Some(s) if s != expected_state => return Callback::Ignore("state mismatch"),
+        Some(_) => {}
+    }
+    if let Some(err) = error {
+        return Callback::Cancelled(err);
+    }
+    match code {
+        Some(c) => Callback::Code(c),
+        None => Callback::Ignore("neither code nor error"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_without_matching_state_does_not_cancel() {
+        assert_eq!(
+            classify(None, None, Some("access_denied".into()), "s1"),
+            Callback::Ignore("missing state")
+        );
+        assert_eq!(
+            classify(None, Some("evil"), Some("access_denied".into()), "s1"),
+            Callback::Ignore("state mismatch")
+        );
+        assert_eq!(
+            classify(None, Some("s1"), Some("access_denied".into()), "s1"),
+            Callback::Cancelled("access_denied".into())
+        );
+    }
+
+    #[test]
+    fn code_requires_matching_state() {
+        assert_eq!(
+            classify(Some("c".into()), Some("evil"), None, "s1"),
+            Callback::Ignore("state mismatch")
+        );
+        assert_eq!(classify(Some("c".into()), Some("s1"), None, "s1"), Callback::Code("c".into()));
+        assert_eq!(classify(None, Some("s1"), None, "s1"), Callback::Ignore("neither code nor error"));
+        assert_eq!(
+            parse_callback("/?code=a%2Bb&state=s1"),
+            (Some("a+b".into()), Some("s1".into()), None)
+        );
     }
 }
 
