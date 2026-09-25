@@ -30,6 +30,8 @@ use ewo_render::text::HoverGlowState;
 use ewo_render::{app_window, Clock, FontStore, GlBackend, VbtnState};
 
 use auth::{AuthOp, AuthService};
+use instance_ops::{delete_instance, loader_spec_for, sync_instance_config};
+use window_hit::*;
 
 /// A launch click whose JRE wasn't available — we kicked off a runtime
 /// fetch and will retry once it lands.
@@ -72,6 +74,7 @@ use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
 mod auth;
 mod bundled;
 mod downloads;
+mod instance_ops;
 mod keybind;
 mod launch;
 mod loaders;
@@ -83,6 +86,7 @@ mod social;
 mod util;
 mod versions;
 mod window;
+mod window_hit;
 
 #[derive(Parser, Debug)]
 #[command(name = "ewolauncher", about = "EwoClient — Velvet & Pearl")]
@@ -97,9 +101,6 @@ struct Args {
     #[arg(long)]
     mint_rewo_env: bool,
 }
-
-const RESIZE_BORDER_LP: f64 = 8.0;
-const CAPTION_HEIGHT_LP: f64 = 32.0;
 
 /// Base URL for the in-development EwoLoader manifests, one JSON per
 /// supported Minecraft version line (26.1.json, 26.2.json, …). The loader
@@ -132,11 +133,6 @@ fn ewo_loader_manifest_url(version_id: &str) -> String {
     };
     format!("{}/{}.json", ewo_loader_base(), line)
 }
-
-// Card inset (logical px). Mirrors `app_window::CARD_INSET`. Used to convert
-// cursor positions from window-local to card-local for widget hit-testing.
-// 0 — the card fills the window (see app_window::CARD_INSET).
-const CARD_INSET_LP: f64 = 0.0;
 
 /// Action triggered by clicking a sidebar menu item on the main menu.
 #[derive(Copy, Clone, Debug)]
@@ -3473,80 +3469,6 @@ impl ApplicationHandler for App {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-enum Zone {
-    Caption,
-    Resize(ResizeDirection),
-}
-
-fn hit_test(
-    pos: PhysicalPosition<f64>,
-    size: PhysicalSize<u32>,
-    scale: f64,
-) -> Option<Zone> {
-    let border = RESIZE_BORDER_LP * scale;
-    let caption = CAPTION_HEIGHT_LP * scale;
-    let (x, y) = (pos.x, pos.y);
-    let (w, h) = (size.width as f64, size.height as f64);
-
-    let on_top = y >= 0.0 && y < border;
-    let on_bottom = y > h - border;
-    let on_left = x >= 0.0 && x < border;
-    let on_right = x > w - border;
-
-    use ResizeDirection::*;
-    let dir = match (on_top, on_bottom, on_left, on_right) {
-        (true, _, true, _) => Some(NorthWest),
-        (true, _, _, true) => Some(NorthEast),
-        (_, true, true, _) => Some(SouthWest),
-        (_, true, _, true) => Some(SouthEast),
-        (true, _, _, _) => Some(North),
-        (_, true, _, _) => Some(South),
-        (_, _, true, _) => Some(West),
-        (_, _, _, true) => Some(East),
-        _ => None,
-    };
-    if let Some(d) = dir {
-        return Some(Zone::Resize(d));
-    }
-    // Top-right minimize / close buttons sit in the caption strip but must be
-    // clickable, not a drag handle — exclude them before the caption check.
-    let lx = (x / scale) as f32;
-    let ly = (y / scale) as f32;
-    let (min_btn, close_btn) = app_window::window_button_bounds((w / scale) as f32);
-    if rect_contains(&min_btn, (lx, ly)) || rect_contains(&close_btn, (lx, ly)) {
-        return None;
-    }
-    if y >= 0.0 && y < caption {
-        return Some(Zone::Caption);
-    }
-    None
-}
-
-/// Convert a window-local cursor position (physical px) into card-local
-/// (logical px), matching the coord space widget code uses.
-fn cursor_card_local(cursor: PhysicalPosition<f64>, scale: f64) -> (f32, f32) {
-    let lp_x = cursor.x / scale;
-    let lp_y = cursor.y / scale;
-    ((lp_x - CARD_INSET_LP) as f32, (lp_y - CARD_INSET_LP) as f32)
-}
-
-/// Card content width in card-local logical pixels (window minus 2× card inset).
-fn card_content_width(size: PhysicalSize<u32>, scale: f64) -> f32 {
-    let logical_w = size.width as f64 / scale;
-    (logical_w - 2.0 * CARD_INSET_LP) as f32
-}
-
-/// Card content height in card-local logical pixels.
-fn card_content_height(size: PhysicalSize<u32>, scale: f64) -> f32 {
-    let logical_h = size.height as f64 / scale;
-    (logical_h - 2.0 * CARD_INSET_LP) as f32
-}
-
-fn rect_contains(rect: &skia_safe::Rect, p: (f32, f32)) -> bool {
-    p.0 >= rect.left && p.0 <= rect.right && p.1 >= rect.top && p.1 <= rect.bottom
-}
-
 /// Phase H5: map a `social::FriendEntry` (raw bot payload) to a
 /// renderer-ready `FriendRowView`. The launcher doesn't yet know MC
 /// display names (no Mojang UUID→name resolver), so we fall back to
@@ -4504,68 +4426,6 @@ fn close_other_modal_dropdowns(modal: &mut NewInstanceModalState, keep: ModalSlo
     }
     if keep != ModalSlot::Loader {
         modal.loader.close();
-    }
-}
-
-/// Remove an instance by underlying index. Adjusts `prefs.selected` so
-/// it still points at a valid instance (or the last one, if the user
-/// deleted the currently-selected one) and persists. Refuses to delete
-/// the last remaining instance — there must always be at least one.
-fn delete_instance(
-    instances: &mut Vec<Instance>,
-    prefs: &mut InstancePrefs,
-    underlying_idx: usize,
-    time: f32,
-) {
-    if underlying_idx >= instances.len() || instances.len() <= 1 {
-        log::info!("delete: refused (idx={} len={})", underlying_idx, instances.len());
-        return;
-    }
-    let removed_name = instances[underlying_idx].name.clone();
-    instances.remove(underlying_idx);
-
-    // Re-anchor selection. If we removed something below the cursor,
-    // shift back. If we removed the cursor itself, clamp to the new last
-    // index.
-    if prefs.selected > underlying_idx {
-        prefs.selected -= 1;
-    } else if prefs.selected == underlying_idx {
-        prefs.selected = prefs.selected.min(instances.len().saturating_sub(1));
-    }
-    prefs.sync_from_instance(instances);
-    prefs.detail_scroll = 0.0;
-    prefs.selected_at = Some(time); // play the detail-panel fade for the new view
-    prefs.delete_hover = None;
-    prefs.list_hover = None;
-
-    log::info!("delete: removed \"{}\"", removed_name);
-    persistence::save_instances(instances);
-}
-
-/// Mirror the prefs slider/dropdown values into the currently-selected
-/// instance. Called whenever those widgets fire a change event so the
-/// per-instance config follows the user's edits.
-fn sync_instance_config(instances: &mut Vec<Instance>, prefs: &InstancePrefs) {
-    if let Some(inst) = instances.get_mut(prefs.selected) {
-        inst.ram = prefs.ram.value as u32;
-        inst.render_distance = prefs.render_dist.value as u32;
-        inst.java_runtime = prefs.java_runtime.selected;
-    }
-}
-
-/// The download job's loader layer for an instance loader (`None` = vanilla).
-fn loader_spec_for(
-    loader: &ewo_render::screens::instances::InstanceLoader,
-) -> Option<loaders::LoaderSpec> {
-    match loader {
-        ewo_render::screens::instances::InstanceLoader::Vanilla
-        | ewo_render::screens::instances::InstanceLoader::Native => None,
-        ewo_render::screens::instances::InstanceLoader::Ewo { manifest_url } => {
-            Some(loaders::LoaderSpec {
-                id: "ewo".to_string(),
-                url: manifest_url.clone(),
-            })
-        }
     }
 }
 
