@@ -91,6 +91,9 @@ pub struct CullInfo {
     pub bars: bool,
     /// A `RenderKind::Cube` whose faces sample a translucent material.
     pub translucent: bool,
+    /// `isCollisionShapeFullBlock` — the ambient-occlusion occluder
+    /// (`BlockBehaviour.getShadeBrightness` = 0.2 for these, else 1.0).
+    pub ao_occluder: bool,
 }
 
 /// Per-state render classification, indexed by global state id.
@@ -1408,6 +1411,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 connect,
                 bars,
                 translucent: false,
+                ao_occluder: false,
             };
             let mut phys = crate::block_physics::BlockPhysics::resolve(block_name, props, water_block);
             if short == "water" || short == "lava" {
@@ -1544,6 +1548,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             } else {
                 Vec::new()
             };
+            cull[id as usize].ao_occluder = collide[id as usize] == [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
             if !collide[id as usize].is_empty() && !solid[id as usize] {
                 stats.shaped_collision_states += 1;
             }

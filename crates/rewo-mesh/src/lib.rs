@@ -450,6 +450,8 @@ impl<'a> MeshInputs<'a> {
 struct Tables<'a> {
     render: &'a [RenderKind],
     cull: &'a [CullInfo],
+    /// Full-face model quads get corner AO (production tables only).
+    model_ao: bool,
 }
 
 impl<'a> Tables<'a> {
@@ -510,9 +512,13 @@ impl<'a> Tables<'a> {
         !skip
     }
 
-    /// The AO occluder test (unchanged legacy rule: a rendered full cube).
+    /// `getShadeBrightness`'s occluder: `isCollisionShapeFullBlock` (glass
+    /// and leaves count, soul sand does not). Legacy: a rendered cube.
     fn ao_solid(&self, state: u32) -> bool {
-        self.is_cube(state)
+        match self.cull.get(state as usize) {
+            Some(c) => c.ao_occluder,
+            None => self.is_cube(state),
+        }
     }
 }
 
@@ -553,6 +559,7 @@ pub(crate) fn mesh_column_reference_with(
     let table = Tables {
         render: inputs.render,
         cull: inputs.cull,
+        model_ao: !inputs.cull.is_empty(),
     };
     let (models, carried) = (inputs.models, inputs.fluid);
     let col = world.column(cx, cz)?;
@@ -964,6 +971,7 @@ pub fn mesh_column_with(
     let table = Tables {
         render: inputs.render,
         cull: inputs.cull,
+        model_ao: !inputs.cull.is_empty(),
     };
     let (models, carried) = (inputs.models, inputs.fluid);
     let col = world.column(cx, cz)?;
@@ -1586,42 +1594,9 @@ fn cube_face(
         Some(rgb) => (raw_faces[face], rgb),
         None => (faces[face], TINT_WHITE),
     };
-    let (uu, vv, (fnx, fny, fnz)) = FACE_AXES[face];
     let mut ao = [0u8; 4];
     for (i, (corner, _uv)) in FACE_CORNERS[face].iter().enumerate() {
-        // AO from the three neighbors around this corner, in the layer
-        // just outside the face.
-        let su = 2 * corner[uu] as i32 - 1;
-        let sv = 2 * corner[vv] as i32 - 1;
-        let mut off_u = [0i32; 3];
-        off_u[uu] = su;
-        let mut off_v = [0i32; 3];
-        off_v[vv] = sv;
-        let np = [wx + fnx, y + fny, wz + fnz];
-        let s1 = solid(
-            world,
-            table,
-            [np[0] + off_u[0], np[1] + off_u[1], np[2] + off_u[2]],
-        );
-        let s2 = solid(
-            world,
-            table,
-            [np[0] + off_v[0], np[1] + off_v[1], np[2] + off_v[2]],
-        );
-        let sc = solid(
-            world,
-            table,
-            [
-                np[0] + off_u[0] + off_v[0],
-                np[1] + off_u[1] + off_v[1],
-                np[2] + off_u[2] + off_v[2],
-            ],
-        );
-        ao[i] = if s1 && s2 {
-            0
-        } else {
-            3 - (s1 as u8 + s2 as u8 + sc as u8)
-        };
+        ao[i] = corner_ao(world, table, wx, y, wz, face, *corner);
     }
     Some(CubeFace {
         layer,
@@ -1631,6 +1606,53 @@ fn cube_face(
         ao,
         shade: face_shade_code(world, face),
     })
+}
+
+/// The AO code of one corner of a block face: the two edge neighbours and the
+/// diagonal in the layer just outside the face. `corner` is the corner's
+/// block-local position (0 or 1 on the face's two tangent axes).
+fn corner_ao(world: &World, table: Tables<'_>, wx: i32, y: i32, wz: i32, face: usize, corner: [f32; 3]) -> u8 {
+    let (uu, vv, (fnx, fny, fnz)) = FACE_AXES[face];
+    let su = 2 * (corner[uu] > 0.5) as i32 - 1;
+    let sv = 2 * (corner[vv] > 0.5) as i32 - 1;
+    let mut off_u = [0i32; 3];
+    off_u[uu] = su;
+    let mut off_v = [0i32; 3];
+    off_v[vv] = sv;
+    let np = [wx + fnx, y + fny, wz + fnz];
+    let s1 = solid(world, table, [np[0] + off_u[0], np[1] + off_u[1], np[2] + off_u[2]]);
+    let s2 = solid(world, table, [np[0] + off_v[0], np[1] + off_v[1], np[2] + off_v[2]]);
+    let sc = solid(
+        world,
+        table,
+        [np[0] + off_u[0] + off_v[0], np[1] + off_u[1] + off_v[1], np[2] + off_u[2] + off_v[2]],
+    );
+    if s1 && s2 {
+        0
+    } else {
+        3 - (s1 as u8 + s2 as u8 + sc as u8)
+    }
+}
+
+/// Whether a model quad is a whole block face (`faceCubic`): axis-aligned
+/// on the block boundary of its direction and spanning the full face. Such a
+/// quad takes the cube path's corner AO.
+fn full_face(verts: &[[f32; 3]; 4], dir: usize) -> bool {
+    let (uu, vv, (nx, ny, nz)) = FACE_AXES[dir];
+    let n = [nx, ny, nz];
+    let an = 3 - uu - vv;
+    let plane = if n[an] > 0 { 1.0 } else { 0.0 };
+    let (mut umin, mut umax, mut vmin, mut vmax) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    for v in verts {
+        if (v[an] - plane).abs() > 1e-5 {
+            return false;
+        }
+        umin = umin.min(v[uu]);
+        umax = umax.max(v[uu]);
+        vmin = vmin.min(v[vv]);
+        vmax = vmax.max(v[vv]);
+    }
+    umin.abs() < 1e-5 && vmin.abs() < 1e-5 && (umax - 1.0).abs() < 1e-5 && (vmax - 1.0).abs() < 1e-5
 }
 
 /// Emit one resolved cube face as a legacy unit quad.
@@ -1774,8 +1796,17 @@ fn emit_model(
         } else {
             (&mut *vertices, &mut *indices)
         };
+        // A whole-face quad (grass_block's faces, a log's) takes the corner
+        // AO a cube face gets; only when the table says so, so legacy
+        // fixtures keep their flat model shading.
+        let face_ao = table.model_ao && full_face(&quad.verts, quad.dir as usize);
         let base_idx = vertices.len() as u32;
         for i in 0..4 {
+            let ao = if face_ao {
+                corner_ao(world, table, wx, y, wz, quad.dir as usize, quad.verts[i])
+            } else {
+                AO_NONE
+            };
             vertices.push(MeshVertex::new(
                 [
                     wx as f32 + quad.verts[i][0],
@@ -1787,7 +1818,7 @@ fn emit_model(
                 own_block,
                 own_sky,
                 shade_code,
-                AO_NONE,
+                ao,
                 tint_rgb,
             ));
         }
@@ -3742,6 +3773,9 @@ mod occlusion_tests {
             info.block = i as u16;
         }
         c[STONE as usize].occludes = 0b11_1111;
+        for s in [STONE, GLASS, STAINED] {
+            c[s as usize].ao_occluder = true;
+        }
         c[GLASS as usize].skip = 1;
         c[STAINED as usize].skip = 1;
         c[STAINED as usize].translucent = true;
@@ -3855,7 +3889,7 @@ mod occlusion_tests {
     fn pane_skip_follows_the_connection_rule() {
         let r = render();
         let c = cull();
-        let t = Tables { render: &r, cull: &c };
+        let t = Tables { render: &r, cull: &c, model_ao: true };
         // Vertical: skip regardless of connections.
         assert!(!t.should_render(PANE_EW, PANE_N, 0));
         assert!(!t.should_render(PANE_EW, PANE_N, 1));
@@ -3868,6 +3902,47 @@ mod occlusion_tests {
         // Air is not a neighbour to skip against.
         assert!(t.should_render(PANE_EW, AIR, 5));
     }
+    /// A full-face model quad (grass_block's top) takes corner AO from a
+    /// full-collision neighbour; a partial quad keeps the flat identity.
+    #[test]
+    fn full_face_model_quads_get_corner_ao() {
+        use rewo_data::assets::Quad;
+        let top = |y: f32, x1: f32| Quad {
+            verts: [[0.0, y, 0.0], [x1, y, 0.0], [x1, y, 1.0], [0.0, y, 1.0]],
+            uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            layer: 9,
+            raw_layer: 9,
+            cull: 0,
+            dir: 0,
+            tint: TintSource::None,
+            shade: true,
+            translucent: false,
+        };
+        let mut r = render();
+        r.push(RenderKind::Model(0));
+        let model = r.len() as u32 - 1;
+        let mut c = cull();
+        c.push(CullInfo { block: 99, ..CullInfo::default() });
+        let models = vec![vec![top(1.0, 1.0), top(0.5, 0.5)]];
+        // Stone one up and one west of the model: the top face's west corners
+        // sit against it.
+        let w = world(&[((4, 10, 4), model), ((3, 11, 4), STONE)]);
+        let m = mesh_column_with(&w, MeshInputs { render: &r, models: &models, fluid: &[], cull: &c }, 0, 0)
+            .expect("meshed");
+        let quad = |y: f32| -> Vec<u8> {
+            m.vertices
+                .iter()
+                .filter(|v| v.pos[1] == 10.0 + y && v.layer_index() == 9)
+                .map(|v| v.ao_code())
+                .collect()
+        };
+        let full = quad(1.0);
+        assert_eq!(full.len(), 4);
+        assert!(full.iter().any(|&a| a < AO_NONE), "west corners shaded: {full:?}");
+        assert!(full.iter().any(|&a| a == AO_NONE), "east corners open: {full:?}");
+        assert!(quad(0.5).iter().all(|&a| a == AO_NONE), "a partial quad stays flat");
+    }
+
     /// The greedy path and the frozen reference agree under a real cull
     /// table too: same opaque unit faces, byte-identical translucent stream.
     #[test]
