@@ -45,7 +45,9 @@ impl std::error::Error for FetchError {}
 /// Fetch a loader manifest by URL. `id` is the loader's logical name and
 /// keys the on-disk copy at `<config>/EwoClient/shared/loaders/<id>.json`.
 ///
-/// HTTP and `file://` schemes are supported. Other schemes return
+/// `https://` and `file://` schemes are supported. Plain `http://` is
+/// rejected: the manifest names every jar on the classpath, so it must not
+/// be swappable in transit. Other schemes return
 /// `FetchError::Other`.
 ///
 /// The fetch happens every call — there is no TTL cache. The on-disk copy
@@ -57,7 +59,7 @@ pub fn get_or_fetch(id: &str, url: &str) -> Result<LoaderManifest, FetchError> {
         log::info!("loader: reading {} from file {}", id, path.display());
         fs::read_to_string(&path)
             .map_err(|e| FetchError::Network(format!("read {}: {}", path.display(), e)))?
-    } else if url.starts_with("http://") || url.starts_with("https://") {
+    } else if url.starts_with("https://") {
         log::info!("loader: fetching {} from {}", id, url);
         fetch_http(url)?
     } else {
@@ -112,7 +114,7 @@ fn save_cached(id: &str, raw_body: &str) -> Result<(), FetchError> {
         fs::create_dir_all(parent)
             .map_err(|e| FetchError::Disk(format!("mkdir {}: {}", parent.display(), e)))?;
     }
-    fs::write(&path, raw_body)
+    crate::util::atomic_write(&path, raw_body.as_bytes())
         .map_err(|e| FetchError::Disk(format!("write {}: {}", path.display(), e)))?;
     log::info!("loader: cached {} to {}", id, path.display());
     Ok(())
@@ -167,10 +169,11 @@ mod tests {
 
     #[test]
     fn unsupported_scheme_errors() {
-        let err = get_or_fetch("nope", "ftp://example.com/x.json").unwrap_err();
-        match err {
-            FetchError::Other(_) => {}
-            other => panic!("expected Other, got {:?}", other),
+        for url in ["ftp://example.com/x.json", "http://example.com/x.json"] {
+            match get_or_fetch("nope", url).unwrap_err() {
+                FetchError::Other(_) => {}
+                other => panic!("expected Other for {url}, got {:?}", other),
+            }
         }
     }
 }
