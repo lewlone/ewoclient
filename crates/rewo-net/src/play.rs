@@ -877,6 +877,10 @@ pub struct PlaySession {
     /// Raw mob-effect ids of haste / conduit power / mining fatigue, captured
     /// from `registry_data` — the three effects `getCurrentSwingDuration` reads.
     swing_effect_ids: crate::SwingEffectIds,
+    /// Raw mob-effect ids of jump boost / slow falling / dolphin's grace /
+    /// levitation, captured the same way — the four effects
+    /// [`crate::attributes::apply_movement_effects`] folds into the physics.
+    movement_effect_ids: crate::config::MovementEffectIds,
     /// Chunk global-palette bit width (from the blocks table).
     global_bits: u32,
     /// The `minecraft:dimension_type` registry in raw wire order — index *is*
@@ -1756,6 +1760,7 @@ impl<'a> Connection<'a> {
         let visual_effects =
             crate::effects::VisualEffects::new(self.cfg.night_vision_id, self.cfg.darkness_id);
         let swing_effect_ids = self.cfg.swing_effect_ids;
+        let movement_effect_ids = self.cfg.movement_effect_ids;
         // The enchantment registry, in wire order (M42) — the index is the
         // protocol id a component patch carries.
         let enchantments = std::mem::take(&mut self.cfg.enchantments);
@@ -1884,6 +1889,7 @@ impl<'a> Connection<'a> {
             swing_data: None,
             recipe_display_ids: None,
             swing_effect_ids,
+            movement_effect_ids,
             global_bits,
             dim_types,
             overworld_clock_id,
@@ -2461,10 +2467,19 @@ impl PlaySession {
             self.push_from_entities();
             let collide = std::mem::take(&mut self.collide);
             let block_physics = std::mem::take(&mut self.block_physics);
-            let move_attrs = match self.attribute_registry.as_deref() {
+            let mut move_attrs = match self.attribute_registry.as_deref() {
                 Some(reg) => crate::attributes::move_attributes(reg, &self.local_attributes),
                 None => physics::MoveAttributes::default(),
             };
+            // The effect-driven fields (jump boost, slow falling, dolphin's
+            // grace, levitation) come from the local effect list, not from
+            // `update_attributes`. Built before `self.player` is borrowed
+            // below, so the closure's read of `self.visual_effects` is free.
+            crate::attributes::apply_movement_effects(
+                &mut move_attrs,
+                &self.movement_effect_ids,
+                |id| self.visual_effects.get(id).map(|e| e.amplifier),
+            );
             // M75. `LocalPlayer.aiStep` runs its flight prologue *before*
             // `super.aiStep()` reaches `travel`, so the toggle and the vertical
             // impulse both land in this tick's movement. All three steps live
@@ -2795,6 +2810,7 @@ impl PlaySession {
             fx.0,
             fx.1,
             self.swing_effect_ids,
+            self.movement_effect_ids,
         ));
         Ok(())
     }
@@ -2859,6 +2875,7 @@ impl PlaySession {
         self.overworld_clock_id = cfg.overworld_clock_id;
         self.world_clock_ids = cfg.world_clock_ids.clone();
         self.swing_effect_ids = cfg.swing_effect_ids;
+        self.movement_effect_ids = cfg.movement_effect_ids;
         self.pending_biome_registry = cfg.biome_registry();
         self.biome_global_bits = self
             .pending_biome_registry

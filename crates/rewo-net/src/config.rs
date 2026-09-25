@@ -18,6 +18,19 @@ use rewo_world::dimension::DimensionTypeDef;
 use crate::ids::Ids;
 use crate::{config_tasks, dimension_parse};
 
+/// Raw `minecraft:mob_effect` registry ids of the four effects the local
+/// player's movement physics reads (`MoveAttributes`'s effect fields). Same
+/// capture as the M13 lightmap's night-vision / darkness ids: from the datagen
+/// report, overridden if a server syncs the registry. `None` = that effect can
+/// never match here.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MovementEffectIds {
+    pub jump_boost: Option<i32>,
+    pub slow_falling: Option<i32>,
+    pub dolphins_grace: Option<i32>,
+    pub levitation: Option<i32>,
+}
+
 /// What one configuration pass synced — the registries and tags a play
 /// session is built from.
 pub struct ConfigData {
@@ -35,6 +48,9 @@ pub struct ConfigData {
     pub night_vision_id: Option<i32>,
     pub darkness_id: Option<i32>,
     pub swing_effect_ids: crate::SwingEffectIds,
+    /// The four movement effects (jump boost, slow falling, dolphin's grace,
+    /// levitation) the local player's physics reads.
+    pub movement_effect_ids: MovementEffectIds,
     /// `minecraft:worldgen/biome` registry in raw wire order (M14).
     pub biome_defs: Vec<rewo_world::biome::BiomeDef>,
     pub enchantments: Vec<crate::enchantment_parse::EnchantmentDef>,
@@ -61,6 +77,12 @@ impl ConfigData {
                 conduit_power: data.mob_effects.id_of("minecraft:conduit_power"),
                 mining_fatigue: data.mob_effects.id_of("minecraft:mining_fatigue"),
             },
+            movement_effect_ids: MovementEffectIds {
+                jump_boost: data.mob_effects.id_of("minecraft:jump_boost"),
+                slow_falling: data.mob_effects.id_of("minecraft:slow_falling"),
+                dolphins_grace: data.mob_effects.id_of("minecraft:dolphins_grace"),
+                levitation: data.mob_effects.id_of("minecraft:levitation"),
+            },
             biome_defs: Vec::new(),
             enchantments: Vec::new(),
             chat_types: Vec::new(),
@@ -79,6 +101,7 @@ impl ConfigData {
         night_vision_id: Option<i32>,
         darkness_id: Option<i32>,
         swing_effect_ids: crate::SwingEffectIds,
+        movement_effect_ids: MovementEffectIds,
     ) -> Self {
         Self {
             dim_types: Vec::new(),
@@ -87,6 +110,7 @@ impl ConfigData {
             night_vision_id,
             darkness_id,
             swing_effect_ids,
+            movement_effect_ids,
             biome_defs: Vec::new(),
             enchantments: Vec::new(),
             chat_types: Vec::new(),
@@ -223,6 +247,19 @@ impl ConfigData {
                     }
                     "minecraft:mining_fatigue" => {
                         self.swing_effect_ids.mining_fatigue = Some(idx as i32)
+                    }
+                    // The local player's movement physics.
+                    "minecraft:jump_boost" => {
+                        self.movement_effect_ids.jump_boost = Some(idx as i32)
+                    }
+                    "minecraft:slow_falling" => {
+                        self.movement_effect_ids.slow_falling = Some(idx as i32)
+                    }
+                    "minecraft:dolphins_grace" => {
+                        self.movement_effect_ids.dolphins_grace = Some(idx as i32)
+                    }
+                    "minecraft:levitation" => {
+                        self.movement_effect_ids.levitation = Some(idx as i32)
                     }
                     _ => {}
                 }
