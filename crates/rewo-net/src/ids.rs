@@ -888,9 +888,12 @@ mod coverage_table_tests {
     /// rather than calling it, because calling it needs a `Packets` and
     /// therefore the datagen report.
     const IDS_SRC: &str = include_str!("ids.rs");
-    /// The dispatch chain. `play.rs` holds `PlaySession::handle`'s `else if`
-    /// ladder; `lib.rs` holds the `route_*` seams.
-    const PLAY_SRC: &str = include_str!("play.rs");
+    /// The dispatch chain: `play/dispatch.rs` holds `handle_packet`'s `else if`
+    /// ladder, `play/mod.rs` the drain loop, `lib.rs` the `route_*` seams.
+    /// `play/tests.rs` is deliberately excluded — an id named only in a test
+    /// is not dispatched.
+    const PLAY_SRC: &str = include_str!("play/mod.rs");
+    const DISPATCH_SRC: &str = include_str!("play/dispatch.rs");
     const LIB_SRC: &str = include_str!("lib.rs");
 
     /// Whether `hay` contains `needle` delimited by non-identifier characters.
@@ -951,7 +954,7 @@ mod coverage_table_tests {
     fn is_dispatched(field: &str) -> bool {
         let by_table_a = format!(": ids.{field}");
         let by_table_b = format!(": self.ids.{field}");
-        [PLAY_SRC, LIB_SRC].iter().any(|src| {
+        [PLAY_SRC, DISPATCH_SRC, LIB_SRC].iter().any(|src| {
             src.lines().any(|line| {
                 let t = line.trim();
                 !t.starts_with("//")
