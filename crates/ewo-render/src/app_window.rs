@@ -312,7 +312,9 @@ pub fn draw_chrome_inner(canvas: &Canvas, w: f32, h: f32) {
 thread_local! {
     /// Cached inner-glow image, keyed by window size. The glow never changes
     /// for a given size, so a sigma-40 mask-blur per frame was pure waste.
-    static GLOW_CACHE: RefCell<Option<(i32, i32, Image)>> = const { RefCell::new(None) };
+    /// Keyed by GPU generation too: after a device loss the old image is
+    /// unusable (see `gl_backend::gpu_generation`).
+    static GLOW_CACHE: RefCell<Option<(u64, i32, i32, Image)>> = const { RefCell::new(None) };
 }
 
 /// Blit the cached inner berry glow, (re)baking it when the size changes.
@@ -323,8 +325,9 @@ fn draw_inner_glow(canvas: &Canvas, w: f32, h: f32) {
         return;
     }
 
+    let generation = crate::gl_backend::gpu_generation();
     let cached = GLOW_CACHE.with(|c| match c.borrow().as_ref() {
-        Some((cw, ch, img)) if *cw == wi && *ch == hi => Some(img.clone()),
+        Some((g, cw, ch, img)) if *g == generation && *cw == wi && *ch == hi => Some(img.clone()),
         _ => None,
     });
 
@@ -333,7 +336,7 @@ fn draw_inner_glow(canvas: &Canvas, w: f32, h: f32) {
         None => {
             let built = build_inner_glow(canvas, w, h, wi, hi);
             if let Some(ref img) = built {
-                GLOW_CACHE.with(|c| *c.borrow_mut() = Some((wi, hi, img.clone())));
+                GLOW_CACHE.with(|c| *c.borrow_mut() = Some((generation, wi, hi, img.clone())));
             }
             built
         }

@@ -73,7 +73,8 @@ pub struct PearlDust {
     /// path) but allocates nothing per frame — 110 gradient shaders/frame also
     /// churned Skia's gradient-LUT cache. Size-independent, so it survives
     /// resize. `RefCell` so it can be built lazily inside `draw(&self)`.
-    halo_sprite: RefCell<Option<Image>>,
+    /// With the `gl_backend::gpu_generation` it was baked under.
+    halo_sprite: RefCell<Option<(u64, Image)>>,
 }
 
 impl PearlDust {
@@ -188,12 +189,13 @@ impl PearlDust {
         // to the old per-mote 3-stop gradient, but with zero per-frame shader
         // allocation. Built lazily here so we have a GPU canvas to render into.
         {
+            let generation = crate::gl_backend::gpu_generation();
             let mut slot = self.halo_sprite.borrow_mut();
-            if slot.is_none() {
-                *slot = build_halo_sprite(canvas);
+            if slot.as_ref().is_none_or(|(g, _)| *g != generation) {
+                *slot = build_halo_sprite(canvas).map(|img| (generation, img));
             }
         }
-        let halo_sprite = self.halo_sprite.borrow().clone();
+        let halo_sprite = self.halo_sprite.borrow().as_ref().map(|(_, img)| img.clone());
 
         let mut halo_paint = Paint::default();
         let mut core = Paint::default();
