@@ -55,7 +55,7 @@ fn load_data() -> Option<rewo_data::GameData> {
     match rewo_data::GameData::load_for_version("26.2") {
         Ok(d) => Some(d),
         Err(e) => {
-            eprintln!("SKIP: no 26.2 datagen report ({e})");
+            rewo_data::skip_test!("no 26.2 datagen report ({e})");
             None
         }
     }

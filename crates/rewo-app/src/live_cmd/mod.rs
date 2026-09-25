@@ -1444,11 +1444,11 @@ mod m131_sounds {
     #[test]
     fn build_sounds_produces_a_system_that_can_resolve_a_real_event() {
         let Some(paths) = rewo_data::DataPaths::for_version("26.2") else {
-            eprintln!("SKIP: no config dir");
+            rewo_data::skip_test!("no config dir");
             return;
         };
         if !paths.registries_json().exists() {
-            eprintln!("SKIP: no datagen report");
+            rewo_data::skip_test!("no datagen report");
             return;
         }
         let registry =
@@ -1476,7 +1476,7 @@ mod m131_sounds {
             .map(|(root, id)| root.join("indexes").join(format!("{id}.json")).exists())
             .unwrap_or(false);
         if !store_present {
-            eprintln!("SKIP: no unpacked asset store, so no sounds.json");
+            rewo_data::skip_test!("no unpacked asset store, so no sounds.json");
             return;
         }
         assert!(

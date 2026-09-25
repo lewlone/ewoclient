@@ -473,7 +473,7 @@ mod real_assets {
     #[test]
     fn a_real_ogg_decodes_to_its_exact_sample_count() {
         let Some(bytes) = asset(CHICKEN.0, CHICKEN.1) else {
-            println!("SKIPPED: no unpacked asset store -- this witness proved nothing");
+            rewo_data::skip_test!("no unpacked asset store");
             return;
         };
         let pcm = super::decode_ogg_vorbis(&bytes).expect("chicken step1 must decode");
@@ -530,7 +530,7 @@ mod real_assets {
             asset(HORN_STEREO.0, HORN_STEREO.1),
             asset(CHICKEN.0, CHICKEN.1),
         ) else {
-            println!("SKIPPED: no unpacked asset store -- this witness proved nothing");
+            rewo_data::skip_test!("no unpacked asset store");
             return;
         };
         let mono = super::decode_ogg_vorbis(&mono).unwrap();
@@ -570,7 +570,7 @@ mod real_assets {
     #[test]
     fn a_stream_reports_its_format_before_any_read() {
         let Some(s) = stream(CHICKEN, false) else {
-            println!("SKIPPED: no unpacked asset store -- this witness proved nothing");
+            rewo_data::skip_test!("no unpacked asset store");
             return;
         };
         assert_eq!(s.format(), (1, 44100));
@@ -589,7 +589,7 @@ mod real_assets {
     #[test]
     fn reading_a_stream_in_chunks_yields_exactly_the_whole_file() {
         let Some(bytes) = asset(CHICKEN.0, CHICKEN.1) else {
-            println!("SKIPPED: no unpacked asset store -- this witness proved nothing");
+            rewo_data::skip_test!("no unpacked asset store");
             return;
         };
         let whole = super::decode_ogg_vorbis(&bytes).expect("decode");
@@ -616,7 +616,7 @@ mod real_assets {
     #[test]
     fn a_non_looping_stream_stays_exhausted() {
         let Some(mut s) = stream(CHICKEN, false) else {
-            println!("SKIPPED: no unpacked asset store -- this witness proved nothing");
+            rewo_data::skip_test!("no unpacked asset store");
             return;
         };
         let mut total = 0;
@@ -646,7 +646,7 @@ mod real_assets {
     #[test]
     fn a_looping_stream_restarts_with_a_short_buffer_at_the_boundary() {
         let Some(mut s) = stream(CHICKEN, true) else {
-            println!("SKIPPED: no unpacked asset store -- this witness proved nothing");
+            rewo_data::skip_test!("no unpacked asset store");
             return;
         };
         let lens: Vec<usize> = (0..5).map(|_| s.read(1000).unwrap().len()).collect();
@@ -676,7 +676,7 @@ mod real_assets {
     #[test]
     fn a_zero_sized_read_does_not_restart_a_looping_stream() {
         let Some(mut s) = stream(CHICKEN, true) else {
-            println!("SKIPPED: no unpacked asset store -- this witness proved nothing");
+            rewo_data::skip_test!("no unpacked asset store");
             return;
         };
         let first = s.read(600).unwrap();
@@ -702,7 +702,7 @@ mod real_assets {
     fn the_bytes_adapter_opens_a_real_stream_through_the_library() {
         use crate::buffers::SoundBufferLibrary;
         let Some(bytes) = asset(CHICKEN.0, CHICKEN.1) else {
-            println!("SKIPPED: no unpacked asset store -- this witness proved nothing");
+            rewo_data::skip_test!("no unpacked asset store");
             return;
         };
         let whole = super::decode_ogg_vorbis(&bytes).expect("decode");
@@ -732,7 +732,7 @@ mod real_assets {
     #[test]
     fn two_streams_of_one_asset_do_not_share_a_position() {
         let Some(bytes) = asset(CHICKEN.0, CHICKEN.1) else {
-            println!("SKIPPED: no unpacked asset store -- this witness proved nothing");
+            rewo_data::skip_test!("no unpacked asset store");
             return;
         };
         let b: std::sync::Arc<[u8]> = bytes.into();

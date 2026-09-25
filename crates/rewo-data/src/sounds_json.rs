@@ -1237,7 +1237,7 @@ mod tests {
     #[test]
     fn the_asset_index_id_derived_from_the_manifest_is_the_one_the_tests_hardcode() {
         let Some(id) = asset_index_id("26.2") else {
-            eprintln!("SKIP: no shared version manifest for 26.2");
+            crate::skip_test!("no shared version manifest for 26.2");
             return;
         };
         assert_eq!(id, "32");
@@ -1246,11 +1246,11 @@ mod tests {
     #[test]
     fn load_for_version_reaches_the_same_index_as_the_explicit_path() {
         let Some(root) = shared_assets_dir() else {
-            eprintln!("SKIP: no config dir");
+            crate::skip_test!("no config dir");
             return;
         };
         if !root.join("indexes/32.json").exists() {
-            eprintln!("SKIP: no asset index at {}", root.display());
+            crate::skip_test!("no asset index at {}", root.display());
             return;
         }
         let by_version = load_for_version("26.2").expect("load_for_version");
@@ -1266,11 +1266,11 @@ mod tests {
     #[test]
     fn the_real_sounds_json_resolves_the_events_the_registry_names() {
         let Some(root) = shared_assets_dir() else {
-            eprintln!("SKIP: no config dir");
+            crate::skip_test!("no config dir");
             return;
         };
         if !root.join("indexes/32.json").exists() {
-            eprintln!("SKIP: no asset index at {}", root.display());
+            crate::skip_test!("no asset index at {}", root.display());
             return;
         }
         let idx = load_from_asset_store(&root, "32").expect("load");
@@ -1348,15 +1348,15 @@ mod tests {
     #[test]
     fn the_registry_and_sounds_json_name_the_same_events() {
         let Some(root) = shared_assets_dir() else {
-            eprintln!("SKIP: no config dir");
+            crate::skip_test!("no config dir");
             return;
         };
         let Some(paths) = crate::DataPaths::for_version("26.2") else {
-            eprintln!("SKIP: no config dir");
+            crate::skip_test!("no config dir");
             return;
         };
         if !root.join("indexes/32.json").exists() || !paths.registries_json().exists() {
-            eprintln!("SKIP: no asset store or datagen report");
+            crate::skip_test!("no asset store or datagen report");
             return;
         }
         let idx = load_from_asset_store(&root, "32").expect("load");

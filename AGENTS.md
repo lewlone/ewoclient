@@ -75,6 +75,7 @@ Author identity for commits in both repos: `lewlone <valtteri.e.saarinen@gmail.c
 ```bash
 cargo build --workspace
 cargo test --workspace --no-fail-fast       # unit tests (some skip without local assets)
+REWO_REQUIRE_ASSETS=1 cargo test --workspace  # local full run: a test that would skip fails instead
 python tools/gates.py                        # every `rewo *shot --check` gate + demo PNG hash
 python tools/gates.py --only mobshot,itemshot
 python tools/render_check.py                 # stages a fresh vanilla server, runs `rewo live --render-check`
@@ -90,8 +91,9 @@ python tools/regen_agents_mirror.py          # after editing this file: regenera
 `%APPDATA%/EwoClient/rewo/26.2/` (datagen reports + a Vineflower decompile of the
 user's own client jar) and a Vulkan device with the SDK's validation layers.
 CI (`.github/workflows/ci.yml`) runs only build + `cargo test` + clippy.
-A test that silently returns when assets are missing is a false pass — prefer
-`#[ignore]` or an explicit skip message.
+A test that needs local assets must call `rewo_data::skip_test!("reason")` before
+returning, never return silently: it prints `SKIP:` normally and panics under
+`REWO_REQUIRE_ASSETS=1`.
 
 **Gate rules** (enforced by `tools/gates.py`): a gate passes only if it exits 0
 **and** its output has no Vulkan validation error. The demo PNG's expected
