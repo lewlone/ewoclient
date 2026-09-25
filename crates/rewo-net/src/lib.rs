@@ -85,14 +85,14 @@ pub mod waypoints;
 use std::borrow::Cow;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rewo_data::packets::State;
-use rewo_data::{blocks::Blocks, GameData};
+use rewo_data::GameData;
 use rewo_proto::frame::FrameCodec;
 use rewo_proto::reader::PacketReader;
 use rewo_proto::writer::PacketWriter;
-use rewo_world::dimension::{DimensionShape, DimensionTypeDef};
+use rewo_world::dimension::DimensionTypeDef;
 use rewo_world::World;
 
 use ids::Ids;
@@ -138,12 +138,13 @@ pub fn take_route_decode_failures() -> u64 {
 /// The holder is `DimensionType.STREAM_CODEC = ByteBufCodecs.holderRegistry` =
 /// an `idMapper`, so it is the **raw 0-based registry id** — there is NO
 /// `0=inline`/`id+1` convention (that belongs to the different
-/// `ByteBufCodecs.holder` codec). Shared by the live `Connection`, the replay
-/// path, and the unit tests.
+/// `ByteBufCodecs.holder` codec). Test-only: the live session and the replay
+/// path read the same prefix through `spawn_info::read_login_prefix`.
 ///
 /// The holder is the *first* field of the embedded `CommonPlayerSpawnInfo`, so
 /// this is `spawn_info::read_login_prefix` plus one VarInt — callers that need
 /// the rest of the block read it with `CommonPlayerSpawnInfo::read` instead.
+#[cfg(test)]
 pub(crate) fn parse_login_dimension_holder(packet: &[u8]) -> rewo_proto::Result<i32> {
     let mut r = PacketReader::new(packet);
     spawn_info::read_login_prefix(&mut r)?;
@@ -560,226 +561,6 @@ impl<'a> Connection<'a> {
                 }
             }
         }
-    }
-
-    /// `handleRequestCookie` (play copy) — `send(new ServerboundCookieResponsePacket(
-    /// packet.key(), this.serverCookies.get(packet.key())))`.
-    fn answer_cookie_request(&mut self, body: usize, resp_id: i32) -> Result<(), String> {
-        let mut r = PacketReader::new(&self.packet[body..]);
-        let key = r.identifier().map_err(de)?;
-        let payload = self.session.cookie(&key).map(<[u8]>::to_vec);
-        let resp = crate::session::write_cookie_response(resp_id, &key, payload.as_deref());
-        self.send(resp)
-    }
-
-    // -- play --------------------------------------------------------------
-
-    /// Run the Play phase until `deadline`, applying packets to `world`.
-    fn run_play(
-        &mut self,
-        world: &mut World,
-        stats: &mut SessionStats,
-        deadline: Instant,
-    ) -> Result<(), String> {
-        stats.reached_play = true;
-        while Instant::now() < deadline {
-            let Some((id, body)) = self.recv()? else {
-                log::info!("net: server closed the play connection");
-                return Ok(());
-            };
-            self.record_inbound(id, body);
-            stats.packets_in += 1;
-            stats.bytes_in += (self.packet.len() - body) as u64;
-
-            match id {
-                x if x == self.ids.cb_play_keep_alive => {
-                    let ka = PacketReader::new(&self.packet[body..]).i64().map_err(de)?;
-                    let mut resp = PacketWriter::packet(self.ids.sb_play_keep_alive);
-                    resp.i64(ka);
-                    self.send(resp)?;
-                    stats.keepalives += 1;
-                }
-                x if x == self.ids.cb_play_ping => {
-                    let ping = PacketReader::new(&self.packet[body..]).i32().map_err(de)?;
-                    let mut resp = PacketWriter::packet(self.ids.sb_play_pong);
-                    resp.i32(ping);
-                    self.send(resp)?;
-                }
-                x if x == self.ids.cb_play_login => {
-                    self.handle_play_login(world, body)?;
-                }
-                x if x == self.ids.cb_play_position => {
-                    self.handle_teleport(body, stats)?;
-                }
-                x if x == self.ids.cb_play_chunk_batch_finished => {
-                    // Ack with a desired rate so chunks keep streaming.
-                    let mut resp = PacketWriter::packet(self.ids.sb_play_chunk_batch_received);
-                    resp.f32(16.0);
-                    self.send(resp)?;
-                }
-                x if x == self.ids.cb_play_level_chunk => {
-                    self.handle_chunk(world, body, stats);
-                }
-                x if x == self.ids.cb_play_forget_chunk => {
-                    let mut r = PacketReader::new(&self.packet[body..]);
-                    if let Ok(v) = r.i64() {
-                        let cx = v as i32;
-                        let cz = (v >> 32) as i32;
-                        world.forget_column(cx, cz);
-                    }
-                }
-                x if x == self.ids.cb_play_block_update => {
-                    self.handle_block_update(world, body);
-                }
-                x if x == self.ids.cb_play_add_entity => {
-                    self.handle_add_entity(world, body);
-                }
-                x if x == self.ids.cb_play_remove_entities => {
-                    let mut r = PacketReader::new(&self.packet[body..]);
-                    if let Ok(n) = r.count("remove entities", 1) {
-                        for _ in 0..n {
-                            if let Ok(eid) = r.varint() {
-                                world.entities.remove(eid);
-                            }
-                        }
-                    }
-                }
-                x if Some(x) == self.ids.cb_play_start_configuration => {
-                    // Server pulls us back to config (datapack reload etc).
-                    let ack = PacketWriter::packet(self.ids.sb_play_config_acknowledged);
-                    self.send(ack)?;
-                    self.state = State::Configuration;
-                    log::info!("net: server started configuration → re-entering config");
-                    self.cfg = config::ConfigData::new(self.data);
-                    self.run_config_packets(stats)?;
-                    stats.reached_play = true;
-                }
-                x if Some(x) == self.ids.cb_play_cookie_request => {
-                    if let Some(resp_id) = self.ids.sb_play_cookie_response {
-                        self.answer_cookie_request(body, resp_id)?;
-                    }
-                }
-                x if x == self.ids.cb_play_disconnect => {
-                    let mut r = PacketReader::new(&self.packet[body..]);
-                    let reason = r.nbt().map(|n| n.to_plain_text()).unwrap_or_default();
-                    stats.disconnect_reason = Some(reason.clone());
-                    log::warn!("net: play disconnect: {reason}");
-                    return Ok(());
-                }
-                _ => {
-                    // M78. The M1 soak/replay harness sees the same seven
-                    // session packets the play session does, and routing them
-                    // here keeps the brand and the cookie jar true on this path
-                    // too. `route_session` returns `false` for every other id,
-                    // which is what makes it safe as the fallthrough.
-                    //
-                    // The eighth, `bundle_delimiter`, is deliberately *not*
-                    // handled here: this loop renders no frames, so
-                    // reassembling a bundle would change nothing measurable.
-                    // See [`bundle`].
-                    route_session(id, &self.packet[body..], &self.ids, &mut self.session);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn handle_play_login(&mut self, world: &mut World, body: usize) -> Result<(), String> {
-        let holder = parse_login_dimension_holder(&self.packet[body..]).map_err(de)?;
-        let def = login_dimension_type(holder, &self.cfg.dim_types);
-        // The world was created before login, so re-point it at the dimension
-        // we actually joined. It holds no columns yet, which is what makes an
-        // in-place `apply_dimension_type` sound here.
-        world.apply_dimension_type(&def);
-        log::info!(
-            "net: play login — dimension {} (holder {holder}): min_y={} height={} \
-             sky_light={} cardinal={}",
-            def.name,
-            def.shape.min_y,
-            def.shape.height,
-            def.has_sky_light,
-            def.cardinal_light_type.name(),
-        );
-        // Signal we've loaded (keeps some servers from stalling).
-        let loaded = PacketWriter::packet(self.ids.sb_play_player_loaded);
-        self.send(loaded)?;
-        Ok(())
-    }
-
-    fn handle_teleport(&mut self, body: usize, stats: &mut SessionStats) -> Result<(), String> {
-        let teleport_id = {
-            let mut r = PacketReader::new(&self.packet[body..]);
-            r.varint().map_err(de)?
-        };
-        let mut ack = PacketWriter::packet(self.ids.sb_play_accept_teleport);
-        ack.varint(teleport_id);
-        self.send(ack)?;
-        stats.teleports += 1;
-        Ok(())
-    }
-
-    fn handle_chunk(&mut self, world: &mut World, body: usize, stats: &mut SessionStats) {
-        let blocks: &Blocks = &self.data.blocks;
-        let mut r = PacketReader::new(&self.packet[body..]);
-        match rewo_world::chunk::read_level_chunk(&mut r, &world.shape, blocks) {
-            Ok(column) => {
-                world.insert_column(column.cx, column.cz, column);
-                stats.chunks += 1;
-            }
-            Err(e) => {
-                // A decode failure is a real bug in the wire model — surface it.
-                log::error!("net: chunk decode failed: {e}");
-            }
-        }
-    }
-
-    fn handle_block_update(&mut self, world: &mut World, body: usize) {
-        let mut r = PacketReader::new(&self.packet[body..]);
-        if let (Ok((x, y, z)), Ok(state)) = (r.position(), r.varint()) {
-            world.set_block(x, y, z, state as u32);
-        }
-    }
-
-    fn handle_add_entity(&mut self, world: &mut World, body: usize) {
-        let mut r = PacketReader::new(&self.packet[body..]);
-        let _ = read_add_entity(&mut r, world);
-    }
-
-    // -- driver ------------------------------------------------------------
-
-    /// Full session: login → config → play until `run_for`, applying to a
-    /// fresh world. Returns stats + the world (for digest / queries).
-    pub fn run_session(
-        mut self,
-        host: &str,
-        port: u16,
-        username: &str,
-        run_for: Duration,
-    ) -> Result<(SessionStats, World), String> {
-        let mut stats = SessionStats {
-            packets_in: 0,
-            bytes_in: 0,
-            chunks: 0,
-            keepalives: 0,
-            teleports: 0,
-            reached_play: false,
-            disconnect_reason: None,
-            world_digest: 0,
-            loaded_columns: 0,
-        };
-        self.login_offline(host, port, username)?;
-        self.run_configuration(&mut stats)?;
-        let mut world = World::new(DimensionShape::OVERWORLD);
-        let deadline = Instant::now() + run_for;
-        self.run_play(&mut world, &mut stats, deadline)?;
-        stats.world_digest = world.digest();
-        stats.loaded_columns = world.loaded_columns();
-        if let Some(rec) = self.recorder.take() {
-            let n = rec.finish().map_err(|e| format!("finish recording: {e}"))?;
-            log::info!("net: recorded {n} inbound packets");
-        }
-        let _ = self.stream.flush();
-        Ok((stats, world))
     }
 
     fn record_inbound(&mut self, id: i32, body: usize) {
@@ -4516,6 +4297,7 @@ pub(crate) fn skip_lpvec3(r: &mut PacketReader) -> rewo_proto::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rewo_world::dimension::DimensionShape;
 
     /// Build a realistic `ClientboundLoginPacket` prefix up to (and including)
     /// the dimension-type holder, for the given holder id + dimension names.

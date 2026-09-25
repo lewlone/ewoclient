@@ -631,7 +631,6 @@ pub enum ComponentValue {
 /// |---|---|
 /// | `lib.rs`'s Login-state disconnect | Not NBT at all: `ClientboundLoginDisconnectPacket` is `ByteBufCodecs.lenientJson(262144)`, read here as a raw string and printed verbatim, so a whitelist kick logs `{"translate":"multiplayer.disconnect.not_whitelisted"}`. Needs a JSON-to-component reader, and **reaches no screen** — `Connection::into_play` runs before a window exists and both arms return `Err(String)`. |
 /// | `lib.rs`'s Configuration-state disconnect | On the live path (`into_play` calls `run_configuration`), but `Connection` holds no language table and `GameData` deliberately does not carry one. Also reaches a log line, not a screen. |
-/// | `lib.rs`'s `run_play` disconnect | `rewo net` / `rewo view` only. |
 /// | `session.rs`'s MOTD | **Nothing renders it.** `ServerData.motd` is drawn by `ServerSelectionList`, a pre-join screen Rewo has not got; its only readers here are `abilityshot` witnesses. |
 /// | `suggestion_wire.rs`'s tooltip | `Suggestion::tooltip` has no renderer, AND `selector.rs` discards the six `argument.entity.selector.*` keys it already stores, AND `Opt::description` is `""` for all 21 options. Fixing the wire third alone is unobservable. |
 /// | `menu.rs`'s container title | `OpenMenu::title` has **zero readers**: the label is not drawn. Drawing it without this would write `container.chest` across every vanilla chest, so it is ship-both-or-neither. |

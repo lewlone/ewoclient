@@ -85,10 +85,8 @@
 //! client that silently continued past a malformed bundle would be applying a
 //! run the server never meant to send as one.
 //!
-//! This machine is wired into [`crate::play::PlaySession`]'s drain only. The
-//! M1-era `Connection::run_play` harness behind `rewo net` / `rewo view` reads
-//! a small subset of packets with no frame between them, so bundling there
-//! would buy nothing measurable and is left out.
+//! This machine is wired into [`crate::play::PlaySession`]'s drain, which every
+//! play-state path (`rewo live`, `play`, `net soak`, `view --host`) runs.
 //!
 //! ## Ground truth (bundled 26.2 decompile, `%APPDATA%/EwoClient/rewo/26.2/
 //! decompiled/`)

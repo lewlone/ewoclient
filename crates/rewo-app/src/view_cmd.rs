@@ -90,18 +90,25 @@ pub fn run(args: ViewArgs) -> Result<(), String> {
         }
         (None, Some(host)) => {
             let conn = Connection::connect(host, args.port, &data)?;
-            let (stats, world) = conn.run_session(
+            let mut session = conn.into_play(
                 host,
                 args.port,
                 &args.username,
-                Duration::from_secs_f32(args.fetch_seconds),
+                None,
+                Vec::new(),
+                data.blocks.global_palette_bits,
+                rewo_world::biome::Colormaps::neutral(),
             )?;
+            session.run_idle(Duration::from_secs_f32(args.fetch_seconds))?;
             log::info!(
                 "view: snapshot from {host}:{} — {} chunks",
                 args.port,
-                stats.chunks
+                session.chunk_packets
             );
-            world
+            std::mem::replace(
+                &mut session.world,
+                rewo_world::World::new(rewo_world::dimension::DimensionShape::OVERWORLD),
+            )
         }
         (None, None) => return Err("view: pass --replay FILE or --host HOST".into()),
     };

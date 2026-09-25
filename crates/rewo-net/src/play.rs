@@ -897,6 +897,16 @@ pub struct PlaySession {
     pub corrections: u32,
     pub teleports: u32,
     pub block_updates: u32,
+    /// Inbound frames and their bytes, since play began.
+    pub packets_in: u64,
+    pub bytes_in: u64,
+    /// Inbound `level_chunk_with_light` and `keep_alive` packets.
+    pub chunk_packets: u64,
+    pub keepalives: u64,
+    /// Records every inbound frame when set (`rewo net soak --record`); the
+    /// `Connection`'s recorder carries over so login, configuration and play
+    /// land in one file.
+    recorder: Option<crate::record::Recorder>,
     /// Who is riding what (M68), from `set_passengers`.
     pub mounts: crate::motion::Mounts,
     /// M169 — `LocalPlayer.jumpRidingTicks` / `jumpRidingScale`.
@@ -1898,6 +1908,11 @@ impl<'a> Connection<'a> {
             corrections: 0,
             teleports: 0,
             block_updates: 0,
+            packets_in: 0,
+            bytes_in: 0,
+            chunk_packets: 0,
+            keepalives: 0,
+            recorder: self.recorder.take(),
             mounts: crate::motion::Mounts::new(),
             jump_riding: Default::default(),
             riding_jumps_sent: 0,
@@ -2626,6 +2641,54 @@ impl PlaySession {
     /// client calls this once per frame; [`Self::tick`] drains too so headless
     /// callers that only tick keep working. Returns how many packets it
     /// applied.
+    /// Tick an idle player at 20 Hz for `duration`, or until the server
+    /// disconnects. Used by `rewo net soak` and `rewo view --host`, so they
+    /// exercise the same packet handling as `rewo live`.
+    pub fn run_idle(&mut self, duration: std::time::Duration) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + duration;
+        let input = TickInput::default();
+        let mut next = std::time::Instant::now();
+        while std::time::Instant::now() < deadline && self.disconnect.is_none() {
+            self.tick(&input)?;
+            next += std::time::Duration::from_millis(50);
+            if let Some(wait) = next.checked_duration_since(std::time::Instant::now()) {
+                std::thread::sleep(wait);
+            }
+        }
+        Ok(())
+    }
+
+    /// Count an inbound frame and record it if a recorder is attached.
+    fn note_inbound(&mut self, id: i32, frame: &[u8], body: usize) {
+        self.packets_in += 1;
+        self.bytes_in += frame.len() as u64;
+        if id == self.ids.cb_play_level_chunk {
+            self.chunk_packets += 1;
+        } else if id == self.ids.cb_play_keep_alive {
+            self.keepalives += 1;
+        }
+        let state = if self.reconfig.is_some() {
+            rewo_data::packets::State::Configuration
+        } else {
+            rewo_data::packets::State::Play
+        };
+        if let Some(rec) = self.recorder.as_mut() {
+            if let Err(e) = rec.record(state, id, &frame[body..]) {
+                log::warn!("net: recording failed ({e}); recording stopped");
+                self.recorder = None;
+            }
+        }
+    }
+
+    /// Finish the recording started by `Connection::recorder`, returning the
+    /// number of packets written (`None` if nothing was recording).
+    pub fn finish_recording(&mut self) -> Result<Option<u64>, String> {
+        match self.recorder.take() {
+            Some(rec) => rec.finish().map(Some).map_err(|e| format!("finish recording: {e}")),
+            None => Ok(None),
+        }
+    }
+
     pub fn pump(&mut self, budget: PumpBudget) -> Result<usize, String> {
         self.tick_budget = Some(budget);
         self.drain_inbound(budget)
@@ -2663,6 +2726,7 @@ impl PlaySession {
                     continue;
                 }
             };
+            self.note_inbound(id, &packet, pos);
             if self.reconfig.is_some() {
                 self.handle_config(id, &packet[pos..])?;
                 continue;
@@ -3634,9 +3698,9 @@ impl PlaySession {
             // them answers the server. See `crate::hud_state`.
         } else if Some(id) == ids.cb_play_cookie_request {
             // M78 closes a hole it would otherwise have shipped around: the
-            // *play-state* `cookie_request` was answered only by the M1-era
-            // `Connection::run_play` harness, never by this session, so the
-            // real client left it unanswered entirely. `store_cookie` fills a
+            // *play-state* `cookie_request` was once answered only by a
+            // separate soak harness, never by this session, so the real
+            // client left it unanswered entirely. `store_cookie` fills a
             // jar whose only observable consequence is this reply, and a jar
             // nothing reads is not a feature.
             //
