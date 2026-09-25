@@ -127,7 +127,7 @@ impl LightEngine {
     ///
     /// Returns the columns whose light changed, which the caller must remesh
     /// — a light change is invisible until the mesh's baked light is rebuilt.
-    /// The set always includes the edited column.
+    /// The world must already hold `new` at `(x, y, z)`.
     pub fn on_block_change(
         &mut self,
         world: &mut World,
@@ -138,49 +138,115 @@ impl LightEngine {
         old: u32,
         new: u32,
     ) -> Vec<(i32, i32)> {
+        self.on_blocks_changed(world, t, &[(x, y, z, old, new)])
+    }
+
+    /// Relight after a batch of block changes (`section_blocks_update`, an
+    /// explosion, a `/fill`): one decrease and one increase pass per channel
+    /// for the whole batch, and one sky-column recomputation per distinct
+    /// `(x, z)`, instead of all of that per block.
+    ///
+    /// Each change is `(x, y, z, old_state, new_state)`; the world must
+    /// already hold every new state. When a position repeats, its first `old`
+    /// is the one before the batch. Returns the columns whose light changed.
+    pub fn on_blocks_changed(
+        &mut self,
+        world: &mut World,
+        t: LightTables,
+        changes: &[(i32, i32, i32, u32, u32)],
+    ) -> Vec<(i32, i32)> {
         self.touched.clear();
+        if changes.is_empty() {
+            return Vec::new();
+        }
 
         // -- block light ----------------------------------------------------
-        // Remove whatever the old state contributed, then seed the new one.
-        // The removal pass also re-seeds any neighbouring source it uncovers,
-        // so "break the wall between a torch and a room" fills correctly.
-        let old_level = self.get(world, Channel::Block, x, y, z);
-        if old_level > 0 {
-            self.set(world, Channel::Block, x, y, z, 0);
-            self.decrease.push_back((x, y, z, old_level));
+        // Clear what every edited cell held, cascade the removal (which
+        // re-seeds surviving sources it reaches), then seed the new emitters
+        // and let the edited cells refill from their neighbours.
+        for &(x, y, z, _, _) in changes {
+            let cur = self.get(world, Channel::Block, x, y, z);
+            if cur > 0 {
+                self.set(world, Channel::Block, x, y, z, 0);
+                self.decrease.push_back((x, y, z, cur));
+            }
         }
         self.run_decrease(world, t, Channel::Block);
-
-        let emit = t.emission(new);
-        if emit > 0 {
-            self.set(world, Channel::Block, x, y, z, emit);
-            self.increase.push_back((x, y, z));
-        }
-        // A cell that became transparent must also be re-fed by its
-        // neighbours; seeding them is cheaper than a separate rule.
-        for (dx, dy, dz) in NEIGHBOURS {
-            let (nx, ny, nz) = (x + dx, y + dy, z + dz);
-            if world.is_loaded(nx, nz) && self.get(world, Channel::Block, nx, ny, nz) > 0 {
-                self.increase.push_back((nx, ny, nz));
+        for (i, &(x, y, z, _, _)) in changes.iter().enumerate() {
+            // The state the batch leaves here: the last change to this cell.
+            let last = changes[i..]
+                .iter()
+                .rev()
+                .find(|c| (c.0, c.1, c.2) == (x, y, z))
+                .map_or(0, |c| c.4);
+            let emit = t.emission(last);
+            if emit > self.get(world, Channel::Block, x, y, z) {
+                self.set(world, Channel::Block, x, y, z, emit);
+                self.increase.push_back((x, y, z));
             }
+            self.seed_lit_neighbours(world, Channel::Block, x, y, z);
         }
         self.run_increase(world, t, Channel::Block);
 
         // -- sky light ------------------------------------------------------
-        // Only the (x,z) column's open-sky extent can change, so recompute
-        // that one column's sources and diff against what is stored.
-        //
         // A dimension with `hasSkyLight == false` has no sky light engine in
         // vanilla at all: the server never sends sky data and the client never
         // computes any. Running the flood there would invent sky light out of
         // the world's zero-initialised arrays, so the whole channel is skipped.
         if world.has_sky_light() {
-            self.update_sky_column(world, t, x, z, old, new, y);
+            // Each column's open-sky extent before and after the batch. The
+            // world already holds the new states, so the "before" bottom is
+            // measured with this column's edits reverted. Comparing extents —
+            // not dampening — is what catches a slab or stair (dampening 0,
+            // but it ends the column through its face occlusion).
+            let mut columns: Vec<(i32, i32)> = Vec::new();
+            for &(x, _, z, _, _) in changes {
+                if !columns.contains(&(x, z)) {
+                    columns.push((x, z));
+                }
+            }
+            // Every edited cell loses what it held first — even an open-sky
+            // source, whose faces may have just closed (a stair keeps the sky
+            // but stops lighting sideways). The column diff re-seeds sources.
+            for &(x, y, z, _, _) in changes {
+                let cur = self.get(world, Channel::Sky, x, y, z);
+                if cur > 0 {
+                    self.set(world, Channel::Sky, x, y, z, 0);
+                    self.decrease.push_back((x, y, z, cur));
+                }
+            }
+            for (x, z) in columns {
+                let mut reverted: Vec<(i32, u32)> = Vec::new();
+                for &(cx, cy, cz, old, _) in changes {
+                    if (cx, cz) == (x, z) && !reverted.iter().any(|(y, _)| *y == cy) {
+                        reverted.push((cy, old));
+                    }
+                }
+                let old_bottom = self.sky_bottom_with(world, t, x, z, &reverted);
+                let new_bottom = self.sky_bottom_with(world, t, x, z, &[]);
+                self.diff_sky_column(world, x, z, old_bottom, new_bottom);
+            }
             self.run_decrease(world, t, Channel::Sky);
+            for &(x, y, z, _, _) in changes {
+                self.seed_lit_neighbours(world, Channel::Sky, x, y, z);
+            }
             self.run_increase(world, t, Channel::Sky);
         }
 
-        self.touched.iter().copied().collect()
+        let mut out: Vec<(i32, i32)> = self.touched.iter().copied().collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// Queue every lit neighbour of a cell for the increase pass, so a cell
+    /// that became transparent is re-fed.
+    fn seed_lit_neighbours(&mut self, world: &World, ch: Channel, x: i32, y: i32, z: i32) {
+        for (dx, dy, dz) in NEIGHBOURS {
+            let (nx, ny, nz) = (x + dx, y + dy, z + dz);
+            if world.is_loaded(nx, nz) && self.get(world, ch, nx, ny, nz) > 0 {
+                self.increase.push_back((nx, ny, nz));
+            }
+        }
     }
 
     /// Recompute a whole column's light from scratch, ignoring whatever the
@@ -256,11 +322,30 @@ impl LightEngine {
     /// even though its dampening is 0. Both callers must agree on this or the
     /// incremental path drifts from the full recompute.
     fn sky_bottom(&self, world: &World, t: LightTables, x: i32, z: i32) -> i32 {
+        self.sky_bottom_with(world, t, x, z, &[])
+    }
+
+    /// [`Self::sky_bottom`] with some cells of the column read as other
+    /// states — the column as it was before a batch of edits.
+    fn sky_bottom_with(
+        &self,
+        world: &World,
+        t: LightTables,
+        x: i32,
+        z: i32,
+        overrides: &[(i32, u32)],
+    ) -> i32 {
         let shape = world.shape;
         let (y0, top) = (shape.min_y, shape.min_y + shape.height);
-        let mut above = world.block_state_at(x, top - 1, z);
+        let state_at = |y: i32| {
+            overrides
+                .iter()
+                .find(|(oy, _)| *oy == y)
+                .map_or_else(|| world.block_state_at(x, y, z), |(_, s)| *s)
+        };
+        let mut above = state_at(top - 1);
         for y in (y0..top).rev() {
-            let here = world.block_state_at(x, y, z);
+            let here = state_at(y);
             // NEIGHBOURS index 2 is −Y: the step downward out of `above`.
             if t.dampening(here) != 0 || (y < top - 1 && t.blocked(above, here, 2)) {
                 return y + 1;
@@ -270,65 +355,35 @@ impl LightEngine {
         y0
     }
 
-    /// The (x,z) column's open-sky extent may have changed. Diff the new
-    /// source set against the stored light and queue the difference.
-    fn update_sky_column(
-        &mut self,
-        world: &mut World,
-        t: LightTables,
-        x: i32,
-        z: i32,
-        old: u32,
-        new: u32,
-        y: i32,
-    ) {
-        let (old_d, new_d) = (t.dampening(old), t.dampening(new));
-        if old_d == new_d {
-            // The column's shape is unchanged; only the edited cell itself
-            // needs re-seeding from its neighbours.
-            for (dx, dy, dz) in NEIGHBOURS {
-                let (nx, ny, nz) = (x + dx, y + dy, z + dz);
-                if world.is_loaded(nx, nz) && self.get(world, Channel::Sky, nx, ny, nz) > 0 {
-                    self.increase.push_back((nx, ny, nz));
+    /// The open-sky column at `(x, z)` moved from `old_bottom` to
+    /// `new_bottom`: cells that became sources are set to 15 and spread; cells
+    /// that stopped being sources are cleared and cascade.
+    fn diff_sky_column(&mut self, world: &mut World, x: i32, z: i32, old_bottom: i32, new_bottom: i32) {
+        let top = world.shape.min_y + world.shape.height;
+        for yy in old_bottom.min(new_bottom)..top {
+            if yy >= new_bottom {
+                if self.get(world, Channel::Sky, x, yy, z) < 15 {
+                    self.set(world, Channel::Sky, x, yy, z, 15);
+                    self.increase.push_back((x, yy, z));
                 }
-            }
-            return;
-        }
-
-        let shape = world.shape;
-        let y0 = shape.min_y;
-        let top = shape.min_y + shape.height;
-        let bottom = self.sky_bottom(world, t, x, z);
-
-        if new_d != 0 {
-            // Sky just got blocked at `y`: everything below loses its source.
-            for yy in y0..bottom.min(y + 1) {
+            } else if yy >= old_bottom {
                 let cur = self.get(world, Channel::Sky, x, yy, z);
                 if cur > 0 {
                     self.set(world, Channel::Sky, x, yy, z, 0);
                     self.decrease.push_back((x, yy, z, cur));
                 }
             }
-        } else {
-            // Sky just opened up: seed the newly-open cells at full strength.
-            for yy in bottom..top {
-                if self.get(world, Channel::Sky, x, yy, z) < 15 {
-                    self.set(world, Channel::Sky, x, yy, z, 15);
-                    self.increase.push_back((x, yy, z));
-                }
-            }
         }
     }
 
+    /// `LightEngine.propagateDecrease`. No shape test on the way out: light
+    /// that crossed a face before an edit must be removable after the edit
+    /// closed that face (vanilla's decrease does not consult shapes either).
     fn run_decrease(&mut self, world: &mut World, t: LightTables, ch: Channel) {
         while let Some((x, y, z, old)) = self.decrease.pop_front() {
-            let here = world.block_state_at(x, y, z);
-            for (dir, (dx, dy, dz)) in NEIGHBOURS.into_iter().enumerate() {
+            for (dx, dy, dz) in NEIGHBOURS {
                 let (nx, ny, nz) = (x + dx, y + dy, z + dz);
                 if !world.is_loaded(nx, nz) || !self.in_world(world, ny) {
-                    continue;
-                }
-                if t.blocked(here, world.block_state_at(nx, ny, nz), dir) {
                     continue;
                 }
                 let cur = self.get(world, ch, nx, ny, nz);
@@ -336,9 +391,21 @@ impl LightEngine {
                     continue;
                 }
                 if cur < old {
-                    // We lit this cell — clear it and cascade.
+                    // We lit this cell — clear it and cascade. A block-light
+                    // source relights itself from its emission, and only
+                    // cascades what it held beyond that (`propagateDecrease`).
+                    let emit = match ch {
+                        Channel::Block => t.emission(world.block_state_at(nx, ny, nz)),
+                        Channel::Sky => 0,
+                    };
                     self.set(world, ch, nx, ny, nz, 0);
-                    self.decrease.push_back((nx, ny, nz, cur));
+                    if emit < cur {
+                        self.decrease.push_back((nx, ny, nz, cur));
+                    }
+                    if emit > 0 {
+                        self.set(world, ch, nx, ny, nz, emit);
+                        self.increase.push_back((nx, ny, nz));
+                    }
                 } else {
                     // Fed by something else: it refills the hole.
                     self.increase.push_back((nx, ny, nz));
@@ -559,6 +626,152 @@ mod tests {
         e.on_block_change(&mut w, tables(), 8, 30, 8, 1, 0);
         for y in 0..DimensionShape::NETHER.height {
             assert_eq!(w.light_at(8, y, 8).1, 0, "no 15s invented at y={y}");
+        }
+    }
+
+    // -- incremental == full recompute ---------------------------------------
+
+    /// 0 air, 1 stone, 2 torch, 3 glass (dampening 1), 4 bottom slab (covers
+    /// −Y), 5 top slab (covers +Y), 6 stair (covers −Y and +X), 7 glowstone
+    /// (emits 15, opaque), 8 leaves (dampening 1), 9 dim emitter (7).
+    const P_EMIT: &[u8] = &[0, 0, 14, 0, 0, 0, 0, 15, 0, 7];
+    const P_DAMP: &[u8] = &[0, 15, 0, 1, 0, 0, 0, 15, 1, 0];
+    const P_FACE: &[u8] = &[0, 0, 0, 0, 1 << 2, 1 << 3, (1 << 2) | (1 << 1), 0, 0, 0];
+
+    fn p_tables() -> LightTables<'static> {
+        LightTables {
+            emission: P_EMIT,
+            dampening: P_DAMP,
+            face_occludes: P_FACE,
+        }
+    }
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self, n: u32) -> u32 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((self.0 >> 33) % n as u64) as u32
+        }
+    }
+
+    /// One loaded column, a stone floor and a lit starting state.
+    fn p_world() -> (World, LightEngine) {
+        let mut w = World::new(DimensionShape::OVERWORLD);
+        w.ensure_column(0, 0);
+        for x in 0..16 {
+            for z in 0..16 {
+                for y in 0..3 {
+                    w.set_block(x, y, z, 1);
+                }
+            }
+        }
+        let mut e = LightEngine::new();
+        e.relight_column(&mut w, p_tables(), 0, 0);
+        (w, e)
+    }
+
+    fn snapshot(w: &World) -> Vec<(u8, u8)> {
+        let mut v = Vec::new();
+        for y in -2..40 {
+            for z in 0..16 {
+                for x in 0..16 {
+                    v.push(w.light_at(x, y, z));
+                }
+            }
+        }
+        v
+    }
+
+    /// Compare the incrementally maintained light with a from-scratch
+    /// recompute, and report the first differing cell.
+    fn assert_matches_recompute(w: &mut World, step: usize) {
+        let inc = snapshot(w);
+        LightEngine::new().relight_column(w, p_tables(), 0, 0);
+        let full = snapshot(w);
+        if let Some(i) = (0..inc.len()).find(|&i| inc[i] != full[i]) {
+            let (x, z, y) = (i % 16, (i / 16) % 16, i / 256);
+            panic!(
+                "step {step}: ({x},{},{z}) incremental {:?} != recompute {:?}",
+                y as i32 - 2,
+                inc[i],
+                full[i]
+            );
+        }
+    }
+
+    /// The property the whole engine rests on: after any sequence of edits the
+    /// incremental result equals a full recompute. Covers opaque, dim
+    /// transparent, face-occluding (slab/stair — dampening 0) and emitting
+    /// states, in open sky and under cover.
+    #[test]
+    fn incremental_matches_full_recompute_after_random_edits() {
+        let (mut w, mut e) = p_world();
+        let mut rng = Lcg(0x5EED_1234);
+        let states = [0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 1];
+        for step in 0..600 {
+            let (x, y, z) = (2 + rng.next(12) as i32, 3 + rng.next(14) as i32, 2 + rng.next(12) as i32);
+            let new = states[rng.next(states.len() as u32) as usize];
+            let old = w.block_state_at(x, y, z);
+            w.set_block(x, y, z, new);
+            e.on_block_change(&mut w, p_tables(), x, y, z, old, new);
+            if step % 20 == 19 {
+                assert_matches_recompute(&mut w, step);
+            }
+        }
+    }
+
+    /// The reported bug: a bottom slab (dampening 0) placed under open sky
+    /// ends the sky column through its face, so the cell under it stops being
+    /// a level-15 source.
+    #[test]
+    fn a_slab_under_open_sky_shades_the_cell_below() {
+        let (mut w, mut e) = p_world();
+        assert_eq!(w.light_at(8, 5, 8).1, 15);
+        w.set_block(8, 6, 8, 4);
+        e.on_block_change(&mut w, p_tables(), 8, 6, 8, 0, 4);
+        assert_eq!(w.light_at(8, 6, 8).1, 15, "the slab cell is still open sky");
+        assert_eq!(w.light_at(8, 5, 8).1, 14, "below it: lit sideways, not a source");
+        assert_matches_recompute(&mut w, 0);
+    }
+
+    /// Removing a strong source must not strand a weaker source it cleared.
+    #[test]
+    fn a_weaker_neighbouring_source_survives_the_stronger_ones_removal() {
+        let mut w = roofed_world();
+        let mut e = LightEngine::new();
+        w.set_block(8, 5, 8, 2); // torch 14
+        e.on_block_change(&mut w, tables(), 8, 5, 8, 0, 2);
+        let pt = LightTables { emission: &[0, 0, 14, 15], dampening: &[0, 15, 0, 15], face_occludes: &[0; 4] };
+        w.set_block(9, 5, 8, 3); // a 15-emitter next to it
+        e.on_block_change(&mut w, pt, 9, 5, 8, 0, 3);
+        w.set_block(9, 5, 8, 0);
+        e.on_block_change(&mut w, pt, 9, 5, 8, 3, 0);
+        assert_eq!(w.light_at(8, 5, 8).0, 14, "the torch relights itself");
+        assert_eq!(w.light_at(7, 5, 8).0, 13);
+    }
+
+    /// The batch path equals the one-at-a-time path (and both equal a full
+    /// recompute), including a position edited twice in one batch.
+    #[test]
+    fn a_batch_equals_the_changes_applied_one_by_one() {
+        let mut rng = Lcg(0xBA7C);
+        let states = [0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+        for round in 0..30 {
+            let (mut a, mut ea) = p_world();
+            let (mut b, mut eb) = p_world();
+            let mut batch = Vec::new();
+            for _ in 0..(1 + rng.next(40)) {
+                let (x, y, z) = (2 + rng.next(6) as i32, 3 + rng.next(8) as i32, 2 + rng.next(6) as i32);
+                let new = states[rng.next(states.len() as u32) as usize];
+                let old = a.block_state_at(x, y, z);
+                a.set_block(x, y, z, new);
+                ea.on_block_change(&mut a, p_tables(), x, y, z, old, new);
+                b.set_block(x, y, z, new);
+                batch.push((x, y, z, old, new));
+            }
+            eb.on_blocks_changed(&mut b, p_tables(), &batch);
+            assert_eq!(snapshot(&a), snapshot(&b), "round {round}");
+            assert_matches_recompute(&mut b, round);
         }
     }
 }
