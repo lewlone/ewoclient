@@ -6285,12 +6285,49 @@ impl PlaySession {
     /// Run a server command (unsigned `chat_command`, the string without the
     /// leading `/`). Used for verification (`/summon …`) when the account is
     /// op; a normal client mostly sends these too.
+    /// `ClientPacketListener.sendCommand`. `command` has no leading slash.
+    ///
+    /// A command whose parse contains `minecraft:message` arguments goes out as
+    /// `chat_command_signed` with one signature per argument (none without a
+    /// chat session, as vanilla); everything else as plain `chat_command`.
     pub fn send_command(&mut self, command: &str) -> Result<(), String> {
-        let Some(id) = self.ids.sb_play_chat_command else {
-            return Err("chat_command unavailable".into());
+        let units: Vec<u16> = command.encode_utf16().collect();
+        let ctx = crate::dispatcher::CommandCtx { names: &[], blocks: None, items: None };
+        let parsed = crate::dispatcher::parse(&self.commands, &units, 0, ctx);
+        let signable = crate::signed_command::signable_arguments(&self.commands, &parsed, &units);
+        if signable.is_empty() {
+            let Some(id) = self.ids.sb_play_chat_command else {
+                return Err("chat_command unavailable".into());
+            };
+            let mut p = PacketWriter::packet(id);
+            p.string(command);
+            return self.send(p);
+        }
+        let Some(id) = self.ids.sb_play_chat_command_signed else {
+            return Err("chat_command_signed unavailable".into());
+        };
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        let salt: i64 = rand::Rng::gen(&mut rand::thread_rng());
+        let last_seen = self.last_seen.generate_and_apply_update();
+        let signatures: Vec<(String, Vec<u8>)> = match self.signer.as_mut() {
+            Some(signer) => signable
+                .into_iter()
+                .map(|(name, value)| {
+                    let sig = signer.sign(&value, salt, now.as_secs() as i64, &last_seen.last_seen);
+                    (name, sig)
+                })
+                .collect(),
+            None => Vec::new(),
         };
         let mut p = PacketWriter::packet(id);
-        p.string(command);
+        crate::signed_command::write_signed_command(
+            &mut p,
+            command,
+            now.as_millis() as i64,
+            salt,
+            &signatures,
+            &last_seen,
+        );
         self.send(p)
     }
 
@@ -6809,8 +6846,6 @@ fn packed_degrees(b: i8) -> f32 {
     b as f32 * (360.0 / 256.0)
 }
 
-/// The unit cube, for blocks with no entry in the collision table.
-static FULL_CUBE: &[[f32; 6]] = &[[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
 
 impl PlaySession {
     /// Vanilla `Entity.push`: entities whose bounding boxes overlap shove each

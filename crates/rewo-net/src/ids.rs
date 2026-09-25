@@ -267,6 +267,8 @@ pub struct Ids {
     pub sb_play_client_tick_end: Option<i32>,
     pub sb_play_chat: Option<i32>,
     pub sb_play_chat_command: Option<i32>,
+    /// `ServerboundChatCommandSignedPacket` — a command with signed `message` arguments.
+    pub sb_play_chat_command_signed: Option<i32>,
     /// `ServerboundCommandSuggestionPacket` (M114) — a VarInt request id then
     /// the command being typed, capped at **32500** UTF-16 units (neither
     /// `readUtf`'s default nor the chat field's 256).
@@ -746,6 +748,7 @@ impl Ids {
             sb_play_client_tick_end: opt!(p, P, S, "client_tick_end"),
             sb_play_chat: opt!(p, P, S, "chat"),
             sb_play_chat_command: opt!(p, P, S, "chat_command"),
+            sb_play_chat_command_signed: opt!(p, P, S, "chat_command_signed"),
             sb_play_command_suggestion: opt!(p, P, S, "command_suggestion"),
             sb_play_chat_session_update: opt!(p, P, S, "chat_session_update"),
             sb_play_chat_ack: opt!(p, P, S, "chat_ack"),
