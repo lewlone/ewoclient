@@ -1,6 +1,4 @@
-//! Widgets — interactive UI primitives. Will move to `ewo-ui` when the
-//! widget set grows; lives in `ewo-render` for now so the launcher can call
-//! through a single dependency while the UI crate is empty.
+//! Widgets — interactive UI primitives used by the launcher screens.
 //!
 //! Step 10 introduces this module with `vbtn`. Subsequent steps add
 //! `vslider`, `vdrop`, `vstatus`, `pbar`, `toggle`, `pathfield`, etc.
