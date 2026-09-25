@@ -10251,6 +10251,15 @@ impl LiveApp {
         let Some(session) = self.session.as_mut() else {
             return;
         };
+        // Vanilla applies inbound packets every frame, independent of the
+        // 20 Hz tick; the budget keeps a backlog from hitching one frame.
+        if let Err(e) = session.pump(rewo_net::play::PumpBudget::FRAME) {
+            log::error!("live: packet handling failed: {e}");
+            session.disconnect = Some(e);
+            session.disconnect_cause =
+                Some(rewo_world::disconnect_screen::DisconnectCause::ClientError);
+            return;
+        }
         self.tick_accum += dt;
         let input = self.keys.input();
         let mut ran_tick = false;
