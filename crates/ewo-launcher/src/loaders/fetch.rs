@@ -68,12 +68,34 @@ pub fn get_or_fetch(id: &str, url: &str) -> Result<LoaderManifest, FetchError> {
 
     let parsed: LoaderManifest = serde_json::from_str(&body)
         .map_err(|e| FetchError::Parse(e.to_string()))?;
+    if url.starts_with("https://") {
+        reject_local_libraries(&parsed)?;
+    }
 
     if let Err(e) = save_cached(id, &body) {
         log::warn!("loader: cache write failed: {}", e);
     }
 
     Ok(parsed)
+}
+
+/// A manifest from the network may not name local files: `file://` libraries
+/// are copied without a hash check, so a remote manifest could otherwise put
+/// any file on the user's disk onto the game classpath. Local (`file://`)
+/// manifests keep that ability for the EwoLoader dev loop.
+fn reject_local_libraries(manifest: &LoaderManifest) -> Result<(), FetchError> {
+    for lib in &manifest.libraries {
+        let artifacts = lib.downloads.artifact.iter().chain(lib.downloads.classifiers.values());
+        for a in artifacts {
+            if !a.url.starts_with("https://") {
+                return Err(FetchError::Other(format!(
+                    "remote loader manifest lists a non-https library: {} ({})",
+                    lib.name, a.url
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn fetch_http(url: &str) -> Result<String, FetchError> {
@@ -125,6 +147,25 @@ mod tests {
     use super::*;
     use std::env;
     use std::io::Write;
+
+    fn manifest_with_library_url(url: &str) -> LoaderManifest {
+        serde_json::from_str(&format!(
+            r#"{{"id":"t","inheritsFrom":"26.2","mainClass":"M","libraries":[
+                {{"name":"a:b:1","downloads":{{"artifact":
+                    {{"path":"a/b.jar","sha1":"00","size":1,"url":"{url}"}}}}}}]}}"#
+        ))
+        .expect("test manifest parses")
+    }
+
+    #[test]
+    fn remote_manifest_may_not_name_local_or_http_libraries() {
+        let ok = manifest_with_library_url("https://maven.example/a/b.jar");
+        assert!(reject_local_libraries(&ok).is_ok());
+        for bad in ["file:///C:/Windows/evil.jar", "http://maven.example/a/b.jar"] {
+            let m = manifest_with_library_url(bad);
+            assert!(reject_local_libraries(&m).is_err(), "{bad} must be rejected");
+        }
+    }
 
     #[test]
     fn file_url_round_trips_through_get_or_fetch() {
