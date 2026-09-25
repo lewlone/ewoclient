@@ -1322,10 +1322,7 @@ mod tests {
             tick(&mut p, &input, &floor);
         }
         let dist = p.z - z0;
-        assert!(
-            (8.0..9.2).contains(&dist),
-            "40-tick walk = {dist} blocks (vanilla ≈ 8.63)"
-        );
+        assert!((dist - walked_from_rest(0.1)).abs() < 1e-12, "40-tick walk = {dist}");
     }
 
     /// Vanilla sprint ≈ 5.612 blocks/s → ≈ 11.2 blocks in 2 s.
@@ -1343,10 +1340,24 @@ mod tests {
             tick(&mut p, &input, &floor);
         }
         let dist = p.z - z0;
-        assert!(
-            (10.4..12.0).contains(&dist),
-            "40-tick sprint = {dist} blocks (vanilla ≈ 11.2)"
-        );
+        let speed = (0.1f32 as f64 * 1.3) as f32;
+        assert!((dist - walked_from_rest(speed)).abs() < 1e-12, "40-tick sprint = {dist}");
+    }
+
+    /// 40 ticks of ground movement from rest, from the formulas: each tick
+    /// adds the accel `speed · (0.21600002F / 0.6F³) · 0.98F`, moves by the
+    /// result, then multiplies by `0.6F · 0.91F`.
+    fn walked_from_rest(speed: f32) -> f64 {
+        let f = 0.6f32;
+        let accel = (speed * (0.21600002f32 / (f * f * f))) as f64 * (0.98f32 as f64);
+        let drag = (f * 0.91f32) as f64;
+        let (mut v, mut d) = (0.0f64, 0.0f64);
+        for _ in 0..40 {
+            v += accel;
+            d += v;
+            v *= drag;
+        }
+        d
     }
 
     /// Vanilla jump apex ≈ 1.2522 blocks.
