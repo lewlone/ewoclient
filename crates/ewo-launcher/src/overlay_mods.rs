@@ -21,12 +21,12 @@ use ewo_render::screens::instances::Instance;
 use crate::bundled;
 use crate::downloads::paths;
 
-fn overlay_mods_path(instance_name: &str) -> Option<PathBuf> {
-    paths::instance_dir(instance_name).map(|d| d.join("overlay-mods.toml"))
+fn overlay_mods_path(instance_id: &str) -> Option<PathBuf> {
+    paths::instance_dir(instance_id).map(|d| d.join("overlay-mods.toml"))
 }
 
-fn overrides_path(instance_name: &str) -> Option<PathBuf> {
-    paths::instance_dir(instance_name).map(|d| d.join("overlay-mod-overrides.toml"))
+fn overrides_path(instance_id: &str) -> Option<PathBuf> {
+    paths::instance_dir(instance_id).map(|d| d.join("overlay-mod-overrides.toml"))
 }
 
 /// Consume `overlay-mod-overrides.toml` for `instances[idx]` — apply the
@@ -36,7 +36,7 @@ pub fn apply_overrides(instances: &mut [Instance], idx: usize) -> bool {
     let Some(inst) = instances.get(idx) else {
         return false;
     };
-    let Some(path) = overrides_path(&inst.name) else {
+    let Some(path) = overrides_path(&inst.id) else {
         return false;
     };
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -74,17 +74,16 @@ pub fn apply_overrides(instances: &mut [Instance], idx: usize) -> bool {
     changed
 }
 
-/// Write `ewo-keybinds.txt` into `instance_name`'s directory — the active
+/// Write `ewo-keybinds.txt` into instance `instance_id`'s directory — the active
 /// client profile's keybinds, resolved to GLFW key codes. The in-game mod
 /// reads it for the overlay-open key (Phase F5c).
 ///
 /// Format is one `action=code` (or `action=code:mods`) line, plain enough
 /// for the mod to parse with a line split — no TOML parser in the JVM.
-pub fn write_keybinds(instance_name: &str) {
-    let Some(dir) = paths::instance_dir(instance_name) else {
+pub fn write_keybinds(instance_id: &str) {
+    let Some(dir) = paths::instance_dir(instance_id) else {
         return;
     };
-    let _ = std::fs::create_dir_all(&dir);
     let mut s = String::from(
         "# EwoClient keybinds — written by the launcher for the in-game mod.\n",
     );
@@ -95,13 +94,15 @@ pub fn write_keybinds(instance_name: &str) {
             s.push_str(&format!("{}={}:{}\n", id, chord.key, chord.mods));
         }
     }
-    let _ = std::fs::write(dir.join("ewo-keybinds.txt"), s);
+    if let Err(e) = crate::util::atomic_write(&dir.join("ewo-keybinds.txt"), s.as_bytes()) {
+        log::warn!("overlay: write ewo-keybinds.txt failed: {}", e);
+    }
 }
 
 /// Write `overlay-mods.toml` for `instance` — every toggleable catalog mod
 /// with the instance's current on/off state. The in-game MODS view reads this.
 pub fn write_catalog(instance: &Instance) {
-    let Some(path) = overlay_mods_path(&instance.name) else {
+    let Some(path) = overlay_mods_path(&instance.id) else {
         return;
     };
     if let Some(dir) = path.parent() {
@@ -122,5 +123,7 @@ pub fn write_catalog(instance: &Instance) {
             m.mod_id, m.display_name, m.category, m.version, enabled,
         ));
     }
-    let _ = std::fs::write(&path, s);
+    if let Err(e) = crate::util::atomic_write(&path, s.as_bytes()) {
+        log::warn!("overlay: write {} failed: {}", path.display(), e);
+    }
 }
