@@ -26,8 +26,7 @@
 //! 82% alpha. Not a flat fill: the bottom is fractionally darker.
 
 use ash::vk;
-use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
-use gpu_allocator::MemoryLocation;
+use gpu_allocator::vulkan::Allocation;
 
 use crate::entities::create_texture;
 use crate::world::DEPTH_FORMAT;
@@ -38,7 +37,8 @@ const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
 /// quads each), the panel and its two highlights, the tooltip's two nine-slices,
 /// and a full bundle grid's twelve cells plus its progress bar (M58).
 const MAX_VERTS: usize = 2048;
-const RING: usize = 2;
+/// Set once this pass has dropped geometry past its budget.
+static TRUNCATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const ATLAS_W: u32 = 512;
 const ATLAS_H: u32 = 288;
 
@@ -587,6 +587,7 @@ fn push_quad(
     // All six or none: dropping a corner past the cap would leave a torn
     // triangle in the buffer rather than one fewer quad.
     if v.len() + corners.len() > MAX_VERTS {
+        crate::buf_ring::warn_truncated(&TRUNCATED, "container", MAX_VERTS);
         return;
     }
     for (pos, uv, color) in corners {
@@ -794,9 +795,7 @@ pub struct ContainerPass {
     image: vk::Image,
     image_alloc: Option<Allocation>,
     view: vk::ImageView,
-    bufs: [vk::Buffer; RING],
-    allocs: [Option<Allocation>; RING],
-    cursor: usize,
+    ring: crate::buf_ring::BufRing,
     /// The back half's vertex count, and the total. The front highlight is the
     /// tail of the same buffer: vanilla brackets the item between the two
     /// sprites, so this pass is drawn twice per frame with the icons in
@@ -996,13 +995,12 @@ impl ContainerPass {
         };
         let pipeline = build_pipeline(&device, layout, color_format)?;
 
-        let mut bufs = [vk::Buffer::null(); RING];
-        let mut allocs: [Option<Allocation>; RING] = [None, None];
-        for i in 0..RING {
-            let (b, a) = new_vertex_buffer(gpu)?;
-            bufs[i] = b;
-            allocs[i] = Some(a);
-        }
+        let ring = crate::buf_ring::BufRing::with_capacity(
+            gpu,
+            "container-verts",
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            VERTEX_STRIDE * MAX_VERTS as u64,
+        )?;
         Ok(Self {
             layout,
             set_layout,
@@ -1013,9 +1011,7 @@ impl ContainerPass {
             image,
             image_alloc: Some(image_alloc),
             view,
-            bufs,
-            allocs,
-            cursor: 0,
+            ring,
             back_verts: 0,
             total_verts: 0,
             panel,
@@ -1073,7 +1069,6 @@ impl ContainerPass {
         let book_open = book.is_some();
         let (left, top, scale) =
             gui_origin_placed(w, h, Placement::with_book(gui_w, gui_h, book_open));
-        self.cursor = (self.cursor + 1) % RING;
         let mut v: Vec<Vertex> = Vec::with_capacity(192);
         let quad = push_quad;
 
@@ -1393,17 +1388,10 @@ impl ContainerPass {
         if v.is_empty() {
             return;
         }
-        if let Some(alloc) = self.allocs[self.cursor].as_ref() {
-            if let Some(ptr) = alloc.mapped_ptr() {
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        v.as_ptr() as *const u8,
-                        ptr.as_ptr() as *mut u8,
-                        std::mem::size_of_val(v),
-                    );
-                }
-            }
-        }
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v))
+        };
+        self.ring.write_fixed(bytes, VERTEX_STRIDE as usize);
     }
 
     /// The backdrop, the panel and the back highlight — everything that goes
@@ -1486,9 +1474,15 @@ impl ContainerPass {
         first: u32,
         count: u32,
     ) {
+        // Never read past what this frame actually uploaded.
+        let uploaded = (self.ring.len() / VERTEX_STRIDE) as u32;
+        let count = count.min(uploaded.saturating_sub(first));
         if count == 0 {
             return;
         }
+        let Some(vbuf) = self.ring.bind() else {
+            return;
+        };
         let device = &gpu.device;
         unsafe {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
@@ -1514,13 +1508,14 @@ impl ContainerPass {
                 0,
                 bytemuck::cast_slice(&push),
             );
-            device.cmd_bind_vertex_buffers(cb, 0, &[self.bufs[self.cursor]], &[0]);
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             device.cmd_draw(cb, count, 1, first, 0);
         }
     }
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         gpu.wait_idle();
+        self.ring.destroy(gpu);
         let device = gpu.device.clone();
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
@@ -1530,51 +1525,11 @@ impl ContainerPass {
             device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
-            for b in self.bufs {
-                device.destroy_buffer(b, None);
-            }
         }
         if let Some(a) = self.image_alloc.take() {
             let _ = gpu.allocator.free(a);
         }
-        for a in self.allocs.iter_mut() {
-            if let Some(a) = a.take() {
-                let _ = gpu.allocator.free(a);
-            }
-        }
     }
-}
-
-fn new_vertex_buffer(gpu: &mut Gpu) -> Result<(vk::Buffer, Allocation), String> {
-    let size = VERTEX_STRIDE * MAX_VERTS as u64;
-    let buf = unsafe {
-        gpu.device
-            .create_buffer(
-                &vk::BufferCreateInfo::default()
-                    .size(size)
-                    .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
-                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
-                None,
-            )
-            .map_err(|e| format!("container vertex buffer: {e}"))?
-    };
-    let req = unsafe { gpu.device.get_buffer_memory_requirements(buf) };
-    let alloc = gpu
-        .allocator
-        .allocate(&AllocationCreateDesc {
-            name: "container-verts",
-            requirements: req,
-            location: MemoryLocation::CpuToGpu,
-            linear: true,
-            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-        })
-        .map_err(|e| format!("container vertex alloc: {e}"))?;
-    unsafe {
-        gpu.device
-            .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
-            .map_err(|e| format!("container bind: {e}"))?;
-    }
-    Ok((buf, alloc))
 }
 
 pub(crate) fn build_pipeline(

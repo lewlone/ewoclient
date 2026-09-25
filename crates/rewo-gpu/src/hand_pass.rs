@@ -25,6 +25,7 @@ pub struct HandPass {
     set: vk::DescriptorSet,
     sampler: vk::Sampler,
     atlas: (vk::Image, vk::ImageView),
+    atlas_extent: (u32, u32),
     allocs: Vec<gpu_allocator::vulkan::Allocation>,
     /// This frame's geometry. A [`BufRing`] rather than a bare buffer because
     /// `set_vertices` runs before the frame is submitted — see `buf_ring`'s
@@ -147,6 +148,7 @@ impl HandPass {
             set,
             sampler,
             atlas: (img, view),
+            atlas_extent: (atlas_w, atlas_h),
             allocs: vec![alloc],
             vbuf: BufRing::new(),
             vert_count: 0,
@@ -367,6 +369,29 @@ impl HandPass {
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         gpu.wait_idle();
+        self.destroy_now(gpu);
+    }
+
+    /// Replace the atlas's texels in place when the new atlas has the same
+    /// size — an ordered transfer, no idle and no pipeline rebuild. `false`
+    /// when the size differs and the pass must be rebuilt.
+    pub(crate) fn update_atlas(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+    ) -> Result<bool, String> {
+        if self.atlas_extent != (w, h) {
+            return Ok(false);
+        }
+        crate::entities::upload_region(gpu, self.atlas.0, rgba, 0, 0, w, h)?;
+        Ok(true)
+    }
+
+    /// Destroy without idling — the caller guarantees no frame still uses
+    /// the pass (deferred destruction, or after its own idle).
+    pub(crate) fn destroy_now(&mut self, gpu: &mut Gpu) {
         self.vbuf.destroy(gpu);
         let device = gpu.device.clone();
         unsafe {

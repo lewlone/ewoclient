@@ -8264,16 +8264,25 @@ impl LiveApp {
             world_renderer,
         } = state;
         let vp = glam::Mat4::IDENTITY.to_cols_array_2d();
-        match renderer.render(gpu, Some((world_renderer, vp)), &draw, CLEAR_SKY) {
-            Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {}
-            Ok(RenderOutcome::NeedsRecreate) => {
-                let size = window.inner_size();
-                let _ = renderer.recreate(gpu, size.width, size.height);
-                let _ = renderer.ensure_depth(gpu);
-            }
-            Err(e) => {
-                log::error!("live: render failed: {e}");
-                event_loop.exit();
+        // GPU half only. A minimized window has a zero extent, so acquire
+        // returns OUT_OF_DATE and a zero-size recreate is refused — rendering
+        // anyway spun this loop at 100% CPU. Skip the GPU work and pace the loop
+        // instead; everything above (ticks, network) keeps running.
+        let size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        } else {
+            gpu.collect_garbage();
+            match renderer.render(gpu, Some((world_renderer, vp)), &draw, CLEAR_SKY) {
+                Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {}
+                Ok(RenderOutcome::NeedsRecreate) => {
+                    let _ = renderer.recreate(gpu, size.width, size.height);
+                    let _ = renderer.ensure_depth(gpu);
+                }
+                Err(e) => {
+                    log::error!("live: render failed: {e}");
+                    event_loop.exit();
+                }
             }
         }
         window.request_redraw();
@@ -11848,16 +11857,25 @@ impl LiveApp {
             c.border_ready |= world_renderer.border_ready();
             c.crumbling_ready |= world_renderer.crumbling_ready();
         }
-        match renderer.render(gpu, Some((world_renderer, vp)), &draw, CLEAR_SKY) {
-            Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {}
-            Ok(RenderOutcome::NeedsRecreate) => {
-                let size = window.inner_size();
-                let _ = renderer.recreate(gpu, size.width, size.height);
-                let _ = renderer.ensure_depth(gpu);
-            }
-            Err(e) => {
-                log::error!("live: render failed: {e}");
-                event_loop.exit();
+        // GPU half only. A minimized window has a zero extent, so acquire
+        // returns OUT_OF_DATE and a zero-size recreate is refused — rendering
+        // anyway spun this loop at 100% CPU. Skip the GPU work and pace the loop
+        // instead; everything above (ticks, network) keeps running.
+        let size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        } else {
+            gpu.collect_garbage();
+            match renderer.render(gpu, Some((world_renderer, vp)), &draw, CLEAR_SKY) {
+                Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {}
+                Ok(RenderOutcome::NeedsRecreate) => {
+                    let _ = renderer.recreate(gpu, size.width, size.height);
+                    let _ = renderer.ensure_depth(gpu);
+                }
+                Err(e) => {
+                    log::error!("live: render failed: {e}");
+                    event_loop.exit();
+                }
             }
         }
 

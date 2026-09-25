@@ -8,8 +8,7 @@
 //! any background. Layout uses the font's per-glyph advances.
 
 use ash::vk;
-use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
-use gpu_allocator::MemoryLocation;
+use gpu_allocator::vulkan::Allocation;
 
 use crate::entities::{create_texture, FontData};
 use crate::world::DEPTH_FORMAT;
@@ -17,7 +16,8 @@ use crate::Gpu;
 
 const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
 const MAX_VERTS: usize = 24_576; // ~1000 glyphs × 2 (shadow) × 6 verts / ~2
-const RING: usize = 2;
+/// Set once this pass has dropped geometry past its budget.
+static TRUNCATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// One line of text to draw this frame.
 pub struct TextLine<'a> {
@@ -140,9 +140,7 @@ pub struct TextPass {
     image: vk::Image,
     image_alloc: Option<Allocation>,
     view: vk::ImageView,
-    bufs: [vk::Buffer; RING],
-    allocs: [Option<Allocation>; RING],
-    cursor: usize,
+    ring: crate::buf_ring::BufRing,
     verts: u32,
     atlas_size: u32,
     cell: u32,
@@ -242,35 +240,12 @@ impl TextPass {
                 .map_err(|e| format!("text layout: {e}"))?;
             let pipeline = build_pipeline(&device, layout, color_format)?;
 
-            let mut bufs = [vk::Buffer::null(); RING];
-            let mut allocs: [Option<Allocation>; RING] = [None, None];
-            for (i, slot) in allocs.iter_mut().enumerate() {
-                let buffer = device
-                    .create_buffer(
-                        &vk::BufferCreateInfo::default()
-                            .size(MAX_VERTS as u64 * VERTEX_STRIDE)
-                            .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
-                            .sharing_mode(vk::SharingMode::EXCLUSIVE),
-                        None,
-                    )
-                    .map_err(|e| format!("text vbuf: {e}"))?;
-                let req = device.get_buffer_memory_requirements(buffer);
-                let alloc = gpu
-                    .allocator
-                    .allocate(&AllocationCreateDesc {
-                        name: "text-verts",
-                        requirements: req,
-                        location: MemoryLocation::CpuToGpu,
-                        linear: true,
-                        allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-                    })
-                    .map_err(|e| format!("text vbuf alloc: {e}"))?;
-                device
-                    .bind_buffer_memory(buffer, alloc.memory(), alloc.offset())
-                    .map_err(|e| format!("text vbuf bind: {e}"))?;
-                bufs[i] = buffer;
-                *slot = Some(alloc);
-            }
+            let ring = crate::buf_ring::BufRing::with_capacity(
+                gpu,
+                "text-verts",
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                MAX_VERTS as u64 * VERTEX_STRIDE,
+            )?;
 
             Ok(Self {
                 layout,
@@ -282,9 +257,7 @@ impl TextPass {
                 image,
                 image_alloc: Some(image_alloc),
                 view,
-                bufs,
-                allocs,
-                cursor: 0,
+                ring,
                 verts: 0,
                 atlas_size: font.size,
                 cell: font.cell,
@@ -332,7 +305,6 @@ impl TextPass {
         lines: &[TextLine<'_>],
     ) {
         self.frame = self.frame.wrapping_add(1);
-        self.cursor = (self.cursor + 1) % RING;
         let mut v: Vec<Vertex> = Vec::with_capacity(1024);
         for line in lines {
             // Shadow first (offset +1 font-px, darkened), then the glyph.
@@ -347,17 +319,14 @@ impl TextPass {
             self.push_line(&mut v, line, 0.0, 0.0, line.color_linear, line.alpha);
         }
         self.verts = v.len() as u32;
-        if let Some(slice) = self.allocs[self.cursor]
-            .as_mut()
-            .and_then(|a| a.mapped_slice_mut())
-        {
-            let bytes: &[u8] =
-                unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 32) };
-            slice[..bytes.len()].copy_from_slice(bytes);
-        }
-        if self.verts == 0 {
+        let bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 32) };
+        
+        let kept = self.ring.write_fixed(bytes, 6 * VERTEX_STRIDE as usize);
+        self.verts = (kept / VERTEX_STRIDE as usize) as u32;
+        let Some(vbuf) = self.ring.bind() else {
             return;
-        }
+        };
 
         let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
         let device = &gpu.device;
@@ -382,7 +351,7 @@ impl TextPass {
                 0,
                 std::slice::from_raw_parts(screen.as_ptr() as *const u8, 8),
             );
-            device.cmd_bind_vertex_buffers(cb, 0, &[self.bufs[self.cursor]], &[0]);
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             device.cmd_draw(cb, self.verts, 1, 0, 0);
         }
     }
@@ -439,6 +408,7 @@ impl TextPass {
                 let copies = if st.bold { 2 } else { 1 };
                 for c in 0..copies {
                     if v.len() + 6 > MAX_VERTS {
+                        crate::buf_ring::warn_truncated(&TRUNCATED, "text", MAX_VERTS);
                         break;
                     }
                     let (cx, cy) =
@@ -500,6 +470,7 @@ impl TextPass {
     /// are glyphs, and they must draw after the text they cross.
     fn push_effect(&self, v: &mut Vec<Vertex>, x0: f32, y0: f32, x1: f32, y1: f32, color4: [f32; 4]) {
         if v.len() + 6 > MAX_VERTS {
+            crate::buf_ring::warn_truncated(&TRUNCATED, "text", MAX_VERTS);
             return;
         }
         let atlas = self.atlas_size as f32;
@@ -518,6 +489,7 @@ impl TextPass {
     }
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
+        self.ring.destroy(gpu);
         unsafe {
             let device = &gpu.device;
             device.destroy_pipeline(self.pipeline, None);
@@ -527,12 +499,6 @@ impl TextPass {
             device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
-            for b in self.bufs {
-                device.destroy_buffer(b, None);
-            }
-        }
-        for a in self.allocs.iter_mut().filter_map(|a| a.take()) {
-            let _ = gpu.allocator.free(a);
         }
         if let Some(a) = self.image_alloc.take() {
             let _ = gpu.allocator.free(a);

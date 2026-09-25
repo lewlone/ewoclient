@@ -170,7 +170,7 @@ const _: () = assert!(std::mem::size_of::<WorldLightmapExtra>() == 32);
 /// One `WorldLightmapExtra` slot per frame that can be in flight. The block is
 /// written by the CPU at record time, so a frame must not scribble on a slot a
 /// still-queued frame's command buffer is reading — the same hazard, and the
-/// same remedy, as [`SELECT_RING`].
+/// same remedy, as the selection outline's ring.
 ///
 /// Sized from [`crate::MAX_FRAMES_IN_FLIGHT`], **not** `FRAMES_IN_FLIGHT`.
 /// [`WorldRenderer::draw`] advances the cursor once per call and the windowed
@@ -186,6 +186,13 @@ const _: () = assert!(std::mem::size_of::<WorldLightmapExtra>() == 32);
 /// The offscreen oracle path (`Offscreen::render`) submits and waits per frame,
 /// so it is safe at any ring length; only the windowed path needs this.
 const LIGHTMAP_UBO_RING: usize = crate::MAX_FRAMES_IN_FLIGHT;
+
+/// One copy of the cull's inputs and outputs (column metadata, indirect
+/// commands, draw count) per frame that can be in flight. `cull` writes them
+/// inside `render`, after that frame's fence wait, so — like the lightmap UBO —
+/// `>= fif` slots suffice. A single shared set let frame N's `cmd_fill_buffer`
+/// and compute writes race frame N-1's `DrawIndexedIndirectCount` reads.
+const CULL_RING: usize = crate::MAX_FRAMES_IN_FLIGHT;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -224,10 +231,6 @@ const fn ring_slot_is_retired(ring: usize, fif: usize) -> bool {
     ring >= fif
 }
 
-const SELECT_RING: usize = 2;
-
-/// Double-buffered like the selection outline, for the same reason.
-const LEASH_RING: usize = 2;
 /// Ribbon vertex budget: ~13 leashes at 294 verts each (98 triangles). A
 /// leash beyond the cap is dropped whole rather than torn.
 const LEASH_MAX_VERTS: usize = 4096;
@@ -409,9 +412,16 @@ struct UploadSlot {
     staging_alloc: Option<Allocation>,
     staging_cap: u64,
     busy: bool,
+    /// Submission order, so a full ring waits on the *oldest* slot.
+    seq: u64,
+    /// Bytes of staging this slot's open batch has used.
+    used: u64,
 }
 
 const UPLOAD_SLOTS: usize = 4;
+/// Staging a batch opens with, so a burst of small column uploads shares one
+/// command buffer and one submit instead of one each.
+const UPLOAD_BATCH_MIN: u64 = 2 * 1024 * 1024;
 
 /// First-fit free-list over a fixed-capacity element range, with coalescing.
 struct FreeList {
@@ -477,18 +487,15 @@ pub struct WorldRenderer {
     /// Block-selection outline (LINE_LIST, depth-tested against terrain).
     select_layout: vk::PipelineLayout,
     select_pipeline: vk::Pipeline,
-    select_bufs: [vk::Buffer; SELECT_RING],
-    select_allocs: [Option<Allocation>; SELECT_RING],
-    select_cursor: usize,
+    select_ring: crate::buf_ring::BufRing,
     /// The targeted block (world coords), or `None` — set each frame.
     selection: Option<[i32; 3]>,
     /// Leash ribbons (M170): a TRIANGLE_LIST of position+colour verts, world
     /// space, depth-tested against terrain and entities. Rebuilt each frame.
     leash_layout: vk::PipelineLayout,
     leash_pipeline: vk::Pipeline,
-    leash_bufs: [vk::Buffer; LEASH_RING],
-    leash_allocs: [Option<Allocation>; LEASH_RING],
-    leash_cursor: usize,
+    leash_ring: crate::buf_ring::BufRing,
+    leash_warned: bool,
     leash_verts: Vec<crate::leash::LeashVertex>,
     tex_pool: vk::DescriptorPool,
     /// One set per frame in flight: identical texture binding, but each points
@@ -513,19 +520,32 @@ pub struct WorldRenderer {
     // -- columns + metadata --
     columns: HashMap<(i32, i32), Slot>,
     meta_dirty: bool,
-    meta_buf: vk::Buffer,
-    meta_alloc: Option<Allocation>,
+    /// The compacted metadata array, and a version bumped when it changes;
+    /// each ring slot re-uploads it lazily when its copy is stale.
+    metas: Vec<ColumnMeta>,
+    meta_version: u64,
+    meta_versions: [u64; CULL_RING],
+    meta_bufs: [vk::Buffer; CULL_RING],
+    meta_allocs: [Option<Allocation>; CULL_RING],
     column_count: u32,
+    /// Arena ranges freed by `remove_column`, held until every frame that could
+    /// still read them has retired (tag = the `Gpu` frame serial that retires
+    /// them). Releasing immediately let a re-upload overwrite geometry an
+    /// in-flight frame was drawing.
+    pending_free: Vec<(u64, [(u64, u64); 2], [(u64, u64); 2])>,
+    meta_warned: bool,
     // -- compute cull --
     cull_set_layout: vk::DescriptorSetLayout,
     cull_layout: vk::PipelineLayout,
     cull_pipeline: vk::Pipeline,
     cull_pool: vk::DescriptorPool,
-    cull_set: vk::DescriptorSet,
-    indirect_buf: vk::Buffer,
-    indirect_alloc: Option<Allocation>,
-    count_buf: vk::Buffer,
-    count_alloc: Option<Allocation>,
+    cull_sets: [vk::DescriptorSet; CULL_RING],
+    indirect_bufs: [vk::Buffer; CULL_RING],
+    indirect_allocs: [Option<Allocation>; CULL_RING],
+    count_bufs: [vk::Buffer; CULL_RING],
+    count_allocs: [Option<Allocation>; CULL_RING],
+    /// The ring slot the current frame's cull wrote and its draw reads.
+    cull_cursor: usize,
     // -- async upload ring --
     // Uploads submit on the graphics queue WITHOUT a CPU fence wait: queue
     // FIFO ordering guarantees every copy executes before any later-
@@ -534,6 +554,11 @@ pub struct WorldRenderer {
     // all slots are still in flight (sustained burst) or to grow staging.
     upload_pool: vk::CommandPool,
     upload_slots: Vec<UploadSlot>,
+    /// The slot whose command buffer is recording this frame's uploads, if
+    /// any. Submitted by [`Self::flush_uploads`] (from `cull`, i.e. before the
+    /// frame that reads it).
+    upload_open: Option<usize>,
+    upload_seq: u64,
     count_readback: vk::Buffer,
     count_readback_alloc: Option<Allocation>,
     // -- entities + HUD (optional passes; drawn after terrain in `draw`) --
@@ -678,6 +703,9 @@ pub struct WorldRenderer {
     tex_size: u32,
     mip_levels: u32,
     animations: Vec<LayerAnimation>,
+    /// Every animation frame's full mip chain, concatenated level by level —
+    /// built once in `set_animations` so a frame change is a memcpy.
+    anim_mips: Vec<Vec<Vec<u8>>>,
     anim_last: Vec<Option<usize>>,
 
     pub drawn_last_frame: usize,
@@ -951,30 +979,20 @@ impl WorldRenderer {
                 )
                 .map_err(|e| format!("leash layout: {e}"))?;
             let leash_pipeline = build_leash_pipeline(&device, leash_layout, color_format)?;
-            let mut leash_bufs = [vk::Buffer::null(); LEASH_RING];
-            let mut leash_allocs: [Option<Allocation>; LEASH_RING] = [None, None];
-            for i in 0..LEASH_RING {
-                let (b, a) = create_host_buffer(
-                    gpu,
-                    (LEASH_MAX_VERTS * std::mem::size_of::<crate::leash::LeashVertex>()) as u64,
-                    vk::BufferUsageFlags::VERTEX_BUFFER,
-                    "leash-ribbon",
-                )?;
-                leash_bufs[i] = b;
-                leash_allocs[i] = Some(a);
-            }
-            let mut select_bufs = [vk::Buffer::null(); SELECT_RING];
-            let mut select_allocs: [Option<Allocation>; SELECT_RING] = [None, None];
-            for i in 0..SELECT_RING {
-                let (b, a) = create_host_buffer(
-                    gpu,
-                    24 * 12, // 24 line verts × vec3
-                    vk::BufferUsageFlags::VERTEX_BUFFER,
-                    "selection-lines",
-                )?;
-                select_bufs[i] = b;
-                select_allocs[i] = Some(a);
-            }
+            // Both written from `draw`, so they cannot grow; sized for their
+            // budgets up front.
+            let leash_ring = crate::buf_ring::BufRing::with_capacity(
+                gpu,
+                "leash-ribbon",
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                (LEASH_MAX_VERTS * std::mem::size_of::<crate::leash::LeashVertex>()) as u64,
+            )?;
+            let select_ring = crate::buf_ring::BufRing::with_capacity(
+                gpu,
+                "selection-lines",
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                24 * 12, // 24 line verts × vec3
+            )?;
 
             // ---- compute cull descriptor + pipeline ----
             let cull_bindings = [storage_binding(0), storage_binding(1), storage_binding(2)];
@@ -1030,50 +1048,69 @@ impl WorldRenderer {
                 vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
                 "mega-indices",
             )?;
-            let (meta_buf, meta_alloc) = create_host_buffer(
-                gpu,
-                (MAX_COLUMNS * std::mem::size_of::<ColumnMeta>()) as u64,
-                vk::BufferUsageFlags::STORAGE_BUFFER,
-                "column-meta",
-            )?;
-            let (indirect_buf, indirect_alloc) = create_device_buffer(
-                gpu,
-                (MAX_COLUMNS * std::mem::size_of::<vk::DrawIndexedIndirectCommand>()) as u64,
-                vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
-                "indirect-cmds",
-            )?;
-            let (count_buf, count_alloc) = create_device_buffer(
-                gpu,
-                16,
-                vk::BufferUsageFlags::INDIRECT_BUFFER
-                    | vk::BufferUsageFlags::STORAGE_BUFFER
-                    | vk::BufferUsageFlags::TRANSFER_DST
-                    | vk::BufferUsageFlags::TRANSFER_SRC, // readback for stats
-                "indirect-count",
-            )?;
+            let mut meta_bufs = [vk::Buffer::null(); CULL_RING];
+            let mut meta_allocs: [Option<Allocation>; CULL_RING] = Default::default();
+            let mut indirect_bufs = [vk::Buffer::null(); CULL_RING];
+            let mut indirect_allocs: [Option<Allocation>; CULL_RING] = Default::default();
+            let mut count_bufs = [vk::Buffer::null(); CULL_RING];
+            let mut count_allocs: [Option<Allocation>; CULL_RING] = Default::default();
+            for i in 0..CULL_RING {
+                let (b, a) = create_host_buffer(
+                    gpu,
+                    (MAX_COLUMNS * std::mem::size_of::<ColumnMeta>()) as u64,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                    "column-meta",
+                )?;
+                gpu.name(b, &format!("column-meta[{i}]"));
+                (meta_bufs[i], meta_allocs[i]) = (b, Some(a));
+                let (b, a) = create_device_buffer(
+                    gpu,
+                    (MAX_COLUMNS * std::mem::size_of::<vk::DrawIndexedIndirectCommand>()) as u64,
+                    vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
+                    "indirect-cmds",
+                )?;
+                gpu.name(b, &format!("indirect-cmds[{i}]"));
+                (indirect_bufs[i], indirect_allocs[i]) = (b, Some(a));
+                let (b, a) = create_device_buffer(
+                    gpu,
+                    16,
+                    vk::BufferUsageFlags::INDIRECT_BUFFER
+                        | vk::BufferUsageFlags::STORAGE_BUFFER
+                        | vk::BufferUsageFlags::TRANSFER_DST
+                        | vk::BufferUsageFlags::TRANSFER_SRC, // readback for stats
+                    "indirect-count",
+                )?;
+                gpu.name(b, &format!("indirect-count[{i}]"));
+                (count_bufs[i], count_allocs[i]) = (b, Some(a));
+            }
 
             // Cull descriptor set (meta, indirect cmds, count).
             let cull_pool_sizes = [vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(3)];
+                .descriptor_count(3 * CULL_RING as u32)];
             let cull_pool = device
                 .create_descriptor_pool(
                     &vk::DescriptorPoolCreateInfo::default()
-                        .max_sets(1)
+                        .max_sets(CULL_RING as u32)
                         .pool_sizes(&cull_pool_sizes),
                     None,
                 )
                 .map_err(|e| format!("cull pool: {e}"))?;
-            let cull_set = device
+            let cull_ring_layouts = [cull_layouts[0]; CULL_RING];
+            let cull_set_vec = device
                 .allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()
                         .descriptor_pool(cull_pool)
-                        .set_layouts(&cull_layouts),
+                        .set_layouts(&cull_ring_layouts),
                 )
-                .map_err(|e| format!("cull set: {e}"))?[0];
-            write_storage(&device, cull_set, 0, meta_buf);
-            write_storage(&device, cull_set, 1, indirect_buf);
-            write_storage(&device, cull_set, 2, count_buf);
+                .map_err(|e| format!("cull set: {e}"))?;
+            let mut cull_sets = [vk::DescriptorSet::null(); CULL_RING];
+            for i in 0..CULL_RING {
+                cull_sets[i] = cull_set_vec[i];
+                write_storage(&device, cull_sets[i], 0, meta_bufs[i]);
+                write_storage(&device, cull_sets[i], 1, indirect_bufs[i]);
+                write_storage(&device, cull_sets[i], 2, count_bufs[i]);
+            }
 
             // ---- async upload ring ----
             // RESET_COMMAND_BUFFER so each slot's cb re-begins on its own
@@ -1113,6 +1150,8 @@ impl WorldRenderer {
                     staging_alloc: Some(staging_alloc),
                     staging_cap,
                     busy: false,
+                    seq: 0,
+                    used: 0,
                 });
             }
             let (count_readback, count_readback_alloc) = create_host_buffer(
@@ -1133,14 +1172,11 @@ impl WorldRenderer {
                 sky_pipeline,
                 select_layout,
                 select_pipeline,
-                select_bufs,
-                select_allocs,
-                select_cursor: 0,
+                select_ring,
                 leash_layout,
                 leash_pipeline,
-                leash_bufs,
-                leash_allocs,
-                leash_cursor: 0,
+                leash_ring,
+                leash_warned: false,
                 leash_verts: Vec::new(),
                 selection: None,
                 tex_pool,
@@ -1160,20 +1196,28 @@ impl WorldRenderer {
                 ifree: FreeList::new(MAX_INDICES),
                 columns: HashMap::new(),
                 meta_dirty: false,
-                meta_buf,
-                meta_alloc: Some(meta_alloc),
+                metas: Vec::new(),
+                meta_version: 0,
+                meta_versions: [0; CULL_RING],
+                meta_bufs,
+                meta_allocs,
                 column_count: 0,
+                pending_free: Vec::new(),
+                meta_warned: false,
                 cull_set_layout,
                 cull_layout,
                 cull_pipeline,
                 cull_pool,
-                cull_set,
-                indirect_buf,
-                indirect_alloc: Some(indirect_alloc),
-                count_buf,
-                count_alloc: Some(count_alloc),
+                cull_sets,
+                indirect_bufs,
+                indirect_allocs,
+                count_bufs,
+                count_allocs,
+                cull_cursor: 0,
                 upload_pool,
                 upload_slots,
+                upload_open: None,
+                upload_seq: 0,
                 count_readback,
                 count_readback_alloc: Some(count_readback_alloc),
                 color_format,
@@ -1225,6 +1269,7 @@ impl WorldRenderer {
                 tex_size,
                 mip_levels,
                 animations: Vec::new(),
+                anim_mips: Vec::new(),
                 anim_last: Vec::new(),
                 drawn_last_frame: 0,
                 culled_last_frame: 0,
@@ -1236,6 +1281,15 @@ impl WorldRenderer {
     /// re-uploaded into the texture array as `anim_tick` advances.
     pub fn set_animations(&mut self, animations: Vec<LayerAnimation>) {
         self.anim_last = vec![None; animations.len()];
+        self.anim_mips = animations
+            .iter()
+            .map(|a| {
+                a.frames
+                    .iter()
+                    .map(|f| generate_mips(self.tex_size, self.mip_levels, f).concat())
+                    .collect()
+            })
+            .collect();
         self.animations = animations;
     }
 
@@ -1255,8 +1309,7 @@ impl WorldRenderer {
             }
             self.anim_last[i] = Some(frame);
             let layer = a.layer;
-            let rgba = self.animations[i].frames[frame].clone();
-            self.upload_layer_frame(gpu, layer, &rgba)?;
+            self.upload_layer_frame(gpu, layer, i, frame)?;
         }
         Ok(())
     }
@@ -1265,18 +1318,25 @@ impl WorldRenderer {
     /// async slot upload (no CPU wait — same-queue ordering keeps the
     /// frame's sampling safe, and the in-cb barriers order the layer's
     /// shader reads around the copy).
-    fn upload_layer_frame(&mut self, gpu: &mut Gpu, layer: u16, rgba: &[u8]) -> Result<(), String> {
-        let mips = generate_mips(self.tex_size, self.mip_levels, rgba);
-        let total: usize = mips.iter().map(|m| m.len()).sum();
-        let slot = self.acquire_slot(gpu, total as u64)?;
+    fn upload_layer_frame(
+        &mut self,
+        gpu: &mut Gpu,
+        layer: u16,
+        anim: usize,
+        frame: usize,
+    ) -> Result<(), String> {
+        let total = self.anim_mips[anim][frame].len() as u64;
+        let (slot, base, cb) = self.stage(gpu, total)?;
         unsafe {
             let alloc = self.upload_slots[slot].staging_alloc.as_mut().unwrap();
             let slice = alloc.mapped_slice_mut().ok_or("staging not mapped")?;
-            let mut off = 0usize;
-            let mut copies = Vec::with_capacity(mips.len());
+            let chain = &self.anim_mips[anim][frame];
+            slice[base as usize..base as usize + chain.len()].copy_from_slice(chain);
+            let mut off = base as usize;
+            let mut copies = Vec::with_capacity(self.mip_levels as usize);
             let mut size = self.tex_size;
-            for (level, mip) in mips.iter().enumerate() {
-                slice[off..off + mip.len()].copy_from_slice(mip);
+            for level in 0..self.mip_levels as usize {
+                let len = (size * size * 4) as usize;
                 copies.push(
                     vk::BufferImageCopy::default()
                         .buffer_offset(off as u64)
@@ -1293,11 +1353,10 @@ impl WorldRenderer {
                             depth: 1,
                         }),
                 );
-                off += mip.len();
+                off += len;
                 size = (size / 2).max(1);
             }
 
-            let cb = self.begin_slot(gpu, slot)?;
             let staging = self.upload_slots[slot].staging;
             let device = &gpu.device;
             let range = vk::ImageSubresourceRange::default()
@@ -1341,7 +1400,7 @@ impl WorldRenderer {
                     .image_memory_barriers(std::slice::from_ref(&to_read)),
             );
         }
-        self.submit_slot(gpu, slot)
+        Ok(())
     }
 
     /// Set the frame's eye position — drives translucent back-to-front
@@ -1387,6 +1446,94 @@ impl WorldRenderer {
         self.fog_base = fog_linear;
     }
 
+    // Re-initialising a pass (rare: asset reload, reconnect) destroys the old
+    // one instead of leaking its handles. Init-time only, so the idle inside
+    // each `destroy` is acceptable here.
+    fn retire_celestial(&mut self, gpu: &mut Gpu) {
+        if let Some(mut old) = self.celestial.take() {
+            gpu.wait_idle();
+            old.destroy(gpu);
+        }
+    }
+    fn retire_end_portal(&mut self, gpu: &mut Gpu) {
+        if let Some(mut old) = self.end_portal.take() {
+            gpu.wait_idle();
+            old.destroy(gpu);
+        }
+    }
+    fn retire_clouds(&mut self, gpu: &mut Gpu) {
+        if let Some(mut old) = self.clouds.take() {
+            gpu.wait_idle();
+            old.destroy(gpu);
+        }
+    }
+    fn retire_border(&mut self, gpu: &mut Gpu) {
+        if let Some(mut old) = self.border.take() {
+            gpu.wait_idle();
+            old.destroy(gpu);
+        }
+    }
+    fn retire_container(&mut self, gpu: &mut Gpu) {
+        if let Some(mut old) = self.container.take() {
+            gpu.wait_idle();
+            old.destroy(gpu);
+        }
+    }
+    fn retire_weather(&mut self, gpu: &mut Gpu) {
+        if let Some(mut old) = self.weather.take() {
+            gpu.wait_idle();
+            old.destroy(gpu);
+        }
+    }
+    fn retire_particles(&mut self, gpu: &mut Gpu) {
+        if let Some(mut old) = self.particles.take() {
+            gpu.wait_idle();
+            old.destroy(gpu);
+        }
+    }
+    fn retire_crumbling(&mut self, gpu: &mut Gpu) {
+        if let Some(mut old) = self.crumbling.take() {
+            gpu.wait_idle();
+            old.destroy(gpu);
+        }
+    }
+    fn retire_end_sky(&mut self, gpu: &mut Gpu) {
+        if let Some(mut old) = self.end_sky.take() {
+            gpu.wait_idle();
+            old.destroy(gpu);
+        }
+    }
+    fn retire_entities(&mut self, gpu: &mut Gpu) {
+        if let Some(mut old) = self.entities.take() {
+            gpu.wait_idle();
+            old.destroy(gpu);
+        }
+    }
+    fn retire_hud(&mut self, gpu: &mut Gpu) {
+        if let Some(mut old) = self.hud.take() {
+            gpu.wait_idle();
+            old.destroy(gpu);
+        }
+    }
+    fn retire_locator(&mut self, gpu: &mut Gpu) {
+        if let Some(mut old) = self.locator.take() {
+            gpu.wait_idle();
+            old.destroy(gpu);
+        }
+    }
+    fn retire_text(&mut self, gpu: &mut Gpu) {
+        if let Some(mut old) = self.text.take() {
+            gpu.wait_idle();
+            old.destroy(gpu);
+        }
+    }
+    fn retire_velvet_text(&mut self, gpu: &mut Gpu) {
+        if let Some(mut old) = self.velvet_text.take() {
+            gpu.wait_idle();
+            old.destroy(gpu);
+        }
+    }
+
     /// Attach the celestial pass (sun/moon/stars/sunrise, M12). Callers that
     /// never attach it render the bare gradient sky. Textures come from the
     /// user's own client jar (`assets::CelestialTextures`).
@@ -1395,6 +1542,7 @@ impl WorldRenderer {
         gpu: &mut Gpu,
         tex: &crate::celestial::CelestialTextures,
     ) -> Result<(), String> {
+        self.retire_celestial(gpu);
         self.celestial = Some(crate::celestial::CelestialPass::new(
             gpu,
             self.color_format,
@@ -1432,6 +1580,7 @@ impl WorldRenderer {
         sky: &crate::end_portal::PortalImage,
         portal: &crate::end_portal::PortalImage,
     ) -> Result<(), String> {
+        self.retire_end_portal(gpu);
         self.end_portal = Some(crate::end_portal::EndPortalPass::new(
             gpu,
             self.color_format,
@@ -1448,6 +1597,7 @@ impl WorldRenderer {
     /// Build the cloud pass (M33). No texture: `clouds.png` is decoded on the
     /// CPU into cell data, and the shader carries its six face colours inline.
     pub fn init_clouds(&mut self, gpu: &mut Gpu) -> Result<(), String> {
+        self.retire_clouds(gpu);
         self.clouds = Some(crate::clouds::CloudPass::new(gpu, self.color_format)?);
         Ok(())
     }
@@ -1474,6 +1624,7 @@ impl WorldRenderer {
         gpu: &mut Gpu,
         tex: &crate::border::BorderImage,
     ) -> Result<(), String> {
+        self.retire_border(gpu);
         self.border = Some(crate::border::BorderPass::new(gpu, self.color_format, tex)?);
         Ok(())
     }
@@ -1505,11 +1656,16 @@ impl WorldRenderer {
         atlas_h: u32,
     ) -> Result<(), String> {
         // Rebuildable: the atlas is repacked whenever the hotbar needs a
-        // texture it does not hold. The old pass owns raw Vulkan handles, which
-        // are plain integers rather than RAII types, so dropping it would leak
-        // an image, a sampler and a pipeline per hotbar change.
+        // texture it does not hold. Same size (the usual case) updates the
+        // texels in place; otherwise the old pass — raw handles, not RAII — is
+        // retired through deferred destruction, never idled on a gameplay path.
+        if let Some(p) = self.gui_items.as_mut() {
+            if p.update_atlas(gpu, atlas_rgba, atlas_w, atlas_h)? {
+                return Ok(());
+            }
+        }
         if let Some(mut old) = self.gui_items.take() {
-            old.destroy(gpu);
+            gpu.defer_destroy(move |g| old.destroy_now(g));
         }
         self.gui_items = Some(crate::gui_item::GuiItemPass::new(
             gpu,
@@ -1545,6 +1701,7 @@ impl WorldRenderer {
         gpu: &mut Gpu,
         sprites: &crate::container::ContainerSpriteData<'_>,
     ) -> Result<(), String> {
+        self.retire_container(gpu);
         self.container = Some(crate::container::ContainerPass::new(
             gpu,
             self.color_format,
@@ -1610,10 +1767,15 @@ impl WorldRenderer {
         atlas_h: u32,
     ) -> Result<(), String> {
         // Rebuildable, like the GUI-item atlas: the resident texture set
-        // changes when the held item does. The old pass owns raw Vulkan
-        // handles, so it has to be destroyed rather than dropped.
+        // changes when the held item does. Same-size atlases update in place;
+        // otherwise the old pass is retired through deferred destruction.
+        if let Some(p) = self.hand.as_mut() {
+            if p.update_atlas(gpu, atlas_rgba, atlas_w, atlas_h)? {
+                return Ok(());
+            }
+        }
         if let Some(mut old) = self.hand.take() {
-            old.destroy(gpu);
+            gpu.defer_destroy(move |g| old.destroy_now(g));
         }
         self.hand = Some(crate::hand_pass::HandPass::new(
             gpu,
@@ -1885,6 +2047,7 @@ impl WorldRenderer {
         rain: &crate::weather::WeatherImage,
         snow: &crate::weather::WeatherImage,
     ) -> Result<(), String> {
+        self.retire_weather(gpu);
         self.weather = Some(crate::weather::WeatherPass::new(
             gpu,
             self.color_format,
@@ -1916,6 +2079,7 @@ impl WorldRenderer {
         gpu: &mut Gpu,
         atlas: &crate::particles::ParticleAtlas,
     ) -> Result<(), String> {
+        self.retire_particles(gpu);
         self.particles = Some(crate::particles::ParticlePass::new(
             gpu,
             self.color_format,
@@ -1962,6 +2126,7 @@ impl WorldRenderer {
             );
             return Ok(());
         };
+        self.retire_crumbling(gpu);
         self.crumbling = Some(crate::crumbling::CrumblingPass::new(
             gpu, format, stages, size,
         )?);
@@ -2004,6 +2169,7 @@ impl WorldRenderer {
         gpu: &mut Gpu,
         tex: &crate::end_sky::EndSkyImage,
     ) -> Result<(), String> {
+        self.retire_end_sky(gpu);
         self.end_sky = Some(crate::end_sky::EndSkyPass::new(
             gpu,
             self.color_format,
@@ -2188,6 +2354,7 @@ impl WorldRenderer {
         font: Option<FontData<'_>>,
         tex: MobTextures<'_>,
     ) -> Result<(), String> {
+        self.retire_entities(gpu);
         self.entities = Some(EntityPass::new(gpu, self.color_format, font, tex)?);
         Ok(())
     }
@@ -2236,6 +2403,7 @@ impl WorldRenderer {
         tex: MobTextures<'_>,
         cem: std::collections::HashMap<crate::mobs::EntityModelKind, crate::mobs::Model>,
     ) -> Result<(), String> {
+        self.retire_entities(gpu);
         self.entities = Some(EntityPass::new_with_cem(
             gpu,
             self.color_format,
@@ -2343,6 +2511,7 @@ impl WorldRenderer {
 
     /// Attach the in-game HUD pass (crosshair/hotbar/hearts/hunger).
     pub fn init_hud(&mut self, gpu: &mut Gpu, sprites: &HudSpritesData<'_>) -> Result<(), String> {
+        self.retire_hud(gpu);
         self.hud = Some(HudPass::new(gpu, self.color_format, sprites)?);
         Ok(())
     }
@@ -2385,6 +2554,7 @@ impl WorldRenderer {
         gpu: &mut Gpu,
         sprites: &crate::locator_bar::LocatorSpritesData<'_>,
     ) -> Result<(), String> {
+        self.retire_locator(gpu);
         self.locator = Some(crate::locator_bar::LocatorBarPass::new(
             gpu,
             self.color_format,
@@ -2404,6 +2574,7 @@ impl WorldRenderer {
 
     /// Attach the screen-space text pass (chat + coords overlay).
     pub fn init_text(&mut self, gpu: &mut Gpu, font: &FontData<'_>) -> Result<(), String> {
+        self.retire_text(gpu);
         self.text = Some(TextPass::new(gpu, self.color_format, font)?);
         Ok(())
     }
@@ -2423,6 +2594,7 @@ impl WorldRenderer {
         let Some(format) = unorm_of(self.color_format) else {
             return Err("velvet text: target has no UNORM twin".into());
         };
+        self.retire_velvet_text(gpu);
         self.velvet_text = Some(crate::velvet_text::VelvetTextPass::new(gpu, format, cache)?);
         Ok(())
     }
@@ -2505,15 +2677,20 @@ impl WorldRenderer {
             let idx = match self.upload_slots.iter().position(|s| !s.busy) {
                 Some(i) => i,
                 None => {
-                    let fence = self.upload_slots[0].fence;
+                    // Every slot in flight: wait on the one submitted first,
+                    // which is the one most likely already done.
+                    let oldest = (0..self.upload_slots.len())
+                        .min_by_key(|&i| self.upload_slots[i].seq)
+                        .unwrap_or(0);
+                    let fence = self.upload_slots[oldest].fence;
                     gpu.device
                         .wait_for_fences(&[fence], true, u64::MAX)
                         .map_err(|e| format!("slot wait: {e}"))?;
                     gpu.device
                         .reset_fences(&[fence])
                         .map_err(|e| format!("slot reset: {e}"))?;
-                    self.upload_slots[0].busy = false;
-                    0
+                    self.upload_slots[oldest].busy = false;
+                    oldest
                 }
             };
             if self.upload_slots[idx].staging_cap < need {
@@ -2573,7 +2750,92 @@ impl WorldRenderer {
                 .map_err(|e| format!("slot submit: {e}"))?;
         }
         s.busy = true;
+        self.upload_seq += 1;
+        s.seq = self.upload_seq;
         Ok(())
+    }
+
+    /// Reserve `need` bytes of staging in this frame's open upload batch,
+    /// opening one if there is none or it is full. Returns the slot, the byte
+    /// offset to write at, and the recording command buffer.
+    fn stage(&mut self, gpu: &mut Gpu, need: u64) -> Result<(usize, u64, vk::CommandBuffer), String> {
+        // `bufferOffset` of a buffer→image copy must be a multiple of 4; 16
+        // keeps every staged span aligned for either copy kind.
+        let need_aligned = need.div_ceil(16) * 16;
+        if let Some(slot) = self.upload_open {
+            let s = &mut self.upload_slots[slot];
+            if s.used + need_aligned <= s.staging_cap {
+                let off = s.used;
+                s.used += need_aligned;
+                return Ok((slot, off, s.cb));
+            }
+            self.flush_uploads(gpu)?;
+        }
+        let slot = self.acquire_slot(gpu, need_aligned.max(UPLOAD_BATCH_MIN))?;
+        let cb = self.begin_slot(gpu, slot)?;
+        unsafe {
+            // Order this batch's writes after every earlier frame's reads of
+            // the arena and the texture array (queue order alone is not a
+            // memory dependency).
+            let war = vk::MemoryBarrier2::default()
+                .src_stage_mask(
+                    vk::PipelineStageFlags2::VERTEX_INPUT
+                        | vk::PipelineStageFlags2::INDEX_INPUT
+                        | vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                )
+                .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER);
+            gpu.device.cmd_pipeline_barrier2(
+                cb,
+                &vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&war)),
+            );
+        }
+        self.upload_slots[slot].used = need_aligned;
+        self.upload_open = Some(slot);
+        Ok((slot, 0, cb))
+    }
+
+    /// Submit this frame's open upload batch, if any. Called from `cull`, so
+    /// the batch is on the queue ahead of the frame that draws from it.
+    fn flush_uploads(&mut self, gpu: &Gpu) -> Result<(), String> {
+        let Some(slot) = self.upload_open.take() else {
+            return Ok(());
+        };
+        let cb = self.upload_slots[slot].cb;
+        unsafe {
+            // Make the copies visible to later frames' vertex/index reads.
+            let vis = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .dst_stage_mask(
+                    vk::PipelineStageFlags2::VERTEX_INPUT | vk::PipelineStageFlags2::INDEX_INPUT,
+                )
+                .dst_access_mask(
+                    vk::AccessFlags2::VERTEX_ATTRIBUTE_READ | vk::AccessFlags2::INDEX_READ,
+                );
+            gpu.device.cmd_pipeline_barrier2(
+                cb,
+                &vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&vis)),
+            );
+        }
+        self.submit_slot(gpu, slot)
+    }
+
+    /// Release arena ranges whose last possible reader has retired.
+    fn reclaim_ranges(&mut self, gpu: &Gpu) {
+        let done = gpu.frames_retired();
+        let (vfree, ifree) = (&mut self.vfree, &mut self.ifree);
+        self.pending_free.retain(|(tag, vr, ir)| {
+            if *tag > done {
+                return true;
+            }
+            for &(o, n) in vr {
+                vfree.free_region(o, n);
+            }
+            for &(o, n) in ir {
+                ifree.free_region(o, n);
+            }
+            false
+        });
     }
 
     /// Suballocate + upload a column's geometry into the mega-buffers via
@@ -2594,6 +2856,8 @@ impl WorldRenderer {
         y_max: f32,
     ) -> Result<(), String> {
         self.remove_column(gpu, cx, cz);
+        self.reclaim_ranges(gpu);
+        gpu.collect_garbage();
         let vtx_count = (vertex_bytes.len() as u64) / VERTEX_STRIDE;
         let idx_count = indices.len() as u64;
         let tvtx_count = (tvertex_bytes.len() as u64) / VERTEX_STRIDE;
@@ -2637,18 +2901,17 @@ impl WorldRenderer {
             (tindex_bytes, self.ibuf, tidx_off * 4),
         ];
         let total: usize = spans.iter().map(|(b, _, _)| b.len()).sum();
-        let slot = self.acquire_slot(gpu, total as u64)?;
+        let (slot, base, cb) = self.stage(gpu, total as u64)?;
         unsafe {
             let alloc = self.upload_slots[slot].staging_alloc.as_mut().unwrap();
             let slice = alloc.mapped_slice_mut().ok_or("staging not mapped")?;
-            let mut off = 0usize;
+            let mut off = base as usize;
             for (bytes, _, _) in &spans {
                 slice[off..off + bytes.len()].copy_from_slice(bytes);
                 off += bytes.len();
             }
-            let cb = self.begin_slot(gpu, slot)?;
             let staging = self.upload_slots[slot].staging;
-            let mut src = 0u64;
+            let mut src = base;
             for (bytes, dst_buf, dst_off) in &spans {
                 if !bytes.is_empty() {
                     gpu.device.cmd_copy_buffer(
@@ -2663,23 +2926,7 @@ impl WorldRenderer {
                 }
                 src += bytes.len() as u64;
             }
-            // Make the copies visible to later frames' vertex/index reads
-            // without relying on fence-signal domain semantics alone.
-            let vis = vk::MemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                .dst_stage_mask(
-                    vk::PipelineStageFlags2::VERTEX_INPUT | vk::PipelineStageFlags2::INDEX_INPUT,
-                )
-                .dst_access_mask(
-                    vk::AccessFlags2::VERTEX_ATTRIBUTE_READ | vk::AccessFlags2::INDEX_READ,
-                );
-            gpu.device.cmd_pipeline_barrier2(
-                cb,
-                &vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&vis)),
-            );
         }
-        self.submit_slot(gpu, slot)?;
 
         let meta = ColumnMeta {
             aabb_min: [cx as f32 * 16.0, y_min, cz as f32 * 16.0, 0.0],
@@ -2707,41 +2954,66 @@ impl WorldRenderer {
         Ok(())
     }
 
-    pub fn remove_column(&mut self, _gpu: &mut Gpu, cx: i32, cz: i32) {
+    pub fn remove_column(&mut self, gpu: &mut Gpu, cx: i32, cz: i32) {
         if let Some(slot) = self.columns.remove(&(cx, cz)) {
-            self.vfree.free_region(slot.vtx_off, slot.vtx_len);
-            self.ifree.free_region(slot.idx_off, slot.idx_len);
-            self.vfree.free_region(slot.tvtx_off, slot.tvtx_len);
-            self.ifree.free_region(slot.tidx_off, slot.tidx_len);
+            // Frames already submitted (and the one being built) may still
+            // draw these ranges; park them until those frames retire.
+            let tag = gpu.frame_serial() + 1;
+            self.pending_free.push((
+                tag,
+                [(slot.vtx_off, slot.vtx_len), (slot.tvtx_off, slot.tvtx_len)],
+                [(slot.idx_off, slot.idx_len), (slot.tidx_off, slot.tidx_len)],
+            ));
             self.meta_dirty = true;
         }
     }
 
     /// Rebuild the compacted metadata array (only when columns changed) and
     /// map-write it into the host-visible SSBO.
-    fn sync_meta(&mut self) {
-        if !self.meta_dirty {
-            return;
+    fn sync_meta(&mut self, slot: usize) {
+        if self.meta_dirty {
+            self.metas = self.columns.values().map(|s| s.meta).collect();
+            if self.metas.len() > MAX_COLUMNS && !self.meta_warned {
+                self.meta_warned = true;
+                log::warn!(
+                    "world: {} columns exceed MAX_COLUMNS {MAX_COLUMNS} — the rest are not drawn",
+                    self.metas.len()
+                );
+            }
+            self.metas.truncate(MAX_COLUMNS);
+            self.column_count = self.metas.len() as u32;
+            self.meta_version += 1;
+            self.meta_dirty = false;
         }
-        let metas: Vec<ColumnMeta> = self.columns.values().map(|s| s.meta).collect();
-        self.column_count = metas.len().min(MAX_COLUMNS) as u32;
-        if let Some(alloc) = self.meta_alloc.as_mut() {
-            if let Some(slice) = alloc.mapped_slice_mut() {
-                let bytes: &[u8] = bytemuck::cast_slice(&metas[..self.column_count as usize]);
+        // Each slot's copy is written only when this frame uses it, i.e.
+        // after the fence that retired its previous reader.
+        if self.meta_versions[slot] != self.meta_version {
+            if let Some(slice) = self.meta_allocs[slot]
+                .as_mut()
+                .and_then(|a| a.mapped_slice_mut())
+            {
+                let bytes: &[u8] = bytemuck::cast_slice(&self.metas);
                 slice[..bytes.len()].copy_from_slice(bytes);
             }
+            self.meta_versions[slot] = self.meta_version;
         }
-        self.meta_dirty = false;
     }
 
     /// Pre-pass (OUTSIDE dynamic rendering): reset the draw count, dispatch
     /// the compute cull, and barrier its writes for the indirect draw.
     pub fn cull(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4]) {
-        self.sync_meta();
+        if let Err(e) = self.flush_uploads(gpu) {
+            log::error!("world: upload flush failed: {e}");
+        }
+        self.cull_cursor = (self.cull_cursor + 1) % CULL_RING;
+        let slot = self.cull_cursor;
+        self.sync_meta(slot);
+        let count_buf = self.count_bufs[slot];
+        let indirect_buf = self.indirect_bufs[slot];
         let device = &gpu.device;
         unsafe {
             // Reset the atomic count to 0.
-            device.cmd_fill_buffer(cb, self.count_buf, 0, 4, 0);
+            device.cmd_fill_buffer(cb, count_buf, 0, 4, 0);
             let reset_barrier = vk::BufferMemoryBarrier2::default()
                 .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
                 .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
@@ -2749,7 +3021,7 @@ impl WorldRenderer {
                 .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
                 .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                 .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .buffer(self.count_buf)
+                .buffer(count_buf)
                 .offset(0)
                 .size(vk::WHOLE_SIZE);
             device.cmd_pipeline_barrier2(
@@ -2765,7 +3037,7 @@ impl WorldRenderer {
                     vk::PipelineBindPoint::COMPUTE,
                     self.cull_layout,
                     0,
-                    &[self.cull_set],
+                    &[self.cull_sets[slot]],
                     &[],
                 );
                 let push = CullPush {
@@ -2786,14 +3058,14 @@ impl WorldRenderer {
                 // Compute writes → indirect draw reads (cmds + count).
                 let barriers = [
                     buf_barrier(
-                        self.indirect_buf,
+                        indirect_buf,
                         vk::PipelineStageFlags2::COMPUTE_SHADER,
                         vk::AccessFlags2::SHADER_STORAGE_WRITE,
                         vk::PipelineStageFlags2::DRAW_INDIRECT,
                         vk::AccessFlags2::INDIRECT_COMMAND_READ,
                     ),
                     buf_barrier(
-                        self.count_buf,
+                        count_buf,
                         vk::PipelineStageFlags2::COMPUTE_SHADER,
                         vk::AccessFlags2::SHADER_STORAGE_WRITE,
                         vk::PipelineStageFlags2::DRAW_INDIRECT,
@@ -3125,7 +3397,15 @@ impl WorldRenderer {
     /// across every visible leash. Truncated to the vertex budget.
     pub fn set_leash(&mut self, verts: &[crate::leash::LeashVertex]) {
         self.leash_verts.clear();
-        let n = verts.len().min(LEASH_MAX_VERTS);
+        // Whole triangles only, so a truncated ribbon never draws a torn one.
+        let n = verts.len().min(LEASH_MAX_VERTS) / 3 * 3;
+        if n < verts.len() && !self.leash_warned {
+            self.leash_warned = true;
+            log::warn!(
+                "world: {} leash vertices exceed the {LEASH_MAX_VERTS}-vertex budget — truncating",
+                verts.len()
+            );
+        }
         self.leash_verts.extend_from_slice(&verts[..n]);
     }
 
@@ -3149,14 +3429,14 @@ impl WorldRenderer {
         if count < 3 {
             return;
         }
-        self.leash_cursor = (self.leash_cursor + 1) % LEASH_RING;
-        if let Some(slice) = self.leash_allocs[self.leash_cursor]
-            .as_mut()
-            .and_then(|a| a.mapped_slice_mut())
-        {
-            let bytes: &[u8] = bytemuck::cast_slice(&self.leash_verts);
-            slice[..bytes.len()].copy_from_slice(bytes);
-        }
+        let stride = std::mem::size_of::<crate::leash::LeashVertex>();
+        let bytes = self
+            .leash_ring
+            .write_fixed(bytemuck::cast_slice(&self.leash_verts), stride * 3);
+        let count = (bytes / stride) as u32;
+        let Some(vbuf) = self.leash_ring.bind() else {
+            return;
+        };
         let push = LeashPush { view_proj };
         let device = &gpu.device;
         unsafe {
@@ -3178,7 +3458,7 @@ impl WorldRenderer {
                     std::mem::size_of::<LeashPush>(),
                 ),
             );
-            device.cmd_bind_vertex_buffers(cb, 0, &[self.leash_bufs[self.leash_cursor]], &[0]);
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             device.cmd_draw(cb, count, 1, 0, 0);
         }
     }
@@ -3232,14 +3512,11 @@ impl WorldRenderer {
             verts[i * 2 + 1] = c[bb];
         }
 
-        self.select_cursor = (self.select_cursor + 1) % SELECT_RING;
-        if let Some(slice) = self.select_allocs[self.select_cursor]
-            .as_mut()
-            .and_then(|a| a.mapped_slice_mut())
-        {
-            let bytes: &[u8] = bytemuck::cast_slice(&verts);
-            slice[..bytes.len()].copy_from_slice(bytes);
-        }
+        self.select_ring
+            .write_fixed(bytemuck::cast_slice(&verts), std::mem::size_of_val(&verts));
+        let Some(vbuf) = self.select_ring.bind() else {
+            return;
+        };
         let push = LinePush {
             view_proj,
             color: [0.0, 0.0, 0.0, 0.7], // black outline, like vanilla
@@ -3264,7 +3541,7 @@ impl WorldRenderer {
                     std::mem::size_of::<LinePush>(),
                 ),
             );
-            device.cmd_bind_vertex_buffers(cb, 0, &[self.select_bufs[self.select_cursor]], &[0]);
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             device.cmd_draw(cb, 24, 1, 0, 0);
         }
     }
@@ -3426,9 +3703,9 @@ impl WorldRenderer {
             device.cmd_bind_index_buffer(cb, self.ibuf, 0, vk::IndexType::UINT32);
             device.cmd_draw_indexed_indirect_count(
                 cb,
-                self.indirect_buf,
+                self.indirect_bufs[self.cull_cursor],
                 0,
-                self.count_buf,
+                self.count_bufs[self.cull_cursor],
                 0,
                 self.column_count,
                 std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
@@ -3439,18 +3716,43 @@ impl WorldRenderer {
     /// Read back the GPU cull's draw count from the last frame (one-shot
     /// copy + a blocking wait — for verification/stats, not per-frame use).
     pub fn read_draw_count(&mut self, gpu: &mut Gpu) -> u32 {
+        if self.flush_uploads(gpu).is_err() {
+            return 0;
+        }
         let Ok(slot) = self.acquire_slot(gpu, 0) else {
             return 0;
         };
         let Ok(cb) = self.begin_slot(gpu, slot) else {
             return 0;
         };
+        let count_buf = self.count_bufs[self.cull_cursor];
         unsafe {
+            // The last frame's cull wrote (and its draw read) the count.
+            let before = buf_barrier(
+                count_buf,
+                vk::PipelineStageFlags2::COMPUTE_SHADER | vk::PipelineStageFlags2::DRAW_INDIRECT,
+                vk::AccessFlags2::SHADER_STORAGE_WRITE,
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::AccessFlags2::TRANSFER_READ,
+            );
+            gpu.device.cmd_pipeline_barrier2(
+                cb,
+                &vk::DependencyInfo::default().buffer_memory_barriers(std::slice::from_ref(&before)),
+            );
+            let after = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::HOST)
+                .dst_access_mask(vk::AccessFlags2::HOST_READ);
             gpu.device.cmd_copy_buffer(
                 cb,
-                self.count_buf,
+                count_buf,
                 self.count_readback,
                 &[vk::BufferCopy::default().size(4)],
+            );
+            gpu.device.cmd_pipeline_barrier2(
+                cb,
+                &vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&after)),
             );
         }
         if self.submit_slot(gpu, slot).is_err() {
@@ -3525,6 +3827,8 @@ impl WorldRenderer {
         if let Some(mut text) = self.text.take() {
             text.destroy(gpu);
         }
+        self.select_ring.destroy(gpu);
+        self.leash_ring.destroy(gpu);
         unsafe {
             let device = &gpu.device;
             for s in &mut self.upload_slots {
@@ -3535,6 +3839,14 @@ impl WorldRenderer {
             device.destroy_pipeline(self.cull_pipeline, None);
             device.destroy_pipeline_layout(self.cull_layout, None);
             device.destroy_descriptor_pool(self.cull_pool, None);
+            for b in self
+                .meta_bufs
+                .iter()
+                .chain(&self.indirect_bufs)
+                .chain(&self.count_bufs)
+            {
+                device.destroy_buffer(*b, None);
+            }
             device.destroy_descriptor_set_layout(self.cull_set_layout, None);
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline(self.water_pipeline, None);
@@ -3542,14 +3854,8 @@ impl WorldRenderer {
             device.destroy_pipeline_layout(self.sky_layout, None);
             device.destroy_pipeline(self.select_pipeline, None);
             device.destroy_pipeline_layout(self.select_layout, None);
-            for b in self.select_bufs {
-                device.destroy_buffer(b, None);
-            }
             device.destroy_pipeline(self.leash_pipeline, None);
             device.destroy_pipeline_layout(self.leash_layout, None);
-            for b in self.leash_bufs {
-                device.destroy_buffer(b, None);
-            }
             for b in self.lm_bufs {
                 device.destroy_buffer(b, None);
             }
@@ -3562,9 +3868,6 @@ impl WorldRenderer {
             for b in [
                 self.vbuf,
                 self.ibuf,
-                self.meta_buf,
-                self.indirect_buf,
-                self.count_buf,
                 self.count_readback,
             ] {
                 device.destroy_buffer(b, None);
@@ -3575,9 +3878,6 @@ impl WorldRenderer {
             .iter_mut()
             .map(|s| s.staging_alloc.take())
             .collect();
-        for a in self.select_allocs.iter_mut() {
-            slot_allocs.push(a.take());
-        }
         for a in self.lm_allocs.iter_mut() {
             slot_allocs.push(a.take());
         }
@@ -3585,13 +3885,13 @@ impl WorldRenderer {
             self.image_alloc.take(),
             self.vbuf_alloc.take(),
             self.ibuf_alloc.take(),
-            self.meta_alloc.take(),
-            self.indirect_alloc.take(),
-            self.count_alloc.take(),
             self.count_readback_alloc.take(),
         ]
         .into_iter()
         .chain(slot_allocs)
+        .chain(self.meta_allocs.iter_mut().map(|a| a.take()))
+        .chain(self.indirect_allocs.iter_mut().map(|a| a.take()))
+        .chain(self.count_allocs.iter_mut().map(|a| a.take()))
         .flatten()
         {
             let _ = gpu.allocator.free(a);
@@ -4426,8 +4726,15 @@ impl DepthTarget {
 
     pub fn barrier_for_use(&self, gpu: &Gpu, cb: vk::CommandBuffer) {
         unsafe {
+            // One depth image serves every frame in flight, so the previous
+            // frame's depth writes must finish before this frame's clear
+            // (a WAW the old TOP_OF_PIPE/no-access source left unordered).
             let barrier = vk::ImageMemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                .src_stage_mask(
+                    vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                        | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+                )
+                .src_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE)
                 .dst_stage_mask(
                     vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
                         | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,

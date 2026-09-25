@@ -131,8 +131,13 @@ fn run_check(
         let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
         wr.set_camera([0.0, 0.0, -dist]);
         wr.set_leash(verts);
-        off.render(gpu, Some((&mut wr, view_proj(dist))), &draw, CLEAR)?;
-        off.read_rgba(gpu)
+        let rendered = off
+            .render(gpu, Some((&mut wr, view_proj(dist))), &draw, CLEAR)
+            .and_then(|()| off.read_rgba(gpu));
+        // A renderer per frame, so it must be torn down per frame — leaking it
+        // left 512 child objects alive at vkDestroyDevice.
+        wr.destroy(gpu);
+        rendered
     };
     let dump = |off: &mut Offscreen, gpu: &mut Gpu, name: &str| {
         if let Some(dir) = &args.out_dir {
@@ -238,6 +243,8 @@ fn run_check(
             "g4 light did not fade — left avg red {la:.1}, right avg red {ra:.1}"
         ));
     }
+
+    off.destroy(gpu);
 
     let total = 5;
     let passed = total - fails.len();
