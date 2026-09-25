@@ -35,6 +35,7 @@ pub mod commands;
 pub mod dispatcher;
 pub mod chunk_batch;
 pub mod client_state;
+pub mod config;
 pub mod config_tasks;
 pub mod component_wire;
 pub mod crypt;
@@ -88,7 +89,6 @@ use std::time::{Duration, Instant};
 use rewo_data::packets::State;
 use rewo_data::{blocks::Blocks, GameData};
 use rewo_proto::frame::FrameCodec;
-use rewo_proto::nbt::Nbt;
 use rewo_proto::reader::PacketReader;
 use rewo_proto::writer::PacketWriter;
 use rewo_world::dimension::{DimensionShape, DimensionTypeDef};
@@ -267,61 +267,8 @@ pub struct Connection<'a> {
     /// What the two blocking configuration tasks asked for and what Rewo
     /// answered (M166). Moved onto the `PlaySession` at `into_play`.
     config_tasks: config_tasks::ConfigTaskLog,
-    /// The `minecraft:dimension_type` registry in raw wire order — index *is*
-    /// the holder registry id. One vector of unified definitions, not the
-    /// M14-era parallel `dim_shapes` / `dim_attrs` pair that a holder id could
-    /// index inconsistently.
-    dim_types: Vec<DimensionTypeDef>,
-    /// Registry id of the `minecraft:overworld` world clock (see
-    /// `parse_registry_data`); `None` on a server that syncs no clocks.
-    overworld_clock_id: Option<i32>,
-    /// The whole `minecraft:world_clock` registry **in raw wire order**, so
-    /// the index *is* the holder id a `set_time` entry carries.
-    ///
-    /// M12 captured only the overworld's id, which is all the day/night cycle
-    /// needs. M149c wants the rest because a dimension's `default_clock` names
-    /// its clock by **identifier**, and the two registries arrive in the same
-    /// `registry_data` batch with no ordering guarantee — so the name-to-id
-    /// step has to be a lookup at use time (M62's lazy two-step) rather than a
-    /// resolution at parse time.
-    world_clock_ids: Vec<String>,
-    /// Raw `minecraft:mob_effect` registry ids for `night_vision` / `darkness`,
-    /// so the M13 lightmap can match the effect packets.
-    ///
-    /// **Resolved from the datagen report, not from `registry_data` (M92c).**
-    /// They were read off the wire until M92c, inside a
-    /// `registry == "minecraft:mob_effect"` branch that cannot fire:
-    /// `registry_data` carries only `RegistryDataLoader.SYNCHRONIZED_REGISTRIES`
-    /// and `Registries.MOB_EFFECT` is not one of them — it is a
-    /// `BuiltInRegistries` entry the server never sends. So these stayed `None`
-    /// for the whole session and night vision and darkness never engaged live,
-    /// which no gate could see because `lightmapshot` is serverless and builds
-    /// the effect state itself. The wire branch below is kept as an override
-    /// for a server that does sync the registry; the report is the default.
-    night_vision_id: Option<i32>,
-    darkness_id: Option<i32>,
-    /// Raw `minecraft:mob_effect` ids of the three effects that change a swing's
-    /// duration (M19). Same source and same history as the two above — these
-    /// were the other three ids M92c found unresolved.
-    swing_effect_ids: SwingEffectIds,
-    /// `minecraft:worldgen/biome` registry in raw wire order (M14 biome tint).
-    biome_defs: Vec<rewo_world::biome::BiomeDef>,
-    /// The `minecraft:enchantment` registry in wire order — the index is the
-    /// protocol id a component patch carries (M42).
-    enchantments: Vec<crate::enchantment_parse::EnchantmentDef>,
-    /// The `minecraft:chat_type` registry in wire order — the index is the id
-    /// a `ChatType.Bound`'s `holder` VarInt names, minus one (M127).
-    chat_types: Vec<crate::chat_type_parse::ChatTypeDef>,
-    trim_materials: Vec<crate::trim_parse::TrimMaterialDef>,
-    trim_patterns: Vec<crate::trim_parse::TrimPatternDef>,
-    /// The three metadata-variant registries (M64), in raw wire order.
-    cat_variants: Vec<crate::variant_parse::MobVariantDef>,
-    wolf_variants: Vec<crate::variant_parse::MobVariantDef>,
-    frog_variants: Vec<crate::variant_parse::MobVariantDef>,
-    /// The server's datapack tags (M69), applied during configuration and
-    /// handed to the play session. Decode and state only — nothing reads them
-    /// yet; `crate::tags` says what wiring them would take.
-    tags: crate::tags::TagOverrides,
+    /// The registries and tags configuration synced — see [`config::ConfigData`].
+    cfg: config::ConfigData,
     /// The session facts that arrive in **configuration** and belong to the
     /// whole connection (M78): the server brand, and the cookie jar
     /// `cookie_request` answers from. Both are fields of vanilla's *common*
@@ -338,6 +285,11 @@ impl<'a> Connection<'a> {
         stream
             .set_read_timeout(Some(Duration::from_secs(30)))
             .map_err(|e| format!("set timeout: {e}"))?;
+        // A stalled peer must fail a write rather than block the send path
+        // (and with it the render thread) forever.
+        stream
+            .set_write_timeout(Some(Duration::from_secs(20)))
+            .map_err(|e| format!("set timeout: {e}"))?;
         stream.set_nodelay(true).ok();
         let ids = Ids::resolve(&data.packets)?;
         Ok(Self {
@@ -350,27 +302,7 @@ impl<'a> Connection<'a> {
             packet: Vec::new(),
             recorder: None,
             config_tasks: config_tasks::ConfigTaskLog::default(),
-            dim_types: Vec::new(),
-            overworld_clock_id: None,
-            world_clock_ids: Vec::new(),
-            // M92c — from the report. `mob_effect` is a built-in registry, so
-            // this is the authority and `registry_data` never carries it.
-            night_vision_id: data.mob_effects.id_of("minecraft:night_vision"),
-            darkness_id: data.mob_effects.id_of("minecraft:darkness"),
-            swing_effect_ids: SwingEffectIds {
-                haste: data.mob_effects.id_of("minecraft:haste"),
-                conduit_power: data.mob_effects.id_of("minecraft:conduit_power"),
-                mining_fatigue: data.mob_effects.id_of("minecraft:mining_fatigue"),
-            },
-            biome_defs: Vec::new(),
-            enchantments: Vec::new(),
-            chat_types: Vec::new(),
-            trim_materials: Vec::new(),
-            cat_variants: Vec::new(),
-            wolf_variants: Vec::new(),
-            frog_variants: Vec::new(),
-            trim_patterns: Vec::new(),
-            tags: crate::tags::TagOverrides::default(),
+            cfg: config::ConfigData::new(data),
             session: crate::session::SessionState::default(),
         })
     }
@@ -378,7 +310,8 @@ impl<'a> Connection<'a> {
     fn send(&mut self, packet: PacketWriter) -> Result<(), String> {
         self.codec
             .write_frame(&mut self.stream, &packet.buf)
-            .map_err(|e| format!("send: {e}"))
+            .map_err(|e| format!("send: {e}"))?;
+        self.stream.flush().map_err(|e| format!("send: {e}"))
     }
 
     /// Read one inbound packet into `self.packet`, returning (id, body_range).
@@ -546,303 +479,66 @@ impl<'a> Connection<'a> {
         self.send(info)
     }
 
-    /// Run configuration until FinishConfiguration → Play.
+    /// Run configuration until FinishConfiguration → Play, through the one
+    /// handler a mid-session re-entry uses too ([`config::handle_config_packet`]).
     fn run_configuration(&mut self, stats: &mut SessionStats) -> Result<(), String> {
         self.send_config_openers()?;
+        self.run_config_packets(stats)
+    }
+
+    /// The configuration loop without the client openers (vanilla sends brand
+    /// and client information once, from the login listener).
+    fn run_config_packets(&mut self, stats: &mut SessionStats) -> Result<(), String> {
         loop {
             let Some((id, body)) = self.recv()? else {
                 return Err("connection closed during configuration".into());
             };
             self.record_inbound(id, body);
-            match id {
-                x if x == self.ids.cb_config_keep_alive => {
-                    let ka = i64::from_be_bytes(self.packet[body..body + 8].try_into().unwrap());
-                    let mut resp = PacketWriter::packet(self.ids.sb_config_keep_alive);
-                    resp.i64(ka);
-                    self.send(resp)?;
-                    stats.keepalives += 1;
-                }
-                x if x == self.ids.cb_config_ping => {
-                    let ping = i32::from_be_bytes(self.packet[body..body + 4].try_into().unwrap());
-                    let mut resp = PacketWriter::packet(self.ids.sb_config_pong);
-                    resp.i32(ping);
-                    self.send(resp)?;
-                }
-                x if x == self.ids.cb_config_select_known_packs => {
-                    // Reply with an empty list = "I have none cached, send me
-                    // everything" (the full RegistryData follows).
-                    let mut resp = PacketWriter::packet(self.ids.sb_config_select_known_packs);
-                    resp.varint(0);
-                    self.send(resp)?;
-                }
-                x if x == self.ids.cb_config_registry_data => {
-                    self.parse_registry_data(body)?;
-                }
-                x if x == self.ids.cb_config_update_tags => {
-                    // M69 — the server's datapack tags. This is where a
-                    // vanilla server sends them on a normal join; the play
-                    // copy (`route_tags`) is the datapack-reload case. Both
-                    // reach the same walk.
-                    apply_update_tags(&self.packet[body..], &mut self.tags);
-                }
-                x if x == self.ids.cb_config_code_of_conduct => {
-                    // M166 — the FIRST of the two blocking tasks
-                    // (`addOptionalTasks` appends it ahead of the resource
-                    // pack), and the one whose name was already sitting in the
-                    // comment on the ignore arm below. Until this reply exists
-                    // the server's task queue never advances and
-                    // `finish_configuration` never arrives.
-                    match config_tasks::read_code_of_conduct(&self.packet[body..]) {
-                        Ok(text) => {
-                            log::info!(
-                                "net: accepting the server's code of conduct ({} chars)",
-                                text.chars().count()
-                            );
-                            self.config_tasks.codes_of_conduct.push(text);
-                        }
-                        Err(err) => {
-                            // Answer anyway. The body is one string and the
-                            // reply carries none of it, so a failed decode
-                            // costs the log line above and nothing else —
-                            // whereas going silent costs the whole connection.
-                            log::warn!("net: code_of_conduct decode: {err} — accepting regardless");
-                            self.config_tasks.codes_of_conduct.push(String::new());
-                        }
-                    }
-                    let ack = config_tasks::write_code_of_conduct_accept(
-                        self.ids.sb_config_accept_code_of_conduct,
-                    );
-                    self.send(ack)?;
-                }
-                x if x == self.ids.cb_config_resource_pack_push => {
-                    // M166 — the second blocking task. See `config_tasks` for
-                    // why the reply is FAILED_DOWNLOAD and not DECLINED.
-                    // Disjoint-field borrow: the body is read out of
-                    // `self.packet` while the log is written -- one function,
-                    // two fields, no clone.
-                    let (id, action) =
-                        config_tasks::answer_pack_push(&self.packet[body..], &mut self.config_tasks);
-                    self.send(config_tasks::write_pack_reply(
-                        self.ids.sb_config_resource_pack,
-                        id,
-                        action,
-                    ))?;
-                }
-                x if x == self.ids.cb_config_finish => {
-                    let ack = PacketWriter::packet(self.ids.sb_config_finish);
-                    self.send(ack)?;
+            let packet = std::mem::take(&mut self.packet);
+            let (codec, stream) = (&self.codec, &mut self.stream);
+            let mut send = |p: PacketWriter| -> Result<(), String> {
+                codec
+                    .write_frame(stream, &p.buf)
+                    .map_err(|e| format!("send: {e}"))?;
+                stream.flush().map_err(|e| format!("send: {e}"))
+            };
+            let step = config::handle_config_packet(
+                config::ConfigCtx {
+                    ids: &self.ids,
+                    cfg: &mut self.cfg,
+                    session: &mut self.session,
+                    tasks: &mut self.config_tasks,
+                    keepalives: &mut stats.keepalives,
+                },
+                id,
+                &packet[body..],
+                &mut send,
+            );
+            self.packet = packet;
+            match step? {
+                config::ConfigStep::Continue => {}
+                config::ConfigStep::Finished => {
                     self.state = State::Play;
                     log::info!("net: configuration finished → play");
                     return Ok(());
                 }
-                x if Some(x) == self.ids.cb_config_cookie_request => {
-                    self.answer_cookie_request(body, self.ids.sb_config_cookie_response)?;
-                }
-                x if x == self.ids.cb_config_custom_payload => {
-                    // M78 — and this is the copy that actually fires: the
-                    // vanilla server sends `minecraft:brand` from its
-                    // configuration listener's opening burst and never sends
-                    // another. `serverBrand` is a field of the *common*
-                    // listener both states extend, so the two ids are one
-                    // store; see `crate::session`.
-                    crate::session::apply(
-                        crate::session::SessionPacket::CustomPayload,
-                        &self.packet[body..],
-                        &mut self.session,
-                    );
-                }
-                x if x == self.ids.cb_config_store_cookie => {
-                    // M78 — the other `common` packet. A transfer-driven
-                    // network sets cookies on whichever side of the state
-                    // boundary it happens to be on, and the jar is one store.
-                    crate::session::apply(
-                        crate::session::SessionPacket::StoreCookie,
-                        &self.packet[body..],
-                        &mut self.session,
-                    );
-                }
-                x if x == self.ids.cb_config_server_links => {
-                    // M85 — the third `common` packet, and the state a vanilla
-                    // server actually sends it in. `serverLinks` is a field of
-                    // the same common listener the brand and the cookie jar
-                    // are, so it crosses into play with them (`into_play`).
-                    crate::session::apply(
-                        crate::session::SessionPacket::ServerLinks,
-                        &self.packet[body..],
-                        &mut self.session,
-                    );
-                }
-                x if x == self.ids.cb_config_disconnect => {
+                config::ConfigStep::Disconnect => {
                     let mut r = PacketReader::new(&self.packet[body..]);
-                    // On the LIVE path — `PlaySession::into_play` calls
-                    // `run_configuration` — but `Connection` has no language
-                    // table and `GameData` deliberately does not carry one, and
-                    // this arm returns `Err(String)` to a log line rather than
-                    // to a screen. M163 left it; see the table on
-                    // `component_wire::nbt_text`.
+                    // `Connection` has no language table, and this arm returns
+                    // `Err(String)` to a log line rather than to a screen.
                     let reason = r.nbt().map(|n| n.to_plain_text()).unwrap_or_default();
                     stats.disconnect_reason = Some(reason.clone());
                     return Err(format!("config disconnect: {reason}"));
                 }
-                // NOT update_tags -- that is handled ~57 lines above (M69), and NOT
-                // either blocking task -- both are answered above (M166). What
-                // is left is genuinely inert: enabled_features, reset_chat,
-                // transfer, custom_report_details, the dialog pair, and
-                // resource_pack_pop (deliberately unresolved -- see
-                // `config_tasks`). None of them blocks the server's task queue.
-                //
-                // This comment named `code_of_conduct` and `update_tags` while
-                // both of those hung or dropped real traffic, which is the
-                // shape to watch for: an ignore arm that LISTS what it ignores
-                // reads as deliberate whether or not anyone checked.
-                _ => {}
             }
         }
     }
 
-    /// Decode one Configuration `registry_data` packet.
-    ///
-    /// The `minecraft:dimension_type` registry is the one that can fail the
-    /// connection: it is the only registry here whose entries the client
-    /// *must* understand exactly (a wrong vertical shape mis-decodes every
-    /// chunk, a wrong `has_skylight` invents light), so `dimension_parse`
-    /// returns a `Result` and it propagates. The remaining registries are
-    /// id-capture only and stay tolerant.
-    fn parse_registry_data(&mut self, body: usize) -> Result<(), String> {
-        let mut r = PacketReader::new(&self.packet[body..]);
-        let Ok(registry) = r.identifier() else {
-            return Ok(());
-        };
-        let Ok(count) = r.count("registry entries", 1) else {
-            return Ok(());
-        };
-        if registry == crate::enchantment_parse::ENCHANTMENT_REGISTRY {
-            // Datapack-driven, so both the contents and the id order are the
-            // server's — nothing here may be assumed from bootstrap order.
-            self.enchantments = crate::enchantment_parse::parse_enchantment_registry(&mut r, count);
-            log::info!("net: {} enchantment(s) synced", self.enchantments.len());
-            return Ok(());
-        }
-        // M127: the chat-type registry, datapack-driven for the same reason —
-        // the index is the id `ChatType.Bound`'s `holder` VarInt names.
-        if registry == crate::chat_type_parse::CHAT_TYPE_REGISTRY {
-            self.chat_types = crate::chat_type_parse::parse_chat_type_registry(&mut r, count);
-            log::info!("net: {} chat type(s) synced", self.chat_types.len());
-            return Ok(());
-        }
-        // M48: the two trim registries, datapack-driven for the same reason.
-        if registry == crate::trim_parse::TRIM_MATERIAL_REGISTRY {
-            self.trim_materials = crate::trim_parse::parse_trim_material_registry(&mut r, count);
-            log::info!("net: {} trim material(s) synced", self.trim_materials.len());
-            return Ok(());
-        }
-        if registry == crate::trim_parse::TRIM_PATTERN_REGISTRY {
-            self.trim_patterns = crate::trim_parse::parse_trim_pattern_registry(&mut r, count);
-            log::info!("net: {} trim pattern(s) synced", self.trim_patterns.len());
-            return Ok(());
-        }
-        // M64: the three mob-variant registries, datapack-driven for the
-        // same reason — the index is the raw holder id the metadata carries.
-        if registry == crate::variant_parse::CAT_VARIANT_REGISTRY {
-            self.cat_variants = crate::variant_parse::parse_single_asset_registry(&mut r, count);
-            log::info!("net: {} cat variant(s) synced", self.cat_variants.len());
-            return Ok(());
-        }
-        if registry == crate::variant_parse::WOLF_VARIANT_REGISTRY {
-            self.wolf_variants = crate::variant_parse::parse_wolf_variant_registry(&mut r, count);
-            log::info!("net: {} wolf variant(s) synced", self.wolf_variants.len());
-            return Ok(());
-        }
-        if registry == crate::variant_parse::FROG_VARIANT_REGISTRY {
-            self.frog_variants = crate::variant_parse::parse_single_asset_registry(&mut r, count);
-            log::info!("net: {} frog variant(s) synced", self.frog_variants.len());
-            return Ok(());
-        }
-        if registry == dimension_parse::DIMENSION_TYPE_REGISTRY {
-            self.dim_types = dimension_parse::parse_dimension_registry(&mut r, count)?;
-            log::info!("net: {} dimension type(s) synced", self.dim_types.len());
-            return Ok(());
-        }
-        // The day/night timeline runs on the `minecraft:overworld` world
-        // clock, and `set_time` keys its clock map by raw registry id. The id
-        // is capture-able here rather than assumed from bootstrap order.
-        let is_clock = registry == "minecraft:world_clock";
-        if is_clock {
-            self.world_clock_ids.clear();
-        }
-        // The M13 camera lightmap keys night-vision / darkness off their raw
-        // `mob_effect` registry ids, captured here rather than assumed from
-        // bootstrap order (exactly like the world clock above).
-        let is_mob_effect = registry == "minecraft:mob_effect";
-        // M14: the biome registry, in raw wire order, drives per-biome tint.
-        let is_biome = registry == "minecraft:worldgen/biome";
-        if is_biome {
-            self.biome_defs.clear();
-        }
-        for idx in 0..count {
-            let Ok(entry_name) = r.identifier() else {
-                return Ok(());
-            };
-            if is_clock {
-                if entry_name == "minecraft:overworld" {
-                    self.overworld_clock_id = Some(idx as i32);
-                }
-                // Pushed in iteration order, so the position is the id. Never
-                // sorted, and never derived from bootstrap order — M64's
-                // alphabetisation trap.
-                self.world_clock_ids.push(entry_name.clone());
-            }
-            if is_mob_effect {
-                match entry_name.as_str() {
-                    "minecraft:night_vision" => self.night_vision_id = Some(idx as i32),
-                    "minecraft:darkness" => self.darkness_id = Some(idx as i32),
-                    // M19: `getCurrentSwingDuration`'s dig-speed / fatigue terms.
-                    "minecraft:haste" => self.swing_effect_ids.haste = Some(idx as i32),
-                    "minecraft:conduit_power" => {
-                        self.swing_effect_ids.conduit_power = Some(idx as i32)
-                    }
-                    "minecraft:mining_fatigue" => {
-                        self.swing_effect_ids.mining_fatigue = Some(idx as i32)
-                    }
-                    _ => {}
-                }
-            }
-            let has_nbt = r.bool().unwrap_or(false);
-            if !has_nbt {
-                if is_biome {
-                    // A biome with no NBT is degenerate; keep raw order intact
-                    // with a neutral default so indices still line up.
-                    self.biome_defs
-                        .push(crate::biome_parse::parse_biome(&entry_name, &Nbt::End));
-                }
-                continue;
-            }
-            let Ok(nbt) = r.nbt() else {
-                return Ok(());
-            };
-            if is_biome {
-                self.biome_defs
-                    .push(crate::biome_parse::parse_biome(&entry_name, &nbt));
-            }
-        }
-        if is_biome {
-            log::info!("net: {} biome(s) synced", self.biome_defs.len());
-        }
-        Ok(())
-    }
-
-    /// `handleRequestCookie` — `send(new ServerboundCookieResponsePacket(
+    /// `handleRequestCookie` (play copy) — `send(new ServerboundCookieResponsePacket(
     /// packet.key(), this.serverCookies.get(packet.key())))`.
-    ///
-    /// The reply is **whatever the jar holds**, and `Map.get` returning `null`
-    /// is what makes it a `writeNullable` of nothing. Before M78 nothing ever
-    /// called `store_cookie`, so this always wrote `false` and a
-    /// transfer-driven network watched its session forget itself on every hop.
-    /// The empty-jar path is unchanged; what changed is that the jar can now be
-    /// non-empty.
     fn answer_cookie_request(&mut self, body: usize, resp_id: i32) -> Result<(), String> {
         let mut r = PacketReader::new(&self.packet[body..]);
-        let key = r.identifier().unwrap_or_default();
+        let key = r.identifier().map_err(de)?;
         let payload = self.session.cookie(&key).map(<[u8]>::to_vec);
         let resp = crate::session::write_cookie_response(resp_id, &key, payload.as_deref());
         self.send(resp)
@@ -869,14 +565,14 @@ impl<'a> Connection<'a> {
 
             match id {
                 x if x == self.ids.cb_play_keep_alive => {
-                    let ka = i64::from_be_bytes(self.packet[body..body + 8].try_into().unwrap());
+                    let ka = PacketReader::new(&self.packet[body..]).i64().map_err(de)?;
                     let mut resp = PacketWriter::packet(self.ids.sb_play_keep_alive);
                     resp.i64(ka);
                     self.send(resp)?;
                     stats.keepalives += 1;
                 }
                 x if x == self.ids.cb_play_ping => {
-                    let ping = i32::from_be_bytes(self.packet[body..body + 4].try_into().unwrap());
+                    let ping = PacketReader::new(&self.packet[body..]).i32().map_err(de)?;
                     let mut resp = PacketWriter::packet(self.ids.sb_play_pong);
                     resp.i32(ping);
                     self.send(resp)?;
@@ -926,7 +622,8 @@ impl<'a> Connection<'a> {
                     self.send(ack)?;
                     self.state = State::Configuration;
                     log::info!("net: server started configuration → re-entering config");
-                    self.run_configuration(stats)?;
+                    self.cfg = config::ConfigData::new(self.data);
+                    self.run_config_packets(stats)?;
                     stats.reached_play = true;
                 }
                 x if Some(x) == self.ids.cb_play_cookie_request => {
@@ -961,7 +658,7 @@ impl<'a> Connection<'a> {
 
     fn handle_play_login(&mut self, world: &mut World, body: usize) -> Result<(), String> {
         let holder = parse_login_dimension_holder(&self.packet[body..]).map_err(de)?;
-        let def = login_dimension_type(holder, &self.dim_types);
+        let def = login_dimension_type(holder, &self.cfg.dim_types);
         // The world was created before login, so re-point it at the dimension
         // we actually joined. It holds no columns yet, which is what makes an
         // in-place `apply_dimension_type` sound here.

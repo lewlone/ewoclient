@@ -1685,24 +1685,24 @@ impl<'a> Connection<'a> {
         // arrive before `apply_login_shape` replaces it and the active-dimension
         // fields below stay `None` until it does.
         let world = World::new(DimensionShape::OVERWORLD);
-        let dim_types = self.dim_types.clone();
-        let overworld_clock_id = self.overworld_clock_id;
-        let world_clock_ids = std::mem::take(&mut self.world_clock_ids);
+        let dim_types = self.cfg.dim_types.clone();
+        let overworld_clock_id = self.cfg.overworld_clock_id;
+        let world_clock_ids = std::mem::take(&mut self.cfg.world_clock_ids);
         let visual_effects =
-            crate::effects::VisualEffects::new(self.night_vision_id, self.darkness_id);
-        let swing_effect_ids = self.swing_effect_ids;
+            crate::effects::VisualEffects::new(self.cfg.night_vision_id, self.cfg.darkness_id);
+        let swing_effect_ids = self.cfg.swing_effect_ids;
         // The enchantment registry, in wire order (M42) — the index is the
         // protocol id a component patch carries.
-        let enchantments = std::mem::take(&mut self.enchantments);
+        let enchantments = std::mem::take(&mut self.cfg.enchantments);
         // The chat-type registry, likewise in wire order (M127) — the index is
         // the id a `ChatType.Bound` names.
-        let chat_types = std::mem::take(&mut self.chat_types);
-        let trim_materials = std::mem::take(&mut self.trim_materials);
-        let trim_patterns = std::mem::take(&mut self.trim_patterns);
+        let chat_types = std::mem::take(&mut self.cfg.chat_types);
+        let trim_materials = std::mem::take(&mut self.cfg.trim_materials);
+        let trim_patterns = std::mem::take(&mut self.cfg.trim_patterns);
         // The tags the server sent during configuration (M69). Moved rather
         // than cloned for the same reason the registries above are: this
         // connection object is finished with them.
-        let tags = std::mem::take(&mut self.tags);
+        let tags = std::mem::take(&mut self.cfg.tags);
         // The brand and the cookie jar (M78). Both arrive during
         // *configuration* — the vanilla server sends `minecraft:brand` from its
         // configuration listener and never repeats it in play — and both are
@@ -1715,20 +1715,14 @@ impl<'a> Connection<'a> {
             delimiter: self.ids.cb_play_bundle_delimiter,
             terminal: self.ids.cb_play_start_configuration,
         });
-        let cat_variants = std::mem::take(&mut self.cat_variants);
-        let wolf_variants = std::mem::take(&mut self.wolf_variants);
-        let frog_variants = std::mem::take(&mut self.frog_variants);
+        let cat_variants = std::mem::take(&mut self.cfg.cat_variants);
+        let wolf_variants = std::mem::take(&mut self.cfg.wolf_variants);
+        let frog_variants = std::mem::take(&mut self.cfg.frog_variants);
         // Biome registry parsed during configuration; the `biomeZoomSeed` +
         // dimension holder arrive with the play-login packet (`apply_login_shape`).
         // Access the field directly (not a `&self` method) — `self.stream` was
         // already moved by `split()`, so `self` is partially moved here.
-        let pending_biome_registry = if self.biome_defs.is_empty() {
-            None
-        } else {
-            Some(rewo_world::biome::BiomeRegistry::new(
-                self.biome_defs.clone(),
-            ))
-        };
+        let pending_biome_registry = self.cfg.biome_registry();
         let biome_global_bits = pending_biome_registry
             .as_ref()
             .map(|r| r.global_bits)
