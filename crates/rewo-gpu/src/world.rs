@@ -4426,8 +4426,15 @@ impl DepthTarget {
 
     pub fn barrier_for_use(&self, gpu: &Gpu, cb: vk::CommandBuffer) {
         unsafe {
+            // One depth image serves every frame in flight, so the previous
+            // frame's depth writes must finish before this frame's clear
+            // (a WAW the old TOP_OF_PIPE/no-access source left unordered).
             let barrier = vk::ImageMemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                .src_stage_mask(
+                    vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                        | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+                )
+                .src_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE)
                 .dst_stage_mask(
                     vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
                         | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,

@@ -15,6 +15,7 @@
 
 pub mod border;
 pub(crate) mod buf_ring;
+pub(crate) mod deferred;
 pub mod celestial;
 pub mod clouds;
 pub mod container;
@@ -115,6 +116,10 @@ pub struct Gpu {
     /// dropped rather than drawn wrong — the same degradation as a missing
     /// sheet.
     pub swapchain_mutable: bool,
+    /// Frame serials + the deferred-destruction queue (see [`deferred`]).
+    pub(crate) clock: deferred::FrameClock,
+    /// Debug-utils device functions for object names; `None` without validation.
+    debug_device: Option<ext::debug_utils::Device>,
 }
 
 impl Gpu {
@@ -163,10 +168,21 @@ impl Gpu {
                 .application_version(vk::make_api_version(0, 0, 1, 0))
                 .engine_name(c"rewo-gpu")
                 .api_version(vk::API_VERSION_1_3);
-            let instance_ci = vk::InstanceCreateInfo::default()
+            // Synchronization validation rides along whenever validation is on,
+            // so a gate's "0 validation errors" also means "0 hazards".
+            // `REWO_NO_SYNC_VALIDATION=1` opts out (it is slower).
+            let sync_features = [vk::ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION];
+            let mut validation_features =
+                vk::ValidationFeaturesEXT::default().enabled_validation_features(&sync_features);
+            let sync_validation =
+                validation_active && std::env::var_os("REWO_NO_SYNC_VALIDATION").is_none();
+            let mut instance_ci = vk::InstanceCreateInfo::default()
                 .application_info(&app_info)
                 .enabled_layer_names(&layers)
                 .enabled_extension_names(&extensions);
+            if sync_validation {
+                instance_ci = instance_ci.push_next(&mut validation_features);
+            }
             let instance = entry
                 .create_instance(&instance_ci, None)
                 .map_err(|e| format!("create instance: {e}"))?;
@@ -244,7 +260,7 @@ impl Gpu {
                 .into_owned();
             let timestamp_period_ns = props.limits.timestamp_period as f64;
             log::info!(
-                "vk: device \"{}\" (api {}.{}.{}, driver {:#x}), graphics family {}, validation {}",
+                "vk: device \"{}\" (api {}.{}.{}, driver {:#x}), graphics family {}, validation {}{}",
                 device_name,
                 vk::api_version_major(props.api_version),
                 vk::api_version_minor(props.api_version),
@@ -252,6 +268,7 @@ impl Gpu {
                 props.driver_version,
                 graphics_family,
                 if validation_active { "ON" } else { "off" },
+                if sync_validation { " +sync" } else { "" },
             );
 
             // Logical device: Vulkan 1.3 core features we build on.
@@ -306,6 +323,8 @@ impl Gpu {
                 .create_device(physical, &device_ci, None)
                 .map_err(|e| format!("create device: {e}"))?;
             let graphics_queue = device.get_device_queue(graphics_family, 0);
+            let debug_device = validation_active
+                .then(|| ext::debug_utils::Device::new(&instance, &device));
 
             let allocator = Allocator::new(&AllocatorCreateDesc {
                 instance: instance.clone(),
@@ -332,14 +351,19 @@ impl Gpu {
                 allocator: ManuallyDrop::new(allocator),
                 validation_active,
                 swapchain_mutable,
+                clock: deferred::FrameClock::default(),
+                debug_device,
             })
         }
     }
 
+    /// Teardown/resize only — never on a per-frame or gameplay path; retire
+    /// resources with [`Self::defer_destroy`] instead.
     pub fn wait_idle(&self) {
         unsafe {
             let _ = self.device.device_wait_idle();
         }
+        self.clock.mark_all_retired();
     }
 }
 
@@ -347,6 +371,8 @@ impl Drop for Gpu {
     fn drop(&mut self) {
         unsafe {
             let _ = self.device.device_wait_idle();
+            let device = self.device.clone();
+            self.clock.collect(&device, &mut self.allocator, true);
             ManuallyDrop::drop(&mut self.allocator);
             self.device.destroy_device(None);
             if let Some(si) = &self.surface_i {
