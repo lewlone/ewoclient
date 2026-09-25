@@ -18,15 +18,16 @@
 //! correction), jumping with `noJumpDelay`, per-block friction / speed / jump
 //! factors, bouncing (slime, beds), climbing (`#climbable`, open trapdoors over
 //! ladders, sneak-to-hold), `makeStuckInBlock` (cobweb, sweet berry bush,
-//! powder snow), the sneak edge guard, water and lava travel with fluid heights
-//! and jump-to-swim, flight (`Player.travel`'s `abilities.flying` arm), no-clip,
-//! the unloaded-chunk `-0.1` fall, and the movement attributes.
+//! powder snow), bubble columns (`BubbleColumnBlock.entityInside`), honey wall
+//! sliding (`HoneyBlock.entityInside`), the sneak edge guard, water and lava
+//! travel with fluid heights and jump-to-swim, flight (`Player.travel`'s
+//! `abilities.flying` arm), no-clip, the unloaded-chunk `-0.1` fall, and the
+//! movement attributes.
 //!
 //! Not covered: fluid currents (`FluidState.getFlow`), swimming pose and the
 //! swim-sprint pitch steering, the crouching/swimming bounding boxes (the box
-//! is always 0.6 × 1.8), elytra, levitation from blocks, bubble columns, honey
-//! sliding, entity colliders (boats, shulkers), powder-snow walking with
-//! leather boots.
+//! is always 0.6 × 1.8), elytra, levitation from blocks, entity colliders
+//! (boats, shulkers), powder-snow walking with leather boots.
 
 use rewo_data::block_physics::{flags, BlockPhysics, PhysFluid, Stuck};
 
@@ -344,7 +345,7 @@ pub fn tick_env(
 
     // -- applyEffectsFromBlocks: entityInside -------------------------------
     if !no_clip {
-        apply_stuck(state, world);
+        apply_stuck(state, world, flying);
     }
 }
 
@@ -852,9 +853,12 @@ fn find_supporting_block(state: &PlayerState, world: &dyn PhysicsWorld, test: &A
     best.map(|b| b.0)
 }
 
-/// `applyEffectsFromBlocks` → `entityInside` → `makeStuckInBlock`, over the
-/// blocks the final (deflated) box touches.
-fn apply_stuck(state: &mut PlayerState, world: &dyn PhysicsWorld) {
+/// `applyEffectsFromBlocks` → `entityInside` over the blocks the final
+/// (deflated) box touches: `makeStuckInBlock` (cobweb, sweet berry bush,
+/// powder snow), `BubbleColumnBlock.entityInside` and `HoneyBlock.entityInside`.
+/// Every block this loop visits overlaps the deflated box, which is exactly
+/// vanilla's `isPrecise`, so the bubble column's precise-only gate is free.
+fn apply_stuck(state: &mut PlayerState, world: &dyn PhysicsWorld, flying: bool) {
     let b = deflate(&state.aabb(), 1.0e-5f32 as f64);
     let feet = state.block_pos();
     let feet_powder = world.block(feet[0], feet[1], feet[2]).has(flags::POWDER_SNOW);
@@ -871,9 +875,97 @@ fn apply_stuck(state: &mut PlayerState, world: &dyn PhysicsWorld) {
                     state.fall_distance = 0.0;
                     state.stuck_multiplier = m;
                 }
+                if block.has(flags::BUBBLE_COLUMN_UP | flags::BUBBLE_COLUMN_DOWN) && !flying {
+                    // `Player.onAboveBubbleColumn` / `onInsideBubbleColumn`
+                    // pass everything through only while not flying.
+                    let down = block.has(flags::BUBBLE_COLUMN_DOWN);
+                    bubble_column_effect(state, world, x, y, z, down);
+                } else if block.has(flags::HONEY) && honey_sliding_down(x, y, z, state) {
+                    // The slide achievement and its sound/particles are not movement.
+                    honey_slide(state);
+                }
             }
         }
     }
+}
+
+/// `BubbleColumnBlock.entityInside` → `Entity.handleOnAboveBubbleColumn` /
+/// `handleOnInsideBubbleColumn`. The "above" arm is vanilla's `nothingAbove`
+/// case: the block over the column has neither a collision shape nor a fluid
+/// (`stateAbove.getCollisionShape(...).isEmpty() &&
+/// stateAbove.getFluidState().isEmpty()` — vanilla passes the column's own
+/// `pos` to `getCollisionShape`, which no block reads).
+fn bubble_column_effect(
+    state: &mut PlayerState, world: &dyn PhysicsWorld, x: i32, y: i32, z: i32, drag_down: bool,
+) {
+    let above = world.block(x, y + 1, z);
+    let nothing_above = world.collision(x, y + 1, z).is_empty() && above.fluid == PhysFluid::None;
+    if nothing_above {
+        state.vy = if drag_down {
+            (state.vy - 0.03).max(-0.9)
+        } else {
+            (state.vy + 0.1).min(1.8)
+        };
+    } else {
+        state.vy = if drag_down {
+            (state.vy - 0.03).max(-0.3)
+        } else {
+            (state.vy + 0.06).min(0.7)
+        };
+        state.fall_distance = 0.0;
+    }
+}
+
+/// `HoneyBlock.SLIDE_STARTS_WHEN_VERTICAL_SPEED_IS_AT_LEAST`.
+const SLIDE_STARTS_WHEN_VERTICAL_SPEED_IS_AT_LEAST: f64 = 0.13;
+/// `HoneyBlock.MIN_FALL_SPEED_TO_BE_CONSIDERED_SLIDING`.
+const MIN_FALL_SPEED_TO_BE_CONSIDERED_SLIDING: f64 = 0.08;
+/// `HoneyBlock.THROTTLE_SLIDE_SPEED_TO`.
+const THROTTLE_SLIDE_SPEED_TO: f64 = 0.05;
+
+/// `HoneyBlock.getOldDeltaY`: the tick's gravity and `0.98F` drag undone.
+fn honey_old_delta_y(delta_y: f64) -> f64 {
+    delta_y / (0.98f32 as f64) + 0.08
+}
+
+/// `HoneyBlock.getNewDeltaY`.
+fn honey_new_delta_y(delta_y: f64) -> f64 {
+    (delta_y - 0.08) * (0.98f32 as f64)
+}
+
+/// `HoneyBlock.isSlidingDown`: beside the block's side (the centre distance
+/// passes `0.4375 + getBbWidth() / 2.0F`, i.e. the player overlaps the cell
+/// but not its 14/16 shape), at or below the 15/16 top, airborne and falling.
+fn honey_sliding_down(x: i32, y: i32, z: i32, state: &PlayerState) -> bool {
+    if state.on_ground {
+        return false;
+    }
+    if state.y > y as f64 + 0.9375 - 1.0e-7 {
+        return false;
+    }
+    if honey_old_delta_y(state.vy) >= -MIN_FALL_SPEED_TO_BE_CONSIDERED_SLIDING {
+        return false;
+    }
+    let dx = (x as f64 + 0.5 - state.x).abs();
+    let dz = (z as f64 + 0.5 - state.z).abs();
+    // `entity.getBbWidth() / 2.0F` — the 0.6F box width, halved in float.
+    let bb_width = (PLAYER_HALF_WIDTH * 2.0) as f32;
+    let overlap_distance = 0.4375 + (bb_width / 2.0f32) as f64;
+    dx + 1.0e-7 > overlap_distance || dz + 1.0e-7 > overlap_distance
+}
+
+/// `HoneyBlock.doSlideMovement`: the fall is throttled to
+/// `getNewDeltaY(-THROTTLE_SLIDE_SPEED_TO)` whatever it was, horizontal
+/// velocity scales with it past the slide threshold, fall distance resets.
+fn honey_slide(state: &mut PlayerState) {
+    let old_delta_y = honey_old_delta_y(state.vy);
+    if old_delta_y < -SLIDE_STARTS_WHEN_VERTICAL_SPEED_IS_AT_LEAST {
+        let horizontal_reduction_factor = -THROTTLE_SLIDE_SPEED_TO / old_delta_y;
+        state.vx *= horizontal_reduction_factor;
+        state.vz *= horizontal_reduction_factor;
+    }
+    state.vy = honey_new_delta_y(-THROTTLE_SLIDE_SPEED_TO);
+    state.fall_distance = 0.0;
 }
 
 /// `EntityFluidInteraction.update` (no currents).
@@ -2147,5 +2239,145 @@ mod tests {
         };
         assert!(run(false), "bounced");
         assert!(!run(true), "sneaking lands flat");
+    }
+
+    // ── bubble columns and honey wall sliding ────────────────────────────
+
+    /// The physics the bake fills in for a water source around a column
+    /// (`FluidState.getOwnHeight()` of a source = 8/9).
+    fn source_water() -> BlockPhysics {
+        BlockPhysics { fluid: PhysFluid::Water { own_height: 8.0 / 9.0 }, ..BlockPhysics::AIR }
+    }
+
+    /// One `BubbleColumnBlock` cell at (0, 0, 0) inside source water over a
+    /// stone floor. The cell over the column is water, so vanilla's
+    /// `nothingAbove` is false and the *inside* arm applies.
+    fn inside_column(drag_down: bool) -> impl Fn(i32, i32, i32) -> BlockPhysics {
+        let flag = if drag_down { flags::BUBBLE_COLUMN_DOWN } else { flags::BUBBLE_COLUMN_UP };
+        let column = BlockPhysics { flags: flag, ..source_water() };
+        move |x, y, z| match (x, y, z) {
+            (0, 0, 0) => column,
+            (0, 1..=3, 0) => source_water(),
+            _ => BlockPhysics::AIR,
+        }
+    }
+
+    /// `BubbleColumnBlock.entityInside`'s inside arm on a push-up column: the
+    /// player standing in the column ends the tick at
+    /// `Entity.handleOnInsideBubbleColumn`'s `min(0.7, vy + 0.06)`.
+    #[test]
+    fn bubble_column_up_pushes_upward_inside() {
+        let w = TestWorld { shape: |_, y, _| cube(y < 0), block: inside_column(false), loaded: true };
+        let mut p = PlayerState::at(0.5, 0.0, 0.5);
+        step_env(&mut p, &TickInput::default(), &w);
+        // From rest the water arm ends at `vy − gravity/16` = −0.005
+        // (`getFluidFallingAdjustedMovement`), then `min(0.7, vy + 0.06)`.
+        let want = (-0.08 / 16.0 + 0.06f64).min(0.7);
+        assert!((p.vy - want).abs() < 1e-12, "vy={}", p.vy);
+        assert!(p.vy > 0.0, "pushes upward, vy={}", p.vy);
+    }
+
+    /// The inside arm on a drag-down column: `max(-0.3, vy − 0.03)`.
+    #[test]
+    fn bubble_column_down_pulls_down_inside() {
+        let w = TestWorld { shape: |_, y, _| cube(y < 0), block: inside_column(true), loaded: true };
+        let mut p = PlayerState::at(0.5, 0.0, 0.5);
+        step_env(&mut p, &TickInput::default(), &w);
+        let rest = -0.08 / 16.0;
+        let want = (rest - 0.03f64).max(-0.3);
+        assert!((p.vy - want).abs() < 1e-12, "vy={}", p.vy);
+        assert!(p.vy < rest, "pulls down past the unassisted tick, vy={}", p.vy);
+    }
+
+    /// The *above* arm: air over the column makes vanilla's `nothingAbove`
+    /// true, and `Entity.handleOnAboveBubbleColumn` gives
+    /// `min(1.8, vy + 0.1)`.
+    #[test]
+    fn bubble_column_above_surface() {
+        let column = BlockPhysics { flags: flags::BUBBLE_COLUMN_UP, ..source_water() };
+        let w = TestWorld {
+            shape: |_, y, _| cube(y < 0),
+            block: move |x, y, z| match (x, y, z) {
+                (0, 0, 0) => source_water(),
+                (0, 1, 0) => column,
+                _ => BlockPhysics::AIR,
+            },
+            loaded: true,
+        };
+        let mut p = PlayerState::at(0.5, 0.0, 0.5);
+        step_env(&mut p, &TickInput::default(), &w);
+        // The same −0.005 at the effect, then `min(1.8, vy + 0.1)`.
+        let want = (-0.08 / 16.0 + 0.1f64).min(1.8);
+        assert!((p.vy - want).abs() < 1e-12, "vy={}", p.vy);
+    }
+
+    /// A single `HoneyBlock` at (0, 0, 0) with the baked 14/16 shape
+    /// (`HoneyBlock.SHAPE` = `Block.column(14.0, 0.0, 15.0)`).
+    fn honey_shape(x: i32, y: i32, z: i32) -> &'static [[f32; 6]] {
+        const SHAPE: &[[f32; 6]] = &[[0.0625, 0.0, 0.0625, 0.9375, 0.9375, 0.9375]];
+        if (x, y, z) == (0, 0, 0) {
+            SHAPE
+        } else {
+            EMPTY
+        }
+    }
+
+    /// What `BlockPhysics::resolve("minecraft:honey_block", …)` returns,
+    /// placed at (0, 0, 0).
+    fn honey_block(x: i32, y: i32, z: i32) -> BlockPhysics {
+        if (x, y, z) == (0, 0, 0) {
+            BlockPhysics { flags: flags::HONEY, speed_factor: 0.4, jump_factor: 0.5, ..BlockPhysics::AIR }
+        } else {
+            BlockPhysics::AIR
+        }
+    }
+
+    /// `HoneyBlock.doSlideMovement` caps the fall at `getNewDeltaY(-0.05)`
+    /// for a player sliding down the block's side wall.
+    #[test]
+    fn honey_wall_slide_caps_fall_speed() {
+        let w = TestWorld { shape: honey_shape, block: honey_block, loaded: true };
+        // Falling alongside the wall: the box overlaps the honey cell but not
+        // its 14/16 shape, so nothing collides.
+        let mut p = PlayerState::at(-0.25, 0.5, 0.5);
+        p.vy = -0.5;
+        step_env(&mut p, &TickInput::default(), &w);
+        // `doSlideMovement` sets `getNewDeltaY(-0.05)` = (−0.05 − 0.08)·0.98F
+        // whatever came in, and resets the fall distance (0.5 from the fall).
+        let want = (-0.05 - 0.08) * (0.98f32 as f64);
+        assert!((p.vy - want).abs() < 1e-12, "vy={}", p.vy);
+        assert_eq!(p.fall_distance, 0.0);
+    }
+
+    /// Standing on top of the honey — its shape tops out at 15/16 — is not a
+    /// slide: `isSlidingDown` refuses a player over the block's top.
+    #[test]
+    fn honey_top_does_not_slide() {
+        let w = TestWorld { shape: honey_shape, block: honey_block, loaded: true };
+        let mut p = PlayerState::at(0.5, 0.9375, 0.5);
+        for _ in 0..5 {
+            step_env(&mut p, &TickInput::default(), &w);
+        }
+        assert_eq!(p.y, 0.9375, "did not slide down the wall");
+        // The plain standing tick: (vy − 0.08)·0.98F from rest.
+        let want = (0.0 - 0.08) * (0.98f32 as f64);
+        assert!((p.vy - want).abs() < 1e-12, "vy={}", p.vy);
+    }
+
+    /// The slide's y-guard, the sliver where it alone decides: level with the
+    /// honey's top but beside its side, where `isSlidingDown`'s overlap test
+    /// passes and only `getY() > pos.getY() + 0.9375 - 1.0E-7` rules it out.
+    #[test]
+    fn honey_top_edge_does_not_slide() {
+        let w = TestWorld { shape: honey_shape, block: honey_block, loaded: true };
+        // One tick's fall of 0.5 lands the feet at 0.95: above the shape's
+        // 0.9375 top, still in the cell the box touches.
+        let mut p = PlayerState::at(-0.25, 1.45, 0.5);
+        p.vy = -0.5;
+        step_env(&mut p, &TickInput::default(), &w);
+        // The plain fall: (vy − 0.08)·0.98F, not throttled to −0.13.
+        let want = (-0.5 - 0.08) * (0.98f32 as f64);
+        assert!((p.vy - want).abs() < 1e-12, "vy={}", p.vy);
+        assert_eq!(p.fall_distance, 0.5, "fall distance untouched");
     }
 }
