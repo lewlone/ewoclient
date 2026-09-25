@@ -614,7 +614,7 @@ fn obfuscated_glyph(
 /// obfuscated glyph per draw: its output differs between two runs of the same
 /// frame, so vanilla itself guarantees nothing a byte-comparing gate could
 /// assert. Every gate in this project renders headlessly and compares bytes,
-/// and the demo PNG has been `2cc56b4acbfb92cb` since M15 — so Rewo needs a
+/// and the demo PNG hash is pinned (`tools/demo_hash.txt`) — so Rewo needs a
 /// source that is reproducible given `(frame, run, index)` while still looking
 /// like noise.
 ///

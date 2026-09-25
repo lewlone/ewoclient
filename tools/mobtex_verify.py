@@ -148,7 +148,8 @@ def demo():
         return ["demo exit != 0"]
     h = hashlib.sha256(open(out, "rb").read()).hexdigest()
     print(f"demo sha256 {h}")
-    return [] if h.startswith("2cc56b4acbfb92cb") else [f"demo hash moved: {h}"]
+    want = open(os.path.join(ROOT, "tools", "demo_hash.txt")).read().strip()
+    return [] if h.startswith(want) else [f"demo hash moved: {h} (expected {want})"]
 
 
 if __name__ == "__main__":
