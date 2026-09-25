@@ -1,13 +1,15 @@
-//! rewo-mesh — M4 mesher: full-cube fast path with ambient occlusion, plus
-//! the general model-quad path for everything else (stairs, slabs, fences,
-//! glass, plants, torches, …).
+//! rewo-mesh — M4 mesher: full-cube fast path, plus the general model-quad
+//! path for everything else (stairs, slabs, fences, glass, plants, torches, …).
 //!
-//! Per-vertex color = directional face shade × AO × biome tint (white when
-//! untinted). As of M15 that product is **not stored**: the 28-byte
-//! [`MeshVertex`] carries the discrete shade and AO *codes* plus lossless tint
-//! bytes, and `world.vert` reconstructs the identical float sequence. Block and
-//! sky light stay packed *separately* in the same word (see [`pack_layer`]) and
-//! are combined in the shader, so the time of day never forces a remesh.
+//! **Lighting is vanilla's**, per `ModelBlockRenderer.tesselateBlock`: with
+//! smooth lighting on, a block that emits no light and whose model uses ambient
+//! occlusion goes through `BlockModelLighter.prepareQuadAmbientOcclusion`
+//! ([`smooth_light`]); everything else through `prepareQuadFlat`. Each vertex
+//! stores what vanilla's vertex stores: the 8-bit RGB color (`ARGB.gray` of the
+//! AO brightness, scaled by the cardinal face shade, times the tint) and the
+//! two light channels in `LightCoordsUtil` smooth units (vanilla's `UV2`). The
+//! shader samples the lightmap per vertex from those, so the time of day never
+//! forces a remesh. See [`MeshVertex`].
 //!
 //! Biome tint is applied at mesh time (M14): a dynamic Grass/Foliage/DryFoliage/
 //! Water face selects the *raw* (un-tinted) atlas layer and carries its resolved
@@ -19,15 +21,14 @@
 //! once, not once per face.
 //!
 //! **Greedy meshing (M15).** The M4 note said greedy was impossible here
-//! because per-vertex AO makes coplanar faces non-mergeable. That is true only
-//! for faces whose four corner AO codes *differ*: across such a face the
+//! because per-vertex lighting makes coplanar faces non-mergeable. That is true
+//! only for faces whose four vertices *differ*: across such a face the
 //! rasterizer interpolates a gradient that a merged rectangle cannot reproduce.
-//! A face whose four AO codes are all equal has no gradient at all, so replacing
-//! N of them with one rectangle is mathematically identical — the same shade,
-//! the same AO level, the same repeated texture. [`mesh_column`] therefore
-//! splits the cube path in two: uniform-AO faces on the five non-up directions
-//! enter a per-(face, plane) mask and are merged; up (+Y) faces and non-uniform
-//! faces fall back to the legacy unit quad, byte-for-byte. The up carve-out is
+//! A face whose four vertices carry the same light and color has no gradient at
+//! all, so replacing N of them with one rectangle is mathematically identical.
+//! [`mesh_column`] therefore splits the cube path in two: uniform faces on the
+//! five non-up directions enter a per-(face, plane) mask and are merged; up
+//! (+Y) faces and non-uniform faces fall back to the unit quad, byte-for-byte. The up carve-out is
 //! empirical, not structural — the merge site in [`mesh_column`] records what
 //! merging it measured. Models and fluids never merge — they run the untouched
 //! [`emit_model`] / [`emit_fluid`] path.
@@ -72,9 +73,8 @@ struct TintCache {
 
 /// Dynamic biome tint (lossless RGB bytes) for a tinted face, or `None` to
 /// fall back to the legacy pre-tinted layer (no biome context or an untinted
-/// face). Stored verbatim in `MeshVertex::tint`; `world.vert` folds it in
-/// alongside shade/AO when it reconstructs the color — the camera sky/fog is a
-/// separate uniform, so this never re-runs on a time-of-day change.
+/// face). Multiplied into the vertex color the way vanilla's `multiplyColor`
+/// does (see [`block_vertex_color`]).
 ///
 /// Results for the four dynamic resolvers are memoized in `cache`, keyed by the
 /// **actually sampled** block position + resolver. `GrassBelow` (doubleTallGrass
@@ -112,93 +112,101 @@ fn biome_tint(
     Some(rgb)
 }
 
-// -- packed vertex bit layout (M15) -----------------------------------------
-// `light` word: layer[0..15] | block[16..19] | sky[20..23] | shade[24..26] |
-// ao[27..28] | reserved[29..31]. The lower 24 bits are exactly `pack_layer`'s
-// historical contract, untouched.
-const SHADE_SHIFT: u32 = 24;
-const SHADE_MASK: u32 = 0b111;
-const AO_SHIFT: u32 = 27;
-const AO_MASK: u32 = 0b11;
+// -- packed vertex -----------------------------------------------------------
 
-/// Pack the discrete shade/AO codes into the high bits of a `pack_layer` word.
-pub fn pack_light_word(layer: u32, block: u8, sky: u8, shade_code: u8, ao_code: u8) -> u32 {
-    // Release assert, not `debug_assert!`: `SHADE_MASK` is 3 bits (0..=7) while
-    // `FACE_SHADE` has 7 entries, so the reserved code 7 fits the mask and would
-    // pack silently — then index out of bounds in
-    // `MeshVertex::reconstructed_color` (and in `world.vert`, where an
-    // out-of-range constant-array index is undefined). 0..=6 are the valid
-    // codes; 7 fails closed here, at the one boundary every emitter goes
-    // through.
-    assert!(
-        (shade_code as usize) < FACE_SHADE.len(),
-        "shade_code {} out of range: FACE_SHADE has {} entries (valid 0..={})",
-        shade_code,
-        FACE_SHADE.len(),
-        FACE_SHADE.len() - 1
-    );
-    debug_assert!((ao_code as usize) < AO_LEVELS.len());
-    pack_layer(layer, block, sky)
-        | ((shade_code as u32 & SHADE_MASK) << SHADE_SHIFT)
-        | ((ao_code as u32 & AO_MASK) << AO_SHIFT)
+/// `LightCoordsUtil.FULL_BRIGHT` = `pack(15, 15)`.
+pub const FULL_BRIGHT: i32 = 15 << 4 | 15 << 20;
+
+/// `LightCoordsUtil.pack(block, sky)` — whole light levels in vanilla's packed
+/// light coordinates (block in bits 4..7, sky in bits 20..23).
+pub const fn light_coords(block: u8, sky: u8) -> i32 {
+    (block as i32) << 4 | (sky as i32) << 20
 }
 
-/// Pack lossless tint bytes + a reserved flag byte.
-pub fn pack_tint(rgb: [u8; 3], flags: u8) -> u32 {
-    (rgb[0] as u32) | ((rgb[1] as u32) << 8) | ((rgb[2] as u32) << 16) | ((flags as u32) << 24)
+/// `LightCoordsUtil.max` — the brighter of two coordinates, per channel.
+fn light_max(a: i32, b: i32) -> i32 {
+    let block = ((a >> 4) & 15).max((b >> 4) & 15);
+    let sky = ((a >> 20) & 15).max((b >> 20) & 15);
+    block << 4 | sky << 20
 }
 
-/// White tint — the legacy/untinted path. `255/255 == 1.0` exactly, so a
-/// reconstructed color is bit-identical to the old `c * 1.0`.
+/// The vertex's `light` word: `layer[0..15] | block[16..23] | sky[24..31]`.
+///
+/// The two light channels are vanilla's `UV2` pair: `LightCoordsUtil` smooth
+/// units, i.e. `smoothBlock(coords)` / `smoothSky(coords)`, a light level ×16
+/// plus the fraction smooth lighting blends in (0..=240). They stay separate to
+/// the shader, which is what lets the time of day re-light the world without a
+/// remesh.
+pub fn pack_light_word(layer: u32, coords: i32) -> u32 {
+    debug_assert!(layer <= 0xFFFF, "texture layer {layer} exceeds 16 bits");
+    let block = (coords & 0xFF) as u32;
+    let sky = ((coords >> 16) & 0xFF) as u32;
+    (layer & 0xFFFF) | block << 16 | sky << 24
+}
+
+/// White tint — the untinted path; multiplying by it is the identity.
 pub const TINT_WHITE: [u8; 3] = [255, 255, 255];
 
-/// **28 bytes.** World-space position stays full `f32` (the M4 invariant: the
-/// mesher emits world space and the shader adds no column origin).
+/// `ARGB.as8BitChannel(value)` = `Mth.floor(value * 255.0F)`.
+fn as_8bit_channel(value: f32) -> i32 {
+    (value * 255.0f32).floor() as i32
+}
+
+/// The vertex color vanilla's block renderer produces, bit for bit:
+/// `ARGB.gray(brightness)` (`prepareQuadAmbientOcclusion` / `prepareQuadFlat`),
+/// then `QuadInstance.scaleColor(shade)` (`ARGB.scaleRGB`: `(int)(c * shade)`
+/// clamped), then `multiplyColor(tint)` (`ARGB.multiply`: `a * b / 255`).
 ///
-/// - `pos`   f32x3 (12) — world space, unchanged
-/// - `uv`    f32x2 (8)  — **exact**; see below
-/// - `light` u32 (4) — see the bit layout above
-/// - `tint`  u32 (4) — lossless RGB bytes + reserved flags
+/// The flat path is `brightness = shade, shade = 1.0`: vanilla's
+/// `prepareQuadFlat` puts the cardinal shade into `gray` directly and never
+/// scales. [`TINT_WHITE`] is the identity of the last step, which is what an
+/// untinted quad (`tintIndex == -1`) skips.
+pub fn block_vertex_color(brightness: f32, shade: f32, tint: [u8; 3]) -> [u8; 3] {
+    let gray = as_8bit_channel(brightness);
+    let scaled = ((gray as f32 * shade) as i32).clamp(0, 255);
+    tint.map(|t| (scaled * t as i32 / 255) as u8)
+}
+
+/// `ARGB.scaleRGB(tintColor, shade)` on an opaque tint — the fluid renderer's
+/// vertex color (`FluidRenderer`, which never goes through `gray`).
+fn scale_rgb(tint: [u8; 3], shade: f32) -> [u8; 3] {
+    tint.map(|t| ((t as f32 * shade) as i32).clamp(0, 255) as u8)
+}
+
+/// **28 bytes**, the same fields vanilla's block vertex carries.
+///
+/// - `pos`   f32x3 (12) — world space (the mesher emits world space and the
+///   shader adds no column origin)
+/// - `uv`    f32x2 (8)  — exact; see below
+/// - `light` u32 (4)   — see [`pack_light_word`]
+/// - `color` u32 (4)   — `r[0..7] g[8..15] b[16..23]`, byte 3 = 255; the GPU
+///   reads it as `R8G8B8A8_UNORM`, the same conversion vanilla's `Color`
+///   attribute gets
 ///
 /// A 24-byte variant storing UV as f16 was built and **rejected**: `emit_fluid`
 /// emits surface UVs of the form `1.0 - k/9` (vanilla's 8/9 source height), and
 /// `1/9` is not a dyadic rational, so no f16 represents it. The resulting
 /// ~2.7e-5 UV error is only ~0.0004 texel, but it lands on a texel boundary and
 /// flipped nearest-neighbour sampling on 6 demo pixels (max channel delta 25),
-/// breaking byte-identical rendering. Baked *model* UVs are all k/16 and were
-/// exact (2,982,592 components, 0 inexact) — the fluid family is the one f16
-/// cannot carry, so UV stays f32.
-///
-/// The per-vertex color is **not** stored; the vertex shader reconstructs it as
-/// `FACE_SHADE[shade] * AO_LEVELS[ao] * (tint_rgb / 255)`, in that order, which
-/// is the identical float sequence the mesher used to run on the CPU.
+/// breaking byte-identical rendering. So UV stays f32.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, PartialEq, Debug)]
 pub struct MeshVertex {
     pub pos: [f32; 3],
     pub uv: [f32; 2],
     pub light: u32,
-    pub tint: u32,
+    pub color: u32,
 }
 
 impl MeshVertex {
-    /// The one constructor. Takes ordinary f32 UV + discrete codes + lossless
-    /// tint bytes, so no call site hand-assembles the layout.
-    pub fn new(
-        pos: [f32; 3],
-        uv: [f32; 2],
-        layer: u32,
-        block: u8,
-        sky: u8,
-        shade_code: u8,
-        ao_code: u8,
-        tint_rgb: [u8; 3],
-    ) -> Self {
+    /// The one constructor: `coords` is vanilla packed light
+    /// (`LightCoordsUtil`), `color` the finished 8-bit vertex color.
+    pub fn new(pos: [f32; 3], uv: [f32; 2], layer: u32, coords: i32, color: [u8; 3]) -> Self {
         Self {
             pos,
             uv,
-            light: pack_light_word(layer, block, sky, shade_code, ao_code),
-            tint: pack_tint(tint_rgb, 0),
+            light: pack_light_word(layer, coords),
+            color: pack_color(color),
         }
     }
 
@@ -212,45 +220,44 @@ impl MeshVertex {
         (self.light & 0xFFFF) as u16
     }
 
+    /// Block light in smooth units (`LightCoordsUtil.smoothBlock`, 0..=240).
+    pub fn block_smooth(&self) -> u8 {
+        ((self.light >> 16) & 0xFF) as u8
+    }
+
+    /// Sky light in smooth units (`LightCoordsUtil.smoothSky`, 0..=240).
+    pub fn sky_smooth(&self) -> u8 {
+        ((self.light >> 24) & 0xFF) as u8
+    }
+
+    /// Whole block light level (`LightCoordsUtil.block`: the smooth value's
+    /// integer part).
     pub fn block_light(&self) -> u8 {
-        ((self.light >> 16) & 15) as u8
+        self.block_smooth() >> 4
     }
 
+    /// Whole sky light level (`LightCoordsUtil.sky`).
     pub fn sky_light(&self) -> u8 {
-        ((self.light >> 20) & 15) as u8
+        self.sky_smooth() >> 4
     }
 
-    pub fn shade_code(&self) -> u8 {
-        ((self.light >> SHADE_SHIFT) & SHADE_MASK) as u8
-    }
-
-    pub fn ao_code(&self) -> u8 {
-        ((self.light >> AO_SHIFT) & AO_MASK) as u8
-    }
-
-    pub fn tint_rgb(&self) -> [u8; 3] {
+    pub fn color_rgb(&self) -> [u8; 3] {
         [
-            (self.tint & 0xFF) as u8,
-            ((self.tint >> 8) & 0xFF) as u8,
-            ((self.tint >> 16) & 0xFF) as u8,
+            (self.color & 0xFF) as u8,
+            ((self.color >> 8) & 0xFF) as u8,
+            ((self.color >> 16) & 0xFF) as u8,
         ]
     }
 
-    pub fn tint_flags(&self) -> u8 {
-        ((self.tint >> 24) & 0xFF) as u8
-    }
-
-    /// CPU mirror of `world.vert`'s reconstruction — the same operations in the
-    /// same order, so oracles can compare against the legacy float formula.
+    /// The color as the vertex shader sees it: `R8G8B8A8_UNORM`, `c / 255`.
     pub fn reconstructed_color(&self) -> [f32; 3] {
-        let c = FACE_SHADE[self.shade_code() as usize] * AO_LEVELS[self.ao_code() as usize];
-        let rgb = self.tint_rgb();
-        [
-            c * (rgb[0] as f32 / 255.0),
-            c * (rgb[1] as f32 / 255.0),
-            c * (rgb[2] as f32 / 255.0),
-        ]
+        self.color_rgb().map(|c| c as f32 / 255.0)
     }
+}
+
+/// Pack an opaque RGB color into the vertex's `color` word.
+pub fn pack_color(rgb: [u8; 3]) -> u32 {
+    (rgb[0] as u32) | ((rgb[1] as u32) << 8) | ((rgb[2] as u32) << 16) | 0xFF00_0000
 }
 
 pub struct ColumnMesh {
@@ -299,54 +306,11 @@ const FACE_OFFSETS: [(i32, i32, i32); 6] = [
     (-1, 0, 0),
     (1, 0, 0),
 ];
-/// Directional face shade, indexed by the vertex's 3-bit shade code.
-/// **Mirrored verbatim in `shaders/world.vert`** — keep both in sync.
-///
-/// Codes 0..=5 are the M15 assignment and are frozen: they are exactly
-/// `CardinalLighting::DEFAULT` in the mesher's face order `[up, down, north,
-/// south, west, east]`, so under the default table a face's code *is* its
-/// direction and code 0 doubles as the `shade: false` identity
-/// (`FACE_SHADE[0] == 1.0`). Nothing may renumber them — every Overworld mesh
-/// byte and the greedy oracle's expansion (which reads the code back as a face
-/// direction) depend on it.
-///
-/// M16 appends **code 6 = 0.9**, the one factor `CardinalLighting::NETHER`
-/// introduces (its up *and* down). Code 7 stays reserved: it is inside the
-/// 3-bit mask but outside this table, and [`pack_light_word`] rejects it in
-/// release builds rather than letting it index out of bounds here or in the
-/// shader.
-pub const FACE_SHADE: [f32; 7] = [1.0, 0.5, 0.8, 0.8, 0.6, 0.6, 0.9];
-
-/// **The one face → shade-code mapping**, driven by the world's dimension.
-///
-/// Both mesher paths, all three geometry kinds (cube, model, fluid) and the
-/// greedy merge key resolve a face's shade through here, so a face's stored
-/// code cannot depend on which emitter produced it.
-///
-/// The rule is a lookup, not a search: a face whose dimension leaves its factor
-/// at the default keeps its historical code — which is what makes every
-/// Overworld/default mesh byte-identical to pre-M16, including the two pairs
-/// (north/south, west/east) that share a value and would otherwise collapse
-/// onto one code. Only a face the dimension actually moves (Nether up/down,
-/// 1.0/0.5 → 0.9) looks the new factor up, and finds code 6.
-///
-/// Fail-closed: a factor that is in no `FACE_SHADE` entry has no representable
-/// code, so this panics rather than packing a wrong shade. Vanilla ships
-/// exactly the two tables `CardinalLightType` names, so that is unreachable
-/// today — it exists so a third table cannot be added silently.
-pub fn face_shade_code(world: &World, face: usize) -> u8 {
-    let want = world.cardinal_light().by_mesh_face(face);
-    if FACE_SHADE[face] == want {
-        return face as u8;
-    }
-    match FACE_SHADE.iter().position(|f| *f == want) {
-        Some(code) => code as u8,
-        None => panic!(
-            "cardinal light factor {want} for face {face} has no FACE_SHADE code \
-             (dimension {:?}); add it to FACE_SHADE *and* shaders/world.vert",
-            world.cardinal_light_type()
-        ),
-    }
+/// `CardinalLighting.byFace` for a mesher face (`[up, down, north, south,
+/// west, east]`) under the world's dimension: 0.5/1.0/0.8/0.6 by default, the
+/// Nether's 0.9 up and down.
+pub fn face_shade(world: &World, face: usize) -> f32 {
+    world.cardinal_light().by_mesh_face(face)
 }
 
 /// Unit-cube face corners + UV, matching asset face order.
@@ -398,50 +362,57 @@ const FACE_AXES: [(usize, usize, (i32, i32, i32)); 6] = [
     (2, 1, (-1, 0, 0)), // west: u=z, v=y
     (2, 1, (1, 0, 0)),  // east
 ];
-/// AO level 0..3 → brightness, indexed by the vertex's 2-bit AO code.
-/// **Mirrored verbatim in `shaders/world.vert`** — keep both in sync.
-pub const AO_LEVELS: [f32; 4] = [0.45, 0.65, 0.82, 1.0];
-/// The AO code meaning "no occlusion" — `AO_LEVELS[AO_NONE] == 1.0`, so model
-/// and fluid faces reproduce their old un-AO'd color exactly.
-pub const AO_NONE: u8 = 3;
-
-/// Pack a texture layer with the two light channels.
-///
-/// Vanilla keeps block and sky light **separate** all the way to the shader:
-/// they are combined additively there, and the sky half is scaled by the time
-/// of day (`SKY_LIGHT_FACTOR`). Collapsing them to one number in the mesh
-/// would bake the time of day into the geometry and force a full remesh at
-/// every sunrise.
-///
-/// The layer index needs 16 bits (a few thousand layers) and each channel
-/// needs 4, so all three ride in the existing `u32` — the vertex does not
-/// grow. Layout: `layer | block << 16 | sky << 20`.
-pub fn pack_layer(layer: u32, block: u8, sky: u8) -> u32 {
-    debug_assert!(layer <= 0xFFFF, "texture layer {layer} exceeds 16 bits");
-    (layer & 0xFFFF) | ((block as u32 & 15) << 16) | ((sky as u32 & 15) << 20)
-}
-
 /// Everything the mesher reads per block state, borrowed.
 ///
 /// `cull` may be empty (or shorter than `render`): a state with no entry falls
-/// back to the legacy rule — a `RenderKind::Cube` occludes all six faces and
-/// nothing is translucent — which is what every synthetic fixture relies on.
+/// back to the legacy rule — a `RenderKind::Cube` occludes all six faces, is a
+/// full opaque block to the lighting, and nothing is translucent — which is
+/// what every synthetic fixture relies on. `emission` / `dampening` may be
+/// empty the same way (no emitters; a cube dampens 15, anything else 0).
 #[derive(Clone, Copy)]
 pub struct MeshInputs<'a> {
     pub render: &'a [RenderKind],
     pub models: &'a [Vec<rewo_data::assets::Quad>],
     pub fluid: &'a [Option<CarriedFluid>],
     pub cull: &'a [CullInfo],
+    /// `BlockState.getLightEmission()` per state.
+    pub emission: &'a [u8],
+    /// `BlockState.getLightDampening()` per state.
+    pub dampening: &'a [u8],
+    /// Vanilla's "Smooth Lighting" option (`Options.ambientOcclusion`, on by
+    /// default): off, every block takes the flat path.
+    pub smooth_lighting: bool,
 }
 
 impl<'a> MeshInputs<'a> {
-    /// The production tables of a bake.
+    /// The production tables of a bake, smooth lighting on.
     pub fn from_baked(b: &'a rewo_data::assets::BakedAssets) -> Self {
         Self {
             render: &b.render,
             models: &b.models,
             fluid: &b.fluid,
             cull: &b.cull,
+            emission: &b.emission,
+            dampening: &b.dampening,
+            smooth_lighting: true,
+        }
+    }
+
+    /// Only the geometry tables; no per-state lighting facts (the legacy
+    /// fallbacks of [`MeshInputs`] apply), smooth lighting on.
+    pub fn geometry(
+        render: &'a [RenderKind],
+        models: &'a [Vec<rewo_data::assets::Quad>],
+        fluid: &'a [Option<CarriedFluid>],
+    ) -> Self {
+        Self {
+            render,
+            models,
+            fluid,
+            cull: &[],
+            emission: &[],
+            dampening: &[],
+            smooth_lighting: true,
         }
     }
 }
@@ -451,11 +422,22 @@ impl<'a> MeshInputs<'a> {
 struct Tables<'a> {
     render: &'a [RenderKind],
     cull: &'a [CullInfo],
-    /// Full-face model quads get corner AO (production tables only).
-    model_ao: bool,
+    emission: &'a [u8],
+    dampening: &'a [u8],
+    smooth_lighting: bool,
 }
 
 impl<'a> Tables<'a> {
+    fn new(inputs: &MeshInputs<'a>) -> Self {
+        Self {
+            render: inputs.render,
+            cull: inputs.cull,
+            emission: inputs.emission,
+            dampening: inputs.dampening,
+            smooth_lighting: inputs.smooth_lighting,
+        }
+    }
+
     fn get(&self, state: usize) -> Option<&'a RenderKind> {
         self.render.get(state)
     }
@@ -463,11 +445,54 @@ impl<'a> Tables<'a> {
     fn info(&self, state: u32) -> CullInfo {
         match self.cull.get(state as usize) {
             Some(c) => *c,
-            None => CullInfo {
-                occludes: if self.is_cube(state) { 0b11_1111 } else { 0 },
-                ..CullInfo::default()
-            },
+            None => {
+                let cube = self.is_cube(state);
+                CullInfo {
+                    occludes: if cube { 0b11_1111 } else { 0 },
+                    ao_occluder: cube,
+                    view_blocking: cube,
+                    shade_dark: cube,
+                    ambient_occlusion: true,
+                    ..CullInfo::default()
+                }
+            }
         }
+    }
+
+    fn emission(&self, state: u32) -> u8 {
+        self.emission.get(state as usize).copied().unwrap_or(0)
+    }
+
+    fn dampening(&self, state: u32) -> u8 {
+        match self.dampening.get(state as usize) {
+            Some(d) => *d,
+            None if self.is_cube(state) => 15,
+            None => 0,
+        }
+    }
+
+    /// `LightCoordsUtil.getLightCoords(BrightnessGetter.DEFAULT, level, state,
+    /// pos)`: `FULL_BRIGHT` for an emissive-rendering state, else the stored
+    /// light at `pos`, with the block channel raised to the state's own
+    /// emission (`withBlock`).
+    fn light_coords(&self, world: &World, state: u32, x: i32, y: i32, z: i32) -> i32 {
+        if self.info(state).emissive_rendering {
+            return FULL_BRIGHT;
+        }
+        let (block, sky) = world.light_at(x, y, z);
+        let packed = light_coords(block, sky);
+        let emission = self.emission(state);
+        if block < emission {
+            packed & 0xFF_0000 | (emission as i32) << 4
+        } else {
+            packed
+        }
+    }
+
+    /// `ModelBlockRenderer.tesselateBlock`'s choice: smooth lighting on, the
+    /// state emits no light, and its (first) model uses ambient occlusion.
+    fn uses_ao(&self, state: u32) -> bool {
+        self.smooth_lighting && self.emission(state) == 0 && self.info(state).ambient_occlusion
     }
 
     fn is_cube(&self, state: u32) -> bool {
@@ -512,15 +537,6 @@ impl<'a> Tables<'a> {
         };
         !skip
     }
-
-    /// `getShadeBrightness`'s occluder: `isCollisionShapeFullBlock` (glass
-    /// and leaves count, soul sand does not). Legacy: a rendered cube.
-    fn ao_solid(&self, state: u32) -> bool {
-        match self.cull.get(state as usize) {
-            Some(c) => c.ao_occluder,
-            None => self.is_cube(state),
-        }
-    }
 }
 
 #[cfg(any(test, feature = "oracle"))]
@@ -538,12 +554,7 @@ pub(crate) fn mesh_column_reference(
 ) -> Option<ColumnMesh> {
     mesh_column_reference_with(
         world,
-        MeshInputs {
-            render: table,
-            models,
-            fluid: carried,
-            cull: &[],
-        },
+        MeshInputs::geometry(table, models, carried),
         cx,
         cz,
     )
@@ -557,11 +568,8 @@ pub(crate) fn mesh_column_reference_with(
     cx: i32,
     cz: i32,
 ) -> Option<ColumnMesh> {
-    let table = Tables {
-        render: inputs.render,
-        cull: inputs.cull,
-        model_ao: !inputs.cull.is_empty(),
-    };
+    let table = Tables::new(&inputs);
+    let ao = AoView { world, table };
     let (models, carried) = (inputs.models, inputs.fluid);
     let col = world.column(cx, cz)?;
     let shape = world.shape;
@@ -633,8 +641,7 @@ pub(crate) fn mesh_column_reference_with(
                             tint,
                         }) => {
                             visible_cube_faces += emit_cube(
-                                world,
-                                table,
+                                &ao,
                                 &mut tint_cache,
                                 &mut vertices,
                                 &mut indices,
@@ -652,8 +659,7 @@ pub(crate) fn mesh_column_reference_with(
                         }
                         Some(RenderKind::Model(idx)) => {
                             emit_model(
-                                world,
-                                table,
+                                &ao,
                                 models,
                                 &mut tint_cache,
                                 &mut vertices,
@@ -705,18 +711,17 @@ pub(crate) fn mesh_column_reference_with(
 /// The merge identity of a mergeable cube face.
 ///
 /// `state` is in the key alongside the packed words on purpose: two different
-/// blocks can legitimately share an atlas layer on one face, and `light`/`tint`
+/// blocks can legitimately share an atlas layer on one face, and `light`/`color`
 /// are lossy summaries of *appearance*, not of *material*. Keying on the block
 /// state as well makes coalescence a deliberate "same block" decision rather
 /// than a coincidence of packed bits.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct FaceKey {
     state: u32,
-    /// The exact `pack_light_word` output — layer, block/sky light, the face's
-    /// shade code, and the (uniform) AO code.
+    /// The exact `pack_light_word` output — layer and the (uniform) light.
     light: u32,
-    /// The exact `pack_tint` output.
-    tint: u32,
+    /// The exact `pack_color` output — the (uniform) vertex color.
+    color: u32,
 }
 
 /// One face direction's plane masks.
@@ -843,7 +848,7 @@ fn emit_rect(
     width: i32,
     height: i32,
     light: u32,
-    tint: u32,
+    color: u32,
 ) {
     let (au, av, _) = FACE_AXES[face];
     let base_idx = vertices.len() as u32;
@@ -863,7 +868,7 @@ fn emit_rect(
             pos,
             uv: [uv[0] * width as f32, uv[1] * height as f32],
             light,
-            tint,
+            color,
         });
     }
     indices.extend_from_slice(&[
@@ -921,7 +926,7 @@ fn greedy_plane(
             }
             let base = mask_base_block(face, plane, u0 as i32, v0 as i32, base_x, base_z, y0);
             emit_rect(
-                vertices, indices, face, base, w as i32, h as i32, key.light, key.tint,
+                vertices, indices, face, base, w as i32, h as i32, key.light, key.color,
             );
             rects += 1;
         }
@@ -948,12 +953,7 @@ pub fn mesh_column(
 ) -> Option<ColumnMesh> {
     mesh_column_with(
         world,
-        MeshInputs {
-            render: table,
-            models,
-            fluid: carried,
-            cull: &[],
-        },
+        MeshInputs::geometry(table, models, carried),
         cx,
         cz,
     )
@@ -969,11 +969,8 @@ pub fn mesh_column_with(
     cx: i32,
     cz: i32,
 ) -> Option<ColumnMesh> {
-    let table = Tables {
-        render: inputs.render,
-        cull: inputs.cull,
-        model_ao: !inputs.cull.is_empty(),
-    };
+    let table = Tables::new(&inputs);
+    let ao = AoView { world, table };
     let (models, carried) = (inputs.models, inputs.fluid);
     let col = world.column(cx, cz)?;
     let shape = world.shape;
@@ -1073,8 +1070,7 @@ pub fn mesh_column_with(
                             let translucent = table.info(state).translucent;
                             for face in 0..6 {
                                 let Some(cf) = cube_face(
-                                    world,
-                                    table,
+                                    &ao,
                                     &mut tint_cache,
                                     wx,
                                     y,
@@ -1103,10 +1099,10 @@ pub fn mesh_column_with(
                                     unit_fallback_faces += 1;
                                     continue;
                                 }
-                                // A face whose four corner AO codes agree has no
+                                // A face whose four vertices agree has no
                                 // gradient to lose, so it may merge. Anything
                                 // else must stay a unit quad — and so must every
-                                // up (+Y) face, whatever its AO.
+                                // up (+Y) face, whatever its lighting.
                                 //
                                 // The up carve-out is a measurement, not a
                                 // structural limit, and the measurement does not
@@ -1128,11 +1124,7 @@ pub fn mesh_column_with(
                                 // diagnosed. The other five directions came out
                                 // byte-identical under the same comparison, so
                                 // they merge and up keeps the legacy unit quads.
-                                if face != 0
-                                    && cf.ao[0] == cf.ao[1]
-                                    && cf.ao[0] == cf.ao[2]
-                                    && cf.ao[0] == cf.ao[3]
-                                {
+                                if face != 0 && cf.lit.uniform() {
                                     greedy_candidate_faces += 1;
                                     masks.insert(
                                         face,
@@ -1143,12 +1135,9 @@ pub fn mesh_column_with(
                                             state,
                                             light: pack_light_word(
                                                 cf.layer as u32,
-                                                cf.lb,
-                                                cf.ls,
-                                                cf.shade,
-                                                cf.ao[0],
+                                                cf.lit.coords[0],
                                             ),
-                                            tint: pack_tint(cf.tint_rgb, 0),
+                                            color: pack_color(cf.lit.color[0]),
                                         },
                                     );
                                 } else {
@@ -1168,8 +1157,7 @@ pub fn mesh_column_with(
                         }
                         Some(RenderKind::Model(idx)) => {
                             emit_model(
-                                world,
-                                table,
+                                &ao,
                                 models,
                                 &mut tint_cache,
                                 &mut vertices,
@@ -1425,32 +1413,21 @@ fn emit_fluid(
     let (z0, z1) = (wz as f32, wz as f32 + 1.0);
     let yf = y as f32;
 
-    // Face light mirrors the cube path (the cell the face looks into); lava
-    // emits its own block light, so it stays bright in an unlit cave.
-    let light = |x: i32, yy: i32, z: i32| -> (u8, u8) {
-        if lava {
-            (15, 0)
-        } else {
-            world.light_at(x, yy, z)
-        }
-    };
-    // Fluid faces carry flat directional shade and no AO, so the AO code is the
-    // identity level (AO_LEVELS[AO_NONE] == 1.0). The shade is the active
-    // dimension's code for the face's direction (M16) — identity under the
-    // default table, so the five call sites below read as the old literals.
-    let mut quad = |p: [([f32; 3], [f32; 2]); 4], shade_code: u8, l: (u8, u8)| {
+    // `FluidRenderer.getLightCoords(level, pos)`: the brighter of the cell and
+    // the one above, each through `LightCoordsUtil.getLightCoords` (so lava's
+    // own emission lights it). The top and the sides sample the fluid's cell,
+    // the bottom the cell below it.
+    let lc = |x: i32, yy: i32, z: i32| table.light_coords(world, world.block_state_at(x, yy, z), x, yy, z);
+    let fluid_light = |yy: i32| light_max(lc(wx, yy, wz), lc(wx, yy + 1, wz));
+    // `ARGB.scaleRGB(tintColor, factor)`: `up()` on top, `down()` below, and
+    // `up() * north()` / `up() * west()` on the Z / X sides.
+    let cardinal = world.cardinal_light();
+    let up = cardinal.by_mesh_face(0);
+    let mut quad = |p: [([f32; 3], [f32; 2]); 4], factor: f32, coords: i32| {
+        let color = scale_rgb(tint_rgb, factor);
         let base = vertices.len() as u32;
         for (pos, uv) in p {
-            vertices.push(MeshVertex::new(
-                pos,
-                uv,
-                fluid_layer as u32,
-                l.0,
-                l.1,
-                shade_code,
-                AO_NONE,
-                tint_rgb,
-            ));
+            vertices.push(MeshVertex::new(pos, uv, fluid_layer as u32, coords, color));
         }
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     };
@@ -1464,8 +1441,8 @@ fn emit_fluid(
                 ([x1, yf + h11, z1], [1.0, 1.0]),
                 ([x0, yf + h01, z1], [0.0, 1.0]),
             ],
-            face_shade_code(world, 0),
-            light(wx, y + 1, wz),
+            up,
+            fluid_light(y),
         );
     }
     // Sides — skip against the same fluid or a full opaque cube.
@@ -1527,7 +1504,9 @@ fn emit_fluid(
         {
             continue;
         }
-        quad(corners, face_shade_code(world, face), light(nx, y, nz));
+        // `faceDir.getAxis() == Z ? north() : west()`.
+        let side = cardinal.by_mesh_face(if face < 4 { 2 } else { 4 });
+        quad(corners, up * side, fluid_light(y));
     }
     // Bottom — against anything that isn't fluid, isn't covered by our own
     // shape, and isn't a full cube. Vanilla's `renderDown` has TWO neighbour
@@ -1546,9 +1525,131 @@ fn emit_fluid(
                 ([x1, yf, z1], [1.0, 1.0]),
                 ([x1, yf, z0], [1.0, 0.0]),
             ],
-            face_shade_code(world, 1),
-            light(wx, y - 1, wz),
+            cardinal.by_mesh_face(1),
+            fluid_light(y - 1),
         );
+    }
+}
+
+/// [`smooth_light::AoWorld`] over the chunk snapshot and the per-state tables:
+/// each question reads the block state at the position, then the table.
+struct AoView<'a> {
+    world: &'a World,
+    table: Tables<'a>,
+}
+
+impl AoView<'_> {
+    fn state(&self, (x, y, z): (i32, i32, i32)) -> u32 {
+        self.world.block_state_at(x, y, z)
+    }
+}
+
+impl smooth_light::AoWorld for AoView<'_> {
+    fn light_coords(&self, p: (i32, i32, i32)) -> i32 {
+        self.table.light_coords(self.world, self.state(p), p.0, p.1, p.2)
+    }
+
+    fn shade_brightness(&self, p: (i32, i32, i32)) -> f32 {
+        if self.table.info(self.state(p)).shade_dark {
+            0.2
+        } else {
+            1.0
+        }
+    }
+
+    fn is_view_blocking(&self, p: (i32, i32, i32)) -> bool {
+        self.table.info(self.state(p)).view_blocking
+    }
+
+    fn light_dampening(&self, p: (i32, i32, i32)) -> i32 {
+        self.table.dampening(self.state(p)) as i32
+    }
+
+    /// `isShapeFullBlock(getOcclusionShape())`: every face occludes.
+    fn is_solid_render(&self, p: (i32, i32, i32)) -> bool {
+        self.table.info(self.state(p)).occludes == 0b11_1111
+    }
+
+    fn is_collision_shape_full_block(&self, p: (i32, i32, i32)) -> bool {
+        self.table.info(self.state(p)).ao_occluder
+    }
+}
+
+/// Mesher face order (`[up, down, north, south, west, east]`) →
+/// [`smooth_light::Face`].
+const SMOOTH_FACE: [smooth_light::Face; 6] = [
+    smooth_light::Face::Up,
+    smooth_light::Face::Down,
+    smooth_light::Face::North,
+    smooth_light::Face::South,
+    smooth_light::Face::West,
+    smooth_light::Face::East,
+];
+
+/// One quad's per-vertex light coordinates and colors.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct LitQuad {
+    coords: [i32; 4],
+    color: [[u8; 3]; 4],
+}
+
+impl LitQuad {
+    /// All four vertices identical — nothing for the rasterizer to
+    /// interpolate, so the face may merge with its equals.
+    fn uniform(&self) -> bool {
+        (1..4).all(|i| self.coords[i] == self.coords[0] && self.color[i] == self.color[0])
+    }
+}
+
+/// Light one quad of the block `state` at `(wx, y, wz)` the way
+/// `ModelBlockRenderer.tesselateBlock` does, then tint it (`putQuadWithTint`).
+///
+/// `verts` are block-local, in any corner order. `dir` is the quad's
+/// direction (mesher order), `cull` its cull face (vanilla's per-direction
+/// quad list; `None` for the unculled list), `shade` its `materialInfo.shade`.
+#[allow(clippy::too_many_arguments)]
+fn light_quad(
+    ao: &AoView<'_>,
+    state: u32,
+    (wx, y, wz): (i32, i32, i32),
+    verts: &[[f32; 3]; 4],
+    dir: usize,
+    cull: Option<usize>,
+    shade: bool,
+    tint: [u8; 3],
+) -> LitQuad {
+    let world = ao.world;
+    // `quad.materialInfo().shade() ? cardinalLighting.byFace(direction) :
+    // cardinalLighting.up()` — both paths.
+    let shade_factor = face_shade(world, if shade { dir } else { 0 });
+    let pos = (wx, y, wz);
+    if ao.table.uses_ao(state) {
+        let face = SMOOTH_FACE[dir];
+        let order = smooth_light::face_info_order(verts, face);
+        let light = smooth_light::quad_ambient_occlusion(ao, pos, face, order.map(|i| verts[i]));
+        let mut out = LitQuad {
+            coords: [0; 4],
+            color: [[0; 3]; 4],
+        };
+        for (k, &i) in order.iter().enumerate() {
+            out.coords[i] = light.light_coords[k];
+            out.color[i] = block_vertex_color(light.brightness[k], shade_factor, tint);
+        }
+        out
+    } else {
+        // `tesselateFlat`: a culled quad samples its cull face's neighbour; an
+        // unculled one `prepareQuadFlat(..., -1)`, i.e. the neighbour only for a
+        // `faceCubic` quad. Either way the *own* state decides emission.
+        let (ox, oy, oz) = match cull {
+            Some(c) => FACE_OFFSETS[c],
+            None if smooth_light::face_cubic(ao, pos, SMOOTH_FACE[dir], verts) => FACE_OFFSETS[dir],
+            None => (0, 0, 0),
+        };
+        let coords = ao.table.light_coords(world, state, wx + ox, y + oy, wz + oz);
+        LitQuad {
+            coords: [coords; 4],
+            color: [block_vertex_color(shade_factor, 1.0, tint); 4],
+        }
     }
 }
 
@@ -1558,21 +1659,14 @@ fn emit_fluid(
 /// fallback path's vertices are computed by the *same* code — they cannot drift.
 struct CubeFace {
     layer: u16,
-    tint_rgb: [u8; 3],
-    lb: u8,
-    ls: u8,
-    /// AO code per `FACE_CORNERS[face]` index.
-    ao: [u8; 4],
-    /// [`face_shade_code`] for this face under the world's dimension. Resolved
-    /// once, here, so the greedy merge key and the unit quad cannot disagree.
-    shade: u8,
+    /// Per `FACE_CORNERS[face]` vertex.
+    lit: LitQuad,
 }
 
 /// Resolve one cube face, or `None` if a full-cube neighbour culls it.
 #[allow(clippy::too_many_arguments)]
 fn cube_face(
-    world: &World,
-    table: Tables<'_>,
+    ao: &AoView<'_>,
     cache: &mut TintCache,
     wx: i32,
     y: i32,
@@ -1583,61 +1677,26 @@ fn cube_face(
     raw_faces: &[u16; 6],
     tint: &[TintSource; 6],
 ) -> Option<CubeFace> {
+    let world = ao.world;
     let (dx, dy, dz) = FACE_OFFSETS[face];
-    let (nx, ny, nz) = (wx + dx, y + dy, wz + dz);
-    if !table.should_render(state, world.block_state_at(nx, ny, nz), face) {
+    if !ao.table.should_render(state, world.block_state_at(wx + dx, y + dy, wz + dz), face) {
         return None;
     }
-    let (lb, ls) = world.light_at(nx, ny, nz);
     // Dynamic biome tint (or the legacy pre-tinted layer + white). The same
     // (wx,y,wz)+resolver recurs across the 6 faces; the cache serves it once.
     let (layer, tint_rgb) = match biome_tint(world, cache, wx, y, wz, tint[face]) {
         Some(rgb) => (raw_faces[face], rgb),
         None => (faces[face], TINT_WHITE),
     };
-    let mut ao = [0u8; 4];
-    for (i, (corner, _uv)) in FACE_CORNERS[face].iter().enumerate() {
-        ao[i] = corner_ao(world, table, wx, y, wz, face, *corner);
-    }
-    Some(CubeFace {
-        layer,
-        tint_rgb,
-        lb,
-        ls,
-        ao,
-        shade: face_shade_code(world, face),
-    })
+    let verts = FACE_CORNERS[face].map(|(corner, _)| corner);
+    // A cube face is a shaded quad culled against its own direction.
+    let lit = light_quad(ao, state, (wx, y, wz), &verts, face, Some(face), true, tint_rgb);
+    Some(CubeFace { layer, lit })
 }
 
-/// The AO code of one corner of a block face: the two edge neighbours and the
-/// diagonal in the layer just outside the face. `corner` is the corner's
-/// block-local position (0 or 1 on the face's two tangent axes).
-fn corner_ao(world: &World, table: Tables<'_>, wx: i32, y: i32, wz: i32, face: usize, corner: [f32; 3]) -> u8 {
-    let (uu, vv, (fnx, fny, fnz)) = FACE_AXES[face];
-    let su = 2 * (corner[uu] > 0.5) as i32 - 1;
-    let sv = 2 * (corner[vv] > 0.5) as i32 - 1;
-    let mut off_u = [0i32; 3];
-    off_u[uu] = su;
-    let mut off_v = [0i32; 3];
-    off_v[vv] = sv;
-    let np = [wx + fnx, y + fny, wz + fnz];
-    let s1 = solid(world, table, [np[0] + off_u[0], np[1] + off_u[1], np[2] + off_u[2]]);
-    let s2 = solid(world, table, [np[0] + off_v[0], np[1] + off_v[1], np[2] + off_v[2]]);
-    let sc = solid(
-        world,
-        table,
-        [np[0] + off_u[0] + off_v[0], np[1] + off_u[1] + off_v[1], np[2] + off_u[2] + off_v[2]],
-    );
-    if s1 && s2 {
-        0
-    } else {
-        3 - (s1 as u8 + s2 as u8 + sc as u8)
-    }
-}
-
-/// Whether a model quad is a whole block face (`faceCubic`): axis-aligned
-/// on the block boundary of its direction and spanning the full face. Such a
-/// quad takes the cube path's corner AO.
+/// Whether a model quad is a whole block face: axis-aligned on the block
+/// boundary of its direction and spanning the full face.
+#[cfg(test)]
 fn full_face(verts: &[[f32; 3]; 4], dir: usize) -> bool {
     let (uu, vv, (nx, ny, nz)) = FACE_AXES[dir];
     let n = [nx, ny, nz];
@@ -1656,7 +1715,7 @@ fn full_face(verts: &[[f32; 3]; 4], dir: usize) -> bool {
     umin.abs() < 1e-5 && vmin.abs() < 1e-5 && (umax - 1.0).abs() < 1e-5 && (vmax - 1.0).abs() < 1e-5
 }
 
-/// Emit one resolved cube face as a legacy unit quad.
+/// Emit one resolved cube face as a unit quad.
 fn push_cube_face(
     vertices: &mut Vec<MeshVertex>,
     indices: &mut Vec<u32>,
@@ -1676,11 +1735,8 @@ fn push_cube_face(
             ],
             *uv,
             f.layer as u32,
-            f.lb,
-            f.ls,
-            f.shade,
-            f.ao[i],
-            f.tint_rgb,
+            f.lit.coords[i],
+            f.lit.color[i],
         ));
     }
     indices.extend_from_slice(&[
@@ -1697,8 +1753,7 @@ fn push_cube_face(
 #[cfg(any(test, feature = "oracle"))]
 #[allow(clippy::too_many_arguments)]
 fn emit_cube(
-    world: &World,
-    table: Tables<'_>,
+    ao: &AoView<'_>,
     cache: &mut TintCache,
     vertices: &mut Vec<MeshVertex>,
     indices: &mut Vec<u32>,
@@ -1712,16 +1767,14 @@ fn emit_cube(
     raw_faces: &[u16; 6],
     tint: &[TintSource; 6],
 ) -> u32 {
-    let (v, i) = if table.info(state).translucent {
+    let (v, i) = if ao.table.info(state).translucent {
         (tvertices, tindices)
     } else {
         (vertices, indices)
     };
     let mut visible = 0;
     for face in 0..6 {
-        let Some(f) =
-            cube_face(world, table, cache, wx, y, wz, state, face, faces, raw_faces, tint)
-        else {
+        let Some(f) = cube_face(ao, cache, wx, y, wz, state, face, faces, raw_faces, tint) else {
             continue;
         };
         push_cube_face(v, i, wx, y, wz, face, &f);
@@ -1732,8 +1785,7 @@ fn emit_cube(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_model(
-    world: &World,
-    table: Tables<'_>,
+    ao: &AoView<'_>,
     models: &[Vec<rewo_data::assets::Quad>],
     cache: &mut TintCache,
     vertices: &mut Vec<MeshVertex>,
@@ -1746,68 +1798,42 @@ fn emit_model(
     state: u32,
     model_idx: u32,
 ) {
+    let world = ao.world;
     let Some(quads) = models.get(model_idx as usize) else {
         return;
     };
-    // Model quads get flat (per-face) shading; AO on arbitrary quads is an
-    // M4-followon. Light is sampled from the cell the quad FACES, not the
-    // block's own — vanilla's `renderModelFaceFlat` does the same. Sampling
-    // the block's own cell reads the inside of a solid block, which is always
-    // dark: grass_block renders as a Model (cube + overlay), so the whole
-    // ground plane of an overworld would light at zero.
-    let own_light = world.light_at(wx, y, wz);
     for quad in quads {
-        if quad.cull >= 0 {
-            let face = quad.cull as usize;
+        let cull = (quad.cull >= 0).then_some(quad.cull as usize);
+        if let Some(face) = cull {
             let (dx, dy, dz) = FACE_OFFSETS[face];
-            if !table.should_render(state, world.block_state_at(wx + dx, y + dy, wz + dz), face) {
+            if !ao.table.should_render(state, world.block_state_at(wx + dx, y + dy, wz + dz), face) {
                 continue;
             }
         }
-        // A shaded quad takes its direction's code under the active dimension
-        // (M16), which is the identity `quad.dir` in every default-lit world.
-        // `shade: false` means an unshaded quad and stays code 0 in *every*
-        // dimension: FACE_SHADE[0] is exactly 1.0, so it reproduces the old
-        // `1.0` multiplier bit-for-bit — vanilla's unshaded quads ignore
-        // cardinal lighting the same way.
-        let shade_code = if quad.shade {
-            face_shade_code(world, quad.dir as usize)
-        } else {
-            0
-        };
-        // A quad facing into a solid neighbour (an interior face) has nothing
-        // to sample, so it keeps the block's own cell.
-        let (odx, ody, odz) = FACE_OFFSETS[quad.dir as usize];
-        let (nbx, nby, nbz) = (wx + odx, y + ody, wz + odz);
-        let (own_block, own_sky) = if table.occludes(world.block_state_at(nbx, nby, nbz), quad.dir as usize ^ 1) {
-            own_light
-        } else {
-            world.light_at(nbx, nby, nbz)
-        };
         // Dynamic biome tint (raw layer + tint color) or the legacy pre-tinted
-        // layer. The tint is per-quad; AO/shade still vary per-vertex. A model's
-        // quads at one block share a resolver+position, so the cache serves them
-        // all from one computation.
+        // layer. A model's quads at one block share a resolver+position, so the
+        // cache serves them all from one computation.
         let (layer, tint_rgb) = match biome_tint(world, cache, wx, y, wz, quad.tint) {
             Some(rgb) => (quad.raw_layer, rgb),
             None => (quad.layer, TINT_WHITE),
         };
+        let lit = light_quad(
+            ao,
+            state,
+            (wx, y, wz),
+            &quad.verts,
+            quad.dir as usize,
+            cull,
+            quad.shade,
+            tint_rgb,
+        );
         let (vertices, indices) = if quad.translucent {
             (&mut *tvertices, &mut *tindices)
         } else {
             (&mut *vertices, &mut *indices)
         };
-        // A whole-face quad (grass_block's faces, a log's) takes the corner
-        // AO a cube face gets; only when the table says so, so legacy
-        // fixtures keep their flat model shading.
-        let face_ao = table.model_ao && full_face(&quad.verts, quad.dir as usize);
         let base_idx = vertices.len() as u32;
         for i in 0..4 {
-            let ao = if face_ao {
-                corner_ao(world, table, wx, y, wz, quad.dir as usize, quad.verts[i])
-            } else {
-                AO_NONE
-            };
             vertices.push(MeshVertex::new(
                 [
                     wx as f32 + quad.verts[i][0],
@@ -1816,11 +1842,8 @@ fn emit_model(
                 ],
                 quad.uv[i],
                 layer as u32,
-                own_block,
-                own_sky,
-                shade_code,
-                ao,
-                tint_rgb,
+                lit.coords[i],
+                lit.color[i],
             ));
         }
         indices.extend_from_slice(&[
@@ -1832,10 +1855,6 @@ fn emit_model(
             base_idx + 3,
         ]);
     }
-}
-
-fn solid(world: &World, table: Tables<'_>, p: [i32; 3]) -> bool {
-    table.ao_solid(world.block_state_at(p[0], p[1], p[2]))
 }
 
 #[cfg(any(test, feature = "oracle"))]
@@ -2174,11 +2193,7 @@ mod tests {
         let m = mesh_column(&w, &table, &models, &[], 0, 0).expect("meshed");
         let v = m.vertices[0];
         assert_eq!(v.layer_index(), 7, "legacy path uses the pre-tinted layer");
-        assert_eq!(
-            v.tint_rgb(),
-            TINT_WHITE,
-            "legacy path carries white tint bytes"
-        );
+        assert_eq!(v.color_rgb(), TINT_WHITE, "legacy path carries a white color");
         assert_eq!(
             v.reconstructed_color(),
             [1.0, 1.0, 1.0],
@@ -2213,11 +2228,9 @@ mod tests {
         let m2 = mesh_column(&w, &table, &models, &[], 0, 0).expect("meshed");
         let v2 = m2.vertices[0];
         assert_eq!(v2.layer_index(), 8, "biome path uses the RAW layer");
-        assert_eq!(
-            v2.tint_rgb(),
-            [100, 0, 0],
-            "tint bytes are carried losslessly"
-        );
+        // Open air, unshaded: gray(1.0) = 255, times the tint (vanilla
+        // `ARGB.multiply`, 255 * 100 / 255 = 100) — the tint exactly.
+        assert_eq!(v2.color_rgb(), [100, 0, 0], "the tint is carried exactly");
         let c2 = v2.reconstructed_color();
         assert!(
             (c2[0] - 100.0 / 255.0).abs() < 1e-6,
@@ -2228,130 +2241,98 @@ mod tests {
         assert_eq!(c2[2], 0.0);
     }
 
-    // -- M15 packed vertex ABI ---------------------------------------------
+    // -- packed vertex ABI --------------------------------------------------
 
     #[test]
     fn packed_vertex_is_exactly_28_bytes_with_expected_offsets() {
         assert_eq!(std::mem::size_of::<MeshVertex>(), 28, "packed vertex size");
         assert_eq!(std::mem::align_of::<MeshVertex>(), 4, "packed vertex align");
         // Offsets the Vulkan attribute descriptions hard-code.
-        let v = MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, 0, 0, AO_NONE, TINT_WHITE);
+        let v = MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, TINT_WHITE);
         let base = &v as *const _ as usize;
         assert_eq!(&v.pos as *const _ as usize - base, 0, "pos offset");
         assert_eq!(&v.uv as *const _ as usize - base, 12, "uv offset");
         assert_eq!(&v.light as *const _ as usize - base, 20, "light offset");
-        assert_eq!(&v.tint as *const _ as usize - base, 24, "tint offset");
+        assert_eq!(&v.color as *const _ as usize - base, 24, "color offset");
     }
 
-    /// Every shade code × every AO level must reconstruct the *legacy* float
-    /// formula bit-for-bit: `FACE_SHADE[face] * AO_LEVELS[ao] * (rgb/255)`.
+    /// `block_vertex_color` against values derived by hand from vanilla's
+    /// `ARGB` arithmetic (f32 products, `Mth.floor`, `(int)` truncation, and
+    /// `a * b / 255` integer division).
     #[test]
-    fn reconstruction_matches_legacy_formula_for_every_shade_and_ao() {
-        for face in 0..FACE_SHADE.len() {
-            for ao in 0..AO_LEVELS.len() {
-                for rgb in [
-                    [255u8, 255, 255],
-                    [100, 0, 0],
-                    [1, 2, 3],
-                    [0, 0, 0],
-                    [91, 163, 163],
-                ] {
-                    let v = MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, 0, face as u8, ao as u8, rgb);
-                    assert_eq!(v.shade_code(), face as u8);
-                    assert_eq!(v.ao_code(), ao as u8);
-                    // The legacy CPU sequence, verbatim.
-                    let c = FACE_SHADE[face] * AO_LEVELS[ao];
-                    let legacy = [
-                        c * (rgb[0] as f32 / 255.0),
-                        c * (rgb[1] as f32 / 255.0),
-                        c * (rgb[2] as f32 / 255.0),
-                    ];
-                    let got = v.reconstructed_color();
-                    for i in 0..3 {
-                        assert_eq!(
-                            got[i].to_bits(),
-                            legacy[i].to_bits(),
-                            "face {face} ao {ao} rgb {rgb:?} channel {i}: {got:?} vs {legacy:?}"
-                        );
-                    }
-                }
-            }
+    fn block_vertex_color_is_vanillas_integer_arithmetic() {
+        // Open-air cube faces: gray(1.0) = floor(255.0) = 255, then
+        // (int)(255 * shade): 1.0 -> 255; 0.5 -> 127 (127.5); f32 0.8 =
+        // 0.800000011920929 -> 204.0000030 -> 204; f32 0.6 -> 153.0000061 -> 153.
+        assert_eq!(block_vertex_color(1.0, 1.0, TINT_WHITE), [255; 3]);
+        assert_eq!(block_vertex_color(1.0, 0.5, TINT_WHITE), [127; 3]);
+        assert_eq!(block_vertex_color(1.0, 0.8, TINT_WHITE), [204; 3]);
+        assert_eq!(block_vertex_color(1.0, 0.6, TINT_WHITE), [153; 3]);
+        // Nether up/down: f32 0.9 = 0.899999976 -> 229.4999939 -> 229.
+        assert_eq!(block_vertex_color(1.0, 0.9, TINT_WHITE), [229; 3]);
+        // An AO corner of 0.8 on a 0.8 face: floor(0.8f * 255) = 204, then
+        // (int)(204 * 0.8f) = (int)163.2000024 = 163; tinted (100, 0, 0):
+        // 163 * 100 / 255 = 16300 / 255 = 63 (63.92 truncated).
+        assert_eq!(block_vertex_color(0.8, 0.8, TINT_WHITE), [163; 3]);
+        assert_eq!(block_vertex_color(0.8, 0.8, [100, 0, 0]), [63, 0, 0]);
+        // The flat path is gray(shade) with no scale: gray(0.6) = 153.
+        assert_eq!(block_vertex_color(0.6, 1.0, TINT_WHITE), [153; 3]);
+        // The darkest AO corner: (0.2 + 0.2 + 0.2 + 0.2) * 0.25 = 0.2 in f32
+        // (0.200000003); floor(0.2f * 255) = floor(51.0000008) = 51.
+        assert_eq!(block_vertex_color(0.2, 1.0, TINT_WHITE), [51; 3]);
+        // White is the identity of the tint step for every gray.
+        for g in 0..=255u8 {
+            let b = g as f32 / 255.0;
+            let white = block_vertex_color(b, 1.0, TINT_WHITE);
+            assert_eq!(white, [as_8bit_channel(b) as u8; 3], "gray {g}");
         }
     }
 
-    /// White tint + shade 0 + AO_NONE must be EXACTLY 1.0 (the lightmapshot
-    /// probe quad depends on this).
+    /// The fluid color is `ARGB.scaleRGB(tint, factor)`, never `gray`.
     #[test]
-    fn white_untinted_vertex_reconstructs_exact_one() {
-        let v = MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, 0, 0, AO_NONE, TINT_WHITE);
-        assert_eq!(v.reconstructed_color(), [1.0, 1.0, 1.0]);
-        assert_eq!(FACE_SHADE[0], 1.0);
-        assert_eq!(AO_LEVELS[AO_NONE as usize], 1.0);
+    fn fluid_color_is_scale_rgb_of_the_tint() {
+        // Water tint 0x3F76E4 on a north side in the Overworld:
+        // factor up() * north() = 1.0 * 0.8f; (int)(63 * 0.8f) = 50,
+        // (int)(118 * 0.8f) = 94, (int)(228 * 0.8f) = 182.
+        assert_eq!(scale_rgb([63, 118, 228], 1.0 * 0.8), [50, 94, 182]);
+        // Lava is untinted (-1): 255 * down() = 127.
+        assert_eq!(scale_rgb(TINT_WHITE, 0.5), [127; 3]);
     }
 
     #[test]
-    fn tint_bytes_roundtrip_losslessly_for_every_value() {
+    fn color_bytes_roundtrip_with_opaque_alpha() {
         for c in 0u16..=255 {
             let rgb = [c as u8, (255 - c) as u8, (c as u8).wrapping_mul(7)];
-            let v = MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, 0, 0, AO_NONE, rgb);
-            assert_eq!(v.tint_rgb(), rgb, "tint byte roundtrip");
-            assert_eq!(v.tint_flags(), 0, "flags default clear");
+            let v = MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, rgb);
+            assert_eq!(v.color_rgb(), rgb, "color byte roundtrip");
+            assert_eq!(v.color >> 24, 0xFF, "alpha byte is opaque");
+            assert_eq!(v.reconstructed_color(), rgb.map(|b| b as f32 / 255.0));
         }
+        assert_eq!(MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, TINT_WHITE).reconstructed_color(), [1.0; 3]);
     }
 
-    /// The packed word must preserve `pack_layer`'s lower-24-bit contract for
-    /// every layer index and every light nibble pair.
+    /// The light word carries the layer and both smooth channels losslessly,
+    /// fractions included; the whole levels are the smooth values' high nibble.
     #[test]
-    fn light_word_preserves_pack_layer_lower_24_bits() {
+    fn light_word_carries_layer_and_smooth_light() {
         for layer in [0u32, 1, 7, 499, 500, 4095, 0xFFFF] {
             for block in 0u8..16 {
                 for sky in [0u8, 1, 7, 15] {
-                    for shade in 0..FACE_SHADE.len() as u8 {
-                        for ao in 0..AO_LEVELS.len() as u8 {
-                            let v = MeshVertex::new(
-                                [0.0; 3], [0.0; 2], layer, block, sky, shade, ao, TINT_WHITE,
-                            );
-                            assert_eq!(
-                                v.light & 0x00FF_FFFF,
-                                pack_layer(layer, block, sky),
-                                "lower 24 bits must equal pack_layer"
-                            );
-                            assert_eq!(v.layer_index(), layer as u16);
-                            assert_eq!(v.block_light(), block);
-                            assert_eq!(v.sky_light(), sky);
-                            assert_eq!(v.shade_code(), shade);
-                            assert_eq!(v.ao_code(), ao);
-                        }
-                    }
+                    let coords = light_coords(block, sky);
+                    let v = MeshVertex::new([0.0; 3], [0.0; 2], layer, coords, TINT_WHITE);
+                    assert_eq!(v.layer_index(), layer as u16);
+                    assert_eq!((v.block_light(), v.sky_light()), (block, sky));
+                    assert_eq!((v.block_smooth(), v.sky_smooth()), (block * 16, sky * 16));
                 }
             }
         }
-    }
-
-    /// An out-of-range shade code is rejected **at the packing boundary**, in
-    /// release builds too. `SHADE_MASK` is 3 bits, so the reserved code 7
-    /// survives masking intact — nothing downstream of `pack_light_word` would
-    /// notice until `MeshVertex::reconstructed_color` indexed `FACE_SHADE[7]`
-    /// out of bounds (and `world.vert` did the same, where it is undefined
-    /// rather than a panic).
-    #[test]
-    fn pack_light_word_rejects_the_reserved_shade_code() {
-        // The mask alone cannot catch 7: it round-trips through SHADE_MASK.
-        assert_eq!(
-            7u32 & SHADE_MASK,
-            7,
-            "mask would accept 7 — the assert must not"
-        );
-
-        let reserved = std::panic::catch_unwind(|| pack_light_word(0, 0, 0, 7, AO_NONE));
-        assert!(reserved.is_err(), "shade_code 7 must panic at pack time");
-
-        // 0..=6 are the valid codes, and the boundary is exactly FACE_SHADE.len().
-        for code in 0..FACE_SHADE.len() as u8 {
-            let ok = std::panic::catch_unwind(move || pack_light_word(0, 0, 0, code, AO_NONE));
-            assert!(ok.is_ok(), "shade_code {code} is valid and must not panic");
-        }
-        assert_eq!(FACE_SHADE.len(), 7, "codes 0..=6 exist, 7 is reserved");
+        // A smoothBlend result keeps its fraction: 196 = 12.25 levels of sky,
+        // 56 = 3.5 levels of block (`smoothPack(56, 196)`).
+        let v = MeshVertex::new([0.0; 3], [0.0; 2], 3, 56 | 196 << 16, TINT_WHITE);
+        assert_eq!((v.block_smooth(), v.sky_smooth()), (56, 196));
+        assert_eq!((v.block_light(), v.sky_light()), (3, 12));
+        assert_eq!(v.layer_index(), 3);
+        assert_eq!(light_coords(15, 15), FULL_BRIGHT);
     }
 
     /// UV transport is **exact for every family the mesher emits** — there is no
@@ -2360,8 +2341,7 @@ mod tests {
     /// could not represent, and it flipped 6 demo pixels at a texel boundary.
     #[test]
     fn uv_is_stored_exactly_for_every_emitted_family() {
-        let store =
-            |x: f32| MeshVertex::new([0.0; 3], [x, x], 0, 0, 0, 0, AO_NONE, TINT_WHITE).uv_f32()[0];
+        let store = |x: f32| MeshVertex::new([0.0; 3], [x, x], 0, 0, TINT_WHITE).uv_f32()[0];
 
         // Integer spans 0..=16 (what greedy will emit).
         for i in 0..=16u32 {
@@ -2400,7 +2380,7 @@ mod tests {
             [0.0625, 0.9375],
             [1.0 - 8.0 / 9.0, 4.0 / 9.0],
         ] {
-            let v = MeshVertex::new([0.0; 3], uv, 0, 0, 0, 0, AO_NONE, TINT_WHITE);
+            let v = MeshVertex::new([0.0; 3], uv, 0, 0, TINT_WHITE);
             assert_eq!(v.uv_f32(), uv, "uv must round-trip exactly");
             assert_eq!(v.uv, uv, "uv is stored verbatim");
         }
@@ -2662,13 +2642,14 @@ mod tests {
     #[test]
     fn unit_rect_is_bit_identical_to_the_legacy_unit_quad() {
         for face in 0..6 {
+            let coords = light_coords(5, 9);
+            let color = [3, 200, 71];
             let cf = CubeFace {
                 layer: 12,
-                tint_rgb: [3, 200, 71],
-                lb: 5,
-                ls: 9,
-                ao: [2; 4],
-                shade: face as u8,
+                lit: LitQuad {
+                    coords: [coords; 4],
+                    color: [color; 4],
+                },
             };
             let (mut lv, mut li) = (Vec::new(), Vec::new());
             push_cube_face(&mut lv, &mut li, 4, -9, 6, face, &cf);
@@ -2680,8 +2661,8 @@ mod tests {
                 [4, -9, 6],
                 1,
                 1,
-                pack_light_word(12, 5, 9, face as u8, 2),
-                pack_tint([3, 200, 71], 0),
+                pack_light_word(12, coords),
+                pack_color(color),
             );
             assert_eq!(
                 bytemuck::cast_slice::<_, u8>(&gv),
@@ -2932,9 +2913,10 @@ mod tests {
             .find(|e| e.f.face == 2 && e.f.block == [6, 64, 6])
             .expect("north face of (6,64,6) must exist");
         assert!(
-            disc.f.ao.iter().any(|a| *a != disc.f.ao[0]),
-            "this face's AO must actually be non-uniform: {:?}",
-            disc.f.ao
+            !disc.f.uniform(),
+            "this face's corners must actually differ: light {:x?}, color {:x?}",
+            disc.f.light,
+            disc.f.color
         );
         assert_eq!(
             (disc.w, disc.h),
@@ -3225,8 +3207,12 @@ mod tests {
         assert_eq!(rep.material_boundary_rects, [(8, 3); 3]);
         assert_eq!(rep.material_boundary_layer, OS_SHARED_DOWN_LAYER);
         assert!(rep.cutout_faces > 0);
-        assert_eq!(rep.block_light_boundary_rects, [(4, 4); 2]);
-        assert_eq!(rep.sky_light_boundary_rects, [(4, 4); 2]);
+        // Smooth lighting blends each light boundary: the unlit/bright half
+        // keeps x 8..=10 whole (3 wide, all 4 rows), while the 4-wide lit/dim
+        // half borders unlit cells on every edge (x = 11 and 16, z = 10 and
+        // 15), so only its 2x2 interior (x 13..=14, z 12..=13) is uniform.
+        assert_eq!(rep.block_light_boundary_rects, [(3, 4), (2, 2)]);
+        assert_eq!(rep.sky_light_boundary_rects, [(3, 4), (2, 2)]);
         assert_eq!(rep.tint_boundary_rects, [(4, 4); 2]);
         assert_eq!(rep.tint_boundary_layer, OS_TINT_RAW_LAYER);
         assert_ne!(rep.tint_boundary_words[0], rep.tint_boundary_words[1]);
@@ -3362,92 +3348,30 @@ mod tests {
             .unwrap_or_else(|| panic!("quad normal {n:?} is not axis-aligned"))
     }
 
-    /// The mapping itself, against the transcribed tables, for both dimensions.
+    /// `face_shade` is `CardinalLighting.byFace` of the world's dimension.
     #[test]
-    fn face_shade_code_is_the_dimension_cardinal_table() {
+    fn face_shade_is_the_dimension_cardinal_table() {
         use rewo_world::dimension::CardinalLighting;
-
-        // DEFAULT: the code IS the direction, and codes 0..=5 keep their exact
-        // M15 values — this is what makes every Overworld mesh byte unchanged.
         let d = World::new(DimensionShape::OVERWORLD);
-        for face in 0..6 {
-            assert_eq!(
-                face_shade_code(&d, face),
-                face as u8,
-                "default face {face} must keep its historical code"
-            );
-            assert_eq!(
-                FACE_SHADE[face_shade_code(&d, face) as usize],
-                CardinalLighting::DEFAULT.by_mesh_face(face),
-                "default face {face} factor"
-            );
-        }
-        assert_eq!(FACE_SHADE[..6], [1.0, 0.5, 0.8, 0.8, 0.6, 0.6]);
-
-        // NETHER: up and down move to the appended code 6; the four sides are
-        // unchanged, so they must keep their own codes rather than collapsing
-        // onto whichever entry happens to share their value first.
         let n = nether_world();
-        assert_eq!(face_shade_code(&n, 0), 6, "nether up");
-        assert_eq!(face_shade_code(&n, 1), 6, "nether down");
-        for face in 2..6 {
-            assert_eq!(
-                face_shade_code(&n, face),
-                face as u8,
-                "nether side {face} is not moved by the dimension"
-            );
-        }
         for face in 0..6 {
-            assert_eq!(
-                FACE_SHADE[face_shade_code(&n, face) as usize],
-                CardinalLighting::NETHER.by_mesh_face(face),
-                "nether face {face} factor"
-            );
+            assert_eq!(face_shade(&d, face), CardinalLighting::DEFAULT.by_mesh_face(face));
+            assert_eq!(face_shade(&n, face), CardinalLighting::NETHER.by_mesh_face(face));
         }
-        assert_eq!(FACE_SHADE[6], 0.9, "code 6 is the Nether up/down factor");
+        assert_eq!(face_shade(&n, 0), 0.9, "nether up");
+        assert_eq!(face_shade(&n, 1), 0.9, "nether down");
     }
 
-    /// Code 6 reconstructs exactly the legacy float sequence at 0.9 — the same
-    /// claim `reconstruction_matches_legacy_formula_for_every_shade_and_ao`
-    /// makes for 0..=5, stated on its own for the new entry.
+    /// A Nether plate in open air: every corner's AO brightness is 1.0 (all
+    /// samples are air, shade 1.0), so each face is `(int)(255 * byFace)` —
+    /// 229 top and bottom (f32 0.9 * 255 = 229.49..), 204 north/south, 153
+    /// west/east — in both mesher paths. The bottom plane still merges.
     #[test]
-    fn shade_code_six_reconstructs_the_nether_factor() {
-        for ao in 0..AO_LEVELS.len() {
-            for rgb in [[255u8, 255, 255], [100, 0, 0], [1, 2, 3], [91, 163, 163]] {
-                let v = MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, 0, 6, ao as u8, rgb);
-                assert_eq!(v.shade_code(), 6, "code 6 survives packing");
-                let c = 0.9f32 * AO_LEVELS[ao];
-                let legacy = [
-                    c * (rgb[0] as f32 / 255.0),
-                    c * (rgb[1] as f32 / 255.0),
-                    c * (rgb[2] as f32 / 255.0),
-                ];
-                let got = v.reconstructed_color();
-                for i in 0..3 {
-                    assert_eq!(
-                        got[i].to_bits(),
-                        legacy[i].to_bits(),
-                        "ao {ao} rgb {rgb:?} channel {i}: {got:?} vs {legacy:?}"
-                    );
-                }
-            }
-        }
-        // And it is distinguishable from every frozen code, so it cannot be a
-        // renumbering of one of them.
-        for code in 0..6 {
-            assert_ne!(FACE_SHADE[code], FACE_SHADE[6], "code {code} vs 6");
-        }
-    }
-
-    /// A Nether cube: its top *and* bottom carry code 6 (0.9), its four sides
-    /// keep their own codes, and both mesher paths agree. The bottom plane still
-    /// merges — the resolved code rides in the merge key, so faces that share it
-    /// coalesce and faces that do not, cannot.
-    #[test]
-    fn nether_cube_top_and_bottom_use_code_six() {
+    fn nether_plate_faces_take_the_nether_cardinal_shade() {
         let mut w = nether_world();
         plate(&mut w, 4, 5, 10, 4, 5, 1); // a 2×2 plate of STONE
         let table = cube_table();
+        let want = [229u8, 229, 204, 204, 153, 153];
 
         for (what, m) in [
             (
@@ -3460,29 +3384,12 @@ mod tests {
             ),
         ] {
             let qs = quads(&m.vertices, &m.indices);
-            assert!(!qs.is_empty(), "{what}: nothing meshed");
             let mut seen = [0usize; 6];
             for q in &qs {
                 let face = face_of_quad(q);
                 seen[face] += 1;
-                let want = if face <= 1 { 6 } else { face as u8 };
                 for v in q {
-                    assert_eq!(
-                        v.shade_code(),
-                        want,
-                        "{what}: face {face} must carry shade code {want}"
-                    );
-                    assert_eq!(
-                        FACE_SHADE[v.shade_code() as usize],
-                        if face <= 1 {
-                            0.9
-                        } else if face <= 3 {
-                            0.8
-                        } else {
-                            0.6
-                        },
-                        "{what}: face {face} shade factor"
-                    );
+                    assert_eq!(v.color_rgb(), [want[face]; 3], "{what}: face {face}");
                 }
             }
             for face in 0..6 {
@@ -3491,40 +3398,38 @@ mod tests {
         }
 
         // The optimized path still merges the bottom plane into one 2×2
-        // rectangle, all of it at code 6.
+        // rectangle; up faces never merge (M15 carve-out).
         let o = mesh_column(&w, &table, &[], &[], 0, 0).expect("optimized");
-        let downs: Vec<_> = quads(&o.vertices, &o.indices)
-            .into_iter()
-            .filter(|q| face_of_quad(q) == 1)
-            .collect();
-        assert_eq!(downs.len(), 1, "the four bottoms merge into one rectangle");
-        assert_eq!(downs[0][0].shade_code(), 6);
         let span = |q: &[MeshVertex; 4], axis: usize| {
             let lo = q.iter().map(|v| v.pos[axis]).fold(f32::MAX, f32::min);
             let hi = q.iter().map(|v| v.pos[axis]).fold(f32::MIN, f32::max);
             hi - lo
         };
+        let of_face = |f: usize| -> Vec<_> {
+            quads(&o.vertices, &o.indices).into_iter().filter(|q| face_of_quad(q) == f).collect()
+        };
+        let downs = of_face(1);
+        assert_eq!(downs.len(), 1, "the four bottoms merge into one rectangle");
         assert_eq!((span(&downs[0], 0), span(&downs[0], 2)), (2.0, 2.0));
-        // Up faces never merge (M15 carve-out), and each still carries code 6.
-        let ups: Vec<_> = quads(&o.vertices, &o.indices)
-            .into_iter()
-            .filter(|q| face_of_quad(q) == 0)
-            .collect();
+        let ups = of_face(0);
         assert_eq!(ups.len(), 4, "one unit quad per top");
         for q in &ups {
-            assert_eq!(q[0].shade_code(), 6);
             assert_eq!((span(q, 0), span(q, 2)), (1.0, 1.0));
         }
     }
 
-    /// Model quads and fluid faces take the same mapping: a shaded quad follows
-    /// the dimension, an unshaded one stays code 0 in *every* dimension.
+    /// Model quads and fluid faces follow the dimension too. A shaded model
+    /// quad takes `byFace(direction)`; an **unshaded** one takes `up()` — 1.0
+    /// by default but 0.9 in the Nether (`prepareQuadAmbientOcclusion` /
+    /// `prepareQuadFlat`: `shade() ? byFace(direction) : up()`). Fluids scale
+    /// their tint by `up()` on top, `down()` below and `up() * north()` /
+    /// `up() * west()` on the sides.
     #[test]
-    fn nether_model_and_fluid_faces_use_the_dimension_mapping() {
+    fn nether_model_and_fluid_faces_follow_the_dimension() {
         use rewo_data::assets::Quad;
 
-        let quad_at = |dir: u8, shade: bool, y: f32| Quad {
-            verts: [[0.0, y, 0.0], [1.0, y, 0.0], [1.0, y, 1.0], [0.0, y, 1.0]],
+        let quad = |verts: [[f32; 3]; 4], dir: u8, shade: bool| Quad {
+            verts,
             uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             layer: 7,
             raw_layer: 7,
@@ -3534,183 +3439,53 @@ mod tests {
             shade,
             translucent: false,
         };
-        // Three quads: shaded up (moved by the Nether), shaded north (not
-        // moved), unshaded up (never shaded at all).
+        // Shaded full top (y = 1), shaded full north face (z = 0), unshaded
+        // mid-height horizontal quad. All sample open air: brightness 1.0.
         let models = vec![vec![
-            quad_at(0, true, 0.0),
-            quad_at(2, true, 0.5),
-            quad_at(0, false, 1.0),
+            quad([[0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]], 0, true),
+            quad([[1.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], 2, true),
+            quad([[0.0, 0.5, 0.0], [1.0, 0.5, 0.0], [1.0, 0.5, 1.0], [0.0, 0.5, 1.0]], 0, false),
         ]];
         let table = oracle_model_table();
+        let overworld = || {
+            let mut w = World::new(DimensionShape::OVERWORLD);
+            w.ensure_column(0, 0);
+            w
+        };
 
-        for (what, mut w, want) in [
-            (
-                "default",
-                {
-                    let mut w = World::new(DimensionShape::OVERWORLD);
-                    w.ensure_column(0, 0);
-                    w
-                },
-                [0u8, 2, 0],
-            ),
-            ("nether", nether_world(), [6, 2, 0]),
-        ] {
+        // (int)(255 * f): 1.0 -> 255, 0.8 -> 204, 0.9 -> 229.
+        for (what, mut w, want) in [("default", overworld(), [255u8, 204, 255]), ("nether", nether_world(), [229, 204, 229])] {
             w.set_block(4, 10, 4, 1);
             let m = mesh_column(&w, &table, &models, &[], 0, 0).expect("model meshed");
-            let codes: Vec<u8> = quads(&m.vertices, &m.indices)
+            let got: Vec<u8> = quads(&m.vertices, &m.indices)
                 .iter()
-                .map(|q| q[0].shade_code())
+                .map(|q| {
+                    assert!(q.iter().all(|v| v.color_rgb() == q[0].color_rgb()), "{what}: uniform quad");
+                    q[0].color_rgb()[0]
+                })
                 .collect();
-            assert_eq!(codes, want, "{what}: model quad shade codes");
-            // Every quad's four vertices agree (the code is per-quad).
-            for q in quads(&m.vertices, &m.indices) {
-                assert!(q.iter().all(|v| v.shade_code() == q[0].shade_code()));
-            }
+            assert_eq!(got, want, "{what}: model quad grays");
         }
 
-        // Fluids: a water source's top and bottom move to code 6 in the Nether,
-        // its sides do not; in a default world every face keeps its direction.
+        // A lone water source (no biome: white tint). Default: top 255, bottom
+        // (int)(255 * 0.5) = 127, N/S (int)(255 * 0.8) = 204, W/E 153. Nether:
+        // top and bottom 229; N/S (int)(255 * f32(0.9 * 0.8)) = (int)183.6 = 183;
+        // W/E (int)(255 * f32(0.9 * 0.6)) = (int)137.7 = 137.
         let ftable = fluid_table();
-        for (what, mut w, up_down) in [
-            (
-                "default",
-                {
-                    let mut w = World::new(DimensionShape::OVERWORLD);
-                    w.ensure_column(0, 0);
-                    w
-                },
-                [0u8, 1],
-            ),
-            ("nether", nether_world(), [6, 6]),
+        for (what, mut w, want) in [
+            ("default", overworld(), [255u8, 127, 204, 204, 153, 153]),
+            ("nether", nether_world(), [229, 229, 183, 183, 137, 137]),
         ] {
-            w.set_block(4, 10, 4, 2); // a lone water source: all six faces visible
+            w.set_block(4, 10, 4, 2);
             let m = mesh_column(&w, &ftable, &[], &[], 0, 0).expect("fluid meshed");
             let qs = quads(&m.tvertices, &m.tindices);
             assert_eq!(qs.len(), 6, "{what}: a lone source emits six faces");
-            let mut seen = [false; 6];
             for q in &qs {
                 let face = fluid_face_of_quad(q, [4, 10, 4]);
-                assert!(!seen[face], "{what}: face {face} emitted twice");
-                seen[face] = true;
-                let want = match face {
-                    0 => up_down[0],
-                    1 => up_down[1],
-                    f => f as u8,
-                };
                 for v in q {
-                    assert_eq!(v.shade_code(), want, "{what}: fluid face {face}");
+                    assert_eq!(v.color_rgb(), [want[face]; 3], "{what}: fluid face {face}");
                 }
             }
-        }
-    }
-
-    /// **The default-world byte guarantee.** In a `CardinalLighting::DEFAULT`
-    /// world the shade byte of every emitted vertex is exactly the pre-M16 rule
-    /// — the face's own direction index for cube and fluid faces, `quad.dir` (or
-    /// 0 when unshaded) for model quads — on a fixture that runs all three
-    /// paths through both meshers. The direction is recovered from the quad's
-    /// winding, so nothing about it comes from the shade code being graded.
-    ///
-    /// The shade code is the only vertex field M16 touches, so this pins the
-    /// whole default output byte-identical to M15. `check_greedy_oracle`'s
-    /// unchanged report (see `production_greedy_oracle_passes_and_measures_a_real_fixture`)
-    /// is the second half of that claim: its decoder reads the shade code back
-    /// *as* a face direction on the adversarial column.
-    #[test]
-    fn default_world_shade_bytes_are_the_legacy_per_direction_codes() {
-        use rewo_data::assets::Quad;
-
-        let mut table = cube_table();
-        table.push(RenderKind::Fluid {
-            layer: 30,
-            raw_layer: 30,
-            level: 0,
-            lava: false,
-        }); // 3
-        table.push(RenderKind::Fluid {
-            layer: 31,
-            raw_layer: 31,
-            level: 0,
-            lava: true,
-        }); // 4
-        table.push(RenderKind::Model(0)); // 5
-        let models = vec![vec![Quad {
-            verts: [
-                [0.2, 0.0, 0.2],
-                [0.8, 0.0, 0.2],
-                [0.8, 1.0, 0.2],
-                [0.2, 1.0, 0.2],
-            ],
-            uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
-            layer: 40,
-            raw_layer: 40,
-            cull: -1,
-            dir: 2,
-            tint: TintSource::None,
-            shade: true,
-            translucent: false,
-        }]];
-
-        let mut w = World::new(DimensionShape::OVERWORLD);
-        w.ensure_column(0, 0);
-        plate(&mut w, 1, 14, 62, 1, 14, 1);
-        plate(&mut w, 4, 9, 63, 4, 9, 2);
-        w.set_block(2, 63, 2, 1); // an AO discontinuity, so fallbacks run too
-        w.set_block(12, 63, 12, 5); // model
-        w.set_block(11, 63, 3, 3); // water
-        w.set_block(3, 63, 11, 4); // lava
-
-        // The mapping is the identity here, which is precisely the pre-M16
-        // constant every emitter used to write.
-        for face in 0..6 {
-            assert_eq!(face_shade_code(&w, face), face as u8);
-        }
-
-        for (what, m) in [
-            (
-                "reference",
-                mesh_column_reference(&w, &table, &models, &[], 0, 0).expect("reference"),
-            ),
-            (
-                "optimized",
-                mesh_column(&w, &table, &models, &[], 0, 0).expect("optimized"),
-            ),
-        ] {
-            let mut checked = 0usize;
-            for (stream, qs) in [
-                ("opaque", quads(&m.vertices, &m.indices)),
-                ("translucent", quads(&m.tvertices, &m.tindices)),
-            ] {
-                for q in &qs {
-                    // Three emitters, three ways to recover the direction the
-                    // shade byte is supposed to encode. Layer 40 is the model
-                    // quad, whose direction is declared (`dir: 2`) rather than
-                    // geometric; 30/31 are the two fluid cells, graded by plane;
-                    // everything else is a cube face, graded by winding.
-                    let want = match q[0].layer_index() {
-                        40 => 2,
-                        30 => fluid_face_of_quad(q, [11, 63, 3]) as u8,
-                        31 => fluid_face_of_quad(q, [3, 63, 11]) as u8,
-                        _ => face_of_quad(q) as u8,
-                    };
-                    for v in q {
-                        assert_eq!(
-                            v.shade_code(),
-                            want,
-                            "{what}/{stream}: shade byte is not the legacy per-direction code"
-                        );
-                        assert!(
-                            v.shade_code() < 6,
-                            "{what}/{stream}: a default world must never emit an M16 code"
-                        );
-                    }
-                    checked += 1;
-                }
-            }
-            assert!(
-                checked > 100,
-                "{what}: fixture is too small: {checked} quads"
-            );
         }
     }
 
@@ -3777,6 +3552,13 @@ mod occlusion_tests {
         for s in [STONE, GLASS, STAINED] {
             c[s as usize].ao_occluder = true;
         }
+        // Stone is suffocating and dark to AO; glass (`TransparentBlock`,
+        // `isViewBlocking(never)`) is neither, though its collision is full.
+        c[STONE as usize].view_blocking = true;
+        c[STONE as usize].shade_dark = true;
+        for info in c.iter_mut() {
+            info.ambient_occlusion = true;
+        }
         c[GLASS as usize].skip = 1;
         c[STAINED as usize].skip = 1;
         c[STAINED as usize].translucent = true;
@@ -3808,12 +3590,7 @@ mod occlusion_tests {
 
     fn mesh(w: &World, cull: &[CullInfo]) -> ColumnMesh {
         let r = render();
-        let inputs = MeshInputs {
-            render: &r,
-            models: &[],
-            fluid: &[],
-            cull,
-        };
+        let inputs = MeshInputs { cull, ..MeshInputs::geometry(&r, &[], &[]) };
         mesh_column_with(w, inputs, 0, 0).expect("meshed")
     }
 
@@ -3890,7 +3667,7 @@ mod occlusion_tests {
     fn pane_skip_follows_the_connection_rule() {
         let r = render();
         let c = cull();
-        let t = Tables { render: &r, cull: &c, model_ao: true };
+        let t = Tables::new(&MeshInputs { cull: &c, ..MeshInputs::geometry(&r, &[], &[]) });
         // Vertical: skip regardless of connections.
         assert!(!t.should_render(PANE_EW, PANE_N, 0));
         assert!(!t.should_render(PANE_EW, PANE_N, 1));
@@ -3903,10 +3680,12 @@ mod occlusion_tests {
         // Air is not a neighbour to skip against.
         assert!(t.should_render(PANE_EW, AIR, 5));
     }
-    /// A full-face model quad (grass_block's top) takes corner AO from a
-    /// full-collision neighbour; a partial quad keeps the flat identity.
+    /// Smooth lighting reaches model quads: a full top face darkens the two
+    /// corners against a suffocating neighbour, as a cube face would. Its
+    /// west corners are `(shade3 + shade0 + corner + center) * 0.25` with the
+    /// stone's 0.2 in one or two samples; the east corners see only air.
     #[test]
-    fn full_face_model_quads_get_corner_ao() {
+    fn model_quads_get_smooth_lighting() {
         use rewo_data::assets::Quad;
         let top = |y: f32, x1: f32| Quad {
             verts: [[0.0, y, 0.0], [x1, y, 0.0], [x1, y, 1.0], [0.0, y, 1.0]],
@@ -3923,25 +3702,33 @@ mod occlusion_tests {
         r.push(RenderKind::Model(0));
         let model = r.len() as u32 - 1;
         let mut c = cull();
-        c.push(CullInfo { block: 99, ..CullInfo::default() });
-        let models = vec![vec![top(1.0, 1.0), top(0.5, 0.5)]];
+        c.push(CullInfo { block: 99, ambient_occlusion: true, ..CullInfo::default() });
+        let models = vec![vec![top(1.0, 1.0)]];
         // Stone one up and one west of the model: the top face's west corners
         // sit against it.
         let w = world(&[((4, 10, 4), model), ((3, 11, 4), STONE)]);
-        let m = mesh_column_with(&w, MeshInputs { render: &r, models: &models, fluid: &[], cull: &c }, 0, 0)
+        let m = mesh_column_with(&w, MeshInputs { cull: &c, ..MeshInputs::geometry(&r, &models, &[]) }, 0, 0)
             .expect("meshed");
-        let quad = |y: f32| -> Vec<u8> {
+        let corner = |x: f32| -> Vec<[u8; 3]> {
             m.vertices
                 .iter()
-                .filter(|v| v.pos[1] == 10.0 + y && v.layer_index() == 9)
-                .map(|v| v.ao_code())
+                .filter(|v| v.pos[1] == 11.0 && v.pos[0] == x && v.layer_index() == 9)
+                .map(|v| v.color_rgb())
                 .collect()
         };
-        let full = quad(1.0);
-        assert_eq!(full.len(), 4);
-        assert!(full.iter().any(|&a| a < AO_NONE), "west corners shaded: {full:?}");
-        assert!(full.iter().any(|&a| a == AO_NONE), "east corners open: {full:?}");
-        assert!(quad(0.5).iter().all(|&a| a == AO_NONE), "a partial quad stays flat");
+        // West corners: WEST sample 0.2, the rest air (1.0):
+        // (1.0 + 0.2 + 1.0 + 1.0) * 0.25 = 0.8 -> gray 204 -> up() 1.0 -> 204.
+        assert_eq!(corner(4.0), vec![[204; 3]; 2], "west corners");
+        assert_eq!(corner(5.0), vec![[255; 3]; 2], "east corners");
+        // Flat when smooth lighting is off: the whole quad is gray(up()) = 255.
+        let flat = mesh_column_with(
+            &w,
+            MeshInputs { cull: &c, smooth_lighting: false, ..MeshInputs::geometry(&r, &models, &[]) },
+            0,
+            0,
+        )
+        .expect("meshed");
+        assert!(flat.vertices.iter().filter(|v| v.layer_index() == 9).all(|v| v.color_rgb() == [255; 3]));
     }
 
     /// The greedy path and the frozen reference agree under a real cull
@@ -3958,7 +3745,7 @@ mod occlusion_tests {
         ]);
         let r = render();
         let c = cull();
-        let inputs = MeshInputs { render: &r, models: &[], fluid: &[], cull: &c };
+        let inputs = MeshInputs { cull: &c, ..MeshInputs::geometry(&r, &[], &[]) };
         let o = mesh_column_with(&w, inputs, 0, 0).expect("optimized");
         let f = mesh_column_reference_with(&w, inputs, 0, 0).expect("reference");
         let units = |m: &ColumnMesh| {

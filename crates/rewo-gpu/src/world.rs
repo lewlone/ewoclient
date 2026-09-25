@@ -94,7 +94,7 @@ pub fn unorm_of(format: vk::Format) -> Option<vk::Format> {
 /// Bytes per uploaded vertex. Must equal `size_of::<rewo_mesh::MeshVertex>()`;
 /// `rewo bench` asserts the two agree, since a silent mismatch would corrupt
 /// every upload offset. M15 packed layout: pos f32x3 (0), uv f32x2 (12),
-/// light u32 (20), tint u32 (24). UV stayed f32 because fluid surface UVs
+/// light u32 (20), color RGBA8 (24). UV stayed f32 because fluid surface UVs
 /// (`1 - k/9`) are not representable in f16 — see `rewo_mesh::MeshVertex`.
 pub const VERTEX_STRIDE: u64 = 28;
 /// Mega-buffer capacities. 4M verts (4M × 28 B = 112 MB) + 6M indices
@@ -803,11 +803,12 @@ impl WorldRenderer {
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                // Read by world.vert, which samples the lightmap per vertex.
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(1)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                    .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
             ];
             let tex_set_layout = device
                 .create_descriptor_set_layout(
@@ -4388,10 +4389,11 @@ fn build_graphics_pipeline(
                 .location(2)
                 .format(vk::Format::R32_UINT)
                 .offset(20),
-            // Packed tint RGB + reserved flags; the shader reconstructs color.
+            // The vertex color, read as vanilla's `Color` attribute is:
+            // UNORM bytes.
             vk::VertexInputAttributeDescription::default()
                 .location(3)
-                .format(vk::Format::R32_UINT)
+                .format(vk::Format::R8G8B8A8_UNORM)
                 .offset(24),
         ];
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()

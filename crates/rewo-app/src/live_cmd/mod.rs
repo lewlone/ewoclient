@@ -851,14 +851,11 @@ fn run_windowed(
     }
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let pool = MeshPool::new(MeshTables {
-        render: baked.render.clone(),
-        models: baked.models.clone(),
-        // M164 — without this the windowed client meshes no waterlogged water
-        // at all, and looks EXACTLY as it did before. `r48` is what asks.
-        fluid: baked.fluid.clone(),
-        cull: baked.cull.clone(),
-    })?;
+    // Every mesher table, from the bake. Built field by field this once lost
+    // M164's carried water — the windowed client then meshed no waterlogged
+    // water and looked EXACTLY as before (`r48` is what asks) — and would
+    // lose smooth lighting's emission/dampening the same way.
+    let pool = MeshPool::new(MeshTables::from_baked(&baked))?;
     let mut app = LiveApp {
         tab_health: std::collections::HashMap::new(),
         options: load_options(),

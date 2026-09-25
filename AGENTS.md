@@ -205,6 +205,10 @@ rewo/26.2/                            Rewo's local datagen + decompile (not redi
   written inside `draw`, ≥ frames-in-flight. Frames in flight can be up to 3.
 - Core validation cannot see host-write or cross-frame hazards; use
   synchronization validation before claiming a pass is race-free.
+- Terrain lighting is vanilla's (`rewo-mesh/src/smooth_light.rs`): the mesher
+  writes the finished 8-bit vertex color and smooth light coordinates, and
+  `world.vert` samples the lightmap per vertex. Don't move lighting back to the
+  fragment stage or store float colors — both drift from vanilla.
 - The Velvet passes must be built with `world::unorm_of(target_format)` and
   drawn inside `with_gamma_space` (gamma-space blending, like Skia).
 - The glint needs `VK_KHR_swapchain_mutable_format`; without it no glint draws.

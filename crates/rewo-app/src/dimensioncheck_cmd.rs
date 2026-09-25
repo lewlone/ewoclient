@@ -431,8 +431,8 @@ pub fn run(args: DimensioncheckArgs) -> Result<(), String> {
     );
     println!(
         "[dimensioncheck] mesh binding: {} dimensions meshed, {} vertices graded, \
-         shade codes {:?}, max sky nibble per dimension {:?}",
-        mesh_report.dimensions, mesh_report.vertices, mesh_report.shade_codes, mesh_report.max_sky,
+         face grays {:?}, max sky nibble per dimension {:?}",
+        mesh_report.dimensions, mesh_report.vertices, mesh_report.face_grays, mesh_report.max_sky,
     );
     println!(
         "[dimensioncheck] generation fence: submit(g0)={} resubmit(g0)={} submit(g1)={}; \
@@ -666,7 +666,8 @@ fn check_world_binding(defs: &[DimensionTypeDef]) -> Result<WorldReport, String>
 struct MeshReport {
     dimensions: usize,
     vertices: usize,
-    shade_codes: Vec<Vec<u8>>,
+    /// Per dimension, the gray each face (mesher order) meshed to.
+    face_grays: Vec<[u8; 6]>,
     max_sky: Vec<u8>,
 }
 
@@ -685,36 +686,29 @@ fn cube_tables() -> MeshTables {
         models: Vec::new(),
         fluid: Vec::new(),
         cull: Vec::new(),
+        emission: Vec::new(),
+        dampening: Vec::new(),
+        smooth_lighting: true,
     }
 }
 
 /// Mesh one floating cube in each dimension's world and read the vertex bytes
-/// back: the shade codes must be exactly the codes the dimension's cardinal
-/// table resolves to, and a dimension with no sky light must not be able to put
+/// back: each face's color must be exactly vanilla's for the dimension's
+/// cardinal table (an unoccluded face: `(int)(255 * byFace)`), and a dimension with no sky light must not be able to put
 /// a nonzero sky nibble into a vertex even though the column it is meshing was
 /// filled with sky 15.
 fn check_mesh_binding(defs: &[DimensionTypeDef]) -> Result<MeshReport, String> {
     let tables = cube_tables();
-    let mut shade_codes = Vec::new();
+    let mut face_grays = Vec::new();
     let mut max_sky = Vec::new();
     let mut vertices = 0usize;
 
     for d in defs {
         let name = &d.name;
-        // The production seam the mesher itself calls, driven by a world built
-        // from the captured registry entry.
-        let w0 = World::for_dimension(d);
-        let mut want_codes: Vec<u8> = (0..6)
-            .map(|face| {
-                let code = rewo_mesh::face_shade_code(&w0, face);
-                if rewo_mesh::FACE_SHADE[code as usize] != d.cardinal_light.by_mesh_face(face) {
-                    panic!("{name}: face {face} shade code {code} is not the dimension factor");
-                }
-                code
-            })
-            .collect();
-        want_codes.sort_unstable();
-        want_codes.dedup();
+        // `ARGB.gray(1.0)` = 255 scaled by the face's cardinal factor, as
+        // `(int)(255 * factor)` — the value an open-air face ends at.
+        let want: [u8; 6] =
+            std::array::from_fn(|face| (255.0f32 * d.cardinal_light.by_mesh_face(face)) as u8);
 
         let mut w = World::for_dimension(d);
         w.ensure_column(0, 0);
@@ -730,13 +724,32 @@ fn check_mesh_binding(defs: &[DimensionTypeDef]) -> Result<MeshReport, String> {
                 mesh.vertices.len()
             ));
         }
-        let mut got: Vec<u8> = mesh.vertices.iter().map(|v| v.shade_code()).collect();
-        got.sort_unstable();
-        got.dedup();
-        if got != want_codes {
-            return Err(format!(
-                "{name}: meshed shade codes {got:?}, expected {want_codes:?}"
-            ));
+        // Each quad's face from its geometry: the axis all four corners share,
+        // on the cube's low or high side.
+        let mut got = [None::<u8>; 6];
+        for q in mesh.vertices.chunks_exact(4) {
+            let axis = (0..3)
+                .find(|&a| q.iter().all(|v| v.pos[a] == q[0].pos[a]))
+                .ok_or_else(|| format!("{name}: a quad is not axis-aligned"))?;
+            let high = q[0].pos[axis] > [8.0, y as f32, 8.0][axis];
+            // Mesher order: up, down, north, south, west, east.
+            let face = match (axis, high) {
+                (1, true) => 0,
+                (1, false) => 1,
+                (2, false) => 2,
+                (2, true) => 3,
+                (0, false) => 4,
+                _ => 5,
+            };
+            let gray = q[0].color_rgb()[0];
+            if q.iter().any(|v| v.color_rgb() != [gray; 3]) {
+                return Err(format!("{name}: face {face} is not one gray: {:?}", q.iter().map(|v| v.color_rgb()).collect::<Vec<_>>()));
+            }
+            got[face] = Some(gray);
+        }
+        let got: [u8; 6] = std::array::from_fn(|f| got[f].unwrap_or(0));
+        if got != want {
+            return Err(format!("{name}: meshed face grays {got:?}, expected {want:?}"));
         }
         let sky = mesh
             .vertices
@@ -757,13 +770,13 @@ fn check_mesh_binding(defs: &[DimensionTypeDef]) -> Result<MeshReport, String> {
             ));
         }
         vertices += mesh.vertices.len();
-        shade_codes.push(got);
+        face_grays.push(got);
         max_sky.push(sky);
     }
     Ok(MeshReport {
         dimensions: defs.len(),
         vertices,
-        shade_codes,
+        face_grays,
         max_sky,
     })
 }
@@ -1014,12 +1027,13 @@ mod tests {
         let m = check_mesh_binding(&defs).unwrap();
         assert_eq!(m.vertices, 96);
         // The Nether — holder 3 in the real synced order — is the one dimension
-        // whose faces move off their historical codes, and the only one whose
-        // vertices may not carry sky light.
+        // whose up/down faces take `CardinalLighting.NETHER`'s 0.9
+        // (`(int)(255 * 0.9f)` = 229), and the only one whose vertices may not
+        // carry sky light. DEFAULT: 1.0/0.5/0.8/0.6 -> 255/127/204/153.
         assert_eq!(defs[3].name, "minecraft:the_nether");
-        assert_eq!(m.shade_codes[3], vec![2, 3, 4, 5, 6]);
+        assert_eq!(m.face_grays[3], [229, 229, 204, 204, 153, 153]);
         assert_eq!(m.max_sky[3], 0);
-        assert_eq!(m.shade_codes[0], vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(m.face_grays[0], [255, 127, 204, 204, 153, 153]);
         assert_eq!(m.max_sky[0], 15);
         check_generation_fence(&defs).unwrap();
     }

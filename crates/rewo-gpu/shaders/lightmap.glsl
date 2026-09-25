@@ -81,3 +81,31 @@ vec3 lm_light(uint packed, vec4 light, vec4 sky_col, vec3 ambient) {
     color = mix(color, ng, brightness_factor);
     return color;
 }
+
+// One texel of vanilla's lightmap: `lm_light` at whole levels, stored to the
+// RGBA8_UNORM texture the way the GPU stores it (round to nearest; the NaN of
+// `lm_not_gamma`'s unguarded 0/0 stores as 0).
+vec3 lm_texel(uint block, uint sky, vec4 light, vec4 sky_col, vec3 ambient) {
+    vec3 c = lm_light((block << 16) | (sky << 20), light, sky_col, ambient);
+    c = mix(c, vec3(0.0), isnan(c));
+    return round(clamp(c, 0.0, 1.0) * 255.0) / 255.0;
+}
+
+// Vanilla `sample_lightmap(Sampler2, UV2)`: a LINEAR, clamp-to-edge sample of
+// the 16x16 lightmap at `clamp(uv / 256 + 0.5/16, 0.5/16, 15.5/16)`, taken per
+// vertex. `block` and `sky` are the vertex's smooth light (`UV2`, level x16
+// plus the smooth-lighting fraction); in texel space that coordinate is
+// `uv / 16` clamped to [0, 15], blended bilinearly between whole levels. Whole
+// levels land exactly on a texel.
+vec3 lm_sample(uint block, uint sky, vec4 light, vec4 sky_col, vec3 ambient) {
+    vec2 t = clamp(vec2(float(block), float(sky)) / 16.0, 0.0, 15.0);
+    vec2 i0 = floor(t);
+    vec2 f = t - i0;
+    uvec2 a = uvec2(i0);
+    uvec2 b = min(a + 1u, uvec2(15u));
+    vec3 c00 = lm_texel(a.x, a.y, light, sky_col, ambient);
+    vec3 c10 = lm_texel(b.x, a.y, light, sky_col, ambient);
+    vec3 c01 = lm_texel(a.x, b.y, light, sky_col, ambient);
+    vec3 c11 = lm_texel(b.x, b.y, light, sky_col, ambient);
+    return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+}

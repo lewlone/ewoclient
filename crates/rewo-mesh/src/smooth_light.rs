@@ -450,6 +450,68 @@ const AMBIENT_VERTEX_REMAP: [[usize; 4]; 6] = [
     [1, 2, 3, 0], // EAST
 ];
 
+/// `FaceInfo`'s four corners per face, as `(x, y, z)` extent selectors: `true`
+/// picks the quad's max on that axis, `false` its min. Indexed by
+/// [`Face::index`]; the rows are the module docs' vertex-order table.
+const FACE_INFO: [[[bool; 3]; 4]; 6] = [
+    [[false, false, true], [false, false, false], [true, false, false], [true, false, true]], // DOWN
+    [[false, true, false], [false, true, true], [true, true, true], [true, true, false]],     // UP
+    [[true, true, false], [true, false, false], [false, false, false], [false, true, false]], // NORTH
+    [[false, true, true], [false, false, true], [true, false, true], [true, true, true]],     // SOUTH
+    [[false, true, false], [false, false, false], [false, false, true], [false, true, true]], // WEST
+    [[true, true, true], [true, false, true], [true, false, false], [true, true, false]],     // EAST
+];
+
+/// Where each `FaceInfo` corner sits in an arbitrarily ordered quad:
+/// `order[k]` is the index in `vertices` of `BakedQuad` vertex `k`.
+///
+/// This is `FaceBakery.recalculateWinding`, which vanilla runs on every quad
+/// without an element rotation: it takes the quad's extents and moves the
+/// vertex equal to each `FaceInfo` corner into that slot. Rewo's bake emits
+/// its own corner order, so the lighter needs the same permutation to put each
+/// result on the right vertex. A vertex that equals no extent corner (an
+/// element-rotated quad, which vanilla leaves in its pre-rotation order) takes
+/// the nearest unclaimed corner — an approximation for those quads only.
+pub fn face_info_order(vertices: &[[f32; 3]; 4], direction: Face) -> [usize; 4] {
+    let mut min = [f32::MAX; 3];
+    let mut max = [f32::MIN; 3];
+    for v in vertices {
+        for axis in 0..3 {
+            min[axis] = min[axis].min(v[axis]);
+            max[axis] = max[axis].max(v[axis]);
+        }
+    }
+    let mut order = [usize::MAX; 4];
+    let mut used = [false; 4];
+    for (k, corner) in FACE_INFO[direction.index()].iter().enumerate() {
+        let target: [f32; 3] = std::array::from_fn(|a| if corner[a] { max[a] } else { min[a] });
+        let exact = (0..4).find(|&i| !used[i] && vertices[i] == target);
+        let i = exact.unwrap_or_else(|| {
+            (0..4)
+                .filter(|&i| !used[i])
+                .min_by(|&a, &b| {
+                    let d = |i: usize| (0..3).map(|x| (vertices[i][x] - target[x]).powi(2)).sum::<f32>();
+                    d(a).total_cmp(&d(b))
+                })
+                .expect("four vertices, four corners")
+        });
+        used[i] = true;
+        order[k] = i;
+    }
+    order
+}
+
+/// `BlockModelLighter.faceCubic` for a quad — what `prepareQuadFlat` asks
+/// (`faceCubic ? pos.relative(direction) : pos` is where it samples light).
+pub fn face_cubic(
+    world: &impl AoWorld,
+    pos: (i32, i32, i32),
+    direction: Face,
+    vertices: &[[f32; 3]; 4],
+) -> bool {
+    prepare_quad_shape(world, pos, direction, vertices).face_cubic
+}
+
 /// The face shape `BlockModelLighter` keeps between `prepareQuadShape` and the
 /// ambient-occlusion pass.
 struct QuadShape {
@@ -796,6 +858,41 @@ mod tests {
         }
         fn is_collision_shape_full_block(&self, pos: (i32, i32, i32)) -> bool {
             self.cell(pos).full_block
+        }
+    }
+
+    /// `face_info_order` is `recalculateWinding`'s permutation: the identity on
+    /// a quad already in `FaceInfo` order, and it undoes any reordering.
+    #[test]
+    fn face_info_order_recovers_the_baked_quad_order() {
+        let faces = [Face::Down, Face::Up, Face::North, Face::South, Face::West, Face::East];
+        for face in faces {
+            // A partial quad, so min and max differ on both in-plane axes.
+            let (lo, hi) = (0.25f32, 0.75f32);
+            let canonical: [[f32; 3]; 4] = FACE_INFO[face.index()].map(|c| {
+                std::array::from_fn(|a| {
+                    let plane_axis = match face {
+                        Face::Down | Face::Up => 1,
+                        Face::North | Face::South => 2,
+                        Face::West | Face::East => 0,
+                    };
+                    if a == plane_axis {
+                        if c[a] { 1.0 } else { 0.0 }
+                    } else if c[a] {
+                        hi
+                    } else {
+                        lo
+                    }
+                })
+            });
+            assert_eq!(face_info_order(&canonical, face), [0, 1, 2, 3], "{face:?} identity");
+            for shift in 1..4 {
+                let rotated: [[f32; 3]; 4] = std::array::from_fn(|i| canonical[(i + shift) % 4]);
+                let order = face_info_order(&rotated, face);
+                for k in 0..4 {
+                    assert_eq!(rotated[order[k]], canonical[k], "{face:?} shift {shift} vertex {k}");
+                }
+            }
         }
     }
 

@@ -148,7 +148,7 @@ pub fn run(args: ViewArgs) -> Result<(), String> {
     let mut meshes = Vec::new();
     let mut total_verts = 0usize;
     for (cx, cz) in world.column_coords() {
-        if let Some(mesh) = rewo_mesh::mesh_column(&world, &baked.render, &baked.models, &baked.fluid, cx, cz) {
+        if let Some(mesh) = rewo_mesh::mesh_column_with(&world, rewo_mesh::MeshInputs::from_baked(&baked), cx, cz) {
             total_verts += mesh.vertices.len();
             meshes.push(mesh);
         }

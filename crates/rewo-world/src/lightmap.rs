@@ -222,6 +222,36 @@ pub fn sample(block_level: u8, sky_level: u8, state: &LightmapState) -> [f32; 3]
     out
 }
 
+/// One texel of vanilla's lightmap *texture*: [`sample`] stored to
+/// `RGBA8_UNORM` (round to nearest, the `0/0` NaN storing as 0). This is what
+/// terrain actually reads — vanilla's `sample_lightmap` filters these bytes —
+/// and what `world.vert`'s `lm_texel` reproduces.
+pub fn texel(block_level: u8, sky_level: u8, state: &LightmapState) -> [f32; 3] {
+    sample(block_level, sky_level, state).map(|c| {
+        let c = if c.is_nan() { 0.0 } else { c.clamp(0.0, 1.0) };
+        (c * 255.0).round() / 255.0
+    })
+}
+
+/// Vanilla `sample_lightmap(Sampler2, UV2)` at smooth light coordinates
+/// (`block`/`sky` = level ×16 plus the smooth-lighting fraction): the LINEAR,
+/// clamp-to-edge filter over [`texel`]s, which in texel space sits at
+/// `uv / 16` clamped to `[0, 15]`. The CPU mirror of `world.vert`'s
+/// `lm_sample`.
+pub fn sample_smooth(block: u8, sky: u8, state: &LightmapState) -> [f32; 3] {
+    let t = |v: u8| (v as f32 / 16.0).clamp(0.0, 15.0);
+    let (tb, ts) = (t(block), t(sky));
+    let (b0, s0) = (tb.floor(), ts.floor());
+    let (fb, fs) = (tb - b0, ts - s0);
+    let (b0, s0) = (b0 as u8, s0 as u8);
+    let (b1, s1) = ((b0 + 1).min(15), (s0 + 1).min(15));
+    let (c00, c10) = (texel(b0, s0, state), texel(b1, s0, state));
+    let (c01, c11) = (texel(b0, s1, state), texel(b1, s1, state));
+    std::array::from_fn(|i| {
+        mix(mix(c00[i], c10[i], fb), mix(c01[i], c11[i], fb), fs)
+    })
+}
+
 // --- java.util.Random / LegacyRandomSource (exact LCG) ---
 
 /// The vanilla 48-bit linear-congruential generator

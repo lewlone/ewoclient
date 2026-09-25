@@ -94,6 +94,15 @@ pub struct CullInfo {
     /// `isCollisionShapeFullBlock` — the ambient-occlusion occluder
     /// (`BlockBehaviour.getShadeBrightness` = 0.2 for these, else 1.0).
     pub ao_occluder: bool,
+    /// `BlockState.isViewBlocking`. Interim: vanilla's default predicate
+    /// with `blocksMotion` assumed, i.e. `ao_occluder`; no per-block overrides.
+    pub view_blocking: bool,
+    /// `getShadeBrightness == 0.2`. Interim: the default, `ao_occluder`.
+    pub shade_dark: bool,
+    /// `BlockState.emissiveRendering()`. Interim: always false.
+    pub emissive_rendering: bool,
+    /// The (first) model's `useAmbientOcclusion()`. Interim: always true.
+    pub ambient_occlusion: bool,
 }
 
 /// Per-state render classification, indexed by global state id.
@@ -1412,6 +1421,9 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 bars,
                 translucent: false,
                 ao_occluder: false,
+                // Interim: vanilla's model default, until the bake reads it.
+                ambient_occlusion: true,
+                ..CullInfo::default()
             };
             let mut phys = crate::block_physics::BlockPhysics::resolve(block_name, props, water_block);
             if short == "water" || short == "lava" {
@@ -1549,6 +1561,9 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 Vec::new()
             };
             cull[id as usize].ao_occluder = collide[id as usize] == [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+            // Interim: `BlockBehaviour`'s defaults, no per-block overrides.
+            cull[id as usize].view_blocking = cull[id as usize].ao_occluder;
+            cull[id as usize].shade_dark = cull[id as usize].ao_occluder;
             if !collide[id as usize].is_empty() && !solid[id as usize] {
                 stats.shaped_collision_states += 1;
             }

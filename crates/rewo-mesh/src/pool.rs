@@ -48,15 +48,39 @@ pub struct MeshTables {
     /// Per-state face culling (`BakedAssets::cull`). Empty = the legacy rule
     /// (a `RenderKind::Cube` occludes, nothing is translucent).
     pub cull: Vec<CullInfo>,
+    /// Per-state light emission / dampening (`BakedAssets::emission`,
+    /// `::dampening`) — what smooth lighting reads. Empty = the legacy rule.
+    pub emission: Vec<u8>,
+    pub dampening: Vec<u8>,
+    /// Vanilla's "Smooth Lighting" option.
+    pub smooth_lighting: bool,
 }
 
 impl MeshTables {
+    /// Every table the mesher reads, cloned from a bake, smooth lighting on.
+    /// Production callers use this so a table added later cannot be left out.
+    pub fn from_baked(b: &rewo_data::assets::BakedAssets) -> Self {
+        let inputs = MeshInputs::from_baked(b);
+        Self {
+            render: b.render.clone(),
+            models: b.models.clone(),
+            fluid: b.fluid.clone(),
+            cull: b.cull.clone(),
+            emission: b.emission.clone(),
+            dampening: b.dampening.clone(),
+            smooth_lighting: inputs.smooth_lighting,
+        }
+    }
+
     fn inputs(&self) -> MeshInputs<'_> {
         MeshInputs {
             render: &self.render,
             models: &self.models,
             fluid: &self.fluid,
             cull: &self.cull,
+            emission: &self.emission,
+            dampening: &self.dampening,
+            smooth_lighting: self.smooth_lighting,
         }
     }
 }
@@ -172,12 +196,7 @@ pub fn mesh_all(
     fluid: &[Option<CarriedFluid>],
     coords: &[(i32, i32)],
 ) -> Vec<MeshOutput> {
-    let inputs = MeshInputs {
-        render,
-        models,
-        fluid,
-        cull: &[],
-    };
+    let inputs = MeshInputs::geometry(render, models, fluid);
     mesh_all_with(generation, world, inputs, coords)
 }
 
@@ -218,6 +237,9 @@ mod tests {
             models: Vec::new(),
             fluid: Vec::new(),
             cull: Vec::new(),
+            emission: Vec::new(),
+            dampening: Vec::new(),
+            smooth_lighting: true,
         }
     }
 

@@ -23,17 +23,28 @@ use super::*;
 
 /// One unit face as both mesher paths must agree on it.
 ///
-/// `light24` is the lower 24 bits (layer + block/sky light); the shade code
-/// rides in `face` and AO is kept per corner, so nothing is smuggled through a
-/// masked-off bit. Field order is the sort order — face, then block, then
-/// appearance.
+/// `light` and `color` are the whole vertex words per corner, in
+/// `FACE_CORNERS` order — smooth lighting varies both across one face, so
+/// nothing is summarized per quad. Field order is the sort order — face, then
+/// block, then appearance.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
 pub(crate) struct UnitFace {
     pub face: u8,
     pub block: [i32; 3],
-    pub light24: u32,
-    pub ao: [u8; 4],
-    pub tint: u32,
+    pub light: [u32; 4],
+    pub color: [u32; 4],
+}
+
+impl UnitFace {
+    /// The texture layer (the low 16 bits of every corner's light word).
+    pub fn layer(&self) -> u16 {
+        (self.light[0] & 0xFFFF) as u16
+    }
+
+    /// Whether all four corners carry the same light and color.
+    pub fn uniform(&self) -> bool {
+        (1..4).all(|i| self.light[i] == self.light[0] && self.color[i] == self.color[0])
+    }
 }
 
 /// A unit face plus the dimensions of the rectangle it was emitted inside.
@@ -92,98 +103,31 @@ pub(crate) fn expand_unit_faces(
 pub(crate) fn expand_quad_list(qs: &[[MeshVertex; 4]]) -> Result<Vec<ExpandedFace>, String> {
     let mut out = Vec::new();
     for q in qs.iter().copied() {
-        // The decoder recovers a quad's direction from its shade code, which is
-        // only a bijection under `CardinalLighting::DEFAULT` (M16: the Nether
-        // maps up *and* down onto code 6). The oracle column is a default-lit
-        // world, so this holds there; anything else is refused rather than
-        // indexed out of `FACE_AXES`.
-        let face = q[0].shade_code() as usize;
-        if face >= FACE_OFFSETS.len() {
+        // The direction is whichever face's corner rule the quad satisfies:
+        // the check below pins every corner's position (and so the winding),
+        // which only the true face can pass.
+        let mut decoded = None;
+        let mut first_err = None;
+        for face in 0..FACE_OFFSETS.len() {
+            match decode_rect(&q, face) {
+                Ok(r) => {
+                    decoded = Some((face, r));
+                    break;
+                }
+                Err(e) => {
+                    first_err.get_or_insert(e);
+                }
+            }
+        }
+        let Some((face, (base, w, h))) = decoded else {
+            return Err(first_err.unwrap_or_default());
+        };
+        if (w > 1 || h > 1) && !(1..4).all(|i| q[i].light == q[0].light && q[i].color == q[0].color) {
             return Err(format!(
-                "shade code {face} is not a face direction — unit-face expansion only decodes DEFAULT cardinal lighting"
+                "face {face} at {base:?}: a {w}x{h} rectangle whose corners differ — a merge must be uniform"
             ));
         }
         let (au, av, _) = FACE_AXES[face];
-        let an = 3 - au - av; // the remaining axis: 0+1+2 == 3
-        let plane = q[0].pos[an];
-        for vtx in &q {
-            if vtx.pos[an] != plane {
-                return Err(format!(
-                    "face {face}: plane axis {an} is not constant ({} vs {plane})",
-                    vtx.pos[an]
-                ));
-            }
-        }
-        let span = |axis: usize| {
-            let lo = q.iter().map(|x| x.pos[axis]).fold(f32::MAX, f32::min);
-            let hi = q.iter().map(|x| x.pos[axis]).fold(f32::MIN, f32::max);
-            (lo, hi)
-        };
-        let (umin, umax) = span(au);
-        let (vmin, vmax) = span(av);
-        let (w, h) = ((umax - umin) as i32, (vmax - vmin) as i32);
-        if w < 1 || h < 1 {
-            return Err(format!("face {face}: degenerate rectangle {w}x{h}"));
-        }
-
-        // Anchor block: the face's own axis sits at `plane` minus whichever side
-        // of the block the face is on (up/south/east are the +1 side).
-        let mut base = [0i32; 3];
-        base[au] = umin as i32;
-        base[av] = vmin as i32;
-        base[an] = (plane - FACE_CORNERS[face][0].0[an]) as i32;
-
-        // Every corner must match the generic emitter rule exactly, and the UV
-        // must scale with the extent (repeat, not stretch).
-        for (i, (corner, uv)) in FACE_CORNERS[face].iter().enumerate() {
-            let mut expect = [
-                base[0] as f32 + corner[0],
-                base[1] as f32 + corner[1],
-                base[2] as f32 + corner[2],
-            ];
-            if corner[au] == 1.0 {
-                expect[au] += (w - 1) as f32;
-            }
-            if corner[av] == 1.0 {
-                expect[av] += (h - 1) as f32;
-            }
-            if q[i].pos != expect {
-                return Err(format!(
-                    "face {face} corner {i} position {:?} != expected {expect:?} for a {w}x{h} rectangle at {base:?}",
-                    q[i].pos
-                ));
-            }
-            let expect_uv = [uv[0] * w as f32, uv[1] * h as f32];
-            if q[i].uv != expect_uv {
-                return Err(format!(
-                    "face {face} corner {i} uv {:?} != expected {expect_uv:?} (a rectangle must repeat its texture, not stretch it)",
-                    q[i].uv
-                ));
-            }
-        }
-
-        let light24 = q[0].light & 0x00FF_FFFF;
-        let tint = q[0].tint;
-        for vtx in &q {
-            if vtx.light & 0x00FF_FFFF != light24 {
-                return Err(format!(
-                    "face {face} at {base:?}: layer/light is not per-quad ({:#08x} vs {light24:#08x})",
-                    vtx.light & 0x00FF_FFFF
-                ));
-            }
-            if vtx.tint != tint {
-                return Err(format!(
-                    "face {face} at {base:?}: tint is not per-quad ({:#010x} vs {tint:#010x})",
-                    vtx.tint
-                ));
-            }
-        }
-        let ao = [
-            q[0].ao_code(),
-            q[1].ao_code(),
-            q[2].ao_code(),
-            q[3].ao_code(),
-        ];
         for dv in 0..h {
             for du in 0..w {
                 let mut block = base;
@@ -193,9 +137,8 @@ pub(crate) fn expand_quad_list(qs: &[[MeshVertex; 4]]) -> Result<Vec<ExpandedFac
                     f: UnitFace {
                         face: face as u8,
                         block,
-                        light24,
-                        ao,
-                        tint,
+                        light: q.map(|v| v.light),
+                        color: q.map(|v| v.color),
                     },
                     w,
                     h,
@@ -204,6 +147,71 @@ pub(crate) fn expand_quad_list(qs: &[[MeshVertex; 4]]) -> Result<Vec<ExpandedFac
         }
     }
     Ok(out)
+}
+
+/// Decode `q` as a rectangle of `face`: its anchor block and extent, or why it
+/// is not one.
+fn decode_rect(q: &[MeshVertex; 4], face: usize) -> Result<([i32; 3], i32, i32), String> {
+    let (au, av, _) = FACE_AXES[face];
+    let an = 3 - au - av; // the remaining axis: 0+1+2 == 3
+    let plane = q[0].pos[an];
+    for vtx in q {
+        if vtx.pos[an] != plane {
+            return Err(format!(
+                "face {face}: plane axis {an} is not constant ({} vs {plane})",
+                vtx.pos[an]
+            ));
+        }
+    }
+    let span = |axis: usize| {
+        let lo = q.iter().map(|x| x.pos[axis]).fold(f32::MAX, f32::min);
+        let hi = q.iter().map(|x| x.pos[axis]).fold(f32::MIN, f32::max);
+        (lo, hi)
+    };
+    let (umin, umax) = span(au);
+    let (vmin, vmax) = span(av);
+    let (w, h) = ((umax - umin) as i32, (vmax - vmin) as i32);
+    if w < 1 || h < 1 {
+        return Err(format!("face {face}: degenerate rectangle {w}x{h}"));
+    }
+
+    // Anchor block: the face's own axis sits at `plane` minus whichever side
+    // of the block the face is on (up/south/east are the +1 side).
+    let mut base = [0i32; 3];
+    base[au] = umin as i32;
+    base[av] = vmin as i32;
+    base[an] = (plane - FACE_CORNERS[face][0].0[an]) as i32;
+
+    // Every corner must match the generic emitter rule exactly, and the UV
+    // must scale with the extent (repeat, not stretch).
+    for (i, (corner, uv)) in FACE_CORNERS[face].iter().enumerate() {
+        let mut expect = [
+            base[0] as f32 + corner[0],
+            base[1] as f32 + corner[1],
+            base[2] as f32 + corner[2],
+        ];
+        if corner[au] == 1.0 {
+            expect[au] += (w - 1) as f32;
+        }
+        if corner[av] == 1.0 {
+            expect[av] += (h - 1) as f32;
+        }
+        if q[i].pos != expect {
+            return Err(format!(
+                "face {face} corner {i} position {:?} != expected {expect:?} for a {w}x{h} rectangle at {base:?}",
+                q[i].pos
+            ));
+        }
+        let expect_uv = [uv[0] * w as f32, uv[1] * h as f32];
+        if q[i].uv != expect_uv {
+            return Err(format!(
+                "face {face} corner {i} uv {:?} != expected {expect_uv:?} (a rectangle must repeat its texture, not stretch it)",
+                q[i].uv
+            ));
+        }
+    }
+
+    Ok((base, w, h))
 }
 
 // -- M15 greedy oracle: the adversarial cube gate ---------------------------
@@ -1145,15 +1153,15 @@ pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
     let mut nonuniform_ao_faces = 0usize;
     let mut nonuniform_vertical = 0usize;
     for e in &exp {
-        if e.f.ao.iter().any(|a| *a != e.f.ao[0]) {
+        if !e.f.uniform() {
             nonuniform_ao_faces += 1;
             if e.f.face != 0 {
                 nonuniform_vertical += 1;
             }
             if e.w != 1 || e.h != 1 {
                 return Err(format!(
-                    "face {} of {:?} has non-uniform corner AO {:?} yet merged into a {}x{} rectangle — a rectangle cannot reproduce a corner gradient",
-                    e.f.face, e.f.block, e.f.ao, e.w, e.h
+                    "face {} of {:?} has non-uniform corners (light {:x?}, color {:x?}) yet merged into a {}x{} rectangle — a rectangle cannot reproduce a corner gradient",
+                    e.f.face, e.f.block, e.f.light, e.f.color, e.w, e.h
                 ));
             }
         }
@@ -1191,28 +1199,22 @@ pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
         oracle_face_at(&exp, 1, [8, 62, 4], "material strip DIORITE")?,
         oracle_face_at(&exp, 1, [8, 62, 7], "material strip CUTOUT")?,
     ];
-    let material_boundary_layer = (strips[0].f.light24 & 0xFFFF) as u16;
+    let material_boundary_layer = strips[0].f.layer();
     if material_boundary_layer != OS_SHARED_DOWN_LAYER {
         return Err(format!(
             "material boundary probe is vacuous: the down layer is {material_boundary_layer}, expected the shared {OS_SHARED_DOWN_LAYER}"
         ));
     }
     for (i, s) in strips.iter().enumerate() {
-        if s.f.light24 != strips[0].f.light24 || s.f.tint != strips[0].f.tint {
+        if s.f.light != strips[0].f.light || s.f.color != strips[0].f.color {
             return Err(format!(
-                "material strip {i} differs in layer/light/tint ({:#08x}/{:#010x} vs {:#08x}/{:#010x}) — the probe must isolate the block state as the only discriminator",
-                s.f.light24, s.f.tint, strips[0].f.light24, strips[0].f.tint
-            ));
-        }
-        if s.f.ao != strips[0].f.ao {
-            return Err(format!(
-                "material strip {i} differs in AO {:?} vs {:?} — the probe must isolate the block state",
-                s.f.ao, strips[0].f.ao
+                "material strip {i} differs in layer/light/color ({:x?}/{:x?} vs {:x?}/{:x?}) — the probe must isolate the block state as the only discriminator",
+                s.f.light, s.f.color, strips[0].f.light, strips[0].f.color
             ));
         }
         if (s.w, s.h) != (8, 3) {
             return Err(format!(
-                "material strip {i} is a {}x{} rectangle, expected 8x3 — with an identical layer, light, tint and AO, the only thing that may keep these three states apart is the block state in the merge key",
+                "material strip {i} is a {}x{} rectangle, expected 8x3 — with an identical layer, light and color, the only thing that may keep these three states apart is the block state in the merge key",
                 s.w, s.h
             ));
         }
@@ -1232,37 +1234,54 @@ pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
     }
 
     // -- 9. light discontinuities are not crossed ----------------------------
-    let block_lo = oracle_face_at(&exp, 1, [8, 66, 11], "block-light plate, unlit half")?;
-    let block_hi = oracle_face_at(&exp, 1, [12, 66, 11], "block-light plate, lit half")?;
-    if block_lo.f.light24 == block_hi.f.light24 {
-        return Err(format!(
-            "block-light probe is vacuous: both halves carry light word {:#08x} — the poke did not reach the sampled neighbour cells at y=65",
-            block_lo.f.light24
-        ));
-    }
-    for (s, half) in [(block_lo, "unlit"), (block_hi, "lit")] {
-        if (s.w, s.h) != (4, 4) {
+    //
+    // Each plate (the down faces of x 8..=15, z 11..=14) is lit one way over
+    // x 8..=11 and another over x 12..=15. Smooth lighting blends the two
+    // across the seam, so the faces beside it carry per-corner gradients and
+    // stay unit quads; what must hold is that no rectangle reaches across. So
+    // the plate's rectangles are decoded straight from the vertex stream and
+    // each is placed: none may cover both x = 11 and x = 12, and each half
+    // must still merge somewhere, or the probe proves nothing.
+    let plate_rects: Vec<([i32; 3], i32, i32)> = split_quads(&o.vertices, &o.indices)?
+        .iter()
+        .filter_map(|q| decode_rect(q, 1).ok())
+        .collect();
+    let mut boundary_rects = [[(0, 0); 2]; 2];
+    for (i, (y, channel, lo_name, hi_name)) in
+        [(66, "block", "unlit", "lit"), (70, "sky", "bright", "dim")].into_iter().enumerate()
+    {
+        let lo = oracle_face_at(&exp, 1, [8, y, 11], &format!("{channel}-light plate, {lo_name} half"))?;
+        let hi = oracle_face_at(&exp, 1, [13, y, 12], &format!("{channel}-light plate, {hi_name} half"))?;
+        if lo.f.light == hi.f.light {
             return Err(format!(
-                "block-light {half} half is a {}x{} rectangle, expected 4x4 — a rectangle must not span a block-light discontinuity",
-                s.w, s.h
+                "{channel}-light probe is vacuous: both halves carry light words {:x?} — the poke did not reach the sampled neighbour cells at y={}",
+                lo.f.light,
+                y - 1
             ));
         }
-    }
-    let sky_lo = oracle_face_at(&exp, 1, [8, 70, 11], "sky-light plate, bright half")?;
-    let sky_hi = oracle_face_at(&exp, 1, [12, 70, 11], "sky-light plate, dim half")?;
-    if sky_lo.f.light24 == sky_hi.f.light24 {
-        return Err(format!(
-            "sky-light probe is vacuous: both halves carry light word {:#08x} — the poke did not reach the sampled neighbour cells at y=69",
-            sky_lo.f.light24
-        ));
-    }
-    for (s, half) in [(sky_lo, "bright"), (sky_hi, "dim")] {
-        if (s.w, s.h) != (4, 4) {
+        let on_plate: Vec<_> = plate_rects
+            .iter()
+            .filter(|(base, _, _)| base[1] == y && (8..=15).contains(&base[0]) && (11..=14).contains(&base[2]))
+            .collect();
+        let mut largest = [(0, 0); 2];
+        for &&(base, w, h) in &on_plate {
+            let (x0, x1) = (base[0], base[0] + w - 1);
+            if x0 <= 11 && x1 >= 12 {
+                return Err(format!(
+                    "{channel}-light plate: a {w}x{h} rectangle at {base:?} covers x {x0}..={x1}, across the x = 11 | 12 light discontinuity"
+                ));
+            }
+            let side = usize::from(x0 >= 12);
+            if w * h > largest[side].0 * largest[side].1 {
+                largest[side] = (w, h);
+            }
+        }
+        if largest.iter().any(|&(w, h)| w * h < 2) {
             return Err(format!(
-                "sky-light {half} half is a {}x{} rectangle, expected 4x4 — a rectangle must not span a sky-light discontinuity",
-                s.w, s.h
+                "{channel}-light plate: largest rectangles {largest:?} ({lo_name}, {hi_name}) — each half must still merge away from the seam"
             ));
         }
+        boundary_rects[i] = largest;
     }
 
     // -- 10. the constant-tint boundary is not crossed -----------------------
@@ -1271,37 +1290,39 @@ pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
     // produce a *same-state* tint change — the two sides necessarily differ in
     // state too. What this grades is therefore the observable property (no
     // rectangle spans the tint change) plus the fact that the split cannot be
-    // attributed to layer or light: both sides carry an identical `light24`.
+    // attributed to layer or light: both sides carry identical light words.
     // Check 7 above separately proves the state field splits a shared layer.
     let spruce = oracle_face_at(&exp, 1, [1, 62, 11], "tint boundary, spruce half")?;
     let birch = oracle_face_at(&exp, 1, [5, 62, 11], "tint boundary, birch half")?;
-    let tint_boundary_layer = (spruce.f.light24 & 0xFFFF) as u16;
+    let tint_boundary_layer = spruce.f.layer();
     if tint_boundary_layer != OS_TINT_RAW_LAYER {
         return Err(format!(
             "tint boundary probe is vacuous: the face resolved to layer {tint_boundary_layer}, not the raw {OS_TINT_RAW_LAYER} — the Constant tint path did not engage (is the biome context attached?)"
         ));
     }
-    if spruce.f.light24 != birch.f.light24 {
+    if spruce.f.light != birch.f.light {
         return Err(format!(
-            "tint boundary probe is impure: the halves also differ in layer/light ({:#08x} vs {:#08x}), so a split would not prove the tint was honoured",
-            spruce.f.light24, birch.f.light24
+            "tint boundary probe is impure: the halves also differ in layer/light ({:x?} vs {:x?}), so a split would not prove the tint was honoured",
+            spruce.f.light, birch.f.light
         ));
     }
-    if spruce.f.tint == birch.f.tint {
+    if spruce.f.color == birch.f.color {
         return Err(format!(
-            "tint boundary probe is vacuous: both halves carry tint word {:#010x}",
-            spruce.f.tint
+            "tint boundary probe is vacuous: both halves carry color words {:x?}",
+            spruce.f.color
         ));
     }
-    if spruce.f.tint != pack_tint(ORACLE_SPRUCE_RGB, 0)
-        || birch.f.tint != pack_tint(ORACLE_BIRCH_RGB, 0)
-    {
+    // Both halves are one gray level (the same light and shade) multiplied by
+    // their own constant, vanilla's `ARGB.multiply` (`a * b / 255`).
+    let tinted = |gray: u32, rgb: [u8; 3]| pack_color(rgb.map(|t| (gray * t as u32 / 255) as u8));
+    let common_gray = (0..=255u32).find(|&g| {
+        spruce.f.color.iter().all(|&c| c == tinted(g, ORACLE_SPRUCE_RGB))
+            && birch.f.color.iter().all(|&c| c == tinted(g, ORACLE_BIRCH_RGB))
+    });
+    if common_gray.is_none() {
         return Err(format!(
-            "tint boundary: the emitted tint words {:#010x}/{:#010x} are not the fixture's constants {:#010x}/{:#010x} — the constant tint is not carried losslessly",
-            spruce.f.tint,
-            birch.f.tint,
-            pack_tint(ORACLE_SPRUCE_RGB, 0),
-            pack_tint(ORACLE_BIRCH_RGB, 0)
+            "tint boundary: the emitted colors {:x?}/{:x?} are not one gray level times the fixture's constants {:?}/{:?} — the constant tint is not carried exactly",
+            spruce.f.color, birch.f.color, ORACLE_SPRUCE_RGB, ORACLE_BIRCH_RGB
         ));
     }
     for (s, half) in [(spruce, "spruce"), (birch, "birch")] {
@@ -1433,11 +1454,11 @@ pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
         ],
         material_boundary_layer,
         cutout_faces,
-        block_light_boundary_rects: [(block_lo.w, block_lo.h), (block_hi.w, block_hi.h)],
-        sky_light_boundary_rects: [(sky_lo.w, sky_lo.h), (sky_hi.w, sky_hi.h)],
+        block_light_boundary_rects: boundary_rects[0],
+        sky_light_boundary_rects: boundary_rects[1],
         tint_boundary_rects: [(spruce.w, spruce.h), (birch.w, birch.h)],
         tint_boundary_layer,
-        tint_boundary_words: [spruce.f.tint, birch.f.tint],
+        tint_boundary_words: [spruce.f.color[0], birch.f.color[0]],
         deterministic_runs,
         model_only_identical: true,
         model_only,

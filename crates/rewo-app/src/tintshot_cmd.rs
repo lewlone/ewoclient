@@ -1334,8 +1334,8 @@ fn render_sky(
 // ---------------------------------------------------------------------------
 
 /// Tinted vertices of the block at (x,y,z): within the unit cube + a non-white
-/// color (the biome path carries the tint bytes; `reconstructed_color()`
-/// mirrors the vertex shader's `shade * ao * tint/255`).
+/// color (the biome path multiplies the tint into the vertex color, vanilla
+/// `ARGB.multiply`; `reconstructed_color()` is those bytes over 255).
 fn tinted_verts<'a>(
     mesh: &'a rewo_mesh::ColumnMesh,
     x: i32,
