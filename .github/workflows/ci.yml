@@ -1,0 +1,47 @@
+# Build + unit tests on every push and PR.
+#
+# What this covers: everything `cargo test` can check without the local 26.2
+# game assets. Tests that need the decompile / client jar skip on a runner, and
+# the `rewo *shot --check` gates (which also need a Vulkan device) are not run
+# here — run `python tools/gates.py` locally for those.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # rewo-gpu's build.rs compiles its GLSL with glslc from the Vulkan SDK.
+      - uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: latest
+          install_runtime: false
+          cache: true
+          stripdown: true
+
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      - name: Test
+        run: cargo test --workspace --no-fail-fast
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets

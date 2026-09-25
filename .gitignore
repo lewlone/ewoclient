@@ -41,3 +41,6 @@ tools/**/*.class
 # file makes a tree read as dirty, and several checks here treat "clean" as
 # meaning "no leftover mutation".
 /logs/
+
+# Written to the working directory by `rewo live` (client options).
+/options.txt
