@@ -5746,7 +5746,8 @@ mod award_stats_tests {
     #[test]
     fn the_effect_ids_come_from_the_report_because_the_wire_never_carries_them() {
         let Some(paths) = rewo_data::DataPaths::for_version("26.2") else {
-            return; // no local datagen -- nothing to grade against
+            rewo_data::skip_test!("no local 26.2 datagen");
+            return;
         };
         let m = rewo_data::mob_effects::MobEffects::load(&paths.registries_json())
             .expect("the report must carry minecraft:mob_effect");
