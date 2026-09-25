@@ -254,19 +254,20 @@ fn body_hash(bytes: &[u8]) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// bit-packed u32 runs
+// bit-packed u16 runs
 // ---------------------------------------------------------------------------
 
-/// A section's 4096 block-state cells stored one-per-u32 would be 16 KiB, and a
+/// A section's 4096 block-state cells stored one-per-u16 would be 8 KiB, and a
 /// full Overworld column has 24 of them. Packing at the width the values
 /// actually need takes a typical indirect palette to ~2 KiB — losslessly, since
 /// the width is derived from the maximum value present and written down.
 ///
 /// The packing convention is the wire's (`floor(64/bits)` values per word, no
 /// value straddling a word boundary), so it reads the same way
-/// `palette::read_bit_storage` does.
-fn put_packed(out: &mut Vec<u8>, values: &[u32]) {
-    let bits = bits_needed(values.iter().copied().max().unwrap_or(0));
+/// `palette::read_bit_storage` does. The bytes are the same as before the
+/// cells narrowed to `u16`: the width comes from the values, not the type.
+fn put_packed(out: &mut Vec<u8>, values: &[u16]) {
+    let bits = bits_needed(values.iter().copied().max().unwrap_or(0) as u32);
     put_u8(out, bits as u8);
     put_u32(out, values.len() as u32);
     let per_word = (64 / bits) as usize;
@@ -279,7 +280,7 @@ fn put_packed(out: &mut Vec<u8>, values: &[u32]) {
     }
 }
 
-fn read_packed(r: &mut ByteReader) -> Result<Vec<u32>, CacheError> {
+fn read_packed(r: &mut ByteReader) -> Result<Vec<u16>, CacheError> {
     let bits = r.u8()? as u32;
     if !(1..=32).contains(&bits) {
         return Err(CacheError::Malformed("bit width out of range"));
@@ -301,7 +302,14 @@ fn read_packed(r: &mut ByteReader) -> Result<Vec<u32>, CacheError> {
             if out.len() == len {
                 break;
             }
-            out.push(((word >> (slot as u32 * bits)) as u32) & mask);
+            let value = ((word >> (slot as u32 * bits)) as u32) & mask;
+            // The width is still read up to 32 bits (an entry from a wider
+            // build must not be *misread*), but a value that does not fit the
+            // u16 cells is a rejection, never a truncation.
+            let Ok(value) = u16::try_from(value) else {
+                return Err(CacheError::Malformed("packed value exceeds u16"));
+            };
+            out.push(value);
         }
     }
     Ok(out)
@@ -1054,7 +1062,7 @@ mod tests {
     }
 
     fn indirect_container() -> Container {
-        let mut cells = vec![0u32; 4096];
+        let mut cells = vec![0u16; 4096];
         cells[0] = 1;
         cells[1] = 2;
         cells[4095] = 2;
@@ -1067,9 +1075,9 @@ mod tests {
     }
 
     fn direct_container() -> Container {
-        let mut cells = vec![0u32; 4096];
+        let mut cells = vec![0u16; 4096];
         cells[5] = 12345;
-        cells[4095] = u32::MAX; // forces the 32-bit packing path
+        cells[4095] = u16::MAX; // forces the full 16-bit packing path
         Container {
             single: None,
             palette: Vec::new(),
@@ -1315,12 +1323,13 @@ mod tests {
 
     #[test]
     fn bit_packing_round_trips_at_every_width_including_the_extremes() {
-        for &max in &[0u32, 1, 2, 15, 16, 65535, u32::MAX] {
+        // The values are u16 now, so the widths the encoder derives run 1..=16.
+        for &max in &[0u16, 1, 2, 15, 16, 255, 65535] {
             // Spread across 0..=max in u64 so `max + 1` cannot wrap, and end on
             // `max` itself so the derived width is the one being tested.
             let span = max as u64 + 1;
-            let mut values: Vec<u32> = (0..1000u64)
-                .map(|i| (i.wrapping_mul(2_654_435_761) % span) as u32)
+            let mut values: Vec<u16> = (0..1000u64)
+                .map(|i| (i.wrapping_mul(2_654_435_761) % span) as u16)
                 .collect();
             values.push(max);
             let mut out = Vec::new();
@@ -1329,6 +1338,18 @@ mod tests {
             assert_eq!(read_packed(&mut r).unwrap(), values, "max {max}");
             assert!(r.is_empty(), "max {max}: consumed exactly");
         }
+        // A width wider than the encoder can derive from u16 values is still
+        // read — the width comes from the file — as long as every value fits a
+        // cell. Built by hand at 32 bits, two values per word.
+        let values = vec![1u16, 2, 3];
+        let mut out = Vec::new();
+        put_u8(&mut out, 32);
+        put_u32(&mut out, 3);
+        put_u64(&mut out, 1 | (2u64 << 32));
+        put_u64(&mut out, 3);
+        let mut r = ByteReader::new(&out);
+        assert_eq!(read_packed(&mut r).unwrap(), values);
+        assert!(r.is_empty());
     }
 
     #[test]
