@@ -5246,12 +5246,10 @@ fn run_headless(
     let mut coords = session.world.column_coords();
     coords.sort_unstable();
     let t0 = Instant::now();
-    let outputs = rewo_mesh::pool::mesh_all(
+    let outputs = rewo_mesh::pool::mesh_all_with(
         session.dimension_generation,
         &session.world,
-        &baked.render,
-        &baked.models,
-        &baked.fluid,
+        rewo_mesh::MeshInputs::from_baked(&baked),
         &coords,
     );
     let mut meshed = 0usize;
@@ -11933,6 +11931,7 @@ fn run_windowed(
         // M164 — without this the windowed client meshes no waterlogged water
         // at all, and looks EXACTLY as it did before. `r48` is what asks.
         fluid: baked.fluid.clone(),
+        cull: baked.cull.clone(),
     })?;
     let mut app = LiveApp {
         tab_health: std::collections::HashMap::new(),

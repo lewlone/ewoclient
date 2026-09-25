@@ -29,10 +29,10 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use rewo_data::assets::{CarriedFluid, Quad, RenderKind};
+use rewo_data::assets::{CarriedFluid, CullInfo, Quad, RenderKind};
 use rewo_world::World;
 
-use crate::{mesh_column, ColumnMesh};
+use crate::{mesh_column_with, ColumnMesh, MeshInputs};
 
 /// The baked per-state render tables the mesher reads — owned once by the
 /// pool, shared read-only with every worker.
@@ -45,6 +45,20 @@ pub struct MeshTables {
     /// because the way this feature disappears is precisely a caller that
     /// forgot it.
     pub fluid: Vec<Option<CarriedFluid>>,
+    /// Per-state face culling (`BakedAssets::cull`). Empty = the legacy rule
+    /// (a `RenderKind::Cube` occludes, nothing is translucent).
+    pub cull: Vec<CullInfo>,
+}
+
+impl MeshTables {
+    fn inputs(&self) -> MeshInputs<'_> {
+        MeshInputs {
+            render: &self.render,
+            models: &self.models,
+            fluid: &self.fluid,
+            cull: &self.cull,
+        }
+    }
 }
 
 /// One finished mesh job. `mesh: None` means the column baked to nothing
@@ -112,11 +126,9 @@ impl MeshPool {
         let tables = Arc::clone(&self.tables);
         let tx = self.tx.clone();
         self.pool.spawn(move || {
-            let mesh = mesh_column(
+            let mesh = mesh_column_with(
                 &snapshot,
-                &tables.render,
-                &tables.models,
-                &tables.fluid,
+                tables.inputs(),
                 cx,
                 cz,
             );
@@ -160,13 +172,29 @@ pub fn mesh_all(
     fluid: &[Option<CarriedFluid>],
     coords: &[(i32, i32)],
 ) -> Vec<MeshOutput> {
+    let inputs = MeshInputs {
+        render,
+        models,
+        fluid,
+        cull: &[],
+    };
+    mesh_all_with(generation, world, inputs, coords)
+}
+
+/// [`mesh_all`] over full [`MeshInputs`].
+pub fn mesh_all_with(
+    generation: u64,
+    world: &World,
+    inputs: MeshInputs<'_>,
+    coords: &[(i32, i32)],
+) -> Vec<MeshOutput> {
     coords
         .par_iter()
         .map(|&(cx, cz)| MeshOutput {
             generation,
             cx,
             cz,
-            mesh: mesh_column(world, render, models, fluid, cx, cz),
+            mesh: mesh_column_with(world, inputs, cx, cz),
         })
         .collect()
 }
@@ -189,6 +217,7 @@ mod tests {
             ],
             models: Vec::new(),
             fluid: Vec::new(),
+            cull: Vec::new(),
         }
     }
 

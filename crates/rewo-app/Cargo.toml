@@ -40,7 +40,7 @@ rewo-gpu = { workspace = true }
 rewo-net = { workspace = true }
 rewo-data = { workspace = true }
 rewo-world = { workspace = true }
-rewo-mesh = { workspace = true }
+rewo-mesh = { workspace = true, features = ["oracle"] }
 rewo-proto = { workspace = true }
 # M52 module port: the module CATALOG only (`ewo_core::modules`), which is
 # plain &'static data. rewo-gpu deliberately does NOT get this dep -- the

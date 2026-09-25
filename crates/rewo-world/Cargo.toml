@@ -18,3 +18,5 @@ dirs = { workspace = true }
 # M12 celestial star geometry relies on. The platform libm on Windows drifts a
 # couple ULP.
 libm = "0.2"
+# Fx hashing for the column map (hot lookups in mesher/light/physics).
+rustc-hash = "2.1"

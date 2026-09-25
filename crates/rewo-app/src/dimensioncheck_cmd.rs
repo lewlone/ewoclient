@@ -684,6 +684,7 @@ fn cube_tables() -> MeshTables {
         render,
         models: Vec::new(),
         fluid: Vec::new(),
+        cull: Vec::new(),
     }
 }
 

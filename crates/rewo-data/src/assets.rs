@@ -59,6 +59,41 @@ pub struct Quad {
     pub tint: TintSource,
     /// Apply directional face shading (false for plants/torches).
     pub shade: bool,
+    /// The face's material is `ChunkSectionLayer.TRANSLUCENT` — its sprite
+    /// has a partially transparent pixel under the face's UV rect, or the
+    /// model forces it (`force_translucent`). Such quads draw in the blended
+    /// pass rather than the alpha-tested one.
+    pub translucent: bool,
+}
+
+/// Per-state face-culling facts the mesher needs beyond [`RenderKind`].
+///
+/// Faces are in the mesher/asset order `[up, down, north, south, west, east]`
+/// (see [`FACE_NAMES`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CullInfo {
+    /// Faces whose `getFaceOcclusionShape` is `Shapes.block()` — i.e. the
+    /// state `canOcclude()` and its shape covers that whole face. A neighbour
+    /// face against one of these is never drawn (`Block.shouldRenderFace`).
+    pub occludes: u8,
+    /// `Block.skipRendering` rule: 0 none, 1 a same-block neighbour
+    /// (`HalfTransparentBlock`, `PowderSnowBlock`), 2 `IronBarsBlock`'s
+    /// connected rule, 3 a same-block neighbour on the Y axis only
+    /// (`MangroveRootsBlock`). See `crate::block_props::SKIP_RENDERING`.
+    pub skip: u8,
+    /// The block (not state) this state belongs to — the `neighbor.is(this)`
+    /// test. A per-bake ordinal.
+    pub block: u16,
+    /// Pane / bars horizontal connections (`north`/`south`/`west`/`east`
+    /// properties), as face bits.
+    pub connect: u8,
+    /// Member of `#minecraft:bars`.
+    pub bars: bool,
+    /// A `RenderKind::Cube` whose faces sample a translucent material.
+    pub translucent: bool,
+    /// `isCollisionShapeFullBlock` — the ambient-occlusion occluder
+    /// (`BlockBehaviour.getShadeBrightness` = 0.2 for these, else 1.0).
+    pub ao_occluder: bool,
 }
 
 /// Per-state render classification, indexed by global state id.
@@ -415,6 +450,10 @@ pub struct BakedAssets {
     /// `model_collision`) — slabs, stairs, fences, … — so a player can stand
     /// on a slab and can't walk through a fence.
     pub collide: Vec<Vec<[f32; 6]>>,
+    /// Per-state face-culling facts for the mesher (see [`CullInfo`]).
+    pub cull: Vec<CullInfo>,
+    /// Per-state movement behaviour for the player physics.
+    pub physics: Vec<crate::block_physics::BlockPhysics>,
     /// Per-state light emission 0..15 (`torch` = 14, `glowstone` = 15).
     /// Extracted from the decompile by `tools/gen_block_light.py`; see
     /// [`crate::block_light`].
@@ -1292,6 +1331,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         animations: Vec::new(),
         grass_tint,
         foliage_tint,
+        forced_layers: std::collections::HashSet::new(),
     };
 
     let mut render = vec![RenderKind::Invisible; max_id + 1];
@@ -1299,6 +1339,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let mut water = vec![false; max_id + 1];
     let mut bubble_column_drag: Vec<Option<bool>> = vec![None; max_id + 1];
     let mut collide: Vec<Vec<[f32; 6]>> = vec![Vec::new(); max_id + 1];
+    let mut cull = vec![CullInfo::default(); max_id + 1];
+    let mut physics = vec![crate::block_physics::BlockPhysics::AIR; max_id + 1];
     let mut emission = vec![0u8; max_id + 1];
     let mut dampening = vec![0u8; max_id + 1];
     let mut face_occludes = vec![0u8; max_id + 1];
@@ -1330,12 +1372,68 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             .map(|&(b, gate, gv, vp, map)| (b, (gate, gv, vp, map)))
             .collect();
 
-    for (block_name, def) in blocks {
+    let constant_collision: HashMap<&str, &[[f32; 6]]> =
+        crate::collision_table::COLLISION.iter().copied().collect();
+    let no_collision: std::collections::HashSet<&str> =
+        crate::collision_table::NO_COLLISION.iter().copied().collect();
+    let skip_rules: HashMap<&str, u8> =
+        crate::block_props::SKIP_RENDERING.iter().copied().collect();
+    for (block_ord, (block_name, def)) in blocks.iter().enumerate() {
         let states = def
             .get("states")
             .and_then(|s| s.as_array())
             .ok_or_else(|| format!("blocks.json: {block_name} has no states"))?;
         let short = block_name.strip_prefix("minecraft:").unwrap_or(block_name);
+        // Culling identity + movement behaviour: shape-independent, so filled
+        // for every state before any branch below can `continue`.
+        let skip = skip_rules.get(block_name.as_str()).copied().unwrap_or(0);
+        let bars = crate::block_props::BARS_TAG.contains(&block_name.as_str());
+        let water_block = matches!(short, "water" | "bubble_column");
+        for state in states {
+            let Some(id) = state.get("id").and_then(|i| i.as_u64()) else {
+                continue;
+            };
+            let props = state.get("properties").and_then(|p| p.as_object());
+            let on = |k: &str| props.and_then(|p| p.get(k)).and_then(|v| v.as_str()) == Some("true");
+            let mut connect = 0u8;
+            if skip == 2 {
+                // Mesher face order: north 2, south 3, west 4, east 5.
+                for (bit, k) in [(2, "north"), (3, "south"), (4, "west"), (5, "east")] {
+                    if on(k) {
+                        connect |= 1 << bit;
+                    }
+                }
+            }
+            cull[id as usize] = CullInfo {
+                occludes: 0,
+                skip,
+                block: block_ord as u16,
+                connect,
+                bars,
+                translucent: false,
+                ao_occluder: false,
+            };
+            let mut phys = crate::block_physics::BlockPhysics::resolve(block_name, props, water_block);
+            if short == "water" || short == "lava" {
+                let level = props
+                    .and_then(|p| p.get("level"))
+                    .and_then(|l| l.as_str())
+                    .and_then(|l| l.parse::<u8>().ok())
+                    .unwrap_or(0);
+                let own_height = crate::block_physics::fluid_own_height(level);
+                phys.fluid = if short == "lava" {
+                    crate::block_physics::PhysFluid::Lava { own_height }
+                } else {
+                    crate::block_physics::PhysFluid::Water { own_height }
+                };
+            } else if carried_water(block_name.as_str(), on("waterlogged")).is_some() {
+                // Every carried fluid is a source (`getOwnHeight` 8/9).
+                phys.fluid = crate::block_physics::PhysFluid::Water {
+                    own_height: crate::block_physics::fluid_own_height(0),
+                };
+            }
+            physics[id as usize] = phys;
+        }
         // Fluids have no usable blockstate models (vanilla hardcodes their
         // renderer) — classify by name, keyed on the `level` property.
         if short == "water" || short == "lava" {
@@ -1422,18 +1520,38 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             // Collision shape: a solid state is the unit cube; otherwise a
             // curated family may collide with its model geometry. Everything
             // else stays empty (today's behaviour).
-            collide[id as usize] = if solid[id as usize] {
+            // The outline the light and culling tables read: a full cube, or
+            // a curated family's model geometry (fences stretched to 1.5).
+            let shape_boxes = if solid[id as usize] {
                 vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
             } else if let (Some(tall), Some(bs)) = (model_collision(short), bs.as_ref()) {
                 let refs = baker.state_refs(bs, props);
-                let boxes = baker.collision_boxes(&refs, tall);
-                if !boxes.is_empty() {
-                    stats.shaped_collision_states += 1;
-                }
-                boxes
+                baker.collision_boxes(&refs, tall)
             } else {
                 Vec::new()
             };
+            // Collision: the block class's own shape where the decompile gives
+            // it (`crate::collision_table`), a few state-dependent classes
+            // transcribed in `special_collision`, else the outline above, else
+            // the model's geometry for a colliding block with none.
+            collide[id as usize] = if let Some(b) = special_collision(short, props) {
+                b
+            } else if let Some(b) = constant_collision.get(block_name.as_str()) {
+                b.to_vec()
+            } else if no_collision.contains(block_name.as_str()) {
+                Vec::new()
+            } else if !shape_boxes.is_empty() {
+                shape_boxes.clone()
+            } else if let Some(bs) = bs.as_ref() {
+                let refs = baker.state_refs(bs, props);
+                baker.collision_boxes(&refs, false)
+            } else {
+                Vec::new()
+            };
+            cull[id as usize].ao_occluder = collide[id as usize] == [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+            if !collide[id as usize].is_empty() && !solid[id as usize] {
+                stats.shaped_collision_states += 1;
+            }
 
             // Light. Vanilla's rule (BlockBehaviour.getLightDampening) is
             //     isSolidRender ? 15 : propagatesSkylightDown ? 0 : 1
@@ -1468,8 +1586,15 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             // leaves out of that list essentially never covers a whole face
             // (a fence post is 6/16 wide), so a false positive is inert.
             if !full_cube && !no_occlude.contains(block_name.as_str()) {
-                face_occludes[id as usize] = face_coverage(&collide[id as usize]);
+                face_occludes[id as usize] = face_coverage(&shape_boxes);
             }
+            // `getFaceOcclusionShape`: `canOcclude ? getShape : empty`. A full
+            // shape covers all six faces; a partial one the faces it spans.
+            cull[id as usize].occludes = if full_cube && !no_occlude.contains(block_name.as_str()) {
+                0b11_1111
+            } else {
+                faces_to_mesher_order(face_occludes[id as usize])
+            };
             // M164 — the water this state CARRIES (see `BakedAssets::fluid`).
             // Two disjoint families: the `waterlogged=true` states, and the five
             // blocks whose override is unconditional.
@@ -1539,6 +1664,24 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             || matches!(render[id], RenderKind::Fluid { lava: false, .. });
     }
 
+    // Translucency, now that every layer exists and every forced reference
+    // has been seen.
+    const FULL_UV: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    for quads in &mut models {
+        for q in quads.iter_mut() {
+            q.translucent = baker.forced_layers.contains(&q.layer)
+                || layer_has_translucent(&baker.layers, &baker.animations, q.layer, q.uv);
+        }
+    }
+    for (id, kind) in render.iter().enumerate() {
+        if let RenderKind::Cube { faces, .. } = kind {
+            cull[id].translucent = faces.iter().any(|&l| {
+                baker.forced_layers.contains(&l)
+                    || layer_has_translucent(&baker.layers, &baker.animations, l, FULL_UV)
+            });
+        }
+    }
+
     // M22: held items, after every block layer exists (block items copy them).
     let held_items = baker.bake_held_items(&trims);
 
@@ -1571,6 +1714,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         fluid,
         bubble_column_drag,
         collide,
+        cull,
+        physics,
         emission,
         dampening,
         face_occludes,
@@ -3003,12 +3148,16 @@ struct Baker<'a> {
     animations: Vec<AnimatedLayer>,
     grass_tint: [u8; 3],
     foliage_tint: [u8; 3],
+    /// Layers some model referenced through a `force_translucent` texture.
+    forced_layers: std::collections::HashSet<u16>,
 }
 
 /// A model with its parent chain flattened: merged textures + all elements.
 #[derive(Clone)]
 struct ResolvedModel {
     textures: HashMap<String, String>,
+    /// Texture variables defined as `{sprite, force_translucent: true}`.
+    forced: std::collections::HashSet<String>,
     elements: Vec<serde_json::Value>,
     ambient_occlusion: bool,
 }
@@ -3185,6 +3334,10 @@ impl<'a> Baker<'a> {
             let tex_name = resolve_texture_var(tex, &resolved.textures)?;
             layers[i] = self.layer_for(&tex_name, foliage_of(&tex_name, tint.foliage))?;
             raw_layers[i] = self.layer_for(&tex_name, TintKind::None)?;
+            if texture_var_forced(tex, &resolved.textures, &resolved.forced) {
+                self.forced_layers.insert(layers[i]);
+                self.forced_layers.insert(raw_layers[i]);
+            }
             tints[i] = resolve_tint_source(tint.layers, tintindex_of(face), tint.upper_half);
         }
         Some(RenderKind::Cube {
@@ -3200,7 +3353,16 @@ impl<'a> Baker<'a> {
         };
         let shade_default = resolved.ambient_occlusion; // proxy; real shade is per-element
         for el in &resolved.elements {
-            self.element_quads(el, &resolved.textures, r.x, r.y, tint, shade_default, out);
+            self.element_quads(
+                el,
+                &resolved.textures,
+                &resolved.forced,
+                r.x,
+                r.y,
+                tint,
+                shade_default,
+                out,
+            );
         }
     }
 
@@ -3209,6 +3371,7 @@ impl<'a> Baker<'a> {
         &mut self,
         el: &serde_json::Value,
         textures: &HashMap<String, String>,
+        forced: &std::collections::HashSet<String>,
         rot_x: i32,
         rot_y: i32,
         tint: TintInfo,
@@ -3239,6 +3402,10 @@ impl<'a> Baker<'a> {
             let Some(raw_layer) = self.layer_for(&tex_name, TintKind::None) else {
                 continue;
             };
+            if texture_var_forced(tex, textures, forced) {
+                self.forced_layers.insert(layer);
+                self.forced_layers.insert(raw_layer);
+            }
             let tint_src = resolve_tint_source(tint.layers, tintindex_of(face), tint.upper_half);
             let has_cull = face.get("cullface").is_some();
 
@@ -3279,6 +3446,8 @@ impl<'a> Baker<'a> {
                 dir,
                 tint: tint_src,
                 shade,
+                // Resolved after the bake, once every forced layer is known.
+                translucent: false,
             });
         }
     }
@@ -3651,12 +3820,14 @@ impl<'a> Baker<'a> {
                 if parent.contains("builtin/") {
                     ResolvedModel {
                         textures: HashMap::new(),
+                        forced: Default::default(),
                         elements: Vec::new(),
                         ambient_occlusion: true,
                     }
                 } else {
                     self.resolve_model(parent).unwrap_or(ResolvedModel {
                         textures: HashMap::new(),
+                        forced: Default::default(),
                         elements: Vec::new(),
                         ambient_occlusion: true,
                     })
@@ -3664,6 +3835,7 @@ impl<'a> Baker<'a> {
             }
             None => ResolvedModel {
                 textures: HashMap::new(),
+                forced: Default::default(),
                 elements: Vec::new(),
                 ambient_occlusion: true,
             },
@@ -3682,6 +3854,17 @@ impl<'a> Baker<'a> {
                 });
                 if let Some(name) = name {
                     out.textures.insert(var.clone(), name);
+                    // A child redefining a variable replaces the parent's
+                    // flag along with its sprite.
+                    let forced = value
+                        .get("force_translucent")
+                        .and_then(|f| f.as_bool())
+                        .unwrap_or(false);
+                    if forced {
+                        out.forced.insert(var.clone());
+                    } else {
+                        out.forced.remove(var);
+                    }
                 }
             }
         }
@@ -4126,6 +4309,27 @@ fn when_matches(
 
 // -- textures ----------------------------------------------------------------
 
+/// Whether a texture reference reaches its sprite through a variable that
+/// the model defined with `force_translucent: true`.
+fn texture_var_forced<'a>(
+    mut tex_ref: &'a str,
+    textures: &'a HashMap<String, String>,
+    forced: &std::collections::HashSet<String>,
+) -> bool {
+    let mut last = false;
+    for _ in 0..8 {
+        let Some(var) = tex_ref.strip_prefix('#') else {
+            return last;
+        };
+        last = forced.contains(var);
+        match textures.get(var) {
+            Some(t) => tex_ref = t,
+            None => return false,
+        }
+    }
+    false
+}
+
 fn resolve_texture_var<'a>(
     mut tex_ref: &'a str,
     textures: &'a HashMap<String, String>,
@@ -4521,6 +4725,231 @@ pub const FACE_DIRS: [(i32, i32, i32); 6] = [
 /// 1/16 boundaries, so rasterising each face at 16×16 and asking whether every
 /// cell is covered gives the same answer for the shapes that matter, without
 /// carrying a shape algebra. Boxes are block-local `0..1`.
+/// Rotate block-local boxes given for a NORTH-facing variant to `facing`
+/// (`Shapes.rotateHorizontal`: Y rotations about the block centre).
+fn rotate_horizontal(boxes: &[[f32; 6]], facing: &str) -> Vec<[f32; 6]> {
+    boxes
+        .iter()
+        .map(|b| {
+            let (x0, z0, x1, z1) = (b[0], b[2], b[3], b[5]);
+            let (a, c, d, e) = match facing {
+                // (x, z) -> (1 - z, x)
+                "east" => (1.0 - z1, x0, 1.0 - z0, x1),
+                "south" => (1.0 - x1, 1.0 - z1, 1.0 - x0, 1.0 - z0),
+                // (x, z) -> (z, 1 - x)
+                "west" => (z0, 1.0 - x1, z1, 1.0 - x0),
+                _ => (x0, z0, x1, z1),
+            };
+            [a, b[1], c, d, b[4], e]
+        })
+        .collect()
+}
+
+/// Collision for state-dependent classes whose shape the decompile gives as
+/// per-state constants but the generator cannot evaluate, and whose render
+/// model has no geometry to fall back to (block-entity rendered).
+fn special_collision(
+    short: &str,
+    props: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<Vec<[f32; 6]>> {
+    let prop = |k: &str| props.and_then(|p| p.get(k)).and_then(|v| v.as_str()).unwrap_or("");
+    const P: f32 = 1.0 / 16.0;
+    let cw = |d: &str| match d {
+        "north" => "east",
+        "east" => "south",
+        "south" => "west",
+        _ => "north",
+    };
+    let ccw = |d: &str| match d {
+        "north" => "west",
+        "west" => "south",
+        "south" => "east",
+        _ => "north",
+    };
+    let opposite = |d: &str| cw(cw(d));
+    let name = format!("minecraft:{short}");
+    let arms = |north_arm: [f32; 6], post: Option<[f32; 6]>, open: &dyn Fn(&str) -> bool| {
+        let mut out: Vec<[f32; 6]> = post.into_iter().collect();
+        for dir in ["north", "east", "south", "west"] {
+            if open(dir) {
+                out.extend(rotate_horizontal(&[north_arm], dir));
+            }
+        }
+        out
+    };
+    let bars = crate::block_props::SKIP_RENDERING.iter().any(|(n, k)| *n == name && *k == 2);
+    if bars || crate::block_props::FENCES_TAG.contains(&name.as_str()) {
+        // `CrossCollisionBlock` collision: `column(post, 0, h)` plus
+        // `boxZ(arm, 0, h, 0, 8)` per connected side. `IronBarsBlock`
+        // (bars, panes) is (2, 16), `FenceBlock` is (4, 24).
+        let (w, h) = if bars { (2.0, 16.0) } else { (4.0, 24.0) };
+        let (a, b) = (0.5 - w / 2.0 * P, 0.5 + w / 2.0 * P);
+        return Some(arms(
+            [a, 0.0, 0.0, b, h * P, 0.5],
+            Some([a, 0.0, a, b, h * P, b]),
+            &|d| prop(d) == "true",
+        ));
+    }
+    if crate::block_props::WALLS_TAG.contains(&name.as_str()) {
+        // `WallBlock` collision: `column(8, 0, 24)` if `up`, and
+        // `boxZ(6, 0, 24, 0, 11)` for every side that is not `none`.
+        let post = (prop("up") == "true").then_some([4.0 * P, 0.0, 4.0 * P, 12.0 * P, 1.5, 12.0 * P]);
+        return Some(arms(
+            [5.0 * P, 0.0, 0.0, 11.0 * P, 1.5, 11.0 * P],
+            post,
+            &|d| !matches!(prop(d), "" | "none"),
+        ));
+    }
+    if crate::block_props::FENCE_GATES.contains(&name.as_str()) {
+        // `FenceGateBlock`: empty while open, else `column(16, 4, 0, 24)`
+        // across the facing's axis.
+        if prop("open") == "true" {
+            return Some(Vec::new());
+        }
+        return Some(match prop("facing") {
+            "east" | "west" => vec![[6.0 * P, 0.0, 0.0, 10.0 * P, 1.5, 1.0]],
+            _ => vec![[0.0, 0.0, 6.0 * P, 1.0, 1.5, 10.0 * P]],
+        });
+    }
+    // `ChainBlock` / `RodBlock`: `rotateAllAxis(cube(w, w, 16))` along the
+    // block's axis (a chain's `axis`, a rod's `facing`), w = 3 / 4.
+    let rod = short == "end_rod" || short.ends_with("lightning_rod");
+    if rod || (short.ends_with("_chain") && props.is_some_and(|p| p.contains_key("axis"))) {
+        let w = if rod { 4.0 } else { 3.0 };
+        let (a, b) = (0.5 - w / 2.0 * P, 0.5 + w / 2.0 * P);
+        let axis = match if rod { prop("facing") } else { prop("axis") } {
+            "x" | "east" | "west" => 0,
+            "z" | "north" | "south" => 2,
+            _ => 1,
+        };
+        let mut bx = [a, a, a, b, b, b];
+        bx[axis] = 0.0;
+        bx[axis + 3] = 1.0;
+        return Some(vec![bx]);
+    }
+    if short.ends_with("pointed_dripstone") {
+        // `SpeleothemBlock.getShape` by thickness (the random XZ render
+        // offset vanilla also moves it by is not modelled).
+        let (w, y0, y1) = match prop("thickness") {
+            "tip_merge" => (6.0, 0.0, 16.0),
+            "tip" if prop("vertical_direction") == "down" => (6.0, 5.0, 16.0),
+            "tip" => (6.0, 0.0, 11.0),
+            "frustum" => (8.0, 0.0, 16.0),
+            "middle" => (10.0, 0.0, 16.0),
+            _ => (12.0, 0.0, 16.0),
+        };
+        let (a, b) = (0.5 - w / 2.0 * P, 0.5 + w / 2.0 * P);
+        return Some(vec![[a, y0 * P, a, b, y1 * P, b]]);
+    }
+    if short == "powder_snow" {
+        // `PowderSnowBlock.getCollisionShape`: empty for an entity that cannot
+        // walk on it (no leather boots). The `fallDistance > 2.5` landing box
+        // is context the bake cannot see.
+        return Some(Vec::new());
+    }
+    if short == "snow" {
+        // `SnowLayerBlock.getCollisionShape`: `SHAPES[layers - 1]`, 2/16 each.
+        let layers: f32 = prop("layers").parse().unwrap_or(1.0);
+        let h = (layers - 1.0) * 2.0 * P;
+        return Some(if h > 0.0 { vec![[0.0, 0.0, 0.0, 1.0, h, 1.0]] } else { Vec::new() });
+    }
+    if short.ends_with("chest") && short != "ender_chest" {
+        // `ChestBlock.getShape`: SINGLE `column(14, 0, 14)`; a double half is
+        // `boxZ(14, 0, 14, 0, 15)` turned toward the connected half
+        // (LEFT → facing clockwise, RIGHT → counter-clockwise).
+        let facing = prop("facing");
+        return Some(match prop("type") {
+            "left" => rotate_horizontal(&[[P, 0.0, 0.0, 15.0 * P, 14.0 * P, 15.0 * P]], cw(facing)),
+            "right" => rotate_horizontal(&[[P, 0.0, 0.0, 15.0 * P, 14.0 * P, 15.0 * P]], ccw(facing)),
+            _ => vec![[P, 0.0, P, 15.0 * P, 14.0 * P, 15.0 * P]],
+        });
+    }
+    if short.ends_with("shulker_box") {
+        // Closed: `Shapes.block()` (the lid's reach needs the block entity).
+        return Some(vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]);
+    }
+    if short.ends_with("_bed") {
+        // `BedBlock.SHAPES[connected.opposite()]`: a 3..9 slab and two legs at
+        // the far end, given for NORTH. HEAD connects toward `facing.opposite`.
+        let key = if prop("part") == "head" { prop("facing") } else { opposite(prop("facing")) };
+        let north = [
+            [0.0, 3.0 * P, 0.0, 1.0, 9.0 * P, 1.0],
+            [0.0, 0.0, 0.0, 3.0 * P, 3.0 * P, 3.0 * P],
+            [13.0 * P, 0.0, 0.0, 1.0, 3.0 * P, 3.0 * P],
+        ];
+        return Some(rotate_horizontal(&north, key));
+    }
+    let is_head = (short.ends_with("_skull") || short.ends_with("_head")) && short != "piston_head";
+    if is_head {
+        let piglin = short.starts_with("piglin");
+        let half = if piglin { 5.0 * P } else { 4.0 * P };
+        if short.contains("_wall_") {
+            // `WallSkullBlock` / `PiglinWallSkullBlock`: boxZ(8|10, 8, 8, 16).
+            let north = [[0.5 - half, 4.0 * P, 0.5, 0.5 + half, 12.0 * P, 1.0]];
+            return Some(rotate_horizontal(&north, prop("facing")));
+        }
+        return Some(vec![[0.5 - half, 0.0, 0.5 - half, 0.5 + half, 0.5, 0.5 + half]]);
+    }
+    None
+}
+
+/// [`FACE_DIRS`]-order face bits → mesher order (`[up, down, north, south,
+/// west, east]`).
+pub fn faces_to_mesher_order(dirs: u8) -> u8 {
+    // mesher face -> FACE_DIRS index
+    const REMAP: [u8; 6] = [3, 2, 4, 5, 0, 1];
+    let mut out = 0;
+    for (m, d) in REMAP.iter().enumerate() {
+        if dirs & (1 << d) != 0 {
+            out |= 1 << m;
+        }
+    }
+    out
+}
+
+/// `NativeImage.computeTransparency` over a UV rect of one layer (and every
+/// frame of it, when animated): whether any pixel has an alpha strictly
+/// between 0 and 255 — the `ChunkSectionLayer.TRANSLUCENT` criterion.
+fn layer_has_translucent(
+    layers: &[Vec<u8>],
+    animations: &[AnimatedLayer],
+    layer: u16,
+    uv: [[f32; 2]; 4],
+) -> bool {
+    let Some(base) = layers.get(layer as usize) else {
+        return false;
+    };
+    let side = ((base.len() / 4) as f64).sqrt() as usize;
+    if side == 0 {
+        return false;
+    }
+    let (mut u0, mut v0, mut u1, mut v1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for [u, v] in uv {
+        u0 = u0.min(u);
+        v0 = v0.min(v);
+        u1 = u1.max(u);
+        v1 = v1.max(v);
+    }
+    // `SpriteContents.computeTransparency`: floor the low edge, ceil the high.
+    let clamp = |x: f32| (x.max(0.0) * side as f32) as f64;
+    let x0 = clamp(u0).floor() as usize;
+    let y0 = clamp(v0).floor() as usize;
+    let x1 = (clamp(u1).ceil() as usize).min(side);
+    let y1 = (clamp(v1).ceil() as usize).min(side);
+    let scan = |px: &[u8]| {
+        (y0..y1).any(|y| {
+            (x0..x1).any(|x| {
+                let a = px.get((y * side + x) * 4 + 3).copied().unwrap_or(255);
+                a != 0 && a != 255
+            })
+        })
+    };
+    match animations.iter().find(|a| a.layer == layer) {
+        Some(anim) => anim.frames.iter().any(|f| scan(f)),
+        None => scan(base),
+    }
+}
+
 fn face_coverage(boxes: &[[f32; 6]]) -> u8 {
     if boxes.is_empty() {
         return 0;

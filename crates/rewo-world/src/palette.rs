@@ -144,6 +144,37 @@ impl Container {
         }
     }
 
+    /// Write one cell's global id (`PalettedContainer.set`). A single-value
+    /// container expands into a one-entry palette; an indirect palette grows
+    /// by appending (the in-memory cells hold full indices, so it never needs
+    /// re-packing); a direct container stores the id.
+    pub fn set(&mut self, index: usize, value: u32, entry_count: usize) {
+        if let Some(v) = self.single {
+            if v == value {
+                return;
+            }
+            self.single = None;
+            self.palette = vec![v];
+            self.cells = vec![0; entry_count];
+            self.direct = false;
+        }
+        let Some(cell) = self.cells.get_mut(index) else {
+            return;
+        };
+        if self.direct {
+            *cell = value;
+            return;
+        }
+        let idx = match self.palette.iter().position(|&p| p == value) {
+            Some(i) => i,
+            None => {
+                self.palette.push(value);
+                self.palette.len() - 1
+            }
+        };
+        *cell = idx as u32;
+    }
+
     /// True if this container is uniformly air (state 0) — lets the column
     /// skip empty sections in queries + digests.
     pub fn is_uniform_zero(&self) -> bool {
@@ -221,6 +252,30 @@ mod tests {
         assert_eq!(c.get(0), 10); // palette[1]
         assert_eq!(c.get(1), 20); // palette[2]
         assert_eq!(c.get(2), 0); // palette[0] = air
+    }
+
+    #[test]
+    fn set_writes_through_every_representation() {
+        // Single → a one-entry palette plus the new id.
+        let mut c = Container::single(7);
+        c.set(5, 7, 4096);
+        assert!(c.single == Some(7), "an unchanged write keeps the single value");
+        c.set(5, 9, 4096);
+        assert_eq!((c.get(5), c.get(0), c.get(4095)), (9, 7, 7));
+        assert_eq!(c.palette, vec![7, 9]);
+        // An existing palette entry is reused, a new one appended.
+        c.set(6, 7, 4096);
+        c.set(7, 11, 4096);
+        assert_eq!((c.get(6), c.get(7)), (7, 11));
+        assert_eq!(c.palette.len(), 3);
+        // Direct storage holds the id itself.
+        let mut w = PacketWriter::default();
+        w.u8(15);
+        w.raw(&pack(&vec![0u32; 4096], 15));
+        let mut r = PacketReader::new(&w.buf);
+        let mut d = Container::read(&mut r, ContainerKind::BlockStates { global_bits: 15 }).unwrap();
+        d.set(100, 23456, 4096);
+        assert_eq!((d.get(100), d.get(101)), (23456, 0));
     }
 
     #[test]
