@@ -13,6 +13,7 @@ use aes::Aes128;
 
 /// The launcher's account handoff (`REWO_ACCESS_TOKEN` / `REWO_UUID` /
 /// `REWO_USERNAME` env contract) — everything the session join needs.
+#[derive(Clone)]
 pub struct OnlineAuth {
     /// Minecraft services bearer token.
     pub access_token: String,
@@ -142,6 +143,17 @@ pub fn server_hash(server_id: &str, secret: &[u8], pubkey_der: &[u8]) -> String 
     hex
 }
 
+/// The HTTP agent for Mojang calls made during connect and play: bounded
+/// connect/read/write timeouts, so a stalled service fails the call instead
+/// of hanging the login (or the play session's signer refresh) forever.
+pub(crate) fn http_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(10))
+        .timeout_read(std::time::Duration::from_secs(15))
+        .timeout_write(std::time::Duration::from_secs(15))
+        .build()
+}
+
 /// `POST sessionserver.mojang.com/session/minecraft/join` — proves to
 /// Mojang that this token intends to join `hash`'s server. 204 = success.
 pub fn session_join(auth: &OnlineAuth, hash: &str) -> Result<(), String> {
@@ -151,7 +163,8 @@ pub fn session_join(auth: &OnlineAuth, hash: &str) -> Result<(), String> {
         r#"{{"accessToken":"{}","selectedProfile":"{:032x}","serverId":"{}"}}"#,
         auth.access_token, auth.uuid, hash
     );
-    let resp = ureq::post("https://sessionserver.mojang.com/session/minecraft/join")
+    let resp = http_agent()
+        .post("https://sessionserver.mojang.com/session/minecraft/join")
         .set("Content-Type", "application/json")
         .send_string(&body);
     match resp {

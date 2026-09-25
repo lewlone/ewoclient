@@ -505,10 +505,69 @@ pub struct MotionStats {
     pub knockback_velocity_delta: f64,
 }
 
+/// Frames the reader thread may queue ahead of the consumer. Bounded so a
+/// server outrunning the client stalls on TCP backpressure instead of growing
+/// this process's memory without limit.
+pub const INBOUND_QUEUE_FRAMES: usize = 4096;
+
+/// How much inbound work one [`PlaySession::pump`] (or the drain inside
+/// [`PlaySession::tick`]) may do before yielding, so a backlog is spread over
+/// frames instead of hitching one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PumpBudget {
+    pub max_packets: usize,
+    pub max_time: std::time::Duration,
+}
+
+impl PumpBudget {
+    /// A per-frame budget for the windowed client.
+    pub const FRAME: PumpBudget = PumpBudget {
+        max_packets: 2048,
+        max_time: std::time::Duration::from_millis(3),
+    };
+    /// No limit — everything queued at the call.
+    pub const UNLIMITED: PumpBudget = PumpBudget {
+        max_packets: usize::MAX,
+        max_time: std::time::Duration::MAX,
+    };
+}
+
+/// Why the reader thread stopped.
+#[derive(Clone, Debug)]
+pub(crate) struct ReaderClosed {
+    reason: String,
+    /// The peer closed the stream (vanilla `disconnect.endOfStream`), as
+    /// opposed to a decode/limit/timeout failure on our side.
+    eof: bool,
+}
+
 pub struct PlaySession {
     writer: crate::NetStream,
     codec: FrameCodec,
-    rx: Receiver<Vec<u8>>,
+    rx: Receiver<Result<Vec<u8>, ReaderClosed>>,
+    /// A handle on the socket, shut down on drop so the reader thread wakes
+    /// and the connection closes promptly.
+    socket: Option<std::net::TcpStream>,
+    /// The budget the last [`Self::pump`] used; `tick`'s own drain honours it
+    /// so the tick cannot undo the frame's pacing.
+    tick_budget: Option<PumpBudget>,
+    /// `Some` while a mid-session configuration phase is running (after
+    /// play's `start_configuration`, before `finish_configuration`).
+    reconfig: Option<crate::config::ConfigData>,
+    /// How many mid-session configuration phases have completed.
+    pub reconfigurations: u32,
+    /// Play packets that failed to decode and were dropped (logged at warn).
+    pub decode_failures: u64,
+    /// Play logins seen; a login after the first follows a reconfiguration.
+    logins: u32,
+    /// The client's `LastSeenMessagesTracker` for signed chat.
+    last_seen: crate::chat_sign::LastSeenTracker,
+    /// The account, kept to refresh the player certificate.
+    auth: Option<crate::crypt::OnlineAuth>,
+    /// An in-flight certificate refresh (runs off-thread; HTTP).
+    signer_refresh: Option<Receiver<Result<crate::chat_sign::ChatSigner, String>>>,
+    /// `AccountProfileKeyPairManager.nextProfileKeyRefreshTime`, epoch-milli.
+    next_key_refresh_ms: i64,
     pub ids: Ids,
     /// What the two blocking configuration tasks asked for and what Rewo
     /// answered (M166), carried over from the `Connection` and appended to by
@@ -1655,7 +1714,9 @@ impl<'a> Connection<'a> {
         let reader_codec = FrameCodec {
             compression_threshold: self.codec.compression_threshold,
         };
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let socket = writer.inner.try_clone().ok();
+        let (tx, rx) =
+            std::sync::mpsc::sync_channel::<Result<Vec<u8>, ReaderClosed>>(INBOUND_QUEUE_FRAMES);
         std::thread::Builder::new()
             .name("rewo-net-reader".into())
             .spawn(move || {
@@ -1663,13 +1724,13 @@ impl<'a> Connection<'a> {
                 let mut scratch = Vec::new();
                 loop {
                     let mut packet = Vec::new();
-                    if reader_codec
-                        .read_frame(&mut stream, &mut scratch, &mut packet)
-                        .is_err()
-                    {
-                        return; // socket closed / error → channel drops
+                    if let Err(e) = reader_codec.read_frame(&mut stream, &mut scratch, &mut packet) {
+                        // The reason travels to the session, which turns it
+                        // into the disconnect; the channel then drops.
+                        let _ = tx.send(Err(reader_closed(e)));
+                        return;
                     }
-                    if tx.send(packet).is_err() {
+                    if tx.send(Ok(packet)).is_err() {
                         return;
                     }
                 }
@@ -1685,24 +1746,24 @@ impl<'a> Connection<'a> {
         // arrive before `apply_login_shape` replaces it and the active-dimension
         // fields below stay `None` until it does.
         let world = World::new(DimensionShape::OVERWORLD);
-        let dim_types = self.dim_types.clone();
-        let overworld_clock_id = self.overworld_clock_id;
-        let world_clock_ids = std::mem::take(&mut self.world_clock_ids);
+        let dim_types = self.cfg.dim_types.clone();
+        let overworld_clock_id = self.cfg.overworld_clock_id;
+        let world_clock_ids = std::mem::take(&mut self.cfg.world_clock_ids);
         let visual_effects =
-            crate::effects::VisualEffects::new(self.night_vision_id, self.darkness_id);
-        let swing_effect_ids = self.swing_effect_ids;
+            crate::effects::VisualEffects::new(self.cfg.night_vision_id, self.cfg.darkness_id);
+        let swing_effect_ids = self.cfg.swing_effect_ids;
         // The enchantment registry, in wire order (M42) — the index is the
         // protocol id a component patch carries.
-        let enchantments = std::mem::take(&mut self.enchantments);
+        let enchantments = std::mem::take(&mut self.cfg.enchantments);
         // The chat-type registry, likewise in wire order (M127) — the index is
         // the id a `ChatType.Bound` names.
-        let chat_types = std::mem::take(&mut self.chat_types);
-        let trim_materials = std::mem::take(&mut self.trim_materials);
-        let trim_patterns = std::mem::take(&mut self.trim_patterns);
+        let chat_types = std::mem::take(&mut self.cfg.chat_types);
+        let trim_materials = std::mem::take(&mut self.cfg.trim_materials);
+        let trim_patterns = std::mem::take(&mut self.cfg.trim_patterns);
         // The tags the server sent during configuration (M69). Moved rather
         // than cloned for the same reason the registries above are: this
         // connection object is finished with them.
-        let tags = std::mem::take(&mut self.tags);
+        let tags = std::mem::take(&mut self.cfg.tags);
         // The brand and the cookie jar (M78). Both arrive during
         // *configuration* — the vanilla server sends `minecraft:brand` from its
         // configuration listener and never repeats it in play — and both are
@@ -1715,20 +1776,14 @@ impl<'a> Connection<'a> {
             delimiter: self.ids.cb_play_bundle_delimiter,
             terminal: self.ids.cb_play_start_configuration,
         });
-        let cat_variants = std::mem::take(&mut self.cat_variants);
-        let wolf_variants = std::mem::take(&mut self.wolf_variants);
-        let frog_variants = std::mem::take(&mut self.frog_variants);
+        let cat_variants = std::mem::take(&mut self.cfg.cat_variants);
+        let wolf_variants = std::mem::take(&mut self.cfg.wolf_variants);
+        let frog_variants = std::mem::take(&mut self.cfg.frog_variants);
         // Biome registry parsed during configuration; the `biomeZoomSeed` +
         // dimension holder arrive with the play-login packet (`apply_login_shape`).
         // Access the field directly (not a `&self` method) — `self.stream` was
         // already moved by `split()`, so `self` is partially moved here.
-        let pending_biome_registry = if self.biome_defs.is_empty() {
-            None
-        } else {
-            Some(rewo_world::biome::BiomeRegistry::new(
-                self.biome_defs.clone(),
-            ))
-        };
+        let pending_biome_registry = self.cfg.biome_registry();
         let biome_global_bits = pending_biome_registry
             .as_ref()
             .map(|r| r.global_bits)
@@ -1746,6 +1801,16 @@ impl<'a> Connection<'a> {
             writer,
             codec,
             rx,
+            socket,
+            tick_budget: None,
+            reconfig: None,
+            reconfigurations: 0,
+            decode_failures: 0,
+            logins: 0,
+            last_seen: crate::chat_sign::LastSeenTracker::default(),
+            auth: auth.cloned(),
+            signer_refresh: None,
+            next_key_refresh_ms: 0,
             ids: self.ids,
             latency: std::collections::HashMap::new(),
             gamemodes: std::collections::HashMap::new(),
@@ -1926,13 +1991,52 @@ impl<'a> Connection<'a> {
     }
 }
 
+/// Classify a reader-thread failure.
+fn reader_closed(e: rewo_proto::ProtoError) -> ReaderClosed {
+    use std::io::ErrorKind;
+    match e {
+        rewo_proto::ProtoError::Io(io)
+            if matches!(
+                io.kind(),
+                ErrorKind::UnexpectedEof
+                    | ErrorKind::ConnectionReset
+                    | ErrorKind::ConnectionAborted
+                    | ErrorKind::BrokenPipe
+            ) =>
+        {
+            ReaderClosed { reason: format!("connection closed: {io}"), eof: true }
+        }
+        rewo_proto::ProtoError::Io(io)
+            if matches!(io.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) =>
+        {
+            // `ReadTimeoutHandler`'s 30 s → `disconnect.timeout`.
+            ReaderClosed { reason: "timed out".into(), eof: false }
+        }
+        other => ReaderClosed { reason: format!("bad inbound frame: {other}"), eof: false },
+    }
+}
+
+impl Drop for PlaySession {
+    fn drop(&mut self) {
+        if let Some(sock) = self.socket.take() {
+            let _ = sock.shutdown(std::net::Shutdown::Both);
+        }
+    }
+}
+
 impl PlaySession {
     fn send(&mut self, packet: PacketWriter) -> Result<(), String> {
+        if self.reconfig.is_some() {
+            // A play packet in the configuration state is a protocol error
+            // the server kicks for; whatever asked for it (a UI action) is
+            // dropped instead, as vanilla has no play connection to send on.
+            log::debug!("net: play packet dropped during configuration");
+            return Ok(());
+        }
         self.codec
             .write_frame(&mut self.writer, &packet.buf)
             .map_err(|e| format!("send: {e}"))?;
-        self.writer.flush().ok();
-        Ok(())
+        self.writer.flush().map_err(|e| format!("send: {e}"))
     }
 
     fn next_sequence(&mut self) -> i32 {
@@ -1940,12 +2044,30 @@ impl PlaySession {
         self.sequence
     }
 
-    /// Mark a column + its 4 orthogonal neighbors stale for re-meshing.
+    /// Mark a column and all 8 neighbours stale for re-meshing. A column's
+    /// mesh reads one block past each edge — face culling, AO and fluid
+    /// corner heights all sample diagonals — so a whole-column change (load,
+    /// light or biome update) reaches the diagonal columns' corners too.
     fn mark_dirty_around(&mut self, cx: i32, cz: i32) {
-        for (dx, dz) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
-            if self.world.is_loaded((cx + dx) * 16, (cz + dz) * 16) {
-                self.dirty.insert((cx + dx, cz + dz));
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                self.mark_column_dirty(cx + dx, cz + dz);
             }
+        }
+    }
+
+    /// Mark the columns whose meshes can see block `(x, z)`: its own, plus
+    /// the neighbour across each column edge it touches — and the diagonal
+    /// neighbour when it sits on a corner.
+    fn mark_dirty_block(&mut self, x: i32, z: i32) {
+        for (cx, cz) in columns_seeing_block(x, z) {
+            self.mark_column_dirty(cx, cz);
+        }
+    }
+
+    fn mark_column_dirty(&mut self, cx: i32, cz: i32) {
+        if self.world.is_loaded(cx * 16, cz * 16) {
+            self.dirty.insert((cx, cz));
         }
     }
 
@@ -2171,10 +2293,13 @@ impl PlaySession {
 
     /// One 20 Hz tick: drain inbound, run physics, send movement.
     pub fn tick(&mut self, input: &TickInput) -> Result<(), String> {
-        self.drain_inbound()?;
-        if self.disconnect.is_some() {
+        self.drain_inbound(self.tick_budget.unwrap_or(PumpBudget::UNLIMITED))?;
+        // During a mid-session configuration there is no level and no play
+        // listener to tick — vanilla's `ClientPacketListener` is gone.
+        if self.disconnect.is_some() || self.reconfig.is_some() {
             return Ok(());
         }
+        self.tick_chat_key()?;
         // `ClientLevel.tickTime`: once the level exists, every running client
         // tick bumps the game time by one and ticks the world clock against it.
         // This is what advances the day/night cycle smoothly between the
@@ -2467,28 +2592,53 @@ impl PlaySession {
         Ok(())
     }
 
-    fn drain_inbound(&mut self) -> Result<(), String> {
+    /// Apply queued inbound packets, at most `budget`'s worth. Vanilla runs
+    /// packet handlers every frame (`Minecraft.runTick` drains the packet
+    /// processor before and independent of the 20 Hz tick), so the windowed
+    /// client calls this once per frame; [`Self::tick`] drains too so headless
+    /// callers that only tick keep working. Returns how many packets it
+    /// applied.
+    pub fn pump(&mut self, budget: PumpBudget) -> Result<usize, String> {
+        self.tick_budget = Some(budget);
+        self.drain_inbound(budget)
+    }
+
+    fn drain_inbound(&mut self, budget: PumpBudget) -> Result<usize, String> {
+        let start = std::time::Instant::now();
+        let mut applied = 0usize;
         loop {
+            if applied >= budget.max_packets
+                || (applied > 0 && start.elapsed() >= budget.max_time)
+                || self.disconnect.is_some()
+            {
+                return Ok(applied);
+            }
             let packet = match self.rx.try_recv() {
-                Ok(p) => p,
-                Err(TryRecvError::Empty) => return Ok(()),
+                Ok(Ok(p)) => p,
+                Ok(Err(closed)) => {
+                    self.reader_closed(Some(closed));
+                    return Ok(applied);
+                }
+                Err(TryRecvError::Empty) => return Ok(applied),
                 Err(TryRecvError::Disconnected) => {
-                    if self.disconnect.is_none() {
-                        // `Connection.channelInactive` — the socket went away
-                        // with no packet. Vanilla's reason is
-                        // `disconnect.endOfStream` and its details carry
-                        // neither a report nor a link.
-                        self.disconnect = Some("connection closed".into());
-                        self.disconnect_cause =
-                            Some(rewo_world::disconnect_screen::DisconnectCause::EndOfStream);
-                    }
-                    return Ok(());
+                    self.reader_closed(None);
+                    return Ok(applied);
                 }
             };
+            applied += 1;
             let mut pos = 0;
-            let Ok(id) = rewo_proto::varint::read_varint(&packet, &mut pos) else {
-                continue;
+            let id = match rewo_proto::varint::read_varint(&packet, &mut pos) {
+                Ok(id) => id,
+                Err(e) => {
+                    self.decode_failures += 1;
+                    log::warn!("net: inbound frame with no readable packet id ({e}); dropped");
+                    continue;
+                }
             };
+            if self.reconfig.is_some() {
+                self.handle_config(id, &packet[pos..])?;
+                continue;
+            }
             // M78 — bundling, wrapped *around* the dispatch chain rather than
             // folded into it. `PacketBundlePacker` sits between the frame
             // decoder and the listener in vanilla's pipeline, and it sits in
@@ -2506,7 +2656,8 @@ impl PlaySession {
                     // `handleBundlePacket` is a plain `for` loop over the
                     // sub-packets on one scheduled task, so nothing renders
                     // between them. Here that falls out of applying the run
-                    // inside a single drain.
+                    // inside a single drain — a budget is only checked between
+                    // frames, never inside a bundle.
                     for (sub_id, sub_body) in self.bundle.take() {
                         self.handle_packet(sub_id, &sub_body)?;
                     }
@@ -2527,10 +2678,204 @@ impl PlaySession {
                         self.disconnect_cause =
                             Some(rewo_world::disconnect_screen::DisconnectCause::ClientError);
                     }
-                    return Ok(());
+                    return Ok(applied);
                 }
             }
         }
+    }
+
+    /// A play packet that failed to decode is dropped whole (never half
+    /// applied), logged, and counted in [`Self::decode_failures`].
+    fn decode_failed(&mut self, what: &str, err: impl std::fmt::Display) {
+        self.decode_failures += 1;
+        log::warn!("net: {what}: dropped malformed packet ({err})");
+    }
+
+    /// The reader thread stopped: record why as the disconnect.
+    fn reader_closed(&mut self, closed: Option<ReaderClosed>) {
+        if self.disconnect.is_some() {
+            return;
+        }
+        match closed {
+            // `Connection.channelInactive` — the socket went away with no
+            // packet. Vanilla's reason is `disconnect.endOfStream` and its
+            // details carry neither a report nor a link.
+            None | Some(ReaderClosed { eof: true, .. }) => {
+                self.disconnect = Some("connection closed".into());
+                self.disconnect_cause =
+                    Some(rewo_world::disconnect_screen::DisconnectCause::EndOfStream);
+            }
+            // A frame the client could not accept — oversized, badly
+            // compressed, undecryptable — or a read timeout: vanilla's
+            // `exceptionCaught` path.
+            Some(ReaderClosed { reason, eof: false }) => {
+                log::warn!("net: connection lost: {reason}");
+                self.disconnect = Some(reason);
+                self.disconnect_cause =
+                    Some(rewo_world::disconnect_screen::DisconnectCause::ClientError);
+            }
+        }
+    }
+
+    /// One packet of a mid-session configuration phase, through the same
+    /// handler the login-time phase uses.
+    fn handle_config(&mut self, id: i32, body: &[u8]) -> Result<(), String> {
+        let Some(mut cfg) = self.reconfig.take() else {
+            return Ok(());
+        };
+        let mut keepalives = 0u64;
+        let (codec, writer) = (&self.codec, &mut self.writer);
+        let mut send = |p: PacketWriter| -> Result<(), String> {
+            codec
+                .write_frame(writer, &p.buf)
+                .map_err(|e| format!("send: {e}"))?;
+            writer.flush().map_err(|e| format!("send: {e}"))
+        };
+        let step = crate::config::handle_config_packet(
+            crate::config::ConfigCtx {
+                ids: &self.ids,
+                cfg: &mut cfg,
+                session: &mut self.session,
+                tasks: &mut self.config_tasks,
+                keepalives: &mut keepalives,
+            },
+            id,
+            body,
+            &mut send,
+        );
+        match step {
+            Err(e) => {
+                self.reconfig = Some(cfg);
+                Err(e)
+            }
+            Ok(crate::config::ConfigStep::Continue) => {
+                self.reconfig = Some(cfg);
+                Ok(())
+            }
+            Ok(crate::config::ConfigStep::Finished) => {
+                self.finish_reconfiguration(cfg);
+                Ok(())
+            }
+            Ok(crate::config::ConfigStep::Disconnect) => {
+                // Configuration's disconnect body is the same component
+                // `ClientboundDisconnectPacket` carries.
+                let (reason, cause) =
+                    rewo_world::disconnect_screen::read_disconnect(body, self.lang.as_deref());
+                self.disconnect = Some(reason);
+                self.disconnect_cause = Some(cause);
+                Ok(())
+            }
+        }
+    }
+
+    /// `ClientPacketListener.handleConfigurationStart`: acknowledge, drop the
+    /// level (`clearClientLevel`), and switch inbound decoding to the
+    /// configuration state. The server sends nothing in play after this.
+    fn start_reconfiguration(&mut self) -> Result<(), String> {
+        // Vanilla flushes pending chat acknowledgements before leaving play.
+        self.send_chat_ack()?;
+        self.send(PacketWriter::packet(self.ids.sb_play_config_acknowledged))?;
+        log::info!("net: server started configuration → re-entering config");
+        self.clear_level();
+        let fx = self.visual_effects.effect_ids();
+        self.reconfig = Some(crate::config::ConfigData::fresh_with_effect_ids(
+            fx.0,
+            fx.1,
+            self.swing_effect_ids,
+        ));
+        Ok(())
+    }
+
+    /// `Minecraft.clearClientLevel` — everything that belonged to the level
+    /// goes: columns (queued for the renderer to drop), entities, light,
+    /// clocks, weather, border, the active dimension, mounts. The next play
+    /// `login` rebuilds it all, exactly as the first one did.
+    fn clear_level(&mut self) {
+        self.removed.extend(self.world.column_coords());
+        self.dirty.clear();
+        self.world = World::new(DimensionShape::OVERWORLD);
+        self.light = rewo_world::light::LightEngine::new();
+        self.day_ticks = None;
+        self.clocks.clear();
+        self.game_time = None;
+        self.weather.clear();
+        self.border = rewo_world::border::WorldBorder::default();
+        self.mounts.clear();
+        self.vehicle_pose = None;
+        self.visual_effects.reset_for_respawn();
+        self.spawned = false;
+        self.active_dimension_key = None;
+        self.active_dimension_holder = None;
+        self.active_dimension_type = None;
+        self.end_flash = None;
+        // A new world generation, so anything keyed to the old one (the mesh
+        // pool) discards its in-flight work.
+        self.dimension_generation = self.dimension_generation.wrapping_add(1);
+        // The play listener that owned the rest goes with the level; the
+        // one built after configuration starts empty (`Hud.onDisconnected`
+        // clears the titles and boss bars; the scoreboard, tab list, menus
+        // and advancements are fields of the old `ClientPacketListener`).
+        // Chat survives: vanilla stores and restores its state across.
+        self.tab_players = TabListPlayers::default();
+        self.latency.clear();
+        self.gamemodes.clear();
+        self.tab_list_orders.clear();
+        self.scoreboard = crate::scoreboard::Scoreboard::new();
+        self.boss_bars = crate::boss_bar::BossBars::new();
+        self.tab_list_text = crate::tab_list_text::TabListText::new();
+        self.hud = crate::hud_state::HudState::default();
+        self.advancements = crate::advancements::ClientAdvancements::default();
+        self.inventory = rewo_world::inventory::Inventory::default();
+        self.menus = rewo_world::menu::Menus::new();
+        self.player_id = None;
+        self.bundle = crate::bundle::BundleAssembler::new(crate::bundle::BundleIds {
+            delimiter: self.ids.cb_play_bundle_delimiter,
+            terminal: self.ids.cb_play_start_configuration,
+        });
+    }
+
+    /// `finish_configuration` of a re-entry: adopt what the phase synced. The
+    /// play `login` that follows builds the level against these registries.
+    fn finish_reconfiguration(&mut self, cfg: crate::config::ConfigData) {
+        self.reconfigurations += 1;
+        log::info!(
+            "net: configuration finished → play (reconfiguration #{})",
+            self.reconfigurations
+        );
+        self.dim_types = cfg.dim_types.clone();
+        self.overworld_clock_id = cfg.overworld_clock_id;
+        self.world_clock_ids = cfg.world_clock_ids.clone();
+        self.swing_effect_ids = cfg.swing_effect_ids;
+        self.pending_biome_registry = cfg.biome_registry();
+        self.biome_global_bits = self
+            .pending_biome_registry
+            .as_ref()
+            .map(|r| r.global_bits)
+            .unwrap_or(7);
+        let crate::config::ConfigData {
+            enchantments,
+            chat_types,
+            trim_materials,
+            trim_patterns,
+            cat_variants,
+            wolf_variants,
+            frog_variants,
+            tags,
+            ..
+        } = cfg;
+        self.enchantments = enchantments;
+        self.chat_types = chat_types;
+        self.trim_materials = trim_materials;
+        self.trim_patterns = trim_patterns;
+        self.cat_variants = cat_variants;
+        self.wolf_variants = wolf_variants;
+        self.frog_variants = frog_variants;
+        self.tags = tags;
+    }
+
+    /// Whether a mid-session configuration phase is running.
+    pub fn is_reconfiguring(&self) -> bool {
+        self.reconfig.is_some()
     }
 
     fn handle_packet(&mut self, id: i32, body: &[u8]) -> Result<(), String> {
@@ -2538,20 +2883,26 @@ impl PlaySession {
         // Resolved before the ladder because the `take_item_entity` arm below
         // borrows `self.world` mutably and cannot read `self.player` too.
         let local_collector = self.local_collector();
-        if id == ids.cb_play_keep_alive {
-            let mut r = PacketReader::new(body);
-            if let Ok(v) = r.i64() {
-                let mut p = PacketWriter::packet(self.ids.sb_play_keep_alive);
-                p.i64(v);
-                self.send(p)?;
-            }
+        if Some(id) == ids.cb_play_start_configuration {
+            // A proxy's server switch (Velocity/Bungee), or a datapack reload
+            // that needs new registries. Only reached outside a bundle — the
+            // bundler treats it as the terminal packet it is.
+            self.start_reconfiguration()?;
+        } else if id == ids.cb_play_keep_alive {
+            // Unanswerable means a kick in 15 s; fail now with the cause.
+            let v = PacketReader::new(body)
+                .i64()
+                .map_err(|e| format!("play keep_alive: {e}"))?;
+            let mut p = PacketWriter::packet(self.ids.sb_play_keep_alive);
+            p.i64(v);
+            self.send(p)?;
         } else if id == ids.cb_play_ping {
-            let mut r = PacketReader::new(body);
-            if let Ok(v) = r.i32() {
-                let mut p = PacketWriter::packet(self.ids.sb_play_pong);
-                p.i32(v);
-                self.send(p)?;
-            }
+            let v = PacketReader::new(body)
+                .i32()
+                .map_err(|e| format!("play ping: {e}"))?;
+            let mut p = PacketWriter::packet(self.ids.sb_play_pong);
+            p.i32(v);
+            self.send(p)?;
         } else if id == ids.cb_play_resource_pack_push {
             // M166. Unlike its configuration twin this blocks nothing — there
             // is no task queue in play — but vanilla answers it from the same
@@ -2587,7 +2938,7 @@ impl PlaySession {
             let now = self.now_nanos();
             match crate::chunk_batch::read_chunk_batch_finished(body) {
                 Ok(batch_size) => self.chunk_batch.on_batch_finished(batch_size, now),
-                Err(err) => log::debug!("net: chunk_batch_finished decode: {err}"),
+                Err(err) => self.decode_failed("chunk_batch_finished", err),
             }
             let mut p = PacketWriter::packet(self.ids.sb_play_chunk_batch_received);
             p.f32(self.chunk_batch.desired_chunks_per_tick());
@@ -2638,9 +2989,11 @@ impl PlaySession {
                             self.world.apply_chunks_biomes(cx, cz, containers);
                             self.mark_dirty_around(cx, cz);
                         }
-                        Err(e) => log::error!("play: chunks_biomes decode failed: {e}"),
+                        Err(e) => self.decode_failed("chunks_biomes", e),
                     }
                 }
+            } else {
+                self.decode_failed("chunks_biomes", "malformed body");
             }
         } else if Some(id) == ids.cb_play_light_update {
             // Lighting changed without a chunk resend (torch placed, cave
@@ -2670,6 +3023,8 @@ impl PlaySession {
                 self.world.forget_column(cx, cz);
                 self.dirty.remove(&(cx, cz));
                 self.removed.push((cx, cz));
+            } else {
+                self.decode_failed("forget_level_chunk", "malformed body");
             }
         } else if id == ids.cb_play_block_update {
             let mut r = PacketReader::new(body);
@@ -2678,8 +3033,10 @@ impl PlaySession {
                 self.world.set_block(x, y, z, state as u32);
                 self.relight(x, y, z, old, state as u32);
                 self.block_updates += 1;
-                self.mark_dirty_around(x >> 4, z >> 4);
+                self.mark_dirty_block(x, z);
                 log::debug!("net: block_update ({x},{y},{z}) = {state}");
+            } else {
+                self.decode_failed("block_update", "malformed body");
             }
         } else if crate::route_block_event(
             id,
@@ -2727,11 +3084,13 @@ impl PlaySession {
                     let old = self.world.block_state_at(x, y, z);
                     self.world.set_block(x, y, z, state);
                     self.relight(x, y, z, old, state);
+                    self.mark_dirty_block(x, z);
                     applied += 1;
                 }
                 self.block_updates += applied;
-                self.mark_dirty_around(sx, sz);
                 log::debug!("net: section_blocks_update ({sx},{sy},{sz}) × {applied}");
+            } else {
+                self.decode_failed("section_blocks_update", "malformed body");
             }
         } else if id == ids.cb_play_set_time {
             // 26.x replaced the old `(worldAge, timeOfDay)` pair with a game
@@ -2785,6 +3144,8 @@ impl PlaySession {
                     "net: set_time game={game_time} clocks={count} day_ticks={:?}",
                     self.day_ticks
                 );
+            } else {
+                self.decode_failed("set_time", "malformed body");
             }
         } else if id == ids.cb_play_explode {
             // M68 decoded the physics prefix; M162 walks the tail for the
@@ -2801,17 +3162,17 @@ impl PlaySession {
                     self.queue_explosion_sound(body, &e);
                     self.apply_explode(&e);
                 }
-                Err(err) => log::debug!("net: explode decode: {err}"),
+                Err(err) => self.decode_failed("explode", err),
             }
         } else if id == ids.cb_play_set_entity_motion {
             match crate::motion::read_set_entity_motion(body) {
                 Ok(m) => self.apply_set_entity_motion(&m),
-                Err(err) => log::debug!("net: set_entity_motion decode: {err}"),
+                Err(err) => self.decode_failed("set_entity_motion", err),
             }
         } else if id == ids.cb_play_move_vehicle {
             match crate::motion::read_move_vehicle(body) {
                 Ok(v) => self.apply_move_vehicle(&v),
-                Err(err) => log::debug!("net: move_vehicle decode: {err}"),
+                Err(err) => self.decode_failed("move_vehicle", err),
             }
         } else if Some(id) == ids.cb_play_level_particles
             || Some(id) == ids.cb_play_level_event
@@ -2895,6 +3256,8 @@ impl PlaySession {
             let mut r = PacketReader::new(body);
             if let Ok((eid, type_id)) = crate::read_add_entity(&mut r, &mut self.world) {
                 self.post_add_entity_sound_instance(eid, type_id);
+            } else {
+                self.decode_failed("add_entity", "malformed body");
             }
         } else if id == ids.cb_play_remove_entities {
             let mut r = PacketReader::new(body);
@@ -2909,6 +3272,8 @@ impl PlaySession {
                         self.mounts.remove_entity(eid);
                     }
                 }
+            } else {
+                self.decode_failed("remove_entities", "malformed body");
             }
         } else if id == ids.cb_play_move_entity_pos {
             let mut r = PacketReader::new(body);
@@ -2916,6 +3281,8 @@ impl PlaySession {
                 if let Some(e) = self.world.entities.get_mut(eid) {
                     e.nudge(dx, dy, dz);
                 }
+            } else {
+                self.decode_failed("move_entity_pos", "malformed body");
             }
         } else if id == ids.cb_play_move_entity_pos_rot {
             let mut r = PacketReader::new(body);
@@ -2930,6 +3297,8 @@ impl PlaySession {
                     e.nudge(dx, dy, dz);
                     e.set_rot(yaw, pitch);
                 }
+            } else {
+                self.decode_failed("move_entity_pos_rot", "malformed body");
             }
         } else if id == ids.cb_play_move_entity_rot {
             let mut r = PacketReader::new(body);
@@ -2944,6 +3313,8 @@ impl PlaySession {
                 if let Some(e) = self.world.entities.get_mut(eid) {
                     e.set_rot(yaw, pitch);
                 }
+            } else {
+                self.decode_failed("move_entity_rot", "malformed body");
             }
         } else if id == ids.cb_play_entity_position_sync {
             // varint id, PositionMoveRotation {pos 3×f64, vel 3×f64, yaw
@@ -2960,6 +3331,8 @@ impl PlaySession {
                     e.set_target(pos[0], pos[1], pos[2]);
                     e.set_rot(yaw, pitch);
                 }
+            } else {
+                self.decode_failed("entity_position_sync", "malformed body");
             }
         } else if id == ids.cb_play_teleport_entity {
             // varint id, PositionMoveRotation, i32 relative-bits, bool
@@ -2987,17 +3360,20 @@ impl PlaySession {
                     let pitch = if rel(4) { e.pitch + pitch } else { pitch };
                     e.set_rot(yaw, pitch);
                 }
+            } else {
+                self.decode_failed("teleport_entity", "malformed body");
             }
         } else if id == ids.cb_play_rotate_head {
             // varint id, yHeadRot (packed-degree byte). The server steers the
             // head toward nearby players, so this is what makes a mob watch you.
             let mut r = PacketReader::new(body);
-            if let Ok(eid) = r.varint() {
-                if let Ok(b) = r.i8() {
+            match (r.varint(), r.i8()) {
+                (Ok(eid), Ok(b)) => {
                     if let Some(e) = self.world.entities.get_mut(eid) {
                         e.set_head_yaw(packed_degrees(b));
                     }
                 }
+                _ => self.decode_failed("rotate_head", "malformed body"),
             }
         } else if crate::route_set_entity_data(
             id,
@@ -3280,7 +3656,7 @@ impl PlaySession {
             let mut r = PacketReader::new(body);
             match r.varint() {
                 Ok(hand) => self.open_book_request = Some(hand),
-                Err(e) => log::debug!("net: open_book decode: {e}"),
+                Err(e) => self.decode_failed("open_book", e),
             }
         } else if id == ids.cb_play_open_sign_editor {
             // M174. `ClientboundOpenSignEditorPacket` — one packed BlockPos
@@ -3290,7 +3666,7 @@ impl PlaySession {
                 Ok((r.position()?, r.u8()? != 0))
             })() {
                 Ok((pos, front)) => self.open_sign_editor_request = Some((pos, front)),
-                Err(e) => log::debug!("net: open_sign_editor decode: {e}"),
+                Err(e) => self.decode_failed("open_sign_editor", e),
             }
         } else if id == ids.cb_play_recipe_book_add
             || id == ids.cb_play_recipe_book_remove
@@ -3449,7 +3825,7 @@ impl PlaySession {
             // milestones that have no reason to share a decode.
             match crate::motion::read_set_passengers(body) {
                 Ok(p) => self.apply_set_passengers(&p),
-                Err(err) => log::debug!("net: set_passengers decode: {err}"),
+                Err(err) => self.decode_failed("set_passengers", err),
             }
         } else if id == ids.cb_play_set_player_team {
             // Scoreboard teams (M62). A body we cannot decode is dropped
@@ -3460,7 +3836,7 @@ impl PlaySession {
                 Ok(p) => {
                     self.scoreboard.teams.apply(&p);
                 }
-                Err(e) => log::debug!("play: set_player_team parse: {e}"),
+                Err(e) => self.decode_failed("set_player_team", e),
             }
         } else if id == ids.cb_play_set_objective {
             // M65 — the scoreboard's other half. Every arm below drops a body
@@ -3472,38 +3848,38 @@ impl PlaySession {
                 Ok(p) => {
                     self.scoreboard.apply_set_objective(&p);
                 }
-                Err(e) => log::debug!("play: set_objective parse: {e}"),
+                Err(e) => self.decode_failed("set_objective", e),
             }
         } else if id == ids.cb_play_set_score {
             match crate::scoreboard::parse_set_score(body, self.number_formats) {
                 Ok(p) => {
                     self.scoreboard.apply_set_score(&p);
                 }
-                Err(e) => log::debug!("play: set_score parse: {e}"),
+                Err(e) => self.decode_failed("set_score", e),
             }
         } else if id == ids.cb_play_reset_score {
             match crate::scoreboard::parse_reset_score(body) {
                 Ok(p) => {
                     self.scoreboard.apply_reset_score(&p);
                 }
-                Err(e) => log::debug!("play: reset_score parse: {e}"),
+                Err(e) => self.decode_failed("reset_score", e),
             }
         } else if id == ids.cb_play_set_display_objective {
             match crate::scoreboard::parse_set_display_objective(body) {
                 Ok(p) => self.scoreboard.apply_set_display_objective(&p),
-                Err(e) => log::debug!("play: set_display_objective parse: {e}"),
+                Err(e) => self.decode_failed("set_display_objective", e),
             }
         } else if id == ids.cb_play_boss_event {
             match crate::boss_bar::parse_boss_event(body) {
                 Ok(p) => {
                     self.boss_bars.apply(&p);
                 }
-                Err(e) => log::debug!("play: boss_event parse: {e}"),
+                Err(e) => self.decode_failed("boss_event", e),
             }
         } else if id == ids.cb_play_tab_list {
             match crate::tab_list_text::parse_tab_list(body) {
                 Ok(p) => self.tab_list_text.apply(&p),
-                Err(e) => log::debug!("play: tab_list parse: {e}"),
+                Err(e) => self.decode_failed("tab_list", e),
             }
         } else if id == ids.cb_play_player_info_update {
             self.apply_player_info(body);
@@ -3529,6 +3905,8 @@ impl PlaySession {
                         self.tab_players.forget(uuid);
                     }
                 }
+            } else {
+                self.decode_failed("player_info_remove", "malformed body");
             }
         } else if Some(id) == ids.cb_play_set_health {
             let mut r = PacketReader::new(body);
@@ -3556,6 +3934,8 @@ impl PlaySession {
                 // [`Self::take_death`], which is the same branch vanilla takes
                 // when `shouldShowDeathScreen()` is false.
                 self.dead = h <= 0.0;
+            } else {
+                self.decode_failed("set_health", "malformed body");
             }
         } else if Some(id) == ids.cb_play_system_chat {
             let mut r = PacketReader::new(body);
@@ -3587,6 +3967,8 @@ impl PlaySession {
                         source: rewo_world::chat::MessageSource::SystemServer,
                     });
                 }
+            } else {
+                self.decode_failed("system_chat", "malformed body");
             }
         } else if Some(id) == ids.cb_play_player_chat {
             let mut r = PacketReader::new(body);
@@ -3617,6 +3999,11 @@ impl PlaySession {
                         &|content| self.decorate_chat(content, &chat.bound),
                         &|tag| self.chat_component_text(tag),
                     );
+                    let was_shown =
+                        matches!(outcome, crate::chat_wire::ChatOutcome::Shown { .. });
+                    if let Some(sig) = chat.signature.as_deref() {
+                        self.mark_message_processed(sig, was_shown)?;
+                    }
                     if let crate::chat_wire::ChatOutcome::Shown { content, tag } = outcome {
                         // M127: `content` is the DECORATED component now, so
                         // the store gets `<Steve> hi` rather than `hi`.
@@ -3639,7 +4026,7 @@ impl PlaySession {
                         });
                     }
                 }
-                Err(e) => log::warn!("net: player_chat decode failed: {e}"),
+                Err(e) => self.decode_failed("player_chat", e),
             }
         } else if id == ids.cb_play_commands {
             // The argument-type registry is a BUILT-IN one, so it comes from
@@ -3658,7 +4045,7 @@ impl PlaySession {
                             );
                             self.commands = tree;
                         }
-                        Err(e) => log::warn!("net: commands decode failed: {e}"),
+                        Err(e) => self.decode_failed("commands", e),
                     }
                 }
                 None => log::debug!("net: commands arrived before the argument-type table"),
@@ -3680,12 +4067,12 @@ impl PlaySession {
                         );
                     }
                 }
-                Err(e) => log::warn!("net: command_suggestions decode failed: {e}"),
+                Err(e) => self.decode_failed("command_suggestions", e),
             }
         } else if id == ids.cb_play_custom_chat_completions {
             match crate::suggestion_wire::read_custom_chat_completions(body) {
                 Ok((action, entries)) => self.suggestions.apply_completions(action, &entries),
-                Err(e) => log::warn!("net: custom_chat_completions decode failed: {e}"),
+                Err(e) => self.decode_failed("custom_chat_completions", e),
             }
         } else if id == ids.cb_play_delete_chat {
             let mut r = PacketReader::new(body);
@@ -3696,12 +4083,14 @@ impl PlaySession {
                 // reaches here for an out-of-range id, where vanilla throws —
                 // see `chat_wire`'s module docs.
                 Ok(packed) => match self.signature_cache.resolve(&packed) {
-                    Some(sig) => self
-                        .chat_events
-                        .push(crate::chat_wire::ChatEvent::Delete(sig)),
+                    Some(sig) => {
+                        self.last_seen.ignore_pending(&sig);
+                        self.chat_events
+                            .push(crate::chat_wire::ChatEvent::Delete(sig));
+                    }
                     None => log::debug!("net: delete_chat named an unknown signature"),
                 },
-                Err(e) => log::warn!("net: delete_chat decode failed: {e}"),
+                Err(e) => self.decode_failed("delete_chat", e),
             }
         } else if id == ids.cb_play_disconnect {
             // M129 — resolved against the language table rather than
@@ -3730,9 +4119,11 @@ impl PlaySession {
             let relatives = r.i32()?;
             Ok((id, vals, yaw, pitch, relatives))
         })();
-        let Ok((teleport_id, vals, yaw, pitch, relatives)) = parse else {
-            return Ok(());
-        };
+        // Fatal, as vanilla's decoder makes it: a teleport the client cannot
+        // read is one it never accepts, and the server then rejects every
+        // movement packet until it is — a silent desync, not a recoverable one.
+        let (teleport_id, vals, yaw, pitch, relatives) =
+            parse.map_err(|e| format!("play player_position: {e}"))?;
         let rel = |bit: i32| relatives & (1 << bit) != 0;
         // Relative bits (decompiled Relative enum order): X=0 Y=1 Z=2
         // Y_ROT=3 X_ROT=4, deltas 5..7, rotate-delta 8.
@@ -4860,6 +5251,21 @@ impl PlaySession {
         self.active_dimension_holder = Some(active.holder);
         self.end_flash = end_flash_for_dimension(&active.def);
         self.active_dimension_type = Some(active.def);
+        // `handleLogin` resets the chat state for the listener it builds: a
+        // fresh `LastSeenMessagesTracker` and signature cache, and a new chat
+        // session (`chatSession = null` → `setKeyPair` announces a new one).
+        // The first login's session was announced at `into_play`; a login
+        // after a reconfiguration must announce again or signed chat is
+        // rejected by the server's new listener.
+        self.logins += 1;
+        self.last_seen = crate::chat_sign::LastSeenTracker::default();
+        if self.logins > 1 {
+            self.signature_cache = crate::chat_wire::MessageSignatureCache::default();
+            if let Some(signer) = self.signer.as_mut() {
+                signer.restart_session();
+                self.announce_chat_session()?;
+            }
+        }
         Ok(())
     }
 
@@ -5040,14 +5446,17 @@ impl PlaySession {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default();
         let millis = now.as_millis() as i64;
-        // A signature commits to the seconds-precision timestamp + a random
-        // salt; both must go on the wire exactly as signed.
+        // `sendChat`: the last-seen update is generated (and applied) for
+        // every message, signed or not; a signature commits to the
+        // seconds-precision timestamp, a random salt and the acknowledged
+        // signatures, all of which go on the wire exactly as signed.
+        let last_seen = self.last_seen.generate_and_apply_update();
         let (salt, signature) = match self.signer.as_mut() {
             Some(signer) => {
                 let mut salt_bytes = [0u8; 8];
                 rand::Rng::fill(&mut rand::thread_rng(), &mut salt_bytes);
                 let salt = i64::from_be_bytes(salt_bytes);
-                let sig = signer.sign(message, salt, now.as_secs() as i64, &[]);
+                let sig = signer.sign(message, salt, now.as_secs() as i64, &last_seen.last_seen);
                 (salt, Some(sig))
             }
             None => (0, None),
@@ -5062,10 +5471,84 @@ impl PlaySession {
                 p.bool(false);
             }
         }
-        p.varint(0); // last-seen offset
-        p.raw(&[0, 0, 0]); // FixedBitSet(20) acknowledged — none
-        p.u8(0); // checksum 0 = skip verification
+        last_seen.write(&mut p);
         self.send(p)
+    }
+
+    /// `markMessageAsProcessed`: a signed player message was handled; once
+    /// more than 64 are unacknowledged, tell the server with a `chat_ack`.
+    fn mark_message_processed(
+        &mut self,
+        signature: &crate::chat_wire::Signature,
+        was_shown: bool,
+    ) -> Result<(), String> {
+        if self.last_seen.add_pending(signature, was_shown)
+            && self.last_seen.offset() > crate::chat_sign::PENDING_OFFSET_THRESHOLD
+        {
+            self.send_chat_ack()?;
+        }
+        Ok(())
+    }
+
+    /// `sendChatAcknowledgement` — only when there is something to report.
+    fn send_chat_ack(&mut self) -> Result<(), String> {
+        let offset = self.last_seen.get_and_clear_offset();
+        if offset > 0 {
+            if let Some(id) = self.ids.sb_play_chat_ack {
+                let mut p = PacketWriter::packet(id);
+                p.varint(offset);
+                self.send(p)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `ClientPacketListener.tick`'s key-pair upkeep: once `refreshedAfter`
+    /// has passed (checked at most hourly, as `shouldRefreshKeyPair` is),
+    /// fetch a new certificate off-thread; when it lands, adopt it and
+    /// announce the new chat session (`setKeyPair`).
+    fn tick_chat_key(&mut self) -> Result<(), String> {
+        if let Some(rx) = self.signer_refresh.as_ref() {
+            match rx.try_recv() {
+                Ok(Ok(signer)) => {
+                    self.signer_refresh = None;
+                    self.signer = Some(signer);
+                    self.announce_chat_session()?;
+                    log::info!("net: player certificate refreshed; chat session re-announced");
+                }
+                Ok(Err(e)) => {
+                    self.signer_refresh = None;
+                    log::warn!("net: player certificate refresh failed: {e}");
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.signer_refresh = None,
+            }
+            return Ok(());
+        }
+        let (Some(signer), Some(auth)) = (self.signer.as_ref(), self.auth.as_ref()) else {
+            return Ok(());
+        };
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        if now_ms < self.next_key_refresh_ms || !signer.due_refresh(now_ms) {
+            return Ok(());
+        }
+        // `MINIMUM_PROFILE_KEY_REFRESH_INTERVAL` — one hour between attempts.
+        self.next_key_refresh_ms = now_ms + 60 * 60 * 1000;
+        let auth = auth.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("rewo-cert-refresh".into())
+            .spawn(move || {
+                let _ = tx.send(crate::chat_sign::ChatSigner::fetch(&auth));
+            });
+        match spawned {
+            Ok(_) => self.signer_refresh = Some(rx),
+            Err(e) => log::warn!("net: certificate refresh thread: {e}"),
+        }
+        Ok(())
     }
 
     /// Creative: put `count` of item `item_id` into hotbar `slot` (0..9).
@@ -6425,6 +6908,50 @@ mod push_tests {
 /// shifted left to put its sign bit at the top before the arithmetic shift
 /// right sign-extends it. Getting this wrong places edits in a different
 /// chunk, which reads as "some blocks never update".
+/// The columns whose meshes read block `(x, z)`: its own column, the
+/// neighbour across each column edge the block lies on, and the diagonal one
+/// when it lies on a corner (AO and fluid corners sample diagonals).
+fn columns_seeing_block(x: i32, z: i32) -> Vec<(i32, i32)> {
+    let (cx, cz) = (x >> 4, z >> 4);
+    let side = |l: i32| -> &'static [i32] {
+        match l {
+            0 => &[0, -1],
+            15 => &[0, 1],
+            _ => &[0],
+        }
+    };
+    let mut out = Vec::with_capacity(4);
+    for &dx in side(x & 15) {
+        for &dz in side(z & 15) {
+            out.push((cx + dx, cz + dz));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod dirty_tests {
+    use super::columns_seeing_block;
+
+    #[test]
+    fn an_interior_block_dirties_only_its_column() {
+        assert_eq!(columns_seeing_block(5, 7), vec![(0, 0)]);
+    }
+
+    #[test]
+    fn an_edge_block_dirties_the_neighbour_across_the_edge() {
+        assert_eq!(columns_seeing_block(16, 7), vec![(1, 0), (0, 0)]);
+        assert_eq!(columns_seeing_block(3, -1), vec![(0, -1), (0, 0)]);
+    }
+
+    #[test]
+    fn a_corner_block_dirties_the_diagonal_too() {
+        let mut got = columns_seeing_block(-16, -1);
+        got.sort();
+        assert_eq!(got, vec![(-2, -1), (-2, 0), (-1, -1), (-1, 0)]);
+    }
+}
+
 fn unpack_section_pos(packed: u64) -> (i32, i32, i32) {
     let v = packed as i64;
     (

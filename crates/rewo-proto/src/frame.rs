@@ -48,6 +48,10 @@ impl FrameCodec {
         let mut pos = 0;
         let data_len = read_varint(scratch, &mut pos)?;
         let body = &scratch[pos..];
+        // Vanilla's client installs `CompressionDecoder` with
+        // `validateDecompressed = false` (`ClientHandshakePacketListenerImpl`),
+        // so it rejects neither an uncompressed frame above the threshold nor
+        // a compressed one below it; only the size caps below apply.
         if data_len == 0 {
             out.clear();
             out.extend_from_slice(body);
@@ -70,34 +74,47 @@ impl FrameCodec {
     }
 
     /// Write one frame from a plaintext packet.
+    ///
+    /// Header and body are assembled into one buffer and handed to the stream
+    /// in a single `write_all`, so an encrypted stream ciphers and sends each
+    /// frame in one piece. Does not flush — the caller decides.
     pub fn write_frame(&self, w: &mut impl Write, packet: &[u8]) -> Result<()> {
-        let mut head = Vec::with_capacity(10);
+        let frame = self.encode_frame(packet)?;
+        w.write_all(&frame)?;
+        Ok(())
+    }
+
+    /// Encode one frame: length prefix, optional compression header, body.
+    pub fn encode_frame(&self, packet: &[u8]) -> Result<Vec<u8>> {
+        if packet.len() > MAX_UNCOMPRESSED {
+            return Err(ProtoError::Frame(format!("packet of {} bytes too large", packet.len())));
+        }
+        let mut out = Vec::with_capacity(packet.len() + 10);
         match self.compression_threshold {
             None => {
-                write_varint(&mut head, packet.len() as i32);
-                w.write_all(&head)?;
-                w.write_all(packet)?;
+                write_varint(&mut out, packet.len() as i32);
+                out.extend_from_slice(packet);
             }
             Some(threshold) => {
                 if (packet.len() as i32) < threshold {
-                    write_varint(&mut head, (packet.len() + varint_len(0)) as i32);
-                    write_varint(&mut head, 0);
-                    w.write_all(&head)?;
-                    w.write_all(packet)?;
+                    write_varint(&mut out, (packet.len() + varint_len(0)) as i32);
+                    write_varint(&mut out, 0);
+                    out.extend_from_slice(packet);
                 } else {
                     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
                     encoder.write_all(packet)?;
                     let compressed = encoder.finish()?;
                     let data_len = packet.len() as i32;
-                    write_varint(&mut head, (varint_len(data_len) + compressed.len()) as i32);
-                    write_varint(&mut head, data_len);
-                    w.write_all(&head)?;
-                    w.write_all(&compressed)?;
+                    write_varint(&mut out, (varint_len(data_len) + compressed.len()) as i32);
+                    write_varint(&mut out, data_len);
+                    out.extend_from_slice(&compressed);
                 }
             }
         }
-        w.flush()?;
-        Ok(())
+        if out.len() > MAX_FRAME + 3 {
+            return Err(ProtoError::Frame(format!("frame of {} bytes too large", out.len())));
+        }
+        Ok(out)
     }
 }
 
@@ -129,6 +146,69 @@ mod tests {
         };
         let packet = vec![0x02; 32];
         assert_eq!(roundtrip(&codec, &packet), packet);
+    }
+
+    /// Counts `write` calls so a frame split across several can be caught.
+    struct CountingWriter {
+        writes: usize,
+        flushes: usize,
+        data: Vec<u8>,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.writes += 1;
+            self.data.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_frame_is_one_write_and_no_flush() {
+        for codec in [
+            FrameCodec::default(),
+            FrameCodec { compression_threshold: Some(4) },
+            FrameCodec { compression_threshold: Some(4096) },
+        ] {
+            let mut w = CountingWriter { writes: 0, flushes: 0, data: Vec::new() };
+            codec.write_frame(&mut w, &[7u8; 300]).unwrap();
+            assert_eq!(w.writes, 1);
+            assert_eq!(w.flushes, 0);
+            assert_eq!(w.data, codec.encode_frame(&[7u8; 300]).unwrap());
+        }
+    }
+
+    #[test]
+    fn declared_uncompressed_length_is_capped_and_checked() {
+        let codec = FrameCodec { compression_threshold: Some(16) };
+        // data_len above the 8 MiB protocol maximum.
+        let mut frame_body = Vec::new();
+        write_varint(&mut frame_body, (MAX_UNCOMPRESSED + 1) as i32);
+        frame_body.extend_from_slice(&[0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01]);
+        let mut wire = Vec::new();
+        write_varint(&mut wire, frame_body.len() as i32);
+        wire.extend_from_slice(&frame_body);
+        let (mut s, mut o) = (Vec::new(), Vec::new());
+        assert!(codec
+            .read_frame(&mut std::io::Cursor::new(wire), &mut s, &mut o)
+            .is_err());
+        // A declared length that does not match the inflated size.
+        let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(&[1u8; 40]).unwrap();
+        let z = enc.finish().unwrap();
+        let mut frame_body = Vec::new();
+        write_varint(&mut frame_body, 41);
+        frame_body.extend_from_slice(&z);
+        let mut wire = Vec::new();
+        write_varint(&mut wire, frame_body.len() as i32);
+        wire.extend_from_slice(&frame_body);
+        assert!(codec
+            .read_frame(&mut std::io::Cursor::new(wire), &mut s, &mut o)
+            .is_err());
     }
 
     #[test]
