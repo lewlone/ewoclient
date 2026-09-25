@@ -2673,7 +2673,11 @@ impl PlaySession {
             // the same place here: the `else if` ladder in `handle_packet`
             // stays a plain list of ids and never learns that bundles exist.
             match self.bundle.feed(id, &packet[pos..]) {
-                crate::bundle::Feed::Apply => self.handle_packet(id, &packet[pos..])?,
+                crate::bundle::Feed::Apply => {
+                    let handled = self.handle_packet(id, &packet[pos..]);
+                    self.fold_route_decode_failures();
+                    handled?;
+                }
                 // The opening delimiter, or a sub-packet buffered inside an
                 // open bundle. An unterminated bundle is *withheld* — the
                 // buffer survives this function returning, which is the whole
@@ -2687,7 +2691,9 @@ impl PlaySession {
                     // inside a single drain — a budget is only checked between
                     // frames, never inside a bundle.
                     for (sub_id, sub_body) in self.bundle.take() {
-                        self.handle_packet(sub_id, &sub_body)?;
+                        let handled = self.handle_packet(sub_id, &sub_body);
+                        self.fold_route_decode_failures();
+                        handled?;
                     }
                 }
                 // Vanilla throws on the Netty pipeline and the connection dies.
@@ -2710,6 +2716,13 @@ impl PlaySession {
                 }
             }
         }
+    }
+
+    /// Fold the `route_*` decode failures the packet's handler swallowed into
+    /// [`Self::decode_failures`], so both halves of the dispatch chain report
+    /// through one counter. Called once per handled packet, after it.
+    fn fold_route_decode_failures(&mut self) {
+        self.decode_failures += crate::take_route_decode_failures();
     }
 
     /// A play packet that failed to decode is dropped whole (never half
@@ -5987,6 +6000,9 @@ impl PlaySession {
         if let Err(e) = self.handle_packet(id, body) {
             log::warn!("net: injected packet {id} failed: {e}");
         }
+        // Fold here too: the thread-local is shared with the drain loop, and a
+        // count left behind would be blamed on the next packet it drains.
+        self.fold_route_decode_failures();
     }
 
     pub fn apply_recipe_book(&mut self, id: i32, body: &[u8]) {
