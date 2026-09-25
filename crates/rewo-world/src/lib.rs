@@ -72,7 +72,7 @@ pub mod server_links_screen;
 pub mod wavy_cape;
 pub mod weather;
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 use dimension::{CardinalLightType, CardinalLighting, DimensionShape, DimensionTypeDef};
@@ -90,7 +90,10 @@ use dimension::{CardinalLightType, CardinalLighting, DimensionShape, DimensionTy
 /// rather than mutating these in place — see `rewo_net::play`.
 pub struct World {
     pub shape: DimensionShape,
-    columns: HashMap<(i32, i32), Arc<chunk::Column>>,
+    /// Fx-hashed: every block query (mesher, light, physics) hashes a column
+    /// key, and SipHash's DoS resistance buys nothing for server-sent chunk
+    /// coordinates the client already bounds by view distance.
+    columns: FxHashMap<(i32, i32), Arc<chunk::Column>>,
     pub entities: entities::EntityTable,
     /// Per-biome color context (registry + colormaps + `biomeZoomSeed`), behind
     /// an `Arc` so `snapshot_3x3` clones it for free. `None` for synthetic /
@@ -125,7 +128,7 @@ impl World {
     pub fn new(shape: DimensionShape) -> Self {
         Self {
             shape,
-            columns: HashMap::new(),
+            columns: FxHashMap::default(),
             entities: entities::EntityTable::default(),
             biome: None,
             has_sky_light: true,
@@ -142,7 +145,7 @@ impl World {
     pub fn for_dimension(def: &DimensionTypeDef) -> Self {
         Self {
             shape: def.shape,
-            columns: HashMap::new(),
+            columns: FxHashMap::default(),
             entities: entities::EntityTable::default(),
             biome: None,
             has_sky_light: def.has_sky_light,
@@ -585,7 +588,7 @@ impl World {
     /// snapshot edge behave exactly like today's unloaded-column edge
     /// (air / full-bright).
     pub fn snapshot_3x3(&self, cx: i32, cz: i32) -> World {
-        let mut columns = HashMap::with_capacity(9);
+        let mut columns = FxHashMap::with_capacity_and_hasher(9, Default::default());
         for dz in -1..=1 {
             for dx in -1..=1 {
                 let key = (cx + dx, cz + dz);

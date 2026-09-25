@@ -2636,6 +2636,7 @@ dependencies = [
  "log",
  "rewo-data",
  "rewo-proto",
+ "rustc-hash 2.1.3",
 ]
 
 [[package]]
