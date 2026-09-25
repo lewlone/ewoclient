@@ -272,6 +272,8 @@ pub struct Ids {
     /// `readUtf`'s default nor the chat field's 256).
     pub sb_play_command_suggestion: Option<i32>,
     pub sb_play_chat_session_update: Option<i32>,
+    /// `ServerboundChatAckPacket` — one VarInt offset.
+    pub sb_play_chat_ack: Option<i32>,
     pub sb_play_set_creative_slot: Option<i32>,
     pub sb_play_set_carried_item: Option<i32>,
     pub sb_play_player_action: i32,
@@ -746,6 +748,7 @@ impl Ids {
             sb_play_chat_command: opt!(p, P, S, "chat_command"),
             sb_play_command_suggestion: opt!(p, P, S, "command_suggestion"),
             sb_play_chat_session_update: opt!(p, P, S, "chat_session_update"),
+            sb_play_chat_ack: opt!(p, P, S, "chat_ack"),
             sb_play_set_creative_slot: opt!(p, P, S, "set_creative_mode_slot"),
             sb_play_set_carried_item: opt!(p, P, S, "set_carried_item"),
             sb_play_player_action: req!(p, P, S, "player_action"),

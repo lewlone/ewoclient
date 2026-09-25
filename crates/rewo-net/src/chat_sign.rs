@@ -28,6 +28,9 @@ pub struct ChatSigner {
     pub key_signature: Vec<u8>,
     /// Certificate expiry, epoch-milli (wire `Instant`).
     pub expires_at_ms: i64,
+    /// `ProfileKeyPair.refreshedAfter`, epoch-milli: past this the key pair
+    /// is `dueRefresh` and a new certificate should be fetched.
+    pub refreshed_after_ms: i64,
     /// Random per-session id announced in `chat_session_update`; also the
     /// `sessionId` mixed into every signature (chain identity).
     pub session_id: u128,
@@ -43,7 +46,8 @@ impl ChatSigner {
     /// signer. `None`-worthy failures are returned as `Err` so the caller
     /// can fall back to unsigned chat with a warning.
     pub fn fetch(auth: &OnlineAuth) -> Result<Self, String> {
-        let resp = ureq::post("https://api.minecraftservices.com/player/certificates")
+        let resp = crate::crypt::http_agent()
+            .post("https://api.minecraftservices.com/player/certificates")
             .set("Authorization", &format!("Bearer {}", auth.access_token))
             .call()
             .map_err(|e| format!("certificates: {e}"))?;
@@ -80,6 +84,11 @@ impl ChatSigner {
         let public_key_der = strip_pem(public_pem)?;
         let key_signature = base64_decode(sig_b64)?;
         let expires_at_ms = iso8601_to_epoch_ms(expires_at)?;
+        // `ProfileKeyPair.refreshedAfter`; absent means "refresh by expiry".
+        let refreshed_after_ms = match json["refreshedAfter"].as_str() {
+            Some(s) => iso8601_to_epoch_ms(s)?,
+            None => expires_at_ms,
+        };
 
         let mut session_id = [0u8; 16];
         rand::Rng::fill(&mut rand::thread_rng(), &mut session_id[..]);
@@ -89,17 +98,34 @@ impl ChatSigner {
             public_key_der,
             key_signature,
             expires_at_ms,
+            refreshed_after_ms,
             session_id: u128::from_be_bytes(session_id),
             sender: auth.uuid,
             index: 0,
         })
     }
 
+    /// `dueRefresh` at `now_ms`.
+    pub fn due_refresh(&self, now_ms: i64) -> bool {
+        self.refreshed_after_ms < now_ms
+    }
+
+    /// `LocalChatSession.create` for the same key pair: a fresh random
+    /// session id and a chain restarting at link 0. Vanilla does this on every
+    /// play login (`handleLogin` nulls `chatSession`), so the chain the
+    /// server's new listener expects starts over.
+    pub fn restart_session(&mut self) {
+        let mut session_id = [0u8; 16];
+        rand::Rng::fill(&mut rand::thread_rng(), &mut session_id[..]);
+        self.session_id = u128::from_be_bytes(session_id);
+        self.index = 0;
+    }
+
     /// Sign one chat message, consuming the next chain link. Returns the
     /// 256-byte RSA signature. `salt`/`timestamp_secs` must match what goes
     /// on the wire (the signature covers them). `last_seen` is the ordered
-    /// list of previously-seen 256-byte signatures (empty for us — we don't
-    /// echo others' messages).
+    /// list of acknowledged 256-byte signatures from the
+    /// [`LastSeenTracker`] update sent in the same packet.
     pub fn sign(
         &mut self,
         content: &str,
@@ -128,6 +154,137 @@ impl ChatSigner {
         }
         self.index += 1;
         self.signing_key.sign(&m).to_bytes().into_vec()
+    }
+}
+
+/// `LastSeenMessages.LAST_SEEN_MESSAGES_MAX_LENGTH` — the tracker's window.
+pub const LAST_SEEN_WINDOW: usize = 20;
+
+/// `ClientPacketListener.PENDING_OFFSET_THRESHOLD`: once more than this many
+/// signed messages have been processed without an outgoing message carrying
+/// the acknowledgement, a `chat_ack` is sent.
+pub const PENDING_OFFSET_THRESHOLD: i32 = 64;
+
+/// `LastSeenMessages.Update` — what an outgoing chat packet carries after its
+/// optional signature: `offset`, a 20-bit acknowledged set, a checksum.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LastSeenUpdate {
+    pub offset: i32,
+    /// Bit `i` set: window position `i` (oldest first) is acknowledged.
+    pub acknowledged: u32,
+    pub checksum: u8,
+    /// The acknowledged signatures, oldest first — the `lastSeen` list the
+    /// message signature covers.
+    pub last_seen: Vec<[u8; 256]>,
+}
+
+impl LastSeenUpdate {
+    /// `LastSeenMessages.Update.write`: VarInt offset, `writeFixedBitSet(_, 20)`
+    /// (3 bytes, little-endian `BitSet.toByteArray` padded), checksum byte.
+    pub fn write(&self, p: &mut rewo_proto::writer::PacketWriter) {
+        p.varint(self.offset);
+        let bytes = self.acknowledged.to_le_bytes();
+        p.raw(&bytes[..LAST_SEEN_WINDOW.div_ceil(8)]);
+        p.u8(self.checksum);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TrackedEntry {
+    signature: [u8; 256],
+    pending: bool,
+}
+
+/// `LastSeenMessagesTracker` (client side): a ring of the last 20 processed
+/// signed messages, and how many have been processed since the server was
+/// last told (`offset`).
+#[derive(Clone, Debug)]
+pub struct LastSeenTracker {
+    tracked: [Option<TrackedEntry>; LAST_SEEN_WINDOW],
+    tail: usize,
+    offset: i32,
+    last_tracked: Option<[u8; 256]>,
+}
+
+impl Default for LastSeenTracker {
+    fn default() -> Self {
+        Self {
+            tracked: [None; LAST_SEEN_WINDOW],
+            tail: 0,
+            offset: 0,
+            last_tracked: None,
+        }
+    }
+}
+
+impl LastSeenTracker {
+    /// `addPending`: a repeat of the previous signature is ignored; a message
+    /// that was not shown still advances the window, as an empty slot.
+    pub fn add_pending(&mut self, signature: &[u8; 256], was_shown: bool) -> bool {
+        if self.last_tracked.as_ref() == Some(signature) {
+            return false;
+        }
+        self.last_tracked = Some(*signature);
+        let entry = was_shown.then_some(TrackedEntry { signature: *signature, pending: true });
+        let index = self.tail;
+        self.tail = (index + 1) % LAST_SEEN_WINDOW;
+        self.offset += 1;
+        self.tracked[index] = entry;
+        true
+    }
+
+    /// `ignorePending` — a deleted message is dropped from the window while
+    /// still unacknowledged.
+    pub fn ignore_pending(&mut self, signature: &[u8; 256]) {
+        for slot in self.tracked.iter_mut() {
+            if matches!(slot, Some(e) if e.pending && &e.signature == signature) {
+                *slot = None;
+                break;
+            }
+        }
+    }
+
+    pub fn offset(&self) -> i32 {
+        self.offset
+    }
+
+    pub fn get_and_clear_offset(&mut self) -> i32 {
+        std::mem::take(&mut self.offset)
+    }
+
+    /// `generateAndApplyUpdate`: walk the window oldest-first from `tail`,
+    /// acknowledge every present entry, and clear the offset.
+    pub fn generate_and_apply_update(&mut self) -> LastSeenUpdate {
+        let offset = self.get_and_clear_offset();
+        let mut acknowledged = 0u32;
+        let mut last_seen = Vec::with_capacity(LAST_SEEN_WINDOW);
+        for i in 0..LAST_SEEN_WINDOW {
+            let index = (self.tail + i) % LAST_SEEN_WINDOW;
+            if let Some(e) = self.tracked[index].as_mut() {
+                acknowledged |= 1 << i;
+                last_seen.push(e.signature);
+                e.pending = false;
+            }
+        }
+        let checksum = last_seen_checksum(&last_seen);
+        LastSeenUpdate { offset, acknowledged, checksum, last_seen }
+    }
+}
+
+/// `LastSeenMessages.computeChecksum` over `MessageSignature.checksum` =
+/// `Arrays.hashCode(bytes)`; a zero byte is replaced by 1 (0 means "skip").
+pub fn last_seen_checksum(entries: &[[u8; 256]]) -> u8 {
+    let mut checksum: i32 = 1;
+    for sig in entries {
+        let mut h: i32 = 1;
+        for &b in sig.iter() {
+            h = h.wrapping_mul(31).wrapping_add(b as i8 as i32);
+        }
+        checksum = checksum.wrapping_mul(31).wrapping_add(h);
+    }
+    match checksum as u8 {
+        0 => 1,
+        b => b,
     }
 }
 
@@ -208,6 +365,91 @@ mod tests {
         );
         // Two-digit fraction pads to 3 (`.34` → 340 ms).
         assert_eq!(iso8601_to_epoch_ms("1970-01-01T00:00:00.34Z").unwrap(), 340);
+    }
+
+    fn sig(n: u8) -> [u8; 256] {
+        [n; 256]
+    }
+
+    #[test]
+    fn tracker_acknowledges_the_window_oldest_first_and_clears_offset() {
+        let mut t = LastSeenTracker::default();
+        assert!(t.add_pending(&sig(1), true));
+        assert!(t.add_pending(&sig(2), false)); // processed, not shown: a gap
+        assert!(t.add_pending(&sig(3), true));
+        assert_eq!(t.offset(), 3);
+        let u = t.generate_and_apply_update();
+        assert_eq!(u.offset, 3);
+        assert_eq!(t.offset(), 0);
+        // tail = 3: window positions 0..17 are empty slots 3..19, then slots
+        // 0,1,2 land at positions 17,18,19; slot 1 (not shown) is empty.
+        assert_eq!(u.acknowledged, (1 << 17) | (1 << 19));
+        assert_eq!(u.last_seen, vec![sig(1), sig(3)]);
+        assert_eq!(u.checksum, last_seen_checksum(&[sig(1), sig(3)]));
+        // A second update re-sends the still-tracked (now acknowledged) set
+        // with a zero offset.
+        let again = t.generate_and_apply_update();
+        assert_eq!(again.offset, 0);
+        assert_eq!(again.acknowledged, u.acknowledged);
+    }
+
+    #[test]
+    fn tracker_ignores_an_immediate_repeat_and_wraps_at_20() {
+        let mut t = LastSeenTracker::default();
+        assert!(t.add_pending(&sig(9), true));
+        assert!(!t.add_pending(&sig(9), true), "repeat of the last tracked");
+        assert_eq!(t.offset(), 1);
+        for n in 0..25u8 {
+            t.add_pending(&sig(100 + n), true);
+        }
+        let u = t.generate_and_apply_update();
+        assert_eq!(u.offset, 26);
+        assert_eq!(u.acknowledged, (1 << 20) - 1);
+        let expect: Vec<_> = (5..25u8).map(|n| sig(100 + n)).collect();
+        assert_eq!(u.last_seen, expect);
+    }
+
+    #[test]
+    fn ignore_pending_only_drops_unacknowledged_entries() {
+        let mut t = LastSeenTracker::default();
+        t.add_pending(&sig(1), true);
+        t.generate_and_apply_update(); // sig(1) now acknowledged
+        t.add_pending(&sig(2), true);
+        t.ignore_pending(&sig(1));
+        t.ignore_pending(&sig(2));
+        let u = t.generate_and_apply_update();
+        assert_eq!(u.last_seen, vec![sig(1)]);
+    }
+
+    #[test]
+    fn checksum_matches_java_hashcode_and_never_zero() {
+        // Empty list: checksum starts at 1.
+        assert_eq!(last_seen_checksum(&[]), 1);
+        // Arrays.hashCode of 256 zero bytes is 31^256 (mod 2^32); fold once.
+        let mut h: i32 = 1;
+        for _ in 0..256 {
+            h = h.wrapping_mul(31);
+        }
+        let expect = (31i32.wrapping_add(h)) as u8;
+        assert_eq!(last_seen_checksum(&[[0u8; 256]]), if expect == 0 { 1 } else { expect });
+        // Negative bytes hash signed, as Java's byte does.
+        let mut neg = [0u8; 256];
+        neg[0] = 0xff;
+        assert_ne!(last_seen_checksum(&[neg]), last_seen_checksum(&[[0u8; 256]]));
+    }
+
+    #[test]
+    fn update_writes_offset_three_bitset_bytes_and_checksum() {
+        let u = LastSeenUpdate {
+            offset: 300,
+            acknowledged: 0b1000_0000_0000_0000_0001,
+            checksum: 0x7f,
+            last_seen: vec![],
+        };
+        let mut p = rewo_proto::writer::PacketWriter::default();
+        u.write(&mut p);
+        // varint 300 = [0xAC, 0x02]; bits 0 and 19 → bytes [0x01, 0x00, 0x08].
+        assert_eq!(p.buf, vec![0xAC, 0x02, 0x01, 0x00, 0x08, 0x7f]);
     }
 
     #[test]
