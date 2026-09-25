@@ -61,8 +61,8 @@
 //! ```
 //!
 //! The body is the column: section count, then per section the non-empty count,
-//! the two paletted containers, the two optional light nibble arrays and the
-//! block-update overrides; then `sky_full_above`, the optional
+//! the two paletted containers (block edits already written into them), the
+//! two optional light nibble arrays and the edited flag; then `sky_full_above`, the optional
 //! `MOTION_BLOCKING` heightmap, and the block entities.
 
 use std::collections::HashMap;
@@ -86,7 +86,7 @@ const MAGIC: [u8; 4] = *b"RWCC";
 /// A stale entry that still parses is the expensive failure this guards, so the
 /// check is equality rather than `>=`: neither an older nor a newer file is
 /// accepted, and the cost of being wrong is one re-request.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Bytes before the body.
 const HEADER_LEN: usize = 36;
@@ -564,23 +564,14 @@ fn put_section(out: &mut Vec<u8>, s: &Section) {
         biomes,
         block_light,
         sky_light,
-        overrides,
+        edited,
     } = s;
     put_i16(out, *non_empty);
     put_container(out, states);
     put_container(out, biomes);
     put_light(out, block_light);
     put_light(out, sky_light);
-    // Sorted, so encoding a column twice produces identical bytes. A `HashMap`
-    // iterates in an unspecified order, and a format whose bytes depend on
-    // allocator state cannot be compared byte-for-byte in a test.
-    let mut keys: Vec<u16> = overrides.keys().copied().collect();
-    keys.sort_unstable();
-    put_u32(out, keys.len() as u32);
-    for k in keys {
-        out.extend_from_slice(&k.to_le_bytes());
-        put_u32(out, overrides[&k]);
-    }
+    put_u8(out, *edited as u8);
 }
 
 fn read_section(r: &mut ByteReader) -> Result<Section, CacheError> {
@@ -589,20 +580,18 @@ fn read_section(r: &mut ByteReader) -> Result<Section, CacheError> {
     let biomes = read_container(r)?;
     let block_light = read_light(r)?;
     let sky_light = read_light(r)?;
-    let n = r.count(6)?; // u16 key + u32 value
-    let mut overrides = HashMap::with_capacity(n);
-    for _ in 0..n {
-        let b = r.take(2)?;
-        let key = u16::from_le_bytes([b[0], b[1]]);
-        overrides.insert(key, r.u32()?);
-    }
+    let edited = match r.u8()? {
+        0 => false,
+        1 => true,
+        _ => return Err(CacheError::Malformed("edited flag")),
+    };
     Ok(Section {
         non_empty,
         states,
         biomes,
         block_light,
         sky_light,
-        overrides,
+        edited,
     })
 }
 
@@ -1099,7 +1088,7 @@ mod tests {
             biomes: Container::single(7),
             block_light: Some((0..2048).map(|i| (i % 251) as u8).collect()),
             sky_light: None,
-            overrides: [(0u16, 99u32), (4095, 5), (17, 1)].into_iter().collect(),
+            edited: true,
         };
         let section_b = Section {
             non_empty: 0,
@@ -1107,7 +1096,7 @@ mod tests {
             biomes: indirect_container(),
             block_light: None,
             sky_light: Some(vec![0xFF; 2048]),
-            overrides: HashMap::new(),
+            edited: false,
         };
         let mut heights = Box::new([0i32; 256]);
         for (i, h) in heights.iter_mut().enumerate() {
@@ -1203,7 +1192,7 @@ mod tests {
                 biomes: abi,
                 block_light: abl,
                 sky_light: asl,
-                overrides: aov,
+                edited: aov,
             } = x;
             let Section {
                 non_empty: bn,
@@ -1211,14 +1200,14 @@ mod tests {
                 biomes: bbi,
                 block_light: bbl,
                 sky_light: bsl,
-                overrides: bov,
+                edited: bov,
             } = y;
             assert_eq!(an, bn, "section {i} non_empty");
             assert_containers_equal(ast, bst, i, "states");
             assert_containers_equal(abi, bbi, i, "biomes");
             assert_eq!(abl, bbl, "section {i} block_light");
             assert_eq!(asl, bsl, "section {i} sky_light");
-            assert_eq!(aov, bov, "section {i} overrides");
+            assert_eq!(aov, bov, "section {i} edited");
         }
     }
 
@@ -1313,7 +1302,7 @@ mod tests {
                     biomes: Container::single(0),
                     block_light: None,
                     sky_light: None,
-                    overrides: HashMap::new(),
+                    edited: false,
                 })
                 .collect(),
             sky_full_above: 0,
