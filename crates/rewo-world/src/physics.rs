@@ -20,11 +20,11 @@
 //! ladders, sneak-to-hold), `makeStuckInBlock` (cobweb, sweet berry bush,
 //! powder snow), bubble columns (`BubbleColumnBlock.entityInside`), honey wall
 //! sliding (`HoneyBlock.entityInside`), the sneak edge guard, water and lava
-//! travel with fluid heights and jump-to-swim, flight (`Player.travel`'s
-//! `abilities.flying` arm), no-clip, the unloaded-chunk `-0.1` fall, and the
-//! movement attributes.
+//! travel with fluid heights, jump-to-swim and fluid currents (`getFlow`),
+//! flight (`Player.travel`'s `abilities.flying` arm), no-clip, the
+//! unloaded-chunk `-0.1` fall, and the movement attributes.
 //!
-//! Not covered: fluid currents (`FluidState.getFlow`), swimming pose and the
+//! Not covered: swimming pose and the
 //! swim-sprint pitch steering, the crouching/swimming bounding boxes (the box
 //! is always 0.6 × 1.8), elytra, levitation from blocks, entity colliders
 //! (boats, shulkers), powder-snow walking with leather boots.
@@ -283,7 +283,7 @@ pub fn tick_env(
     };
 
     // -- Entity.baseTick: fluid interaction ---------------------------------
-    update_fluids(state, world);
+    update_fluids(state, world, !flying);
     if state.in_water() {
         state.fall_distance = 0.0;
     }
@@ -701,9 +701,11 @@ fn do_move(state: &mut PlayerState, ctx: &Ctx, mut delta: [f64; 3]) {
     check_supporting_block(state, ctx.world, below, Some(movement));
 
     // `LivingEntity.checkFallDamage` refreshes the fluids first (landing in
-    // water this tick counts), then `Entity.checkFallDamage`.
+    // water this tick counts), then `Entity.checkFallDamage`. Vanilla's
+    // `updateFluidInteraction` pushes the currents here too, so a move that
+    // lands the player in a flow takes the impulse mid-tick.
     if !state.in_water() {
-        update_fluids(state, ctx.world);
+        update_fluids(state, ctx.world, !ctx.flying);
     }
     if !state.in_water() && movement[1] < 0.0 {
         state.fall_distance -= movement[1] as f32 as f64;
@@ -968,8 +970,12 @@ fn honey_slide(state: &mut PlayerState) {
     state.fall_distance = 0.0;
 }
 
-/// `EntityFluidInteraction.update` (no currents).
-fn update_fluids(state: &mut PlayerState, world: &dyn PhysicsWorld) {
+/// `EntityFluidInteraction.update` plus the current push that
+/// `Entity.updateFluidInteraction` adds afterwards: `FlowingFluid.getFlow` per
+/// sampled cell, then `Tracker.applyCurrentTo` once per fluid kind.
+/// `pushed_by_fluid` is `isPushedByFluid()` (for the player, `!abilities.flying`)
+/// — vanilla samples no current at all for a fluid that does not push.
+fn update_fluids(state: &mut PlayerState, world: &dyn PhysicsWorld, pushed_by_fluid: bool) {
     state.water_height = 0.0;
     state.lava_height = 0.0;
     state.eye_in_water = false;
@@ -991,6 +997,8 @@ fn update_fluids(state: &mut PlayerState, world: &dyn PhysicsWorld) {
     let entity_y = state.y;
     let eye_y = state.eye_y();
     let (ex, ez) = (state.x.floor() as i32, state.z.floor() as i32);
+    // One `Tracker` per fluid kind; water and lava never share one.
+    let (mut current_water, mut current_lava) = (Current::default(), Current::default());
     for x in x0..=x1 {
         for y in y0..=y1 {
             for z in z0..=z1 {
@@ -1005,8 +1013,20 @@ fn update_fluids(state: &mut PlayerState, world: &dyn PhysicsWorld) {
                 }
                 let h = if lava { &mut state.lava_height } else { &mut state.water_height };
                 *h = (top - entity_y).max(*h);
+                if pushed_by_fluid {
+                    // `tracker.accumulateCurrent`, with the shallow-tracker
+                    // height scale.
+                    let flow = fluid_flow(world, x, y, z, lava);
+                    let flow = if *h < 0.4 { scale_vec(flow, *h) } else { flow };
+                    if lava { current_lava.accumulate(flow) } else { current_water.accumulate(flow) }
+                }
             }
         }
+    }
+    if pushed_by_fluid {
+        // `updateFluidInteraction`: water at 0.014, then lava at its own rate.
+        if state.in_water() { current_water.apply(state, WATER_FLOW_SCALE); }
+        if state.in_lava() { current_lava.apply(state, LAVA_FLOW_SCALE); }
     }
 }
 
@@ -1024,6 +1044,169 @@ fn fluid_top(world: &dyn PhysicsWorld, x: i32, y: i32, z: i32) -> Option<(bool, 
     );
     let h = if same_above { 1.0 } else { own };
     Some((lava, y as f64 + h as f64))
+}
+
+/// `Entity.updateFluidInteraction`'s water push per tick, and its lava push
+/// with `EnvironmentAttributes.FAST_LAVA` off (the overworld; `0.007` fast).
+/// Rewo's physics has no dimension attributes.
+const WATER_FLOW_SCALE: f64 = 0.014;
+const LAVA_FLOW_SCALE: f64 = 0.0023333333333333335;
+/// `Tracker.applyCurrentTo`'s floor: a weak current on a near-stationary
+/// player is normalized up to this length.
+const MIN_FLOW_IMPULSE: f64 = 0.0045000000000000005;
+/// `Direction.Plane.HORIZONTAL`'s order (north, east, south, west), so the
+/// height gradient sums in the order Java does.
+const HORIZONTAL: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+
+/// `EntityFluidInteraction.Tracker`'s current state for one fluid kind.
+#[derive(Clone, Copy, Default)]
+struct Current {
+    sum: [f64; 3], // `accumulatedCurrent`
+    count: i32,    // `currentCount`
+}
+
+impl Current {
+    /// `Tracker.accumulateCurrent`.
+    fn accumulate(&mut self, flow: [f64; 3]) {
+        self.sum = add_vec(self.sum, flow);
+        self.count += 1;
+    }
+
+    /// `Tracker.applyCurrentTo` for a player: the mean of the sampled flows,
+    /// not the normalized direction a non-player gets, scaled and added to
+    /// the velocity — with the nudge that keeps a weak current moving a player
+    /// that is otherwise standing still.
+    fn apply(self, state: &mut PlayerState, scale: f64) {
+        if self.count == 0 || len_sq(self.sum) < 1.0e-5f32 as f64 {
+            return;
+        }
+        let mut impulse = scale_vec(scale_vec(self.sum, 1.0 / self.count as f64), scale);
+        if state.vx.abs() < 0.003 && state.vz.abs() < 0.003 && len_sq(impulse).sqrt() < MIN_FLOW_IMPULSE {
+            impulse = scale_vec(normalize_vec(impulse), MIN_FLOW_IMPULSE);
+        }
+        state.vx += impulse[0];
+        state.vy += impulse[1];
+        state.vz += impulse[2];
+    }
+}
+
+/// `FlowingFluid.getFlow` for one fluid cell: the unit vector of its flow —
+/// the horizontal own-height gradient, plus `(0, -6, 0)` for a falling column
+/// walled in by a solid face. Zero when nothing flows.
+fn fluid_flow(world: &dyn PhysicsWorld, x: i32, y: i32, z: i32, lava: bool) -> [f64; 3] {
+    let here = world.block(x, y, z);
+    let own = fluid_own_height(here.fluid);
+    let (mut fx, mut fz) = (0.0, 0.0);
+    for (dx, dz) in HORIZONTAL {
+        let (nx, nz) = (x + dx, z + dz);
+        let neighbour = world.block(nx, y, nz);
+        if !affects_flow(lava, neighbour.fluid) {
+            continue;
+        }
+        // The height and distance arithmetic is `float` in Java.
+        let mut neighbour_own = fluid_own_height(neighbour.fluid);
+        let mut distance = 0.0f32;
+        if neighbour_own == 0.0 {
+            // An empty neighbour cell is read through into the one below it,
+            // unless something that blocks motion is in the way.
+            if !blocks_motion(world, nx, y, nz) {
+                let below = world.block(nx, y - 1, nz);
+                if affects_flow(lava, below.fluid) {
+                    neighbour_own = fluid_own_height(below.fluid);
+                    if neighbour_own > 0.0 {
+                        // `0.8888889F` in the Java — 8/9, a float.
+                        distance = own - (neighbour_own - 0.8888889f32);
+                    }
+                }
+            }
+        } else if neighbour_own > 0.0 {
+            distance = own - neighbour_own;
+        }
+        if distance != 0.0 {
+            fx += (dx as f32 * distance) as f64;
+            fz += (dz as f32 * distance) as f64;
+        }
+    }
+    let mut flow = [fx, 0.0, fz];
+    if here.fluid_falling
+        && HORIZONTAL.iter().any(|&(dx, dz)| {
+            solid_face(world, x + dx, y, z + dz, (dx, dz), lava)
+                || solid_face(world, x + dx, y + 1, z + dz, (dx, dz), lava)
+        })
+    {
+        flow = normalize_vec(flow);
+        flow[1] -= 6.0; // `flow.normalize().add(0.0, -6.0, 0.0)`
+    }
+    normalize_vec(flow)
+}
+
+/// `FluidState.getOwnHeight()` — 0 for `FluidState.isEmpty`.
+fn fluid_own_height(fluid: PhysFluid) -> f32 {
+    match fluid {
+        PhysFluid::None => 0.0,
+        PhysFluid::Water { own_height } | PhysFluid::Lava { own_height } => own_height,
+    }
+}
+
+/// `FlowingFluid.affectsFlow`: an empty neighbour, or the same fluid
+/// (`isSame` — water and lava never mix).
+fn affects_flow(lava: bool, fluid: PhysFluid) -> bool {
+    matches!(fluid, PhysFluid::None) || same_fluid(lava, fluid)
+}
+
+fn same_fluid(lava: bool, fluid: PhysFluid) -> bool {
+    matches!((lava, fluid), (false, PhysFluid::Water { .. }) | (true, PhysFluid::Lava { .. }))
+}
+
+/// `BlockState.blocksMotion`, approximated by "has collision boxes".
+/// Vanilla's is `!cobweb && !bamboo_sapling && isSolid()`; what the flow reads
+/// (the floor under a drop-off, a wall) is solid either way.
+fn blocks_motion(world: &dyn PhysicsWorld, x: i32, y: i32, z: i32) -> bool {
+    !world.collision(x, y, z).is_empty()
+}
+
+/// `FlowingFluid.isSolidFace` for a horizontal `direction` — the only kind
+/// `getFlow` asks, so its `direction == UP` arm never runs. Two
+/// approximations: vanilla exempts `IceBlock`, which `BlockPhysics` cannot
+/// tell from stone (a falling column beside ice is pulled down here and not
+/// in vanilla), and `SupportType.FULL` checks the union of the neighbour's
+/// box faces where here one box must span the whole face.
+fn solid_face(world: &dyn PhysicsWorld, x: i32, y: i32, z: i32, d: (i32, i32), lava: bool) -> bool {
+    if same_fluid(lava, world.block(x, y, z).fluid) {
+        return false;
+    }
+    let axis = if d.0 != 0 { 0 } else { 2 };
+    full_face(world.collision(x, y, z), axis, d.0 > 0 || d.1 > 0)
+}
+
+/// One box fills the cell's whole `axis` face: flush with it, and spanning the
+/// cell on the other two axes.
+fn full_face(boxes: &[[f32; 6]], axis: usize, positive: bool) -> bool {
+    boxes.iter().any(|b| {
+        (0..3).all(|a| {
+            if a == axis {
+                if positive { b[a + 3] == 1.0 } else { b[a] == 0.0 }
+            } else {
+                b[a] == 0.0 && b[a + 3] == 1.0
+            }
+        })
+    })
+}
+
+/// `Vec3.normalize`: `Vec3.ZERO` below `1.0E-5F`, not a division by zero.
+fn normalize_vec(v: [f64; 3]) -> [f64; 3] {
+    let d = len_sq(v).sqrt();
+    if d < 1.0e-5f32 as f64 { [0.0; 3] } else { [v[0] / d, v[1] / d, v[2] / d] }
+}
+
+/// `Vec3.scale`.
+fn scale_vec(v: [f64; 3], s: f64) -> [f64; 3] {
+    [v[0] * s, v[1] * s, v[2] * s]
+}
+
+/// `Vec3.add`.
+fn add_vec(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 fn contains_liquid(b: &Aabb, world: &dyn PhysicsWorld) -> bool {
@@ -2379,5 +2562,119 @@ mod tests {
         let want = (-0.5 - 0.08) * (0.98f32 as f64);
         assert!((p.vy - want).abs() < 1e-12, "vy={}", p.vy);
         assert_eq!(p.fall_distance, 0.5, "fall distance untouched");
+    }
+
+    // ── fluid currents (`FlowingFluid.getFlow`) ──────────────────────────
+
+    fn world(
+        shape: impl Fn(i32, i32, i32) -> &'static [[f32; 6]],
+        block: impl Fn(i32, i32, i32) -> BlockPhysics,
+    ) -> impl PhysicsWorld {
+        TestWorld { shape, block, loaded: true }
+    }
+
+    /// The bake's water cell for one `level` (`fluid_own_height`), not falling.
+    fn water(own_height: f32) -> BlockPhysics {
+        BlockPhysics { fluid: PhysFluid::Water { own_height }, ..BlockPhysics::AIR }
+    }
+
+    fn lava(own_height: f32) -> BlockPhysics {
+        BlockPhysics { fluid: PhysFluid::Lava { own_height }, ..BlockPhysics::AIR }
+    }
+
+    /// One cell at (0, 0, 0) with a neighbour at (1, 0, 0), the rest air. A
+    /// player at (0.5, 0, 0.5) samples only (0, 0, 0): the interaction box
+    /// spans the x = 0 and z = 0 column, y = 0..1.
+    fn draining(here: BlockPhysics, there: BlockPhysics) -> impl Fn(i32, i32, i32) -> BlockPhysics {
+        move |x, y, z| match (x, y, z) {
+            (0, 0, 0) => here,
+            (1, 0, 0) => there,
+            _ => BlockPhysics::AIR,
+        }
+    }
+
+    /// Standing in water whose +X neighbour is lower: the flow pushes the
+    /// player downstream.
+    #[test]
+    fn flowing_water_pushes_downstream() {
+        let w = world(|_, _, _| EMPTY, draining(water(8.0 / 9.0), water(1.0 / 9.0)));
+        let mut p = PlayerState::at(0.5, 0.0, 0.5);
+        step_env(&mut p, &TickInput::default(), &w);
+        // `getFlow` at (0, 0, 0): the east neighbour's own height 1/9 is below
+        // ours 8/9, so `distance = 8/9 − 1/9 = 7/9` and the flow is (7/9, 0, 0)
+        // → the unit vector (1, 0, 0). The other three neighbours are air with
+        // nothing below (0 each) and the cell is not falling. One cell is
+        // sampled, its tracker height 8/9 ≥ 0.4 so the flow is unscaled, and a
+        // player gets `sum / count · 0.014` = +0.014 in x (over the 0.0045
+        // nudge). `travelInWater` then multiplies by 0.8F.
+        let want = 0.014 * (0.8f32 as f64);
+        assert!((p.vx - want).abs() < 1e-12, "vx={} want {want}", p.vx);
+        assert_eq!(p.vz, 0.0);
+        assert!(p.vx > 0.0, "pushed downstream, vx={}", p.vx);
+    }
+
+    /// A pool of sources: every neighbour is the same water at the same
+    /// height, so `getFlow` is zero and the current moves nothing.
+    #[test]
+    fn still_water_does_not_push() {
+        let w = world(|_, _, _| EMPTY, |_, y, _| if y < 2 { water(8.0 / 9.0) } else { BlockPhysics::AIR });
+        let mut p = PlayerState::at(0.5, 0.0, 0.5);
+        step_env(&mut p, &TickInput::default(), &w);
+        // Every sampled cell sees four neighbours at its own height:
+        // `distance = 8/9 − 8/9 = 0` all round, and the state is a source.
+        // The accumulated flow is zero, so `applyCurrentTo` adds nothing and
+        // the tick is the plain water one: 0 horizontal and the
+        // `getFluidFallingAdjustedMovement` `−gravity/16` from rest.
+        assert_eq!((p.vx, p.vz), (0.0, 0.0), "still water does not push sideways");
+        assert!((p.vy + 0.08 / 16.0).abs() < 1e-12, "vy={}", p.vy);
+    }
+
+    /// A falling column beside a solid face: `getFlow`'s falling branch adds
+    /// the downward component.
+    #[test]
+    fn falling_water_pulls_down() {
+        let falling = BlockPhysics { fluid_falling: true, ..water(8.0 / 9.0) };
+        let w = world(|x, y, z| cube((x, y, z) == (1, 0, 0)), draining(falling, stone()));
+        let mut p = PlayerState::at(0.5, 0.0, 0.5);
+        step_env(&mut p, &TickInput::default(), &w);
+        // `getFlow` at (0, 0, 0): the horizontal gradient is zero — the east
+        // neighbour is stone, which blocks motion so its cell is never read
+        // through, and the other three are air with nothing below. The state is
+        // falling though, and the east face of the stone is full, so
+        // `flow = (0, 0, 0).normalize() + (0, −6, 0)` = (0, −6, 0) → (0, −1, 0).
+        // One cell: `sum / count · 0.014` = (0, −0.014, 0) — over the 0.0045
+        // nudge — and `travelInWater` drags by 0.8F and adds `−gravity/16`.
+        let want = -0.014 * (0.8f32 as f64) - 0.08 / 16.0;
+        assert!((p.vy - want).abs() < 1e-12, "vy={} want {want}", p.vy);
+        assert!(p.vy < -0.08 / 16.0, "pulled below the plain tick, vy={}", p.vy);
+        assert_eq!((p.vx, p.vz), (0.0, 0.0));
+    }
+
+    /// Lava pushes less than water — and its rate is so low that the nudge,
+    /// not the rate, is what the player feels.
+    #[test]
+    fn lava_pushes_slower_than_water() {
+        let vx_after_one_tick = |here: BlockPhysics, there: BlockPhysics| {
+            let w = world(|_, _, _| EMPTY, draining(here, there));
+            let mut p = PlayerState::at(0.5, 0.0, 0.5);
+            step_env(&mut p, &TickInput::default(), &w);
+            p.vx
+        };
+        // Water, as `flowing_water_pushes_downstream` derives: 0.014 · 0.8F.
+        // The mid-move `checkFallDamage` refresh does not add a second
+        // application here: it skips the update while `isInWater()`.
+        let water_vx = vx_after_one_tick(water(8.0 / 9.0), water(1.0 / 9.0));
+        assert!((water_vx - 0.014 * (0.8f32 as f64)).abs() < 1e-12, "water vx={water_vx}");
+        // Lava: the same unit flow, but `updateFluidInteraction` scales it by
+        // `0.0023333333333333335` (overworld; `FAST_LAVA` is 0.007). The player
+        // is at rest and 0.0023… < 0.0045, so `applyCurrentTo`'s nudge replaces
+        // that impulse with `0.0045000000000000005` in the flow's direction.
+        // `Entity.move` ends in `checkFallDamage`, which refreshes the fluids
+        // because the player is in lava and not in *water* — so the current is
+        // applied again mid-tick, now without the nudge (0.0045 > 0.003), and
+        // the raw 0.0023… is added. `travelInLava` scales the sum by 0.5.
+        let lava_vx = vx_after_one_tick(lava(8.0 / 9.0), lava(1.0 / 9.0));
+        assert!((lava_vx - (0.0045000000000000005 + 0.0023333333333333335) * 0.5).abs() < 1e-12, "lava vx={lava_vx}");
+        assert!(lava_vx < water_vx, "lava {lava_vx} vs water {water_vx}");
     }
 }
