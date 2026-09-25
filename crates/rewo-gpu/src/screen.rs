@@ -437,7 +437,7 @@ impl ScreenPass {
         // known at compile time, and a stable placement means the UVs below
         // are readable constants instead of a lookup.
         let mut sheets = vec![((0u32, 0u32), (0u32, 0u32)); SHEET_COUNT];
-        let mut put = |atlas: &mut Vec<u8>,
+        let put = |atlas: &mut Vec<u8>,
                        sheets: &mut Vec<((u32, u32), (u32, u32))>,
                        s: Sheet,
                        data: &crate::hud::HudSpriteData<'_>,

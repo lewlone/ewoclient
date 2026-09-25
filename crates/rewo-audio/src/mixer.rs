@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn distance_attenuation_is_linear_and_reaches_zero() {
         let max = 16.0;
-        let mut at = |d: f32| {
+        let at = |d: f32| {
             let mut m = Mixer::new(44100);
             m.push(front_voice(44100, d, max));
             peak_lr(&render(&mut m, 64)).0
@@ -575,7 +575,7 @@ mod tests {
     /// Left, right and centre, from the output alone.
     #[test]
     fn the_stereo_image_follows_the_source() {
-        let mut place = |pos: [f32; 3]| {
+        let place = |pos: [f32; 3]| {
             let mut m = Mixer::new(44100);
             let mut v = Voice::new(dc(44100, 512, 1));
             v.position = pos;
@@ -605,7 +605,7 @@ mod tests {
     /// witness got this wrong first; so did this one.
     #[test]
     fn yaw_moves_a_source_between_the_ears() {
-        let mut aim = |yaw: f32, pitch: f32| {
+        let aim = |yaw: f32, pitch: f32| {
             let mut m = Mixer::new(44100);
             let (forward, up) = rewo_net::sound_engine::listener_basis(yaw, pitch);
             m.listener = ListenerTransform {
@@ -677,7 +677,7 @@ mod tests {
     /// `AL_SOURCE_RELATIVE` — a UI sound does not move when the player does.
     #[test]
     fn a_relative_source_is_unmoved_by_the_listener() {
-        let mut at_listener = |pos: [f64; 3], relative: bool| {
+        let at_listener = |pos: [f64; 3], relative: bool| {
             let mut m = Mixer::new(44100);
             m.listener = ListenerTransform {
                 position: pos,
@@ -843,7 +843,7 @@ mod tests {
     /// on seven rolls of the dice and not on the eighth.
     #[test]
     fn a_stereo_source_ignores_its_position() {
-        let mut place = |x: f32| {
+        let place = |x: f32| {
             let mut m = Mixer::new(44100);
             let mut v = Voice::new(dc(44100, 256, 2));
             v.position = [x, 0.0, 0.0];
@@ -858,7 +858,7 @@ mod tests {
         // A mono source in the same two places does NOT agree, which is what
         // makes the assertion above about stereo rather than about the mixer
         // ignoring position generally.
-        let mut mono = |x: f32| {
+        let mono = |x: f32| {
             let mut m = Mixer::new(44100);
             let mut v = Voice::new(dc(44100, 256, 1));
             v.position = [x, 0.0, 0.0];

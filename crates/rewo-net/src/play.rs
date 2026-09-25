@@ -6366,7 +6366,7 @@ impl PlaySession {
         let Some(id) = self.player_id else {
             return;
         };
-        use rewo_world::entities::{HandItem, InteractionHand};
+        use rewo_world::entities::HandItem;
         let resolve = |slot: Option<rewo_world::inventory::ItemSlot>| -> HandItem {
             let Some(stack) = slot else {
                 return HandItem::Empty;
