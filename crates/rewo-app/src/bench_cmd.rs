@@ -290,7 +290,7 @@ pub fn run(args: BenchArgs) -> Result<(), String> {
         let meshes: Vec<rewo_mesh::ColumnMesh> = coords
             .iter()
             .filter_map(|(cx, cz)| {
-                rewo_mesh::mesh_column(&world, &baked.render, &baked.models, &baked.fluid, *cx, *cz)
+                rewo_mesh::mesh_column_with(&world, rewo_mesh::MeshInputs::from_baked(&baked), *cx, *cz)
             })
             .collect();
         mesh_ms.push(t0.elapsed().as_secs_f32() * 1000.0);

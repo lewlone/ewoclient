@@ -16,6 +16,8 @@ pub mod beacon_payment_table;
 pub mod block_entity_models;
 pub mod block_entity_types;
 pub mod block_light;
+pub mod block_physics;
+pub mod block_props;
 pub mod blocks;
 pub mod cem;
 pub mod command_argument_types;

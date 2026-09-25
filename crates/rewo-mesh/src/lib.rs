@@ -42,7 +42,7 @@ pub mod pool;
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
-use rewo_data::assets::{CarriedFluid, RenderKind, TintSource};
+use rewo_data::assets::{CarriedFluid, CullInfo, RenderKind, TintSource};
 use rewo_world::World;
 
 /// Vanilla `Options.biomeBlendRadius` default — the `(2r+1)²` block-tint window.
@@ -420,8 +420,100 @@ pub fn pack_layer(layer: u32, block: u8, sky: u8) -> u32 {
     (layer & 0xFFFF) | ((block as u32 & 15) << 16) | ((sky as u32 & 15) << 20)
 }
 
-fn is_full_cube(table: &[RenderKind], state: u32) -> bool {
-    matches!(table.get(state as usize), Some(RenderKind::Cube { .. }))
+/// Everything the mesher reads per block state, borrowed.
+///
+/// `cull` may be empty (or shorter than `render`): a state with no entry falls
+/// back to the legacy rule — a `RenderKind::Cube` occludes all six faces and
+/// nothing is translucent — which is what every synthetic fixture relies on.
+#[derive(Clone, Copy)]
+pub struct MeshInputs<'a> {
+    pub render: &'a [RenderKind],
+    pub models: &'a [Vec<rewo_data::assets::Quad>],
+    pub fluid: &'a [Option<CarriedFluid>],
+    pub cull: &'a [CullInfo],
+}
+
+impl<'a> MeshInputs<'a> {
+    /// The production tables of a bake.
+    pub fn from_baked(b: &'a rewo_data::assets::BakedAssets) -> Self {
+        Self {
+            render: &b.render,
+            models: &b.models,
+            fluid: &b.fluid,
+            cull: &b.cull,
+        }
+    }
+}
+
+/// The per-state lookups the emitters share.
+#[derive(Clone, Copy)]
+struct Tables<'a> {
+    render: &'a [RenderKind],
+    cull: &'a [CullInfo],
+}
+
+impl<'a> Tables<'a> {
+    fn get(&self, state: usize) -> Option<&'a RenderKind> {
+        self.render.get(state)
+    }
+
+    fn info(&self, state: u32) -> CullInfo {
+        match self.cull.get(state as usize) {
+            Some(c) => *c,
+            None => CullInfo {
+                occludes: if self.is_cube(state) { 0b11_1111 } else { 0 },
+                ..CullInfo::default()
+            },
+        }
+    }
+
+    fn is_cube(&self, state: u32) -> bool {
+        matches!(self.render.get(state as usize), Some(RenderKind::Cube { .. }))
+    }
+
+    /// `neighbor.getFaceOcclusionShape(face) == Shapes.block()` — `face` is
+    /// the neighbour's own face (the one touching us).
+    fn occludes(&self, state: u32, face: usize) -> bool {
+        self.info(state).occludes & (1 << face) != 0
+    }
+
+    /// `Block.shouldRenderFace(state, neighbor, face)` for the two cases Rewo
+    /// can decide exactly: a fully occluding neighbour face, and
+    /// `skipRendering`. Partial-shape against partial-shape pairs (two slabs
+    /// side by side) are drawn — vanilla culls some of those via
+    /// `Shapes.joinIsNotEmpty`, which needs per-face shapes the bake does not
+    /// carry; the result is hidden overdraw, never a hole.
+    fn should_render(&self, state: u32, neighbor: u32, face: usize) -> bool {
+        let opp = face ^ 1;
+        if self.occludes(neighbor, opp) {
+            return false;
+        }
+        let s = self.info(state);
+        if s.skip == 0 {
+            return true;
+        }
+        let n = self.info(neighbor);
+        let same = n.block == s.block && self.cull.get(neighbor as usize).is_some();
+        let skip = match s.skip {
+            // `HalfTransparentBlock` / `PowderSnowBlock`: `neighbor.is(this)`.
+            1 => same,
+            // `IronBarsBlock`: same block, or both in `#bars` (every pane and
+            // bar declares all four connection properties).
+            2 => {
+                (same || (n.bars && s.bars))
+                    && (face < 2 || (s.connect & (1 << face) != 0 && n.connect & (1 << opp) != 0))
+            }
+            // `MangroveRootsBlock`: same block on the Y axis.
+            3 => same && face < 2,
+            _ => false,
+        };
+        !skip
+    }
+
+    /// The AO occluder test (unchanged legacy rule: a rendered full cube).
+    fn ao_solid(&self, state: u32) -> bool {
+        self.is_cube(state)
+    }
 }
 
 /// The **frozen pre-greedy mesher** — one unit quad per visible face, in scan
@@ -436,6 +528,31 @@ pub(crate) fn mesh_column_reference(
     cx: i32,
     cz: i32,
 ) -> Option<ColumnMesh> {
+    mesh_column_reference_with(
+        world,
+        MeshInputs {
+            render: table,
+            models,
+            fluid: carried,
+            cull: &[],
+        },
+        cx,
+        cz,
+    )
+}
+
+/// [`mesh_column_reference`] over full [`MeshInputs`].
+pub(crate) fn mesh_column_reference_with(
+    world: &World,
+    inputs: MeshInputs<'_>,
+    cx: i32,
+    cz: i32,
+) -> Option<ColumnMesh> {
+    let table = Tables {
+        render: inputs.render,
+        cull: inputs.cull,
+    };
+    let (models, carried) = (inputs.models, inputs.fluid);
     let col = world.column(cx, cz)?;
     let shape = world.shape;
     let base_x = cx * 16;
@@ -470,7 +587,7 @@ pub(crate) fn mesh_column_reference(
                     let state = world.block_state_at(wx, y, wz);
                     // `SectionCompiler.compile:89-97` — the fluid first, then
                     // the block, as two independent draws at one position.
-                    if let Some(f) = fluid_at(table, carried, state) {
+                    if let Some(f) = fluid_at(table.render, carried, state) {
                         // Water blends → translucent set; lava is opaque (and
                         // fullbright) → opaque set.
                         let (fv, fi) = if f.lava {
@@ -511,9 +628,12 @@ pub(crate) fn mesh_column_reference(
                                 &mut tint_cache,
                                 &mut vertices,
                                 &mut indices,
+                                &mut tvertices,
+                                &mut tindices,
                                 wx,
                                 y,
                                 wz,
+                                state,
                                 faces,
                                 raw_faces,
                                 tint,
@@ -528,9 +648,12 @@ pub(crate) fn mesh_column_reference(
                                 &mut tint_cache,
                                 &mut vertices,
                                 &mut indices,
+                                &mut tvertices,
+                                &mut tindices,
                                 wx,
                                 y,
                                 wz,
+                                state,
                                 *idx,
                             );
                             bump(y as f32);
@@ -813,6 +936,34 @@ pub fn mesh_column(
     cx: i32,
     cz: i32,
 ) -> Option<ColumnMesh> {
+    mesh_column_with(
+        world,
+        MeshInputs {
+            render: table,
+            models,
+            fluid: carried,
+            cull: &[],
+        },
+        cx,
+        cz,
+    )
+}
+
+/// [`mesh_column`] over full [`MeshInputs`] — the production entry point,
+/// which also culls against non-occluding cubes (glass, leaves, ice, …),
+/// applies `skipRendering`, and routes translucent materials into
+/// [`ColumnMesh::tvertices`].
+pub fn mesh_column_with(
+    world: &World,
+    inputs: MeshInputs<'_>,
+    cx: i32,
+    cz: i32,
+) -> Option<ColumnMesh> {
+    let table = Tables {
+        render: inputs.render,
+        cull: inputs.cull,
+    };
+    let (models, carried) = (inputs.models, inputs.fluid);
     let col = world.column(cx, cz)?;
     let shape = world.shape;
     let base_x = cx * 16;
@@ -875,7 +1026,7 @@ pub fn mesh_column(
                     // the block, as two independent draws at one position. A
                     // waterlogged stair runs BOTH arms; a `LiquidBlock` only
                     // this one (its render shape is INVISIBLE).
-                    if let Some(f) = fluid_at(table, carried, state) {
+                    if let Some(f) = fluid_at(table.render, carried, state) {
                         let (fv, fi) = if f.lava {
                             (&mut vertices, &mut indices)
                         } else {
@@ -908,6 +1059,7 @@ pub fn mesh_column(
                             raw_faces,
                             tint,
                         }) => {
+                            let translucent = table.info(state).translucent;
                             for face in 0..6 {
                                 let Some(cf) = cube_face(
                                     world,
@@ -916,6 +1068,7 @@ pub fn mesh_column(
                                     wx,
                                     y,
                                     wz,
+                                    state,
                                     face,
                                     faces,
                                     raw_faces,
@@ -924,6 +1077,21 @@ pub fn mesh_column(
                                     continue;
                                 };
                                 visible_cube_faces += 1;
+                                // Translucent material: blended pass, unit
+                                // quads (the per-column sort needs no merge).
+                                if translucent {
+                                    push_cube_face(
+                                        &mut tvertices,
+                                        &mut tindices,
+                                        wx,
+                                        y,
+                                        wz,
+                                        face,
+                                        &cf,
+                                    );
+                                    unit_fallback_faces += 1;
+                                    continue;
+                                }
                                 // A face whose four corner AO codes agree has no
                                 // gradient to lose, so it may merge. Anything
                                 // else must stay a unit quad — and so must every
@@ -995,9 +1163,12 @@ pub fn mesh_column(
                                 &mut tint_cache,
                                 &mut vertices,
                                 &mut indices,
+                                &mut tvertices,
+                                &mut tindices,
                                 wx,
                                 y,
                                 wz,
+                                state,
                                 *idx,
                             );
                             bump(y as f32);
@@ -1162,14 +1333,14 @@ fn fluid_h(level: u8) -> f32 {
 /// block's type IS water, so it answers here.
 fn fluid_level(
     world: &World,
-    table: &[RenderKind],
+    table: Tables<'_>,
     carried: &[Option<CarriedFluid>],
     x: i32,
     y: i32,
     z: i32,
     want_lava: bool,
 ) -> Option<u8> {
-    let f = fluid_at(table, carried, world.block_state_at(x, y, z))?;
+    let f = fluid_at(table.render, carried, world.block_state_at(x, y, z))?;
     (f.lava == want_lava).then_some(f.level)
 }
 
@@ -1193,7 +1364,7 @@ fn fluid_level(
 #[allow(clippy::too_many_arguments)]
 fn emit_fluid(
     world: &World,
-    table: &[RenderKind],
+    table: Tables<'_>,
     carried: &[Option<CarriedFluid>],
     cache: &mut TintCache,
     vertices: &mut Vec<MeshVertex>,
@@ -1341,7 +1512,7 @@ fn emit_fluid(
         // and belongs to whoever takes that on.
         if same(nx, y, nz)
             || f.self_occludes & (1 << face) != 0
-            || is_full_cube(table, world.block_state_at(nx, y, nz))
+            || table.occludes(world.block_state_at(nx, y, nz), face ^ 1)
         {
             continue;
         }
@@ -1355,7 +1526,7 @@ fn emit_fluid(
     // on the sides.
     if !same(wx, y - 1, wz)
         && f.self_occludes & (1 << 1) == 0
-        && !is_full_cube(table, world.block_state_at(wx, y - 1, wz))
+        && !table.occludes(world.block_state_at(wx, y - 1, wz), 0)
     {
         quad(
             [
@@ -1390,11 +1561,12 @@ struct CubeFace {
 #[allow(clippy::too_many_arguments)]
 fn cube_face(
     world: &World,
-    table: &[RenderKind],
+    table: Tables<'_>,
     cache: &mut TintCache,
     wx: i32,
     y: i32,
     wz: i32,
+    state: u32,
     face: usize,
     faces: &[u16; 6],
     raw_faces: &[u16; 6],
@@ -1402,7 +1574,7 @@ fn cube_face(
 ) -> Option<CubeFace> {
     let (dx, dy, dz) = FACE_OFFSETS[face];
     let (nx, ny, nz) = (wx + dx, y + dy, wz + dz);
-    if is_full_cube(table, world.block_state_at(nx, ny, nz)) {
+    if !table.should_render(state, world.block_state_at(nx, ny, nz), face) {
         return None;
     }
     let (lb, ls) = world.light_at(nx, ny, nz);
@@ -1500,24 +1672,33 @@ fn push_cube_face(
 #[allow(clippy::too_many_arguments)]
 fn emit_cube(
     world: &World,
-    table: &[RenderKind],
+    table: Tables<'_>,
     cache: &mut TintCache,
     vertices: &mut Vec<MeshVertex>,
     indices: &mut Vec<u32>,
+    tvertices: &mut Vec<MeshVertex>,
+    tindices: &mut Vec<u32>,
     wx: i32,
     y: i32,
     wz: i32,
+    state: u32,
     faces: &[u16; 6],
     raw_faces: &[u16; 6],
     tint: &[TintSource; 6],
 ) -> u32 {
+    let (v, i) = if table.info(state).translucent {
+        (tvertices, tindices)
+    } else {
+        (vertices, indices)
+    };
     let mut visible = 0;
     for face in 0..6 {
-        let Some(f) = cube_face(world, table, cache, wx, y, wz, face, faces, raw_faces, tint)
+        let Some(f) =
+            cube_face(world, table, cache, wx, y, wz, state, face, faces, raw_faces, tint)
         else {
             continue;
         };
-        push_cube_face(vertices, indices, wx, y, wz, face, &f);
+        push_cube_face(v, i, wx, y, wz, face, &f);
         visible += 1;
     }
     visible
@@ -1526,14 +1707,17 @@ fn emit_cube(
 #[allow(clippy::too_many_arguments)]
 fn emit_model(
     world: &World,
-    table: &[RenderKind],
+    table: Tables<'_>,
     models: &[Vec<rewo_data::assets::Quad>],
     cache: &mut TintCache,
     vertices: &mut Vec<MeshVertex>,
     indices: &mut Vec<u32>,
+    tvertices: &mut Vec<MeshVertex>,
+    tindices: &mut Vec<u32>,
     wx: i32,
     y: i32,
     wz: i32,
+    state: u32,
     model_idx: u32,
 ) {
     let Some(quads) = models.get(model_idx as usize) else {
@@ -1548,8 +1732,9 @@ fn emit_model(
     let own_light = world.light_at(wx, y, wz);
     for quad in quads {
         if quad.cull >= 0 {
-            let (dx, dy, dz) = FACE_OFFSETS[quad.cull as usize];
-            if is_full_cube(table, world.block_state_at(wx + dx, y + dy, wz + dz)) {
+            let face = quad.cull as usize;
+            let (dx, dy, dz) = FACE_OFFSETS[face];
+            if !table.should_render(state, world.block_state_at(wx + dx, y + dy, wz + dz), face) {
                 continue;
             }
         }
@@ -1568,7 +1753,7 @@ fn emit_model(
         // to sample, so it keeps the block's own cell.
         let (odx, ody, odz) = FACE_OFFSETS[quad.dir as usize];
         let (nbx, nby, nbz) = (wx + odx, y + ody, wz + odz);
-        let (own_block, own_sky) = if is_full_cube(table, world.block_state_at(nbx, nby, nbz)) {
+        let (own_block, own_sky) = if table.occludes(world.block_state_at(nbx, nby, nbz), quad.dir as usize ^ 1) {
             own_light
         } else {
             world.light_at(nbx, nby, nbz)
@@ -1580,6 +1765,11 @@ fn emit_model(
         let (layer, tint_rgb) = match biome_tint(world, cache, wx, y, wz, quad.tint) {
             Some(rgb) => (quad.raw_layer, rgb),
             None => (quad.layer, TINT_WHITE),
+        };
+        let (vertices, indices) = if quad.translucent {
+            (&mut *tvertices, &mut *tindices)
+        } else {
+            (&mut *vertices, &mut *indices)
         };
         let base_idx = vertices.len() as u32;
         for i in 0..4 {
@@ -1609,8 +1799,8 @@ fn emit_model(
     }
 }
 
-fn solid(world: &World, table: &[RenderKind], p: [i32; 3]) -> bool {
-    is_full_cube(table, world.block_state_at(p[0], p[1], p[2]))
+fn solid(world: &World, table: Tables<'_>, p: [i32; 3]) -> bool {
+    table.ao_solid(world.block_state_at(p[0], p[1], p[2]))
 }
 
 // -- M15 greedy oracle: emitted-geometry decoder ----------------------------
@@ -2043,6 +2233,7 @@ fn oracle_model_quads() -> Vec<Vec<rewo_data::assets::Quad>> {
             dir: 2,
             tint: TintSource::None,
             shade: true,
+            translucent: false,
         },
         Quad {
             verts: [
@@ -2058,6 +2249,7 @@ fn oracle_model_quads() -> Vec<Vec<rewo_data::assets::Quad>> {
             dir: 3,
             tint: TintSource::None,
             shade: false,
+            translucent: false,
         },
     ]]
 }
@@ -3376,6 +3568,7 @@ mod tests {
             dir: 2, // north
             tint: TintSource::Water,
             shade: false, // c = 1.0 → color is exactly the tint
+            translucent: false,
         }]];
 
         // Legacy: no biome context → white color, pre-tinted layer 7.
@@ -4275,6 +4468,7 @@ mod tests {
             dir: 2,
             tint: TintSource::None,
             shade: true,
+            translucent: false,
         }]];
 
         let mut w = World::new(DimensionShape::OVERWORLD);
@@ -4742,6 +4936,7 @@ mod tests {
             dir,
             tint: TintSource::None,
             shade,
+            translucent: false,
         };
         // Three quads: shaded up (moved by the Nether), shaded north (not
         // moved), unshaded up (never shaded at all).
@@ -4857,6 +5052,7 @@ mod tests {
             dir: 2,
             tint: TintSource::None,
             shade: true,
+            translucent: false,
         }]];
 
         let mut w = World::new(DimensionShape::OVERWORLD);
@@ -4930,5 +5126,212 @@ mod tests {
         let table = cube_table();
         assert!(mesh_column_reference(&w, &table, &[], &[], 0, 0).is_none());
         assert!(mesh_column(&w, &table, &[], &[], 0, 0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod occlusion_tests {
+    use super::*;
+    use rewo_world::dimension::DimensionShape;
+
+    const AIR: u32 = 0;
+    const STONE: u32 = 1;
+    const GLASS: u32 = 2;
+    const STAINED: u32 = 3;
+    const WATER: u32 = 4;
+    const PANE_EW: u32 = 5;
+    const PANE_N: u32 = 6;
+    const BOTTOM_SLAB: u32 = 7;
+
+    fn cube(layer: u16) -> RenderKind {
+        RenderKind::Cube {
+            faces: [layer; 6],
+            raw_faces: [layer; 6],
+            tint: [TintSource::None; 6],
+        }
+    }
+
+    fn render() -> Vec<RenderKind> {
+        vec![
+            RenderKind::Invisible,
+            cube(1),
+            cube(2),
+            cube(3),
+            RenderKind::Fluid {
+                layer: 4,
+                raw_layer: 4,
+                level: 0,
+                lava: false,
+            },
+            RenderKind::Invisible,
+            RenderKind::Invisible,
+            RenderKind::Invisible,
+        ]
+    }
+
+    /// Shaped like the bake: stone occludes every face; glass and stained
+    /// glass occlude none and skip a same-block neighbour; a bottom slab
+    /// covers its own bottom face.
+    fn cull() -> Vec<CullInfo> {
+        let mut c = vec![CullInfo::default(); 8];
+        for (i, info) in c.iter_mut().enumerate() {
+            info.block = i as u16;
+        }
+        c[STONE as usize].occludes = 0b11_1111;
+        c[GLASS as usize].skip = 1;
+        c[STAINED as usize].skip = 1;
+        c[STAINED as usize].translucent = true;
+        c[PANE_EW as usize] = CullInfo {
+            skip: 2,
+            block: 5,
+            connect: (1 << 4) | (1 << 5),
+            ..CullInfo::default()
+        };
+        // Same block as PANE_EW, connected north only.
+        c[PANE_N as usize] = CullInfo {
+            skip: 2,
+            block: 5,
+            connect: 1 << 2,
+            ..CullInfo::default()
+        };
+        c[BOTTOM_SLAB as usize].occludes = 1 << 1;
+        c
+    }
+
+    fn world(blocks: &[((i32, i32, i32), u32)]) -> World {
+        let mut w = World::new(DimensionShape::OVERWORLD);
+        w.ensure_column(0, 0);
+        for &((x, y, z), s) in blocks {
+            w.set_block(x, y, z, s);
+        }
+        w
+    }
+
+    fn mesh(w: &World, cull: &[CullInfo]) -> ColumnMesh {
+        let r = render();
+        let inputs = MeshInputs {
+            render: &r,
+            models: &[],
+            fluid: &[],
+            cull,
+        };
+        mesh_column_with(w, inputs, 0, 0).expect("meshed")
+    }
+
+    fn quads(v: &[MeshVertex]) -> usize {
+        v.len() / 4
+    }
+
+    /// Glass does not occlude: the stone face against it is drawn (before, it
+    /// was culled — a see-through hole), and the glass face against the stone
+    /// is culled, because stone does.
+    #[test]
+    fn a_face_against_glass_is_drawn_and_glass_against_stone_is_not() {
+        let w = world(&[((4, 10, 4), STONE), ((5, 10, 4), GLASS)]);
+        let m = mesh(&w, &cull());
+        assert_eq!(quads(&m.vertices), 6 + 5);
+        assert!(m.tvertices.is_empty());
+        // Legacy (no cull table): glass counts as an opaque cube, 5 + 5.
+        let legacy = mesh(&w, &[]);
+        assert_eq!(quads(&legacy.vertices), 10);
+    }
+
+    /// `HalfTransparentBlock.skipRendering`: glass against glass draws no
+    /// shared face, from either side.
+    #[test]
+    fn same_block_glass_skips_the_shared_faces() {
+        let w = world(&[((4, 10, 4), GLASS), ((5, 10, 4), GLASS)]);
+        // (Counted as unit faces: coplanar faces of one state merge.)
+        assert_eq!(mesh(&w, &cull()).visible_cube_faces, 10);
+        // A different half-transparent block does not skip.
+        let w = world(&[((4, 10, 4), GLASS), ((5, 10, 4), STAINED)]);
+        let m = mesh(&w, &cull());
+        assert_eq!(quads(&m.vertices), 6);
+        assert_eq!(quads(&m.tvertices), 6);
+    }
+
+    /// A translucent cube goes to the blended set, whole.
+    #[test]
+    fn translucent_cubes_route_to_the_translucent_set() {
+        let w = world(&[((4, 10, 4), STAINED)]);
+        let m = mesh(&w, &cull());
+        assert!(m.vertices.is_empty());
+        assert_eq!(quads(&m.tvertices), 6);
+    }
+
+    /// `FluidRenderer.isFaceOccludedByNeighbor`: water's side is hidden by a
+    /// neighbour whose face occlusion shape is the full block — stone — and
+    /// drawn against glass, which has none.
+    #[test]
+    fn water_sides_are_drawn_against_glass_but_not_stone() {
+        let side_quads = |n: u32| {
+            let w = world(&[((4, 10, 4), WATER), ((5, 10, 4), n)]);
+            let m = mesh(&w, &cull());
+            // East-facing water quads sit on the x = 5 plane.
+            m.tvertices
+                .chunks_exact(4)
+                .filter(|q| q.iter().all(|v| v.pos[0] == 5.0))
+                .count()
+        };
+        assert_eq!(side_quads(STONE), 0);
+        assert_eq!(side_quads(GLASS), 1);
+    }
+
+    /// A partial shape culls exactly the faces it covers: a cube's top against
+    /// a bottom slab's bottom is hidden, its sides are not.
+    #[test]
+    fn a_slab_bottom_culls_the_face_below_it() {
+        let w = world(&[((4, 10, 4), STONE), ((4, 11, 4), BOTTOM_SLAB)]);
+        assert_eq!(quads(&mesh(&w, &cull()).vertices), 5);
+    }
+
+    /// `IronBarsBlock.skipRendering`: panes stacked vertically always skip;
+    /// side by side only when both are connected toward each other.
+    #[test]
+    fn pane_skip_follows_the_connection_rule() {
+        let r = render();
+        let c = cull();
+        let t = Tables { render: &r, cull: &c };
+        // Vertical: skip regardless of connections.
+        assert!(!t.should_render(PANE_EW, PANE_N, 0));
+        assert!(!t.should_render(PANE_EW, PANE_N, 1));
+        // East face: EW is connected east, and the neighbour connected west.
+        assert!(!t.should_render(PANE_EW, PANE_EW, 5));
+        // PANE_N is not connected west, so EW's east face toward it draws.
+        assert!(t.should_render(PANE_EW, PANE_N, 5));
+        // A non-pane neighbour never skips.
+        assert!(t.should_render(PANE_EW, GLASS, 5));
+        // Air is not a neighbour to skip against.
+        assert!(t.should_render(PANE_EW, AIR, 5));
+    }
+    /// The greedy path and the frozen reference agree under a real cull
+    /// table too: same opaque unit faces, byte-identical translucent stream.
+    #[test]
+    fn greedy_matches_the_reference_with_culling() {
+        let w = world(&[
+            ((4, 10, 4), STONE),
+            ((5, 10, 4), GLASS),
+            ((6, 10, 4), GLASS),
+            ((4, 11, 4), STAINED),
+            ((5, 11, 4), STONE),
+            ((4, 9, 4), BOTTOM_SLAB),
+        ]);
+        let r = render();
+        let c = cull();
+        let inputs = MeshInputs { render: &r, models: &[], fluid: &[], cull: &c };
+        let o = mesh_column_with(&w, inputs, 0, 0).expect("optimized");
+        let f = mesh_column_reference_with(&w, inputs, 0, 0).expect("reference");
+        let units = |m: &ColumnMesh| {
+            let mut v: Vec<UnitFace> = expand_unit_faces(&m.vertices, &m.indices)
+                .expect("decodes")
+                .into_iter()
+                .map(|e| e.f)
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(units(&o), units(&f));
+        assert_eq!(o.tvertices, f.tvertices);
+        assert_eq!(o.visible_cube_faces, f.visible_cube_faces);
     }
 }

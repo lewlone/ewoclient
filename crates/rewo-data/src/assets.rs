@@ -59,6 +59,38 @@ pub struct Quad {
     pub tint: TintSource,
     /// Apply directional face shading (false for plants/torches).
     pub shade: bool,
+    /// The face's material is `ChunkSectionLayer.TRANSLUCENT` — its sprite
+    /// has a partially transparent pixel under the face's UV rect, or the
+    /// model forces it (`force_translucent`). Such quads draw in the blended
+    /// pass rather than the alpha-tested one.
+    pub translucent: bool,
+}
+
+/// Per-state face-culling facts the mesher needs beyond [`RenderKind`].
+///
+/// Faces are in the mesher/asset order `[up, down, north, south, west, east]`
+/// (see [`FACE_NAMES`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CullInfo {
+    /// Faces whose `getFaceOcclusionShape` is `Shapes.block()` — i.e. the
+    /// state `canOcclude()` and its shape covers that whole face. A neighbour
+    /// face against one of these is never drawn (`Block.shouldRenderFace`).
+    pub occludes: u8,
+    /// `Block.skipRendering` rule: 0 none, 1 a same-block neighbour
+    /// (`HalfTransparentBlock`, `PowderSnowBlock`), 2 `IronBarsBlock`'s
+    /// connected rule, 3 a same-block neighbour on the Y axis only
+    /// (`MangroveRootsBlock`). See `crate::block_props::SKIP_RENDERING`.
+    pub skip: u8,
+    /// The block (not state) this state belongs to — the `neighbor.is(this)`
+    /// test. A per-bake ordinal.
+    pub block: u16,
+    /// Pane / bars horizontal connections (`north`/`south`/`west`/`east`
+    /// properties), as face bits.
+    pub connect: u8,
+    /// Member of `#minecraft:bars`.
+    pub bars: bool,
+    /// A `RenderKind::Cube` whose faces sample a translucent material.
+    pub translucent: bool,
 }
 
 /// Per-state render classification, indexed by global state id.
@@ -415,6 +447,10 @@ pub struct BakedAssets {
     /// `model_collision`) — slabs, stairs, fences, … — so a player can stand
     /// on a slab and can't walk through a fence.
     pub collide: Vec<Vec<[f32; 6]>>,
+    /// Per-state face-culling facts for the mesher (see [`CullInfo`]).
+    pub cull: Vec<CullInfo>,
+    /// Per-state movement behaviour for the player physics.
+    pub physics: Vec<crate::block_physics::BlockPhysics>,
     /// Per-state light emission 0..15 (`torch` = 14, `glowstone` = 15).
     /// Extracted from the decompile by `tools/gen_block_light.py`; see
     /// [`crate::block_light`].
@@ -1292,6 +1328,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         animations: Vec::new(),
         grass_tint,
         foliage_tint,
+        forced_layers: std::collections::HashSet::new(),
     };
 
     let mut render = vec![RenderKind::Invisible; max_id + 1];
@@ -1299,6 +1336,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let mut water = vec![false; max_id + 1];
     let mut bubble_column_drag: Vec<Option<bool>> = vec![None; max_id + 1];
     let mut collide: Vec<Vec<[f32; 6]>> = vec![Vec::new(); max_id + 1];
+    let mut cull = vec![CullInfo::default(); max_id + 1];
+    let mut physics = vec![crate::block_physics::BlockPhysics::AIR; max_id + 1];
     let mut emission = vec![0u8; max_id + 1];
     let mut dampening = vec![0u8; max_id + 1];
     let mut face_occludes = vec![0u8; max_id + 1];
@@ -1330,12 +1369,63 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             .map(|&(b, gate, gv, vp, map)| (b, (gate, gv, vp, map)))
             .collect();
 
-    for (block_name, def) in blocks {
+    let skip_rules: HashMap<&str, u8> =
+        crate::block_props::SKIP_RENDERING.iter().copied().collect();
+    for (block_ord, (block_name, def)) in blocks.iter().enumerate() {
         let states = def
             .get("states")
             .and_then(|s| s.as_array())
             .ok_or_else(|| format!("blocks.json: {block_name} has no states"))?;
         let short = block_name.strip_prefix("minecraft:").unwrap_or(block_name);
+        // Culling identity + movement behaviour: shape-independent, so filled
+        // for every state before any branch below can `continue`.
+        let skip = skip_rules.get(block_name.as_str()).copied().unwrap_or(0);
+        let bars = crate::block_props::BARS_TAG.contains(&block_name.as_str());
+        let water_block = matches!(short, "water" | "bubble_column");
+        for state in states {
+            let Some(id) = state.get("id").and_then(|i| i.as_u64()) else {
+                continue;
+            };
+            let props = state.get("properties").and_then(|p| p.as_object());
+            let on = |k: &str| props.and_then(|p| p.get(k)).and_then(|v| v.as_str()) == Some("true");
+            let mut connect = 0u8;
+            if skip == 2 {
+                // Mesher face order: north 2, south 3, west 4, east 5.
+                for (bit, k) in [(2, "north"), (3, "south"), (4, "west"), (5, "east")] {
+                    if on(k) {
+                        connect |= 1 << bit;
+                    }
+                }
+            }
+            cull[id as usize] = CullInfo {
+                occludes: 0,
+                skip,
+                block: block_ord as u16,
+                connect,
+                bars,
+                translucent: false,
+            };
+            let mut phys = crate::block_physics::BlockPhysics::resolve(block_name, props, water_block);
+            if short == "water" || short == "lava" {
+                let level = props
+                    .and_then(|p| p.get("level"))
+                    .and_then(|l| l.as_str())
+                    .and_then(|l| l.parse::<u8>().ok())
+                    .unwrap_or(0);
+                let own_height = crate::block_physics::fluid_own_height(level);
+                phys.fluid = if short == "lava" {
+                    crate::block_physics::PhysFluid::Lava { own_height }
+                } else {
+                    crate::block_physics::PhysFluid::Water { own_height }
+                };
+            } else if carried_water(block_name.as_str(), on("waterlogged")).is_some() {
+                // Every carried fluid is a source (`getOwnHeight` 8/9).
+                phys.fluid = crate::block_physics::PhysFluid::Water {
+                    own_height: crate::block_physics::fluid_own_height(0),
+                };
+            }
+            physics[id as usize] = phys;
+        }
         // Fluids have no usable blockstate models (vanilla hardcodes their
         // renderer) — classify by name, keyed on the `level` property.
         if short == "water" || short == "lava" {
@@ -1470,6 +1560,13 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             if !full_cube && !no_occlude.contains(block_name.as_str()) {
                 face_occludes[id as usize] = face_coverage(&collide[id as usize]);
             }
+            // `getFaceOcclusionShape`: `canOcclude ? getShape : empty`. A full
+            // shape covers all six faces; a partial one the faces it spans.
+            cull[id as usize].occludes = if full_cube && !no_occlude.contains(block_name.as_str()) {
+                0b11_1111
+            } else {
+                faces_to_mesher_order(face_occludes[id as usize])
+            };
             // M164 — the water this state CARRIES (see `BakedAssets::fluid`).
             // Two disjoint families: the `waterlogged=true` states, and the five
             // blocks whose override is unconditional.
@@ -1539,6 +1636,24 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             || matches!(render[id], RenderKind::Fluid { lava: false, .. });
     }
 
+    // Translucency, now that every layer exists and every forced reference
+    // has been seen.
+    const FULL_UV: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    for quads in &mut models {
+        for q in quads.iter_mut() {
+            q.translucent = baker.forced_layers.contains(&q.layer)
+                || layer_has_translucent(&baker.layers, &baker.animations, q.layer, q.uv);
+        }
+    }
+    for (id, kind) in render.iter().enumerate() {
+        if let RenderKind::Cube { faces, .. } = kind {
+            cull[id].translucent = faces.iter().any(|&l| {
+                baker.forced_layers.contains(&l)
+                    || layer_has_translucent(&baker.layers, &baker.animations, l, FULL_UV)
+            });
+        }
+    }
+
     // M22: held items, after every block layer exists (block items copy them).
     let held_items = baker.bake_held_items(&trims);
 
@@ -1571,6 +1686,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         fluid,
         bubble_column_drag,
         collide,
+        cull,
+        physics,
         emission,
         dampening,
         face_occludes,
@@ -3003,12 +3120,16 @@ struct Baker<'a> {
     animations: Vec<AnimatedLayer>,
     grass_tint: [u8; 3],
     foliage_tint: [u8; 3],
+    /// Layers some model referenced through a `force_translucent` texture.
+    forced_layers: std::collections::HashSet<u16>,
 }
 
 /// A model with its parent chain flattened: merged textures + all elements.
 #[derive(Clone)]
 struct ResolvedModel {
     textures: HashMap<String, String>,
+    /// Texture variables defined as `{sprite, force_translucent: true}`.
+    forced: std::collections::HashSet<String>,
     elements: Vec<serde_json::Value>,
     ambient_occlusion: bool,
 }
@@ -3185,6 +3306,10 @@ impl<'a> Baker<'a> {
             let tex_name = resolve_texture_var(tex, &resolved.textures)?;
             layers[i] = self.layer_for(&tex_name, foliage_of(&tex_name, tint.foliage))?;
             raw_layers[i] = self.layer_for(&tex_name, TintKind::None)?;
+            if texture_var_forced(tex, &resolved.textures, &resolved.forced) {
+                self.forced_layers.insert(layers[i]);
+                self.forced_layers.insert(raw_layers[i]);
+            }
             tints[i] = resolve_tint_source(tint.layers, tintindex_of(face), tint.upper_half);
         }
         Some(RenderKind::Cube {
@@ -3200,7 +3325,16 @@ impl<'a> Baker<'a> {
         };
         let shade_default = resolved.ambient_occlusion; // proxy; real shade is per-element
         for el in &resolved.elements {
-            self.element_quads(el, &resolved.textures, r.x, r.y, tint, shade_default, out);
+            self.element_quads(
+                el,
+                &resolved.textures,
+                &resolved.forced,
+                r.x,
+                r.y,
+                tint,
+                shade_default,
+                out,
+            );
         }
     }
 
@@ -3209,6 +3343,7 @@ impl<'a> Baker<'a> {
         &mut self,
         el: &serde_json::Value,
         textures: &HashMap<String, String>,
+        forced: &std::collections::HashSet<String>,
         rot_x: i32,
         rot_y: i32,
         tint: TintInfo,
@@ -3239,6 +3374,10 @@ impl<'a> Baker<'a> {
             let Some(raw_layer) = self.layer_for(&tex_name, TintKind::None) else {
                 continue;
             };
+            if texture_var_forced(tex, textures, forced) {
+                self.forced_layers.insert(layer);
+                self.forced_layers.insert(raw_layer);
+            }
             let tint_src = resolve_tint_source(tint.layers, tintindex_of(face), tint.upper_half);
             let has_cull = face.get("cullface").is_some();
 
@@ -3279,6 +3418,8 @@ impl<'a> Baker<'a> {
                 dir,
                 tint: tint_src,
                 shade,
+                // Resolved after the bake, once every forced layer is known.
+                translucent: false,
             });
         }
     }
@@ -3651,12 +3792,14 @@ impl<'a> Baker<'a> {
                 if parent.contains("builtin/") {
                     ResolvedModel {
                         textures: HashMap::new(),
+                        forced: Default::default(),
                         elements: Vec::new(),
                         ambient_occlusion: true,
                     }
                 } else {
                     self.resolve_model(parent).unwrap_or(ResolvedModel {
                         textures: HashMap::new(),
+                        forced: Default::default(),
                         elements: Vec::new(),
                         ambient_occlusion: true,
                     })
@@ -3664,6 +3807,7 @@ impl<'a> Baker<'a> {
             }
             None => ResolvedModel {
                 textures: HashMap::new(),
+                forced: Default::default(),
                 elements: Vec::new(),
                 ambient_occlusion: true,
             },
@@ -3682,6 +3826,17 @@ impl<'a> Baker<'a> {
                 });
                 if let Some(name) = name {
                     out.textures.insert(var.clone(), name);
+                    // A child redefining a variable replaces the parent's
+                    // flag along with its sprite.
+                    let forced = value
+                        .get("force_translucent")
+                        .and_then(|f| f.as_bool())
+                        .unwrap_or(false);
+                    if forced {
+                        out.forced.insert(var.clone());
+                    } else {
+                        out.forced.remove(var);
+                    }
                 }
             }
         }
@@ -4126,6 +4281,27 @@ fn when_matches(
 
 // -- textures ----------------------------------------------------------------
 
+/// Whether a texture reference reaches its sprite through a variable that
+/// the model defined with `force_translucent: true`.
+fn texture_var_forced<'a>(
+    mut tex_ref: &'a str,
+    textures: &'a HashMap<String, String>,
+    forced: &std::collections::HashSet<String>,
+) -> bool {
+    let mut last = false;
+    for _ in 0..8 {
+        let Some(var) = tex_ref.strip_prefix('#') else {
+            return last;
+        };
+        last = forced.contains(var);
+        match textures.get(var) {
+            Some(t) => tex_ref = t,
+            None => return false,
+        }
+    }
+    false
+}
+
 fn resolve_texture_var<'a>(
     mut tex_ref: &'a str,
     textures: &'a HashMap<String, String>,
@@ -4521,6 +4697,63 @@ pub const FACE_DIRS: [(i32, i32, i32); 6] = [
 /// 1/16 boundaries, so rasterising each face at 16×16 and asking whether every
 /// cell is covered gives the same answer for the shapes that matter, without
 /// carrying a shape algebra. Boxes are block-local `0..1`.
+/// [`FACE_DIRS`]-order face bits → mesher order (`[up, down, north, south,
+/// west, east]`).
+pub fn faces_to_mesher_order(dirs: u8) -> u8 {
+    // mesher face -> FACE_DIRS index
+    const REMAP: [u8; 6] = [3, 2, 4, 5, 0, 1];
+    let mut out = 0;
+    for (m, d) in REMAP.iter().enumerate() {
+        if dirs & (1 << d) != 0 {
+            out |= 1 << m;
+        }
+    }
+    out
+}
+
+/// `NativeImage.computeTransparency` over a UV rect of one layer (and every
+/// frame of it, when animated): whether any pixel has an alpha strictly
+/// between 0 and 255 — the `ChunkSectionLayer.TRANSLUCENT` criterion.
+fn layer_has_translucent(
+    layers: &[Vec<u8>],
+    animations: &[AnimatedLayer],
+    layer: u16,
+    uv: [[f32; 2]; 4],
+) -> bool {
+    let Some(base) = layers.get(layer as usize) else {
+        return false;
+    };
+    let side = ((base.len() / 4) as f64).sqrt() as usize;
+    if side == 0 {
+        return false;
+    }
+    let (mut u0, mut v0, mut u1, mut v1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for [u, v] in uv {
+        u0 = u0.min(u);
+        v0 = v0.min(v);
+        u1 = u1.max(u);
+        v1 = v1.max(v);
+    }
+    // `SpriteContents.computeTransparency`: floor the low edge, ceil the high.
+    let clamp = |x: f32| (x.max(0.0) * side as f32) as f64;
+    let x0 = clamp(u0).floor() as usize;
+    let y0 = clamp(v0).floor() as usize;
+    let x1 = (clamp(u1).ceil() as usize).min(side);
+    let y1 = (clamp(v1).ceil() as usize).min(side);
+    let scan = |px: &[u8]| {
+        (y0..y1).any(|y| {
+            (x0..x1).any(|x| {
+                let a = px.get((y * side + x) * 4 + 3).copied().unwrap_or(255);
+                a != 0 && a != 255
+            })
+        })
+    };
+    match animations.iter().find(|a| a.layer == layer) {
+        Some(anim) => anim.frames.iter().any(|f| scan(f)),
+        None => scan(base),
+    }
+}
+
 fn face_coverage(boxes: &[[f32; 6]]) -> u8 {
     if boxes.is_empty() {
         return 0;
