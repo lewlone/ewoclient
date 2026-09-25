@@ -41,7 +41,8 @@ use rewo_proto::nbt::Nbt;
 use rewo_proto::reader::PacketReader;
 use rewo_world::dimension::{
     CardinalLightType, DimensionShape, DimensionTypeDef, Skybox, DEFAULT_AMBIENT_LIGHT_COLOR,
-    DEFAULT_CLOUD_COLOR, DEFAULT_CLOUD_HEIGHT, DEFAULT_SKY_LIGHT_COLOR, DEFAULT_SKY_LIGHT_FACTOR,
+    DEFAULT_CLOUD_COLOR, DEFAULT_CLOUD_HEIGHT, DEFAULT_FAST_LAVA, DEFAULT_SKY_LIGHT_COLOR,
+    DEFAULT_SKY_LIGHT_FACTOR,
 };
 
 /// The registry the Configuration `registry_data` packet must name for this
@@ -62,6 +63,7 @@ const ATTR_SKY_LIGHT_COLOR: &str = "minecraft:visual/sky_light_color";
 const ATTR_SKY_LIGHT_FACTOR: &str = "minecraft:visual/sky_light_factor";
 const ATTR_CLOUD_COLOR: &str = "minecraft:visual/cloud_color";
 const ATTR_CLOUD_HEIGHT: &str = "minecraft:visual/cloud_height";
+const ATTR_FAST_LAVA: &str = "minecraft:gameplay/fast_lava";
 
 /// Why one `minecraft:dimension_type` entry could not be understood.
 ///
@@ -284,6 +286,22 @@ fn attr_f32(
     Ok(Some(n))
 }
 
+/// One `attributes` boolean override (`AttributeTypes.BOOLEAN` = `Codec.BOOL`).
+/// `NbtOps.getBooleanValue` is `getNumberValue(..) != 0`, so any non-zero
+/// numeric tag is `true` — the rule [`req_bool`] applies to the codec's own
+/// `BOOL` fields. `Ok(None)` means the key is absent, which takes the
+/// attribute's declared default.
+fn attr_bool(attrs: Option<&Nbt>, key: &'static str) -> Result<Option<bool>, DimensionTypeError> {
+    let Some(v) = attrs.and_then(|a| a.get(key)) else {
+        return Ok(None);
+    };
+    if matches!(v, Nbt::Compound(_)) {
+        return Err(DimensionTypeError::AttributeModifierUnsupported(key));
+    }
+    let n = as_number(v).ok_or(DimensionTypeError::BadAttribute(key))?;
+    Ok(Some(n != 0.0))
+}
+
 /// Parse one `minecraft:dimension_type` entry's NBT into the unified
 /// definition. `name` is the entry's registry identifier, carried for
 /// diagnostics only — selection is always by raw registry id.
@@ -346,6 +364,10 @@ pub fn parse_dimension_type(name: &str, nbt: &Nbt) -> Result<DimensionTypeDef, D
     // `NON_NEGATIVE_FLOAT`, per `EnvironmentAttributes.CLOUD_HEIGHT`.
     let cloud_height =
         attr_f32(attributes, ATTR_CLOUD_HEIGHT, 0.0..=f32::MAX)?.unwrap_or(DEFAULT_CLOUD_HEIGHT);
+    // `BOOLEAN`, per `EnvironmentAttributes.FAST_LAVA`. The Nether sets it,
+    // and it is what makes its lava push at `0.007` rather than `0.0023333…`
+    // (`Entity.java:1672`).
+    let fast_lava = attr_bool(attributes, ATTR_FAST_LAVA)?.unwrap_or(DEFAULT_FAST_LAVA);
     // `audio/ambient_sounds` shares the biome's projection because it is the
     // same attribute map on both sides — the dimension supplies the base and a
     // biome replaces it, and neither reads the other's key. Kept `Option` for
@@ -382,6 +404,7 @@ pub fn parse_dimension_type(name: &str, nbt: &Nbt) -> Result<DimensionTypeDef, D
         sky_light_factor,
         cloud_color,
         cloud_height,
+        fast_lava,
         default_clock,
         ambient_sounds,
         background_music,
@@ -919,6 +942,35 @@ mod tests {
         assert_ne!(d.has_sky_light, nether.has_sky_light);
         assert_ne!(d.skybox, nether.skybox);
         assert_ne!(d.cardinal_light_type, nether.cardinal_light_type);
+    }
+
+    /// `gameplay/fast_lava` is a `Codec.BOOL` attribute, and it is the one
+    /// that makes the Nether's lava push at `0.007` instead of `0.0023333…`
+    /// (`Entity.java:1672`). Absent is `false`, and the value is read as
+    /// `NbtOps.getBooleanValue` reads it — any numeric tag, `!= 0`.
+    #[test]
+    fn fast_lava_is_read_from_the_attribute_byte() {
+        assert!(parse("minecraft:the_nether", &the_nether()).fast_lava);
+        assert!(!parse("minecraft:overworld", &overworld()).fast_lava);
+        assert!(!parse("minecraft:the_end", &the_end()).fast_lava);
+        // Absent is the attribute's default, not "whatever the last entry
+        // said" — the Nether's own entry with the key dropped.
+        let attrs = the_nether().get("attributes").cloned().expect("fixture attributes");
+        let bare = with(&the_nether(), "attributes", without(&attrs, ATTR_FAST_LAVA));
+        assert!(!parse("test:no_fast_lava", &bare).fast_lava);
+        // A `Byte` and an `Int` are the same boolean to `NbtOps`, and zero is
+        // `false` even when the key is present.
+        let overworld_with = |v: Nbt| with_attr(&overworld(), ATTR_FAST_LAVA, v);
+        assert!(parse("test:byte", &overworld_with(Nbt::Byte(1))).fast_lava);
+        assert!(!parse("test:byte0", &overworld_with(Nbt::Byte(0))).fast_lava);
+        assert!(parse("test:int", &overworld_with(Nbt::Int(1))).fast_lava);
+        // The `{modifier, argument}` arm of `Codec.either` is not modelled, so
+        // it must not quietly become the default.
+        let modifier_form = overworld_with(Nbt::Compound(vec![]));
+        assert_eq!(
+            parse_dimension_type("test:modifier", &modifier_form),
+            Err(DimensionTypeError::AttributeModifierUnsupported(ATTR_FAST_LAVA))
+        );
     }
 
     #[test]

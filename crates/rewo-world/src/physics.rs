@@ -82,6 +82,10 @@ pub struct MoveAttributes {
     pub dolphins_grace: bool,
     /// `LEVITATION` amplifier, if active.
     pub levitation: Option<i32>,
+    /// The dimension's `EnvironmentAttributes.FAST_LAVA` — lava currents push
+    /// at `LAVA_FAST_FLOW_SCALE` instead of `LAVA_SLOW_FLOW_SCALE`. The Nether
+    /// sets it; no other vanilla dimension does.
+    pub fast_lava: bool,
 }
 
 impl Default for MoveAttributes {
@@ -99,6 +103,7 @@ impl Default for MoveAttributes {
             slow_falling: false,
             dolphins_grace: false,
             levitation: None,
+            fast_lava: false,
         }
     }
 }
@@ -283,7 +288,7 @@ pub fn tick_env(
     };
 
     // -- Entity.baseTick: fluid interaction ---------------------------------
-    update_fluids(state, world, !flying);
+    update_fluids(state, world, !flying, attrs.fast_lava);
     if state.in_water() {
         state.fall_distance = 0.0;
     }
@@ -705,7 +710,7 @@ fn do_move(state: &mut PlayerState, ctx: &Ctx, mut delta: [f64; 3]) {
     // `updateFluidInteraction` pushes the currents here too, so a move that
     // lands the player in a flow takes the impulse mid-tick.
     if !state.in_water() {
-        update_fluids(state, ctx.world, !ctx.flying);
+        update_fluids(state, ctx.world, !ctx.flying, ctx.attrs.fast_lava);
     }
     if !state.in_water() && movement[1] < 0.0 {
         state.fall_distance -= movement[1] as f32 as f64;
@@ -975,7 +980,14 @@ fn honey_slide(state: &mut PlayerState) {
 /// sampled cell, then `Tracker.applyCurrentTo` once per fluid kind.
 /// `pushed_by_fluid` is `isPushedByFluid()` (for the player, `!abilities.flying`)
 /// — vanilla samples no current at all for a fluid that does not push.
-fn update_fluids(state: &mut PlayerState, world: &dyn PhysicsWorld, pushed_by_fluid: bool) {
+/// `fast_lava` is the dimension's `EnvironmentAttributes.FAST_LAVA`, which
+/// picks the lava push rate and nothing else.
+fn update_fluids(
+    state: &mut PlayerState,
+    world: &dyn PhysicsWorld,
+    pushed_by_fluid: bool,
+    fast_lava: bool,
+) {
     state.water_height = 0.0;
     state.lava_height = 0.0;
     state.eye_in_water = false;
@@ -1026,7 +1038,10 @@ fn update_fluids(state: &mut PlayerState, world: &dyn PhysicsWorld, pushed_by_fl
     if pushed_by_fluid {
         // `updateFluidInteraction`: water at 0.014, then lava at its own rate.
         if state.in_water() { current_water.apply(state, WATER_FLOW_SCALE); }
-        if state.in_lava() { current_lava.apply(state, LAVA_FLOW_SCALE); }
+        if state.in_lava() {
+            let lava_scale = if fast_lava { LAVA_FAST_FLOW_SCALE } else { LAVA_SLOW_FLOW_SCALE };
+            current_lava.apply(state, lava_scale);
+        }
     }
 }
 
@@ -1046,11 +1061,14 @@ fn fluid_top(world: &dyn PhysicsWorld, x: i32, y: i32, z: i32) -> Option<(bool, 
     Some((lava, y as f64 + h as f64))
 }
 
-/// `Entity.updateFluidInteraction`'s water push per tick, and its lava push
-/// with `EnvironmentAttributes.FAST_LAVA` off (the overworld; `0.007` fast).
-/// Rewo's physics has no dimension attributes.
+/// `Entity.updateFluidInteraction`'s water push per tick.
 const WATER_FLOW_SCALE: f64 = 0.014;
-const LAVA_FLOW_SCALE: f64 = 0.0023333333333333335;
+/// `Entity.LAVA_FAST_FLOW_SCALE` (`Entity.java:208`), the lava push per tick
+/// with `EnvironmentAttributes.FAST_LAVA` set — the Nether.
+const LAVA_FAST_FLOW_SCALE: f64 = 0.007;
+/// The lava push with `FAST_LAVA` off, three times weaker. Vanilla writes it
+/// inline at `Entity.java:1672`'s other arm and never names it.
+const LAVA_SLOW_FLOW_SCALE: f64 = 0.0023333333333333335;
 /// `Tracker.applyCurrentTo`'s floor: a weak current on a near-stationary
 /// player is normalized up to this length.
 const MIN_FLOW_IMPULSE: f64 = 0.0045000000000000005;
@@ -2676,5 +2694,40 @@ mod tests {
         let lava_vx = vx_after_one_tick(lava(8.0 / 9.0), lava(1.0 / 9.0));
         assert!((lava_vx - (0.0045000000000000005 + 0.0023333333333333335) * 0.5).abs() < 1e-12, "lava vx={lava_vx}");
         assert!(lava_vx < water_vx, "lava {lava_vx} vs water {water_vx}");
+    }
+
+    /// `EnvironmentAttributes.FAST_LAVA` — the Nether alone — triples the lava
+    /// current rate: `Entity.java:1672` picks `0.007` over `0.0023333…`.
+    #[test]
+    fn fast_lava_pushes_three_times_harder() {
+        let vx_after_one_tick = |here: BlockPhysics, there: BlockPhysics, fast_lava: bool| {
+            let w = world(|_, _, _| EMPTY, draining(here, there));
+            let mut p = PlayerState::at(0.5, 0.0, 0.5);
+            // The player is already moving, so `applyCurrentTo`'s standing-still
+            // nudge (0.0045, above both rates) never replaces the impulse and
+            // the tick carries the rate itself. The resting case above cannot
+            // show a ratio at all: its slow run is the nudge, not the rate.
+            p.vx = 0.02;
+            let attrs = MoveAttributes { fast_lava, ..MoveAttributes::default() };
+            let input = TickInput::default();
+            tick_env(&mut p, &input, &Abilities::default(), false, None, &attrs, &w);
+            p.vx
+        };
+        // The derivation is `lava_pushes_slower_than_water`'s: the current is
+        // applied twice per tick (here, then `checkFallDamage`'s mid-move
+        // refresh) and `travelInLava` scales the sum by 0.5 — so one rate's
+        // worth is what the tick adds. A still pool measures the same tick
+        // with no current at all.
+        let still = vx_after_one_tick(lava(8.0 / 9.0), lava(8.0 / 9.0), false);
+        let slow = vx_after_one_tick(lava(8.0 / 9.0), lava(1.0 / 9.0), false);
+        let fast = vx_after_one_tick(lava(8.0 / 9.0), lava(1.0 / 9.0), true);
+        let (slow_gain, fast_gain) = (slow - still, fast - still);
+        assert!((slow_gain - LAVA_SLOW_FLOW_SCALE).abs() < 1e-12, "slow {slow_gain}");
+        assert!((fast_gain - LAVA_FAST_FLOW_SCALE).abs() < 1e-12, "fast {fast_gain}");
+        assert!(
+            (fast_gain / slow_gain - 3.0).abs() < 1e-12,
+            "fast lava must push 0.007/0.0023333333333333335 = 3x harder: \
+             slow {slow_gain}, fast {fast_gain}"
+        );
     }
 }

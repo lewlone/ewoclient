@@ -239,6 +239,10 @@ pub const DEFAULT_CLOUD_COLOR: i32 = 0;
 /// `EnvironmentAttributes.CLOUD_HEIGHT` default `192.33`.
 pub const DEFAULT_CLOUD_HEIGHT: f32 = 192.33;
 
+/// `EnvironmentAttributes.FAST_LAVA` default `false`
+/// (`AttributeTypes.BOOLEAN`, `EnvironmentAttributes.java:123`).
+pub const DEFAULT_FAST_LAVA: bool = false;
+
 /// One `minecraft:dimension_type` registry entry.
 ///
 /// This replaces the M14-era parallel `dim_shapes` / `dim_attrs` vectors: one
@@ -258,6 +262,7 @@ pub const DEFAULT_CLOUD_HEIGHT: f32 = 192.33;
 /// | `ambient_light_color` | `AMBIENT_LIGHT_COLOR` | [`DEFAULT_AMBIENT_LIGHT_COLOR`] |
 /// | `sky_light_color` | `SKY_LIGHT_COLOR` | [`DEFAULT_SKY_LIGHT_COLOR`] |
 /// | `sky_light_factor` | `SKY_LIGHT_FACTOR` | [`DEFAULT_SKY_LIGHT_FACTOR`] |
+/// | `fast_lava` | `FAST_LAVA` | [`DEFAULT_FAST_LAVA`] |
 ///
 /// `has_skylight`, `min_y`, `height` and `ambient_light` are **required**
 /// fields with no codec default. A value of this type therefore only ever
@@ -308,6 +313,12 @@ pub struct DimensionTypeDef {
     pub cloud_color: i32,
     /// `minecraft:visual/cloud_height`, in blocks.
     pub cloud_height: f32,
+    /// `minecraft:gameplay/fast_lava` — whether lava currents push at the
+    /// fast rate. `Entity.updateFluidInteraction` (`Entity.java:1672`) scales
+    /// the lava current by `0.007` when this is set and by
+    /// `0.0023333333333333335` when it is not, and the Nether is the only
+    /// vanilla dimension that sets it. Absent means [`DEFAULT_FAST_LAVA`].
+    pub fast_lava: bool,
     /// `default_clock` — `Optional<Holder<WorldClock>>`
     /// (`DimensionType.java:45, 101`), as its registry id.
     ///
@@ -390,6 +401,9 @@ impl DimensionTypeDef {
             sky_light_factor: DEFAULT_SKY_LIGHT_FACTOR,
             cloud_color: DEFAULT_CLOUD_COLOR,
             cloud_height: DEFAULT_CLOUD_HEIGHT,
+            // An unresolved holder keeps the Overworld's behaviour, and the
+            // Overworld's lava is the slow one.
+            fast_lava: DEFAULT_FAST_LAVA,
             // The Overworld's clock, for the same reason as the fields above:
             // an unresolved holder should keep time like the Overworld. `None`
             // is available and would be worse — it means a *permanent zero*,
