@@ -20,6 +20,7 @@ pub mod block_physics;
 pub mod block_props;
 pub mod blocks;
 pub mod cem;
+pub mod collision_table;
 pub mod command_argument_types;
 pub mod chest_states;
 pub mod copper_golem_poses;

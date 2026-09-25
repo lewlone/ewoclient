@@ -1369,6 +1369,10 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             .map(|&(b, gate, gv, vp, map)| (b, (gate, gv, vp, map)))
             .collect();
 
+    let constant_collision: HashMap<&str, &[[f32; 6]]> =
+        crate::collision_table::COLLISION.iter().copied().collect();
+    let no_collision: std::collections::HashSet<&str> =
+        crate::collision_table::NO_COLLISION.iter().copied().collect();
     let skip_rules: HashMap<&str, u8> =
         crate::block_props::SKIP_RENDERING.iter().copied().collect();
     for (block_ord, (block_name, def)) in blocks.iter().enumerate() {
@@ -1512,18 +1516,37 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             // Collision shape: a solid state is the unit cube; otherwise a
             // curated family may collide with its model geometry. Everything
             // else stays empty (today's behaviour).
-            collide[id as usize] = if solid[id as usize] {
+            // The outline the light and culling tables read: a full cube, or
+            // a curated family's model geometry (fences stretched to 1.5).
+            let shape_boxes = if solid[id as usize] {
                 vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
             } else if let (Some(tall), Some(bs)) = (model_collision(short), bs.as_ref()) {
                 let refs = baker.state_refs(bs, props);
-                let boxes = baker.collision_boxes(&refs, tall);
-                if !boxes.is_empty() {
-                    stats.shaped_collision_states += 1;
-                }
-                boxes
+                baker.collision_boxes(&refs, tall)
             } else {
                 Vec::new()
             };
+            // Collision: the block class's own shape where the decompile gives
+            // it (`crate::collision_table`), a few state-dependent classes
+            // transcribed in `special_collision`, else the outline above, else
+            // the model's geometry for a colliding block with none.
+            collide[id as usize] = if let Some(b) = special_collision(short, props) {
+                b
+            } else if let Some(b) = constant_collision.get(block_name.as_str()) {
+                b.to_vec()
+            } else if no_collision.contains(block_name.as_str()) {
+                Vec::new()
+            } else if !shape_boxes.is_empty() {
+                shape_boxes.clone()
+            } else if let Some(bs) = bs.as_ref() {
+                let refs = baker.state_refs(bs, props);
+                baker.collision_boxes(&refs, false)
+            } else {
+                Vec::new()
+            };
+            if !collide[id as usize].is_empty() && !solid[id as usize] {
+                stats.shaped_collision_states += 1;
+            }
 
             // Light. Vanilla's rule (BlockBehaviour.getLightDampening) is
             //     isSolidRender ? 15 : propagatesSkylightDown ? 0 : 1
@@ -1558,7 +1581,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             // leaves out of that list essentially never covers a whole face
             // (a fence post is 6/16 wide), so a false positive is inert.
             if !full_cube && !no_occlude.contains(block_name.as_str()) {
-                face_occludes[id as usize] = face_coverage(&collide[id as usize]);
+                face_occludes[id as usize] = face_coverage(&shape_boxes);
             }
             // `getFaceOcclusionShape`: `canOcclude ? getShape : empty`. A full
             // shape covers all six faces; a partial one the faces it spans.
@@ -4697,6 +4720,174 @@ pub const FACE_DIRS: [(i32, i32, i32); 6] = [
 /// 1/16 boundaries, so rasterising each face at 16×16 and asking whether every
 /// cell is covered gives the same answer for the shapes that matter, without
 /// carrying a shape algebra. Boxes are block-local `0..1`.
+/// Rotate block-local boxes given for a NORTH-facing variant to `facing`
+/// (`Shapes.rotateHorizontal`: Y rotations about the block centre).
+fn rotate_horizontal(boxes: &[[f32; 6]], facing: &str) -> Vec<[f32; 6]> {
+    boxes
+        .iter()
+        .map(|b| {
+            let (x0, z0, x1, z1) = (b[0], b[2], b[3], b[5]);
+            let (a, c, d, e) = match facing {
+                // (x, z) -> (1 - z, x)
+                "east" => (1.0 - z1, x0, 1.0 - z0, x1),
+                "south" => (1.0 - x1, 1.0 - z1, 1.0 - x0, 1.0 - z0),
+                // (x, z) -> (z, 1 - x)
+                "west" => (z0, 1.0 - x1, z1, 1.0 - x0),
+                _ => (x0, z0, x1, z1),
+            };
+            [a, b[1], c, d, b[4], e]
+        })
+        .collect()
+}
+
+/// Collision for state-dependent classes whose shape the decompile gives as
+/// per-state constants but the generator cannot evaluate, and whose render
+/// model has no geometry to fall back to (block-entity rendered).
+fn special_collision(
+    short: &str,
+    props: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<Vec<[f32; 6]>> {
+    let prop = |k: &str| props.and_then(|p| p.get(k)).and_then(|v| v.as_str()).unwrap_or("");
+    const P: f32 = 1.0 / 16.0;
+    let cw = |d: &str| match d {
+        "north" => "east",
+        "east" => "south",
+        "south" => "west",
+        _ => "north",
+    };
+    let ccw = |d: &str| match d {
+        "north" => "west",
+        "west" => "south",
+        "south" => "east",
+        _ => "north",
+    };
+    let opposite = |d: &str| cw(cw(d));
+    let name = format!("minecraft:{short}");
+    let arms = |north_arm: [f32; 6], post: Option<[f32; 6]>, open: &dyn Fn(&str) -> bool| {
+        let mut out: Vec<[f32; 6]> = post.into_iter().collect();
+        for dir in ["north", "east", "south", "west"] {
+            if open(dir) {
+                out.extend(rotate_horizontal(&[north_arm], dir));
+            }
+        }
+        out
+    };
+    let bars = crate::block_props::SKIP_RENDERING.iter().any(|(n, k)| *n == name && *k == 2);
+    if bars || crate::block_props::FENCES_TAG.contains(&name.as_str()) {
+        // `CrossCollisionBlock` collision: `column(post, 0, h)` plus
+        // `boxZ(arm, 0, h, 0, 8)` per connected side. `IronBarsBlock`
+        // (bars, panes) is (2, 16), `FenceBlock` is (4, 24).
+        let (w, h) = if bars { (2.0, 16.0) } else { (4.0, 24.0) };
+        let (a, b) = (0.5 - w / 2.0 * P, 0.5 + w / 2.0 * P);
+        return Some(arms(
+            [a, 0.0, 0.0, b, h * P, 0.5],
+            Some([a, 0.0, a, b, h * P, b]),
+            &|d| prop(d) == "true",
+        ));
+    }
+    if crate::block_props::WALLS_TAG.contains(&name.as_str()) {
+        // `WallBlock` collision: `column(8, 0, 24)` if `up`, and
+        // `boxZ(6, 0, 24, 0, 11)` for every side that is not `none`.
+        let post = (prop("up") == "true").then_some([4.0 * P, 0.0, 4.0 * P, 12.0 * P, 1.5, 12.0 * P]);
+        return Some(arms(
+            [5.0 * P, 0.0, 0.0, 11.0 * P, 1.5, 11.0 * P],
+            post,
+            &|d| !matches!(prop(d), "" | "none"),
+        ));
+    }
+    if crate::block_props::FENCE_GATES.contains(&name.as_str()) {
+        // `FenceGateBlock`: empty while open, else `column(16, 4, 0, 24)`
+        // across the facing's axis.
+        if prop("open") == "true" {
+            return Some(Vec::new());
+        }
+        return Some(match prop("facing") {
+            "east" | "west" => vec![[6.0 * P, 0.0, 0.0, 10.0 * P, 1.5, 1.0]],
+            _ => vec![[0.0, 0.0, 6.0 * P, 1.0, 1.5, 10.0 * P]],
+        });
+    }
+    // `ChainBlock` / `RodBlock`: `rotateAllAxis(cube(w, w, 16))` along the
+    // block's axis (a chain's `axis`, a rod's `facing`), w = 3 / 4.
+    let rod = short == "end_rod" || short.ends_with("lightning_rod");
+    if rod || (short.ends_with("_chain") && props.is_some_and(|p| p.contains_key("axis"))) {
+        let w = if rod { 4.0 } else { 3.0 };
+        let (a, b) = (0.5 - w / 2.0 * P, 0.5 + w / 2.0 * P);
+        let axis = match if rod { prop("facing") } else { prop("axis") } {
+            "x" | "east" | "west" => 0,
+            "z" | "north" | "south" => 2,
+            _ => 1,
+        };
+        let mut bx = [a, a, a, b, b, b];
+        bx[axis] = 0.0;
+        bx[axis + 3] = 1.0;
+        return Some(vec![bx]);
+    }
+    if short.ends_with("pointed_dripstone") {
+        // `SpeleothemBlock.getShape` by thickness (the random XZ render
+        // offset vanilla also moves it by is not modelled).
+        let (w, y0, y1) = match prop("thickness") {
+            "tip_merge" => (6.0, 0.0, 16.0),
+            "tip" if prop("vertical_direction") == "down" => (6.0, 5.0, 16.0),
+            "tip" => (6.0, 0.0, 11.0),
+            "frustum" => (8.0, 0.0, 16.0),
+            "middle" => (10.0, 0.0, 16.0),
+            _ => (12.0, 0.0, 16.0),
+        };
+        let (a, b) = (0.5 - w / 2.0 * P, 0.5 + w / 2.0 * P);
+        return Some(vec![[a, y0 * P, a, b, y1 * P, b]]);
+    }
+    if short == "powder_snow" {
+        // `PowderSnowBlock.getCollisionShape`: empty for an entity that cannot
+        // walk on it (no leather boots). The `fallDistance > 2.5` landing box
+        // is context the bake cannot see.
+        return Some(Vec::new());
+    }
+    if short == "snow" {
+        // `SnowLayerBlock.getCollisionShape`: `SHAPES[layers - 1]`, 2/16 each.
+        let layers: f32 = prop("layers").parse().unwrap_or(1.0);
+        let h = (layers - 1.0) * 2.0 * P;
+        return Some(if h > 0.0 { vec![[0.0, 0.0, 0.0, 1.0, h, 1.0]] } else { Vec::new() });
+    }
+    if short.ends_with("chest") && short != "ender_chest" {
+        // `ChestBlock.getShape`: SINGLE `column(14, 0, 14)`; a double half is
+        // `boxZ(14, 0, 14, 0, 15)` turned toward the connected half
+        // (LEFT → facing clockwise, RIGHT → counter-clockwise).
+        let facing = prop("facing");
+        return Some(match prop("type") {
+            "left" => rotate_horizontal(&[[P, 0.0, 0.0, 15.0 * P, 14.0 * P, 15.0 * P]], cw(facing)),
+            "right" => rotate_horizontal(&[[P, 0.0, 0.0, 15.0 * P, 14.0 * P, 15.0 * P]], ccw(facing)),
+            _ => vec![[P, 0.0, P, 15.0 * P, 14.0 * P, 15.0 * P]],
+        });
+    }
+    if short.ends_with("shulker_box") {
+        // Closed: `Shapes.block()` (the lid's reach needs the block entity).
+        return Some(vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]);
+    }
+    if short.ends_with("_bed") {
+        // `BedBlock.SHAPES[connected.opposite()]`: a 3..9 slab and two legs at
+        // the far end, given for NORTH. HEAD connects toward `facing.opposite`.
+        let key = if prop("part") == "head" { prop("facing") } else { opposite(prop("facing")) };
+        let north = [
+            [0.0, 3.0 * P, 0.0, 1.0, 9.0 * P, 1.0],
+            [0.0, 0.0, 0.0, 3.0 * P, 3.0 * P, 3.0 * P],
+            [13.0 * P, 0.0, 0.0, 1.0, 3.0 * P, 3.0 * P],
+        ];
+        return Some(rotate_horizontal(&north, key));
+    }
+    let is_head = (short.ends_with("_skull") || short.ends_with("_head")) && short != "piston_head";
+    if is_head {
+        let piglin = short.starts_with("piglin");
+        let half = if piglin { 5.0 * P } else { 4.0 * P };
+        if short.contains("_wall_") {
+            // `WallSkullBlock` / `PiglinWallSkullBlock`: boxZ(8|10, 8, 8, 16).
+            let north = [[0.5 - half, 4.0 * P, 0.5, 0.5 + half, 12.0 * P, 1.0]];
+            return Some(rotate_horizontal(&north, prop("facing")));
+        }
+        return Some(vec![[0.5 - half, 0.0, 0.5 - half, 0.5 + half, 0.5, 0.5 + half]]);
+    }
+    None
+}
+
 /// [`FACE_DIRS`]-order face bits → mesher order (`[up, down, north, south,
 /// west, east]`).
 pub fn faces_to_mesher_order(dirs: u8) -> u8 {

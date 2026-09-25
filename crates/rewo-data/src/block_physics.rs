@@ -274,6 +274,42 @@ mod real_bake {
             };
             assert_eq!(t, translucent, "{name} translucent");
         }
+        let full = vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+        let p = 1.0 / 16.0;
+        for (name, want) in [
+            ("minecraft:stone", full.clone()),
+            ("minecraft:grass_block", full.clone()),
+            ("minecraft:glass", full.clone()),
+            ("minecraft:soul_sand", vec![[0.0, 0.0, 0.0, 1.0, 14.0 * p, 1.0]]),
+            ("minecraft:mud", vec![[0.0, 0.0, 0.0, 1.0, 14.0 * p, 1.0]]),
+            ("minecraft:honey_block", vec![[p, 0.0, p, 15.0 * p, 15.0 * p, 15.0 * p]]),
+            ("minecraft:chest", vec![[p, 0.0, p, 15.0 * p, 14.0 * p, 15.0 * p]]),
+            ("minecraft:skeleton_skull", vec![[0.25, 0.0, 0.25, 0.75, 0.5, 0.75]]),
+            ("minecraft:powder_snow", vec![]),
+            ("minecraft:torch", vec![]),
+            ("minecraft:cobweb", vec![]),
+            ("minecraft:snow", vec![]),
+        ] {
+            assert_eq!(b.collide[id(name)], want, "{name}");
+        }
+        for name in [
+            "minecraft:glass_pane",
+            "minecraft:iron_bars",
+            "minecraft:lantern",
+            "minecraft:iron_chain",
+            "minecraft:end_rod",
+            "minecraft:bell",
+            "minecraft:candle",
+            "minecraft:pointed_dripstone",
+            "minecraft:red_bed",
+            "minecraft:flower_pot",
+            "minecraft:campfire",
+            "minecraft:brewing_stand",
+        ] {
+            assert!(!b.collide[id(name)].is_empty(), "{name} collides");
+        }
+        let fence = &b.collide[id("minecraft:oak_fence")];
+        assert!(fence.iter().any(|b| b[4] == 1.5), "fence is 1.5 tall: {fence:?}");
         assert_eq!(b.physics[id("minecraft:ice")].friction, 0.98);
         assert!(b.physics[id("minecraft:ladder")].has(super::flags::CLIMBABLE));
         assert!(matches!(
