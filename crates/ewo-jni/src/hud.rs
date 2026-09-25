@@ -1076,10 +1076,14 @@ pub struct Editor {
     skin_drag: Option<f32>,
     /// Whether the loaded skin uses the slim ("Alex") 3px-arm model.
     skin_slim: bool,
-    /// `ewo-skin.png`'s mtime when it was last loaded — the export thread
-    /// rewrites the file after the `Editor` was built, and may also replace a
-    /// stale png left by an earlier launch, so the viewer reloads on a change.
-    skin_mtime: Option<std::time::SystemTime>,
+    /// `ewo-skin.png`'s (mtime, length) when it was last loaded — the export
+    /// thread rewrites the file after the `Editor` was built, and may also
+    /// replace a stale png left by an earlier launch, so the viewer reloads on
+    /// a change. A decode failure is cached under its stamp too: a corrupt
+    /// file is retried when it changes, not every frame.
+    skin_stamp: Option<(std::time::SystemTime, u64)>,
+    /// Frame clock of the last `ewo-skin.png` stat — polled, not per paint.
+    skin_checked_at: f32,
     /// PvP-Utils config — loaded from the active profile's `pvp.toml`,
     /// edited from the PVP overlay tab, saved on each commit. The Java mod
     /// polls the file's mtime and hot-reloads — so edits apply live.
@@ -1239,7 +1243,8 @@ impl Editor {
             skin_yaw: 0.5,
             skin_drag: None,
             skin_slim: instance_file("ewo-skin-slim").map(|p| p.exists()).unwrap_or(false),
-            skin_mtime: skin_png_mtime(),
+            skin_stamp: skin_png_stamp(),
+            skin_checked_at: f32::NEG_INFINITY,
             pvp: crate::pvp::PvpConfig::load(),
             pvp_drag: None,
             glass_drag: false,
@@ -2381,14 +2386,14 @@ pub fn draw(
 
     // Pick up the skin PNGs once the mod has written them — the export
     // finishes after the Editor was constructed, and may replace a stale png
-    // from an earlier launch. Reload when the file's mtime moves, or keep
-    // retrying while we have no image but the file exists (a partial write).
-    if editor.view == OverlayView::Home {
-        let disk_mtime = skin_png_mtime();
-        if disk_mtime != editor.skin_mtime
-            || (editor.skin_image.is_none() && disk_mtime.is_some())
-        {
-            editor.skin_mtime = disk_mtime;
+    // from an earlier launch. Polled every SKIN_POLL seconds; reload when the
+    // file's (mtime, length) stamp moves. A partial write that failed to
+    // decode is retried once the finished write moves the stamp.
+    if editor.view == OverlayView::Home && now() - editor.skin_checked_at >= SKIN_POLL {
+        editor.skin_checked_at = now();
+        let disk_stamp = skin_png_stamp();
+        if disk_stamp != editor.skin_stamp {
+            editor.skin_stamp = disk_stamp;
             editor.skin_image = load_skin_image("ewo-skin.png");
             editor.cape_image = load_skin_image("ewo-cape.png");
             editor.skin_slim =
@@ -7009,9 +7014,13 @@ fn load_skin_image(name: &str) -> Option<Image> {
     Image::from_encoded(Data::new_copy(&bytes))
 }
 
-/// `ewo-skin.png`'s last-modified time, or `None` if it isn't there yet.
-fn skin_png_mtime() -> Option<std::time::SystemTime> {
-    std::fs::metadata(instance_file("ewo-skin.png")?).ok()?.modified().ok()
+/// Seconds between `ewo-skin.png` stats while the HOME view is open.
+const SKIN_POLL: f32 = 1.0;
+
+/// `ewo-skin.png`'s (last-modified, length), or `None` if it isn't there yet.
+fn skin_png_stamp() -> Option<(std::time::SystemTime, u64)> {
+    let m = std::fs::metadata(instance_file("ewo-skin.png")?).ok()?;
+    Some((m.modified().ok()?, m.len()))
 }
 
 /// Read the launcher-written `ewo-keybinds.txt` from the instance dir into

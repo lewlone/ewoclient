@@ -3,9 +3,8 @@
 //!
 //! The lean cdylib makes **no** network calls: the launcher owns all social
 //! HTTP and drops a fresh snapshot whenever the friends list changes. The
-//! overlay tab reads the small file directly each frame it's visible — no
-//! cache needed (the file is a few hundred bytes and the tab only renders
-//! while the overlay is open).
+//! overlay tab re-reads it at most once a second ([`POLL`]) — resolving the
+//! path alone reads `profiles.toml`, which is not something to do per frame.
 //!
 //! Format: one tab-separated line per accepted friend —
 //! `<online 0|1>\t<name>\t<presence>\t<server_addr>`.
@@ -17,9 +16,15 @@
 //! during play would need either an in-game poller or a launcher background
 //! tick — deferred.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+/// How often the snapshot is re-read while the FRIENDS tab is visible.
+const POLL: Duration = Duration::from_secs(1);
 
 /// One friend row, decoded from a line of `ewo-friends.txt`.
+#[derive(Clone)]
 pub struct FriendLine {
     pub online: bool,
     pub name: String,
@@ -42,10 +47,28 @@ fn friends_file_path() -> Option<PathBuf> {
     )
 }
 
-/// Read + parse the current snapshot. Returns an empty `Vec` when the file is
-/// absent (launcher signed out / not linked) — the tab renders its empty
-/// state. Cheap enough to call per-frame while the overlay is open.
+thread_local! {
+    static CACHE: RefCell<Option<(Instant, Vec<FriendLine>)>> = const { RefCell::new(None) };
+}
+
+/// The current snapshot, re-read from disk at most every [`POLL`]. Empty when
+/// the file is absent (launcher signed out / not linked) — the tab renders its
+/// empty state.
 pub fn read_friends() -> Vec<FriendLine> {
+    CACHE.with(|cell| {
+        let mut c = cell.borrow_mut();
+        match &*c {
+            Some((at, list)) if at.elapsed() < POLL => list.clone(),
+            _ => {
+                let list = read_friends_uncached();
+                *c = Some((Instant::now(), list.clone()));
+                list
+            }
+        }
+    })
+}
+
+fn read_friends_uncached() -> Vec<FriendLine> {
     let Some(path) = friends_file_path() else {
         return Vec::new();
     };
