@@ -797,10 +797,16 @@ mod tests {
             let i = (((cy + 1) * SIZE + cx + 1) * 4 + 3) as usize;
             a[i] = 255;
         }
-        let (wx, wy) = ((32 % 16) * CELL, (32 / 16) * CELL);
+        let (wx, wy) = white_cell();
         let wi = (((wy * SIZE) + wx) * 4) as usize;
         a[wi..wi + 4].copy_from_slice(&[255, 255, 255, 255]);
         a
+    }
+
+    /// The space glyph's cell, where the white texel lives.
+    fn white_cell() -> (u32, u32) {
+        let space = u32::from(b' ');
+        ((space % 16) * CELL, (space / 16) * CELL)
     }
 
     fn font<'a>(atlas: &'a [u8], advance: &'a [u8; 256]) -> FontData<'a> {
@@ -809,7 +815,7 @@ mod tests {
             size: SIZE,
             cell: CELL,
             advance,
-            white_texel: ((32 % 16) * CELL, (32 / 16) * CELL),
+            white_texel: white_cell(),
         }
     }
 

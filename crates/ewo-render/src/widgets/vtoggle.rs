@@ -156,7 +156,7 @@ fn draw_pearl(canvas: &Canvas, bounds: &Rect, anim: f32) {
         let mut halo = Paint::default();
         halo.set_anti_alias(true);
         halo.set_color4f(
-            Color4f::new(255.0 / 255.0, 246.0 / 255.0, 240.0 / 255.0, 0.7 * anim),
+            Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, 0.7 * anim),
             None,
         );
         halo.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 5.0, false));
@@ -170,7 +170,7 @@ fn draw_pearl(canvas: &Canvas, bounds: &Rect, anim: f32) {
         pearl_r * 1.6,
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(255.0 / 255.0, 246.0 / 255.0, 240.0 / 255.0, 1.0),
+                Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, 1.0),
                 Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 1.0),
                 Color4f::new(200.0 / 255.0, 164.0 / 255.0, 180.0 / 255.0, 1.0),
             ],

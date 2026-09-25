@@ -121,7 +121,7 @@ const NIGHT_VISION_COLOR: [f32; 3] = [153.0 / 255.0, 153.0 / 255.0, 153.0 / 255.
 
 /// `BlockLightTint` — `EnvironmentAttributes.BLOCK_LIGHT_TINT` default
 /// `-10100` (`0xFFFFD88C`) → RGB24 `0xFFD88C` → R 255, G 216, B 140.
-const BLOCK_LIGHT_TINT: [f32; 3] = [255.0 / 255.0, 216.0 / 255.0, 140.0 / 255.0];
+const BLOCK_LIGHT_TINT: [f32; 3] = [1.0, 216.0 / 255.0, 140.0 / 255.0];
 
 /// Boss-overlay world-darkening tint (`vec3(0.7, 0.6, 0.6)` in the shader).
 const BOSS_DARKEN_TINT: [f32; 3] = [0.7, 0.6, 0.6];

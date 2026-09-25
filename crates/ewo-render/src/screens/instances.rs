@@ -1303,7 +1303,7 @@ fn draw_head(
             caret.set_style(PaintStyle::Stroke);
             caret.set_stroke_width(2.0);
             caret.set_color4f(
-                Color4f::new(255.0 / 255.0, 246.0 / 255.0, 240.0 / 255.0, alpha),
+                Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, alpha),
                 None,
             );
             canvas.draw_line((caret_x, caret_top), (caret_x, caret_bottom), &caret);
@@ -1702,7 +1702,7 @@ fn draw_mod_row(
             pearl_r * 1.6,
             skia_safe::gradient_shader::GradientShaderColors::ColorsInSpace(
                 &[
-                    Color4f::new(255.0 / 255.0, 246.0 / 255.0, 240.0 / 255.0, 1.0),
+                    Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, 1.0),
                     Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 1.0),
                     Color4f::new(201.0 / 255.0, 165.0 / 255.0, 212.0 / 255.0, 1.0),
                 ],

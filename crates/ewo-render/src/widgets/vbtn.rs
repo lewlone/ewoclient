@@ -288,7 +288,7 @@ fn draw_ripples(canvas: &Canvas, bounds: Rect, ripples: &[Ripple]) {
             (diam * 0.5).max(0.5),
             gradient_shader::GradientShaderColors::ColorsInSpace(
                 &[
-                    Color4f::new(255.0 / 255.0, 225.0 / 255.0, 230.0 / 255.0, 0.8 * opacity),
+                    Color4f::new(1.0, 225.0 / 255.0, 230.0 / 255.0, 0.8 * opacity),
                     Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.4 * opacity),
                     Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.0),
                 ],
@@ -502,9 +502,9 @@ fn draw_sheen(canvas: &Canvas, rect: Rect, time: f32, motion_speed: f32, hover: 
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
                 Color4f::new(0.0, 0.0, 0.0, 0.0),
-                Color4f::new(255.0 / 255.0, 240.0 / 255.0, 244.0 / 255.0, 0.18),
+                Color4f::new(1.0, 240.0 / 255.0, 244.0 / 255.0, 0.18),
                 Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.35),
-                Color4f::new(255.0 / 255.0, 240.0 / 255.0, 244.0 / 255.0, 0.18),
+                Color4f::new(1.0, 240.0 / 255.0, 244.0 / 255.0, 0.18),
                 Color4f::new(0.0, 0.0, 0.0, 0.0),
             ],
             None,

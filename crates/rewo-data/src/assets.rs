@@ -3066,7 +3066,8 @@ fn bake_font(jar: Jar) -> Option<BakedFont> {
     // Patch one opaque-white texel into the space glyph's cell (guaranteed
     // blank — and text layout never emits quads for spaces, so it can't
     // show). Solid quads (nametag backgrounds, capsules) sample it.
-    let (wx, wy) = ((32 % 16) * cell, (32 / 16) * cell);
+    let space = u32::from(b' ');
+    let (wx, wy) = ((space % 16) * cell, (space / 16) * cell);
     let wi = ((wy as usize) * px + wx as usize) * 4;
     atlas[wi..wi + 4].copy_from_slice(&[255, 255, 255, 255]);
 
