@@ -75,6 +75,12 @@ pub mod flags {
     pub const AIR: u16 = 1 << 9;
     /// `#minecraft:suppresses_bounce`.
     pub const SUPPRESSES_BOUNCE: u16 = 1 << 10;
+    /// `Blocks.BUBBLE_COLUMN` with `DRAG_DOWN` false (`drag=false`).
+    pub const BUBBLE_COLUMN_UP: u16 = 1 << 11;
+    /// `Blocks.BUBBLE_COLUMN` with `DRAG_DOWN` true (`drag=true`).
+    pub const BUBBLE_COLUMN_DOWN: u16 = 1 << 12;
+    /// `Blocks.HONEY_BLOCK`.
+    pub const HONEY: u16 = 1 << 13;
 }
 
 /// Per-state movement behaviour. `Default` is plain stone: friction 0.6,
@@ -161,6 +167,18 @@ impl BlockPhysics {
         if block == "minecraft:powder_snow" {
             f |= flags::POWDER_SNOW;
         }
+        if block == "minecraft:bubble_column" {
+            // `DRAG_DOWN` is registered true (`BubbleColumnBlock`'s default
+            // state), so an absent `drag` is the drag-down column.
+            f |= if prop("drag") == Some("false") {
+                flags::BUBBLE_COLUMN_UP
+            } else {
+                flags::BUBBLE_COLUMN_DOWN
+            };
+        }
+        if block == "minecraft:honey_block" {
+            f |= flags::HONEY;
+        }
         if water_block {
             f |= flags::WATER_BLOCK;
         }
@@ -235,6 +253,30 @@ mod tests {
         assert_eq!(fluid_own_height(7), 1.0 / 9.0);
         assert_eq!(fluid_own_height(8), 8.0 / 9.0);
         assert_eq!(fluid_own_height(15), 8.0 / 9.0);
+    }
+
+    #[test]
+    fn bubble_column_drag_and_honey_resolve_to_flags() {
+        let drag = |value: &str| {
+            let mut p = serde_json::Map::new();
+            p.insert("drag".to_string(), value.into());
+            p
+        };
+        let up = BlockPhysics::resolve("minecraft:bubble_column", Some(&drag("false")), true);
+        assert!(up.has(flags::BUBBLE_COLUMN_UP) && !up.has(flags::BUBBLE_COLUMN_DOWN));
+        let down = BlockPhysics::resolve("minecraft:bubble_column", Some(&drag("true")), true);
+        assert!(down.has(flags::BUBBLE_COLUMN_DOWN) && !down.has(flags::BUBBLE_COLUMN_UP));
+        // `DRAG_DOWN` is registered true, so a state without `drag` is down.
+        assert!(BlockPhysics::resolve("minecraft:bubble_column", None, true).has(flags::BUBBLE_COLUMN_DOWN));
+        assert!(BlockPhysics::resolve("minecraft:honey_block", None, false).has(flags::HONEY));
+        // And no other block gains them.
+        for name in ["minecraft:water", "minecraft:stone", "minecraft:soul_sand"] {
+            let b = BlockPhysics::resolve(name, None, true);
+            assert!(
+                !b.has(flags::BUBBLE_COLUMN_UP | flags::BUBBLE_COLUMN_DOWN | flags::HONEY),
+                "{name}"
+            );
+        }
     }
 }
 
