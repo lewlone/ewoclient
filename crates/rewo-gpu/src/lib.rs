@@ -371,8 +371,7 @@ impl Drop for Gpu {
     fn drop(&mut self) {
         unsafe {
             let _ = self.device.device_wait_idle();
-            let device = self.device.clone();
-            self.clock.collect(&device, &mut self.allocator, true);
+            self.collect_all_garbage();
             ManuallyDrop::drop(&mut self.allocator);
             self.device.destroy_device(None);
             if let Some(si) = &self.surface_i {

@@ -6,17 +6,21 @@
 //! retired. A resource retired *now* may still be read by any frame already
 //! submitted and by the one being recorded, so it is tagged `submitted + 1` and
 //! released once `completed` reaches that tag — no `vkDeviceWaitIdle` needed.
+//! (A fence signal also covers every earlier submission on the queue, so a
+//! one-off upload submitted before frame N is retired once frame N is.)
 //!
-//! Frees need `&mut Allocator`, so the queue is drained from
-//! [`crate::Gpu::collect_garbage`], which `&mut Gpu` paths call opportunistically
-//! (ring growth, uploads, the app's frame loop) and `Gpu::drop` calls last.
+//! Destructors run from [`crate::Gpu::collect_garbage`], which `&mut Gpu` paths
+//! call opportunistically (ring growth, uploads, the app's frame loop), and
+//! from `Gpu::drop`.
 
 use std::cell::{Cell, RefCell};
 
 use ash::vk;
-use gpu_allocator::vulkan::{Allocation, Allocator};
+use gpu_allocator::vulkan::Allocation;
 
-type Destroy = Box<dyn FnOnce(&ash::Device, &mut Allocator)>;
+use crate::Gpu;
+
+type Destroy = Box<dyn FnOnce(&mut Gpu)>;
 
 #[derive(Default)]
 pub(crate) struct FrameClock {
@@ -57,22 +61,18 @@ impl FrameClock {
         self.garbage.borrow_mut().push((tag, f));
     }
 
-    /// Run every destructor whose tag has retired (all of them when `all`).
-    pub(crate) fn collect(&self, device: &ash::Device, allocator: &mut Allocator, all: bool) {
+    /// Remove and return every destructor whose tag has retired (all of them
+    /// when `all`).
+    pub(crate) fn take_ready(&self, all: bool) -> Vec<Destroy> {
         let done = self.completed.get();
-        let ready: Vec<Destroy> = {
-            let mut g = self.garbage.borrow_mut();
-            if g.is_empty() {
-                return;
-            }
-            let (ready, keep): (Vec<_>, Vec<_>) =
-                g.drain(..).partition(|(tag, _)| all || *tag <= done);
-            *g = keep;
-            ready.into_iter().map(|(_, f)| f).collect()
-        };
-        for f in ready {
-            f(device, allocator);
+        let mut g = self.garbage.borrow_mut();
+        if g.is_empty() {
+            return Vec::new();
         }
+        let (ready, keep): (Vec<_>, Vec<_>) =
+            g.drain(..).partition(|(tag, _)| all || *tag <= done);
+        *g = keep;
+        ready.into_iter().map(|(_, f)| f).collect()
     }
 
     #[cfg(test)]
@@ -81,7 +81,7 @@ impl FrameClock {
     }
 }
 
-impl crate::Gpu {
+impl Gpu {
     /// Serial the next frame submission will get.
     pub fn frame_serial(&self) -> u64 {
         self.clock.submitted()
@@ -92,24 +92,38 @@ impl crate::Gpu {
         self.clock.completed()
     }
 
-    /// Destroy `f`'s objects once every frame that could reference them retired.
-    pub(crate) fn defer_destroy(&self, f: impl FnOnce(&ash::Device, &mut Allocator) + 'static) {
+    /// Run `f` once every frame that could reference its objects has retired.
+    pub(crate) fn defer_destroy(&self, f: impl FnOnce(&mut Gpu) + 'static) {
         self.clock.defer(Box::new(f));
     }
 
     pub(crate) fn defer_destroy_buffer(&self, buffer: vk::Buffer, alloc: Option<Allocation>) {
-        self.defer_destroy(move |d, a| unsafe {
-            d.destroy_buffer(buffer, None);
-            if let Some(al) = alloc {
-                let _ = a.free(al);
+        self.defer_destroy(move |gpu| unsafe {
+            gpu.device.destroy_buffer(buffer, None);
+            if let Some(a) = alloc {
+                let _ = gpu.allocator.free(a);
             }
         });
     }
 
     /// Release garbage whose frames have retired. Cheap when nothing is pending.
     pub fn collect_garbage(&mut self) {
-        let device = self.device.clone();
-        self.clock.collect(&device, &mut self.allocator, false);
+        for f in self.clock.take_ready(false) {
+            f(self);
+        }
+    }
+
+    /// Release everything, retired or not. Only after the device is idle.
+    pub(crate) fn collect_all_garbage(&mut self) {
+        loop {
+            let ready = self.clock.take_ready(true);
+            if ready.is_empty() {
+                break;
+            }
+            for f in ready {
+                f(self);
+            }
+        }
     }
 
     /// Attach a debug name (no-op without validation / debug utils).
@@ -137,15 +151,15 @@ mod tests {
     fn garbage_waits_for_every_frame_that_could_see_it() {
         let c = FrameClock::default();
         let s0 = c.begin_submit(); // frame 0 in flight
-        c.defer(Box::new(|_, _| {}));
+        c.defer(Box::new(|_| {}));
         // Tag = submitted + 1 = 2: frame 0 retiring is not enough, because the
         // retire may have happened while frame 1 was being recorded.
         c.mark_retired(s0);
-        assert_eq!(c.completed(), 1);
+        assert!(c.take_ready(false).is_empty());
         let s1 = c.begin_submit();
         c.mark_retired(s1);
-        assert_eq!(c.completed(), 2);
-        assert_eq!(c.pending(), 1);
+        assert_eq!(c.take_ready(false).len(), 1);
+        assert_eq!(c.pending(), 0);
     }
 
     #[test]

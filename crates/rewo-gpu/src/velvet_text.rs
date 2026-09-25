@@ -37,8 +37,7 @@
 //! they overlap, which is the whole widget.
 
 use ash::vk;
-use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
-use gpu_allocator::MemoryLocation;
+use gpu_allocator::vulkan::Allocation;
 
 use crate::velvet_glyph::{GlyphCache, PositionedGlyph};
 use crate::world::DEPTH_FORMAT;
@@ -46,7 +45,8 @@ use crate::Gpu;
 
 const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
 const MAX_VERTS: usize = 65_536;
-const RING: usize = 2;
+/// Set once this pass has dropped geometry past its budget.
+static TRUNCATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -86,9 +86,7 @@ pub struct VelvetTextPass {
     view: vk::ImageView,
     /// Edge length of the currently uploaded atlas, so a grow is detectable.
     uploaded_edge: u32,
-    bufs: [vk::Buffer; RING],
-    allocs: [Option<Allocation>; RING],
-    cursor: usize,
+    ring: crate::buf_ring::BufRing,
     verts: u32,
 }
 
@@ -129,25 +127,8 @@ impl VelvetTextPass {
                     None,
                 )
                 .map_err(|e| format!("velvet text set layout: {e}"))?;
-            let pool_sizes = [vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)];
-            let pool = device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .max_sets(1)
-                        .pool_sizes(&pool_sizes),
-                    None,
-                )
-                .map_err(|e| format!("velvet text pool: {e}"))?;
+            let (pool, set) = new_set(&device, set_layout)?;
             let set_layouts = [set_layout];
-            let set = device
-                .allocate_descriptor_sets(
-                    &vk::DescriptorSetAllocateInfo::default()
-                        .descriptor_pool(pool)
-                        .set_layouts(&set_layouts),
-                )
-                .map_err(|e| format!("velvet text set: {e}"))?[0];
             write_set(&device, set, sampler, view);
 
             let push = [vk::PushConstantRange::default()
@@ -164,35 +145,12 @@ impl VelvetTextPass {
                 .map_err(|e| format!("velvet text layout: {e}"))?;
             let pipeline = build_pipeline(&device, layout, color_format)?;
 
-            let mut bufs = [vk::Buffer::null(); RING];
-            let mut allocs: [Option<Allocation>; RING] = [None, None];
-            for (i, slot) in allocs.iter_mut().enumerate() {
-                let buffer = device
-                    .create_buffer(
-                        &vk::BufferCreateInfo::default()
-                            .size(VERTEX_STRIDE * MAX_VERTS as u64)
-                            .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
-                            .sharing_mode(vk::SharingMode::EXCLUSIVE),
-                        None,
-                    )
-                    .map_err(|e| format!("velvet text buffer: {e}"))?;
-                let req = device.get_buffer_memory_requirements(buffer);
-                let alloc = gpu
-                    .allocator
-                    .allocate(&AllocationCreateDesc {
-                        name: "velvet-text-vertices",
-                        requirements: req,
-                        location: MemoryLocation::CpuToGpu,
-                        linear: true,
-                        allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-                    })
-                    .map_err(|e| format!("velvet text alloc: {e}"))?;
-                device
-                    .bind_buffer_memory(buffer, alloc.memory(), alloc.offset())
-                    .map_err(|e| format!("velvet text bind: {e}"))?;
-                bufs[i] = buffer;
-                *slot = Some(alloc);
-            }
+            let ring = crate::buf_ring::BufRing::with_capacity(
+                gpu,
+                "velvet-text-vertices",
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                VERTEX_STRIDE * MAX_VERTS as u64,
+            )?;
 
             Ok(Self {
                 layout,
@@ -205,9 +163,7 @@ impl VelvetTextPass {
                 image_alloc: Some(image_alloc),
                 view,
                 uploaded_edge: edge,
-                bufs,
-                allocs,
-                cursor: 0,
+                ring,
                 verts: 0,
             })
         }
@@ -227,52 +183,29 @@ impl VelvetTextPass {
         let (image, alloc, view) =
             crate::entities::create_texture_r8(gpu, cache.atlas(), edge, edge)?;
         // The old texture and the descriptor set that names it may both still
-        // be referenced by frames in flight, and destroying or rewriting either
-        // one is illegal while they are.
-        //
-        // The comment that stood here said "the caller is expected to have
-        // idled or to be outside the ring" — and the caller (`live_cmd`'s
-        // inventory branch) does neither. That went unnoticed until M86, for the
-        // same reason the eight `set_*` buffers did: this path is only reachable
-        // when the inventory screen is open, and the whole screen was dead code
-        // in the windowed client. `create_texture_r8` fences on its *own*
-        // upload, which says nothing about earlier frames.
-        //
-        // A ring would work, but a rebuild is rare — the cache goes dirty only
-        // when a glyph at a new (char, size, axis) key is rasterised, so it
-        // settles within a few frames of new text appearing — and ringing an
-        // image, a view and a descriptor set for a rare event costs far more
-        // than it saves. An idle is what `GuiItemPass::destroy` and
-        // `HandPass::destroy` already do for their own rebuilds; this joins
-        // them.
-        //
-        // **Argued from the spec, not measured.** `live --render-check` drives
-        // this path twice per run — once when the screen opens, once when a
-        // second tooltip line brings new glyphs in while the pass is already
-        // drawing every frame — and deleting this `wait_idle` produced **zero**
-        // validation errors both times. Core validation tracks a buffer bound
-        // by `vkCmdBindVertexBuffers` precisely (that is what caught the eight
-        // `set_*` rings, 40,532 times) and does not track an image reached
-        // through a descriptor set the same way. So the gate cannot fail on
-        // this line, and the honest statement is that it is here because
-        // `vkDestroyImage` requires it, not because a witness demanded it.
-        // Enabling `VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION`
-        // would grade it; that is its own milestone, because it would also
-        // light up every other cross-frame hazard in the tree at once.
-        gpu.wait_idle();
-        unsafe {
-            let device = gpu.device.clone();
-            device.destroy_image_view(self.view, None);
-            device.destroy_image(self.image, None);
-            if let Some(a) = self.image_alloc.take() {
-                let _ = gpu.allocator.free(a);
+        // be bound by frames in flight, so neither may be destroyed or
+        // rewritten now (sync validation grades this). The rebuild gets a
+        // fresh descriptor pool + set, and the old image, view and pool go
+        // through deferred destruction once every frame that could still bind
+        // them has retired — no idle on a path any new glyph key reaches.
+        let (pool, set) = unsafe { new_set(&gpu.device, self.set_layout)? };
+        unsafe { write_set(&gpu.device, set, self.sampler, view) };
+        let (old_image, old_view, old_pool) = (self.image, self.view, self.pool);
+        let old_alloc = self.image_alloc.take();
+        gpu.defer_destroy(move |g| unsafe {
+            g.device.destroy_descriptor_pool(old_pool, None);
+            g.device.destroy_image_view(old_view, None);
+            g.device.destroy_image(old_image, None);
+            if let Some(a) = old_alloc {
+                let _ = g.allocator.free(a);
             }
-            self.image = image;
-            self.image_alloc = Some(alloc);
-            self.view = view;
-            self.uploaded_edge = edge;
-            write_set(&device, self.set, self.sampler, self.view);
-        }
+        });
+        self.image = image;
+        self.image_alloc = Some(alloc);
+        self.view = view;
+        self.pool = pool;
+        self.set = set;
+        self.uploaded_edge = edge;
         cache.clear_dirty();
         Ok(())
     }
@@ -290,12 +223,12 @@ impl VelvetTextPass {
         extent: vk::Extent2D,
         runs: &[Run<'_>],
     ) {
-        self.cursor = (self.cursor + 1) % RING;
         let mut v: Vec<Vertex> = Vec::with_capacity(1024);
         for run in runs {
             let c = [run.color[0], run.color[1], run.color[2], run.alpha];
             for g in run.glyphs {
                 if v.len() + 6 > MAX_VERTS {
+                    crate::buf_ring::warn_truncated(&TRUNCATED, "velvet-text", MAX_VERTS);
                     break;
                 }
                 let (x0, y0) = (g.dst_x, g.dst_y);
@@ -314,21 +247,18 @@ impl VelvetTextPass {
             }
         }
         self.verts = v.len() as u32;
-        if let Some(slice) = self.allocs[self.cursor]
-            .as_mut()
-            .and_then(|a| a.mapped_slice_mut())
-        {
-            let bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    v.as_ptr() as *const u8,
-                    v.len() * VERTEX_STRIDE as usize,
-                )
-            };
-            slice[..bytes.len()].copy_from_slice(bytes);
-        }
-        if self.verts == 0 {
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                v.as_ptr() as *const u8,
+                v.len() * VERTEX_STRIDE as usize,
+            )
+        };
+        
+        let kept = self.ring.write_fixed(bytes, 6 * VERTEX_STRIDE as usize);
+        self.verts = (kept / VERTEX_STRIDE as usize) as u32;
+        let Some(vbuf) = self.ring.bind() else {
             return;
-        }
+        };
 
         let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
         let device = &gpu.device;
@@ -353,12 +283,13 @@ impl VelvetTextPass {
                 0,
                 std::slice::from_raw_parts(screen.as_ptr() as *const u8, 8),
             );
-            device.cmd_bind_vertex_buffers(cb, 0, &[self.bufs[self.cursor]], &[0]);
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             device.cmd_draw(cb, self.verts, 1, 0, 0);
         }
     }
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
+        self.ring.destroy(gpu);
         unsafe {
             let device = gpu.device.clone();
             device.destroy_pipeline(self.pipeline, None);
@@ -371,14 +302,36 @@ impl VelvetTextPass {
             if let Some(a) = self.image_alloc.take() {
                 let _ = gpu.allocator.free(a);
             }
-            for (buf, alloc) in self.bufs.iter().zip(self.allocs.iter_mut()) {
-                device.destroy_buffer(*buf, None);
-                if let Some(a) = alloc.take() {
-                    let _ = gpu.allocator.free(a);
-                }
-            }
         }
     }
+}
+
+/// A one-set descriptor pool and its set. One pool per atlas generation, so a
+/// rebuild never rewrites a set a frame in flight still binds.
+unsafe fn new_set(
+    device: &ash::Device,
+    set_layout: vk::DescriptorSetLayout,
+) -> Result<(vk::DescriptorPool, vk::DescriptorSet), String> {
+    let pool_sizes = [vk::DescriptorPoolSize::default()
+        .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .descriptor_count(1)];
+    let pool = device
+        .create_descriptor_pool(
+            &vk::DescriptorPoolCreateInfo::default()
+                .max_sets(1)
+                .pool_sizes(&pool_sizes),
+            None,
+        )
+        .map_err(|e| format!("velvet text pool: {e}"))?;
+    let set_layouts = [set_layout];
+    let set = device
+        .allocate_descriptor_sets(
+            &vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(pool)
+                .set_layouts(&set_layouts),
+        )
+        .map_err(|e| format!("velvet text set: {e}"))?[0];
+    Ok((pool, set))
 }
 
 fn write_set(
