@@ -38,6 +38,7 @@
 
 pub mod crumbling;
 pub mod pool;
+pub mod smooth_light;
 
 use std::collections::HashMap;
 
