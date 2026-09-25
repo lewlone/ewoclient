@@ -6,15 +6,19 @@
 //! from the Windows System Media Transport Controls (SMTC) — a per-process
 //! global feed that every modern media app (Spotify, browsers, Apple Music,
 //! system audio) writes to. The polling + action dispatch lives in a
-//! background thread spawned by [`MediaService::start`]; the main thread
-//! drains updates each frame via [`MediaService::poll`].
+//! background thread spawned by [`MediaService::start`]; it publishes into a
+//! latest-value slot (never a queue — a snapshot carries album art, and the
+//! render thread may go a long time without draining) that the main thread
+//! takes each frame via [`MediaService::poll`].
 //!
 //! All state lives in [`Editor::media`]; rendering reads it through the
 //! shared `&MediaState` reference. Transport clicks (play / pause / skip)
 //! flow back via [`MediaService::act`] and the polling thread translates them
 //! into `TryPlayAsync` / `TryPauseAsync` / etc.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
@@ -151,10 +155,32 @@ pub enum MediaUpdate {
     Idle,
 }
 
+/// State shared with the SMTC thread.
+struct Shared {
+    /// Newest update, overwritten by the thread, taken by [`MediaService::poll`].
+    latest: Mutex<Option<MediaUpdate>>,
+    /// Set when the service is dropped — the thread exits at its next wake.
+    stop: AtomicBool,
+}
+
+impl Shared {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn publish(&self, update: MediaUpdate) {
+        if let Ok(mut slot) = self.latest.lock() {
+            *slot = Some(update);
+        }
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn stopping(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+}
+
 /// The background SMTC subscriber. Spawned once at HUD init; its polling
-/// thread feeds updates back through the channel.
+/// thread publishes into the shared latest-value slot.
 pub struct MediaService {
-    rx_updates: Receiver<MediaUpdate>,
+    shared: Arc<Shared>,
     tx_actions: Sender<MediaAction>,
     /// Fingerprint of the bytes we last decoded into `state.thumbnail` — used
     /// to skip the PNG decode + GPU upload on snapshots that carry identical
@@ -166,18 +192,21 @@ pub struct MediaService {
 impl MediaService {
     /// Spawn the background poller. Runs until the process exits.
     pub fn start() -> Self {
-        let (tx_updates, rx_updates) = channel();
+        let shared = Arc::new(Shared { latest: Mutex::new(None), stop: AtomicBool::new(false) });
         let (tx_actions, rx_actions) = channel();
+        let thread_shared = shared.clone();
         thread::Builder::new()
             .name("ewo-smtc".into())
-            .spawn(move || smtc_thread(tx_updates, rx_actions))
+            .spawn(move || smtc_thread(thread_shared, rx_actions))
             .ok();
-        Self { rx_updates, tx_actions, last_thumb_fingerprint: 0 }
+        Self { shared, tx_actions, last_thumb_fingerprint: 0 }
     }
 
-    /// Drain pending updates into `state`. Cheap to call every frame.
+    /// Apply the newest pending update to `state`, if any. Cheap to call every
+    /// frame.
     pub fn poll(&mut self, state: &mut MediaState) {
-        while let Ok(update) = self.rx_updates.try_recv() {
+        let update = self.shared.latest.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(update) = update {
             self.apply(state, update);
         }
     }
@@ -236,6 +265,12 @@ impl MediaService {
     }
 }
 
+impl Drop for MediaService {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Cheap fingerprint of a thumbnail byte blob: length + first/last 16-byte
 /// chunks mixed with FNV-1a. Different PNGs reliably hash differently; the
 /// same bytes always hash to the same value. Skips the full memcmp + decode.
@@ -271,7 +306,7 @@ fn fingerprint_thumb(bytes: &[u8]) -> u64 {
 // ────────────────────────────────────────────────────────────────────────
 
 #[cfg(windows)]
-fn smtc_thread(tx: Sender<MediaUpdate>, rx_actions: Receiver<MediaAction>) {
+fn smtc_thread(shared: Arc<Shared>, rx_actions: Receiver<MediaAction>) {
     use std::time::Duration;
     use windows::Media::Control::{
         GlobalSystemMediaTransportControlsSession as Session,
@@ -291,7 +326,7 @@ fn smtc_thread(tx: Sender<MediaUpdate>, rx_actions: Receiver<MediaAction>) {
         Err(_) => return,
     };
 
-    loop {
+    while !shared.stopping() {
         // Apply any pending transport actions first (so the next snapshot
         // already reflects the resulting playback state).
         let current_session = manager.GetCurrentSession().ok();
@@ -307,16 +342,18 @@ fn smtc_thread(tx: Sender<MediaUpdate>, rx_actions: Receiver<MediaAction>) {
 
         // Snapshot the current session (if any).
         let snapshot = current_session.as_ref().and_then(capture_snapshot);
-        match snapshot {
-            Some(snap) => {
-                let _ = tx.send(MediaUpdate::Snapshot(snap));
-            }
-            None => {
-                let _ = tx.send(MediaUpdate::Idle);
-            }
-        }
+        shared.publish(match snapshot {
+            Some(snap) => MediaUpdate::Snapshot(snap),
+            None => MediaUpdate::Idle,
+        });
 
-        thread::sleep(Duration::from_millis(500));
+        // 500 ms between polls, in slices so a stop is noticed promptly.
+        for _ in 0..5 {
+            if shared.stopping() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
         // Helper closures defined inside the loop scope so they capture the
         // imports. `apply_action` and `capture_snapshot` are below.
         #[allow(unused_imports)]
@@ -423,7 +460,7 @@ fn smtc_thread(tx: Sender<MediaUpdate>, rx_actions: Receiver<MediaAction>) {
 }
 
 #[cfg(not(windows))]
-fn smtc_thread(_tx: Sender<MediaUpdate>, _rx_actions: Receiver<MediaAction>) {
+fn smtc_thread(_shared: Arc<Shared>, _rx_actions: Receiver<MediaAction>) {
     // SMTC is a Windows-only API. On other platforms the media-controller
     // widget renders its empty state and that's that.
 }

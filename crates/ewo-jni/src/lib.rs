@@ -96,7 +96,8 @@ use std::sync::{Once, OnceLock};
 use std::time::Instant;
 
 use ewo_render::FontStore;
-use skia_safe::gpu::gl::{Format, FramebufferInfo, Interface, TextureInfo};
+use gl::types::GLsync;
+use skia_safe::gpu::gl::{BackendState, Format, FramebufferInfo, Interface, TextureInfo};
 use skia_safe::gpu::{
     backend_render_targets, backend_textures, direct_contexts, surfaces, Budgeted, DirectContext,
     Mipmapped, Protected, SurfaceOrigin,
@@ -257,11 +258,18 @@ impl HudPaintRate {
 static GL_LOADED: Once = Once::new();
 static START: OnceLock<Instant> = OnceLock::new();
 /// Address of the shared JVM→Rust data block, registered by `nativeInit`.
-/// `0` until then. Set on the render thread before the first `nativeRender`.
+/// `0` until then — or if the buffer was refused as too small. Set on the
+/// render thread before the first `nativeRender`.
 static HUD_BUFFER: AtomicUsize = AtomicUsize::new(0);
+/// JNI global reference pinning the `HUD_BUFFER` object while Rust holds its
+/// address (a direct buffer's memory is freed when the object is collected).
+static HUD_BUFFER_REF: AtomicUsize = AtomicUsize::new(0);
 /// Address of the Rust→JVM module-state block, registered by `nativeInitModules`.
-/// `0` until then. Rust writes it every frame; the mod reads it. See [`modules`].
+/// `0` until then (or if refused). Rust writes it every frame; the mod reads
+/// it. See [`modules`].
 static MODULE_BUFFER: AtomicUsize = AtomicUsize::new(0);
+/// Global reference pinning the `MODULE_BUFFER` object — see `HUD_BUFFER_REF`.
+static MODULE_BUFFER_REF: AtomicUsize = AtomicUsize::new(0);
 /// Logs a buffer-schema mismatch at most once.
 static SCHEMA_WARN: Once = Once::new();
 
@@ -273,6 +281,49 @@ enum HudState {
     Uninit,
     Failed,
     Ready(Hud),
+}
+
+/// Our context made current for a scope; Minecraft's is handed back on drop —
+/// including when a panic unwinds out of paint/composite, so Minecraft never
+/// resumes rendering into our context.
+struct OursCurrent {
+    hdc: *mut c_void,
+    mc_ctx: *mut c_void,
+}
+
+impl Drop for OursCurrent {
+    fn drop(&mut self) {
+        unsafe { wglMakeCurrent(self.hdc, self.mc_ctx) };
+    }
+}
+
+/// Insert a fence after the current context's commands and flush so another
+/// context in the share group can wait on it. Null when fences are off.
+unsafe fn fence_here(enabled: bool) -> GLsync {
+    if !enabled {
+        return ptr::null();
+    }
+    let f = gl::FenceSync(gl::SYNC_GPU_COMMANDS_COMPLETE, 0);
+    gl::Flush();
+    f
+}
+
+/// Make the current context's GPU queue wait (server-side, no CPU stall) for
+/// `f`, then release it.
+unsafe fn wait_fence(f: &mut GLsync) {
+    if !f.is_null() {
+        gl::WaitSync(*f, 0, gl::TIMEOUT_IGNORED);
+        gl::DeleteSync(*f);
+        *f = ptr::null();
+    }
+}
+
+/// Store `f` in `slot`, releasing any fence nobody waited on.
+unsafe fn replace_fence(slot: &mut GLsync, f: GLsync) {
+    if !slot.is_null() {
+        gl::DeleteSync(*slot);
+    }
+    *slot = f;
 }
 
 thread_local! {
@@ -288,6 +339,20 @@ struct Hud {
     /// Our dedicated GL context. Skia owns its state machine entirely.
     our_ctx: *mut c_void,
     gr: DirectContext,
+    /// Cross-context GL fences are usable: `wglShareLists` succeeded (sync
+    /// objects are shared like textures) and the entry points loaded.
+    fences: bool,
+    /// Fence after the fast path's paint into `hud_tex`, waited on in
+    /// Minecraft's context before the composite samples it.
+    hud_fence: GLsync,
+    /// Fence after `capture_game`'s copy into `game_tex` (Minecraft's
+    /// context), waited on in ours before Skia reads it for the glass.
+    game_fence: GLsync,
+    /// Diagnostic sentinels, read once at init — see `composite_mc`/`frame`.
+    diag_solid: bool,
+    diag_finish: bool,
+    /// Failed `wglMakeCurrent` switches — logged for the first few only.
+    switch_failures: u32,
     /// Offscreen GPU surface the HUD is painted to (window-sized). This is the
     /// "cache" of the two-clock model: `composite` reads it every frame, even
     /// on frames where `paint` was rate-gated and skipped.
@@ -477,14 +542,17 @@ unsafe fn compile_shader(kind: u32, src: &[u8]) -> Option<u32> {
     Some(sh)
 }
 
-// `Hud` lives in a thread-local for the process lifetime; it is never dropped
-// before exit, so no `Drop`/`wglDeleteContext` cleanup is wired up.
+// `Hud` lives in a thread-local for the process lifetime. The one teardown
+// path is `Hud::teardown` (Minecraft replaced its GL context); there is no
+// `Drop` impl — an implicit drop would release Skia's GL objects into
+// whichever context happened to be current.
 
 impl Hud {
     /// Create a dedicated GL context on Minecraft's window and build a Skia
-    /// `DirectContext` against it. Called once, on the render thread, with
-    /// Minecraft's context current.
-    fn create() -> Option<Hud> {
+    /// `DirectContext` against it. Called on the render thread with
+    /// Minecraft's context current — once at startup, and again if Minecraft
+    /// replaces its context (`editor` then carries the live editor across).
+    fn create(editor: Option<hud::Editor>) -> Option<Hud> {
         let hdc = unsafe { wglGetCurrentDC() };
         let mc_ctx = unsafe { wglGetCurrentContext() };
         if hdc.is_null() || mc_ctx.is_null() {
@@ -528,6 +596,15 @@ impl Hud {
         // a *shared* object, so Minecraft's context can use it every frame.
         let (comp_program, comp_tex_loc, comp_solid_loc) =
             unsafe { build_composite_program() }.unwrap_or((0, -1, -1));
+        let mut gr = gr;
+        if let Some(gr) = gr.as_mut() {
+            // Raw GL above ran behind Skia's back — drop its cached state.
+            gr.reset(None);
+        }
+        let fences = shared
+            && gl::FenceSync::is_loaded()
+            && gl::WaitSync::is_loaded()
+            && gl::DeleteSync::is_loaded();
 
         // Hand the thread's context back to Minecraft, success or not.
         unsafe { wglMakeCurrent(hdc, mc_ctx) };
@@ -542,7 +619,10 @@ impl Hud {
         // working shader. Either missing → fall back to the legacy switch path.
         // A `%TEMP%/ewo-no-mc-composite` sentinel forces the legacy path too —
         // a no-rebuild kill switch if the new path misbehaves on a given driver.
-        let force_legacy = std::env::temp_dir().join("ewo-no-mc-composite").exists();
+        let tmp = std::env::temp_dir();
+        let force_legacy = tmp.join("ewo-no-mc-composite").exists();
+        let diag_solid = tmp.join("ewo-comp-solid").exists();
+        let diag_finish = tmp.join("ewo-comp-finish").exists();
         if force_legacy {
             log("MC-context composite disabled by ewo-no-mc-composite sentinel — legacy path");
         }
@@ -580,6 +660,12 @@ impl Hud {
             mc_ctx,
             our_ctx,
             gr,
+            fences,
+            hud_fence: ptr::null(),
+            game_fence: ptr::null(),
+            diag_solid,
+            diag_finish,
+            switch_failures: 0,
             offscreen: None,
             offscreen_size: (0, 0),
             last_painted: f32::NEG_INFINITY,
@@ -587,7 +673,7 @@ impl Hud {
             paints: 0,
             font_store,
             buffer: 0,
-            editor: hud::Editor::new(),
+            editor: editor.unwrap_or_default(),
             frost: None,
             frost_half: None,
             frost_size: (0, 0),
@@ -610,10 +696,73 @@ impl Hud {
         })
     }
 
+    /// Make our context current; `None` (with Minecraft's handed back) if the
+    /// switch fails. The guard restores Minecraft's context when dropped.
+    fn make_ours_current(&mut self) -> Option<OursCurrent> {
+        if unsafe { wglMakeCurrent(self.hdc, self.our_ctx) } == 0 {
+            self.switch_failures += 1;
+            if self.switch_failures <= 4 {
+                log("wglMakeCurrent(dedicated context) failed in frame");
+            }
+            // A failed switch may leave no context current at all — don't
+            // return to Minecraft without its own.
+            unsafe { wglMakeCurrent(self.hdc, self.mc_ctx) };
+            return None;
+        }
+        Some(OursCurrent {
+            hdc: self.hdc,
+            mc_ctx: self.mc_ctx,
+        })
+    }
+
+    /// Whether the thread's current context is no longer the Minecraft
+    /// context this `Hud` was built against (Minecraft recreated it). Our
+    /// context shares objects only with the old one, so the caller rebuilds.
+    fn mc_context_changed(&self) -> bool {
+        let cur = unsafe { wglGetCurrentContext() };
+        !cur.is_null() && cur != self.mc_ctx && cur != self.our_ctx
+    }
+
+    /// Release everything without touching GL through Skia (its context is
+    /// abandoned, so no GL calls reach whatever context is current) and delete
+    /// our GL context. Returns the editor so a rebuilt `Hud` keeps its state.
+    fn teardown(mut self) -> hud::Editor {
+        self.gr.abandon();
+        let ctx = self.our_ctx;
+        let editor = self.editor;
+        // The remaining fields (abandoned surfaces, the dead GL ids) drop here.
+        unsafe { wglDeleteContext(ctx) };
+        editor
+    }
+
+    /// The shared data block, if one is registered and carries the schema this
+    /// build reads. Every read of the block goes through here.
+    fn hud_data(&self) -> Option<hud::HudData> {
+        if self.buffer == 0 {
+            return None;
+        }
+        // SAFETY: `buffer` was registered by `nativeInit` only after its
+        // capacity was checked against `hud::BLOCK_BYTES`, and is pinned by a
+        // JNI global reference for as long as it stays registered.
+        let data = unsafe { hud::HudData::new(self.buffer as *const u8) };
+        if data.schema_version() == hud::SCHEMA_VERSION {
+            Some(data)
+        } else {
+            SCHEMA_WARN.call_once(|| {
+                log(&format!(
+                    "HUD data block schema {} != expected {} — widgets disabled",
+                    data.schema_version(),
+                    hud::SCHEMA_VERSION
+                ));
+            });
+            None
+        }
+    }
+
     /// One frame: refresh the data-block address, paint (rate-gated) the HUD to
     /// the offscreen surface, then composite it onto Minecraft's framebuffer.
-    /// Runs on our dedicated context; Minecraft's context is handed back
-    /// untouched at the end.
+    /// Every switch into our context is scoped by an [`OursCurrent`] guard, so
+    /// Minecraft's context is handed back on every exit, panics included.
     fn frame(&mut self, buffer: usize, module_buffer: usize) {
         self.buffer = buffer;
 
@@ -622,6 +771,8 @@ impl Hud {
         // independent of the window size / paint, so it runs before the
         // early-return below and is never rate-gated.
         if module_buffer != 0 {
+            // SAFETY: registered only after its capacity was checked against
+            // `modules::required_bytes()`, and pinned by a global reference.
             unsafe { self.editor.modules.write_buffer(module_buffer as *mut u8) };
         }
 
@@ -649,9 +800,7 @@ impl Hud {
         // behind them, which needs Skia to read + blur the live framebuffer —
         // only possible in our context. Those frames (and the fallback when the
         // shared composite is unavailable) take the legacy switch-in/out path.
-        let frost = self.buffer != 0
-            && unsafe { hud::HudData::new(self.buffer as *const u8) }.overlay_open()
-            && self.editor.frosts_game();
+        let frost = self.hud_data().is_some_and(|d| d.overlay_open()) && self.editor.frosts_game();
         if !frost {
             // Cache goes cold while the frost isn't shown, so the next open
             // recomputes immediately instead of flashing a stale frame.
@@ -662,13 +811,21 @@ impl Hud {
             // ── Legacy path ── full Skia paint + composite in our context, with
             // one `wglMakeCurrent` in and out. Correct but pays the per-frame
             // context-switch cost; reserved for frosted overlay views.
+            //
+            // Fence Minecraft's finished frame so Skia's reads of fbo 0 (the
+            // frost, the glass capture) see it complete.
+            let mut mc_done = unsafe { fence_here(self.fences) };
             let t = prof.then(Instant::now);
-            if unsafe { wglMakeCurrent(self.hdc, self.our_ctx) } == 0 {
-                log("wglMakeCurrent(dedicated context) failed in frame");
+            let Some(ours) = self.make_ours_current() else {
+                unsafe { replace_fence(&mut mc_done, ptr::null()) };
                 return;
-            }
+            };
             if let Some(t) = t {
                 self.perf.rec(Sec::McTo, t.elapsed().as_nanos() as u64);
+            }
+            unsafe {
+                wait_fence(&mut mc_done);
+                wait_fence(&mut self.game_fence);
             }
             let resized = self.offscreen_size != (w, h);
             if resized {
@@ -679,6 +836,7 @@ impl Hud {
                 }
             }
             unsafe { gl::Viewport(0, 0, w, h) };
+            self.gr.reset(Some(BackendState::VIEW.bits()));
             self.ensure_offscreen(w, h);
             self.ensure_glass_surfaces(w, h);
             let pt = prof.then(Instant::now);
@@ -688,8 +846,11 @@ impl Hud {
                 self.perf.note_paint();
             }
             self.composite(w, h, frost);
+            // Fence our composite into fbo 0 before Minecraft carries on.
+            let mut ours_done = unsafe { fence_here(self.fences) };
             let t = prof.then(Instant::now);
-            unsafe { wglMakeCurrent(self.hdc, self.mc_ctx) };
+            drop(ours);
+            unsafe { wait_fence(&mut ours_done) };
             if let Some(t) = t {
                 self.perf.rec(Sec::McBack, t.elapsed().as_nanos() as u64);
             }
@@ -701,13 +862,15 @@ impl Hud {
             let now = elapsed_secs();
             if self.should_paint(now) {
                 let t = prof.then(Instant::now);
-                if unsafe { wglMakeCurrent(self.hdc, self.our_ctx) } == 0 {
-                    log("wglMakeCurrent(dedicated context) failed in frame");
+                let Some(ours) = self.make_ours_current() else {
                     return;
-                }
+                };
                 if let Some(t) = t {
                     self.perf.rec(Sec::McTo, t.elapsed().as_nanos() as u64);
                 }
+                // The last capture into `game_tex` happened in Minecraft's
+                // context; the glass reads it below.
+                unsafe { wait_fence(&mut self.game_fence) };
                 let resized = self.offscreen_size != (w, h);
                 if resized {
                     let t = prof.then(Instant::now);
@@ -717,29 +880,35 @@ impl Hud {
                     }
                 }
                 unsafe { gl::Viewport(0, 0, w, h) };
+                self.gr.reset(Some(BackendState::VIEW.bits()));
                 self.ensure_offscreen(w, h);
+                // Glass surfaces lazily, only once glass is actually on — the
+                // capture in `composite_mc` needs `game_tex` to exist.
+                if self.editor.glass_strength() > 0.0 {
+                    self.ensure_glass_surfaces(w, h);
+                }
                 let pt = prof.then(Instant::now);
                 let painted = self.paint(now, w, h);
                 if let (Some(pt), true) = (pt, painted) {
                     self.perf.rec(Sec::Paint, pt.elapsed().as_nanos() as u64);
                     self.perf.note_paint();
                 }
-                // Submit Skia's writes to `hud_tex` before Minecraft's context
-                // samples it. (Same-thread + flush ⇒ coherent; worst case the
-                // HUD shows one frame late, which the 60 Hz cap makes invisible.)
+                // Submit Skia's writes to `hud_tex`, then fence them: Minecraft's
+                // context waits on the fence before sampling the texture.
                 let ft = prof.then(Instant::now);
                 self.gr.flush_and_submit();
-                // DIAGNOSTIC: `ewo-comp-finish` sentinel → a hard GPU sync so the
-                // texture render is guaranteed complete before Minecraft's
-                // context samples it (tests the cross-context coherency theory).
-                if std::env::temp_dir().join("ewo-comp-finish").exists() {
+                // DIAGNOSTIC: `ewo-comp-finish` sentinel → a hard GPU sync
+                // instead of relying on the fence alone.
+                if self.diag_finish {
                     unsafe { gl::Finish() };
                 }
+                let f = unsafe { fence_here(self.fences) };
+                unsafe { replace_fence(&mut self.hud_fence, f) };
                 if let Some(ft) = ft {
                     self.perf.rec(Sec::Flush, ft.elapsed().as_nanos() as u64);
                 }
                 let t = prof.then(Instant::now);
-                unsafe { wglMakeCurrent(self.hdc, self.mc_ctx) };
+                drop(ours);
                 if let Some(t) = t {
                     self.perf.rec(Sec::McBack, t.elapsed().as_nanos() as u64);
                 }
@@ -810,8 +979,12 @@ impl Hud {
             gl::GetIntegerv(gl::VERTEX_ARRAY_BINDING, &mut prev_vao);
             let mut prev_active = 0i32;
             gl::GetIntegerv(gl::ACTIVE_TEXTURE, &mut prev_active);
-            let mut prev_fbo = 0i32;
-            gl::GetIntegerv(gl::FRAMEBUFFER_BINDING, &mut prev_fbo);
+            // Read and draw bindings separately — Minecraft can leave them
+            // pointing at different framebuffers.
+            let mut prev_read_fbo = 0i32;
+            gl::GetIntegerv(gl::READ_FRAMEBUFFER_BINDING, &mut prev_read_fbo);
+            let mut prev_draw_fbo = 0i32;
+            gl::GetIntegerv(gl::DRAW_FRAMEBUFFER_BINDING, &mut prev_draw_fbo);
             let mut prev_vp = [0i32; 4];
             gl::GetIntegerv(gl::VIEWPORT, prev_vp.as_mut_ptr());
             let blend_on = gl::IsEnabled(gl::BLEND);
@@ -819,6 +992,9 @@ impl Hud {
             let cull_on = gl::IsEnabled(gl::CULL_FACE);
             let scissor_on = gl::IsEnabled(gl::SCISSOR_TEST);
             let srgb_on = gl::IsEnabled(gl::FRAMEBUFFER_SRGB);
+            let stencil_on = gl::IsEnabled(gl::STENCIL_TEST);
+            let poly_offset_on = gl::IsEnabled(gl::POLYGON_OFFSET_FILL);
+            let logic_op_on = gl::IsEnabled(gl::COLOR_LOGIC_OP);
             let mut b_src_rgb = 0i32;
             let mut b_dst_rgb = 0i32;
             let mut b_src_a = 0i32;
@@ -847,10 +1023,19 @@ impl Hud {
             // fbo 0 is bound and holds Minecraft's finished frame; one more
             // draw and it would hold ours too, which the glass would then
             // refract back into itself as a feedback smear at every rim.
-            self.capture_game(w, h, elapsed_secs());
+            if self.capture_game(w, h, elapsed_secs()) {
+                // Our context reads `game_tex` at the next paint — fence the copy.
+                let f = fence_here(self.fences);
+                replace_fence(&mut self.game_fence, f);
+            }
+            // The fast path's last paint into `hud_tex` ran in our context.
+            wait_fence(&mut self.hud_fence);
             gl::Disable(gl::DEPTH_TEST);
             gl::Disable(gl::CULL_FACE);
             gl::Disable(gl::SCISSOR_TEST);
+            gl::Disable(gl::STENCIL_TEST);
+            gl::Disable(gl::POLYGON_OFFSET_FILL);
+            gl::Disable(gl::COLOR_LOGIC_OP);
             gl::Disable(gl::FRAMEBUFFER_SRGB); // Skia paints non-sRGB RGBA8 — write straight
             gl::Enable(gl::BLEND);
             gl::BlendEquationSeparate(gl::FUNC_ADD, gl::FUNC_ADD);
@@ -869,8 +1054,7 @@ impl Hud {
             // DIAGNOSTIC: `ewo-comp-solid` sentinel → output a fixed
             // semi-transparent green instead of sampling, isolating the
             // blend/state path from the texture-sampling path.
-            let solid = std::env::temp_dir().join("ewo-comp-solid").exists();
-            gl::Uniform1i(self.comp_solid_loc, solid as i32);
+            gl::Uniform1i(self.comp_solid_loc, self.diag_solid as i32);
             // Drain any pre-existing GL error so the post-draw check is ours.
             if self.composites < 4 {
                 let _ = gl::GetError();
@@ -890,7 +1074,8 @@ impl Hud {
             gl::BindTexture(gl::TEXTURE_2D, prev_tex0 as u32);
             gl::ActiveTexture(prev_active as u32);
             gl::UseProgram(prev_prog as u32);
-            gl::BindFramebuffer(gl::FRAMEBUFFER, prev_fbo as u32);
+            gl::BindFramebuffer(gl::READ_FRAMEBUFFER, prev_read_fbo as u32);
+            gl::BindFramebuffer(gl::DRAW_FRAMEBUFFER, prev_draw_fbo as u32);
             gl::Viewport(prev_vp[0], prev_vp[1], prev_vp[2], prev_vp[3]);
             gl::BlendFuncSeparate(
                 b_src_rgb as u32,
@@ -913,6 +1098,15 @@ impl Hud {
             }
             if srgb_on != 0 {
                 gl::Enable(gl::FRAMEBUFFER_SRGB);
+            }
+            if stencil_on != 0 {
+                gl::Enable(gl::STENCIL_TEST);
+            }
+            if poly_offset_on != 0 {
+                gl::Enable(gl::POLYGON_OFFSET_FILL);
+            }
+            if logic_op_on != 0 {
+                gl::Enable(gl::COLOR_LOGIC_OP);
             }
             gl::ColorMask(cmask[0], cmask[1], cmask[2], cmask[3]);
         }
@@ -971,6 +1165,8 @@ impl Hud {
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAX_LEVEL, 0);
             gl::BindTexture(gl::TEXTURE_2D, 0);
         }
+        // The raw binds above changed state Skia caches.
+        self.gr.reset(Some(BackendState::TEXTURE_BINDING.bits()));
 
         let info = TextureInfo {
             target: gl::TEXTURE_2D,
@@ -1048,6 +1244,8 @@ impl Hud {
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAX_LEVEL, 0);
             gl::BindTexture(gl::TEXTURE_2D, 0);
         }
+        // The raw binds above changed state Skia caches.
+        self.gr.reset(Some(BackendState::TEXTURE_BINDING.bits()));
 
         let info = TextureInfo {
             target: gl::TEXTURE_2D,
@@ -1083,7 +1281,8 @@ impl Hud {
         self.glass_size = (w, h);
     }
 
-    /// Copy the live framebuffer into [`Self::game_tex`].
+    /// Copy the live framebuffer into [`Self::game_tex`]. Returns whether a
+    /// copy was issued (the caller fences it for the reading context).
     ///
     /// **Must be called with fbo 0 bound for reading and before the HUD is
     /// composited** — capturing after the blit would make the glass refract
@@ -1092,14 +1291,14 @@ impl Hud {
     /// Safe to call from either GL context: the texture is shared via
     /// `wglShareLists`, and this touches only the 2D texture binding, which it
     /// restores.
-    fn capture_game(&mut self, w: i32, h: i32, now: f32) {
+    fn capture_game(&mut self, w: i32, h: i32, now: f32) -> bool {
         if self.game_tex == 0 || self.glass_size != (w, h) {
-            return;
+            return false;
         }
         // Capture at the paint cadence — no point refreshing a backdrop that
         // will not be redrawn.
         if now - self.last_captured < self.editor.paint_rate().min_interval() {
-            return;
+            return false;
         }
         unsafe {
             let mut prev_tex = 0i32;
@@ -1109,6 +1308,7 @@ impl Hud {
             gl::BindTexture(gl::TEXTURE_2D, prev_tex as u32);
         }
         self.last_captured = now;
+        true
     }
 
     /// Rebuild the two blur levels from the last capture. Runs in our context,
@@ -1189,29 +1389,20 @@ impl Hud {
         // Clear to transparent so only the widgets composite over the game.
         canvas.clear(Color::TRANSPARENT);
 
-        if self.buffer != 0 {
-            // SAFETY: `buffer` is the address of the mod's direct `ByteBuffer`,
-            // held for the process lifetime (`EwoHudData.CAPACITY` bytes).
-            let data = unsafe { hud::HudData::new(self.buffer as *const u8) };
-            if data.schema_version() == hud::SCHEMA_VERSION {
-                hud::draw(
-                    canvas,
-                    &data,
-                    &mut self.editor,
-                    &self.font_store,
-                    w as f32,
-                    h as f32,
-                    frame,
-                );
-            } else {
-                SCHEMA_WARN.call_once(|| {
-                    log(&format!(
-                        "HUD data block schema {} != expected {} — widgets disabled",
-                        data.schema_version(),
-                        hud::SCHEMA_VERSION
-                    ));
-                });
-            }
+        if let Some(data) = self.hud_data() {
+            // Re-borrow the canvas: `hud_data` needed `&self`.
+            let Some(surface) = self.offscreen.as_mut() else {
+                return false;
+            };
+            hud::draw(
+                surface.canvas(),
+                &data,
+                &mut self.editor,
+                &self.font_store,
+                w as f32,
+                h as f32,
+                frame,
+            );
         }
 
         self.last_painted = now;
@@ -1505,38 +1696,84 @@ pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeForceExit(
     std::process::exit(0);
 }
 
+/// Resolve a direct `ByteBuffer`, refusing it if smaller than `min_bytes`, and
+/// pin it with a JNI global reference so it cannot be collected while Rust
+/// holds its address. Publishes the address to `addr_slot` (`0` on refusal —
+/// every reader treats `0` as "no block") and swaps the pin in `ref_slot`.
+///
+/// # Safety
+/// `env` must be the calling thread's valid `JNIEnv` (or null); `buf` a local
+/// reference from the same call (or null).
+unsafe fn register_direct_buffer(
+    env: *mut jni_sys::JNIEnv,
+    buf: jni_sys::jobject,
+    min_bytes: usize,
+    what: &str,
+    addr_slot: &AtomicUsize,
+    ref_slot: &AtomicUsize,
+) {
+    // Refuse first: a failed re-registration must not leave a stale address.
+    addr_slot.store(0, Ordering::Relaxed);
+    if env.is_null() || buf.is_null() {
+        log(&format!("{what}: null env or buffer"));
+        return;
+    }
+    let jni = &**env;
+    let (Some(get_addr), Some(get_cap), Some(new_ref), Some(del_ref)) = (
+        jni.GetDirectBufferAddress,
+        jni.GetDirectBufferCapacity,
+        jni.NewGlobalRef,
+        jni.DeleteGlobalRef,
+    ) else {
+        log(&format!("{what}: JNI direct-buffer functions unavailable"));
+        return;
+    };
+    let addr = get_addr(env, buf);
+    let cap = get_cap(env, buf);
+    if addr.is_null() || cap < 0 {
+        log(&format!("{what}: not a direct buffer"));
+        return;
+    }
+    if (cap as u64) < min_bytes as u64 {
+        log(&format!(
+            "{what}: buffer is {cap} bytes, need {min_bytes} — refused, block disabled"
+        ));
+        return;
+    }
+    let pin = new_ref(env, buf);
+    if pin.is_null() {
+        log(&format!("{what}: NewGlobalRef failed — refused"));
+        return;
+    }
+    addr_slot.store(addr as usize, Ordering::Relaxed);
+    let old = ref_slot.swap(pin as usize, Ordering::Relaxed);
+    if old != 0 {
+        del_ref(env, old as jni_sys::jobject);
+    }
+    log(&format!("{what}: block registered ({cap} bytes)"));
+}
+
 /// Register the shared JVM→Rust data block. Called once at mod init with a
 /// direct `ByteBuffer`; Rust resolves its address and reads it every frame
 /// thereafter with no further JNI marshaling.
+///
+/// # Safety
+/// Called by the JVM with a valid `JNIEnv` and a `ByteBuffer` reference.
 #[no_mangle]
-pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeInit(
+pub unsafe extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeInit(
     env: *mut jni_sys::JNIEnv,
     _class: *mut c_void,
     buf: jni_sys::jobject,
 ) {
-    let _ = panic::catch_unwind(AssertUnwindSafe(|| {
-        if env.is_null() || buf.is_null() {
-            log("nativeInit: null env or buffer");
-            return;
-        }
-        // SAFETY: `env` is a valid JNIEnv for the calling thread; reading its
-        // function table and calling `GetDirectBufferAddress` is the documented
-        // JNI contract.
-        let addr = unsafe {
-            match (**env).GetDirectBufferAddress {
-                Some(get_addr) => get_addr(env, buf),
-                None => {
-                    log("nativeInit: GetDirectBufferAddress unavailable");
-                    return;
-                }
-            }
-        };
-        if addr.is_null() {
-            log("nativeInit: GetDirectBufferAddress returned null (buffer not direct?)");
-            return;
-        }
-        HUD_BUFFER.store(addr as usize, Ordering::Relaxed);
-        log("nativeInit: HUD data block registered");
+    let _ = panic::catch_unwind(AssertUnwindSafe(|| unsafe {
+        register_direct_buffer(
+            env,
+            buf,
+            hud::BLOCK_BYTES,
+            "nativeInit",
+            &HUD_BUFFER,
+            &HUD_BUFFER_REF,
+        );
     }));
 }
 
@@ -1549,8 +1786,18 @@ pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeRender(
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         HUD.with(|cell| {
             let mut state = cell.borrow_mut();
+            // Minecraft replaced its GL context: ours shares objects only with
+            // the old one and the fast composite would sample dead handles.
+            // Rebuild against the new context, keeping the editor's state.
+            let mut carried = None;
+            if matches!(&*state, HudState::Ready(hud) if hud.mc_context_changed()) {
+                log("Minecraft's GL context changed — rebuilding the HUD context");
+                if let HudState::Ready(old) = std::mem::replace(&mut *state, HudState::Uninit) {
+                    carried = Some(old.teardown());
+                }
+            }
             if matches!(*state, HudState::Uninit) {
-                *state = match Hud::create() {
+                *state = match Hud::create(carried) {
                     Some(hud) => HudState::Ready(hud),
                     None => {
                         log("Skia init failed — HUD disabled for this thread");
@@ -1693,33 +1940,24 @@ pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeQuickEdit(
 /// Register the Rust→JVM module-state block (Phase G). Called once at mod init
 /// with a direct `ByteBuffer`; Rust resolves its address and writes the block
 /// every frame thereafter.
+///
+/// # Safety
+/// Called by the JVM with a valid `JNIEnv` and a `ByteBuffer` reference.
 #[no_mangle]
-pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeInitModules(
+pub unsafe extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeInitModules(
     env: *mut jni_sys::JNIEnv,
     _class: *mut c_void,
     buf: jni_sys::jobject,
 ) {
-    let _ = panic::catch_unwind(AssertUnwindSafe(|| {
-        if env.is_null() || buf.is_null() {
-            log("nativeInitModules: null env or buffer");
-            return;
-        }
-        // SAFETY: documented JNI contract — identical to `nativeInit`.
-        let addr = unsafe {
-            match (**env).GetDirectBufferAddress {
-                Some(get_addr) => get_addr(env, buf),
-                None => {
-                    log("nativeInitModules: GetDirectBufferAddress unavailable");
-                    return;
-                }
-            }
-        };
-        if addr.is_null() {
-            log("nativeInitModules: GetDirectBufferAddress returned null (buffer not direct?)");
-            return;
-        }
-        MODULE_BUFFER.store(addr as usize, Ordering::Relaxed);
-        log("nativeInitModules: module-state block registered");
+    let _ = panic::catch_unwind(AssertUnwindSafe(|| unsafe {
+        register_direct_buffer(
+            env,
+            buf,
+            modules::required_bytes(),
+            "nativeInitModules",
+            &MODULE_BUFFER,
+            &MODULE_BUFFER_REF,
+        );
     }));
 }
 

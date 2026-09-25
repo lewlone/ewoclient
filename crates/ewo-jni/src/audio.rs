@@ -13,10 +13,13 @@
 //! falls back to whole-mix loopback rather than showing nothing, and reports
 //! which mode it got so the UI can say so.
 //!
-//! Everything here runs on a background thread and publishes immutable
-//! snapshots. The render thread never blocks on audio.
+//! Everything here runs on a background thread and publishes into a
+//! latest-value slot — never a queue, so nothing piles up while the render
+//! thread is not draining (window minimised, schema mismatch). The render
+//! thread never blocks on audio beyond an uncontended lock.
 
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Number of spectrum bands the widget draws. Log-spaced across the audible
 /// range — few enough to read at a glance on a small widget, enough to show
@@ -28,7 +31,8 @@ pub const BANDS: usize = 14;
 const FFT_SIZE: usize = 1024;
 
 /// Capture format. Process loopback does not support `GetMixFormat`, so the
-/// format is stated rather than queried; Windows resamples into it.
+/// format is stated rather than queried; `AUTOCONVERTPCM` makes WASAPI
+/// resample into it on both capture paths.
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u16 = 2;
 
@@ -72,9 +76,42 @@ impl Spectrum {
     }
 }
 
+/// State shared with the capture thread.
+pub(crate) struct Shared {
+    /// Newest analysis, overwritten by the thread, taken by [`AudioService::poll`].
+    latest: Mutex<Option<Spectrum>>,
+    /// Set when the service is dropped — the thread exits at its next wake.
+    stop: AtomicBool,
+    /// Cleared by the thread on its way out.
+    alive: AtomicBool,
+}
+
+impl Shared {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn publish(&self, s: Spectrum) {
+        if let Ok(mut slot) = self.latest.lock() {
+            *slot = Some(s);
+        }
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn stopping(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+}
+
+/// Clears [`Shared::alive`] however the capture thread exits.
+struct AliveGuard(Arc<Shared>);
+
+impl Drop for AliveGuard {
+    fn drop(&mut self) {
+        self.0.alive.store(false, Ordering::Relaxed);
+    }
+}
+
 /// Handle to the capture thread. Poll it once per frame.
 pub struct AudioService {
-    rx: Option<Receiver<Spectrum>>,
+    shared: Option<Arc<Shared>>,
     /// Last value seen — the widget wants a value every frame, not only on
     /// the frames a new one happened to arrive.
     last: Spectrum,
@@ -87,40 +124,42 @@ impl AudioService {
     /// Start capturing. Never fails loudly — a missing backend just means the
     /// visualiser stays still.
     pub fn start() -> Self {
-        let (tx, rx) = mpsc::channel();
+        let shared = Arc::new(Shared {
+            latest: Mutex::new(None),
+            stop: AtomicBool::new(false),
+            alive: AtomicBool::new(true),
+        });
+        let thread_shared = shared.clone();
         let spawned = std::thread::Builder::new()
             .name("ewo-audio".into())
-            .spawn(move || backend::run(tx));
+            .spawn(move || {
+                let guard = AliveGuard(thread_shared);
+                backend::run(&guard.0);
+            });
         match spawned {
-            Ok(_) => AudioService { rx: Some(rx), last: Spectrum::SILENT, stale: 0 },
+            Ok(_) => AudioService { shared: Some(shared), last: Spectrum::SILENT, stale: 0 },
             Err(e) => {
                 crate::log(&format!("audio: capture thread failed to start: {e}"));
-                AudioService { rx: None, last: Spectrum::SILENT, stale: 0 }
+                AudioService { shared: None, last: Spectrum::SILENT, stale: 0 }
             }
         }
     }
 
-    /// Latest analysis. Drains everything queued and keeps the newest — a
-    /// visualiser wants the current value, not a backlog.
+    /// Latest analysis — the newest value the thread published since the last
+    /// poll, else the previous one (decaying if the thread has gone quiet).
     pub fn poll(&mut self) -> Spectrum {
-        let Some(rx) = &self.rx else {
+        let Some(shared) = &self.shared else {
             return Spectrum::SILENT;
         };
-        let mut got = false;
-        loop {
-            match rx.try_recv() {
-                Ok(s) => {
-                    self.last = s;
-                    got = true;
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    // Thread is gone; stop pretending.
-                    self.rx = None;
-                    self.last = Spectrum::SILENT;
-                    return self.last;
-                }
-            }
+        let fresh = shared.latest.lock().ok().and_then(|mut slot| slot.take());
+        let got = fresh.is_some();
+        if let Some(s) = fresh {
+            self.last = s;
+        } else if !shared.alive.load(Ordering::Relaxed) {
+            // Thread is gone; stop pretending.
+            self.shared = None;
+            self.last = Spectrum::SILENT;
+            return self.last;
         }
         if got {
             self.stale = 0;
@@ -143,6 +182,14 @@ impl AudioService {
 impl Default for AudioService {
     fn default() -> Self {
         Self::start()
+    }
+}
+
+impl Drop for AudioService {
+    fn drop(&mut self) {
+        if let Some(shared) = &self.shared {
+            shared.stop.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -333,24 +380,24 @@ fn fft(re: &mut [f32], im: &mut [f32]) {
 /// a build without a capture backend is quiet rather than broken.
 #[cfg(not(windows))]
 mod backend {
-    use super::{Sender, Spectrum};
+    use super::Shared;
 
-    pub(super) fn run(_tx: Sender<Spectrum>) {}
+    pub(super) fn run(_shared: &Shared) {}
 }
 
 #[cfg(windows)]
 mod backend {
-    use super::{Analyser, Sender, Source, Spectrum, CHANNELS, SAMPLE_RATE};
-
-    use std::sync::mpsc::Sender as Tx;
+    use super::{Analyser, Shared, Source, Spectrum, CHANNELS, SAMPLE_RATE};
 
     use windows::core::{implement, Interface, GUID, PCWSTR};
-    use windows::Win32::Foundation::{HANDLE, S_OK, WAIT_OBJECT_0};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, S_OK, WAIT_OBJECT_0};
     use windows::Win32::Media::Audio::{
         eConsole, eRender, ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
         IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl,
         IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
-        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
+        AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+        AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
+        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
         AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
         AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
         PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, WAVEFORMATEX,
@@ -415,8 +462,19 @@ mod backend {
         }
     }
 
+    /// Owned Win32 event handle, closed on drop.
+    struct Event(HANDLE);
+
+    impl Drop for Event {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+
     /// Capture-thread entry point.
-    pub(super) fn run(tx: Sender<Spectrum>) {
+    pub(super) fn run(shared: &Shared) {
         unsafe {
             // MTA: this thread does nothing but audio, and the WASAPI objects
             // are not shared with Minecraft's STA render thread.
@@ -424,7 +482,7 @@ mod backend {
                 super::super::log("audio: CoInitializeEx failed");
                 return;
             }
-            let result = capture_loop(&tx);
+            let result = capture_loop(shared);
             if let Err(e) = result {
                 super::super::log(&format!("audio: capture ended: {e}"));
             }
@@ -432,7 +490,7 @@ mod backend {
         }
     }
 
-    unsafe fn capture_loop(tx: &Tx<Spectrum>) -> windows::core::Result<()> {
+    unsafe fn capture_loop(shared: &Shared) -> windows::core::Result<()> {
         // Preferred: everything except our own process tree.
         let (client, source) = match activate_process_loopback() {
             Ok(c) => (c, Source::ExcludingGame),
@@ -446,34 +504,51 @@ mod backend {
         };
 
         let format = wave_format();
-        let event = CreateEventW(None, false, false, PCWSTR::null())?;
+        let event = Event(CreateEventW(None, false, false, PCWSTR::null())?);
 
         // 200 ms buffer. Generous: a starved capture drops audio, and this
-        // thread has no realtime priority.
+        // thread has no realtime priority. AUTOCONVERTPCM lets the stated
+        // 48 kHz float format stand even when the endpoint's mix format is
+        // something else (the system-mix fallback on a 44.1 kHz device).
         client.Initialize(
             AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+            AUDCLNT_STREAMFLAGS_LOOPBACK
+                | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
             2_000_000,
             0,
             &format,
             None,
         )?;
-        client.SetEventHandle(event)?;
+        client.SetEventHandle(event.0)?;
         let capture: IAudioCaptureClient = client.GetService()?;
         client.Start()?;
 
         let mut analyser = Analyser::new();
         let mut out: Vec<Spectrum> = Vec::new();
+        let mut silence: Vec<f32> = Vec::new();
+        // Consecutive 500 ms waits with no packet — short waits keep the stop
+        // flag responsive; four of them is "nothing playing".
+        let mut idle_waits = 0u32;
 
         loop {
-            if WaitForSingleObject(event, 2_000) != WAIT_OBJECT_0 {
-                // No audio for two seconds. Not an error — nothing is playing.
-                // Publish silence so the bars settle instead of freezing.
-                if tx.send(Spectrum { source, ..Spectrum::SILENT }).is_err() {
-                    return Ok(());
+            if shared.stopping() {
+                let _ = client.Stop();
+                return Ok(());
+            }
+            if WaitForSingleObject(event.0, 500) != WAIT_OBJECT_0 {
+                idle_waits += 1;
+                if idle_waits >= 4 {
+                    // No audio for two seconds. Not an error — nothing is
+                    // playing. Publish silence so the bars settle instead of
+                    // freezing.
+                    idle_waits = 0;
+                    shared.publish(Spectrum { source, ..Spectrum::SILENT });
                 }
                 continue;
             }
+            idle_waits = 0;
             loop {
                 match capture.GetNextPacketSize() {
                     Ok(0) | Err(_) => break,
@@ -488,19 +563,25 @@ mod backend {
                 {
                     break;
                 }
-                if !data.is_null() && frames > 0 {
+                if frames > 0 {
                     let n = frames as usize * CHANNELS as usize;
-                    let samples = std::slice::from_raw_parts(data as *const f32, n);
-                    analyser.feed(samples, CHANNELS as usize, &mut out, source);
+                    // A SILENT packet's buffer contents are undefined — feed
+                    // zeros rather than whatever happens to be there.
+                    if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || data.is_null() {
+                        silence.clear();
+                        silence.resize(n, 0.0);
+                        analyser.feed(&silence, CHANNELS as usize, &mut out, source);
+                    } else {
+                        let samples = std::slice::from_raw_parts(data as *const f32, n);
+                        analyser.feed(samples, CHANNELS as usize, &mut out, source);
+                    }
                 }
                 let _ = capture.ReleaseBuffer(frames);
             }
             // Publish only the newest — the UI wants current, not history.
             if let Some(latest) = out.pop() {
                 out.clear();
-                if tx.send(latest).is_err() {
-                    return Ok(()); // UI dropped the receiver; we are done.
-                }
+                shared.publish(latest);
             }
         }
     }
@@ -544,10 +625,12 @@ mod backend {
         )?;
 
         // The activation is asynchronous but there is nothing else for this
-        // thread to do until it lands.
+        // thread to do until it lands. On timeout the handle is deliberately
+        // leaked: the callback may still fire and `SetEvent` it later.
         if WaitForSingleObject(done, 3_000) != WAIT_OBJECT_0 {
             return Err(windows::core::Error::from_win32());
         }
+        drop(Event(done));
 
         let mut hr = S_OK;
         let mut unknown: Option<windows::core::IUnknown> = None;

@@ -153,22 +153,26 @@ thread_local! {
     /// re-compiling inside a per-frame draw is exactly the "foreign allocation
     /// in a draw call" mistake the 2026-05-31 perf pass was about — see the
     /// CLAUDE.md "Memory + performance pass" section.
-    static EFFECT: RefCell<Option<RuntimeEffect>> = const { RefCell::new(None) };
+    ///
+    /// `None` = not tried yet, `Some(None)` = compile failed. The failure is
+    /// cached too, so a broken shader warns once instead of recompiling (and
+    /// warning) every frame; plates then draw their flat chrome.
+    static EFFECT: RefCell<Option<Option<RuntimeEffect>>> = const { RefCell::new(None) };
 }
 
 fn with_effect<R>(f: impl FnOnce(&RuntimeEffect) -> R) -> Option<R> {
     EFFECT.with(|cell| {
         let mut slot = cell.borrow_mut();
-        if slot.is_none() {
+        let effect = slot.get_or_insert_with(|| {
             match RuntimeEffect::make_for_shader(GLASS_SKSL, None) {
-                Ok(effect) => *slot = Some(effect),
+                Ok(effect) => Some(effect),
                 Err(err) => {
                     log::warn!("liquid_glass: SkSL failed to compile: {err}");
-                    return None;
+                    None
                 }
             }
-        }
-        slot.as_ref().map(f)
+        });
+        effect.as_ref().map(f)
     })
 }
 

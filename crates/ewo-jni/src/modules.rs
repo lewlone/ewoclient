@@ -39,6 +39,12 @@ const OFF_RECORDS: usize = 8;
 /// Schema 2: 4 + 8*4 + 4 = 40 bytes.
 const RECORD: usize = 8 + catalog::MAX_SETTINGS * 4;
 
+/// Bytes [`ModuleConfig::write_buffer`] writes — header plus one record per
+/// registry entry. `nativeInitModules` refuses a smaller buffer.
+pub fn required_bytes() -> usize {
+    OFF_RECORDS + catalog::REGISTRY.len() * RECORD
+}
+
 /// One module's live state.
 #[derive(Clone, Copy)]
 pub struct ModuleState {
