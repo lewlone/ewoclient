@@ -738,6 +738,10 @@ pub struct PlaySession {
     /// a stair. An id past the end falls back to "non-air is a full cube",
     /// which is what the flat test worlds want when no bake is supplied.
     pub collide: Vec<Vec<[f32; 6]>>,
+    /// state id → movement behaviour (`BakedAssets::physics`: friction, speed
+    /// and jump factors, climbable, fluids, stuck-in blocks). Empty = every
+    /// block behaves like stone, as before the table existed.
+    pub block_physics: Vec<rewo_data::block_physics::BlockPhysics>,
     /// Per entity-type `(width, height, pushable)` for entity collision.
     /// Empty disables pushing (the harnesses that don't care about mobs).
     pub entity_push: Vec<(f32, f32, bool)>,
@@ -1851,6 +1855,7 @@ impl<'a> Connection<'a> {
             world,
             player: PlayerState::at(0.5, 80.0, 0.5),
             collide,
+            block_physics: Vec::new(),
             entity_push: Vec::new(),
             warden_type_id: None,
             armadillo_type_id: None,
@@ -2083,7 +2088,13 @@ impl PlaySession {
     /// Apply a block change and relight around it, marking every column whose
     /// light moved for remesh. `old` is the state before the write.
     fn relight(&mut self, x: i32, y: i32, z: i32, old: u32, new: u32) {
-        if self.light_dampening.is_empty() {
+        self.relight_batch(&[(x, y, z, old, new)]);
+    }
+
+    /// Relight after several block changes at once. The world must already
+    /// hold every new state.
+    fn relight_batch(&mut self, changes: &[(i32, i32, i32, u32, u32)]) {
+        if self.light_dampening.is_empty() || changes.is_empty() {
             return;
         }
         let tables = rewo_world::light::LightTables {
@@ -2093,7 +2104,7 @@ impl PlaySession {
         };
         for (cx, cz) in self
             .light
-            .on_block_change(&mut self.world, tables, x, y, z, old, new)
+            .on_blocks_changed(&mut self.world, tables, changes)
         {
             self.dirty.insert((cx, cz));
         }
@@ -2449,15 +2460,10 @@ impl PlaySession {
             // *before* `travel`, so the shove lands in this tick's movement.
             self.push_from_entities();
             let collide = std::mem::take(&mut self.collide);
-            let world = &self.world;
-            let shapes = |x: i32, y: i32, z: i32| -> &[[f32; 6]] {
-                let state = world.block_state_at(x, y, z);
-                match collide.get(state as usize) {
-                    Some(boxes) => boxes.as_slice(),
-                    // No table (flat test worlds): non-air collides as a cube.
-                    None if state != 0 => FULL_CUBE,
-                    None => &[],
-                }
+            let block_physics = std::mem::take(&mut self.block_physics);
+            let move_attrs = match self.attribute_registry.as_deref() {
+                Some(reg) => crate::attributes::move_attributes(reg, &self.local_attributes),
+                None => physics::MoveAttributes::default(),
             };
             // M75. `LocalPlayer.aiStep` runs its flight prologue *before*
             // `super.aiStep()` reaches `travel`, so the toggle and the vertical
@@ -2482,18 +2488,25 @@ impl PlaySession {
             }
             let mut owes_packet = step.abilities_changed;
             let abilities = self.abilities;
-            physics::tick_with(
+            let world = physics::WorldPhysics {
+                world: &self.world,
+                collide: &collide,
+                blocks: &block_physics,
+            };
+            physics::tick_env(
                 &mut self.player,
                 input,
                 &abilities,
                 spectator,
                 Some(self.border.collision()),
-                &shapes,
+                &move_attrs,
+                &world,
             );
             owes_packet |= self
                 .flight
                 .after_travel(&mut self.abilities, &self.player, spectator);
             self.collide = collide;
+            self.block_physics = block_physics;
             if owes_packet {
                 self.send_abilities()?;
             }
@@ -3075,6 +3088,7 @@ impl PlaySession {
             if let (Ok(section), Ok(count)) = (r.u64(), r.varint()) {
                 let (sx, sy, sz) = unpack_section_pos(section);
                 let mut applied = 0;
+                let mut changes = Vec::new();
                 for _ in 0..count.max(0) {
                     let Ok(packed) = r.varlong() else { break };
                     let packed = packed as u64;
@@ -3083,10 +3097,13 @@ impl PlaySession {
                     let (x, y, z) = (sx * 16 + ox, sy * 16 + oy, sz * 16 + oz);
                     let old = self.world.block_state_at(x, y, z);
                     self.world.set_block(x, y, z, state);
-                    self.relight(x, y, z, old, state);
+                    changes.push((x, y, z, old, state));
                     self.mark_dirty_block(x, z);
                     applied += 1;
                 }
+                // One light pass for the whole section, after every state is
+                // in place (a /fill or explosion relit per block was O(n) floods).
+                self.relight_batch(&changes);
                 self.block_updates += applied;
                 log::debug!("net: section_blocks_update ({sx},{sy},{sz}) × {applied}");
             } else {

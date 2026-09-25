@@ -700,6 +700,9 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
         data.blocks.global_palette_bits,
         colormaps,
     )?;
+    if let Some(b) = baked.as_ref() {
+        session.block_physics = b.physics.clone();
+    }
     // Entity collision: per-type footprint + whether it shoves (living only).
     session.entity_push = crate::live_cmd::entity_push_table(&data.entity_types);
     // Kinds whose polymorphic entity events drive model rigs (warden attack/

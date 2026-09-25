@@ -1889,6 +1889,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         global_bits,
         colormaps,
     )?;
+    session.block_physics = baked.physics.clone();
     // Entity collision: per-type footprint + whether it shoves (living only).
     session.entity_push = entity_push_table(&data.entity_types);
     // Resolve the kinds whose entity events drive model rigs — a
