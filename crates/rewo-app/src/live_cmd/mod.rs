@@ -55,6 +55,9 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 use crate::stats::{OverlayRing, StatsAccum};
 
 mod app;
+mod frame;
+mod input;
+mod screen_pumps;
 mod block_entities;
 pub(crate) use block_entities::*;
 mod entities;
