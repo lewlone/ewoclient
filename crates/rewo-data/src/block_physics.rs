@@ -98,6 +98,9 @@ pub struct BlockPhysics {
     pub facing: u8,
     pub stuck: Stuck,
     pub fluid: PhysFluid,
+    /// `FluidState.getValue(FALLING)` — a `LiquidBlock` `level` of 8 or more
+    /// (`fluid_is_falling`). Only meaningful beside a non-`None` `fluid`.
+    pub fluid_falling: bool,
 }
 
 impl Default for BlockPhysics {
@@ -111,6 +114,7 @@ impl Default for BlockPhysics {
             facing: 255,
             stuck: Stuck::None,
             fluid: PhysFluid::None,
+            fluid_falling: false,
         }
     }
 }
@@ -126,6 +130,7 @@ impl BlockPhysics {
         facing: 255,
         stuck: Stuck::None,
         fluid: PhysFluid::None,
+        fluid_falling: false,
     };
 
     pub fn has(&self, flag: u16) -> bool {
@@ -210,6 +215,8 @@ impl BlockPhysics {
             facing,
             stuck,
             fluid: PhysFluid::None,
+            // Only a `LiquidBlock` has `level`; anything else is not a fluid.
+            fluid_falling: prop("level").and_then(|l| l.parse().ok()).map_or(false, fluid_is_falling),
         }
     }
 }
@@ -220,6 +227,12 @@ impl BlockPhysics {
 pub fn fluid_own_height(level: u8) -> f32 {
     let amount = if level == 0 || level >= 8 { 8 } else { 8 - level };
     amount as f32 / 9.0
+}
+
+/// `FluidState.getValue(FALLING)` for the same `level`: cache index 8 is
+/// `getFlowing(8, true)` and `getFluidState` clamps to it, so 8 and up fall.
+pub fn fluid_is_falling(level: u8) -> bool {
+    level >= 8
 }
 
 #[cfg(test)]
@@ -253,6 +266,24 @@ mod tests {
         assert_eq!(fluid_own_height(7), 1.0 / 9.0);
         assert_eq!(fluid_own_height(8), 8.0 / 9.0);
         assert_eq!(fluid_own_height(15), 8.0 / 9.0);
+    }
+
+    #[test]
+    fn fluid_falling_follows_the_state_cache() {
+        // `LiquidBlock`'s cache: index 0 is `getSource(false)`, 1..7 are
+        // `getFlowing(8 - level, false)`, index 8 is `getFlowing(8, true)`,
+        // and `getFluidState` clamps the level to 8 — so only 8..15 fall.
+        assert!(!fluid_is_falling(0));
+        assert!(!fluid_is_falling(7));
+        assert!(fluid_is_falling(8));
+        assert!(fluid_is_falling(15));
+        let level = |value: &str| serde_json::Map::from_iter([("level".to_string(), value.into())]);
+        assert!(!BlockPhysics::resolve("minecraft:water", Some(&level("0")), true).fluid_falling);
+        assert!(!BlockPhysics::resolve("minecraft:water", Some(&level("7")), true).fluid_falling);
+        assert!(BlockPhysics::resolve("minecraft:water", Some(&level("8")), true).fluid_falling);
+        assert!(BlockPhysics::resolve("minecraft:lava", Some(&level("15")), false).fluid_falling);
+        // No `level` property, no falling — including the carried sources.
+        assert!(!BlockPhysics::resolve("minecraft:stone", None, false).fluid_falling);
     }
 
     #[test]
