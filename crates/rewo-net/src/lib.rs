@@ -105,6 +105,33 @@ fn de(e: rewo_proto::ProtoError) -> String {
     format!("decode: {e}")
 }
 
+thread_local! {
+    /// How many `route_*` helpers on this thread dropped an undecodable body.
+    static ROUTE_DECODE_FAILURES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A `route_*` helper dropped a packet whose body did not decode — the `route_*`
+/// half of [`play::PlaySession::decode_failed`]. Only a body that fails to
+/// *decode* counts: a well-formed packet ignored on purpose (an untracked
+/// entity, a wrong kind, an unmodelled event) is not a failure.
+pub(crate) fn route_decode_failed(what: &str, err: impl std::fmt::Display) {
+    ROUTE_DECODE_FAILURES.with(|c| c.set(c.get() + 1));
+    log::warn!("net: {what}: malformed packet body ({err})");
+}
+
+/// [`route_decode_failed`] and then `None`, the shape most `route_*` helpers
+/// give up in.
+fn route_decode_none<T>(what: &str, err: impl std::fmt::Display) -> Option<T> {
+    route_decode_failed(what, err);
+    None
+}
+
+/// Take and reset the `route_*` decode-failure count on this thread; the
+/// session folds it into [`play::PlaySession::decode_failures`] per packet.
+pub fn take_route_decode_failures() -> u64 {
+    ROUTE_DECODE_FAILURES.with(|c| c.replace(0))
+}
+
 /// Parse the play-login prefix (`ClientboundLoginPacket` up to and including the
 /// `CommonPlayerSpawnInfo` dimension-type holder) and return the holder id.
 ///
@@ -828,6 +855,7 @@ pub(crate) fn apply_entity_event(
     // A short / malformed body decodes to nothing (a truncated packet is not
     // an animation).
     let (Ok(eid), Ok(event)) = (r.i32(), r.i8()) else {
+        route_decode_failed("entity_event", "truncated body");
         return;
     };
     // Unknown entity → ignore (it may not be tracked / already despawned).
@@ -891,6 +919,8 @@ pub fn route_block_entity_data(
         // packet cannot paint one into thin air.
         let applied = world.set_block_entity_data(pos, type_id, data);
         log::debug!("net: block_entity_data ({x},{y},{z}) type={type_id} applied={applied}");
+    } else {
+        route_decode_failed("block_entity_data", "truncated body");
     }
     true
 }
@@ -938,6 +968,8 @@ pub fn route_block_event(
             .block_entities
             .trigger_block_event(types, pos, b0, b1, game_time);
         log::debug!("net: block_event ({x},{y},{z}) b0={b0} b1={b1} consumed={consumed}");
+    } else {
+        route_decode_failed("block_event", "truncated body");
     }
     true
 }
@@ -1010,24 +1042,28 @@ pub(crate) fn apply_damage_event(
 ) {
     let mut r = PacketReader::new(body);
     let Ok(eid) = r.varint() else {
+        route_decode_failed("damage_event", "truncated entity id");
         return;
     };
     // Walk the rest of the body even though none of it is model-visible: a
     // decoder that stops early is a decoder that desyncs.
     if r.varint().is_err() {
-        return; // damage type holder (raw registry id)
+        route_decode_failed("damage_event", "truncated damage type holder");
+        return;
     }
     if r.varint().is_err() || r.varint().is_err() {
+        route_decode_failed("damage_event", "truncated source entity ids");
         return; // cause / direct entity ids, each written as id + 1
     }
     match r.bool() {
         Ok(true) => {
             if r.take(24).is_err() {
+                route_decode_failed("damage_event", "truncated source position");
                 return; // source position: 3 × f64
             }
         }
         Ok(false) => {}
-        Err(_) => return,
+        Err(e) => return route_decode_failed("damage_event", e),
     }
     let Some(type_id) = entities.get(eid).map(|e| e.type_id) else {
         return; // getEntity(id) == null
@@ -1105,6 +1141,7 @@ pub(crate) fn apply_hurt_animation(
 ) {
     let mut r = PacketReader::new(body);
     let (Ok(eid), Ok(yaw)) = (r.varint(), r.f32()) else {
+        route_decode_failed("hurt_animation", "truncated body");
         return;
     };
     let is_player = if Some(eid) == local_player {
@@ -1165,6 +1202,7 @@ pub(crate) fn apply_block_destruction(
 ) {
     let mut r = PacketReader::new(body);
     let (Ok(id), Ok((x, y, z)), Ok(progress)) = (r.varint(), r.position(), r.u8()) else {
+        route_decode_failed("block_destruction", "truncated body");
         return;
     };
     destruction.set(id, [x, y, z], progress as i32, game_time);
@@ -1228,8 +1266,12 @@ pub struct CombatKill {
 /// vanilla drops it silently, and so does this.
 pub(crate) fn apply_player_combat_kill(body: &[u8], local_player: Option<i32>) -> Option<CombatKill> {
     let mut r = PacketReader::new(body);
-    let player_id = r.varint().ok()?;
-    let message = r.nbt().ok()?;
+    let Ok(player_id) = r.varint() else {
+        return route_decode_none("player_combat_kill", "truncated player id");
+    };
+    let Ok(message) = r.nbt() else {
+        return route_decode_none("player_combat_kill", "truncated message");
+    };
     if local_player != Some(player_id) {
         log::debug!("net: player_combat_kill for {player_id}, not the local player");
         return None;
@@ -1447,7 +1489,9 @@ pub fn container_slot_state_changed_body(
 /// truncated statistics list is worth more than a dropped one.
 pub fn apply_award_stats(body: &[u8]) -> Option<Vec<(rewo_world::stats::StatKey, i32)>> {
     let mut r = PacketReader::new(body);
-    let count = r.varint().ok()?;
+    let Ok(count) = r.varint() else {
+        return route_decode_none("award_stats", "truncated count");
+    };
     if count < 0 {
         log::warn!("net: award_stats with a negative count {count}");
         return None;
@@ -1460,6 +1504,7 @@ pub fn apply_award_stats(body: &[u8]) -> Option<Vec<(rewo_world::stats::StatKey,
         out.push((rewo_world::stats::StatKey::new(type_id, value_id), amount));
     }
     if out.len() != count as usize {
+        route_decode_failed("award_stats", format!("truncated at {} of {count}", out.len()));
         log::warn!(
             "net: award_stats truncated at {} of {count} entries",
             out.len()
@@ -1595,6 +1640,7 @@ pub(crate) fn apply_take_item_entity(
 ) {
     let mut r = PacketReader::new(body);
     let (Ok(item_id), Ok(player_id), Ok(amount)) = (r.varint(), r.varint(), r.varint()) else {
+        route_decode_failed("take_item_entity", "truncated body");
         return;
     };
     let Some(from) = world.entities.get(item_id) else {
@@ -1727,6 +1773,7 @@ pub(crate) fn apply_update_attributes(
     // Decode first and completely: a body that does not fully parse changes
     // nothing, so a malformed packet can never half-apply.
     let Some(packet) = crate::attributes::parse(body) else {
+        route_decode_failed("update_attributes", "malformed body");
         return;
     };
     let Some(type_id) = entities.get(packet.entity_id).map(|e| e.type_id) else {
@@ -1807,6 +1854,11 @@ pub fn route_update_attributes(
 /// unregistered type id is likewise inert — that is vanilla's own behaviour,
 /// not a tolerance added here.
 pub fn apply_game_event(body: &[u8], weather: &mut rewo_world::weather::WeatherState) -> bool {
+    // `game_event::apply` reports "no event" for a short body and for an
+    // unregistered type id alike; decode up front to tell the two apart.
+    if let Err(e) = game_event::decode(body) {
+        route_decode_failed("game_event", e);
+    }
     // The bool has always meant "was it a weather event", not "did a level
     // move" — `RAIN_LEVEL_CHANGE` to the level already held is still weather.
     game_event::apply(
@@ -1948,6 +2000,7 @@ pub fn apply_container_set_content(
 ) -> bool {
     let mut r = rewo_proto::reader::PacketReader::new(body);
     let (Ok(container), Ok(state_id), Ok(count)) = (r.varint(), r.varint(), r.varint()) else {
+        route_decode_failed("container_set_content", "truncated header");
         return false;
     };
     if container != expect_container {
@@ -1963,10 +2016,14 @@ pub fn apply_container_set_content(
             Ok(s) => slots.push(s),
             // Abandoned mid-list: everything after this point is garbage, so
             // the packet is dropped whole and the previous contents stand.
-            Err(()) => return false,
+            Err(()) => {
+                route_decode_failed("container_set_content", "truncated slot");
+                return false;
+            }
         }
     }
     let Ok(carried) = read_slot(&mut r, components) else {
+        route_decode_failed("container_set_content", "truncated carried stack");
         return false;
     };
     // The tooltip text is recorded before the contents, so a slot is never
@@ -1998,12 +2055,14 @@ pub fn apply_container_set_slot(
 ) -> bool {
     let mut r = rewo_proto::reader::PacketReader::new(body);
     let (Ok(container), Ok(state_id), Ok(slot)) = (r.varint(), r.varint(), r.i16()) else {
+        route_decode_failed("container_set_slot", "truncated header");
         return false;
     };
     if container != expect_container {
         return false;
     }
     let Ok((item, text, detail)) = read_slot(&mut r, components) else {
+        route_decode_failed("container_set_slot", "truncated stack");
         return false;
     };
     if let Some((fingerprint, text)) = text {
@@ -2045,6 +2104,7 @@ pub fn apply_set_player_inventory(
     use rewo_world::inventory::IndexWrite;
     let mut r = rewo_proto::reader::PacketReader::new(body);
     let Ok(index) = r.varint() else {
+        route_decode_failed("set_player_inventory", "truncated slot index");
         return IndexWrite::OutOfRange;
     };
     // The stack is read before the index is judged, deliberately: a body whose
@@ -2052,6 +2112,7 @@ pub fn apply_set_player_inventory(
     // text is worth recording. Judging first would also mean the two failure
     // modes ("bad index" and "bad stack") could not be told apart.
     let Ok((item, text, detail)) = read_slot(&mut r, components) else {
+        route_decode_failed("set_player_inventory", "truncated stack");
         return IndexWrite::OutOfRange;
     };
     if let Some((fingerprint, text)) = text {
@@ -2082,6 +2143,7 @@ pub fn apply_set_cursor_item(
 ) -> bool {
     let mut r = rewo_proto::reader::PacketReader::new(body);
     let Ok((item, text, detail)) = read_slot(&mut r, components) else {
+        route_decode_failed("set_cursor_item", "truncated stack");
         return false;
     };
     if let Some((fingerprint, text)) = text {
@@ -2105,6 +2167,7 @@ pub fn apply_set_held_slot(
 ) -> bool {
     let mut r = rewo_proto::reader::PacketReader::new(body);
     let Ok(slot) = r.varint() else {
+        route_decode_failed("set_held_slot", "truncated slot");
         return false;
     };
     inventory.set_selected(slot)
@@ -2208,7 +2271,16 @@ pub(crate) fn container_target<'a>(
     inventory: &'a mut rewo_world::inventory::Inventory,
     menus: &'a mut rewo_world::menu::Menus,
 ) -> Option<(i32, &'a mut rewo_world::inventory::Inventory)> {
-    let container = rewo_proto::reader::PacketReader::new(body).varint().ok()?;
+    let container = match rewo_proto::reader::PacketReader::new(body).varint() {
+        Ok(container) => container,
+        // The seam serves two packet ids and has no way to say which one it is
+        // without a signature change that would ripple into `menu.rs`'s
+        // witnesses, so the two are named together.
+        Err(e) => {
+            route_decode_failed("container_set_content/container_set_slot", e);
+            return None;
+        }
+    };
     if container == rewo_world::inventory::PLAYER_CONTAINER_ID {
         return Some((container, inventory));
     }
@@ -2295,6 +2367,7 @@ pub fn apply_update_tags(body: &[u8], overrides: &mut crate::tags::TagOverrides)
             true
         }
         Err(e) => {
+            route_decode_failed("update_tags", &e);
             log::debug!("net: update_tags decode: {e}");
             false
         }
@@ -2459,7 +2532,10 @@ pub fn parse_set_passengers(body: &[u8]) -> rewo_proto::Result<(i32, Vec<i32>)> 
 pub(crate) fn apply_set_passengers(body: &[u8], entities: &mut rewo_world::entities::EntityTable) {
     match parse_set_passengers(body) {
         Ok((vehicle, riders)) => entities.set_passengers(vehicle, riders),
-        Err(e) => log::debug!("play: set_passengers parse: {e}"),
+        Err(e) => {
+            route_decode_failed("set_passengers", &e);
+            log::debug!("play: set_passengers parse: {e}");
+        }
     }
 }
 
@@ -2483,6 +2559,7 @@ pub(crate) fn apply_set_entity_data<'a>(
     let kinds: MetaKinds = kinds.into();
     let mut r = PacketReader::new(body);
     let Ok(eid) = r.varint() else {
+        route_decode_failed("set_entity_data", "truncated entity id");
         return;
     };
     // Vanilla drops metadata for an entity it isn't tracking (getEntity == null).
@@ -2876,6 +2953,7 @@ pub(crate) fn apply_move_minecart(
     let (eid, steps) = match parse_move_minecart(body) {
         Ok(v) => v,
         Err(e) => {
+            route_decode_failed("move_minecart_along_track", &e);
             log::debug!("play: move_minecart_along_track parse: {e}");
             return;
         }
@@ -2949,6 +3027,7 @@ pub(crate) fn apply_set_entity_link(
     let (source, dest) = match parse_set_entity_link(body) {
         Ok(v) => v,
         Err(e) => {
+            route_decode_failed("set_entity_link", &e);
             log::debug!("play: set_entity_link parse: {e}");
             return;
         }
@@ -3008,6 +3087,7 @@ pub(crate) fn apply_projectile_power(
     let (eid, power) = match parse_projectile_power(body) {
         Ok(v) => v,
         Err(e) => {
+            route_decode_failed("projectile_power", &e);
             log::debug!("play: projectile_power parse: {e}");
             return;
         }
@@ -3081,6 +3161,7 @@ pub(crate) fn apply_animate(
     let mut r = PacketReader::new(body);
     // A short / malformed body decodes to nothing.
     let (Ok(eid), Ok(action)) = (r.varint(), r.u8()) else {
+        route_decode_failed("animate", "truncated body");
         return;
     };
     // `getEntity(id) == null` → the whole packet is inert.
@@ -3156,6 +3237,7 @@ pub(crate) fn apply_set_equipment(
     use rewo_world::entities::{HandItem, HeldItem, InteractionHand};
     let mut r = PacketReader::new(body);
     let Ok(eid) = r.varint() else {
+        route_decode_failed("set_equipment", "truncated entity id");
         return;
     };
     let Some(type_id) = entities.get(eid).map(|e| e.type_id) else {
@@ -3165,10 +3247,14 @@ pub(crate) fn apply_set_equipment(
         return; // `instanceof LivingEntity` failed
     }
     loop {
+        // The `do/while` exits on a slot id with its high bit clear, so this
+        // only fails for a body that ran out mid-list.
         let Ok(slot_id) = r.i8() else {
+            route_decode_failed("set_equipment", "truncated slot list");
             return;
         };
         let Ok(slot) = item_stack::read_optional(&mut r, data.components) else {
+            route_decode_failed("set_equipment", "truncated stack");
             return; // truncated — stop, don't guess at the rest
         };
         let hand = match slot_id & 127 {
@@ -3381,22 +3467,27 @@ pub fn route_level_particles(
 ) -> Option<rewo_world::particles::ParticleEvent> {
     use rewo_world::particles::{ParticleCommand, ParticleEvent, ParticleKind};
     let mut r = PacketReader::new(body);
-    let override_limiter = r.bool().ok()?;
-    let always_show = r.bool().ok()?;
-    let x = r.f64().ok()?;
-    let y = r.f64().ok()?;
-    let z = r.f64().ok()?;
-    let x_dist = r.f32().ok()?;
-    let y_dist = r.f32().ok()?;
-    let z_dist = r.f32().ok()?;
-    let max_speed = r.f32().ok()?;
-    let count = r.i32().ok()?;
-    let type_id = r.varint().ok()?;
+    // The fixed prefix is read as one row so a body that runs out half-way is
+    // one failure, not eleven.
+    let head = (
+        r.bool(), r.bool(), r.f64(), r.f64(), r.f64(),
+        r.f32(), r.f32(), r.f32(), r.f32(), r.i32(), r.varint(),
+    );
+    let (
+        Ok(override_limiter), Ok(always_show), Ok(x), Ok(y), Ok(z), Ok(x_dist),
+        Ok(y_dist), Ok(z_dist), Ok(max_speed), Ok(count), Ok(type_id),
+    ) = head
+    else {
+        return route_decode_none("level_particles", "truncated body");
+    };
     let kind = ParticleKind::from_registry_name(types.name(type_id)?)?;
     // `BlockParticleOption` appends the block state as a VarInt; every other
     // kind here is a `SimpleParticleType` with an empty options body.
     let block_state = if Some(type_id) == types.block_id {
-        r.varint().ok()?.max(0) as u32
+        let Ok(state) = r.varint() else {
+            return route_decode_none("level_particles", "truncated block state");
+        };
+        state.max(0) as u32
     } else {
         0
     };
@@ -3426,10 +3517,11 @@ pub fn route_level_particles(
 pub fn route_level_event(body: &[u8]) -> Option<rewo_world::particles::ParticleEvent> {
     use rewo_world::particles::{ParticleEvent, LEVEL_EVENT_DESTROY_BLOCK};
     let mut r = PacketReader::new(body);
-    let kind = r.i32().ok()?;
-    let (x, y, z) = r.position().ok()?;
-    let data = r.i32().ok()?;
-    let _global = r.bool().ok()?;
+    let (Ok(kind), Ok((x, y, z)), Ok(data), Ok(_global)) =
+        (r.i32(), r.position(), r.i32(), r.bool())
+    else {
+        return route_decode_none("level_event", "truncated body");
+    };
     if kind != LEVEL_EVENT_DESTROY_BLOCK {
         return None;
     }
@@ -3627,10 +3719,11 @@ pub fn route_level_event_sound(
 ) -> Option<crate::sounds::SoundEvent> {
     use rewo_data::level_event_sounds::Placement;
     let mut r = PacketReader::new(body);
-    let kind = r.i32().ok()?;
-    let (x, y, z) = r.position().ok()?;
-    let data = r.i32().ok()?;
-    let global = r.bool().ok()?;
+    let (Ok(kind), Ok((x, y, z)), Ok(data), Ok(global)) =
+        (r.i32(), r.position(), r.i32(), r.bool())
+    else {
+        return route_decode_none("level_event", "truncated body");
+    };
 
     // `global` is matched rather than ignored: `globalLevelEvent` and
     // `levelEvent` are disjoint switches, so a mismatched flag is silence in
@@ -4164,10 +4257,19 @@ pub enum SoundPacketKind {
 pub fn route_sound(kind: SoundPacketKind, body: &[u8]) -> Option<sounds::SoundEvent> {
     use sounds::SoundEvent;
     let mut r = PacketReader::new(body);
-    match kind {
-        SoundPacketKind::Positioned => sounds::PositionedSound::read(&mut r).ok().map(SoundEvent::At),
-        SoundPacketKind::OnEntity => sounds::EntitySound::read(&mut r).ok().map(SoundEvent::OnEntity),
-        SoundPacketKind::Stop => sounds::StopSound::read(&mut r).ok().map(SoundEvent::Stop),
+    let what = match kind {
+        SoundPacketKind::Positioned => "sound",
+        SoundPacketKind::OnEntity => "entity_sound",
+        SoundPacketKind::Stop => "stop_sound",
+    };
+    let read = match kind {
+        SoundPacketKind::Positioned => sounds::PositionedSound::read(&mut r).map(SoundEvent::At),
+        SoundPacketKind::OnEntity => sounds::EntitySound::read(&mut r).map(SoundEvent::OnEntity),
+        SoundPacketKind::Stop => sounds::StopSound::read(&mut r).map(SoundEvent::Stop),
+    };
+    match read {
+        Ok(event) => Some(event),
+        Err(e) => route_decode_none(what, e),
     }
 }
 
@@ -4196,7 +4298,10 @@ pub fn route_view_area(
     let Some(kind) = view_area::kind_for_id(id, table) else {
         return false;
     };
-    view_area::apply(kind, body, area);
+    // `apply` decodes in `view_area.rs`, so the packet is named by its kind.
+    if !view_area::apply(kind, body, area) {
+        route_decode_failed("view_area", format!("{kind:?} body"));
+    }
     true
 }
 
@@ -4227,6 +4332,7 @@ pub fn route_border(
         return false;
     };
     if !border::apply(kind, body, border) {
+        route_decode_failed("border", format!("{kind:?} body"));
         log::debug!("net: border {kind:?} decode failed ({} bytes)", body.len());
     }
     true
@@ -4259,6 +4365,7 @@ pub fn route_waypoint(
         return false;
     }
     if !waypoints::apply(body, store) {
+        route_decode_failed("waypoint", "malformed body");
         log::debug!("net: waypoint decode failed ({} bytes)", body.len());
     }
     true
@@ -4293,7 +4400,9 @@ pub fn route_client_state(
     let Some(kind) = client_state::kind_for_id(id, table) else {
         return false;
     };
-    client_state::apply(kind, body, state, entities, local_player);
+    if !client_state::apply(kind, body, state, entities, local_player) {
+        route_decode_failed("client_state", format!("{kind:?} body"));
+    }
     true
 }
 
@@ -4317,7 +4426,9 @@ pub fn route_ticking(
     let Some(kind) = ticking::kind_for_id(id, table) else {
         return false;
     };
-    ticking::apply(kind, body, manager);
+    if !ticking::apply(kind, body, manager) {
+        route_decode_failed("ticking", format!("{kind:?} body"));
+    }
     true
 }
 
@@ -4347,7 +4458,9 @@ pub fn route_session(
     let Some(kind) = session::kind_for_id(id, table) else {
         return false;
     };
-    session::apply(kind, body, state);
+    if !session::apply(kind, body, state) {
+        route_decode_failed("session", format!("{kind:?} body"));
+    }
     true
 }
 
@@ -4378,7 +4491,9 @@ pub fn route_hud_state(
     let Some(kind) = hud_state::kind_for_id(id, table) else {
         return false;
     };
-    hud_state::apply(kind, body, state);
+    if !hud_state::apply(kind, body, state) {
+        route_decode_failed("hud_state", format!("{kind:?} body"));
+    }
     true
 }
 
@@ -5658,5 +5773,45 @@ mod award_stats_tests {
             client_command_body(ClientCommand::PerformRespawn),
             vec![0u8]
         );
+    }
+}
+
+#[cfg(test)]
+mod route_decode_failure_tests {
+    //! [`super::route_decode_failed`] as seen through
+    //! [`super::route_level_event`]: a `route_*` seam that takes a bare body
+    //! (no `Ids`, no world) and has both a give-up and a deliberate-ignore case.
+
+    use super::{route_level_event, take_route_decode_failures};
+
+    fn body(kind: i32) -> Vec<u8> {
+        let packed = ((7i64 & 0x3FF_FFFF) << 38) | ((-3i64 & 0x3FF_FFFF) << 12) | (64i64 & 0xFFF);
+        let mut b = kind.to_be_bytes().to_vec();
+        b.extend_from_slice(&packed.to_be_bytes());
+        b.extend_from_slice(&1234i32.to_be_bytes());
+        b.push(0);
+        b
+    }
+
+    #[test]
+    fn route_decode_failure_is_counted() {
+        // Another test on this thread may have left a count behind.
+        let _ = take_route_decode_failures();
+        // `&[]` cannot produce even the event kind, so the body gives up on its
+        // first read — one failure, not one per field.
+        assert!(route_level_event(&[]).is_none());
+        assert_eq!(take_route_decode_failures(), 1);
+        // Taking resets: the second take is zero.
+        assert_eq!(take_route_decode_failures(), 0);
+    }
+
+    #[test]
+    fn route_ignored_packet_is_not_counted() {
+        let _ = take_route_decode_failures();
+        // Event 1000 is a well-formed `level_event` this milestone does not
+        // simulate: it decodes in full and is ignored on purpose, which is not
+        // a decode failure.
+        assert!(route_level_event(&body(1000)).is_none());
+        assert_eq!(take_route_decode_failures(), 0);
     }
 }
