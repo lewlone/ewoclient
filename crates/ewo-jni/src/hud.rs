@@ -27,14 +27,18 @@ use skia_safe::{
     PaintStyle, Point, RRect, Rect, TileMode,
 };
 
-// ── Velvet theme tokens (see CLAUDE.md "Velvet theme tokens") ──────────────
-const PEARL: (u8, u8, u8) = (0xF4, 0xE8, 0xEA); // --text-pearl
-const MAUVE: (u8, u8, u8) = (0x9A, 0x80, 0x87); // --text-mauve
-const ROSE: (u8, u8, u8) = (0xE5, 0xB8, 0xC5); // --accent-rose
-const LAV: (u8, u8, u8) = (0xC9, 0xA5, 0xD4); // --accent-lav
-const BERRY: (u8, u8, u8) = (0xB4, 0x74, 0x91); // --accent-berry
-const CHAMP: (u8, u8, u8) = (0xE8, 0xD4, 0xA8); // --accent-champ
-const WINE: (u8, u8, u8) = (0x12, 0x00, 0x10); // --bg-wine-b
+// ── Velvet theme tokens — straight from `ewo_core::theme::Theme::VELVET` ────
+const fn tok(c: ewo_core::color::Srgb) -> (u8, u8, u8) {
+    (c.r, c.g, c.b)
+}
+const VELVET: ewo_core::theme::Theme = ewo_core::theme::Theme::VELVET;
+const PEARL: (u8, u8, u8) = tok(VELVET.text_pearl); // --text-pearl
+const MAUVE: (u8, u8, u8) = tok(VELVET.text_mauve); // --text-mauve
+const ROSE: (u8, u8, u8) = tok(VELVET.accent_rose); // --accent-rose
+const LAV: (u8, u8, u8) = tok(VELVET.accent_lav); // --accent-lav
+const BERRY: (u8, u8, u8) = tok(VELVET.accent_berry); // --accent-berry
+const CHAMP: (u8, u8, u8) = tok(VELVET.accent_champ); // --accent-champ
+const WINE: (u8, u8, u8) = tok(VELVET.bg_wine_b); // --bg-wine-b
 
 fn rgba(c: (u8, u8, u8), a: f32) -> Color4f {
     Color4f::new(c.0 as f32 / 255.0, c.1 as f32 / 255.0, c.2 as f32 / 255.0, a)
@@ -626,8 +630,13 @@ enum WidgetId {
     Media,
 }
 
+/// Number of HUD widgets. Every per-widget array is sized by this, so adding
+/// a variant is one edit here plus its `ALL` entry — never a stale `[_; N]`
+/// that a `WidgetId::ALL[i]` index then walks off the end of.
+const WIDGET_COUNT: usize = 17;
+
 impl WidgetId {
-    const ALL: [WidgetId; 17] = [
+    const ALL: [WidgetId; WIDGET_COUNT] = [
         WidgetId::Fps,
         WidgetId::Coords,
         WidgetId::Ping,
@@ -738,7 +747,7 @@ fn scale_rect_about(r: Rect, cx: f32, cy: f32, s: f32) -> Rect {
 /// The persisted HUD config — the per-widget layout plus HUD prefs. Saved to
 /// `hud.toml`.
 struct HudLayout {
-    widgets: [WidgetLayout; 17],
+    widgets: [WidgetLayout; WIDGET_COUNT],
     /// The paint-rate cap — a pref, kept here so it shares `hud.toml`.
     paint_rate: crate::HudPaintRate,
     /// Liquid-glass intensity, [`GLASS_MIN`]..=[`GLASS_MAX`]. Scales the
@@ -1022,7 +1031,7 @@ pub struct Editor {
     /// Cursor position in window pixels.
     cursor: (f32, f32),
     /// Each widget's drawn bounds, recorded each paint (indexed by `WidgetId`).
-    bounds: [Rect; 17],
+    bounds: [Rect; WIDGET_COUNT],
     dragging: Option<Drag>,
     /// An in-progress corner-drag resize of the selected widget.
     resizing: Option<ResizeDrag>,
@@ -1103,7 +1112,7 @@ pub struct Editor {
     /// Per-frame cache of the HOME quick-toggle chip rects. Chips are flowed
     /// at render time (their width depends on the text) so the press handler
     /// can't compute them without a `FontStore`; the renderer writes here.
-    pub(crate) home_toggle_bounds: [Rect; 17],
+    pub(crate) home_toggle_bounds: [Rect; WIDGET_COUNT],
     /// MODULES tab — `Some(catalog_index)` while the per-module settings
     /// popover is open. Driven by right-click on a row with sliders; closed by
     /// the popover's own ✕ button or by clicking outside the card.
@@ -1210,7 +1219,7 @@ impl Editor {
             layout: HudLayout::load(),
             window: (1.0, 1.0),
             cursor: (0.0, 0.0),
-            bounds: [empty_rect(); 17],
+            bounds: [empty_rect(); WIDGET_COUNT],
             dragging: None,
             resizing: None,
             media_pinned: false,
@@ -1240,7 +1249,7 @@ impl Editor {
             audio_service: crate::audio::AudioService::start(),
             spectrum: crate::audio::Spectrum::SILENT,
             modules_scroll: 0.0,
-            home_toggle_bounds: [empty_rect(); 17],
+            home_toggle_bounds: [empty_rect(); WIDGET_COUNT],
             module_popover: None,
             media_button_press: None,
             crosshair: crate::crosshair::load(),
@@ -5168,8 +5177,8 @@ const ANCHOR_PRESETS: [(Anchor, f32, f32); 9] = [
 /// Hit-rects of the editor side panel, computed from the window height.
 struct PanelLayout {
     panel: Rect,
-    rows: [Rect; 17],
-    toggles: [Rect; 17],
+    rows: [Rect; WIDGET_COUNT],
+    toggles: [Rect; WIDGET_COUNT],
     cells: [Rect; 9],
 }
 
@@ -5199,8 +5208,8 @@ fn panel_layout(h: f32) -> PanelLayout {
     let content_w = PANEL_W - PAD * 2.0;
 
     let rows_top = panel_y + PAD + HEADER_H + WLABEL_H;
-    let mut rows = [empty_rect(); 17];
-    let mut toggles = [empty_rect(); 17];
+    let mut rows = [empty_rect(); WIDGET_COUNT];
+    let mut toggles = [empty_rect(); WIDGET_COUNT];
     for i in 0..WidgetId::ALL.len() {
         let row = Rect::from_xywh(content_x, rows_top + i as f32 * ROW_H, content_w, ROW_H);
         rows[i] = row;
