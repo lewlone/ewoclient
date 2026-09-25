@@ -124,6 +124,8 @@ rewo-audio = { path = "crates/rewo-audio" }
 version = "0.58"
 features = [
     "Win32_Foundation",
+    # auth.toml secrets (DPAPI)
+    "Win32_Security_Cryptography",
     "Win32_Graphics_Dwm",
     # Windows DirectComposition backend (true per-pixel-alpha rounded corners):
     # Skia's D3D12 backend renders into a composition swapchain with

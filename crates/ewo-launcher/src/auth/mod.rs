@@ -22,6 +22,7 @@ pub mod chain;
 pub mod loopback;
 pub mod persistence;
 pub mod pkce;
+pub mod secret;
 pub mod service;
 
 pub use service::{AuthOp, AuthService};

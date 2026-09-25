@@ -147,7 +147,7 @@ implemented theme.
 shared/{versions,libraries,assets}/   Mojang-compatible; vanilla launchers can read it. Don't break it.
 instances/<id>/                       per-instance game dir, natives, logs
 runtime/<major>/jre/                  Adoptium JREs fetched on demand
-auth.toml                             accounts (plaintext refresh tokens — encrypt before distribution)
+auth.toml                             accounts; refresh/social tokens DPAPI-sealed on Windows (`auth/secret.rs`), 0600 plaintext elsewhere
 profiles.toml, profiles/<name>/       client profiles: client.toml, hud.toml, modules.toml, crosshair.toml, pvp.toml
 settings.toml, instances.toml         global settings, instance list
 rewo/26.2/                            Rewo's local datagen + decompile (not redistributable)
