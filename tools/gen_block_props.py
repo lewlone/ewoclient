@@ -12,11 +12,11 @@ Emitted into `crates/rewo-data/src/block_props.rs`:
   `IronBarsBlock` has the connected-pane rule (2), `MangroveRootsBlock` skips a
   same-block neighbour on the Y axis only (3). `LeavesBlock` skips only when
   the `cutoutLeaves` option is off, and its default is on, so it is absent.
-* `FRICTION` / `SPEED_FACTOR` / `JUMP_FACTOR` — `Properties.friction(..)` etc.
+* `FRICTION` / `SPEED_FACTOR` / `JUMP_FACTOR` / `BOUNCE` — `Properties.friction(..)` etc.
 * `STUCK` — `entityInside` → `makeStuckInBlock` multipliers, by class chain.
 * `TRAPDOORS` / `LADDERS` / `FENCE_GATES` — class-chain membership for
   `LivingEntity.onClimbable` and `Entity.getOnPos`.
-* `CLIMBABLE` / `BARS` / `FENCES` / `WALLS` — block tags, fully expanded.
+* `CLIMBABLE` / `BARS` / `FENCES` / `WALLS` / `SUPPRESSES_BOUNCE` — block tags, fully expanded.
 
 Run after a version bump:
     python tools/gen_block_props.py
@@ -130,7 +130,7 @@ def main():
             j += 1
         helpers[m.group(1)] = src[brace : j + 1]
 
-    skip, friction, speed, jump, stuck = {}, {}, {}, {}, {}
+    skip, friction, speed, jump, bounce, stuck = {}, {}, {}, {}, {}, {}
     trapdoors, ladders, gates = set(), set(), set()
     missing = []
 
@@ -157,7 +157,7 @@ def main():
             ladders.add(name)
         if "FenceGateBlock" in ch:
             gates.add(name)
-        for prop, table in (("friction", friction), ("speedFactor", speed), ("jumpFactor", jump)):
+        for prop, table in (("friction", friction), ("speedFactor", speed), ("jumpFactor", jump), ("bounceRestitution", bounce)):
             v = float_prop(body, prop) or float_prop(expanded, prop)
             if v is not None:
                 table[name] = v
@@ -184,7 +184,7 @@ def main():
     if missing:
         print(f"  {len(missing)} names not in the registry: {missing[:5]}", file=sys.stderr)
 
-    tags = {t: sorted(expand_tag(t)) for t in ("climbable", "bars", "fences", "walls")}
+    tags = {t: sorted(expand_tag(t)) for t in ("climbable", "bars", "fences", "walls", "suppresses_bounce")}
 
     dest = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -217,6 +217,7 @@ def main():
     f32_table("FRICTION", "`Properties.friction` (default 0.6).", friction)
     f32_table("SPEED_FACTOR", "`Properties.speedFactor` (default 1.0).", speed)
     f32_table("JUMP_FACTOR", "`Properties.jumpFactor` (default 1.0).", jump)
+    f32_table("BOUNCE", "`Properties.bounceRestitution` (default 0.0).", bounce)
     w("/// `makeStuckInBlock` multiplier from the block's `entityInside`.\n")
     w("pub const STUCK: &[(&str, [f64; 3])] = &[\n")
     for k in sorted(stuck):

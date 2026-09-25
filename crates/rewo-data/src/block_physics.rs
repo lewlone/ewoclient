@@ -73,6 +73,8 @@ pub mod flags {
     pub const WATER_BLOCK: u16 = 1 << 8;
     /// `BlockState.isAir()`.
     pub const AIR: u16 = 1 << 9;
+    /// `#minecraft:suppresses_bounce`.
+    pub const SUPPRESSES_BOUNCE: u16 = 1 << 10;
 }
 
 /// Per-state movement behaviour. `Default` is plain stone: friction 0.6,
@@ -82,6 +84,8 @@ pub struct BlockPhysics {
     pub friction: f32,
     pub speed_factor: f32,
     pub jump_factor: f32,
+    /// `Properties.bounceRestitution` (slime 1.0, beds 0.75).
+    pub bounce: f32,
     pub flags: u16,
     /// Horizontal `facing` as a 2D data value (0 south, 1 west, 2 north,
     /// 3 east — `Direction.get2DDataValue`), or 255 when the state has none.
@@ -96,6 +100,7 @@ impl Default for BlockPhysics {
             friction: DEFAULT_FRICTION,
             speed_factor: 1.0,
             jump_factor: 1.0,
+            bounce: 0.0,
             flags: 0,
             facing: 255,
             stuck: Stuck::None,
@@ -110,6 +115,7 @@ impl BlockPhysics {
         friction: DEFAULT_FRICTION,
         speed_factor: 1.0,
         jump_factor: 1.0,
+        bounce: 0.0,
         flags: flags::AIR,
         facing: 255,
         stuck: Stuck::None,
@@ -158,6 +164,9 @@ impl BlockPhysics {
         if water_block {
             f |= flags::WATER_BLOCK;
         }
+        if has(bp::SUPPRESSES_BOUNCE_TAG) {
+            f |= flags::SUPPRESSES_BOUNCE;
+        }
         if matches!(block, "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air") {
             f |= flags::AIR;
         }
@@ -178,6 +187,7 @@ impl BlockPhysics {
             friction: find(bp::FRICTION, DEFAULT_FRICTION),
             speed_factor: find(bp::SPEED_FACTOR, 1.0),
             jump_factor: find(bp::JUMP_FACTOR, 1.0),
+            bounce: find(bp::BOUNCE, 0.0),
             flags: f,
             facing,
             stuck,

@@ -87,6 +87,27 @@ pub const JUMP_FACTOR: &[(&str, f32)] = &[
     ("minecraft:honey_block", 0.5),
 ];
 
+/// `Properties.bounceRestitution` (default 0.0).
+pub const BOUNCE: &[(&str, f32)] = &[
+    ("minecraft:black_bed", 0.75),
+    ("minecraft:blue_bed", 0.75),
+    ("minecraft:brown_bed", 0.75),
+    ("minecraft:cyan_bed", 0.75),
+    ("minecraft:gray_bed", 0.75),
+    ("minecraft:green_bed", 0.75),
+    ("minecraft:light_blue_bed", 0.75),
+    ("minecraft:light_gray_bed", 0.75),
+    ("minecraft:lime_bed", 0.75),
+    ("minecraft:magenta_bed", 0.75),
+    ("minecraft:orange_bed", 0.75),
+    ("minecraft:pink_bed", 0.75),
+    ("minecraft:purple_bed", 0.75),
+    ("minecraft:red_bed", 0.75),
+    ("minecraft:slime_block", 1.0),
+    ("minecraft:white_bed", 0.75),
+    ("minecraft:yellow_bed", 0.75),
+];
+
 /// `makeStuckInBlock` multiplier from the block's `entityInside`.
 pub const STUCK: &[(&str, [f64; 3])] = &[
     ("minecraft:cobweb", [0.25, 0.05f32 as f64, 0.25]),
@@ -217,5 +238,10 @@ pub const WALLS_TAG: &[&str] = &[
     "minecraft:sulfur_wall",
     "minecraft:tuff_brick_wall",
     "minecraft:tuff_wall",
+];
+
+/// `#minecraft:suppresses_bounce`, expanded.
+pub const SUPPRESSES_BOUNCE_TAG: &[&str] = &[
+    "minecraft:honey_block",
 ];
 
