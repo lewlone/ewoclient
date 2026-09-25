@@ -46,6 +46,7 @@ const K_SKY_LIGHT_COLOR: &str = "minecraft:visual/sky_light_color";
 const K_SKY_LIGHT_FACTOR: &str = "minecraft:visual/sky_light_factor";
 const K_CLOUD_COLOR: &str = "minecraft:visual/cloud_color";
 const K_CLOUD_HEIGHT: &str = "minecraft:visual/cloud_height";
+const K_FAST_LAVA: &str = "minecraft:gameplay/fast_lava";
 
 /// The timeline whose presence in the resolved holder set turns the day cycle
 /// on. Grounded in `data/minecraft/timeline/day.json`.
@@ -62,6 +63,9 @@ const JSON_DEFAULT_SKY_LIGHT_FACTOR: f32 = 1.0;
 /// `CLOUD_COLOR`'s attribute default — fully transparent, i.e. no clouds.
 const JSON_DEFAULT_CLOUD_COLOR: i32 = 0;
 const JSON_DEFAULT_CLOUD_HEIGHT: f32 = 192.33;
+/// `FAST_LAVA`'s attribute default — `AttributeTypes.BOOLEAN`, off. The Nether
+/// alone writes `"minecraft:gameplay/fast_lava": true`.
+const JSON_DEFAULT_FAST_LAVA: bool = false;
 
 /// One `data/minecraft/dimension_type/*.json` file, read raw and graded.
 #[derive(Clone, Debug, PartialEq)]
@@ -84,6 +88,10 @@ pub struct JsonDimension {
     /// defaulted so the gate can actually catch a wrong cloud colour.
     pub cloud_color: i32,
     pub cloud_height: f32,
+    /// `gameplay/fast_lava` — `AttributeTypes.BOOLEAN`, off unless the file
+    /// says otherwise. The Nether's `true` is what makes its lava currents
+    /// push at `0.007` instead of `0.0023333…` (`Entity.java:1672`).
+    pub fast_lava: bool,
     /// `default_clock` — the raw identifier string, read straight off the
     /// file. Absent is a real state (`the_nether.json` declares none), and
     /// `getClockTimeTicks`'s `.orElse(0L)` makes it a permanent zero rather
@@ -134,6 +142,7 @@ impl JsonDimension {
             sky_light_factor: self.sky_light_factor,
             cloud_color: self.cloud_color,
             cloud_height: self.cloud_height,
+            fast_lava: self.fast_lava,
             default_clock: self.default_clock.clone(),
             ambient_sounds: self.ambient_sounds.clone(),
             background_music: self.background_music.clone(),
@@ -193,6 +202,7 @@ impl JsonDimension {
         eq!("ambient_sounds", d.ambient_sounds, want.ambient_sounds);
         eq!("background_music", d.background_music, want.background_music);
         eq!("cloud_height", d.cloud_height, want.cloud_height);
+        eq!("fast_lava", d.fast_lava, want.fast_lava);
         eq!("default_clock", d.default_clock, want.default_clock);
         eq!("sky_light_color", d.sky_light_color, want.sky_light_color);
         eq!(
@@ -421,6 +431,24 @@ fn load_one(data_root: &Path, name: &str, path: &Path) -> Result<JsonDimension, 
             .ok_or_else(|| at(&format!("attribute `{K_CLOUD_HEIGHT}` is not a number")))?
             as f32,
     };
+    // `gameplay/fast_lava` is `AttributeTypes.BOOLEAN`: a JSON `true`/`false`,
+    // where the wire form carries a numeric tag. It is the Nether's alone, and
+    // it is what makes its lava push at `0.007` rather than `0.0023333…`.
+    let fast_lava = match attr(K_FAST_LAVA) {
+        None => {
+            defaulted.push("attributes.gameplay/fast_lava");
+            JSON_DEFAULT_FAST_LAVA
+        }
+        Some(Value::Object(_)) => {
+            return Err(at(&format!(
+                "attribute `{K_FAST_LAVA}` uses the {{modifier, argument}} form, \
+                 which the client does not model"
+            )))
+        }
+        Some(v) => v
+            .as_bool()
+            .ok_or_else(|| at(&format!("attribute `{K_FAST_LAVA}` is not a boolean")))?,
+    };
     // `default_clock` is a top-level field, not an attribute — a bare
     // identifier string, or absent.
     let default_clock = match root.get("default_clock") {
@@ -498,6 +526,7 @@ fn load_one(data_root: &Path, name: &str, path: &Path) -> Result<JsonDimension, 
         sky_light_factor,
         cloud_color,
         cloud_height,
+        fast_lava,
         default_clock,
         ambient_sounds,
         background_music,

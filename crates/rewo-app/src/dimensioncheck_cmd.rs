@@ -119,6 +119,11 @@ pub struct Expect {
     /// for the Overworld's: `getClockTimeTicks` answers `.orElse(0L)`, a
     /// permanent zero.
     pub default_clock: Option<&'static str>,
+    /// `gameplay/fast_lava` — the Nether's alone. It is what makes that
+    /// dimension's lava currents push at `0.007` instead of `0.0023333…`
+    /// (`Entity.java:1672`), which is the physics `MoveAttributes::fast_lava`
+    /// carries.
+    pub fast_lava: bool,
 }
 
 /// The four built-ins, in [`BUILTIN_ORDER`].
@@ -151,6 +156,7 @@ pub const EXPECT: [Expect; 4] = [
         has_day_timeline: true,
         has_fixed_time: false,
         default_clock: Some("minecraft:overworld"),
+        fast_lava: false,
     },
     Expect {
         name: "minecraft:overworld_caves",
@@ -170,6 +176,7 @@ pub const EXPECT: [Expect; 4] = [
         has_day_timeline: true,
         has_fixed_time: false,
         default_clock: Some("minecraft:overworld"),
+        fast_lava: false,
     },
     Expect {
         name: "minecraft:the_end",
@@ -192,6 +199,7 @@ pub const EXPECT: [Expect; 4] = [
         // A DIFFERENT clock from the Overworld's — a vanilla server sends both
         // in every `set_time`, and the End's flash schedule runs on this one.
         default_clock: Some("minecraft:the_end"),
+        fast_lava: false,
     },
     Expect {
         name: "minecraft:the_nether",
@@ -215,6 +223,9 @@ pub const EXPECT: [Expect; 4] = [
         // The ONLY vanilla dimension that declares no clock, so
         // `getDefaultClockTime()` here is a permanent zero.
         default_clock: None,
+        // The ONLY vanilla dimension that sets it: its lava currents push at
+        // `0.007` instead of `0.0023333333333333335`.
+        fast_lava: true,
     },
 ];
 
@@ -285,6 +296,7 @@ impl Expect {
             d.default_clock.as_deref(),
             self.default_clock
         );
+        eq!("fast_lava", d.fast_lava, self.fast_lava);
         Ok(())
     }
 }
@@ -457,7 +469,8 @@ pub fn run(args: DimensioncheckArgs) -> Result<(), String> {
          both the bundled built-in transcription and the decompiled datagen JSON read from \
          {}, field for field (shape, section count, skylight, skybox, ambient scalar, \
          cardinal type + all six factors, sky/fog/ambient/sky-light colours + factor, fixed \
-         time, and a day timeline resolved through the shipped tags/timeline tag files); the \
+         time, the gameplay/fast_lava flag, and a day timeline resolved through the shipped \
+         tags/timeline tag files); the \
          independent EXPECT table agrees with all three; every entry propagates through \
          World::for_dimension to the vertical shape, the sky channel and the cardinal shade \
          codes the mesher packs; and the mesh pool's generation fence separates two \
@@ -523,7 +536,7 @@ fn captured_registry(path: &std::path::Path) -> Result<Vec<DimensionTypeDef>, St
 fn print_matrix(defs: &[DimensionTypeDef]) {
     println!(
         "[dimensioncheck] holder  name                       min_y height sec sky skybox    \
-         ambient cardinal  up/down  sky_color  fog_color  amb_color  skylight_color/factor  day fixed"
+         ambient cardinal  up/down  sky_color  fog_color  amb_color  skylight_color/factor  day fixed lava"
     );
     for (holder, d) in defs.iter().enumerate() {
         let col = |c: Option<i32>| match c {
@@ -532,7 +545,7 @@ fn print_matrix(defs: &[DimensionTypeDef]) {
         };
         println!(
             "[dimensioncheck] {holder:>6}  {:<26} {:>5} {:>6} {:>3} {:>3} {:<9} {:>7.2} \
-             {:<9} {:.1}/{:.1}  {}   {}   {:08x}   {:08x}/{:.1}          {}   {}",
+             {:<9} {:.1}/{:.1}  {}   {}   {:08x}   {:08x}/{:.1}          {}   {}   {}",
             d.name,
             d.shape.min_y,
             d.shape.height,
@@ -550,6 +563,7 @@ fn print_matrix(defs: &[DimensionTypeDef]) {
             d.sky_light_factor,
             if d.has_day_timeline { "yes" } else { "no " },
             if d.has_fixed_time { "yes" } else { "no" },
+            if d.fast_lava { "yes" } else { "no" },
         );
     }
 }

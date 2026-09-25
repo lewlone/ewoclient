@@ -2486,6 +2486,11 @@ impl PlaySession {
                 Some(reg) => crate::attributes::move_attributes(reg, &self.local_attributes),
                 None => physics::MoveAttributes::default(),
             };
+            // `gameplay/fast_lava` is a dimension attribute, not a player one,
+            // so it comes from the active dimension type and not from
+            // `update_attributes`.
+            move_attrs.fast_lava =
+                self.active_dimension_type.as_ref().is_some_and(|d| d.fast_lava);
             // The effect-driven fields (jump boost, slow falling, dolphin's
             // grace, levitation) come from the local effect list, not from
             // `update_attributes`. Built before `self.player` is borrowed
