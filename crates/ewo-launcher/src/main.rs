@@ -77,6 +77,7 @@ mod downloads;
 mod instance_ops;
 mod keybind;
 mod launch;
+mod launch_slot;
 mod loaders;
 mod overlay_mods;
 mod persistence;
@@ -795,37 +796,57 @@ impl App {
     /// it's reaped here and the launch slot is freed; a live game is never
     /// killed — the new launch is refused instead.
     fn launch_slot_busy(&mut self, time: f32) -> bool {
-        if self.pending_prepare.is_some() || self.pending_relaunch.is_some() {
-            log::warn!("launch: a launch is already being prepared — ignoring launch request");
-            return true;
-        }
-        if self.launch_rx.is_none() {
-            return false;
-        }
-        let Some(tracked) = self.active_launch else {
-            // Spawned but not yet reported `Started`.
-            log::warn!("launch: a game is starting — ignoring launch request");
-            return true;
-        };
-        match launch::reaper::state(&tracked) {
-            launch::reaper::GameState::Gone => {}
-            launch::reaper::GameState::Running { visible_window } => {
-                let zombie = launch::reaper::is_zombie(
-                    visible_window,
-                    self.active_launch_window_seen,
-                    time - self.active_launch_started_at,
-                );
-                if !zombie {
-                    log::warn!(
-                        "launch: a game is already running (pid {}) — ignoring launch request",
-                        tracked.pid
-                    );
-                    return true;
-                }
-                launch::reaper::reap(&tracked);
+        use launch_slot::{decide, SlotDecision, SlotInput};
+        // Gather the input — the only place OS process state is read.
+        let tracked = self.active_launch;
+        let input = if self.pending_prepare.is_some() || self.pending_relaunch.is_some() {
+            SlotInput::Preparing
+        } else if self.launch_rx.is_none() {
+            SlotInput::NeverLaunched
+        } else {
+            match tracked {
+                // Spawned but not yet reported `Started`.
+                None => SlotInput::Starting,
+                Some(t) => match launch::reaper::state(&t) {
+                    launch::reaper::GameState::Gone => SlotInput::Gone,
+                    launch::reaper::GameState::Running { visible_window } => SlotInput::Running {
+                        zombie: launch::reaper::is_zombie(
+                            visible_window,
+                            self.active_launch_window_seen,
+                            time - self.active_launch_started_at,
+                        ),
+                    },
+                },
             }
+        };
+        match decide(input) {
+            SlotDecision::Busy(reason) => {
+                // The running-game line names the pid, which the pure
+                // decision can't carry; it is appended here.
+                match (input, tracked) {
+                    (SlotInput::Running { .. }, Some(t)) => log::warn!(
+                        "launch: {reason} (pid {}) — ignoring launch request",
+                        t.pid
+                    ),
+                    _ => log::warn!("launch: {reason} — ignoring launch request"),
+                }
+                return true;
+            }
+            // Nothing was ever launched: nothing to clean up either.
+            SlotDecision::Free => return false,
+            SlotDecision::ReapThenFree => {
+                // Reap first; forgetting the record comes below.
+                if let Some(t) = tracked {
+                    launch::reaper::reap(&t);
+                }
+            }
+            SlotDecision::ForgetThenFree => {}
         }
-        launch::reaper::forget(&tracked);
+        // The game is gone (or was a zombie): drop its OS-side record and
+        // clear the launch fields so the next click gets a fresh slot.
+        if let Some(t) = tracked {
+            launch::reaper::forget(&t);
+        }
         self.launch_rx = None;
         self.active_launch = None;
         self.active_launch_instance_id = None;
