@@ -473,7 +473,7 @@ pub fn run(args: DimensioncheckArgs) -> Result<(), String> {
          tags/timeline tag files); the \
          independent EXPECT table agrees with all three; every entry propagates through \
          World::for_dimension to the vertical shape, the sky channel and the cardinal shade \
-         codes the mesher packs; and the mesh pool's generation fence separates two \
+         the mesher applies to each face; and the mesh pool's generation fence separates two \
          dimension worlds",
         captured.len(),
         captured_names,
