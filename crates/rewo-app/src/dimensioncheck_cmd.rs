@@ -910,11 +910,19 @@ mod tests {
     }
 
     /// The four real datagen files, read off disk by the independent JSON
-    /// oracle. Fails closed: there is no "the files were absent so we skipped"
-    /// arm, because a check that can vanish is not a check.
-    fn decompiled_json() -> Vec<dimension_json::JsonDimension> {
-        dimension_json::load(&dimension_json::default_data_root("26.2"), &BUILTIN_ORDER)
-            .expect("the decompiled 26.2 dimension_type JSON must be readable")
+    /// oracle. `None` (a recorded skip) only when the decompile is absent
+    /// altogether, as on CI; `REWO_REQUIRE_ASSETS=1` turns that skip into a
+    /// failure, and a decompile that is present but unreadable still fails.
+    fn decompiled_json() -> Option<Vec<dimension_json::JsonDimension>> {
+        let root = dimension_json::default_data_root("26.2");
+        if !root.join("dimension_type").is_dir() {
+            rewo_data::skip_test!("no local 26.2 decompile at {}", root.display());
+            return None;
+        }
+        Some(
+            dimension_json::load(&root, &BUILTIN_ORDER)
+                .expect("the decompiled 26.2 dimension_type JSON must be readable"),
+        )
     }
 
     /// The bundled transcription is graded against the **actual decompiled
@@ -925,7 +933,7 @@ mod tests {
     #[test]
     fn the_bundled_transcription_matches_the_decompiled_json_files() {
         let defs = bundled();
-        let json = decompiled_json();
+        let Some(json) = decompiled_json() else { return };
         assert_eq!(defs.len(), json.len());
         for (holder, j) in json.iter().enumerate() {
             j.diff("bundled", holder, &defs[holder]).unwrap();
@@ -937,7 +945,7 @@ mod tests {
     /// reader and a parser that mis-read the *same* field still fail.
     #[test]
     fn the_expectation_table_matches_the_decompiled_json_files() {
-        let json = decompiled_json();
+        let Some(json) = decompiled_json() else { return };
         assert_eq!(EXPECT.len(), json.len());
         for (holder, expect) in EXPECT.iter().enumerate() {
             expect
@@ -951,7 +959,7 @@ mod tests {
     /// names the field and the file.
     #[test]
     fn the_json_oracle_rejects_a_drifted_transcription() {
-        let json = decompiled_json();
+        let Some(json) = decompiled_json() else { return };
         let mut defs = bundled();
         // Nether graded against the Overworld's file.
         assert!(json[0].diff("bundled", 0, &defs[3]).is_err());
@@ -974,7 +982,7 @@ mod tests {
     /// is independent of `has_fixed_time`.
     #[test]
     fn the_day_timeline_is_resolved_from_the_decompiled_tag_files() {
-        let json = decompiled_json();
+        let Some(json) = decompiled_json() else { return };
         assert_eq!(json[0].timelines_raw, vec!["#minecraft:in_overworld"]);
         assert!(json[0].has_day_timeline && !json[0].has_fixed_time);
         for holder in [2usize, 3] {

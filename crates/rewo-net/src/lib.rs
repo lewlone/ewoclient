@@ -4774,6 +4774,13 @@ mod animate_tests {
         };
         apply_swing_effect(&[5, 3, 1, 100, 0], &mut t, ids, true, Some(&classes()));
         assert_eq!(t.current_swing_duration(5), Some(6), "no haste applied");
+        // The equipment half needs the real item registry for its tables.
+        let Some(paths) = rewo_data::DataPaths::for_version("26.2")
+            .filter(|p| p.registries_json().exists())
+        else {
+            rewo_data::skip_test!("no local 26.2 datagen report (equipment half)");
+            return;
+        };
         let comps = DataComponentIds {
             max_damage: 4,
             stored_enchantments: 12,
@@ -4799,9 +4806,9 @@ mod animate_tests {
             writable_book_content: 23,
         };
         let data = super::item_stack::SwingWireData {
-            prototypes: unreachable_prototypes(),
+            prototypes: unreachable_prototypes(&paths),
             components: comps,
-            use_profiles: unreachable_use_profiles(),
+            use_profiles: unreachable_use_profiles(&paths),
         };
         apply_set_equipment(&equipment_body(5, 0, 949), &mut t, &data, Some(&classes()));
         assert_eq!(t.hand_item(5, InteractionHand::MainHand), HandItem::Empty);
@@ -4830,17 +4837,15 @@ mod animate_tests {
     /// real registry — these unit tests only need the *gate*, so the table is
     /// never consulted (the entity is rejected first). `swingshot` covers the
     /// resolved path against the live registry.
-    fn unreachable_prototypes() -> rewo_data::swing_anim::SwingAnimations {
+    fn unreachable_prototypes(paths: &rewo_data::DataPaths) -> rewo_data::swing_anim::SwingAnimations {
         // A registry-less table is impossible to build honestly, so borrow the
-        // real one if the reports are present and skip the assertion otherwise.
-        let paths = rewo_data::DataPaths::for_version("26.2").expect("config dir");
+        // real one; the caller skips when the reports are absent.
         let items = rewo_data::items::Items::load(&paths.registries_json())
             .expect("registries.json for the equipment gate test");
         rewo_data::swing_anim::SwingAnimations::resolve(&items).expect("prototypes")
     }
 
-    fn unreachable_use_profiles() -> rewo_data::use_item::UseProfiles {
-        let paths = rewo_data::DataPaths::for_version("26.2").expect("config dir");
+    fn unreachable_use_profiles(paths: &rewo_data::DataPaths) -> rewo_data::use_item::UseProfiles {
         let items = rewo_data::items::Items::load(&paths.registries_json())
             .expect("registries.json for the equipment gate test");
         rewo_data::use_item::UseProfiles::resolve(&items).expect("use profiles")
@@ -5527,8 +5532,12 @@ mod award_stats_tests {
     /// pass just as well if they came back from a wire branch that never runs.
     #[test]
     fn the_effect_ids_come_from_the_report_because_the_wire_never_carries_them() {
-        let Some(paths) = rewo_data::DataPaths::for_version("26.2") else {
-            rewo_data::skip_test!("no local 26.2 datagen");
+        // `for_version` is `Some` whenever the config dir exists, so the file
+        // itself is what decides.
+        let Some(paths) = rewo_data::DataPaths::for_version("26.2")
+            .filter(|p| p.registries_json().exists())
+        else {
+            rewo_data::skip_test!("no local 26.2 datagen report");
             return;
         };
         let m = rewo_data::mob_effects::MobEffects::load(&paths.registries_json())
