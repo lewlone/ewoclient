@@ -70,7 +70,7 @@ Path-scoped rules (auto-loaded; read one directly if you need it early):
 | Rule | Covers |
 |---|---|
 | `ewo-visual.md` | Velvet tokens, render graph, reference materials, glossary, Skia perf rules |
-| `ewo-launcher.md` | window model, lifecycle and leak fixes, module map, disk layout, `LEAK_HUNT_INSTRUMENT` strip list |
+| `ewo-launcher.md` | window model, lifecycle and leak fixes, module map, disk layout |
 | `ewo-loader-integration.md` | loader manifests, bundled mods, per-instance toggles, iteration loop, stale `file://` jar |
 | `ewo-ingame-hud.md` | Phase E architecture, shared buffers + schema versions, build/deploy, HUD feature gotchas |
 | `ewo-modules.md` | module catalog, legit / pvp split, mixin hooks, PvP Utils |

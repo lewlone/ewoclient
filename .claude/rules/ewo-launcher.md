@@ -52,13 +52,11 @@ Full history: `docs/history/ewoclient-v1.md` (Steps 1–16) and
   focused loop drops to `IDLE_FPS` (120). Input snaps it back. It never
   throttles on the Launching screen. `ControlFlow` sets the cadence, not
   `request_redraw`.
-- **Leak-hunt instrumentation — strip before release.** Every diagnostic site
-  carries the marker `LEAK_HUNT_INSTRUMENT` (`git grep LEAK_HUNT_INSTRUMENT`):
-  the counting global allocator and periodic mem/alloc logs in `main.rs`; the
-  Skia cache caps and logs in `gl_backend.rs`; `process_memory` in
-  `window/win32.rs` plus its wrapper in `window/mod.rs`; and the
-  `Win32_System_Threading`/`ProcessStatus` features in the workspace
-  `Cargo.toml`. The foreground/occlusion skip itself is **not** tagged and stays.
+- **Leak-hunt instrumentation was removed** (2026-09, commit `1d20a71`): the
+  counting allocator, mem/alloc logs and `process_memory` are gone. The
+  foreground/occlusion skip was the fix, not instrumentation, and stays. To
+  hunt a leak again, measure RSS from outside (Task Manager / `Get-Process`)
+  before adding probes back.
 
 ## Module map
 
