@@ -1465,6 +1465,7 @@ impl LiveApp {
         let rows = match page {
             os::OptionsPage::Root => root_rows(&self.lang),
             os::OptionsPage::Sound => sound_rows(&self.options, &self.lang),
+            os::OptionsPage::Video => video_rows(&self.options, &self.lang),
             os::OptionsPage::Accessibility => accessibility_rows(&self.options, &self.lang),
         };
         // The list content starts under the 33-px header; the title sits
@@ -1475,6 +1476,9 @@ impl LiveApp {
             os::OptionsPage::Sound => self
                 .lang
                 .get_or_default("options.sounds.title", "Music & Sound Options"),
+            os::OptionsPage::Video => self
+                .lang
+                .get_or_default("options.videoTitle", "Video Settings"),
             os::OptionsPage::Accessibility => self
                 .lang
                 .get_or_default("options.accessibility.title", "Accessibility Settings"),
@@ -1502,7 +1506,7 @@ impl LiveApp {
         self.options_drag = None;
         save_options(self.options);
         match page {
-            Some(OptionsPage::Sound) | Some(OptionsPage::Accessibility) => {
+            Some(OptionsPage::Sound) | Some(OptionsPage::Video) | Some(OptionsPage::Accessibility) => {
                 self.open_options_screen(OptionsPage::Root);
             }
             _ => {

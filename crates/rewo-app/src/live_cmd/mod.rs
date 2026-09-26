@@ -855,10 +855,17 @@ fn run_windowed(
     // M164's carried water — the windowed client then meshed no waterlogged
     // water and looked EXACTLY as before (`r48` is what asks) — and would
     // lose smooth lighting's emission/dampening the same way.
-    let pool = MeshPool::new(MeshTables::from_baked(&baked))?;
+    let mut pool = MeshPool::new(MeshTables::from_baked(&baked))?;
+    // `options.txt`'s `ao` reaches the pool BEFORE the first submit, or a
+    // player who turned Smooth Lighting off would see their world meshed with
+    // it on. Vanilla carries the same option into the mesher
+    // (`SectionCompiler.java:61` -> `ModelBlockRenderer.java:38-40`) and
+    // re-meshes every chunk when it changes (`Options.java:236-239`).
+    let options = load_options();
+    pool.set_smooth_lighting(options.smooth_lighting);
     let mut app = LiveApp {
         tab_health: std::collections::HashMap::new(),
-        options: load_options(),
+        options,
         blocks,
         capture_pending: false,
         particles: None,

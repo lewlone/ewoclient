@@ -16,9 +16,10 @@
 //!
 //! # What is here and what is not
 //!
-//! Rewo has two options ([`rewo_net::options`]), and they live on two different
-//! vanilla sub-screens: `musicFrequency` on `SoundOptionsScreen` (`:23`) and
-//! `hideLightningFlashes` on `AccessibilityOptionsScreen`. Both are rendered
+//! Rewo has three options ([`rewo_net::options`]), and they live on three
+//! different vanilla sub-screens: `musicFrequency` on `SoundOptionsScreen`
+//! (`:23`), `hideLightningFlashes` on `AccessibilityOptionsScreen`, and
+//! `ambientOcclusion` (`ao`) on `VideoSettingsScreen`. All three are rendered
 //! as **cycle buttons**, which is `OptionInstance.Enum`'s widget.
 //!
 //! The volume sliders arrived with M173: the Sound page is vanilla
@@ -52,6 +53,16 @@ pub enum OptionsPage {
     Root,
     /// `SoundOptionsScreen` — carries `musicFrequency`.
     Sound,
+    /// `VideoSettingsScreen` — carries `ambientOcclusion` (`ao`), the ONE row
+    /// of it Rewo models.
+    ///
+    /// Vanilla's `addOptions` puts three sections on this screen (Display,
+    /// Quality & Performance, Preferences) and `ambientOcclusion` is the fifth
+    /// of `qualityOptions`'s seventeen. Rewo models **only that row**; every
+    /// other row of the three sections — render distance, particles, clouds,
+    /// vsync, FOV, gamma, the graphics preset, the restart-required warning —
+    /// is absent rather than stubbed, exactly as the Sound page's rows are.
+    Video,
     /// `AccessibilityOptionsScreen` — carries `hideLightningFlashes`.
     Accessibility,
 }

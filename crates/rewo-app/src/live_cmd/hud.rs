@@ -887,15 +887,28 @@ pub(crate) fn resolve_book_pages(
     }
 }
 
-/// The ROOT options page's rows (M173): links to the two sub-pages.
+/// The ROOT options page's rows (M173): links to the sub-pages Rewo has, in
+/// vanilla `OptionsScreen.init`'s order — `SOUNDS` (`:71`), `VIDEO` (`:72`),
+/// then `ACCESSIBILITY` (`:87`), two per row as vanilla's `createRowHelper(2)`
+/// packs them. The links Rewo does not have (Skin Customization, Controls,
+/// Language, Chat, Resource Packs, Telemetry, Credits) are absent rather than
+/// stubbed.
 pub(crate) fn root_rows(lang: &rewo_data::lang::Language) -> Vec<rewo_world::options_screen::OptionRow> {
     use rewo_world::options_screen::{OptionRow, RowItem};
-    vec![OptionRow::small(
-        RowItem::Button(lang.get_or_default("options.sounds", "Music & Sounds...").to_string()),
-        Some(RowItem::Button(
-            lang.get_or_default("options.accessibility", "Accessibility Settings...").to_string(),
-        )),
-    )]
+    vec![
+        OptionRow::small(
+            RowItem::Button(lang.get_or_default("options.sounds", "Music & Sounds...").to_string()),
+            Some(RowItem::Button(
+                lang.get_or_default("options.video", "Video Settings...").to_string(),
+            )),
+        ),
+        OptionRow::small(
+            RowItem::Button(
+                lang.get_or_default("options.accessibility", "Accessibility Settings...").to_string(),
+            ),
+            None,
+        ),
+    ]
 }
 
 /// The SOUND page's rows (M173), in vanilla `SoundOptionsScreen.addOptions`
@@ -937,6 +950,23 @@ pub(crate) fn sound_rows(
         None,
     ));
     rows
+}
+
+/// The VIDEO page's rows (M173): the one option Rewo models there —
+/// `options.ao`'s cycle button, the fifth of vanilla's `qualityOptions`
+/// (`VideoSettingsScreen.java:51`) and the whole of Rewo's page. Everything
+/// else on the three sections is absent rather than stubbed (see
+/// [`rewo_world::options_screen::OptionsPage::Video`]).
+pub(crate) fn video_rows(
+    options: &rewo_net::options::Options,
+    lang: &rewo_data::lang::Language,
+) -> Vec<rewo_world::options_screen::OptionRow> {
+    use rewo_world::options_screen::{bool_label, cycle_label, OptionRow, RowItem};
+    let caption = lang.get_or_default("options.ao", "Smooth Lighting");
+    vec![OptionRow::small(
+        RowItem::Button(cycle_label(caption, bool_label(options.smooth_lighting))),
+        None,
+    )]
 }
 
 /// The ACCESSIBILITY page's rows (M173): the one option Rewo models there.
