@@ -708,8 +708,11 @@ impl LiveApp {
         let Some(page) = self.options_view else { return };
         match page {
             os::OptionsPage::Root => match id {
+                // `root_rows`' packing in vanilla's link order (Sounds,
+                // Video, Accessibility): row-major, two per row.
                 0 => self.open_options_screen(os::OptionsPage::Sound),
-                1 => self.open_options_screen(os::OptionsPage::Accessibility),
+                1 => self.open_options_screen(os::OptionsPage::Video),
+                2 => self.open_options_screen(os::OptionsPage::Accessibility),
                 os::DONE => self.close_options(),
                 _ => {}
             },
@@ -731,6 +734,39 @@ impl LiveApp {
                     self.rebuild_options_screen();
                 }
                 Some(os::SoundSlot::Done) => self.close_options(),
+                _ => {}
+            },
+            os::OptionsPage::Video => match id {
+                0 => {
+                    // The button is `CycleableValueSet.createButton`, so a
+                    // click runs the option's `onValueUpdate` and then
+                    // `options.save()`. For `ambientOcclusion` the
+                    // `onValueUpdate` is `operateOnLevelExtractor(
+                    // LevelExtractor::allChanged)` (`Options.java:236-239`) —
+                    // vanilla re-meshes every chunk, because the vertex light
+                    // is baked into the mesh rather than applied at draw time.
+                    //
+                    // Rewo re-meshes through the mechanism every block edit
+                    // uses: the `PlaySession` dirty set (`requeue_dirty` over
+                    // the loaded columns), which `pump_meshing` turns into
+                    // `pool.submit` calls. `MeshPool` reads the setting at
+                    // SUBMIT time (it is moved into the job), so the re-submits
+                    // all carry the new value; a job already in flight keeps
+                    // the old one and is replaced by the re-submit that follows
+                    // it (see `rewo_mesh::pool` — one job per
+                    // `(generation, cx, cz)` at a time).
+                    self.options.smooth_lighting = !self.options.smooth_lighting;
+                    self.pool.set_smooth_lighting(self.options.smooth_lighting);
+                    if let Some(session) = self.session.as_mut() {
+                        let coords = session.world.column_coords();
+                        session.requeue_dirty(coords);
+                    }
+                    // A cycle button saves on every click (vanilla's
+                    // `CycleableValueSet.createButton` -> `options.save()`).
+                    save_options(self.options);
+                    self.rebuild_options_screen();
+                }
+                os::DONE => self.close_options(),
                 _ => {}
             },
             os::OptionsPage::Accessibility => match id {
