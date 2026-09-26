@@ -8,11 +8,16 @@
 //! `0.91F` widened is `0.9100000262…`, not `0.91`.
 //!
 //! Collision is `Entity.collide`: one collider list collected from the
-//! movement-expanded box by `BlockCollisions` (which also scans a one-block
-//! shell for shapes taller than a block — fences, walls), then
-//! `collideWithShapes` in `Direction.axisStepOrder` (Y, then the larger
-//! horizontal axis last), then the step-up retry over the candidate heights the
-//! colliders offer, only when on the ground or landing this tick.
+//! movement-expanded box — the entity colliders
+//! [`PhysicsWorld::entity_colliders`] returns first (`getEntityCollisions`:
+//! boats, shulkers, happy ghasts), then the world border where it is in play,
+//! then `BlockCollisions` (which also scans a one-block shell for shapes taller
+//! than a block — fences, walls) — then `collideWithShapes` in
+//! `Direction.axisStepOrder` (Y, then the larger horizontal axis last), then
+//! the step-up retry over the candidate heights the colliders offer, only when
+//! on the ground or landing this tick. Vanilla collects the entity shapes once,
+//! from the movement-expanded box, and collides the *same* shapes in that
+//! retry; so does this.
 //!
 //! Covered: walking/sprinting/sneaking input (`modifyInput`, square-movement
 //! correction), jumping with `noJumpDelay`, per-block friction / speed / jump
@@ -39,8 +44,14 @@
 //! `setSharedFlag(7, …)` does (landing, a climbable), so
 //! [`TickInput::fall_flying`] is only read here.
 //!
-//! Not covered: `SLEEPING` / `SPIN_ATTACK` poses, passengers, entity colliders
-//! (boats, shulkers), suffocation damage and the exact `isSuffocating` property
+//! Also covered — the entity colliders `Entity.collide` collects ahead of the
+//! blocks: [`PhysicsWorld::entity_colliders`] is `EntityGetter.getEntityCollisions`,
+//! vanilla's `canBeCollidedWith` kinds (`AbstractBoat`, `Shulker`, `HappyGhast`),
+//! which the live session answers from its `EntityTable`.
+//!
+//! Not covered: `SLEEPING` / `SPIN_ATTACK` poses, passengers, the entity half
+//! of `Level.noCollision` ([`can_fit`] — the pose fit — is blocks and the world
+//! border only), suffocation damage and the exact `isSuffocating` property
 //! (see [`suffocates_at`]), levitation from blocks, powder-snow walking with
 //! leather boots, and the server-only half of the elytra —
 //! `handleFallFlyingCollisions` (the `fly-into-wall` damage), the durability hit
@@ -177,6 +188,22 @@ pub trait PhysicsWorld {
     fn has_chunk(&self, x: i32, z: i32) -> bool;
     /// The dimension's lowest y (`Level.getMinY`).
     fn min_y(&self) -> i32;
+    /// `EntityGetter.getEntityCollisions`: the bounding boxes of the entities
+    /// the player collides with — vanilla's `canBeCollidedWith` kinds
+    /// (`AbstractBoat`, `Shulker`, `HappyGhast`), never the vehicle the player
+    /// rides — whose box overlaps `search`, in any order. One box per entity.
+    ///
+    /// `search` is the area `getEntities` selects over, i.e. the caller's test
+    /// area (`aabb.expandTowards(movement)`) already inflated by `1.0E-7`.
+    /// Touching boxes therefore count, exactly as in vanilla.
+    ///
+    /// Default: nothing, which is every world without entities to stand on —
+    /// [`ShapesOnly`] and the flat-test-world harnesses behave as they did
+    /// before this seam existed.
+    fn entity_colliders(&self, search: [f64; 6]) -> Vec<[f64; 6]> {
+        let _ = search;
+        Vec::new()
+    }
 }
 
 /// A world that is only collision shapes: every block behaves like stone
@@ -200,7 +227,7 @@ impl<'s> PhysicsWorld for ShapesOnly<'_, 's> {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerState {
     /// Feet position (the wire position).
     pub x: f64,
@@ -1670,6 +1697,11 @@ fn deflate(b: &Aabb, e: f64) -> Aabb {
     [b[0] + e, b[1] + e, b[2] + e, b[3] - e, b[4] - e, b[5] - e]
 }
 
+/// `AABB.inflate(amount)` — every face moves outwards.
+fn inflate(b: &Aabb, e: f64) -> Aabb {
+    [b[0] - e, b[1] - e, b[2] - e, b[3] + e, b[4] + e, b[5] + e]
+}
+
 /// `AABB.expandTowards`.
 fn expand_towards(b: &Aabb, d: [f64; 3]) -> Aabb {
     let mut o = *b;
@@ -1821,11 +1853,29 @@ fn collide(state: &PlayerState, ctx: &Ctx, movement: [f64; 3]) -> [f64; 3] {
             b.is_inside_close_to_border(state.x, state.z, q[3] - q[0], q[5] - q[2])
         })
     };
+    // `Entity.collide`'s single entity query: `getEntityCollisions(this,
+    // aabb.expandTowards(movement))`, whose `getEntities` searches that test
+    // area inflated by `1.0E-7` (its size guard is unreachable here — the query
+    // is at least the player's 0.6-wide box). The shapes come back and lead
+    // `collectCollidersIgnoringWorldBorder`'s list — entities, border, blocks —
+    // and the same shapes are what the step-up retry below collides against:
+    // vanilla collects them once, here, and reuses them for `stepUpAABB`.
+    let q = expand_towards(&bx, movement);
+    let entities: Vec<Vec<Aabb>> = ctx
+        .world
+        .entity_colliders(inflate(&q, EPS))
+        .into_iter()
+        .map(|b| vec![b])
+        .collect();
+    let collect = |q: &Aabb| {
+        let mut all = entities.clone();
+        all.extend(collect_colliders(q, ctx.world));
+        all
+    };
     let step = if len_sq(movement) == 0.0 {
         movement
     } else {
-        let q = expand_towards(&bx, movement);
-        collide_with_shapes(movement, &bx, &collect_colliders(&q, ctx.world), border_for(&q))
+        collide_with_shapes(movement, &bx, &collect(&q), border_for(&q))
     };
     let x_coll = movement[0] != step[0];
     let y_coll = movement[1] != step[1];
@@ -1838,7 +1888,7 @@ fn collide(state: &PlayerState, ctx: &Ctx, movement: [f64; 3]) -> [f64; 3] {
         if !landing {
             q = expand_towards(&q, [0.0, -1.0e-5f32 as f64, 0.0]);
         }
-        let colliders = collect_colliders(&q, ctx.world);
+        let colliders = collect(&q);
         let border = border_for(&q);
         for h in step_up_candidates(&grounded, &colliders, max_step, step[1] as f32) {
             let s = collide_with_shapes([movement[0], h as f64, movement[2]], &grounded, &colliders, border);
@@ -2554,6 +2604,108 @@ mod tests {
             "and stopped at the *floored* one, z={}",
             p.z
         );
+    }
+
+    // ── The entity colliders (`getEntityCollisions`) ─────────────────────
+
+    /// [`ShapesOnly`] plus the entity boxes [`PhysicsWorld::entity_colliders`]
+    /// returns — the seam the live session fills from its entity table, with
+    /// the boxes given here rather than derived.
+    struct WithEntities<'a, 's> {
+        shapes: &'a dyn Fn(i32, i32, i32) -> &'s [[f32; 6]],
+        entities: Vec<Aabb>,
+    }
+
+    impl<'s> PhysicsWorld for WithEntities<'_, 's> {
+        fn collision(&self, x: i32, y: i32, z: i32) -> &[[f32; 6]] {
+            (self.shapes)(x, y, z)
+        }
+        fn block(&self, _x: i32, _y: i32, _z: i32) -> BlockPhysics {
+            BlockPhysics::default()
+        }
+        fn has_chunk(&self, _x: i32, _z: i32) -> bool {
+            true
+        }
+        fn min_y(&self) -> i32 {
+            i32::MIN
+        }
+        /// `getEntities`'s selection: every entity box overlapping the test
+        /// area — which arrives already inflated, so touching counts.
+        fn entity_colliders(&self, search: [f64; 6]) -> Vec<[f64; 6]> {
+            self.entities.iter().copied().filter(|b| intersects(b, &search)).collect()
+        }
+    }
+
+    /// `oak_boat`'s box (1.375 wide × 0.5625 tall, `EntityPickTable`), centred
+    /// on x/z and standing on `y`.
+    fn boat_box(x: f64, y: f64, z: f64) -> Aabb {
+        [x - 0.6875, y, z - 0.6875, x + 0.6875, y + 0.5625, z + 0.6875]
+    }
+
+    /// [`tick_env`] over one of these worlds, with the tick's usual defaults.
+    fn tick_world(p: &mut PlayerState, input: &TickInput, world: &dyn PhysicsWorld) {
+        tick_env(p, input, &Abilities::default(), false, None, &MoveAttributes::default(), world);
+    }
+
+    /// Stand on one: the player lands on the box's top face and stays there —
+    /// exactly as on a block.
+    #[test]
+    fn stands_on_a_boat_sized_collider() {
+        let world = WithEntities { shapes: &floor, entities: vec![boat_box(0.5, 0.0, 0.5)] };
+        let mut p = PlayerState::at(0.5, 3.0, 0.5);
+        for _ in 0..80 {
+            tick_world(&mut p, &TickInput::default(), &world);
+        }
+        assert!(p.on_ground, "landed on the collider");
+        assert!((p.y - 0.5625).abs() < 1e-6, "stands on its top face, y={}", p.y);
+    }
+
+    /// Walk into one and you stop. The box is raised to `[0.25, 0.8125]` only
+    /// so its top clears the 0.6 step height — a boat *on* the floor is
+    /// 0.5625 tall and is stepped onto, not walked into. The step-up retry
+    /// does offer the box's lower face (0.25) as a candidate, and fails
+    /// there: at that height the player still overlaps the box.
+    #[test]
+    fn a_boat_sized_collider_stops_a_walking_player() {
+        let world = WithEntities { shapes: &floor, entities: vec![boat_box(0.5, 0.25, 2.0)] };
+        let mut p = PlayerState::at(0.5, 0.0, -1.0);
+        let fwd = TickInput { forward: 1.0, ..Default::default() };
+        for _ in 0..60 {
+            tick_world(&mut p, &fwd, &world);
+        }
+        assert!(p.horizontal_collision, "stopped by the collider");
+        assert!(p.z > 0.5, "walked up to it first, z={}", p.z);
+        assert!(p.z <= 1.3125 - PLAYER_HALF_WIDTH + 1e-6, "did not pass the face, z={}", p.z);
+        assert!(p.y.abs() < 1e-6, "and did not climb it, y={}", p.y);
+    }
+
+    /// Regression: a world that returns no entity colliders must tick exactly
+    /// like one that never had the seam. Same world and inputs against
+    /// `ShapesOnly` (the pre-seam default) and a [`WithEntities`] with an
+    /// empty list; the walk, the jumps and the half-block step-up cover the
+    /// paths the entity shapes now sit in front of.
+    #[test]
+    fn no_entity_colliders_changes_nothing() {
+        const SLAB: &[[f32; 6]] = &[[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]];
+        let shapes = |_x: i32, y: i32, z: i32| {
+            if y < 0 {
+                FULL
+            } else if y == 0 && z == 4 {
+                SLAB
+            } else {
+                EMPTY
+            }
+        };
+        let before = ShapesOnly { shapes: &shapes };
+        let empty = WithEntities { shapes: &shapes, entities: Vec::new() };
+        let mut a = PlayerState::at(0.5, 0.0, 0.5);
+        let mut b = PlayerState::at(0.5, 0.0, 0.5);
+        for i in 0..120 {
+            let input = TickInput { forward: 1.0, jump: i == 20 || i == 60, ..Default::default() };
+            tick_world(&mut a, &input, &before);
+            tick_world(&mut b, &input, &empty);
+        }
+        assert_eq!(a, b);
     }
 
     // ---- vanilla-derived expectations for the full tick ------------------
