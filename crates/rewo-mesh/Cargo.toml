@@ -17,3 +17,6 @@ rayon = { workspace = true }
 # The M15 greedy-mesh oracle (`check_greedy_oracle`, the frozen reference
 # mesher and its fixtures) for `rewo meshshot --check`. Off in a client build.
 oracle = []
+
+[lints]
+workspace = true

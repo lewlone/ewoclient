@@ -19,3 +19,6 @@ serde = ["dep:serde", "glam/serde"]
 # assist set (auto-tool, auto-totem, swing-cadence, …) used in semi-anarchy
 # builds. The Java side mirrors the gate via `build.ps1 -Pvp`.
 pvp = []
+
+[lints]
+workspace = true

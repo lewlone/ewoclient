@@ -53,3 +53,6 @@ default = []
 # feature when producing a matched pvp build (cargo's feature unification
 # does this automatically when you build the workspace with --features pvp).
 pvp = ["ewo-core/pvp"]
+
+[lints]
+workspace = true

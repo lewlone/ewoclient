@@ -60,3 +60,6 @@ windows = { version = "0.58", features = [
 # crate has to be a direct dependency rather than reached through `windows`.
 # Same 0.58 release, so cargo unifies it with the one `windows` already pulls.
 windows-core = "0.58"
+
+[lints]
+workspace = true

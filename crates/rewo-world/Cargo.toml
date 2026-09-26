@@ -20,3 +20,6 @@ dirs = { workspace = true }
 libm = "0.2"
 # Fx hashing for the column map (hot lookups in mesher/light/physics).
 rustc-hash = "2.1"
+
+[lints]
+workspace = true

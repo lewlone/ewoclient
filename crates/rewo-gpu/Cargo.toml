@@ -29,3 +29,6 @@ indexmap = { workspace = true }
 # only the outline sink. Kept explicit rather than defaulted so a future
 # default-feature change cannot silently drop the rasterizer.
 swash = { version = "0.2.10", default-features = false, features = ["scale", "render", "std"] }
+
+[lints]
+workspace = true

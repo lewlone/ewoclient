@@ -156,6 +156,22 @@ opt-level = 3
 [profile.dev.package.skia-bindings]
 opt-level = 3
 
+# Lints every crate opts into (`[lints] workspace = true`). The allows are the
+# ones whose "fix" would damage the code rather than improve it:
+[workspace.lints.rust]
+# Test names capitalise the word the test is about (`..._by_the_MENU_not_...`).
+non_snake_case = "allow"
+
+[workspace.lints.clippy]
+# Float literals and comparisons are transcribed from the decompile; shortening
+# `0.0023333333333333335` or rewriting `!(a < b)` (Java's NaN-aware form) would
+# break the line-for-line correspondence the code is checked against.
+excessive_precision = "allow"
+neg_cmp_op_on_partial_ord = "allow"
+# Judgement lints the transcriptions trip constantly (vanilla signatures).
+too_many_arguments = "allow"
+type_complexity = "allow"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

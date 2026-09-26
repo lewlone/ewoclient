@@ -17,3 +17,6 @@ zip = { workspace = true }
 png = { workspace = true }
 # `deprecated.json`'s rename map is applied in file order — see `lang.rs`.
 indexmap = { workspace = true }
+
+[lints]
+workspace = true
