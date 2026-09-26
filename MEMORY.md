@@ -2,7 +2,7 @@
 
 Personal read-only orientation notes after a full-repo deep dive. **Numbers below
 carry their verification date; the authoritative current numbers live in
-`REWO_PLAN.md` §0.0 and the AGENTS.md top block** — per project rule, don't
+`REWO_PLAN.md` §0.0** — per project rule, don't
 trust a number copied into a second document (including this one) without
 re-measuring.
 
@@ -25,7 +25,7 @@ Sibling repos: `Desktop\EwoLoaderV1` (Fabric fork, loader manifests) and
   **`HANDOFF.md` at the repo root** — rewritten every session, so read it
   rather than any snapshot here for "where are we".
 - Doc precedence when they disagree: REWO_PLAN §0.0 (per-milestone updated) >
-  AGENTS.md top block > HANDOFF.md (rewritten 2026-08-25, post-M180) >
+  HANDOFF.md (rewritten 2026-08-25, post-M180) >
   `.claude/NEXT_SESSION_PROMPT.md` (now a pointer to HANDOFF) > README.md.
   AGENTS.md is a GENERATED mirror of CLAUDE.md — never hand-edit; regenerate
   via `python tools/regen_agents_mirror.py`.
@@ -126,7 +126,9 @@ inherits its event across every wrapped piece of its own text.
   vanilla_hier.rs, chunk.rs, light.rs mixed) — measure bytes, not grep. And
   normalize NEW files as bytes too: PowerShell `Add-Content` appended one CRLF
   into an LF file this arc.
-- Commit messages explain the finding; merge --no-ff; update §15 + §0.0 +
-  CLAUDE.md then regenerate mirror.
+- Commit messages explain the finding; merge --no-ff; update §15 + §0.0 (+ a
+  `.claude/rules/*.md` file if a durable rule changed). CLAUDE.md is a ~200-line
+  index since 2026-09-26 — never append milestone text; if it changes,
+  regenerate the mirror.
 - The listening pass (audio) is explicitly THE USER'S — never claim audio works
   from a green suite.

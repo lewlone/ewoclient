@@ -317,9 +317,11 @@ not yet pushed". Everything is merged and pushed; there is no work branch.
   only record of a subtle vanilla behaviour. End with
   `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
 - **After a milestone**, update `REWO_PLAN.md` §15 (the status log — it is the
-  durable record), §0.0's measurements, the Rewo section of `CLAUDE.md`, and the
-  `rewo_client` memory file. Load-bearing conventions belong there so they are
-  never re-derived.
+  durable record), §0.0's measurements, and the `rewo_client` memory file. If a
+  load-bearing convention changed, edit the matching `.claude/rules/*.md` file
+  so it is never re-derived. **Never append milestone narrative to `CLAUDE.md`**:
+  since 2026-09-26 it is a ~200-line always-loaded index, and its old Rewo
+  section lives verbatim in `docs/rewo/` and `docs/history/`.
   **Then REGENERATE `AGENTS.md`** — it is a generated mirror of `CLAUDE.md`, its
   own header carries the one-line command, and forgetting it is how that file
   drifted 634 lines by 2026-07-27 and 3,061 lines by 2026-08-07. Never hand-edit
