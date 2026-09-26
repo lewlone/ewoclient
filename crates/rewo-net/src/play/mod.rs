@@ -3036,7 +3036,7 @@ impl PlaySession {
             &self.ids,
             crate::player_rotation::LocalRotation {
                 pos: [self.player.x, self.player.y, self.player.z],
-                eye_height: rewo_world::physics::EYE_HEIGHT,
+                eye_height: self.player.eye_height(),
                 yaw: &mut self.player.yaw,
                 pitch: &mut self.player.pitch,
             },

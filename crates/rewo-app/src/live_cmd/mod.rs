@@ -477,6 +477,9 @@ impl Keys {
             jump: self.jump,
             sneak: self.sneak,
             sprint: self.sprint && self.w,
+            // No key drives the elytra yet: the FALL_FLYING pose is modelled,
+            // the fall-flying travel is a later change.
+            fall_flying: false,
         }
     }
 }

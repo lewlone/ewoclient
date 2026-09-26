@@ -24,10 +24,18 @@
 //! flight (`Player.travel`'s `abilities.flying` arm), no-clip, the
 //! unloaded-chunk `-0.1` fall, and the movement attributes.
 //!
-//! Not covered: swimming pose and the
-//! swim-sprint pitch steering, the crouching/swimming bounding boxes (the box
-//! is always 0.6 × 1.8), elytra, levitation from blocks, entity colliders
-//! (boats, shulkers), powder-snow walking with leather boots.
+//! Also covered — the poses: the crouching / crawling / swimming bounding boxes
+//! and eye heights (`Avatar.POSES`), `LocalPlayer.aiStep`'s auto-`crouching`
+//! flag and `moveTowardsClosestSpace` un-suffocation, `isMovingSlowly`,
+//! `Entity.updateSwimming` / `Player.updateSwimming`, `Player.updatePlayerPose`
+//! and `getDesiredPose`, and `Player.travel`'s swim-steering.
+//!
+//! Not covered: the fall-flying *travel* (the `FALL_FLYING` pose itself is
+//! modelled from `TickInput::fall_flying`, elytra motion is a later change),
+//! `SLEEPING` / `SPIN_ATTACK` poses, passengers, entity colliders (boats,
+//! shulkers), suffocation damage and the exact `isSuffocating` property
+//! (see [`suffocates_at`]), levitation from blocks, powder-snow walking with
+//! leather boots.
 
 use rewo_data::block_physics::{flags, BlockPhysics, PhysFluid, Stuck};
 
@@ -35,7 +43,7 @@ use crate::abilities::Abilities;
 use crate::border::BorderCollision;
 use crate::lightmap::{mth_cos, mth_sin};
 
-/// Player collision box: 0.6 × 1.8 (eye height 1.62).
+/// Player collision box: 0.6 × 1.8 (eye height 1.62) — the STANDING pose.
 pub const PLAYER_HALF_WIDTH: f64 = 0.3;
 pub const PLAYER_HEIGHT: f64 = 1.8;
 pub const EYE_HEIGHT: f64 = 1.62;
@@ -52,6 +60,40 @@ const SPRINT_MODIFIER: f64 = 0.3;
 const FLUID_JUMP_THRESHOLD: f64 = 0.4;
 const EPS: f64 = 1.0e-7;
 
+/// `Pose` — the entity-data pose, which picks the bounding box and the eye
+/// height (`Avatar.POSES` maps it to `EntityDimensions`). `SLEEPING`,
+/// `SPIN_ATTACK` and `DYING` have no local-player model here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Pose {
+    #[default]
+    Standing,
+    Crouching,
+    Swimming,
+    FallFlying,
+}
+
+/// `Avatar.POSES` as `(half width, height, eye height)`.
+///
+/// The Java values are `float`s and the port widens them exactly as Java does:
+/// `1.27F` is `1.2699999809265137`, not `1.27`. STANDING is the exception and
+/// keeps this module's pre-pose consts verbatim, so every standing number
+/// (`eye_y()` above all) stays bit-identical to the code that predates poses.
+/// Every pose is `0.6F` wide, halved in `float` by `makeBoundingBox`, so one
+/// half-width serves all four.
+pub fn dimensions(pose: Pose) -> (f64, f64, f64) {
+    match pose {
+        Pose::Standing => (PLAYER_HALF_WIDTH, PLAYER_HEIGHT, EYE_HEIGHT),
+        Pose::Crouching => (PLAYER_HALF_WIDTH, 1.5f32 as f64, 1.27f32 as f64),
+        Pose::Swimming | Pose::FallFlying => (PLAYER_HALF_WIDTH, 0.6f32 as f64, 0.4f32 as f64),
+    }
+}
+
+/// `EntityDimensions.makeBoundingBox(position)`.
+fn pose_box(pose: Pose, x: f64, y: f64, z: f64) -> Aabb {
+    let (half_width, height, _) = dimensions(pose);
+    [x - half_width, y, z - half_width, x + half_width, y + height, z + half_width]
+}
+
 /// Per-tick input, vanilla conventions: forward +1 = W, strafe +1 = left.
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct TickInput {
@@ -60,6 +102,9 @@ pub struct TickInput {
     pub jump: bool,
     pub sneak: bool,
     pub sprint: bool,
+    /// `Entity.isFallFlying()` — the elytra shared flag. Only the pose is
+    /// modelled here (the fall-flying travel is a later change).
+    pub fall_flying: bool,
 }
 
 /// The local player's movement attributes and effects. `Default` is a vanilla
@@ -171,6 +216,15 @@ pub struct PlayerState {
     pub lava_height: f64,
     /// `isEyeInFluid(WATER)` as of this tick's fluid update.
     pub eye_in_water: bool,
+    /// `Entity`'s DATA_POSE — see [`Pose`]. Set by the tick's
+    /// `Player.updatePlayerPose`.
+    pub pose: Pose,
+    /// `Entity`'s shared SWIMMING flag, as maintained by the tick's
+    /// `Entity.updateSwimming` / `Player.updateSwimming`.
+    pub swimming: bool,
+    /// `LocalPlayer.crouching` — the auto-crouching flag, **not** the shift
+    /// key (`TickInput::sneak`).
+    pub crouching: bool,
 }
 
 impl PlayerState {
@@ -195,11 +249,19 @@ impl PlayerState {
             water_height: 0.0,
             lava_height: 0.0,
             eye_in_water: false,
+            pose: Pose::Standing,
+            swimming: false,
+            crouching: false,
         }
     }
 
+    /// `Entity.getEyeHeight()` — the current pose's eye height.
+    pub fn eye_height(&self) -> f64 {
+        dimensions(self.pose).2
+    }
+
     pub fn eye_y(&self) -> f64 {
-        self.y + EYE_HEIGHT
+        self.y + self.eye_height()
     }
 
     pub fn in_water(&self) -> bool {
@@ -210,15 +272,16 @@ impl PlayerState {
         self.lava_height > 0.0
     }
 
+    /// `LocalPlayer.isMovingSlowly`: `isCrouching() || isVisuallyCrawling()`,
+    /// the latter being a SWIMMING pose out of the water
+    /// (`Entity.isVisuallyCrawling`).
+    fn is_moving_slowly(&self) -> bool {
+        self.crouching || (self.pose == Pose::Swimming && !self.in_water())
+    }
+
+    /// `Entity.getBoundingBox` for the current pose.
     fn aabb(&self) -> Aabb {
-        [
-            self.x - PLAYER_HALF_WIDTH,
-            self.y,
-            self.z - PLAYER_HALF_WIDTH,
-            self.x + PLAYER_HALF_WIDTH,
-            self.y + PLAYER_HEIGHT,
-            self.z + PLAYER_HALF_WIDTH,
-        ]
+        pose_box(self.pose, self.x, self.y, self.z)
     }
 
     fn block_pos(&self) -> [i32; 3] {
@@ -276,6 +339,35 @@ pub fn tick_env(
 ) {
     let flying = abilities.flying;
     let affected_by_fluids = !flying;
+
+    // -- Entity.baseTick: fluid interaction ---------------------------------
+    update_fluids(state, world, !flying, attrs.fast_lava);
+    if state.in_water() {
+        state.fall_distance = 0.0;
+    }
+    // -- Entity.baseTick: updateSwimming, before the lava fall halving -------
+    update_swimming(state, input, world, flying);
+    if state.in_lava() {
+        state.fall_distance *= 0.5;
+    }
+
+    // -- LocalPlayer.aiStep: the auto-crouching flag -------------------------
+    // `Player.canPlayerFitWithinBlocksAndEntitiesWhen`, at the current
+    // position. `!isPassenger()` and `!isSleeping()` are taken as true here.
+    state.crouching = !flying
+        && !state.swimming
+        && can_fit(state, world, border, Pose::Crouching)
+        && (input.sneak || !can_fit(state, world, border, Pose::Standing));
+
+    // -- LocalPlayer.aiStep: the un-suffocation nudges -----------------------
+    if !no_clip {
+        let reach = dimensions(state.pose).0 * 2.0 * 0.35;
+        move_towards_closest_space(state, world, state.x - reach, state.z + reach);
+        move_towards_closest_space(state, world, state.x - reach, state.z - reach);
+        move_towards_closest_space(state, world, state.x + reach, state.z - reach);
+        move_towards_closest_space(state, world, state.x + reach, state.z + reach);
+    }
+
     let mut ctx = Ctx {
         world,
         attrs,
@@ -283,18 +375,8 @@ pub fn tick_env(
         input,
         no_clip,
         flying,
-        crouching: input.sneak && !flying,
         air_speed: abilities.air_move_speed(input.sprint, flying) as f32,
     };
-
-    // -- Entity.baseTick: fluid interaction ---------------------------------
-    update_fluids(state, world, !flying, attrs.fast_lava);
-    if state.in_water() {
-        state.fall_distance = 0.0;
-    }
-    if state.in_lava() {
-        state.fall_distance *= 0.5;
-    }
 
     // -- LocalPlayer.aiStep: sneaking sinks in water --------------------------
     if state.in_water() && input.sneak && affected_by_fluids {
@@ -314,7 +396,7 @@ pub fn tick_env(
     if state.vy.abs() < MIN_MOVEMENT_DISTANCE {
         state.vy = 0.0;
     }
-    let (xxa, zza) = modify_input(input, ctx.crouching, attrs);
+    let (xxa, zza) = modify_input(input, state.is_moving_slowly(), attrs);
 
     if input.jump && affected_by_fluids {
         let in_lava = state.in_lava();
@@ -352,6 +434,9 @@ pub fn tick_env(
     if !no_clip {
         apply_stuck(state, world, flying);
     }
+
+    // -- Player.tick's tail: updatePlayerPose, after the move ---------------
+    update_player_pose(state, input, flying, no_clip, world, border);
 }
 
 struct Ctx<'a> {
@@ -361,22 +446,169 @@ struct Ctx<'a> {
     input: &'a TickInput,
     no_clip: bool,
     flying: bool,
-    crouching: bool,
     /// `Player.getFlyingSpeed()` (the airborne `moveRelative` amount).
     air_speed: f32,
 }
 
-/// `LocalPlayer.modifyInput`: ×0.98, ×`sneaking_speed` while crouching, then
+// -- poses and un-suffocation (`LocalPlayer.aiStep`, `Player.updatePlayerPose`)
+
+/// `Entity.updateSwimming`, with `Player.updateSwimming`'s flying arm on top:
+/// the SWIMMING shared flag. `isSprinting()` is [`TickInput::sprint`],
+/// `isUnderWater()` `LocalPlayer.isUnderWater()` (`wasUnderwater`, the
+/// eye-in-water flag), `isInWater()` the fluid heights. `!isPassenger()` is
+/// taken as true.
+fn update_swimming(state: &mut PlayerState, input: &TickInput, world: &dyn PhysicsWorld, flying: bool) {
+    if flying {
+        // `Player.updateSwimming`.
+        state.swimming = false;
+        return;
+    }
+    state.swimming = if state.swimming {
+        // Already swimming: it stays up while sprinting in water.
+        input.sprint && state.in_water()
+    } else {
+        // Starting: eyes under water *and* water at `blockPosition()`.
+        let [x, y, z] = state.block_pos();
+        input.sprint
+            && state.eye_in_water
+            && matches!(world.block(x, y, z).fluid, PhysFluid::Water { .. })
+    };
+}
+
+/// `Player.canPlayerFitWithinBlocksAndEntitiesWhen`: the pose's box at the
+/// current position, deflated by `1.0E-7`, through `Level.noCollision` — the
+/// blocks and the world border, entity colliders out of scope.
+fn can_fit(state: &PlayerState, world: &dyn PhysicsWorld, border: Option<BorderCollision>, pose: Pose) -> bool {
+    let box_at = deflate(&pose_box(pose, state.x, state.y, state.z), EPS);
+    no_collision(&box_at, world) && no_border_collision(&box_at, state, border)
+}
+
+/// `CollisionGetter.noBorderCollision`: the border shape is the complement of
+/// the floored/ceiled rectangle [`clip_border`] clips against, exact face
+/// touches excluded, and only applies near the wall
+/// (`WorldBorder.isInsideCloseToBorder`).
+fn no_border_collision(b: &Aabb, state: &PlayerState, border: Option<BorderCollision>) -> bool {
+    let Some(w) = border else { return true };
+    if !w.is_inside_close_to_border(state.x, state.z, b[3] - b[0], b[5] - b[2]) {
+        return true;
+    }
+    b[0] >= w.plane_min_x()
+        && b[3] <= w.plane_max_x()
+        && b[2] >= w.plane_min_z()
+        && b[5] <= w.plane_max_z()
+}
+
+/// `LocalPlayer.suffocatesAt`: does the block column at `(x, z)` cover the
+/// player's box y span? The test area is that column over
+/// `boundingBox.minY..maxY`, deflated by `1.0E-7`, through
+/// `CollisionGetter.collidesWithSuffocatingBlock`.
+///
+/// Approximation: vanilla's `BlockCollisions(…, onlySuffocatingBlocks=true)`
+/// keeps a block when `BlockState.isSuffocating` — a solid full block — and
+/// takes its shape; here a block suffocates only when [`PhysicsWorld::collision`]
+/// is exactly one full unit cube (`FULL_CUBE`: a full block that blocks motion).
+/// A slab, stairs or a fence therefore never counts, where `isSuffocating`
+/// could disagree for the few non-full-cube shapes it calls suffocating.
+fn suffocates_at(x: i32, z: i32, y0: f64, y1: f64, world: &dyn PhysicsWorld) -> bool {
+    let test = deflate(&[x as f64, y0, z as f64, x as f64 + 1.0, y1, z as f64 + 1.0], EPS);
+    for y in (y0.floor() as i32 - 1)..=(y1.ceil() as i32 + 1) {
+        if world.collision(x, y, z) != FULL_CUBE {
+            continue;
+        }
+        let cube = [x as f64, y as f64, z as f64, x as f64 + 1.0, y as f64 + 1.0, z as f64 + 1.0];
+        if intersects(&cube, &test) {
+            return true;
+        }
+    }
+    false
+}
+
+/// `LocalPlayer.moveTowardsClosestSpace(x, z)`: the un-suffocation nudge at
+/// the top of `aiStep`. If the column the `(x, z)` point falls in suffocates,
+/// the nearest of the four horizontal neighbours that does not gets a `0.1`
+/// shove along its axis.
+fn move_towards_closest_space(state: &mut PlayerState, world: &dyn PhysicsWorld, x: f64, z: f64) {
+    let pos = [x.floor() as i32, state.y.floor() as i32, z.floor() as i32];
+    let (y0, y1) = (state.aabb()[1], state.aabb()[4]);
+    if !suffocates_at(pos[0], pos[2], y0, y1, world) {
+        return;
+    }
+    let (xd, zd) = (x - pos[0] as f64, z - pos[2] as f64);
+    let mut dir: Option<(usize, f64)> = None;
+    let mut closest = f64::MAX;
+    // `Direction.Plane.HORIZONTAL`'s WEST, EAST, NORTH, SOUTH — the order the
+    // Java scans them in, so a tie keeps the earlier one (`<`, not `<=`).
+    for (axis, distance_to_edge, step) in [
+        (0, xd, -1.0),        // WEST
+        (0, 1.0 - xd, 1.0),   // EAST
+        (2, zd, -1.0),        // NORTH
+        (2, 1.0 - zd, 1.0),   // SOUTH
+    ] {
+        let (nx, nz) = if axis == 0 { (pos[0] + step as i32, pos[2]) } else { (pos[0], pos[2] + step as i32) };
+        if distance_to_edge < closest && !suffocates_at(nx, nz, y0, y1, world) {
+            closest = distance_to_edge;
+            dir = Some((axis, step));
+        }
+    }
+    if let Some((axis, step)) = dir {
+        // `setDeltaMovement(0.1 * dir.getStepX(), old.y, old.z)` and the Z
+        // counterpart — the shove is absolute, the other axes keep the old
+        // velocity.
+        match axis {
+            0 => state.vx = 0.1 * step,
+            _ => state.vz = 0.1 * step,
+        }
+    }
+}
+
+/// `Player.getDesiredPose` for the local player: no sleeping, no spin attack.
+fn desired_pose(state: &PlayerState, input: &TickInput, flying: bool) -> Pose {
+    if state.swimming {
+        Pose::Swimming
+    } else if input.fall_flying {
+        Pose::FallFlying
+    } else if input.sneak && !flying {
+        Pose::Crouching
+    } else {
+        Pose::Standing
+    }
+}
+
+/// `Player.updatePlayerPose`, at the end of the tick.
+fn update_player_pose(
+    state: &mut PlayerState,
+    input: &TickInput,
+    flying: bool,
+    no_clip: bool,
+    world: &dyn PhysicsWorld,
+    border: Option<BorderCollision>,
+) {
+    // Only moves at all when the 0.6-high SWIMMING box fits.
+    if !can_fit(state, world, border, Pose::Swimming) {
+        return;
+    }
+    let desired = desired_pose(state, input, flying);
+    state.pose = if no_clip || can_fit(state, world, border, desired) {
+        desired
+    } else if can_fit(state, world, border, Pose::Crouching) {
+        Pose::Crouching
+    } else {
+        Pose::Swimming
+    };
+}
+
+/// `LocalPlayer.modifyInput`: ×0.98, ×`sneaking_speed` while
+/// `isMovingSlowly()` (crouching or crawling), then
 /// `modifyInputSpeedForSquareMovement` — a diagonal is stretched toward the
 /// unit square's corner (capped at length 1).
-fn modify_input(input: &TickInput, crouching: bool, attrs: &MoveAttributes) -> (f32, f32) {
+fn modify_input(input: &TickInput, moving_slowly: bool, attrs: &MoveAttributes) -> (f32, f32) {
     let (mut x, mut y) = (input.strafe, input.forward);
     if x * x + y * y == 0.0 {
         return (x, y);
     }
     x *= 0.98;
     y *= 0.98;
-    if crouching {
+    if moving_slowly {
         let f = attrs.sneaking_speed as f32;
         x *= f;
         y *= f;
@@ -448,13 +680,32 @@ fn jump_from_ground(state: &mut PlayerState, ctx: &Ctx) {
     }
 }
 
-/// `LivingEntity.travel` (fall flying not modelled).
+/// `Player.travel` — the swim steering, then `LivingEntity.travel` (fall
+/// flying not modelled). The `abilities.flying` arm is applied by the caller.
 fn travel(state: &mut PlayerState, ctx: &mut Ctx, xxa: f32, zza: f32) {
+    if state.swimming {
+        // `getLookAngle().y` is `calculateViewVector`'s y: `-Mth.sin(pitch ·
+        // (float)(π/180))`.
+        let look_y = -(mth_sin(state.pitch * (std::f64::consts::PI / 180.0) as f32) as f64);
+        let multiplier = if look_y < -0.2 { 0.085 } else { 0.06 };
+        if look_y <= 0.0
+            || ctx.input.jump
+            || has_fluid_at(ctx.world, state.x, state.y + 1.0 - 0.1, state.z)
+        {
+            state.vy += (look_y - state.vy) * multiplier;
+        }
+    }
     if (state.in_water() || state.in_lava()) && !ctx.flying {
         travel_in_fluid(state, ctx, xxa, zza);
     } else {
         travel_in_air(state, ctx, xxa, zza);
     }
+}
+
+/// `Level.getFluidState(pos).isEmpty()` for the block under a point.
+fn has_fluid_at(world: &dyn PhysicsWorld, x: f64, y: f64, z: f64) -> bool {
+    let (x, y, z) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
+    world.block(x, y, z).fluid != PhysFluid::None
 }
 
 fn travel_in_air(state: &mut PlayerState, ctx: &mut Ctx, xxa: f32, zza: f32) {
@@ -2729,5 +2980,180 @@ mod tests {
             "fast lava must push 0.007/0.0023333333333333335 = 3x harder: \
              slow {slow_gain}, fast {fast_gain}"
         );
+    }
+
+    // ── poses (`Avatar.POSES`) ────────────────────────────────────────────
+
+    /// A 1.5-high gap: full-cube floor, and a top slab over it from z = 2 on
+    /// — CROUCHING's height exactly, not STANDING's 1.8.
+    fn one_point_five_gap(_x: i32, y: i32, z: i32) -> &'static [[f32; 6]] {
+        const TOP_SLAB: &[[f32; 6]] = &[[0.0, 0.5, 0.0, 1.0, 1.0, 1.0]];
+        match (y, z) {
+            (y, _) if y < 0 => FULL,
+            (1, z) if z >= 2 => TOP_SLAB,
+            _ => EMPTY,
+        }
+    }
+
+    /// A 1-block-high tunnel: full-cube floor and ceiling from z = 2 on.
+    fn one_block_tunnel(_x: i32, y: i32, z: i32) -> &'static [[f32; 6]] {
+        cube(y < 0 || (y == 1 && z >= 2))
+    }
+
+    /// CROUCHING (0.6 × 1.5, eye 1.27) is exactly what a 1.5 gap has;
+    /// STANDING's 1.8 box is stopped at its mouth.
+    #[test]
+    fn only_the_crouching_box_fits_a_one_point_five_gap() {
+        let fwd = TickInput { forward: 1.0, ..Default::default() };
+        let sneak = TickInput { forward: 1.0, sneak: true, ..Default::default() };
+
+        // The 1.8 box stops under the slab, and the mouth is the last place it
+        // fits, so `updatePlayerPose` keeps STANDING.
+        let mut p = PlayerState::at(0.5, 0.0, 0.5);
+        for _ in 0..100 {
+            tick(&mut p, &fwd, &one_point_five_gap);
+        }
+        assert_eq!(p.pose, Pose::Standing);
+        assert!(p.horizontal_collision, "stopped by the slab");
+        assert!(p.z <= 2.0 - PLAYER_HALF_WIDTH + 1e-6, "did not enter, z={}", p.z);
+
+        // Shift auto-crouches and walks in: `getDesiredPose` is CROUCHING.
+        let mut q = PlayerState::at(0.5, 0.0, 0.5);
+        for _ in 0..100 {
+            tick(&mut q, &sneak, &one_point_five_gap);
+        }
+        assert_eq!(q.pose, Pose::Crouching);
+        assert!(q.crouching, "the auto-crouching flag");
+        assert!(q.z > 4.0, "entered the gap, z={}", q.z);
+        let b = q.aabb();
+        assert!((b[4] - b[1] - 1.5f32 as f64).abs() < 1e-12, "the 1.5-high box");
+        assert_eq!(q.eye_height(), 1.27f32 as f64);
+        assert_eq!(q.eye_y(), q.y + 1.27f32 as f64);
+    }
+
+    /// A 1-block-high tunnel: no pose but SWIMMING fits, so the player crawls
+    /// — and crawling is `isMovingSlowly`'s second arm, the sneak speed.
+    #[test]
+    fn a_one_block_tunnel_crawls_at_the_sneak_speed() {
+        let fwd = TickInput { forward: 1.0, ..Default::default() };
+        let mut p = PlayerState::at(0.5, 0.0, 4.5);
+        // One tick with the head in the ceiling: `updatePlayerPose` falls back
+        // to SWIMMING (`Pose::Swimming` is the one box that fits).
+        tick(&mut p, &TickInput::default(), &one_block_tunnel);
+        assert_eq!(p.pose, Pose::Swimming, "crawling");
+        assert!(!p.crouching, "the CROUCHING box does not fit either");
+        assert_eq!(p.eye_height(), 0.4f32 as f64);
+        assert!((p.aabb()[4] - p.aabb()[1] - 0.6f32 as f64).abs() < 1e-12, "the 0.6-high box");
+
+        // Settle the fresh state first: a spawned player's first tick is an
+        // airborne one (`accel = air_speed`), not a walk.
+        for _ in 0..39 {
+            tick(&mut p, &TickInput::default(), &one_block_tunnel);
+        }
+        // `isMovingSlowly` is the crawling arm alone here (`crouching` is
+        // false), so the walk is the ×0.3 `sneaking_speed` input.
+        let z0 = p.z;
+        for _ in 0..40 {
+            tick(&mut p, &fwd, &one_block_tunnel);
+        }
+        let crawled = p.z - z0;
+        assert!((crawled - 0.3 * walked_from_rest(0.1)).abs() < 1e-5, "crawled {crawled}");
+
+        // Control: 40 ticks of sneak-walking in the open go through the
+        // identical `modifyInput` branch — the same distance to the bit.
+        let sneak = TickInput { forward: 1.0, sneak: true, ..Default::default() };
+        let mut s = PlayerState::at(0.5, 0.0, 0.5);
+        settle(&mut s);
+        let s0 = s.z;
+        for _ in 0..40 {
+            tick(&mut s, &sneak, &floor);
+        }
+        assert!((crawled - (s.z - s0)).abs() < 1e-12, "crawled {crawled} vs sneak-walked {}", s.z - s0);
+    }
+
+    /// `Entity.updateSwimming`: sprint + eyes under water + water at
+    /// `blockPosition()`, and `Player.updateSwimming` clears it in flight.
+    #[test]
+    fn swimming_needs_sprint_and_water_at_the_feet() {
+        let deep = world(|_, _, _| EMPTY, |_, y, _| if y < 20 { water(8.0 / 9.0) } else { BlockPhysics::AIR });
+        let sprint = TickInput { sprint: true, ..Default::default() };
+        let mut p = PlayerState::at(0.5, 5.0, 0.5);
+        step_env(&mut p, &TickInput::default(), &deep);
+        assert!(!p.swimming, "sprint is what starts it");
+        step_env(&mut p, &sprint, &deep);
+        assert!(p.swimming, "sprinting with the eyes under water starts it");
+        step_env(&mut p, &TickInput::default(), &deep);
+        assert!(!p.swimming, "releasing sprint stops it, still under water");
+
+        // Eyes under water are not enough: y = 10.5 stands in an air pocket
+        // (the feet block) with the eyes at 12.12, under water.
+        let pocket = world(|_, _, _| EMPTY, |_, y, _| if y < 20 && y != 10 { water(8.0 / 9.0) } else { BlockPhysics::AIR });
+        let mut q = PlayerState::at(0.5, 10.5, 0.5);
+        step_env(&mut q, &sprint, &pocket);
+        assert!(q.eye_in_water, "the eyes are under water");
+        assert!(!q.swimming, "but the feet block is air");
+        let mut r = PlayerState::at(0.5, 10.5, 0.5);
+        step_env(&mut r, &sprint, &deep);
+        assert!(r.swimming, "the same with water at the feet too");
+
+        // `Player.updateSwimming`: flight clears the flag.
+        let mut s = PlayerState::at(0.5, 5.0, 0.5);
+        step_env(&mut s, &sprint, &deep);
+        assert!(s.swimming);
+        tick_env(&mut s, &sprint, &flying(), false, None, &MoveAttributes::default(), &deep);
+        assert!(!s.swimming, "flying clears it");
+    }
+
+    /// `Player.travel`'s swim steering pulls `vy` toward `getLookAngle().y`.
+    #[test]
+    fn swim_steering_pulls_vy_toward_the_look_angle() {
+        let deep = world(|_, _, _| EMPTY, |_, y, _| if y < 20 { water(8.0 / 9.0) } else { BlockPhysics::AIR });
+        // Hand derivation: pitch 90° → `realXRot = 90F · (float)(π/180)` =
+        // 1.5707964F, and `Mth.sin` reads `SIN[16384]` =
+        // `sin(16384 / 10430.378350470453)` = `sin(π/2)` = 1 — so
+        // `getLookAngle().y` is −1, under −0.2, hence the 0.085 multiplier.
+        // From rest the steering gives vy = (−1 − 0) · 0.085 = −0.085;
+        // `travelInWater` then drags by 0.8F and, the player being sprinting,
+        // skips `getFluidFallingAdjustedMovement`'s `−gravity/16`, so the tick
+        // ends at −0.085 · 0.8 = −0.068.
+        let look_y = -(mth_sin(90.0 * (std::f64::consts::PI / 180.0) as f32) as f64);
+        assert_eq!(look_y, -1.0, "the hand derivation above");
+        let mut p = PlayerState::at(0.5, 5.0, 0.5);
+        p.pitch = 90.0;
+        let sprint = TickInput { sprint: true, ..Default::default() };
+        step_env(&mut p, &sprint, &deep);
+        assert!(p.swimming, "the tick starts swimming");
+        let want = (look_y - 0.0) * 0.085 * (0.8f32 as f64);
+        assert!((p.vy - want).abs() < 1e-12, "vy={} want {want}", p.vy);
+        assert!((p.vy + 0.068).abs() < 1e-6, "the hand number, vy={}", p.vy);
+
+        // Control: without sprinting nothing swims, so nothing steers and the
+        // tick is the plain `−gravity/16` sink (−0.005).
+        let mut q = PlayerState::at(0.5, 5.0, 0.5);
+        q.pitch = 90.0;
+        step_env(&mut q, &TickInput::default(), &deep);
+        assert!(!q.swimming);
+        assert!((q.vy + 0.08 / 16.0).abs() < 1e-12, "vy={}", q.vy);
+        assert!(q.vy.abs() * 12.0 < p.vy.abs(), "no steering: {} vs {}", q.vy, p.vy);
+    }
+
+    /// The regression guard: open air leaves a standing player alone — same
+    /// pose, same box, same eye height.
+    #[test]
+    fn standing_in_the_open_stays_standing() {
+        let w = world(|_, y, _| cube(y < 0), |_, _, _| stone());
+        let mut p = PlayerState::at(0.5, 0.0, 0.5);
+        for _ in 0..40 {
+            step_env(&mut p, &TickInput::default(), &w);
+        }
+        assert_eq!(p.pose, Pose::Standing);
+        assert!(!p.swimming && !p.crouching);
+        assert_eq!(dimensions(Pose::Standing), (PLAYER_HALF_WIDTH, PLAYER_HEIGHT, EYE_HEIGHT));
+        assert_eq!(p.eye_height(), EYE_HEIGHT);
+        assert_eq!(p.eye_y(), p.y + EYE_HEIGHT);
+        let b = p.aabb();
+        assert!((b[3] - b[0] - PLAYER_HALF_WIDTH * 2.0).abs() < 1e-12);
+        assert!((b[4] - b[1] - PLAYER_HEIGHT).abs() < 1e-12);
+        assert_eq!(dimensions(Pose::FallFlying), dimensions(Pose::Swimming));
     }
 }
