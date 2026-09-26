@@ -606,26 +606,9 @@ pub struct WorldRenderer {
     /// and its buttons. Distinct from `container`, which is the *inventory's*
     /// panel and slot highlights and is inventory-specific throughout.
     screen: Option<crate::screen::ScreenPass>,
-    /// This frame's screen chrome. Empty = nothing to draw, which is the
-    /// in-game case and also a screen that draws only text.
-    screen_draw: crate::screen::ScreenDraw,
-    /// Whether the screen is open, and which slot's GUI-space top-left the
-    /// cursor is over.
-    container_open: Option<Option<(i32, i32)>>,
-    /// The open container's panel (M87). `None` means the player's own
-    /// inventory, whose 176x166 panel the container pass draws from its own
-    /// `inventory.png` rect.
-    container_panel: Option<crate::container::ContainerPanel>,
-    /// The recipe book (M94). Beside the panel, not inside it: the player's
-    /// own inventory has no `ContainerPanel` and still has a book.
-    recipe_book: Option<crate::container::RecipeBookPanel>,
-    /// This frame's tooltip: the text block's GUI-space top-left and size,
-    /// both measured by the caller (M40), plus the bundle grid inside it if the
-    /// hovered stack produced one (M58). The pass owns no font.
-    container_tooltip: Option<crate::container::TooltipDraw>,
-    /// This frame's durability bars, in screen pixels (M41). Independent of
-    /// the screen being open — a worn pickaxe shows one in the hotbar.
-    item_bars: Vec<crate::container::ItemBar>,
+    /// This frame's GUI inputs — what the `set_*` calls stored for the
+    /// GUI passes to draw at `render` (the passes themselves stay above).
+    gui: GuiFrame,
     /// A **second** entity pass, for the inventory screen's player preview
     /// (M36).
     ///
@@ -639,12 +622,8 @@ pub struct WorldRenderer {
     /// Built on first use, so a session that never opens the inventory never
     /// pays for the second atlas.
     preview: Option<crate::entities::EntityPass>,
-    /// This frame's preview matrix and window, or `None` when it is closed.
-    preview_state: Option<([[f32; 4]; 4], vk::Rect2D)>,
     /// The first-person hand (M38). `None` until `init_hand`.
     hand: Option<crate::hand_pass::HandPass>,
-    /// This frame's hand view-projection, or `None` when nothing is drawn.
-    hand_vp: Option<[[f32; 4]; 4]>,
     /// Particles (M37). `None` until `init_particles` supplies the atlas.
     particles: Option<crate::particles::ParticlePass>,
     /// The block-break crack overlay (M81). `None` until `init_crumbling`
@@ -657,32 +636,11 @@ pub struct WorldRenderer {
     sky_mode: SkyMode,
     hud: Option<HudPass>,
     locator: Option<crate::locator_bar::LocatorBarPass>,
-    locator_state: Option<crate::locator_bar::LocatorBarState>,
-    /// Live HUD state (health 0..20, food 0..20, selected slot 0..8); when
-    /// `None`, no HUD draws (view/demo/bench aren't "playing").
-    hud_state: Option<(u8, crate::hud::HudGauges)>,
-    /// M168 — this frame's survival gauges (`survival_hud::layout`), in GUI
-    /// pixels. Replaced every frame with the rest of `hud_state`.
-    hud_survival: Vec<crate::hud::HudBlit>,
-    /// This frame's chat backdrops (M109). A separate field from
-    /// [`Self::hud_state`] because it is set on a different cadence — the HUD
-    /// state comes from the packet stream and this comes from the chat store's
-    /// own geometry — and because an empty slice is a meaningful value (no
-    /// chat on screen) rather than an absent one.
-    hud_fills: Vec<crate::hud::HudFill>,
-    /// M151 — this frame's caller-placed HUD sprites (the tab list's ping
-    /// icons). Separate from `hud_fills` because they name an atlas rect
-    /// rather than a colour.
-    hud_icons: Vec<crate::hud::HudBlit>,
     text: Option<TextPass>,
     /// The Velvet type stack (M52b) — real variable-font text, for the pieces
     /// that need per-run styling the bitmap pass cannot express (tooltips
     /// first; chat and F3 next).
     velvet_text: Option<crate::velvet_text::VelvetTextPass>,
-    velvet_runs: Vec<crate::velvet_text::OwnedRun>,
-    /// Screen-space text lines to draw this frame (chat, coords); empty →
-    /// nothing (view/demo/bench never set them).
-    text_lines: Vec<OwnedTextLine>,
     /// Eye position for translucent sort + fog origin (`set_camera`).
     camera_eye: [f32; 3],
     /// The resolved lightmap uniforms (sky/block factors, sky colour, gamma,
@@ -710,6 +668,58 @@ pub struct WorldRenderer {
 
     pub drawn_last_frame: usize,
     pub culled_last_frame: usize,
+}
+
+/// One frame's GUI inputs, separate from the renderer's GPU resources.
+/// Each field is written by a `WorldRenderer::set_*` call and read when
+/// the frame is recorded.
+#[derive(Default)]
+struct GuiFrame {
+    /// This frame's screen chrome. Empty = nothing to draw, which is the
+    /// in-game case and also a screen that draws only text.
+    screen_draw: crate::screen::ScreenDraw,
+    /// Whether the screen is open, and which slot's GUI-space top-left the
+    /// cursor is over.
+    container_open: Option<Option<(i32, i32)>>,
+    /// The open container's panel (M87). `None` means the player's own
+    /// inventory, whose 176x166 panel the container pass draws from its own
+    /// `inventory.png` rect.
+    container_panel: Option<crate::container::ContainerPanel>,
+    /// The recipe book (M94). Beside the panel, not inside it: the player's
+    /// own inventory has no `ContainerPanel` and still has a book.
+    recipe_book: Option<crate::container::RecipeBookPanel>,
+    /// This frame's tooltip: the text block's GUI-space top-left and size,
+    /// both measured by the caller (M40), plus the bundle grid inside it if the
+    /// hovered stack produced one (M58). The pass owns no font.
+    container_tooltip: Option<crate::container::TooltipDraw>,
+    /// This frame's durability bars, in screen pixels (M41). Independent of
+    /// the screen being open — a worn pickaxe shows one in the hotbar.
+    item_bars: Vec<crate::container::ItemBar>,
+    /// This frame's preview matrix and window, or `None` when it is closed.
+    preview_state: Option<([[f32; 4]; 4], vk::Rect2D)>,
+    /// This frame's hand view-projection, or `None` when nothing is drawn.
+    hand_vp: Option<[[f32; 4]; 4]>,
+    locator_state: Option<crate::locator_bar::LocatorBarState>,
+    /// Live HUD state (health 0..20, food 0..20, selected slot 0..8); when
+    /// `None`, no HUD draws (view/demo/bench aren't "playing").
+    hud_state: Option<(u8, crate::hud::HudGauges)>,
+    /// M168 — this frame's survival gauges (`survival_hud::layout`), in GUI
+    /// pixels. Replaced every frame with the rest of `hud_state`.
+    hud_survival: Vec<crate::hud::HudBlit>,
+    /// This frame's chat backdrops (M109). A separate field from
+    /// [`Self::hud_state`] because it is set on a different cadence — the HUD
+    /// state comes from the packet stream and this comes from the chat store's
+    /// own geometry — and because an empty slice is a meaningful value (no
+    /// chat on screen) rather than an absent one.
+    hud_fills: Vec<crate::hud::HudFill>,
+    /// M151 — this frame's caller-placed HUD sprites (the tab list's ping
+    /// icons). Separate from `hud_fills` because they name an atlas rect
+    /// rather than a colour.
+    hud_icons: Vec<crate::hud::HudBlit>,
+    velvet_runs: Vec<crate::velvet_text::OwnedRun>,
+    /// Screen-space text lines to draw this frame (chat, coords); empty →
+    /// nothing (view/demo/bench never set them).
+    text_lines: Vec<OwnedTextLine>,
 }
 
 impl WorldRenderer {
@@ -1164,7 +1174,7 @@ impl WorldRenderer {
 
             Ok(Self {
                 velvet_text: None,
-                velvet_runs: Vec::new(),
+                gui: GuiFrame::default(),
                 tex_set_layout,
                 graphics_layout,
                 pipeline,
@@ -1237,29 +1247,15 @@ impl WorldRenderer {
                 gui_item_generation: 0,
                 hand_generation: 0,
                 container: None,
-                container_open: None,
-                container_panel: None,
-                recipe_book: None,
-                container_tooltip: None,
                 screen: None,
-                screen_draw: crate::screen::ScreenDraw::default(),
-                item_bars: Vec::new(),
                 preview: None,
-                preview_state: None,
                 hand: None,
-                hand_vp: None,
                 particles: None,
                 crumbling: None,
                 sky_mode: SkyMode::default(),
                 hud: None,
                 locator: None,
-                locator_state: None,
-                hud_state: None,
-                hud_survival: Vec::new(),
-                hud_fills: Vec::new(),
-                hud_icons: Vec::new(),
                 text: None,
-                text_lines: Vec::new(),
                 camera_eye: [0.0; 3],
                 lightmap: WorldLightmapState::default(),
                 sky_tint: [1.0; 3],
@@ -1735,7 +1731,7 @@ impl WorldRenderer {
 
     /// This frame's screen chrome. `ScreenDraw::default()` draws nothing.
     pub fn set_screen(&mut self, draw: crate::screen::ScreenDraw) {
-        self.screen_draw = draw;
+        self.gui.screen_draw = draw;
     }
 
     /// Build the preview's entity pass. Idempotent, and cheap to call every
@@ -1857,7 +1853,7 @@ impl WorldRenderer {
         glint: &[crate::gui_item::GuiItemVertex],
         view_proj: [[f32; 4]; 4],
     ) -> Result<(), String> {
-        self.hand_vp = (!verts.is_empty()).then_some(view_proj);
+        self.gui.hand_vp = (!verts.is_empty()).then_some(view_proj);
         match self.hand.as_mut() {
             Some(p) => p.set_vertices_with_glint(gpu, verts, glint),
             None => Ok(()),
@@ -1908,9 +1904,9 @@ impl WorldRenderer {
                     0.0,
                     [0.0, 0.0, 0.0],
                 );
-                self.preview_state = Some((vp, rect));
+                self.gui.preview_state = Some((vp, rect));
             }
-            _ => self.preview_state = None,
+            _ => self.gui.preview_state = None,
         }
     }
 
@@ -1927,7 +1923,7 @@ impl WorldRenderer {
     /// this one is *which* menu — and a container can open and close without
     /// the hover changing.
     pub fn set_container_panel(&mut self, panel: Option<crate::container::ContainerPanel>) {
-        self.container_panel = panel;
+        self.gui.container_panel = panel;
     }
 
     /// The panel height the renderer is actually holding, if a container's.
@@ -1937,7 +1933,7 @@ impl WorldRenderer {
     /// renderer drew the player's 166, and a witness that asked the layout
     /// could not tell those apart. This is what the draw uses.
     pub fn container_panel_height(&self) -> Option<f32> {
-        self.container_panel.as_ref().map(|p| p.gui_h)
+        self.gui.container_panel.as_ref().map(|p| p.gui_h)
     }
 
     /// How many overlay sprites this frame's container panel carries (M92).
@@ -1946,7 +1942,7 @@ impl WorldRenderer {
     /// what it *should* draw answers from the model, and the question is
     /// whether the windowed frame loop reached the builder at all.
     pub fn container_panel_overlays(&self) -> usize {
-        self.container_panel.as_ref().map_or(0, |p| p.overlays.len())
+        self.gui.container_panel.as_ref().map_or(0, |p| p.overlays.len())
     }
 
     /// How many quads this frame's RECIPE BOOK carries — its panel plus its
@@ -1957,17 +1953,17 @@ impl WorldRenderer {
     /// and the question is whether the windowed frame loop reached the book's
     /// builder at all. That is the M86 gap, one feature over.
     pub fn container_panel_book_quads(&self) -> usize {
-        self.recipe_book
+        self.gui.recipe_book
             .as_ref()
             .map_or(0, |b| b.blits.len() + b.overlays.len())
     }
 
     pub fn set_recipe_book(&mut self, book: Option<crate::container::RecipeBookPanel>) {
-        self.recipe_book = book;
+        self.gui.recipe_book = book;
     }
 
     pub fn set_container(&mut self, open: bool, hovered: Option<(i32, i32)>) {
-        self.container_open = open.then_some(hovered);
+        self.gui.container_open = open.then_some(hovered);
     }
 
     /// This frame's tooltip, or `None` for no tooltip. The caller measures it
@@ -1976,14 +1972,14 @@ impl WorldRenderer {
     /// because the text — the lines, the `+N` badge and the bar's label — goes
     /// through the ordinary text pass.
     pub fn set_container_tooltip(&mut self, tooltip: Option<crate::container::TooltipDraw>) {
-        self.container_tooltip = tooltip;
+        self.gui.container_tooltip = tooltip;
     }
 
     /// This frame's durability bars (M41). The caller decides which stacks
     /// have one — `isBarVisible` needs the item's max damage, which is not on
     /// the wire.
     pub fn set_item_bars(&mut self, bars: Vec<crate::container::ItemBar>) {
-        self.item_bars = bars;
+        self.gui.item_bars = bars;
     }
 
     pub fn gui_items_ready(&self) -> bool {
@@ -2526,8 +2522,8 @@ impl WorldRenderer {
         gauges: crate::hud::HudGauges,
         survival: Vec<crate::hud::HudBlit>,
     ) {
-        self.hud_state = Some((slot, gauges));
-        self.hud_survival = survival;
+        self.gui.hud_state = Some((slot, gauges));
+        self.gui.hud_survival = survival;
     }
 
     /// Set this frame's chat backdrops (M109), in GUI pixels.
@@ -2536,7 +2532,7 @@ impl WorldRenderer {
     /// draw — a stale backdrop under nothing would be a black bar hanging over
     /// the world after the last message faded.
     pub fn set_hud_fills(&mut self, rects: Vec<crate::hud::HudFill>) {
-        self.hud_fills = rects;
+        self.gui.hud_fills = rects;
     }
 
     /// Set this frame's caller-placed HUD sprites (M151), in GUI pixels.
@@ -2545,7 +2541,7 @@ impl WorldRenderer {
     /// only while its key is held, and a stale list would leave six ping icons
     /// floating over the world the moment it is let go.
     pub fn set_hud_icons(&mut self, icons: Vec<crate::hud::HudBlit>) {
-        self.hud_icons = icons;
+        self.gui.hud_icons = icons;
     }
 
     /// Attach the locator bar (M83). Independent of `init_hud` because its
@@ -2570,7 +2566,7 @@ impl WorldRenderer {
     /// the 182x5 strip, because `extractBackground` and `extractRenderState`
     /// are separate calls and only the second one loops.
     pub fn set_locator_bar(&mut self, state: Option<crate::locator_bar::LocatorBarState>) {
-        self.locator_state = state;
+        self.gui.locator_state = state;
     }
 
     /// Attach the screen-space text pass (chat + coords overlay).
@@ -2614,11 +2610,11 @@ impl WorldRenderer {
     }
 
     pub fn set_velvet_runs(&mut self, runs: Vec<crate::velvet_text::OwnedRun>) {
-        self.velvet_runs = runs;
+        self.gui.velvet_runs = runs;
     }
 
     pub fn set_text(&mut self, lines: Vec<OwnedTextLine>) {
-        self.text_lines = lines;
+        self.gui.text_lines = lines;
     }
 
     /// Rebuild this frame's entity geometry (no-op until `init_entities`).
@@ -3263,7 +3259,7 @@ impl WorldRenderer {
         // block in front of you from cutting your arm in half — the hand is
         // drawn in view space at a fraction of a block, well inside anything
         // the world put there.
-        if let (Some(pass), Some(vp)) = (&self.hand, self.hand_vp) {
+        if let (Some(pass), Some(vp)) = (&self.hand, self.gui.hand_vp) {
             clear_depth_rect(
                 gpu,
                 cb,
@@ -3278,7 +3274,7 @@ impl WorldRenderer {
         // `set_gui_items` the screen's 46 slot rects instead of the hotbar's
         // nine, and this order puts them between the two highlight halves,
         // where vanilla puts them.
-        let screen = self.container_open.filter(|_| self.container.is_some());
+        let screen = self.gui.container_open.filter(|_| self.container.is_some());
         // The container pass owns the durability bars whether or not the
         // screen is open, because the hotbar draws them too — so its geometry
         // is built unconditionally and only the panel is gated on `open`.
@@ -3287,22 +3283,22 @@ impl WorldRenderer {
                 extent,
                 screen.is_some(),
                 screen.flatten(),
-                self.container_tooltip.as_ref(),
-                &self.item_bars,
-                self.container_panel.as_ref(),
-                self.recipe_book.as_ref(),
+                self.gui.container_tooltip.as_ref(),
+                &self.gui.item_bars,
+                self.gui.container_panel.as_ref(),
+                self.gui.recipe_book.as_ref(),
             );
         }
-        if let (Some(hud), Some((slot, gauges))) = (self.hud.as_mut(), self.hud_state) {
+        if let (Some(hud), Some((slot, gauges))) = (self.hud.as_mut(), self.gui.hud_state) {
             hud.draw(
                 gpu,
                 cb,
                 extent,
-                &self.hud_survival,
+                &self.gui.hud_survival,
                 slot,
                 gauges,
-                &self.hud_fills,
-                &self.hud_icons,
+                &self.gui.hud_fills,
+                &self.gui.hud_icons,
             );
             if screen.is_none() {
                 // M83 — the contextual bar's slot, which is the XP bar's slot:
@@ -3311,7 +3307,7 @@ impl WorldRenderer {
                 // when the XP bar won). Behind the hotbar icons for the same
                 // reason the XP bar is: it is background chrome.
                 if let (Some(pass), Some(state)) =
-                    (self.locator.as_mut(), self.locator_state.as_ref())
+                    (self.locator.as_mut(), self.gui.locator_state.as_ref())
                 {
                     pass.draw(gpu, cb, extent, state);
                 }
@@ -3330,7 +3326,7 @@ impl WorldRenderer {
             // The player preview sits between the panel and the icons: it is
             // inside the window the panel paints, and an item on the cursor
             // passes over it.
-            if let (Some(preview), Some((vp, rect))) = (&self.preview, self.preview_state) {
+            if let (Some(preview), Some((vp, rect))) = (&self.preview, self.gui.preview_state) {
                 clear_depth_rect(gpu, cb, rect);
                 preview.draw_solid(gpu, cb, vp, extent);
             }
@@ -3349,13 +3345,13 @@ impl WorldRenderer {
         // `extractBackground` then the widgets then the deferred text, and the
         // text pass below is drawn last of all for every caller.
         if let Some(pass) = self.screen.as_mut() {
-            pass.set_state(extent, &self.screen_draw);
+            pass.set_state(extent, &self.gui.screen_draw);
             pass.draw(gpu, cb, extent);
         }
         if let Some(text) = self.text.as_mut() {
-            if !self.text_lines.is_empty() {
+            if !self.gui.text_lines.is_empty() {
                 let lines: Vec<TextLine> = self
-                    .text_lines
+                    .gui.text_lines
                     .iter()
                     .map(|l| TextLine {
                         x: l.x,
@@ -3374,10 +3370,10 @@ impl WorldRenderer {
         // Velvet text last, and in gamma space. `take` because
         // `in_gamma_space` borrows `&self` while the pass needs `&mut` — the
         // same dance `self.text.take()` does at teardown.
-        if !self.velvet_runs.is_empty() {
+        if !self.gui.velvet_runs.is_empty() {
             if let Some(mut vt) = self.velvet_text.take() {
                 let runs: Vec<crate::velvet_text::Run> = self
-                    .velvet_runs
+                    .gui.velvet_runs
                     .iter()
                     .map(|r| crate::velvet_text::Run {
                         glyphs: &r.glyphs,
