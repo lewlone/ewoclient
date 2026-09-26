@@ -1,0 +1,44 @@
+# The GPU + local-asset half of verification, on the owner's own machine.
+#
+# `ci.yml` runs on GitHub's hosted runners, which have neither a Vulkan device
+# nor the local 26.2 datagen/decompile, so the `rewo *shot --check` gates and
+# the live render check never ran automatically. This workflow runs them on a
+# self-hosted runner labelled `rewo-gpu`.
+#
+# Security: this repo is public, and a self-hosted runner executes whatever a
+# workflow tells it to with the owner's account. So:
+#   - there is no `pull_request` trigger. Only `push` (people with write access)
+#     and a manual dispatch can start this workflow;
+#   - the repository requires approval before any workflow runs for an outside
+#     contributor's pull request, so a fork cannot add its own workflow that
+#     targets this runner and have it run unreviewed.
+name: gates
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    if: github.repository == 'lewlone/ewoclient'
+    runs-on: [self-hosted, windows, rewo-gpu]
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+      # A test that needs the local assets must run here, not skip.
+      REWO_REQUIRE_ASSETS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit tests (assets required)
+        run: cargo test --workspace --no-fail-fast --features rewo-app/gates
+
+      - name: Gates
+        run: python tools/gates.py
+
+      - name: Live render check
+        run: python tools/render_check.py
