@@ -1,6 +1,6 @@
 //! Local-player physics — a port of the vanilla 20 Hz tick from the decompiled
 //! 26.2 `LocalPlayer.aiStep` → `LivingEntity.aiStep` → `Player.travel` →
-//! `LivingEntity.travel{InAir,InFluid}` → `Entity.move` chain.
+//! `LivingEntity.travel{FallFlying,InAir,InFluid}` → `Entity.move` chain.
 //!
 //! Vanilla does most of this arithmetic in `float` (block friction, the speed
 //! passed to `moveRelative`, the drag factors, the sin/cos table) and widens to
@@ -30,12 +30,22 @@
 //! `Entity.updateSwimming` / `Player.updateSwimming`, `Player.updatePlayerPose`
 //! and `getDesiredPose`, and `Player.travel`'s swim-steering.
 //!
-//! Not covered: the fall-flying *travel* (the `FALL_FLYING` pose itself is
-//! modelled from `TickInput::fall_flying`, elytra motion is a later change),
-//! `SLEEPING` / `SPIN_ATTACK` poses, passengers, entity colliders (boats,
-//! shulkers), suffocation damage and the exact `isSuffocating` property
+//! Also covered — the elytra glide: `LivingEntity.travelFallFlying` and
+//! `updateFallFlyingMovement` (the lift/drag arithmetic), the client half of
+//! `LivingEntity.updateFallFlying` (`checkFallDistanceAccumulation`), and
+//! `Player.tryToStartFallFlying`'s condition as [`can_start_fall_flying`].
+//! The `FLAG_FALL_FLYING` flag itself is the **caller's**: the session keeps it
+//! from the server's shared flags and clears it where vanilla's
+//! `setSharedFlag(7, …)` does (landing, a climbable), so
+//! [`TickInput::fall_flying`] is only read here.
+//!
+//! Not covered: `SLEEPING` / `SPIN_ATTACK` poses, passengers, entity colliders
+//! (boats, shulkers), suffocation damage and the exact `isSuffocating` property
 //! (see [`suffocates_at`]), levitation from blocks, powder-snow walking with
-//! leather boots.
+//! leather boots, and the server-only half of the elytra —
+//! `handleFallFlyingCollisions` (the `fly-into-wall` damage), the durability hit
+//! and the `ELYTRA_GLIDE` game event, plus `canGlideUsing`'s equippable-slot and
+//! `nextDamageWillBreak` clauses (see [`can_start_fall_flying`]).
 
 use rewo_data::block_physics::{flags, BlockPhysics, PhysFluid, Stuck};
 
@@ -102,8 +112,11 @@ pub struct TickInput {
     pub jump: bool,
     pub sneak: bool,
     pub sprint: bool,
-    /// `Entity.isFallFlying()` — the elytra shared flag. Only the pose is
-    /// modelled here (the fall-flying travel is a later change).
+    /// `Entity.isFallFlying()` — the elytra shared flag (`FLAG_FALL_FLYING`).
+    /// Selects the `FALL_FLYING` pose **and** [`travel_fall_flying`] in
+    /// `travel`. The flag is the caller's to keep: vanilla's server clears it
+    /// in `updateFallFlying` and `stopFallFlying`, and the session mirrors
+    /// those into this bit.
     pub fall_flying: bool,
 }
 
@@ -421,6 +434,15 @@ pub fn tick_env(
         state.no_jump_delay = 0;
     }
 
+    // -- LivingEntity.aiStep: `updateFallFlying`, just before travel ----------
+    // It runs only `while (this.isFallFlying())`, and on the client its whole
+    // body is `checkFallDistanceAccumulation()` — the `canGlide` flag clear,
+    // the elytra durability hit and the `ELYTRA_GLIDE` game event are behind
+    // `!level.isClientSide()`.
+    if input.fall_flying {
+        check_fall_distance_accumulation(state);
+    }
+
     // -- Player.travel -------------------------------------------------------
     if flying {
         let original_vy = state.vy;
@@ -680,8 +702,9 @@ fn jump_from_ground(state: &mut PlayerState, ctx: &Ctx) {
     }
 }
 
-/// `Player.travel` — the swim steering, then `LivingEntity.travel` (fall
-/// flying not modelled). The `abilities.flying` arm is applied by the caller.
+/// `Player.travel` — the swim steering, then `LivingEntity.travel`'s three-way
+/// dispatch (`shouldTravelInFluid` → `isFallFlying` → air). The
+/// `abilities.flying` arm is applied by the caller.
 fn travel(state: &mut PlayerState, ctx: &mut Ctx, xxa: f32, zza: f32) {
     if state.swimming {
         // `getLookAngle().y` is `calculateViewVector`'s y: `-Mth.sin(pitch ·
@@ -697,9 +720,142 @@ fn travel(state: &mut PlayerState, ctx: &mut Ctx, xxa: f32, zza: f32) {
     }
     if (state.in_water() || state.in_lava()) && !ctx.flying {
         travel_in_fluid(state, ctx, xxa, zza);
+    } else if ctx.input.fall_flying {
+        travel_fall_flying(state, ctx, xxa, zza);
     } else {
         travel_in_air(state, ctx, xxa, zza);
     }
+}
+
+/// `LivingEntity.travelFallFlying` — the elytra glide. The `input` steering is
+/// used by the climbable arm only; the glide itself is pure momentum (no
+/// `moveRelative`).
+fn travel_fall_flying(state: &mut PlayerState, ctx: &mut Ctx, xxa: f32, zza: f32) {
+    if is_on_climbable(state, ctx.world, ctx.no_clip) {
+        // Vanilla's arm is `travelInAir(input); stopFallFlying();` — and the
+        // flag is the caller's here, so what this leaves behind is exactly the
+        // air travel (the caller clears its flag on the same probe).
+        travel_in_air(state, ctx, xxa, zza);
+        return;
+    }
+    let movement = update_fall_flying_movement(state, ctx.attrs, [state.vx, state.vy, state.vz]);
+    state.vx = movement[0];
+    state.vy = movement[1];
+    state.vz = movement[2];
+    // `setDeltaMovement(...)` then `move(MoverType.SELF, getDeltaMovement())`.
+    do_move(state, ctx, movement);
+    // `handleFallFlyingCollisions(lastSpeed, newSpeed)` — the `fly-into-wall`
+    // damage — is `!level.isClientSide()` and is not modelled.
+}
+
+/// `LivingEntity.updateFallFlyingMovement` — the glide's lift and drag, in the
+/// doubles it is written in. The types matter: `leanAngle` is a `float` widened
+/// where it meets a `double`, `Mth.sin` is the 65,536-entry table while
+/// `Math.cos` is double trig on that same widened angle, and
+/// `multiply(0.99F, 0.98F, 0.99F)` widens the factors before it multiplies.
+fn update_fall_flying_movement(
+    state: &PlayerState,
+    attrs: &MoveAttributes,
+    movement: [f64; 3],
+) -> [f64; 3] {
+    let look = view_vector(state.pitch, state.yaw);
+    let lean_angle = state.pitch * (std::f64::consts::PI / 180.0) as f32;
+    let look_hor_length = (look[0] * look[0] + look[2] * look[2]).sqrt();
+    let move_hor_length = (movement[0] * movement[0] + movement[2] * movement[2]).sqrt();
+    let gravity = effective_gravity(state, attrs);
+    // `Mth.square(Math.cos(leanAngle))`.
+    let cos_lean = (lean_angle as f64).cos();
+    let lift_force = cos_lean * cos_lean;
+
+    let mut m = movement;
+    m[1] += gravity * (-1.0 + lift_force * 0.75);
+    if m[1] < 0.0 && look_hor_length > 0.0 {
+        // Falling: some of the drop becomes forward slip along the look
+        // direction.
+        let convert = m[1] * -0.1 * lift_force;
+        m[0] += look[0] * convert / look_hor_length;
+        m[1] += convert;
+        m[2] += look[2] * convert / look_hor_length;
+    }
+    if lean_angle < 0.0 && look_hor_length > 0.0 {
+        // Pitched down: the speed converts to lift (×3.2 on y) and to forward
+        // motion *against* the look's horizontal direction.
+        let convert = move_hor_length * -(mth_sin(lean_angle) as f64) * 0.04;
+        m[0] += -look[0] * convert / look_hor_length;
+        m[1] += convert * 3.2;
+        m[2] += -look[2] * convert / look_hor_length;
+    }
+    if look_hor_length > 0.0 {
+        // Align the horizontal velocity with the look direction.
+        m[0] += (look[0] / look_hor_length * move_hor_length - m[0]) * 0.1;
+        m[2] += (look[2] / look_hor_length * move_hor_length - m[2]) * 0.1;
+    }
+    [
+        m[0] * (0.99f32 as f64),
+        m[1] * (0.98f32 as f64),
+        m[2] * (0.99f32 as f64),
+    ]
+}
+
+/// `Entity.calculateViewVector(xRot, yRot)` — `getLookAngle()`'s body.
+fn view_vector(x_rot: f32, y_rot: f32) -> [f64; 3] {
+    let rad = (std::f64::consts::PI / 180.0) as f32;
+    let real_x_rot = x_rot * rad;
+    let real_y_rot = -y_rot * rad;
+    let (y_cos, y_sin) = (mth_cos(real_y_rot), mth_sin(real_y_rot));
+    let (x_cos, x_sin) = (mth_cos(real_x_rot), mth_sin(real_x_rot));
+    [(y_sin * x_cos) as f64, (-x_sin) as f64, (y_cos * x_cos) as f64]
+}
+
+/// `Entity.checkFallDistanceAccumulation` — a glide that is not descending
+/// fast enough cannot keep accumulating fall damage.
+fn check_fall_distance_accumulation(state: &mut PlayerState) {
+    if state.vy > -0.5 && state.fall_distance > 1.0 {
+        state.fall_distance = 1.0;
+    }
+}
+
+/// `Player.tryToStartFallFlying`'s condition — can the elytra take off now?
+///
+/// ```java
+/// if (!this.isFallFlying() && this.canGlide() && !this.isInWater()) {
+///    this.startFallFlying();
+///    return true;
+/// }
+/// ```
+///
+/// `Player.canGlide()` is `!this.abilities.flying && super.canGlide()`, and
+/// `LivingEntity.canGlide()` is `!onGround() && !isPassenger()
+/// && !hasEffect(LEVITATION)` plus a `canGlideUsing` slot. Clause by clause:
+///
+/// | Java | here |
+/// |---|---|
+/// | `!isFallFlying()` | `!fall_flying` — the flag is the caller's |
+/// | `!this.abilities.flying` | `!abilities.flying` |
+/// | `!this.onGround()` | `!state.on_ground` |
+/// | `!this.hasEffect(MobEffects.LEVITATION)` | `attrs.levitation.is_none()` |
+/// | `!this.isInWater()` | `!state.in_water()` |
+/// | `canGlideUsing` in some `EquipmentSlot` | `has_glider` |
+///
+/// Two clauses of the Java have no representation here and are the caller's to
+/// honour: `!isPassenger()` (there is no passenger model — the session runs
+/// this only while unmounted) and, inside `canGlideUsing`, `equippable.slot()
+/// == slot` (the caller looks at the slot an elytra is equippable on) and
+/// `!itemStack.nextDamageWillBreak()` (Rewo's `ItemSlot` has the damage but
+/// not the max).
+pub fn can_start_fall_flying(
+    state: &PlayerState,
+    abilities: &Abilities,
+    attrs: &MoveAttributes,
+    fall_flying: bool,
+    has_glider: bool,
+) -> bool {
+    !fall_flying
+        && !abilities.flying
+        && !state.on_ground
+        && !state.in_water()
+        && attrs.levitation.is_none()
+        && has_glider
 }
 
 /// `Level.getFluidState(pos).isEmpty()` for the block under a point.
@@ -733,7 +889,9 @@ fn travel_in_air(state: &mut PlayerState, ctx: &mut Ctx, xxa: f32, zza: f32) {
     let (dx, dy, dz) = (state.vx, state.vy, state.vz);
     do_move(state, ctx, [dx, dy, dz]);
     let mut vy = state.vy;
-    if (state.horizontal_collision || ctx.input.jump) && on_climbable(state, ctx) {
+    if (state.horizontal_collision || ctx.input.jump)
+        && is_on_climbable(state, ctx.world, ctx.no_clip)
+    {
         vy = 0.2;
     }
 
@@ -778,7 +936,7 @@ fn travel_in_fluid(state: &mut PlayerState, ctx: &mut Ctx, xxa: f32, zza: f32) {
         let d = [state.vx, state.vy, state.vz];
         do_move(state, ctx, d);
         let mut m = [state.vx, state.vy, state.vz];
-        if state.horizontal_collision && on_climbable(state, ctx) {
+        if state.horizontal_collision && is_on_climbable(state, ctx.world, ctx.no_clip) {
             m[1] = 0.2;
         }
         m[0] *= slow_down as f64;
@@ -829,17 +987,21 @@ fn fluid_falling_adjusted(ctx: &Ctx, base_gravity: f64, is_falling: bool, vy: f6
 }
 
 /// `LivingEntity.onClimbable`.
-fn on_climbable(state: &PlayerState, ctx: &Ctx) -> bool {
-    if ctx.no_clip {
+///
+/// Public because the elytra needs it outside the tick: `LocalPlayer.aiStep`'s
+/// take-off line guards on `!this.onClimbable()`, and `travelFallFlying`'s
+/// climbable arm is `travelInAir(input); stopFallFlying()`.
+pub fn is_on_climbable(state: &PlayerState, world: &dyn PhysicsWorld, no_clip: bool) -> bool {
+    if no_clip {
         return false;
     }
     let [x, y, z] = state.block_pos();
-    let here = ctx.world.block(x, y, z);
+    let here = world.block(x, y, z);
     if here.has(flags::CLIMBABLE) {
         return true;
     }
     if here.has(flags::OPEN_TRAPDOOR) {
-        let below = ctx.world.block(x, y - 1, z);
+        let below = world.block(x, y - 1, z);
         return below.has(flags::LADDER) && below.facing == here.facing;
     }
     false
@@ -847,7 +1009,7 @@ fn on_climbable(state: &PlayerState, ctx: &Ctx) -> bool {
 
 /// `LivingEntity.handleOnClimbable`.
 fn handle_on_climbable(state: &mut PlayerState, ctx: &Ctx) {
-    if !on_climbable(state, ctx) {
+    if !is_on_climbable(state, ctx.world, ctx.no_clip) {
         return;
     }
     state.fall_distance = 0.0;
@@ -3155,5 +3317,155 @@ mod tests {
         assert!((b[3] - b[0] - PLAYER_HALF_WIDTH * 2.0).abs() < 1e-12);
         assert!((b[4] - b[1] - PLAYER_HEIGHT).abs() < 1e-12);
         assert_eq!(dimensions(Pose::FallFlying), dimensions(Pose::Swimming));
+    }
+
+    // ---- the elytra glide (`LivingEntity.travelFallFlying`) ---------------
+
+    /// One level tick from rest, derived from `updateFallFlyingMovement` by
+    /// hand (pitch 0, yaw 0, gravity 0.08, no input):
+    ///
+    /// * `getLookAngle()` is `calculateViewVector(0, 0)` = (0, −0, 1), so
+    ///   `lookHorLength` = 1 and `moveHorLength` = 0.
+    /// * `leanAngle` = 0 → `liftForce` = `Math.cos(0)²` = 1, so the first line
+    ///   adds `0.08 · (−1 + 0.75)` = **−0.02** to y.
+    /// * y is now negative, so the slip term converts `y · −0.1 · liftForce` =
+    ///   0.002 into `(look.x · 0.002 / 1, 0.002, look.z · 0.002 / 1)`, i.e.
+    ///   y −0.02 → **−0.018** and z 0 → **0.002**.
+    /// * `leanAngle < 0` is false, so the dive term is skipped (it would be 0
+    ///   from rest anyway: `moveHorLength` = 0).
+    /// * the alignment term pulls z toward `look.z / 1 · 0` = 0 by 10%:
+    ///   z += (0 − 0.002) · 0.1 = −0.0002 → **0.0018**.
+    /// * `multiply(0.99F, 0.98F, 0.99F)` widens the factors first:
+    ///   y = −0.018 · 0.9800000190734863 = **−0.01764000034332275…**,
+    ///   z = 0.0018 · 0.9900000095367432 = **0.001782000017166137…**.
+    ///
+    /// So a glide from rest pitched level loses altitude and gains forward
+    /// speed on its very first tick.
+    #[test]
+    fn a_level_glide_from_rest_is_vanilla_one_tick() {
+        let w = world(|_, _, _| EMPTY, |_, _, _| stone());
+        let mut p = PlayerState::at(0.5, 100.0, 0.5);
+        step_env(&mut p, &TickInput { fall_flying: true, ..Default::default() }, &w);
+        assert!((p.vy - -0.01764000034332275).abs() < 1e-9, "vy={}", p.vy);
+        assert!((p.vz - 0.0017820000171661376).abs() < 1e-9, "vz={}", p.vz);
+        assert_eq!(p.vx, 0.0, "yaw 0 has no x component");
+        assert!((100.0 - p.y - 0.01764000034332275).abs() < 1e-9, "y={} — lost altitude", p.y);
+    }
+
+    /// A dive converts speed into lift and forward motion (the `leanAngle < 0`
+    /// arm: `−Mth.sin(leanAngle) · 0.04` of the horizontal speed, `· 3.2` of
+    /// it onto y), so from rest the same tick is faster forward than the level
+    /// one — 0.0023388750337735424 against 0.0017820000171661376 — and drops
+    /// harder, −0.03172750134709954 against −0.01764000034332275.
+    #[test]
+    fn diving_gains_more_forward_speed_than_a_level_glide() {
+        let w = world(|_, _, _| EMPTY, |_, _, _| stone());
+        let mut level = PlayerState::at(0.5, 100.0, 0.5);
+        let mut dive = PlayerState::at(0.5, 100.0, 0.5);
+        dive.pitch = -30.0;
+        let glide = TickInput { fall_flying: true, ..Default::default() };
+        step_env(&mut level, &glide, &w);
+        step_env(&mut dive, &glide, &w);
+        assert!((dive.vz - 0.0023388750337735424).abs() < 1e-9, "vz={}", dive.vz);
+        assert!(dive.vz > level.vz, "dive {} > level {}", dive.vz, level.vz);
+        assert!(dive.vy < level.vy, "and it falls faster: {} vs {}", dive.vy, level.vy);
+    }
+
+    /// Landing does not end the glide *here*: vanilla's server does, in
+    /// `LivingEntity.updateFallFlying`'s `!canGlide()` arm (whose first clause
+    /// is `onGround()`), by clearing `FLAG_FALL_FLYING` — and the session
+    /// mirrors that clear into `TickInput::fall_flying`, which is the flag path
+    /// this module reads. So the physics-side evidence is the pair: the glide
+    /// lands on the floor, and once the flag is low the tick is ordinary air
+    /// travel with no take-off available from the ground.
+    #[test]
+    fn landing_ends_the_glide_through_the_flag_path() {
+        let w = world(|_, y, _| cube(y < 0), |_, _, _| stone());
+        let mut p = PlayerState::at(0.5, 3.0, 0.5);
+        let mut glide = TickInput { fall_flying: true, ..Default::default() };
+        let mut ticks = 0;
+        while !p.on_ground && ticks < 200 {
+            step_env(&mut p, &glide, &w);
+            ticks += 1;
+        }
+        assert!(p.on_ground, "the glide reaches the floor in {ticks} ticks");
+        assert!(
+            !can_start_fall_flying(&p, &Abilities::default(), &MoveAttributes::default(), false, true),
+            "`tryToStartFallFlying` refuses the ground the glide just landed on"
+        );
+
+        // The server's clear arrives as `fall_flying: false`, and the tick is
+        // then `travelInAir` again — the full `−gravity` drop after the move,
+        // not the glide's `gravity · (−1 + liftForce · 0.75)`.
+        glide.fall_flying = false;
+        let y0 = p.y;
+        step_env(&mut p, &glide, &w);
+        assert!((p.y - y0).abs() < 1e-12, "still on the floor, y={}", p.y);
+        assert!(
+            (p.vy - -0.08 * (0.98f32 as f64)).abs() < 1e-12,
+            "ordinary air travel, vy={}",
+            p.vy
+        );
+        assert_eq!(p.pose, Pose::Standing, "the pose follows the flag down");
+    }
+
+    /// `travelFallFlying`'s climbable arm is literally `travelInAir(input)`
+    /// (the `stopFallFlying()` half is the caller's flag), so a tick that
+    /// begins a glide against a ladder moves exactly like the same tick with
+    /// the flag low. The two runs hold everything but the flag constant.
+    #[test]
+    fn a_glide_on_a_ladder_is_just_the_air_travel() {
+        let ladder = BlockPhysics { flags: flags::CLIMBABLE, ..BlockPhysics::AIR };
+        let w = TestWorld {
+            shape: |_, y, z| cube(y < 0 || z >= 1),
+            block: move |_, y, z| if z == 0 && y >= 0 { ladder } else { stone() },
+            loaded: true,
+        };
+        let mut gliding = PlayerState::at(0.5, 0.0, 0.7);
+        let mut walking = gliding;
+        let input = |fall_flying| TickInput { forward: 1.0, fall_flying, ..Default::default() };
+        step_env(&mut gliding, &input(true), &w);
+        step_env(&mut walking, &input(false), &w);
+        assert!(is_on_climbable(&gliding, &w, false), "the fixture is on the ladder");
+        assert_eq!((gliding.x, gliding.y, gliding.z), (walking.x, walking.y, walking.z));
+        assert_eq!((gliding.vx, gliding.vy, gliding.vz), (walking.vx, walking.vy, walking.vz));
+    }
+
+    /// `Player.tryToStartFallFlying`'s condition, all 64 rows of the table in
+    /// [`can_start_fall_flying`]'s docs — the expected column is the Java
+    /// condition written out again, so a rewrite that flips a clause is a
+    /// failed row rather than a matching edit in both places.
+    #[test]
+    fn can_start_fall_flying_is_the_java_truth_table() {
+        for row in 0..64u32 {
+            let (fall_flying, flying, on_ground, in_water, levitating, glider) = (
+                row & 1 != 0,
+                row & 2 != 0,
+                row & 4 != 0,
+                row & 8 != 0,
+                row & 16 != 0,
+                row & 32 != 0,
+            );
+            let mut state = PlayerState::at(0.5, 5.0, 0.5);
+            state.on_ground = on_ground;
+            if in_water {
+                state.water_height = 0.4;
+            }
+            let mut abilities = Abilities::default();
+            abilities.flying = flying;
+            let attrs = MoveAttributes {
+                levitation: if levitating { Some(0) } else { None },
+                ..MoveAttributes::default()
+            };
+            // `!isFallFlying() && !abilities.flying && !onGround()
+            //  && !hasEffect(LEVITATION) && !isInWater() && canGlideUsing(…)`.
+            let want = !fall_flying && !flying && !on_ground && !in_water && !levitating && glider;
+            assert_eq!(
+                can_start_fall_flying(&state, &abilities, &attrs, fall_flying, glider),
+                want,
+                "row {row:06b}: fall_flying={fall_flying} flying={flying} \
+                 on_ground={on_ground} in_water={in_water} levitating={levitating} glider={glider}"
+            );
+        }
     }
 }

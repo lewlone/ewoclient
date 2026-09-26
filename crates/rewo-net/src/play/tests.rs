@@ -679,6 +679,7 @@ mod respawn_tests {
         last_on_ground: bool,
         last_horiz: bool,
         last_input_flags: u8,
+        local_fall_flying: bool,
     }
 
     fn player_harness() -> PlayerHarness {
@@ -694,6 +695,7 @@ mod respawn_tests {
             last_on_ground: true,
             last_horiz: true,
             last_input_flags: 0b0101_0001,
+            local_fall_flying: true,
         }
     }
 
@@ -711,6 +713,7 @@ mod respawn_tests {
                 last_on_ground: &mut self.last_on_ground,
                 last_horiz: &mut self.last_horiz,
                 last_input_flags: &mut self.last_input_flags,
+                local_fall_flying: &mut self.local_fall_flying,
             }
             .apply(keep_entity_data);
         }
@@ -747,6 +750,9 @@ mod respawn_tests {
         // non-default value exactly; food is `FoodData` and is always fresh.
         assert_eq!(h.health, 3.5, "DATA_HEALTH_ID carried by assignValues");
         assert_eq!(h.food, 20, "FoodData is not synched data — always fresh");
+        // `DATA_SHARED_FLAGS_ID` travels on the same `assignValues`, so a
+        // player who was mid-glide when they died comes back mid-glide.
+        assert!(h.local_fall_flying, "FLAG_FALL_FLYING carried by assignValues");
         assert!(!h.dead);
         assert!(
             !h.spawned,
@@ -775,6 +781,10 @@ mod respawn_tests {
         // No bit 2 → no `assignValues`, so the harness's non-default 3.5 health
         // is gone and the fresh player's 20 stands.
         assert_eq!((h.health, h.food), (20.0, 20));
+        // The fresh entity's shared flags are the defaults, and the server will
+        // never re-state one that is already default — so without this reset a
+        // glide outlives its player.
+        assert!(!h.local_fall_flying, "fresh entity starts with the flag low");
         assert!(!h.dead);
         assert!(!h.spawned);
     }
@@ -813,8 +823,8 @@ mod respawn_tests {
             );
             assert_eq!(x.last_input_flags, y.last_input_flags);
             assert_eq!(
-                (x.health, x.food, x.dead, x.spawned),
-                (y.health, y.food, y.dead, y.spawned)
+                (x.health, x.food, x.dead, x.spawned, x.local_fall_flying),
+                (y.health, y.food, y.dead, y.spawned, y.local_fall_flying)
             );
         }
     }
@@ -1898,5 +1908,119 @@ mod m146_music {
         // …and the dragon still overrides it, because that arm returns before
         // the record is consulted at all.
         assert!(situational_music_from(true, true, &BackgroundMusic::empty(), false, false).is_some());
+    }
+}
+
+/// The elytra take-off line (`LocalPlayer.aiStep:850`). A `PlaySession` owns a
+/// socket and cannot be built in a test (M71's lesson), so these witness the
+/// pure function `PlaySession::tick` adapts — with a real inventory, and with
+/// the real glider classification behind it.
+mod fall_flying_tests {
+    use super::*;
+    use rewo_world::inventory::{Inventory, ItemSlot};
+
+    /// The id table `into_play` resolves glider ids against. `Items::for_tests`
+    /// numbers by position, so `minecraft:elytra` is id 0 in this fixture.
+    fn items() -> rewo_data::items::Items {
+        rewo_data::items::Items::for_tests(&["minecraft:elytra", "minecraft:bread"])
+    }
+
+    /// One take-off attempt, returning the bytes it would send. The player is
+    /// `PlayerState::at`'s airborne, dry default, so
+    /// [`physics::can_start_fall_flying`]'s own clauses hold except the two
+    /// this passes in — those are covered exhaustively by the physics side's
+    /// `can_start_fall_flying_is_the_java_truth_table`.
+    fn attempt(
+        jump: bool,
+        was_jumping: bool,
+        just_toggled_creative_flight: bool,
+        on_climbable: bool,
+        fall_flying: bool,
+        elytra_in_chest: bool,
+    ) -> Option<Vec<u8>> {
+        let items = items();
+        let glider_items = glider_item_ids(&items);
+        let mut inventory = Inventory::default();
+        if elytra_in_chest {
+            let elytra = items.id("minecraft:elytra").expect("the fixture names it");
+            // Inventory index 38 is the chest armour slot — menu slot 6, the
+            // `ARMOR_MENU_START + 1` lookup `chest_is_glider` makes.
+            let _ = inventory.set_inventory_index(38, Some(ItemSlot::plain(elytra, 1)));
+        }
+        let state = PlayerState::at(0.0, 64.0, 0.0);
+        let abilities = rewo_world::abilities::Abilities::default();
+        let attrs = physics::MoveAttributes::default();
+        fall_flying_takeoff(&FallFlyingTakeoff {
+            jump,
+            was_jumping,
+            just_toggled_creative_flight,
+            on_climbable,
+            state: &state,
+            abilities: &abilities,
+            attrs: &attrs,
+            fall_flying,
+            inventory: &inventory,
+            glider_items: &glider_items,
+            wire: Some((0x25, 7)),
+        })
+        .map(|p| p.into_bytes())
+    }
+
+    /// Jump in the air with an elytra in the chest slot emits
+    /// `ServerboundPlayerCommandPacket(7, START_FALL_FLYING)`; without one it
+    /// emits nothing at all. The bytes are the packet id `0x25` as a varint,
+    /// then `player_command_body`'s entity 7, action 6, data 0 — the last two
+    /// being the `Action` ordinal and the two-argument constructor's `data`.
+    #[test]
+    fn jump_in_the_air_takes_off_only_with_an_elytra_in_the_chest_slot() {
+        assert_eq!(
+            attempt(true, false, false, false, false, true),
+            Some(vec![0x25, 7, 6, 0]),
+            "START_FALL_FLYING is the Action enum's seventh constant"
+        );
+        assert_eq!(attempt(true, false, false, false, false, false), None);
+    }
+
+    /// The line is a conjunction and every other conjunct is load-bearing: the
+    /// key must be *newly* pressed (a held key does not take off), the press
+    /// that just toggled creative flight is already spent, a climbable is the
+    /// ladder's business, and an already-flying elytra is not started twice.
+    #[test]
+    fn the_take_off_line_is_a_conjunction() {
+        assert_eq!(attempt(false, false, false, false, false, true), None, "no press");
+        assert_eq!(attempt(true, true, false, false, false, true), None, "held, not newly pressed");
+        assert_eq!(
+            attempt(true, false, true, false, false, true),
+            None,
+            "the press that toggled creative flight"
+        );
+        assert_eq!(attempt(true, false, false, true, false, true), None, "on a climbable");
+        assert_eq!(attempt(true, false, false, false, true, true), None, "already gliding");
+    }
+
+    /// The item test is the prototype's `minecraft:glider` component — which
+    /// `minecraft:elytra` carries — applied to the **chest** slot, where
+    /// `canGlideUsing`'s `equippable.slot() == slot` clause puts it. An elytra
+    /// one slot up is the head and must not count.
+    #[test]
+    fn the_glider_test_is_the_prototype_component_in_the_chest_slot() {
+        assert_eq!(
+            rewo_data::item_components_table::prototype_has_component(
+                "minecraft:elytra",
+                "minecraft:glider"
+            ),
+            Some(true),
+            "the classification `glider_item_ids` keys on"
+        );
+        let items = items();
+        let glider_items = glider_item_ids(&items);
+        let elytra = items.id("minecraft:elytra").unwrap();
+        assert_eq!(glider_items, vec![elytra], "the bread carries no glider");
+        let mut chest = Inventory::default();
+        let _ = chest.set_inventory_index(38, Some(ItemSlot::plain(elytra, 1)));
+        assert!(chest_is_glider(&chest, &glider_items));
+        let mut head = Inventory::default();
+        let _ = head.set_inventory_index(39, Some(ItemSlot::plain(elytra, 1)));
+        assert!(!chest_is_glider(&head, &glider_items), "menu 5 is the head");
     }
 }
