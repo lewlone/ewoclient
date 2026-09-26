@@ -119,8 +119,11 @@ python tools/regen_agents_mirror.py          # after editing this file: regenera
 - **Local-only inputs.** Most gates and several tests need
   `%APPDATA%/EwoClient/rewo/26.2/` (datagen reports + a Vineflower decompile of
   the user's own client jar) and a Vulkan device with the SDK's validation
-  layers. CI (`.github/workflows/ci.yml`, required check `test` on `main`) runs
-  only build + `cargo test` + clippy, so run the gates yourself.
+  layers. Hosted CI (`ci.yml`, required check `test` on `main`) runs only
+  build + `cargo test` + clippy. `gates.yml` runs the tests with
+  `REWO_REQUIRE_ASSETS=1`, `gates.py` and `render_check.py` on every push, on
+  the owner's self-hosted runner (label `rewo-gpu`); it has no `pull_request`
+  trigger, and outside contributors' workflow runs need approval.
 - A test that needs local assets calls `rewo_data::skip_test!("reason")`, never
   returns silently: it prints `SKIP:`, and panics under `REWO_REQUIRE_ASSETS=1`.
 - **Gate rules** (enforced by `tools/gates.py`): a gate passes only if it exits

@@ -57,6 +57,23 @@ enum PrepareFail {
 /// A launch whose blocking preparation runs on a worker thread; the result
 /// arrives on `rx` and the UI thread finishes the launch (JRE pick, plan,
 /// spawn) — see `App::poll_prepare`.
+/// The launching screen's meta line: the instance's "<LOADER> · <version>",
+/// then, for a JVM instance, the Java runtime once one has been picked and
+/// the heap. A native (Rewo) instance has neither.
+fn launch_meta(
+    inst: &ewo_render::screens::instances::Instance,
+    java_major: Option<u32>,
+    ram_gb: i32,
+) -> String {
+    if matches!(inst.loader, ewo_render::screens::instances::InstanceLoader::Native) {
+        return inst.version.clone();
+    }
+    match java_major {
+        Some(major) => format!("{} · JAVA {} · {} GB", inst.version, major, ram_gb),
+        None => format!("{} · {} GB", inst.version, ram_gb),
+    }
+}
+
 struct PendingPrepare {
     rx: std::sync::mpsc::Receiver<Result<launch::prepare::Prepared, String>>,
     idx: usize,
@@ -683,6 +700,9 @@ impl App {
                     j.path.display(),
                     required_major
                 );
+                // Name the runtime actually chosen, now that it is known.
+                self.launching.instance_meta =
+                    launch_meta(&inst, Some(j.major), self.instance_prefs.ram.value as i32);
                 j.path.clone()
             }
             None => {
@@ -875,10 +895,7 @@ impl App {
         let (inst_name, inst_meta) = match self.instances.get(idx) {
             Some(i) if i.status != InstanceStatus::Pending => (
                 i.name.clone(),
-                format!(
-                    "{} · ADOPTIUM 21 · {} GB",
-                    i.version, self.instance_prefs.ram.value as i32,
-                ),
+                launch_meta(i, None, self.instance_prefs.ram.value as i32),
             ),
             _ => {
                 log::warn!(

@@ -942,11 +942,7 @@ impl App {
                                     .map(|i| {
                                         (
                                             i.name.clone(),
-                                            format!(
-                                                "{} · ADOPTIUM 21 · {} GB",
-                                                i.version,
-                                                self.instance_prefs.ram.value as i32,
-                                            ),
+                                            crate::launch_meta(i, None, self.instance_prefs.ram.value as i32),
                                         )
                                     })
                                     .unwrap_or_else(|| {
@@ -2060,11 +2056,7 @@ impl App {
                                 .map(|i| {
                                     (
                                         i.name.clone(),
-                                        format!(
-                                            "{} · ADOPTIUM 21 · {} GB",
-                                            i.version,
-                                            self.instance_prefs.ram.value as i32,
-                                        ),
+                                        crate::launch_meta(i, None, self.instance_prefs.ram.value as i32),
                                     )
                                 })
                                 .unwrap_or_else(|| {
