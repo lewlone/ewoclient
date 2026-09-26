@@ -1789,6 +1789,13 @@ impl WorldRenderer {
         self.hand.is_some()
     }
 
+    /// Whether the vanilla-font text pass exists (`init_text`) — chat, the
+    /// command line, screen labels. Without it `set_text` stores lines that
+    /// nothing draws.
+    pub fn text_ready(&self) -> bool {
+        self.text.is_some()
+    }
+
     /// The raw handle of the buffer the hand pass would bind this frame, or 0.
     ///
     /// For `live --render-check`'s rotation witnesses (M86): the whole point of

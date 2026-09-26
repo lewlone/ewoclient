@@ -1880,6 +1880,8 @@ impl LiveApp {
             c.sample_rings(world_renderer);
             c.gui_items_ready |= world_renderer.gui_items_ready();
             c.hand_ready |= world_renderer.hand_ready();
+            c.text_ready |= world_renderer.text_ready();
+            c.container_ready |= world_renderer.container_ready();
             c.clouds_ready |= world_renderer.clouds_ready();
             c.weather_ready |= world_renderer.weather_ready();
             c.particles_ready |= world_renderer.particles_ready();

@@ -581,6 +581,8 @@ pub(super) struct RenderCheck {
     /// Passes actually constructed by the end of the run.
     pub(super) gui_items_ready: bool,
     pub(super) hand_ready: bool,
+    pub(super) text_ready: bool,
+    pub(super) container_ready: bool,
     pub(super) clouds_ready: bool,
     pub(super) weather_ready: bool,
     pub(super) particles_ready: bool,
@@ -664,7 +666,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 64;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 66;
 
     pub(super) fn report(&self) -> bool {
         let vuids = rewo_gpu::validation_error_count();
@@ -1482,6 +1484,21 @@ impl RenderCheck {
                  IS the commit — the 0.90 book-menu injection replaces the editor)",
                 self.sign_update_sent
             ),
+        );
+        // The windowed client's OWN renderer has the passes that draw text and
+        // container screens. Every other text/container row counts data
+        // (lines built, panel heights) that is stored whether or not a pass
+        // exists to draw it — which is how the windowed client shipped with
+        // neither pass while those rows stayed green.
+        row(
+            "r65 the windowed renderer built the vanilla-font text pass",
+            self.text_ready,
+            format!("{}", self.text_ready),
+        );
+        row(
+            "r66 the windowed renderer built the container-screen pass",
+            self.container_ready,
+            format!("{}", self.container_ready),
         );
         row(
             "r18 the session was validation-clean",

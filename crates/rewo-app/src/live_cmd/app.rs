@@ -68,6 +68,18 @@ impl ApplicationHandler for LiveApp {
             if let Some(w) = widget_sprites(&baked) {
                 world_renderer.init_screen(&mut gpu, &w)?;
             }
+            // The vanilla-font text pass (chat, the command line, screen
+            // labels) and the container-screen pass (the inventory and every
+            // menu's panel). The windowed client never created either: the
+            // gates and the headless path call these on their own renderers,
+            // so all of them drew text and panels while the real window drew
+            // neither. `live --render-check`'s r65/r66 now ask this renderer.
+            if let Some(font) = font_data(&baked) {
+                world_renderer.init_text(&mut gpu, &font)?;
+            }
+            if let Some(c) = container_sprites(&baked) {
+                world_renderer.init_container(&mut gpu, &c)?;
+            }
             if let Some(hud) = hud_sprites(&baked) {
                 world_renderer.init_hud(&mut gpu, &hud)?;
                 // M52b: the Velvet type stack, windowed only. A build with no
