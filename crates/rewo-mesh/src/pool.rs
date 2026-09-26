@@ -29,10 +29,10 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use rewo_data::assets::{CarriedFluid, Quad, RenderKind};
+use rewo_data::assets::{CarriedFluid, CullInfo, Quad, RenderKind};
 use rewo_world::World;
 
-use crate::{mesh_column, ColumnMesh};
+use crate::{mesh_column_with, ColumnMesh, MeshInputs};
 
 /// The baked per-state render tables the mesher reads — owned once by the
 /// pool, shared read-only with every worker.
@@ -45,6 +45,44 @@ pub struct MeshTables {
     /// because the way this feature disappears is precisely a caller that
     /// forgot it.
     pub fluid: Vec<Option<CarriedFluid>>,
+    /// Per-state face culling (`BakedAssets::cull`). Empty = the legacy rule
+    /// (a `RenderKind::Cube` occludes, nothing is translucent).
+    pub cull: Vec<CullInfo>,
+    /// Per-state light emission / dampening (`BakedAssets::emission`,
+    /// `::dampening`) — what smooth lighting reads. Empty = the legacy rule.
+    pub emission: Vec<u8>,
+    pub dampening: Vec<u8>,
+    /// Vanilla's "Smooth Lighting" option.
+    pub smooth_lighting: bool,
+}
+
+impl MeshTables {
+    /// Every table the mesher reads, cloned from a bake, smooth lighting on.
+    /// Production callers use this so a table added later cannot be left out.
+    pub fn from_baked(b: &rewo_data::assets::BakedAssets) -> Self {
+        let inputs = MeshInputs::from_baked(b);
+        Self {
+            render: b.render.clone(),
+            models: b.models.clone(),
+            fluid: b.fluid.clone(),
+            cull: b.cull.clone(),
+            emission: b.emission.clone(),
+            dampening: b.dampening.clone(),
+            smooth_lighting: inputs.smooth_lighting,
+        }
+    }
+
+    fn inputs(&self) -> MeshInputs<'_> {
+        MeshInputs {
+            render: &self.render,
+            models: &self.models,
+            fluid: &self.fluid,
+            cull: &self.cull,
+            emission: &self.emission,
+            dampening: &self.dampening,
+            smooth_lighting: self.smooth_lighting,
+        }
+    }
 }
 
 /// One finished mesh job. `mesh: None` means the column baked to nothing
@@ -63,6 +101,10 @@ pub struct MeshOutput {
 pub struct MeshPool {
     pool: rayon::ThreadPool,
     tables: Arc<MeshTables>,
+    /// Vanilla's "Smooth Lighting" option (`Options.ambientOcclusion`), seeded
+    /// from [`MeshTables::smooth_lighting`] and moved per job at submit time —
+    /// see [`Self::set_smooth_lighting`].
+    smooth_lighting: bool,
     tx: Sender<MeshOutput>,
     rx: Receiver<MeshOutput>,
     /// Identity is `(generation, cx, cz)` — a new generation may re-enter a
@@ -90,13 +132,28 @@ impl MeshPool {
             .map_err(|e| format!("mesh pool: {e}"))?;
         log::info!("mesh pool: {threads} workers");
         let (tx, rx) = mpsc::channel();
+        let smooth_lighting = tables.smooth_lighting;
         Ok(Self {
             pool,
             tables: Arc::new(tables),
+            smooth_lighting,
             tx,
             rx,
             in_flight: HashSet::new(),
         })
+    }
+
+    /// Vanilla's "Smooth Lighting" option (`Options.ambientOcclusion`), on by
+    /// default.
+    ///
+    /// Takes effect at the next [`Self::submit`]: the value is read there and
+    /// moved into the job, so a job already in flight keeps the setting it was
+    /// submitted with (nothing can change under it) and every job submitted
+    /// from here on meshes the new way. A caller that flips this is expected
+    /// to re-mesh every loaded column — vanilla's `allChanged` on the option's
+    /// `onValueUpdate` — and those re-submits are what carry the new value.
+    pub fn set_smooth_lighting(&mut self, on: bool) {
+        self.smooth_lighting = on;
     }
 
     /// Queue a mesh job for (cx, cz) at `generation`. Returns `false` —
@@ -110,13 +167,12 @@ impl MeshPool {
         }
         let snapshot = world.snapshot_3x3(cx, cz);
         let tables = Arc::clone(&self.tables);
+        let smooth_lighting = self.smooth_lighting;
         let tx = self.tx.clone();
         self.pool.spawn(move || {
-            let mesh = mesh_column(
+            let mesh = mesh_column_with(
                 &snapshot,
-                &tables.render,
-                &tables.models,
-                &tables.fluid,
+                MeshInputs { smooth_lighting, ..tables.inputs() },
                 cx,
                 cz,
             );
@@ -160,13 +216,24 @@ pub fn mesh_all(
     fluid: &[Option<CarriedFluid>],
     coords: &[(i32, i32)],
 ) -> Vec<MeshOutput> {
+    let inputs = MeshInputs::geometry(render, models, fluid);
+    mesh_all_with(generation, world, inputs, coords)
+}
+
+/// [`mesh_all`] over full [`MeshInputs`].
+pub fn mesh_all_with(
+    generation: u64,
+    world: &World,
+    inputs: MeshInputs<'_>,
+    coords: &[(i32, i32)],
+) -> Vec<MeshOutput> {
     coords
         .par_iter()
         .map(|&(cx, cz)| MeshOutput {
             generation,
             cx,
             cz,
-            mesh: mesh_column(world, render, models, fluid, cx, cz),
+            mesh: mesh_column_with(world, inputs, cx, cz),
         })
         .collect()
 }
@@ -189,6 +256,10 @@ mod tests {
             ],
             models: Vec::new(),
             fluid: Vec::new(),
+            cull: Vec::new(),
+            emission: Vec::new(),
+            dampening: Vec::new(),
+            smooth_lighting: true,
         }
     }
 
@@ -277,6 +348,74 @@ mod tests {
         let out = recv_blocking(&mut pool);
         assert_eq!(out.mesh.expect("meshed").vertices.len(), 24);
         assert_eq!(world.block_state_at(4, 11, 4), 1);
+    }
+
+    /// The four `(pos, color)` of the base block's up face (y = 11, x/z in
+    /// 4..=5), sorted by position. Exactly one quad qualifies — the raised
+    /// block's own faces reach outside that box.
+    fn up_face(mesh: &ColumnMesh) -> Vec<([f32; 3], [u8; 3])> {
+        let mut face: Vec<([f32; 3], [u8; 3])> = mesh
+            .vertices
+            .chunks_exact(4)
+            .filter(|q| {
+                q.iter().all(|v| {
+                    v.pos[1] == 11.0
+                        && (4.0..=5.0).contains(&v.pos[0])
+                        && (4.0..=5.0).contains(&v.pos[2])
+                })
+            })
+            .flatten()
+            .map(|v| (v.pos, v.color_rgb()))
+            .collect();
+        assert_eq!(face.len(), 4, "exactly one up face in the box: {face:?}");
+        face.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        face
+    }
+
+    /// **`set_smooth_lighting` is read at submit time and reaches the mesher.**
+    ///
+    /// A block with a raised diagonal neighbour shades the up face's nearest
+    /// corner (vanilla's four-sample AO: that corner's sample is the raised
+    /// block, `shade_brightness` 0.2, so `(1 + 1 + 0.2 + 1) / 4 = 0.8`);
+    /// with the option off the same face is `tesselateFlat`'s `gray(shade)` —
+    /// all four vertex colors equal. The pool starts at the TABLES' value, and
+    /// the setter flips both ways for every job submitted after it.
+    #[test]
+    fn set_smooth_lighting_is_read_at_submit_time() {
+        let mut world = one_block_world();
+        // One up and one diagonal over the base block: the up face's
+        // (max_x, max_z) corner samples exactly this cell and no other corner
+        // does.
+        world.set_block(5, 11, 5, 1);
+        let mut pool = MeshPool::new(tables()).unwrap(); // smooth lighting ON
+
+        assert!(pool.submit(0, &world, 0, 0));
+        let smooth = up_face(&recv_blocking(&mut pool).mesh.expect("meshed"));
+        let near = smooth.iter().find(|(p, _)| *p == [5.0, 11.0, 5.0]).unwrap().1;
+        let far = smooth.iter().find(|(p, _)| *p == [4.0, 11.0, 4.0]).unwrap().1;
+        assert_eq!(near, [204; 3], "the corner nearest the raised block: {smooth:?}");
+        assert_eq!(far, [255; 3], "the far corner is unoccluded: {smooth:?}");
+
+        pool.set_smooth_lighting(false);
+        assert!(pool.submit(0, &world, 0, 0));
+        let flat = up_face(&recv_blocking(&mut pool).mesh.expect("meshed"));
+        assert!(
+            flat.iter().all(|(_, c)| *c == flat[0].1),
+            "flat lighting: every vertex color equal — {flat:?}"
+        );
+        assert!(
+            flat.iter().all(|(_, c)| *c == [255; 3]),
+            "and `gray(up shade)` — {flat:?}"
+        );
+
+        // And back: the setter is live in both directions, per submit.
+        pool.set_smooth_lighting(true);
+        assert!(pool.submit(0, &world, 0, 0));
+        assert_eq!(
+            up_face(&recv_blocking(&mut pool).mesh.expect("meshed")),
+            smooth,
+            "the same job shape comes back"
+        );
     }
 
     #[test]

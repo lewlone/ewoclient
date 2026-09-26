@@ -234,12 +234,12 @@ mod tests {
     #[test]
     fn the_real_report_pins_these_ids_to_these_names() {
         let Some(paths) = crate::DataPaths::for_version("26.2") else {
-            eprintln!("SKIP: no config dir");
+            crate::skip_test!("no config dir");
             return;
         };
         let p = paths.registries_json();
         if !p.exists() {
-            eprintln!("SKIP: no datagen report at {}", p.display());
+            crate::skip_test!("no datagen report at {}", p.display());
             return;
         }
         let t = SoundEvents::load(&p).unwrap();

@@ -119,6 +119,11 @@ pub struct Expect {
     /// for the Overworld's: `getClockTimeTicks` answers `.orElse(0L)`, a
     /// permanent zero.
     pub default_clock: Option<&'static str>,
+    /// `gameplay/fast_lava` — the Nether's alone. It is what makes that
+    /// dimension's lava currents push at `0.007` instead of `0.0023333…`
+    /// (`Entity.java:1672`), which is the physics `MoveAttributes::fast_lava`
+    /// carries.
+    pub fast_lava: bool,
 }
 
 /// The four built-ins, in [`BUILTIN_ORDER`].
@@ -151,6 +156,7 @@ pub const EXPECT: [Expect; 4] = [
         has_day_timeline: true,
         has_fixed_time: false,
         default_clock: Some("minecraft:overworld"),
+        fast_lava: false,
     },
     Expect {
         name: "minecraft:overworld_caves",
@@ -170,6 +176,7 @@ pub const EXPECT: [Expect; 4] = [
         has_day_timeline: true,
         has_fixed_time: false,
         default_clock: Some("minecraft:overworld"),
+        fast_lava: false,
     },
     Expect {
         name: "minecraft:the_end",
@@ -192,6 +199,7 @@ pub const EXPECT: [Expect; 4] = [
         // A DIFFERENT clock from the Overworld's — a vanilla server sends both
         // in every `set_time`, and the End's flash schedule runs on this one.
         default_clock: Some("minecraft:the_end"),
+        fast_lava: false,
     },
     Expect {
         name: "minecraft:the_nether",
@@ -215,6 +223,9 @@ pub const EXPECT: [Expect; 4] = [
         // The ONLY vanilla dimension that declares no clock, so
         // `getDefaultClockTime()` here is a permanent zero.
         default_clock: None,
+        // The ONLY vanilla dimension that sets it: its lava currents push at
+        // `0.007` instead of `0.0023333333333333335`.
+        fast_lava: true,
     },
 ];
 
@@ -285,6 +296,7 @@ impl Expect {
             d.default_clock.as_deref(),
             self.default_clock
         );
+        eq!("fast_lava", d.fast_lava, self.fast_lava);
         Ok(())
     }
 }
@@ -431,8 +443,8 @@ pub fn run(args: DimensioncheckArgs) -> Result<(), String> {
     );
     println!(
         "[dimensioncheck] mesh binding: {} dimensions meshed, {} vertices graded, \
-         shade codes {:?}, max sky nibble per dimension {:?}",
-        mesh_report.dimensions, mesh_report.vertices, mesh_report.shade_codes, mesh_report.max_sky,
+         face grays {:?}, max sky nibble per dimension {:?}",
+        mesh_report.dimensions, mesh_report.vertices, mesh_report.face_grays, mesh_report.max_sky,
     );
     println!(
         "[dimensioncheck] generation fence: submit(g0)={} resubmit(g0)={} submit(g1)={}; \
@@ -457,10 +469,11 @@ pub fn run(args: DimensioncheckArgs) -> Result<(), String> {
          both the bundled built-in transcription and the decompiled datagen JSON read from \
          {}, field for field (shape, section count, skylight, skybox, ambient scalar, \
          cardinal type + all six factors, sky/fog/ambient/sky-light colours + factor, fixed \
-         time, and a day timeline resolved through the shipped tags/timeline tag files); the \
+         time, the gameplay/fast_lava flag, and a day timeline resolved through the shipped \
+         tags/timeline tag files); the \
          independent EXPECT table agrees with all three; every entry propagates through \
          World::for_dimension to the vertical shape, the sky channel and the cardinal shade \
-         codes the mesher packs; and the mesh pool's generation fence separates two \
+         the mesher applies to each face; and the mesh pool's generation fence separates two \
          dimension worlds",
         captured.len(),
         captured_names,
@@ -523,7 +536,7 @@ fn captured_registry(path: &std::path::Path) -> Result<Vec<DimensionTypeDef>, St
 fn print_matrix(defs: &[DimensionTypeDef]) {
     println!(
         "[dimensioncheck] holder  name                       min_y height sec sky skybox    \
-         ambient cardinal  up/down  sky_color  fog_color  amb_color  skylight_color/factor  day fixed"
+         ambient cardinal  up/down  sky_color  fog_color  amb_color  skylight_color/factor  day fixed lava"
     );
     for (holder, d) in defs.iter().enumerate() {
         let col = |c: Option<i32>| match c {
@@ -532,7 +545,7 @@ fn print_matrix(defs: &[DimensionTypeDef]) {
         };
         println!(
             "[dimensioncheck] {holder:>6}  {:<26} {:>5} {:>6} {:>3} {:>3} {:<9} {:>7.2} \
-             {:<9} {:.1}/{:.1}  {}   {}   {:08x}   {:08x}/{:.1}          {}   {}",
+             {:<9} {:.1}/{:.1}  {}   {}   {:08x}   {:08x}/{:.1}          {}   {}   {}",
             d.name,
             d.shape.min_y,
             d.shape.height,
@@ -550,6 +563,7 @@ fn print_matrix(defs: &[DimensionTypeDef]) {
             d.sky_light_factor,
             if d.has_day_timeline { "yes" } else { "no " },
             if d.has_fixed_time { "yes" } else { "no" },
+            if d.fast_lava { "yes" } else { "no" },
         );
     }
 }
@@ -666,7 +680,8 @@ fn check_world_binding(defs: &[DimensionTypeDef]) -> Result<WorldReport, String>
 struct MeshReport {
     dimensions: usize,
     vertices: usize,
-    shade_codes: Vec<Vec<u8>>,
+    /// Per dimension, the gray each face (mesher order) meshed to.
+    face_grays: Vec<[u8; 6]>,
     max_sky: Vec<u8>,
 }
 
@@ -684,36 +699,30 @@ fn cube_tables() -> MeshTables {
         render,
         models: Vec::new(),
         fluid: Vec::new(),
+        cull: Vec::new(),
+        emission: Vec::new(),
+        dampening: Vec::new(),
+        smooth_lighting: true,
     }
 }
 
 /// Mesh one floating cube in each dimension's world and read the vertex bytes
-/// back: the shade codes must be exactly the codes the dimension's cardinal
-/// table resolves to, and a dimension with no sky light must not be able to put
+/// back: each face's color must be exactly vanilla's for the dimension's
+/// cardinal table (an unoccluded face: `(int)(255 * byFace)`), and a dimension with no sky light must not be able to put
 /// a nonzero sky nibble into a vertex even though the column it is meshing was
 /// filled with sky 15.
 fn check_mesh_binding(defs: &[DimensionTypeDef]) -> Result<MeshReport, String> {
     let tables = cube_tables();
-    let mut shade_codes = Vec::new();
+    let mut face_grays = Vec::new();
     let mut max_sky = Vec::new();
     let mut vertices = 0usize;
 
     for d in defs {
         let name = &d.name;
-        // The production seam the mesher itself calls, driven by a world built
-        // from the captured registry entry.
-        let w0 = World::for_dimension(d);
-        let mut want_codes: Vec<u8> = (0..6)
-            .map(|face| {
-                let code = rewo_mesh::face_shade_code(&w0, face);
-                if rewo_mesh::FACE_SHADE[code as usize] != d.cardinal_light.by_mesh_face(face) {
-                    panic!("{name}: face {face} shade code {code} is not the dimension factor");
-                }
-                code
-            })
-            .collect();
-        want_codes.sort_unstable();
-        want_codes.dedup();
+        // `ARGB.gray(1.0)` = 255 scaled by the face's cardinal factor, as
+        // `(int)(255 * factor)` — the value an open-air face ends at.
+        let want: [u8; 6] =
+            std::array::from_fn(|face| (255.0f32 * d.cardinal_light.by_mesh_face(face)) as u8);
 
         let mut w = World::for_dimension(d);
         w.ensure_column(0, 0);
@@ -729,13 +738,32 @@ fn check_mesh_binding(defs: &[DimensionTypeDef]) -> Result<MeshReport, String> {
                 mesh.vertices.len()
             ));
         }
-        let mut got: Vec<u8> = mesh.vertices.iter().map(|v| v.shade_code()).collect();
-        got.sort_unstable();
-        got.dedup();
-        if got != want_codes {
-            return Err(format!(
-                "{name}: meshed shade codes {got:?}, expected {want_codes:?}"
-            ));
+        // Each quad's face from its geometry: the axis all four corners share,
+        // on the cube's low or high side.
+        let mut got = [None::<u8>; 6];
+        for q in mesh.vertices.chunks_exact(4) {
+            let axis = (0..3)
+                .find(|&a| q.iter().all(|v| v.pos[a] == q[0].pos[a]))
+                .ok_or_else(|| format!("{name}: a quad is not axis-aligned"))?;
+            let high = q[0].pos[axis] > [8.0, y as f32, 8.0][axis];
+            // Mesher order: up, down, north, south, west, east.
+            let face = match (axis, high) {
+                (1, true) => 0,
+                (1, false) => 1,
+                (2, false) => 2,
+                (2, true) => 3,
+                (0, false) => 4,
+                _ => 5,
+            };
+            let gray = q[0].color_rgb()[0];
+            if q.iter().any(|v| v.color_rgb() != [gray; 3]) {
+                return Err(format!("{name}: face {face} is not one gray: {:?}", q.iter().map(|v| v.color_rgb()).collect::<Vec<_>>()));
+            }
+            got[face] = Some(gray);
+        }
+        let got: [u8; 6] = std::array::from_fn(|f| got[f].unwrap_or(0));
+        if got != want {
+            return Err(format!("{name}: meshed face grays {got:?}, expected {want:?}"));
         }
         let sky = mesh
             .vertices
@@ -756,13 +784,13 @@ fn check_mesh_binding(defs: &[DimensionTypeDef]) -> Result<MeshReport, String> {
             ));
         }
         vertices += mesh.vertices.len();
-        shade_codes.push(got);
+        face_grays.push(got);
         max_sky.push(sky);
     }
     Ok(MeshReport {
         dimensions: defs.len(),
         vertices,
-        shade_codes,
+        face_grays,
         max_sky,
     })
 }
@@ -882,11 +910,19 @@ mod tests {
     }
 
     /// The four real datagen files, read off disk by the independent JSON
-    /// oracle. Fails closed: there is no "the files were absent so we skipped"
-    /// arm, because a check that can vanish is not a check.
-    fn decompiled_json() -> Vec<dimension_json::JsonDimension> {
-        dimension_json::load(&dimension_json::default_data_root("26.2"), &BUILTIN_ORDER)
-            .expect("the decompiled 26.2 dimension_type JSON must be readable")
+    /// oracle. `None` (a recorded skip) only when the decompile is absent
+    /// altogether, as on CI; `REWO_REQUIRE_ASSETS=1` turns that skip into a
+    /// failure, and a decompile that is present but unreadable still fails.
+    fn decompiled_json() -> Option<Vec<dimension_json::JsonDimension>> {
+        let root = dimension_json::default_data_root("26.2");
+        if !root.join("dimension_type").is_dir() {
+            rewo_data::skip_test!("no local 26.2 decompile at {}", root.display());
+            return None;
+        }
+        Some(
+            dimension_json::load(&root, &BUILTIN_ORDER)
+                .expect("the decompiled 26.2 dimension_type JSON must be readable"),
+        )
     }
 
     /// The bundled transcription is graded against the **actual decompiled
@@ -897,7 +933,7 @@ mod tests {
     #[test]
     fn the_bundled_transcription_matches_the_decompiled_json_files() {
         let defs = bundled();
-        let json = decompiled_json();
+        let Some(json) = decompiled_json() else { return };
         assert_eq!(defs.len(), json.len());
         for (holder, j) in json.iter().enumerate() {
             j.diff("bundled", holder, &defs[holder]).unwrap();
@@ -909,7 +945,7 @@ mod tests {
     /// reader and a parser that mis-read the *same* field still fail.
     #[test]
     fn the_expectation_table_matches_the_decompiled_json_files() {
-        let json = decompiled_json();
+        let Some(json) = decompiled_json() else { return };
         assert_eq!(EXPECT.len(), json.len());
         for (holder, expect) in EXPECT.iter().enumerate() {
             expect
@@ -923,7 +959,7 @@ mod tests {
     /// names the field and the file.
     #[test]
     fn the_json_oracle_rejects_a_drifted_transcription() {
-        let json = decompiled_json();
+        let Some(json) = decompiled_json() else { return };
         let mut defs = bundled();
         // Nether graded against the Overworld's file.
         assert!(json[0].diff("bundled", 0, &defs[3]).is_err());
@@ -946,7 +982,7 @@ mod tests {
     /// is independent of `has_fixed_time`.
     #[test]
     fn the_day_timeline_is_resolved_from_the_decompiled_tag_files() {
-        let json = decompiled_json();
+        let Some(json) = decompiled_json() else { return };
         assert_eq!(json[0].timelines_raw, vec!["#minecraft:in_overworld"]);
         assert!(json[0].has_day_timeline && !json[0].has_fixed_time);
         for holder in [2usize, 3] {
@@ -1013,12 +1049,13 @@ mod tests {
         let m = check_mesh_binding(&defs).unwrap();
         assert_eq!(m.vertices, 96);
         // The Nether — holder 3 in the real synced order — is the one dimension
-        // whose faces move off their historical codes, and the only one whose
-        // vertices may not carry sky light.
+        // whose up/down faces take `CardinalLighting.NETHER`'s 0.9
+        // (`(int)(255 * 0.9f)` = 229), and the only one whose vertices may not
+        // carry sky light. DEFAULT: 1.0/0.5/0.8/0.6 -> 255/127/204/153.
         assert_eq!(defs[3].name, "minecraft:the_nether");
-        assert_eq!(m.shade_codes[3], vec![2, 3, 4, 5, 6]);
+        assert_eq!(m.face_grays[3], [229, 229, 204, 204, 153, 153]);
         assert_eq!(m.max_sky[3], 0);
-        assert_eq!(m.shade_codes[0], vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(m.face_grays[0], [255, 127, 204, 204, 153, 153]);
         assert_eq!(m.max_sky[0], 15);
         check_generation_fence(&defs).unwrap();
     }

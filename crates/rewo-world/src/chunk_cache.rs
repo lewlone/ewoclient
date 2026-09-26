@@ -61,8 +61,8 @@
 //! ```
 //!
 //! The body is the column: section count, then per section the non-empty count,
-//! the two paletted containers, the two optional light nibble arrays and the
-//! block-update overrides; then `sky_full_above`, the optional
+//! the two paletted containers (block edits already written into them), the
+//! two optional light nibble arrays and the edited flag; then `sky_full_above`, the optional
 //! `MOTION_BLOCKING` heightmap, and the block entities.
 
 use std::collections::HashMap;
@@ -86,7 +86,7 @@ const MAGIC: [u8; 4] = *b"RWCC";
 /// A stale entry that still parses is the expensive failure this guards, so the
 /// check is equality rather than `>=`: neither an older nor a newer file is
 /// accepted, and the cost of being wrong is one re-request.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Bytes before the body.
 const HEADER_LEN: usize = 36;
@@ -254,19 +254,20 @@ fn body_hash(bytes: &[u8]) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// bit-packed u32 runs
+// bit-packed u16 runs
 // ---------------------------------------------------------------------------
 
-/// A section's 4096 block-state cells stored one-per-u32 would be 16 KiB, and a
+/// A section's 4096 block-state cells stored one-per-u16 would be 8 KiB, and a
 /// full Overworld column has 24 of them. Packing at the width the values
 /// actually need takes a typical indirect palette to ~2 KiB — losslessly, since
 /// the width is derived from the maximum value present and written down.
 ///
 /// The packing convention is the wire's (`floor(64/bits)` values per word, no
 /// value straddling a word boundary), so it reads the same way
-/// `palette::read_bit_storage` does.
-fn put_packed(out: &mut Vec<u8>, values: &[u32]) {
-    let bits = bits_needed(values.iter().copied().max().unwrap_or(0));
+/// `palette::read_bit_storage` does. The bytes are the same as before the
+/// cells narrowed to `u16`: the width comes from the values, not the type.
+fn put_packed(out: &mut Vec<u8>, values: &[u16]) {
+    let bits = bits_needed(values.iter().copied().max().unwrap_or(0) as u32);
     put_u8(out, bits as u8);
     put_u32(out, values.len() as u32);
     let per_word = (64 / bits) as usize;
@@ -279,7 +280,7 @@ fn put_packed(out: &mut Vec<u8>, values: &[u32]) {
     }
 }
 
-fn read_packed(r: &mut ByteReader) -> Result<Vec<u32>, CacheError> {
+fn read_packed(r: &mut ByteReader) -> Result<Vec<u16>, CacheError> {
     let bits = r.u8()? as u32;
     if !(1..=32).contains(&bits) {
         return Err(CacheError::Malformed("bit width out of range"));
@@ -301,7 +302,14 @@ fn read_packed(r: &mut ByteReader) -> Result<Vec<u32>, CacheError> {
             if out.len() == len {
                 break;
             }
-            out.push(((word >> (slot as u32 * bits)) as u32) & mask);
+            let value = ((word >> (slot as u32 * bits)) as u32) & mask;
+            // The width is still read up to 32 bits (an entry from a wider
+            // build must not be *misread*), but a value that does not fit the
+            // u16 cells is a rejection, never a truncation.
+            let Ok(value) = u16::try_from(value) else {
+                return Err(CacheError::Malformed("packed value exceeds u16"));
+            };
+            out.push(value);
         }
     }
     Ok(out)
@@ -564,23 +572,14 @@ fn put_section(out: &mut Vec<u8>, s: &Section) {
         biomes,
         block_light,
         sky_light,
-        overrides,
+        edited,
     } = s;
     put_i16(out, *non_empty);
     put_container(out, states);
     put_container(out, biomes);
     put_light(out, block_light);
     put_light(out, sky_light);
-    // Sorted, so encoding a column twice produces identical bytes. A `HashMap`
-    // iterates in an unspecified order, and a format whose bytes depend on
-    // allocator state cannot be compared byte-for-byte in a test.
-    let mut keys: Vec<u16> = overrides.keys().copied().collect();
-    keys.sort_unstable();
-    put_u32(out, keys.len() as u32);
-    for k in keys {
-        out.extend_from_slice(&k.to_le_bytes());
-        put_u32(out, overrides[&k]);
-    }
+    put_u8(out, *edited as u8);
 }
 
 fn read_section(r: &mut ByteReader) -> Result<Section, CacheError> {
@@ -589,20 +588,18 @@ fn read_section(r: &mut ByteReader) -> Result<Section, CacheError> {
     let biomes = read_container(r)?;
     let block_light = read_light(r)?;
     let sky_light = read_light(r)?;
-    let n = r.count(6)?; // u16 key + u32 value
-    let mut overrides = HashMap::with_capacity(n);
-    for _ in 0..n {
-        let b = r.take(2)?;
-        let key = u16::from_le_bytes([b[0], b[1]]);
-        overrides.insert(key, r.u32()?);
-    }
+    let edited = match r.u8()? {
+        0 => false,
+        1 => true,
+        _ => return Err(CacheError::Malformed("edited flag")),
+    };
     Ok(Section {
         non_empty,
         states,
         biomes,
         block_light,
         sky_light,
-        overrides,
+        edited,
     })
 }
 
@@ -1065,7 +1062,7 @@ mod tests {
     }
 
     fn indirect_container() -> Container {
-        let mut cells = vec![0u32; 4096];
+        let mut cells = vec![0u16; 4096];
         cells[0] = 1;
         cells[1] = 2;
         cells[4095] = 2;
@@ -1078,9 +1075,9 @@ mod tests {
     }
 
     fn direct_container() -> Container {
-        let mut cells = vec![0u32; 4096];
+        let mut cells = vec![0u16; 4096];
         cells[5] = 12345;
-        cells[4095] = u32::MAX; // forces the 32-bit packing path
+        cells[4095] = u16::MAX; // forces the full 16-bit packing path
         Container {
             single: None,
             palette: Vec::new(),
@@ -1099,7 +1096,7 @@ mod tests {
             biomes: Container::single(7),
             block_light: Some((0..2048).map(|i| (i % 251) as u8).collect()),
             sky_light: None,
-            overrides: [(0u16, 99u32), (4095, 5), (17, 1)].into_iter().collect(),
+            edited: true,
         };
         let section_b = Section {
             non_empty: 0,
@@ -1107,7 +1104,7 @@ mod tests {
             biomes: indirect_container(),
             block_light: None,
             sky_light: Some(vec![0xFF; 2048]),
-            overrides: HashMap::new(),
+            edited: false,
         };
         let mut heights = Box::new([0i32; 256]);
         for (i, h) in heights.iter_mut().enumerate() {
@@ -1203,7 +1200,7 @@ mod tests {
                 biomes: abi,
                 block_light: abl,
                 sky_light: asl,
-                overrides: aov,
+                edited: aov,
             } = x;
             let Section {
                 non_empty: bn,
@@ -1211,14 +1208,14 @@ mod tests {
                 biomes: bbi,
                 block_light: bbl,
                 sky_light: bsl,
-                overrides: bov,
+                edited: bov,
             } = y;
             assert_eq!(an, bn, "section {i} non_empty");
             assert_containers_equal(ast, bst, i, "states");
             assert_containers_equal(abi, bbi, i, "biomes");
             assert_eq!(abl, bbl, "section {i} block_light");
             assert_eq!(asl, bsl, "section {i} sky_light");
-            assert_eq!(aov, bov, "section {i} overrides");
+            assert_eq!(aov, bov, "section {i} edited");
         }
     }
 
@@ -1313,7 +1310,7 @@ mod tests {
                     biomes: Container::single(0),
                     block_light: None,
                     sky_light: None,
-                    overrides: HashMap::new(),
+                    edited: false,
                 })
                 .collect(),
             sky_full_above: 0,
@@ -1326,12 +1323,13 @@ mod tests {
 
     #[test]
     fn bit_packing_round_trips_at_every_width_including_the_extremes() {
-        for &max in &[0u32, 1, 2, 15, 16, 65535, u32::MAX] {
+        // The values are u16 now, so the widths the encoder derives run 1..=16.
+        for &max in &[0u16, 1, 2, 15, 16, 255, 65535] {
             // Spread across 0..=max in u64 so `max + 1` cannot wrap, and end on
             // `max` itself so the derived width is the one being tested.
             let span = max as u64 + 1;
-            let mut values: Vec<u32> = (0..1000u64)
-                .map(|i| (i.wrapping_mul(2_654_435_761) % span) as u32)
+            let mut values: Vec<u16> = (0..1000u64)
+                .map(|i| (i.wrapping_mul(2_654_435_761) % span) as u16)
                 .collect();
             values.push(max);
             let mut out = Vec::new();
@@ -1340,6 +1338,18 @@ mod tests {
             assert_eq!(read_packed(&mut r).unwrap(), values, "max {max}");
             assert!(r.is_empty(), "max {max}: consumed exactly");
         }
+        // A width wider than the encoder can derive from u16 values is still
+        // read — the width comes from the file — as long as every value fits a
+        // cell. Built by hand at 32 bits, two values per word.
+        let values = vec![1u16, 2, 3];
+        let mut out = Vec::new();
+        put_u8(&mut out, 32);
+        put_u32(&mut out, 3);
+        put_u64(&mut out, 1 | (2u64 << 32));
+        put_u64(&mut out, 3);
+        let mut r = ByteReader::new(&out);
+        assert_eq!(read_packed(&mut r).unwrap(), values);
+        assert!(r.is_empty());
     }
 
     #[test]

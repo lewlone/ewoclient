@@ -478,7 +478,7 @@ impl Particle {
         self.yo = self.y;
         self.zo = self.z;
         self.age += 1;
-        if self.age - 1 >= self.lifetime {
+        if self.age > self.lifetime {
             self.remove();
             return;
         }
@@ -503,7 +503,7 @@ impl Particle {
         self.yo = self.y;
         self.zo = self.z;
         self.lifetime -= 1;
-        if self.lifetime + 1 <= 0 {
+        if self.lifetime < 0 {
             self.remove();
             return;
         }

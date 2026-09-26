@@ -119,19 +119,34 @@ impl<'a> PacketReader<'a> {
         read_varlong(self.buf, &mut self.pos)
     }
 
-    /// VarInt-length-prefixed UTF-8 string. `max_chars` mirrors the vanilla
-    /// per-field limit; enforced loosely as `max_chars * 3` bytes.
+    /// VarInt-length-prefixed UTF-8 string, `Utf8String.read`: the byte length
+    /// is capped at `utf8MaxBytes(max_chars)` (= `max_chars * 3`), and the
+    /// decoded string at `max_chars` **UTF-16 code units** (`String.length()`).
     pub fn string(&mut self, max_chars: usize) -> Result<String> {
         let len = self.varint()?;
-        if len < 0 || len as usize > max_chars.saturating_mul(3) {
+        let max_bytes = max_chars.saturating_mul(3);
+        if len < 0 || len as usize > max_bytes {
             return Err(ProtoError::LengthOutOfRange {
                 what: "string",
                 len: len as i64,
-                max: max_chars * 3,
+                max: max_bytes,
             });
         }
         let bytes = self.take(len as usize)?;
-        String::from_utf8(bytes.to_vec()).map_err(|_| ProtoError::InvalidUtf8)
+        let s = String::from_utf8(bytes.to_vec()).map_err(|_| ProtoError::InvalidUtf8)?;
+        // Every UTF-8 byte yields at most one UTF-16 unit, so a short buffer
+        // cannot exceed the limit and skips the count.
+        if s.len() > max_chars {
+            let units = s.encode_utf16().count();
+            if units > max_chars {
+                return Err(ProtoError::LengthOutOfRange {
+                    what: "string chars",
+                    len: units as i64,
+                    max: max_chars,
+                });
+            }
+        }
+        Ok(s)
     }
 
     /// Resource locations ("minecraft:overworld") — 32767-char limit.
@@ -245,5 +260,26 @@ mod tests {
         assert_eq!(r.string(16).unwrap(), "hello");
         assert!(r.is_empty());
         assert!(r.u8().is_err());
+    }
+
+    fn wire_string(s: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        crate::varint::write_varint(&mut out, s.len() as i32);
+        out.extend_from_slice(s.as_bytes());
+        out
+    }
+
+    #[test]
+    fn string_limit_counts_utf16_units_not_bytes() {
+        // 5 ASCII chars in a 4-char field: under the 12-byte cap, over the
+        // char cap — vanilla rejects it.
+        assert!(PacketReader::new(&wire_string("hello")).string(4).is_err());
+        // 4 three-byte chars (12 bytes) in a 4-char field: accepted.
+        let s = "\u{20ac}\u{20ac}\u{20ac}\u{20ac}";
+        assert_eq!(PacketReader::new(&wire_string(s)).string(4).unwrap(), s);
+        // A supplementary char is two UTF-16 units.
+        let emoji = "\u{1F600}\u{1F600}\u{1F600}";
+        assert!(PacketReader::new(&wire_string(emoji)).string(5).is_err());
+        assert_eq!(PacketReader::new(&wire_string(emoji)).string(6).unwrap(), emoji);
     }
 }

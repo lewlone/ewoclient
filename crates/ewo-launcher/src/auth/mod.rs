@@ -22,6 +22,7 @@ pub mod chain;
 pub mod loopback;
 pub mod persistence;
 pub mod pkce;
+pub mod secret;
 pub mod service;
 
 pub use service::{AuthOp, AuthService};
@@ -47,7 +48,7 @@ pub const SCOPES: &str = "XboxLive.signin offline_access";
 /// while the user is signed in. The Minecraft access token is short-lived
 /// (~24h) — kept in memory only; we re-derive it from the refresh token
 /// on startup or when expired.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MinecraftAccount {
     /// Minecraft display name (e.g. "Notch").
     pub name: String,
@@ -68,6 +69,19 @@ pub struct MinecraftAccount {
     /// `default` so old auth.toml files (no field) deserialize cleanly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub social_token: Option<String>,
+}
+
+/// Hand-written so no `{:?}` can ever leak a credential into a log.
+impl std::fmt::Debug for MinecraftAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MinecraftAccount")
+            .field("name", &self.name)
+            .field("uuid", &self.uuid)
+            .field("minecraft_token", &"<redacted>")
+            .field("ms_refresh_token", &"<redacted>")
+            .field("social_token", &self.social_token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// Errors surfaced to the UI. The `String` payloads are user-facing

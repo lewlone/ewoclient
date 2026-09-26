@@ -30,6 +30,8 @@ use ewo_render::text::HoverGlowState;
 use ewo_render::{app_window, Clock, FontStore, GlBackend, VbtnState};
 
 use auth::{AuthOp, AuthService};
+use instance_ops::{delete_instance, loader_spec_for, sync_instance_config};
+use window_hit::*;
 
 /// A launch click whose JRE wasn't available — we kicked off a runtime
 /// fetch and will retry once it lands.
@@ -42,6 +44,26 @@ struct PendingRelaunch {
     /// the runtime service emits `Done { major }` matching this value.
     waiting_for_major: u32,
 }
+
+/// What to do if a launch's background preparation fails.
+#[derive(Debug, Clone, Copy)]
+enum PrepareFail {
+    /// Fall back to the synthetic launch animation (plain Launch click).
+    Synthetic,
+    /// Show this line + an error exit on the launching screen (retries).
+    Error(&'static str),
+}
+
+/// A launch whose blocking preparation runs on a worker thread; the result
+/// arrives on `rx` and the UI thread finishes the launch (JRE pick, plan,
+/// spawn) — see `App::poll_prepare`.
+struct PendingPrepare {
+    rx: std::sync::mpsc::Receiver<Result<launch::prepare::Prepared, String>>,
+    idx: usize,
+    inst_name: String,
+    inst_meta: String,
+    fail: PrepareFail,
+}
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -52,8 +74,11 @@ use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
 mod auth;
 mod bundled;
 mod downloads;
+mod events;
+mod instance_ops;
 mod keybind;
 mod launch;
+mod launch_slot;
 mod loaders;
 mod overlay_mods;
 mod persistence;
@@ -63,6 +88,7 @@ mod social;
 mod util;
 mod versions;
 mod window;
+mod window_hit;
 
 #[derive(Parser, Debug)]
 #[command(name = "ewolauncher", about = "EwoClient — Velvet & Pearl")]
@@ -78,17 +104,23 @@ struct Args {
     mint_rewo_env: bool,
 }
 
-const RESIZE_BORDER_LP: f64 = 8.0;
-const CAPTION_HEIGHT_LP: f64 = 32.0;
-
 /// Base URL for the in-development EwoLoader manifests, one JSON per
 /// supported Minecraft version line (26.1.json, 26.2.json, …). The loader
 /// project lives in a sibling repo on the developer's machine and
 /// doesn't yet publish a public meta endpoint, so we point straight at
 /// the on-disk manifests via `file://`. Becomes a config knob (or a real
-/// HTTPS URL) once the loader publishes a meta endpoint.
+/// HTTPS URL) once the loader publishes a meta endpoint. Override with the
+/// `EWO_LOADER_BASE` env var (a `file://` or `https://` base URL).
 const DEV_EWO_LOADER_BASE: &str =
     "file:///C:/Users/valtteri/Desktop/EwoLoaderV1/manifest/0.1.0";
+
+fn ewo_loader_base() -> String {
+    std::env::var("EWO_LOADER_BASE")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEV_EWO_LOADER_BASE.to_string())
+}
 
 /// Resolve the EwoLoader manifest URL for a Minecraft version id. The
 /// manifests are keyed by version *line* (major.minor), so patch releases
@@ -101,13 +133,8 @@ fn ewo_loader_manifest_url(version_id: &str) -> String {
         Some((second_dot, _)) => &version_id[..second_dot],
         None => version_id,
     };
-    format!("{}/{}.json", DEV_EWO_LOADER_BASE, line)
+    format!("{}/{}.json", ewo_loader_base(), line)
 }
-
-// Card inset (logical px). Mirrors `app_window::CARD_INSET`. Used to convert
-// cursor positions from window-local to card-local for widget hit-testing.
-// 0 — the card fills the window (see app_window::CARD_INSET).
-const CARD_INSET_LP: f64 = 0.0;
 
 /// Action triggered by clicking a sidebar menu item on the main menu.
 #[derive(Copy, Clone, Debug)]
@@ -233,11 +260,21 @@ struct App {
     /// C). `None` while no launch is running. Drained each frame in
     /// `RedrawRequested`.
     launch_rx: Option<std::sync::mpsc::Receiver<launch::LaunchEvent>>,
-    /// PID of the most-recent spawned game JVM, held so a lingering zombie
-    /// (JVM that deadlocks in native teardown on exit — see `launch::reaper`)
-    /// can be force-killed before the next launch. Set on `Started`, cleared
-    /// on a clean exit. `None` when no launch has run this session.
-    active_launch_pid: Option<u32>,
+    /// The running game process (PID + creation time), held so a lingering
+    /// zombie (JVM that deadlocks in native teardown on exit — see
+    /// `launch::reaper`) can be reaped before the next launch. Set on
+    /// `Started`, cleared on exit.
+    active_launch: Option<launch::reaper::Tracked>,
+    /// Wall-time the running game was spawned, and whether its window-ready
+    /// marker has been seen — together they tell a zombie from a game that
+    /// is still starting up.
+    active_launch_started_at: f32,
+    active_launch_window_seen: bool,
+    /// Folder id of the instance whose game is running (for its log dump).
+    active_launch_instance_id: Option<String>,
+    /// A launch whose blocking preparation (manifest/loader fetch, library
+    /// downloads, natives extraction) is running on a worker thread.
+    pending_prepare: Option<PendingPrepare>,
     /// While a launch is in flight, the wall-time deadline after which the
     /// launcher minimizes itself even if we haven't yet seen the game's
     /// window-ready log marker. `None` when no launch is pending a minimize.
@@ -372,7 +409,11 @@ impl App {
             versions: versions::VersionService::new(),
             downloads: downloads::DownloadService::new(),
             launch_rx: None,
-            active_launch_pid: None,
+            active_launch: None,
+            active_launch_started_at: 0.0,
+            active_launch_window_seen: false,
+            active_launch_instance_id: None,
+            pending_prepare: None,
             pending_minimize: None,
             runtime: runtime::RuntimeService::new(),
             pending_relaunch: None,
@@ -445,13 +486,20 @@ impl App {
         }
     }
 
-    /// Attempt a real JVM launch for the instance at `idx`. Returns
-    /// `true` if a real launch started; `false` if we should fall back
-    /// to the synthetic path (e.g. instance not Ready, manifest missing
-    /// from cache, plan-build failed). On success: stores the receiver
-    /// in `self.launch_rx`, transitions `self.launching` into real
-    /// mode, and the per-frame poll picks up subsequent events.
-    fn try_real_launch(&mut self, idx: usize, inst_name: &str, inst_meta: &str, time: f32) -> bool {
+    /// Attempt a real launch for the instance at `idx`. Returns `true` if a
+    /// real launch is under way (Native spawned, or a JVM launch handed to
+    /// the background preparer); `false` if we should fall back right away
+    /// (instance not Ready, manifest missing, …). A JVM launch finishes in
+    /// [`Self::poll_prepare`] once its preparation arrives; a failure there
+    /// is handled per `fail`.
+    fn try_real_launch(
+        &mut self,
+        idx: usize,
+        inst_name: &str,
+        inst_meta: &str,
+        time: f32,
+        fail: PrepareFail,
+    ) -> bool {
         // E6: apply any bundled-mod toggles made in the in-game overlay last
         // session, before we read the instance's mod state for this launch.
         if overlay_mods::apply_overrides(&mut self.instances, idx) {
@@ -471,7 +519,7 @@ impl App {
         // E6: refresh the in-game MODS view's snapshot of the bundled mods.
         overlay_mods::write_catalog(&inst);
         // F5c: resolve the active profile's keybinds for the in-game mod.
-        overlay_mods::write_keybinds(&inst.name);
+        overlay_mods::write_keybinds(&inst.id);
         // The version *string* comes from the meta, formatted as
         // "<LOADER> · <version>". Strip the loader prefix.
         let version_id = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
@@ -512,6 +560,7 @@ impl App {
             let (tx, rx) = std::sync::mpsc::channel::<launch::LaunchEvent>();
             let _ = launch::spawn_native(launch::NativePlan { program, args, envs }, tx);
             self.launch_rx = Some(rx);
+            self.active_launch_instance_id = Some(inst.id.clone());
             self.launching.enter_real(time, inst_name, inst_meta);
             log::info!("launch: rewo spawned for \"{}\" ({})", inst.name, version_id);
             return true;
@@ -530,120 +579,93 @@ impl App {
                 return false;
             }
         };
-        // Per-version manifest must be on disk (Phase B). If somehow
-        // it isn't, refuse to launch — caller falls back to synthetic.
-        let vanilla_pv = match versions::per_version_fetch::get_or_fetch(&entry) {
+        // The network + disk work (manifests, library downloads, natives
+        // extraction, zombie reaping) runs on a worker so the UI never
+        // blocks; `poll_prepare` finishes the launch.
+        let rx = launch::prepare::spawn(launch::prepare::PrepareJob {
+            entry,
+            version_id: version_id.to_string(),
+            instance_id: inst.id.clone(),
+            loader: inst.loader.clone(),
+            mods: inst.mods.clone(),
+        });
+        self.launching.enter_real(time, inst_name, inst_meta);
+        self.launching.push_real_line(
+            screens::RealSeverity::Info,
+            "[ewo] preparing game files…".into(),
+            time,
+        );
+        self.pending_prepare = Some(PendingPrepare {
+            rx,
+            idx,
+            inst_name: inst_name.to_string(),
+            inst_meta: inst_meta.to_string(),
+            fail,
+        });
+        true
+    }
+
+    /// Drain the background launch preparation, if any, and finish the
+    /// launch on success. Called once per frame.
+    fn poll_prepare(&mut self, time: f32) {
+        let result = match self.pending_prepare.as_ref().map(|p| p.rx.try_recv()) {
+            None | Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return,
+            Some(Ok(r)) => r,
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                Err("launch preparation thread died".to_string())
+            }
+        };
+        let Some(pending) = self.pending_prepare.take() else {
+            return;
+        };
+        let prepared = match result {
             Ok(p) => p,
-            Err(e) => {
-                log::warn!("launch: per-version fetch failed: {}", e);
-                return false;
+            Err(msg) => {
+                log::warn!("launch: {} — falling back", msg);
+                self.fail_launch(&pending, &msg, time);
+                return;
             }
         };
-        // Phase D: layer the instance's loader on top of vanilla, if any.
-        // Loader-fetch failures are non-fatal — we log + fall back to
-        // launching the vanilla profile so the user isn't blocked by a
-        // flaky local manifest.
-        let mut pv = match &inst.loader {
-            // Native never reaches here (early return above) — vanilla is
-            // the harmless arm the exhaustiveness check wants.
-            ewo_render::screens::instances::InstanceLoader::Vanilla
-            | ewo_render::screens::instances::InstanceLoader::Native => vanilla_pv,
-            ewo_render::screens::instances::InstanceLoader::Ewo { manifest_url } => {
-                match loaders::get_or_fetch("ewo", manifest_url) {
-                    Ok(loader_manifest) => {
-                        log::info!(
-                            "launch: merging EwoLoader manifest \"{}\" on top of {}",
-                            loader_manifest.id, version_id
-                        );
-                        loaders::merge(&vanilla_pv, &loader_manifest)
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "launch: EwoLoader fetch failed ({}) — launching vanilla {}",
-                            e, version_id
-                        );
-                        vanilla_pv
-                    }
-                }
-            }
-        };
-        // Phase D follow-on: download any library the merge added that
-        // wasn't in the vanilla `PerVersion` Phase B saw at instance-setup
-        // time (the EwoLoader fat jar + bundled mods). Idempotent —
-        // `ensure_libraries` skips files already on disk. Runs against the
-        // *full* merged library set so disabled mods stay downloaded — the
-        // user re-enabling a mod doesn't trigger a re-download.
-        if let Err(e) = downloads::ensure_libraries(&pv) {
-            log::warn!("launch: loader library fetch failed: {} — falling back", e);
-            return false;
+        if !self.finish_launch(&pending, prepared, time) {
+            self.fail_launch(&pending, "could not start the game — see log", time);
         }
-        // Per-instance mod toggles: strip libraries the user disabled from
-        // the merged classpath. The corresponding mod ids also feed the
-        // -Dfabric.debug.disableModIds JVM arg below so the loader's
-        // BundledMods verification skips them. Order matters — strip must
-        // happen after ensure_libraries (we still want disabled mods on
-        // disk for cheap re-enable) but before launch::build (which reads
-        // pv.libraries to assemble the classpath).
-        let mut disabled_mod_ids = bundled::disabled_mod_ids(&inst.mods);
-        if !disabled_mod_ids.is_empty() {
-            // Prefix match (`maven.modrinth:iris:`), not the full pinned
-            // coordinate — the catalog is version-agnostic across manifest
-            // lines (26.1 vs 26.2 pin different versions of the same mod).
-            let disabled_prefixes = bundled::library_prefixes_for_disabled(&disabled_mod_ids);
-            let before = pv.libraries.len();
-            pv.libraries
-                .retain(|l| !disabled_prefixes.iter().any(|p| l.name.starts_with(p)));
-            log::info!(
-                "launch: disabling {} mod(s) [{}] — stripped {} libraries from classpath",
-                disabled_mod_ids.len(),
-                disabled_mod_ids.join(","),
-                before - pv.libraries.len()
-            );
-        }
-        // Bundled mods this manifest line doesn't ship at all (BetterF3 has
-        // no MC 26.2 build, so 26.2.json omits it) were never on the
-        // classpath — but the loader-side BundledMods verification still
-        // expects them, so they must ride the same disableModIds subtraction.
-        if matches!(
-            inst.loader,
-            ewo_render::screens::instances::InstanceLoader::Ewo { .. }
-        ) {
-            let missing =
-                bundled::missing_bundled_ids(pv.libraries.iter().map(|l| l.name.as_str()));
-            for id in missing {
-                if !disabled_mod_ids.contains(&id) {
-                    log::info!(
-                        "launch: bundled mod \"{}\" absent from this manifest line — auto-disabling",
-                        id
-                    );
-                    disabled_mod_ids.push(id);
-                }
+    }
+
+    fn fail_launch(&mut self, pending: &PendingPrepare, msg: &str, time: f32) {
+        match pending.fail {
+            PrepareFail::Synthetic => {
+                log::info!("launch: falling back to synthetic for \"{}\"", pending.inst_name);
+                self.launching.enter(time, &pending.inst_name, &pending.inst_meta);
             }
-        }
-        if let Err(e) = launch::extract_all(&pv, &inst.name) {
-            // A locked natives dir almost always means a zombie game JVM
-            // (deadlocked in teardown on a previous exit) still holds a
-            // native .dll open. The PID reaper above only knows launches we
-            // recorded; an untracked zombie (e.g. left by an older launcher
-            // build) slips past it. Reap any windowless java and retry once
-            // — self-healing instead of silently falling back to synthetic.
-            log::warn!(
-                "launch: native extraction failed: {} — reaping windowless java and retrying",
-                e
-            );
-            let killed = launch::reaper::reap_windowless_java();
-            if killed > 0 {
-                std::thread::sleep(std::time::Duration::from_millis(300));
-            }
-            if let Err(e2) = launch::extract_all(&pv, &inst.name) {
-                log::warn!(
-                    "launch: native extraction still failing after reaping {} process(es): {} — falling back",
-                    killed, e2
+            PrepareFail::Error(line) => {
+                self.launching.push_real_line(
+                    screens::RealSeverity::Warn,
+                    format!("[ewo] {} ({})", line, msg),
+                    time,
                 );
-                return false;
+                self.launching.set_real_exit(Some(127), time);
             }
-            log::info!("launch: native extraction recovered after reaping {} zombie(s)", killed);
         }
+    }
+
+    /// UI-thread half of a JVM launch: pick a JRE (or start fetching one),
+    /// build the plan and spawn. Returns `false` on a failure the caller
+    /// should surface.
+    fn finish_launch(
+        &mut self,
+        pending: &PendingPrepare,
+        prepared: launch::prepare::Prepared,
+        time: f32,
+    ) -> bool {
+        let Some(inst) = self.instances.get(pending.idx).cloned() else {
+            return false;
+        };
+        let (inst_name, inst_meta) = (pending.inst_name.as_str(), pending.inst_meta.as_str());
+        let version_id = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
+        let launch::prepare::Prepared {
+            pv,
+            disabled_mod_ids,
+        } = prepared;
         // Pick a JRE matching the per-version manifest's
         // `javaVersion.majorVersion`. Falls back to whatever's first in
         // the detected list if the manifest doesn't specify (legacy
@@ -671,11 +693,9 @@ impl App {
                     required_major,
                     installed
                 );
-                // Kick off the bundled-JRE download, switch the
-                // launching screen into "downloading runtime" mode, and
-                // record this launch as pending. The per-frame runtime
-                // poll will retry once the fetch completes.
-                self.launching.enter_real(time, inst_name, inst_meta);
+                // Kick off the bundled-JRE download and record this launch
+                // as pending. The per-frame runtime poll retries once the
+                // fetch completes.
                 self.launching.push_real_line(
                     screens::RealSeverity::Info,
                     format!(
@@ -686,14 +706,11 @@ impl App {
                 );
                 self.runtime.start_fetch(required_major);
                 self.pending_relaunch = Some(PendingRelaunch {
-                    instance_idx: idx,
+                    instance_idx: pending.idx,
                     instance_name: inst_name.to_string(),
                     instance_meta: inst_meta.to_string(),
                     waiting_for_major: required_major,
                 });
-                // Treat this as a "real" launch path so the caller
-                // doesn't fall back to synthetic — we've already
-                // populated the launching screen with our own status.
                 return true;
             }
         };
@@ -719,10 +736,10 @@ impl App {
                 launch::LaunchProfile::offline(&inst.name)
             }
         };
-        let mut plan = match launch::build(&pv, &inst.name, inst.ram, &profile, jvm_path) {
+        let mut plan = match launch::build(&pv, &inst.id, inst.ram, &profile, jvm_path) {
             Ok(p) => p,
             Err(e) => {
-                log::warn!("launch: plan build failed: {} — falling back", e);
+                log::warn!("launch: plan build failed: {}", e);
                 return false;
             }
         };
@@ -742,6 +759,12 @@ impl App {
         // the plugin's Fabric-loader fallback probe.
         plan.jvm_args
             .push(format!("-Dewo.mc.version={}", version_id));
+        // A bundled HUD native next to the launcher (see package.ps1) wins
+        // over the mod's dev fallback (the repo's cargo target dir).
+        if let Some(dll) = launch::find_hud_native() {
+            plan.jvm_args
+                .push(format!("-Dewo.hud.nativePath={}", dll.display()));
+        }
         // H6: if this launch was initiated as a server-join (main-menu
         // server widget or a friend's "Join"), auto-connect on boot via the
         // modern quick-play arg. The address is `host:port`; the client
@@ -756,12 +779,79 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel::<launch::LaunchEvent>();
         let _ = launch::spawn_jvm(plan, tx);
         self.launch_rx = Some(rx);
-        self.launching.enter_real(time, inst_name, inst_meta);
+        self.active_launch_instance_id = Some(inst.id.clone());
+        self.launching.push_real_line(
+            screens::RealSeverity::Info,
+            "[ewo] starting jvm…".into(),
+            time,
+        );
         log::info!(
             "launch: real JVM spawned for \"{}\" ({})",
             inst.name, version_id
         );
         true
+    }
+
+    /// Whether a launch is already running or being prepared. When the
+    /// running game is a zombie (its window closed but the process lingers)
+    /// it's reaped here and the launch slot is freed; a live game is never
+    /// killed — the new launch is refused instead.
+    fn launch_slot_busy(&mut self, time: f32) -> bool {
+        use launch_slot::{decide, SlotDecision, SlotInput};
+        // Gather the input — the only place OS process state is read.
+        let tracked = self.active_launch;
+        let input = if self.pending_prepare.is_some() || self.pending_relaunch.is_some() {
+            SlotInput::Preparing
+        } else if self.launch_rx.is_none() {
+            SlotInput::NeverLaunched
+        } else {
+            match tracked {
+                // Spawned but not yet reported `Started`.
+                None => SlotInput::Starting,
+                Some(t) => match launch::reaper::state(&t) {
+                    launch::reaper::GameState::Gone => SlotInput::Gone,
+                    launch::reaper::GameState::Running { visible_window } => SlotInput::Running {
+                        zombie: launch::reaper::is_zombie(
+                            visible_window,
+                            self.active_launch_window_seen,
+                            time - self.active_launch_started_at,
+                        ),
+                    },
+                },
+            }
+        };
+        match decide(input) {
+            SlotDecision::Busy(reason) => {
+                // The running-game line names the pid, which the pure
+                // decision can't carry; it is appended here.
+                match (input, tracked) {
+                    (SlotInput::Running { .. }, Some(t)) => log::warn!(
+                        "launch: {reason} (pid {}) — ignoring launch request",
+                        t.pid
+                    ),
+                    _ => log::warn!("launch: {reason} — ignoring launch request"),
+                }
+                return true;
+            }
+            // Nothing was ever launched: nothing to clean up either.
+            SlotDecision::Free => return false,
+            SlotDecision::ReapThenFree => {
+                // Reap first; forgetting the record comes below.
+                if let Some(t) = tracked {
+                    launch::reaper::reap(&t);
+                }
+            }
+            SlotDecision::ForgetThenFree => {}
+        }
+        // The game is gone (or was a zombie): drop its OS-side record and
+        // clear the launch fields so the next click gets a fresh slot.
+        if let Some(t) = tracked {
+            launch::reaper::forget(&t);
+        }
+        self.launch_rx = None;
+        self.active_launch = None;
+        self.active_launch_instance_id = None;
+        false
     }
 
     /// Shared launch entry point for the Launch button and the H6 server-join
@@ -775,6 +865,11 @@ impl App {
     /// celebrate burst.
     fn start_launch(&mut self, idx: usize, server: Option<String>, time: f32) {
         use ewo_render::screens::instances::InstanceStatus;
+        // A still-downloading instance can't launch; clicking Launch on one
+        // whose download failed (or never started this session) retries it.
+        if matches!(self.instances.get(idx), Some(i) if i.status == InstanceStatus::Pending) {
+            self.retry_download(idx);
+        }
         // Resolve name + meta and gate Pending/missing instances. The
         // immutable borrow ends here so the rest can mutate `self`.
         let (inst_name, inst_meta) = match self.instances.get(idx) {
@@ -793,6 +888,11 @@ impl App {
                 return;
             }
         };
+        // One game at a time: a live game is never killed by a second
+        // launch click — the click is ignored. Only a zombie is reaped.
+        if self.launch_slot_busy(time) {
+            return;
+        }
         // Dev affordance: `EWO_DEV_SERVER=host:port` points plain Launch
         // clicks at a server without going through a join flow — e.g. the
         // local offline Rewo test server (127.0.0.1:25599) for eyeballing
@@ -814,25 +914,19 @@ impl App {
         }
         persistence::save_instances(&self.instances);
 
-        // Reap any lingering game JVM before spawning a new one. On Windows
-        // the previous JVM can deadlock in native teardown on exit and hang
-        // around as a headless zombie holding this instance's files + the
-        // ewo_jni.dll open — that lock is what makes a second launch fail.
-        // A cleanly-exited launch already cleared its record, so this is a
-        // no-op in the normal case; only a real zombie gets terminated.
-        if let Some(pid) = self.active_launch_pid.take() {
-            launch::reaper::reap(pid);
-            launch::reaper::clear();
-        } else {
-            // No live launch this session, but a previous launcher session
-            // may have left a zombie recorded on disk — reap that too.
-            launch::reaper::reap_recorded();
+        // A previous launcher session may have left a zombie game process
+        // recorded on disk; reap it (only if it's ours, still that exact
+        // process, and windowless — a live game is left alone).
+        let reaped = launch::reaper::reap_recorded_zombies();
+        if reaped > 0 {
+            log::info!("launch: reaped {} zombie game process(es) from an earlier run", reaped);
         }
 
         // Real launch fires only when the instance is Ready + the manifest
         // resolves; otherwise fall back to the synthetic animation so the
         // user still gets feedback.
-        let real_launched = self.try_real_launch(idx, &inst_name, &inst_meta, time);
+        let real_launched =
+            self.try_real_launch(idx, &inst_name, &inst_meta, time, PrepareFail::Synthetic);
         if !real_launched {
             log::info!("launch: falling back to synthetic for \"{}\"", inst_name);
             self.launching.enter(time, &inst_name, &inst_meta);
@@ -845,6 +939,25 @@ impl App {
             bd.celebrate(true);
         }
         self.celebrate_until = Some(time + 4.5);
+    }
+
+    /// (Re)start the download job for a Pending instance whose job failed or
+    /// never ran this session. No-op while a job for it is in flight.
+    fn retry_download(&mut self, idx: usize) {
+        let Some(inst) = self.instances.get(idx) else {
+            return;
+        };
+        let version_id = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
+        let loader_spec = loader_spec_for(&inst.loader);
+        let Some(manifest) = self.versions.manifest() else {
+            log::warn!("downloads: master manifest not loaded — can't retry {}", version_id);
+            return;
+        };
+        let Some(entry) = manifest.entry(version_id).cloned() else {
+            log::warn!("downloads: {} not in master manifest — can't retry", version_id);
+            return;
+        };
+        self.downloads.start(entry, loader_spec);
     }
 }
 
@@ -998,385 +1111,11 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => {
-                // Keybind capture — the Keybinds tab armed a rebind, so the
-                // next key press becomes the new binding. Esc cancels; a key
-                // GLFW can't name leaves the rebind armed.
-                if let Some(action_id) = self.keybind_capture.clone() {
-                    if logical_key == Key::Named(NamedKey::Escape) {
-                        log::info!("keybind: capture cancelled");
-                        self.keybind_capture = None;
-                    } else if let winit::keyboard::PhysicalKey::Code(code) = physical_key {
-                        if let Some(chord) = keybind::KeyChord::from_winit(code) {
-                            log::info!("keybind: {} → {}", action_id, chord.label());
-                            self.keybinds.insert(action_id, chord);
-                            profile::save_keybinds(&self.keybinds);
-                            self.keybind_capture = None;
-                        }
-                    }
-                    window.request_redraw();
-                    return;
-                }
-                if self.instance_prefs.renaming {
-                    // Inline rename for the selected instance.
-                    const RENAME_MAX_LEN: usize = 48;
-                    if logical_key == Key::Named(NamedKey::Escape) {
-                        log::info!("rename: Esc → cancelled");
-                        self.instance_prefs.renaming = false;
-                        self.instance_prefs.rename_buffer.clear();
-                    } else if logical_key == Key::Named(NamedKey::Enter) {
-                        let trimmed = self.instance_prefs.rename_buffer.trim();
-                        if !trimmed.is_empty() {
-                            if let Some(inst) =
-                                self.instances.get_mut(self.instance_prefs.selected)
-                            {
-                                log::info!(
-                                    "rename: \"{}\" → \"{}\"",
-                                    inst.name, trimmed
-                                );
-                                inst.name = trimmed.to_string();
-                            }
-                            persistence::save_instances(&self.instances);
-                        } else {
-                            log::info!("rename: empty → cancelled");
-                        }
-                        self.instance_prefs.renaming = false;
-                        self.instance_prefs.rename_buffer.clear();
-                    } else if logical_key == Key::Named(NamedKey::Backspace) {
-                        self.instance_prefs.rename_buffer.pop();
-                        self.instance_prefs.rename_focus_time = 0.0;
-                    } else if let Some(t) = text {
-                        for ch in t.chars() {
-                            if !ch.is_control()
-                                && self.instance_prefs.rename_buffer.chars().count() < RENAME_MAX_LEN
-                            {
-                                self.instance_prefs.rename_buffer.push(ch);
-                                self.instance_prefs.rename_focus_time = 0.0;
-                            }
-                        }
-                    }
-                } else if self.prefs.profile_renaming.is_some() {
-                    // Inline rename for a client profile (Settings → Profiles).
-                    if logical_key == Key::Named(NamedKey::Escape) {
-                        log::info!("profile rename: Esc → cancelled");
-                        self.prefs.profile_renaming = None;
-                        self.prefs.profile_rename_buffer.clear();
-                    } else if logical_key == Key::Named(NamedKey::Enter) {
-                        if let Some(idx) = self.prefs.profile_renaming {
-                            self.prefs.profile_request = Some(ProfileRequest::Rename {
-                                index: idx,
-                                new_name: self.prefs.profile_rename_buffer.clone(),
-                            });
-                        }
-                        self.prefs.profile_renaming = None;
-                    } else if logical_key == Key::Named(NamedKey::Backspace) {
-                        self.prefs.profile_rename_buffer.pop();
-                        self.prefs.profile_rename_focus_time = 0.0;
-                    } else if let Some(t) = text {
-                        for ch in t.chars() {
-                            // Skip control + path-unsafe chars — the name
-                            // becomes a directory under `profiles/`.
-                            if !ch.is_control()
-                                && !"/\\:*?\"<>|".contains(ch)
-                                && self.prefs.profile_rename_buffer.chars().count()
-                                    < profile::MAX_NAME_LEN
-                            {
-                                self.prefs.profile_rename_buffer.push(ch);
-                                self.prefs.profile_rename_focus_time = 0.0;
-                            }
-                        }
-                    }
-                } else if logical_key == Key::Named(NamedKey::Escape) && self.about_modal.open {
-                    log::info!("about: Esc → closing");
-                    self.about_modal.close();
-                } else if self.launcher_link_modal.open {
-                    // Phase H2 launcher-link modal — captures Esc, Enter,
-                    // Backspace, and digit chars while open. Non-digit
-                    // chars are ignored (push_digit double-checks).
-                    if logical_key == Key::Named(NamedKey::Escape) {
-                        log::info!("launcher-link modal: Esc → closing");
-                        self.launcher_link_modal.close();
-                        self.social.clear_link_redeem();
-                    } else if logical_key == Key::Named(NamedKey::Backspace) {
-                        self.launcher_link_modal.pop_digit();
-                    } else if logical_key == Key::Named(NamedKey::Enter)
-                        && self.launcher_link_modal.is_ready()
-                    {
-                        let code = self.launcher_link_modal.code.clone();
-                        log::info!("launcher-link modal: Enter → submitting");
-                        self.social.submit_link_code(code);
-                    } else if let Some(t) = text.as_ref() {
-                        for ch in t.chars() {
-                            if ch.is_ascii_digit() {
-                                self.launcher_link_modal.push_digit(ch);
-                            }
-                        }
-                    }
-                } else if self.screen == Screen::Friends
-                    && self.friends_prefs.add_focused
-                {
-                    // Phase H5 — text input for the add-friend MC name.
-                    const NAME_MAX_LEN: usize = 32;
-                    if logical_key == Key::Named(NamedKey::Escape) {
-                        self.friends_prefs.add_focused = false;
-                    } else if logical_key == Key::Named(NamedKey::Backspace) {
-                        self.friends_prefs.add_buffer.pop();
-                        self.friends_prefs.add_focus_time = 0.0;
-                    } else if logical_key == Key::Named(NamedKey::Enter) {
-                        let token = self
-                            .auth
-                            .active()
-                            .and_then(|a| self.auth.social_token(&a.uuid))
-                            .map(str::to_string);
-                        let name = self.friends_prefs.add_buffer.trim().to_string();
-                        if let (Some(token), false) = (token, name.is_empty()) {
-                            log::info!("friends: Enter → request '{}'", name);
-                            self.social.submit_friend_request_by_name(&token, name);
-                            self.friends_prefs.add_buffer.clear();
-                            self.friends_prefs.add_focused = false;
-                        }
-                    } else if let Some(t) = text.as_ref() {
-                        for ch in t.chars() {
-                            // MC names are ASCII alphanumeric + underscore,
-                            // 1-16 chars, but accept broader and let the
-                            // bot reject — keeps the input forgiving.
-                            if !ch.is_control()
-                                && self.friends_prefs.add_buffer.chars().count()
-                                    < NAME_MAX_LEN
-                            {
-                                self.friends_prefs.add_buffer.push(ch);
-                                self.friends_prefs.add_focus_time = 0.0;
-                            }
-                        }
-                    }
-                } else if logical_key == Key::Named(NamedKey::Escape) && self.modal.open {
-                    log::info!("modal: Esc → closing");
-                    self.modal.close();
-                } else if self.modal.open && self.modal.name_focused {
-                    // Name field text input — append printable chars, pop on
-                    // backspace. Only when the name field is the active
-                    // focus target (set by clicking the input).
-                    const NAME_MAX_LEN: usize = 48;
-                    if logical_key == Key::Named(NamedKey::Backspace) {
-                        self.modal.name.pop();
-                        self.modal.name_focus_time = 0.0; // restart caret blink
-                        if !self.modal.name.is_empty() {
-                            self.modal.name_error = false;
-                        }
-                    } else if logical_key == Key::Named(NamedKey::Enter) {
-                        // Enter commits — same as clicking Create.
-                        if let Some(form) = self.modal.try_submit() {
-                            commit_new_instance(
-                                &mut self.instances,
-                                &mut self.instance_prefs,
-                                &self.versions,
-                                &mut self.downloads,
-                                form,
-                                self.clock.elapsed,
-                            );
-                            self.modal.close();
-                        }
-                    } else if let Some(t) = text {
-                        for ch in t.chars() {
-                            if !ch.is_control() && self.modal.name.chars().count() < NAME_MAX_LEN {
-                                self.modal.name.push(ch);
-                                self.modal.name_focus_time = 0.0;
-                                self.modal.name_error = false;
-                            }
-                        }
-                    }
-                }
+                self.on_key_pressed(&window, logical_key, physical_key, text);
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
-                let scale = window.scale_factor();
-                let card_pos = cursor_card_local(self.cursor, scale);
-                let size = window.inner_size();
-                let card_w = card_content_width(size, scale);
-                let card_h = card_content_height(size, scale);
-
-                // Convert delta to logical pixels. `LineDelta` lines are
-                // platform-dependent — multiply by 32px to get a roughly
-                // right wheel-tick-to-pixels mapping. `PixelDelta` is
-                // already in physical pixels — divide by scale.
-                let dy: f32 = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => -y * 32.0,
-                    MouseScrollDelta::PixelDelta(p) => -(p.y as f32 / scale as f32),
-                };
-
-                // Routing priority:
-                //  1. If a dropdown menu is open *anywhere*, route the
-                //     wheel to it (so users can scroll the open list).
-                //  2. If the modal is open, absorb the wheel even when no
-                //     menu is open — prevents the underlying Instances
-                //     panel from scrolling beneath a modal.
-                //  3. Otherwise, scroll the active screen's primary
-                //     scrollable region (currently only the Instances
-                //     detail panel).
-                let fonts = self.fonts.as_ref();
-                let mut handled = false;
-
-                // About modal absorbs wheel events outright — there's nothing
-                // scrollable inside it, but we don't want the Instances panel
-                // to scroll behind the dialog.
-                if self.about_modal.open {
-                    let _ = dy;
-                    return;
-                }
-
-                if let Some(fonts) = fonts {
-                    // Modal dropdown takes precedence when modal is open.
-                    if self.modal.open {
-                        if let Some(slot) = self.modal.open_dropdown() {
-                            // Extract just the count so the `Vec<&str>` borrow on
-                            // `self.modal` ends before the `&mut VdropState`.
-                            let opt_count = self.modal.dropdown_options(slot).map(|v| v.len());
-                            if let Some(opt_count) = opt_count {
-                                let layout = screens::new_instance_modal::compute_layout(
-                                    card_w, card_h, fonts,
-                                );
-                                let head = match slot {
-                                    ModalSlot::Version => layout.version_head,
-                                    ModalSlot::Loader => layout.loader_head,
-                                    _ => layout.version_head,
-                                };
-                                let (menu_bounds, _flip) =
-                                    ewo_render::widgets::menu_layout(head, opt_count, card_h);
-                                if let Some(state) = self.modal.dropdown_state_mut(slot) {
-                                    state.scroll_by(dy, menu_bounds, opt_count);
-                                }
-                                handled = true;
-                            }
-                        }
-                    } else {
-                        // Settings dropdown
-                        if !handled && self.screen == Screen::Settings {
-                            if let Some(slot) = self.prefs.open_dropdown() {
-                                if let Some(opts) = screens::settings::dropdown_options(slot) {
-                                    if let Some(head) = screens::settings::dropdown_head_for_slot(
-                                        slot, fonts, card_w, card_h,
-                                    ) {
-                                        let (menu_bounds, _flip) =
-                                            ewo_render::widgets::menu_layout(
-                                                head,
-                                                opts.len(),
-                                                card_h,
-                                            );
-                                        if let Some(state) = self.prefs.dropdown_state_mut(slot) {
-                                            state.scroll_by(dy, menu_bounds, opts.len());
-                                        }
-                                        handled = true;
-                                    }
-                                }
-                            }
-                        }
-                        // Instances dropdown
-                        if !handled && self.screen == Screen::Instances {
-                            if let Some(slot) = self.instance_prefs.open_dropdown() {
-                                if let Some(opts) = screens::instances::dropdown_options(slot) {
-                                    if let Some(head) = screens::instances::dropdown_head_for_slot(
-                                        slot,
-                                        fonts,
-                                        card_w,
-                                        card_h,
-                                        &self.instance_prefs,
-                                        &self.instances,
-                                    ) {
-                                        let (menu_bounds, _flip) =
-                                            ewo_render::widgets::menu_layout(
-                                                head,
-                                                opts.len(),
-                                                card_h,
-                                            );
-                                        if let Some(state) =
-                                            self.instance_prefs.dropdown_state_mut(slot)
-                                        {
-                                            state.scroll_by(dy, menu_bounds, opts.len());
-                                        }
-                                        handled = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Modal absorbs all remaining wheel events so the
-                // background doesn't scroll beneath it.
-                if !handled && self.modal.open {
-                    handled = true;
-                }
-
-                // Fall-through: Worlds list (left) or Instances detail
-                // panel (right) scroll, depending on which side the cursor
-                // is on.
-                if !handled && self.screen == Screen::Instances {
-                    if let Some(fonts) = fonts {
-                        if card_pos.0 < 320.0 {
-                            // Cursor is over the Worlds list column.
-                            let max_scroll = screens::instances::list_max_scroll(
-                                card_h,
-                                fonts,
-                                &self.instances,
-                            );
-                            self.instance_prefs.list_scroll =
-                                (self.instance_prefs.list_scroll + dy).clamp(0.0, max_scroll);
-                        } else {
-                            let panel =
-                                screens::instances::detail_panel_bounds(card_w, card_h);
-                            if rect_contains(&panel, card_pos) {
-                                let max_scroll = screens::instances::detail_max_scroll(
-                                    card_w,
-                                    card_h,
-                                    fonts,
-                                    &self.instance_prefs,
-                                    &self.instances,
-                                );
-                                self.instance_prefs.detail_scroll = (self.instance_prefs.detail_scroll + dy)
-                                    .clamp(0.0, max_scroll);
-                            }
-                        }
-                    }
-                }
-
-                // Settings — scroll the Keybinds / Modules tab list.
-                if !handled && self.screen == Screen::Settings {
-                    if let Some(fonts) = fonts {
-                        let (content_h, visible_h) = match self.settings_tab {
-                            SettingsTab::Keybinds => {
-                                let l = screens::settings::keybinds_tab_layout(
-                                    fonts,
-                                    card_w,
-                                    card_h,
-                                    keybind::REGISTRY.len(),
-                                    self.prefs.settings_scroll,
-                                );
-                                (l.content_h, l.list_region.height())
-                            }
-                            SettingsTab::Modules => {
-                                let l = screens::settings::modules_tab_layout(
-                                    fonts,
-                                    card_w,
-                                    card_h,
-                                    self.prefs.settings_scroll,
-                                );
-                                (l.content_h, l.list_region.height())
-                            }
-                            SettingsTab::PvpUtils => {
-                                let l = screens::settings::pvp_tab_layout(
-                                    fonts,
-                                    card_w,
-                                    card_h,
-                                    self.prefs.settings_scroll,
-                                );
-                                (l.content_h, l.list_region.height())
-                            }
-                            _ => (0.0, 1.0),
-                        };
-                        let max = (content_h - visible_h).max(0.0);
-                        self.prefs.settings_scroll =
-                            (self.prefs.settings_scroll + dy).clamp(0.0, max);
-                    }
-                }
+                self.on_mouse_wheel(&window, delta);
             }
 
             WindowEvent::Resized(size) => {
@@ -1397,1929 +1136,15 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = position;
-                let scale = window.scale_factor();
-                let card_pos = cursor_card_local(position, scale);
-                let size = window.inner_size();
-                let card_w = card_content_width(size, scale);
-                let card_h = card_content_height(size, scale);
-                let time = self.clock.elapsed;
-
-                // Top tab bar hover → glow (every screen). Suppressed while a
-                // modal is open so tabs don't light up under the shroud.
-                let any_modal = self.modal.open
-                    || self.about_modal.open
-                    || self.launcher_link_modal.open;
-                self.hovered_tab = if any_modal {
-                    None
-                } else {
-                    self.fonts.as_ref().and_then(|fonts| {
-                        screens::tab_bounds(card_w, fonts)
-                            .into_iter()
-                            .find(|(_, r)| rect_contains(r, card_pos))
-                            .map(|(s, _)| s)
-                    })
-                };
-                // "‹ Main menu" back-link hover (for its glow).
-                self.back_link_hover = !any_modal
-                    && matches!(self.screen, Screen::Settings | Screen::Instances)
-                    && rect_contains(
-                        &skia_safe::Rect::from_xywh(34.0, 38.0, 180.0, 42.0),
-                        card_pos,
-                    );
-                // Top-right window buttons hover.
-                let (min_btn, close_btn) = app_window::window_button_bounds(card_w);
-                self.min_btn_hover = rect_contains(&min_btn, card_pos);
-                self.close_btn_hover = rect_contains(&close_btn, card_pos);
-
-                // When a modal is open it absorbs all hover state so the
-                // background screen doesn't react under it. Otherwise drive
-                // the active screen's widget + list/button hovers normally.
-                if self.about_modal.open {
-                    // About modal absorbs hover; clear background state so
-                    // glows/highlights don't bleed through.
-                    self.instance_prefs.list_hover = None;
-                    self.instance_prefs.delete_hover = None;
-                    self.instance_prefs.rename_hover = false;
-                    self.instance_prefs.add_hover = false;
-                    self.instance_prefs.sort_hover = false;
-                } else if self.modal.open {
-                    drive_modal_widgets(
-                        &mut self.modal,
-                        self.fonts.as_ref(),
-                        card_pos,
-                        self.mouse_down,
-                        card_w,
-                        card_h,
-                    );
-                    // Clear background hover state so the modal feels modal.
-                    self.instance_prefs.list_hover = None;
-                    self.instance_prefs.add_hover = false;
-                    self.launch_button = VbtnState::default();
-                    for s in self.menu_items.iter_mut() {
-                        *s = VbtnState::default();
-                    }
-                } else if self.screen == Screen::Settings {
-                    let account_uuids = self.auth.account_uuids();
-                    let link_status = self.link_status_view();
-                    let changed = drive_settings_sliders(
-                        &mut self.prefs,
-                        self.settings_tab,
-                        self.fonts.as_ref(),
-                        card_pos,
-                        self.mouse_down,
-                        card_w,
-                        card_h,
-                        &account_uuids,
-                        &self.profiles,
-                        link_status,
-                    );
-                    if changed {
-                        profile::save(&self.prefs.to_config(), &self.settings);
-                        if let Some(b) = self.backend.as_ref() {
-                            b.set_vsync(self.prefs.vsync.on);
-                        }
-                    }
-                    self.instance_prefs.list_hover = None;
-                    self.instance_prefs.add_hover = false;
-                } else if self.screen == Screen::Instances {
-                    let changed = drive_instance_widgets(
-                        &mut self.instance_prefs,
-                        &self.instances,
-                        self.fonts.as_ref(),
-                        card_pos,
-                        self.mouse_down,
-                        card_w,
-                        card_h,
-                    );
-                    if changed {
-                        sync_instance_config(&mut self.instances, &self.instance_prefs);
-                        persistence::save_instances(&self.instances);
-                    }
-                    // List-row + "+" button + sort button + × delete hover
-                    // + ✎ rename hover.
-                    if let Some(fonts) = self.fonts.as_ref() {
-                        self.instance_prefs.rename_hover =
-                            screens::instances::rename_button_bounds(
-                                card_w, card_h, fonts, &self.instances, &self.instance_prefs,
-                            )
-                            .map(|r| rect_contains(&r, card_pos))
-                            .unwrap_or(false);
-                        let mut hover: Option<usize> = None;
-                        let mut delete_hover: Option<usize> = None;
-                        for (i, rect) in screens::instances::list_row_bounds(
-                            card_h,
-                            fonts,
-                            &self.instances,
-                            &self.instance_prefs,
-                        )
-                        .iter()
-                        .enumerate()
-                        {
-                            if rect_contains(rect, card_pos) {
-                                hover = Some(i);
-                            }
-                            let del = screens::instances::delete_button_bounds(*rect);
-                            if rect_contains(&del, card_pos) {
-                                delete_hover = Some(i);
-                            }
-                        }
-                        self.instance_prefs.list_hover = hover;
-                        self.instance_prefs.delete_hover = delete_hover;
-                        self.instance_prefs.add_hover = rect_contains(
-                            &screens::instances::add_button_bounds(),
-                            card_pos,
-                        );
-                        self.instance_prefs.sort_hover = rect_contains(
-                            &screens::instances::sort_button_bounds(fonts),
-                            card_pos,
-                        );
-                    }
-                } else {
-                    // Clear lingering hover state when off the Instances screen.
-                    self.instance_prefs.list_hover = None;
-                    self.instance_prefs.add_hover = false;
-                }
-                if let Some(overlay) = self.dev_overlay.as_mut() {
-                    drive_dev_overlay(overlay, card_pos, self.mouse_down, card_w, card_h);
-                }
-
-                // Update launch-button + main-menu hover state. Modal-open
-                // suppresses these so background buttons don't react under
-                // a modal (new-instance, About, or launcher-link).
-                let any_modal_open = self.modal.open
-                    || self.about_modal.open
-                    || self.launcher_link_modal.open;
-                if any_modal_open {
-                    self.launch_button = VbtnState::default();
-                } else if let Some(b) = self.launch_button_bounds(card_w) {
-                    self.launch_button.update(card_pos, b, self.mouse_down, time);
-                } else {
-                    self.launch_button = VbtnState::default();
-                }
-
-                // Friends-screen buttons hover (link-launcher / add-friend) —
-                // without this the buttons never animate and read as dead.
-                if !any_modal_open && self.screen == Screen::Friends {
-                    if let Some(fonts) = self.fonts.as_ref() {
-                        let counts = match self.social.friends() {
-                            social::FriendsListState::Loaded(list) => screens::FriendsCounts {
-                                friends: list.friends.len(),
-                                incoming: list.incoming.len(),
-                                outgoing: list.outgoing.len(),
-                            },
-                            _ => screens::FriendsCounts::default(),
-                        };
-                        let layout = screens::friends_layout(card_w, fonts, counts);
-                        self.friends_prefs.link_launcher_btn.update(
-                            card_pos,
-                            layout.link_launcher_btn,
-                            self.mouse_down,
-                            time,
-                        );
-                        self.friends_prefs.add_submit_btn.update(
-                            card_pos,
-                            layout.add_submit,
-                            self.mouse_down,
-                            time,
-                        );
-                    }
-                }
-
-                let mut hovering_menu = false;
-                if !any_modal_open && self.screen == Screen::MainMenu {
-                    if let Some(fonts) = self.fonts.as_ref() {
-                        let bounds = screens::main_menu::menu_item_bounds(card_w, card_h, fonts);
-                        for (i, b) in bounds.iter().enumerate() {
-                            self.menu_items[i].update(card_pos, *b, self.mouse_down, time);
-                            if self.menu_items[i].hover {
-                                hovering_menu = true;
-                            }
-                        }
-                        // Heading hover-glow — fires per-glyph stagger when
-                        // the cursor enters/exits the EwoClient title bbox.
-                        let heading = screens::main_menu::heading_bounds(fonts);
-                        let over_heading = rect_contains(&heading, card_pos);
-                        self.heading_hover.update(over_heading, time);
-                    }
-                    // H6 — network widget hover (lower-left card).
-                    let server_rect = screens::server_widget_bounds(card_w, card_h);
-                    self.server_widget_hover = rect_contains(&server_rect, card_pos);
-                } else {
-                    for s in self.menu_items.iter_mut() {
-                        *s = VbtnState::default();
-                    }
-                    // Clear heading-hover when off the main menu so the
-                    // glow doesn't survive a screen change.
-                    self.heading_hover.update(false, time);
-                    self.server_widget_hover = false;
-                }
-
-                // About modal — drive the Close button hover so the ghost
-                // glow tracks the cursor without needing a click.
-                if self.about_modal.open {
-                    let close_rect =
-                        screens::about_modal::close_button_bounds(card_w, card_h);
-                    self.about_modal.close_btn.handle(card_pos, close_rect, false);
-                }
-
-                // Phase H2 launcher-link modal — drive Cancel + Submit hover.
-                if self.launcher_link_modal.open {
-                    let cancel_rect = screens::launcher_link_modal::cancel_button_bounds(
-                        card_w, card_h,
-                    );
-                    let submit_rect = screens::launcher_link_modal::submit_button_bounds(
-                        card_w, card_h,
-                    );
-                    self.launcher_link_modal.cancel_btn.handle(
-                        card_pos, cancel_rect, false,
-                    );
-                    self.launcher_link_modal.submit_btn.update(
-                        card_pos,
-                        submit_rect,
-                        self.mouse_down,
-                        time,
-                    );
-                }
-
-                // Hover priority: tab bar → menu items → launch button → window zones.
-                let hovering_tab = if let Some(fonts) = self.fonts.as_ref() {
-                    screens::tab_bounds(card_w, fonts)
-                        .iter()
-                        .any(|(_, r)| rect_contains(r, card_pos))
-                } else {
-                    false
-                };
-
-                let hovering_settings_tab = if self.screen == Screen::Settings {
-                    if let Some(fonts) = self.fonts.as_ref() {
-                        let hit = screens::settings::sidebar_tab_bounds(fonts)
-                            .into_iter()
-                            .find(|(_, r)| rect_contains(r, card_pos))
-                            .map(|(t, _)| t);
-                        self.prefs.hovered_sidebar_tab = hit;
-                        hit.is_some()
-                    } else {
-                        self.prefs.hovered_sidebar_tab = None;
-                        false
-                    }
-                } else {
-                    self.prefs.hovered_sidebar_tab = None;
-                    false
-                };
-
-                let hovering_settings_widget = if self.screen == Screen::Settings {
-                    if let Some(fonts) = self.fonts.as_ref() {
-                        screens::settings::widget_bounds(
-                            self.settings_tab, fonts, card_w, card_h,
-                        )
-                        .iter()
-                        .any(|(_, r)| rect_contains(r, card_pos))
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-
-                let hovering_instance_widget = if self.screen == Screen::Instances {
-                    if let Some(fonts) = self.fonts.as_ref() {
-                        let widgets = screens::instances::widget_bounds(
-                            card_w, card_h, fonts, &self.instance_prefs, &self.instances,
-                        );
-                        let on_widget = widgets
-                            .iter()
-                            .any(|(_, r)| rect_contains(r, card_pos));
-                        let row_rects = screens::instances::list_row_bounds(
-                            card_h, fonts, &self.instances, &self.instance_prefs,
-                        );
-                        let on_list_row =
-                            row_rects.iter().any(|r| rect_contains(r, card_pos));
-                        let on_add = rect_contains(
-                            &screens::instances::add_button_bounds(),
-                            card_pos,
-                        );
-                        let on_sort = rect_contains(
-                            &screens::instances::sort_button_bounds(fonts),
-                            card_pos,
-                        );
-                        // × buttons are inside row rects, but we want the
-                        // pointer cursor regardless — `on_list_row` already
-                        // covers them.
-                        let on_rename = screens::instances::rename_button_bounds(
-                            card_w, card_h, fonts, &self.instances, &self.instance_prefs,
-                        )
-                        .map(|r| rect_contains(&r, card_pos))
-                        .unwrap_or(false);
-                        on_widget || on_list_row || on_add || on_sort || on_rename
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-
-                // Modal hover: when the modal is open, the cursor flips
-                // based on which control it's over. Name field → text
-                // I-beam; buttons / dropdowns / slider → pointer; anywhere
-                // else (including the shroud) → default arrow.
-                let modal_cursor = if self.modal.open {
-                    if let Some(fonts) = self.fonts.as_ref() {
-                        let layout = screens::new_instance_modal::compute_layout(
-                            card_w, card_h, fonts,
-                        );
-                        if rect_contains(&layout.name_input, card_pos) {
-                            Some(CursorIcon::Text)
-                        } else {
-                            let widgets = screens::new_instance_modal::widget_bounds(
-                                card_w, card_h, fonts,
-                            );
-                            if widgets.iter().any(|(_, r)| rect_contains(r, card_pos)) {
-                                Some(CursorIcon::Pointer)
-                            } else {
-                                Some(CursorIcon::Default)
-                            }
-                        }
-                    } else {
-                        Some(CursorIcon::Default)
-                    }
-                } else {
-                    None
-                };
-
-                if let Some(icon) = modal_cursor {
-                    window.set_cursor(icon);
-                } else if hovering_tab
-                    || hovering_menu
-                    || hovering_settings_tab
-                    || hovering_settings_widget
-                    || hovering_instance_widget
-                    || self.launch_button.hover
-                {
-                    window.set_cursor(CursorIcon::Pointer);
-                } else {
-                    update_cursor_icon(&window, &self.cursor, size, scale);
-                }
+                self.on_cursor_moved(&window, position);
             }
 
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
-                let pressed = matches!(state, ElementState::Pressed);
-                self.mouse_down = pressed;
-
-                let scale = window.scale_factor();
-                let card_pos = cursor_card_local(self.cursor, scale);
-                let size = window.inner_size();
-                let card_w = card_content_width(size, scale);
-                let card_h = card_content_height(size, scale);
-                let time = self.clock.elapsed;
-
-                // Step -2: top-right window buttons (minimize / close) — handled
-                // before anything else (incl. modals + dev overlay) so they
-                // always work. They're excluded from the drag caption in
-                // `hit_test`, so the press reaches here.
-                if pressed {
-                    let (min_btn, close_btn) = app_window::window_button_bounds(card_w);
-                    if rect_contains(&close_btn, card_pos) {
-                        log::info!("window: close button → exit");
-                        event_loop.exit();
-                        return;
-                    }
-                    if rect_contains(&min_btn, card_pos) {
-                        log::info!("window: minimize button");
-                        if let Some(w) = self.window.as_ref() {
-                            w.set_minimized(true);
-                        }
-                        return;
-                    }
-                }
-
-                // Step -1: dev overlay (when --dev) — sits above everything,
-                // including the modal. Absorbs input when cursor is over it.
-                if let Some(overlay) = self.dev_overlay.as_mut() {
-                    let panel = screens::dev_overlay::panel_bounds(card_w, card_h);
-                    drive_dev_overlay(overlay, card_pos, pressed, card_w, card_h);
-                    if rect_contains(&panel, card_pos) {
-                        if pressed {
-                            let vsync_changed =
-                                handle_dev_overlay_press(overlay, card_pos, card_w, card_h);
-                            if vsync_changed {
-                                if let Some(backend) = self.backend.as_ref() {
-                                    backend.set_vsync(overlay.vsync);
-                                }
-                            }
-                        }
-                        return;
-                    }
-                }
-
-                // Step 0a: About modal — when open, absorbs all input. Close
-                // button click closes; shroud click closes; press anywhere
-                // else inside the card is a no-op so the modal can't be
-                // dismissed by misclicks on the card itself.
-                if self.about_modal.open {
-                    let close_rect =
-                        screens::about_modal::close_button_bounds(card_w, card_h);
-                    let close_clicked =
-                        self.about_modal.close_btn.handle(card_pos, close_rect, pressed);
-                    if close_clicked {
-                        log::info!("about: Close clicked");
-                        self.about_modal.close();
-                    } else if pressed
-                        && screens::about_modal::shroud_consumes(card_pos, card_w, card_h)
-                    {
-                        log::info!("about: shroud click → closing");
-                        self.about_modal.close();
-                    }
-                    return;
-                }
-
-                // Step 0b (Phase H2): launcher-link modal absorbs all input.
-                // Cancel closes + clears redeem; Submit fires submit_link_code
-                // when the code is ready; shroud click closes.
-                if self.launcher_link_modal.open {
-                    let cancel_rect = screens::launcher_link_modal::cancel_button_bounds(
-                        card_w, card_h,
-                    );
-                    let submit_rect = screens::launcher_link_modal::submit_button_bounds(
-                        card_w, card_h,
-                    );
-                    let cancel_clicked = self.launcher_link_modal.cancel_btn.handle(
-                        card_pos, cancel_rect, pressed,
-                    );
-                    let submit_clicked = self.launcher_link_modal.submit_btn.update(
-                        card_pos,
-                        submit_rect,
-                        self.mouse_down,
-                        time,
-                    );
-                    if cancel_clicked {
-                        log::info!("launcher-link modal: Cancel clicked");
-                        self.launcher_link_modal.close();
-                        self.social.clear_link_redeem();
-                    } else if submit_clicked && self.launcher_link_modal.is_ready() {
-                        let code = self.launcher_link_modal.code.clone();
-                        log::info!("launcher-link modal: Submit clicked");
-                        self.social.submit_link_code(code);
-                    } else if pressed
-                        && screens::launcher_link_modal::shroud_consumes(
-                            card_pos, card_w, card_h,
-                        )
-                    {
-                        log::info!("launcher-link modal: shroud click → closing");
-                        self.launcher_link_modal.close();
-                        self.social.clear_link_redeem();
-                    }
-                    return;
-                }
-
-                // Step 0: modal — when open, the modal absorbs all input.
-                // `drive_modal_widgets` runs first so slider drags start on
-                // the rising edge inside bounds; `handle_modal_press` runs
-                // after to consume button / dropdown / shroud clicks.
-                if self.modal.open {
-                    drive_modal_widgets(
-                        &mut self.modal,
-                        self.fonts.as_ref(),
-                        card_pos,
-                        pressed,
-                        card_w,
-                        card_h,
-                    );
-                    if pressed {
-                        handle_modal_press(
-                            &mut self.modal,
-                            &mut self.instances,
-                            &mut self.instance_prefs,
-                            &self.versions,
-                            &mut self.downloads,
-                            self.fonts.as_ref(),
-                            card_pos,
-                            card_w,
-                            card_h,
-                            self.clock.elapsed,
-                        );
-                    }
-                    return;
-                }
-
-                // Step 1: tab bar hit-test (priority over everything else).
-                let mut handled = false;
-                if pressed {
-                    if let Some(fonts) = self.fonts.as_ref() {
-                        for (target, rect) in screens::tab_bounds(card_w, fonts) {
-                            if rect_contains(&rect, card_pos) {
-                                if self.screen != target {
-                                    log::info!("nav: {:?} → {:?}", self.screen, target);
-                                    self.screen = target;
-                                    self.launch_button = VbtnState::default();
-                                    for s in self.menu_items.iter_mut() {
-                                        *s = VbtnState::default();
-                                    }
-                                    self.prefs.close_dropdowns();
-                                    self.instance_prefs.close_dropdowns();
-                                    self.keybind_capture = None;
-                                    self.prefs.keybind_request = None;
-                                    self.prefs.profile_renaming = None;
-                                    self.prefs.profile_rename_buffer.clear();
-                                    self.modal.close();
-                                    // Trigger the tab fade-in when arriving at
-                                    // Settings, so the active tab's content
-                                    // greets the user with the same animation
-                                    // it plays when they switch tabs.
-                                    if target == Screen::Settings {
-                                        self.prefs.tab_changed_at = Some(time);
-                                        self.prefs.settings_scroll = 0.0;
-                                    }
-                                    // Demo affordance: clicking the LAUNCHING
-                                    // tab without an active launch kicks off
-                                    // a fresh synthetic one so the screen is
-                                    // never empty.
-                                    if target == Screen::Launching
-                                        && self.launching.start_time.is_none()
-                                    {
-                                        let (inst_name, inst_meta) = self
-                                            .instances
-                                            .get(self.instance_prefs.selected)
-                                            .map(|i| {
-                                                (
-                                                    i.name.clone(),
-                                                    format!(
-                                                        "{} · ADOPTIUM 21 · {} GB",
-                                                        i.version,
-                                                        self.instance_prefs.ram.value as i32,
-                                                    ),
-                                                )
-                                            })
-                                            .unwrap_or_else(|| {
-                                                (
-                                                    "Velvet Hours".to_string(),
-                                                    "VANILLA · 1.21 · ADOPTIUM 21".to_string(),
-                                                )
-                                            });
-                                        self.launching.enter(time, &inst_name, &inst_meta);
-                                    }
-                                }
-                                handled = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                // Step 1.5: "‹ Main menu" back-link (top-left of the
-                // screen-head screens) — navigate home.
-                if !handled
-                    && pressed
-                    && matches!(self.screen, Screen::Settings | Screen::Instances)
-                {
-                    let back_rect = skia_safe::Rect::from_xywh(34.0, 38.0, 180.0, 42.0);
-                    if rect_contains(&back_rect, card_pos) {
-                        log::info!("nav: {:?} → MainMenu (back-link)", self.screen);
-                        self.screen = Screen::MainMenu;
-                        self.prefs.close_dropdowns();
-                        self.instance_prefs.close_dropdowns();
-                        handled = true;
-                    }
-                }
-
-                // Step 2: main-menu sidebar items.
-                if !handled && self.screen == Screen::MainMenu {
-                    if let Some(fonts) = self.fonts.as_ref() {
-                        let bounds = screens::main_menu::menu_item_bounds(card_w, card_h, fonts);
-                        for (i, b) in bounds.iter().enumerate() {
-                            let clicked =
-                                self.menu_items[i].update(card_pos, *b, pressed, time);
-                            if clicked {
-                                match MAIN_MENU_ACTIONS[i] {
-                                    MenuAction::Navigate(target) => {
-                                        log::info!("nav (menu): {:?} → {:?}", self.screen, target);
-                                        self.screen = target;
-                                    }
-                                    MenuAction::About => {
-                                        log::info!("about: clicked → opening About modal");
-                                        self.about_modal.open();
-                                    }
-                                    MenuAction::Quit => {
-                                        log::info!("quit: closing app");
-                                        event_loop.exit();
-                                    }
-                                }
-                            }
-                            if self.menu_items[i].hover && pressed {
-                                handled = true;
-                            }
-                        }
-                    }
-                    // H6 — click the network widget to join the chickenedin
-                    // lobby (only when the network reports online).
-                    if !handled {
-                        let server_rect = screens::server_widget_bounds(card_w, card_h);
-                        if rect_contains(&server_rect, card_pos) {
-                            let online = matches!(
-                                self.social.server_status(),
-                                Some(s) if s.online
-                            );
-                            if online {
-                                log::info!("h6: network widget clicked → joining lobby");
-                                self.start_launch(
-                                    self.instance_prefs.selected,
-                                    Some(social::CHICKENEDIN_LOBBY_ADDR.to_string()),
-                                    time,
-                                );
-                            }
-                            handled = true;
-                        }
-                    }
-                }
-
-                // Step 2.5: settings sidebar tab switch.
-                if !handled && pressed && self.screen == Screen::Settings {
-                    if let Some(fonts) = self.fonts.as_ref() {
-                        for (tab, rect) in screens::settings::sidebar_tab_bounds(fonts) {
-                            if rect_contains(&rect, card_pos) {
-                                if self.settings_tab != tab {
-                                    log::info!(
-                                        "settings: {:?} → {:?}",
-                                        self.settings_tab, tab
-                                    );
-                                    self.settings_tab = tab;
-                                    self.prefs.close_dropdowns();
-                                    // A tab switch abandons a pending keybind
-                                    // capture or an in-progress profile rename.
-                                    self.keybind_capture = None;
-                                    self.prefs.keybind_request = None;
-                                    self.prefs.profile_renaming = None;
-                                    self.prefs.profile_rename_buffer.clear();
-                                    self.prefs.tab_changed_at =
-                                        Some(self.clock.elapsed);
-                                    self.prefs.settings_scroll = 0.0;
-                                }
-                                handled = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                // Step 2.7: settings widget interaction. Toggles flip on the
-                // press edge; sliders begin a drag (drag continues in
-                // CursorMoved via `drive_settings_sliders`); dropdown heads
-                // toggle the menu open/closed; clicks on open menu rows
-                // commit the selection; clicks elsewhere close the menu.
-                // Phase H5 — Friends screen press handling. Inline because
-                // the surface is small (5 click targets + N row buttons).
-                if !handled && pressed && self.screen == Screen::Friends {
-                    if let Some(fonts) = self.fonts.as_ref() {
-                        let counts = if let social::FriendsListState::Loaded(list) =
-                            self.social.friends()
-                        {
-                            screens::FriendsCounts {
-                                friends: list.friends.len(),
-                                incoming: list.incoming.len(),
-                                outgoing: list.outgoing.len(),
-                            }
-                        } else {
-                            screens::FriendsCounts::default()
-                        };
-                        let layout = screens::friends_layout(card_w, fonts, counts);
-                        let active_token: Option<String> = self
-                            .auth
-                            .active()
-                            .and_then(|a| self.auth.social_token(&a.uuid))
-                            .map(str::to_string);
-
-                        if active_token.is_none() {
-                            // NotLinked: clicking the centered button opens
-                            // the launcher-link modal (same path as the
-                            // rose line in Settings → Account).
-                            if rect_contains(&layout.link_launcher_btn, card_pos) {
-                                log::info!("friends: link button → open launcher-link modal");
-                                self.social.clear_link_redeem();
-                                self.launcher_link_modal.open();
-                                handled = true;
-                            }
-                        } else if let Some(token) = active_token.as_deref() {
-                            // Loaded path. add input → focus.
-                            if rect_contains(&layout.add_input, card_pos) {
-                                self.friends_prefs.add_focused = true;
-                                self.friends_prefs.add_focus_time = 0.0;
-                                handled = true;
-                            } else if rect_contains(&layout.add_submit, card_pos) {
-                                let name = self.friends_prefs.add_buffer.trim().to_string();
-                                if !name.is_empty() {
-                                    log::info!("friends: + Add → request '{}'", name);
-                                    self.social.submit_friend_request_by_name(token, name);
-                                    self.friends_prefs.add_buffer.clear();
-                                    self.friends_prefs.add_focused = false;
-                                }
-                                handled = true;
-                            } else {
-                                // Click landed away from the input; lose focus.
-                                self.friends_prefs.add_focused = false;
-                                // Walk row buttons for accept/decline/remove.
-                                for btn in &layout.row_buttons {
-                                    if !rect_contains(&btn.rect, card_pos) {
-                                        continue;
-                                    }
-                                    // H6 — "Join" launches into the friend's
-                                    // current server (presence.server_addr),
-                                    // not a friend-graph mutation.
-                                    if btn.kind == screens::RowButtonKind::Join {
-                                        let addr = if let social::FriendsListState::Loaded(list) =
-                                            self.social.friends()
-                                        {
-                                            list.friends
-                                                .get(btn.index)
-                                                .and_then(|e| e.presence.as_ref())
-                                                .and_then(|p| p.server_addr.clone())
-                                        } else {
-                                            None
-                                        };
-                                        if let Some(addr) = addr {
-                                            log::info!(
-                                                "friends: join row {} → {}",
-                                                btn.index, addr
-                                            );
-                                            self.start_launch(
-                                                self.instance_prefs.selected,
-                                                Some(addr),
-                                                time,
-                                            );
-                                        }
-                                        handled = true;
-                                        break;
-                                    }
-                                    let target_id = if let social::FriendsListState::Loaded(list) =
-                                        self.social.friends()
-                                    {
-                                        match btn.kind {
-                                            screens::RowButtonKind::Accept
-                                            | screens::RowButtonKind::Decline => list
-                                                .incoming
-                                                .get(btn.index)
-                                                .map(|e| e.discord_id.clone()),
-                                            screens::RowButtonKind::Remove => list
-                                                .friends
-                                                .get(btn.index)
-                                                .map(|e| e.discord_id.clone()),
-                                            // Handled above with an early break.
-                                            screens::RowButtonKind::Join => None,
-                                        }
-                                    } else {
-                                        None
-                                    };
-                                    if let Some(other) = target_id {
-                                        match btn.kind {
-                                            screens::RowButtonKind::Accept => {
-                                                log::info!("friends: accept {}", other);
-                                                self.social.respond_friend_request(
-                                                    token, other, true,
-                                                );
-                                            }
-                                            screens::RowButtonKind::Decline => {
-                                                log::info!("friends: decline {}", other);
-                                                self.social.respond_friend_request(
-                                                    token, other, false,
-                                                );
-                                            }
-                                            screens::RowButtonKind::Remove => {
-                                                log::info!("friends: remove {}", other);
-                                                self.social.remove_friend(token, other);
-                                            }
-                                            // Join is handled above (early break).
-                                            screens::RowButtonKind::Join => {}
-                                        }
-                                        handled = true;
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if self.screen == Screen::Settings {
-                    let account_uuids = self.auth.account_uuids();
-                    let link_status = self.link_status_view();
-                    let mut changed = drive_settings_sliders(
-                        &mut self.prefs,
-                        self.settings_tab,
-                        self.fonts.as_ref(),
-                        card_pos,
-                        pressed,
-                        card_w,
-                        card_h,
-                        &account_uuids,
-                        &self.profiles,
-                        link_status,
-                    );
-                    if !handled && pressed {
-                        let (h, c) = handle_settings_press(
-                            &mut self.prefs,
-                            self.settings_tab,
-                            self.fonts.as_ref(),
-                            card_pos,
-                            card_w,
-                            card_h,
-                            &account_uuids,
-                            &self.profiles,
-                            link_status,
-                        );
-                        handled = h;
-                        changed = changed || c;
-                    }
-                    if changed {
-                        profile::save(&self.prefs.to_config(), &self.settings);
-                        if let Some(b) = self.backend.as_ref() {
-                            b.set_vsync(self.prefs.vsync.on);
-                        }
-                    }
-                }
-
-                // Step 2.75: instances list "+" button — opens the
-                // new-instance modal.
-                if !handled && pressed && self.screen == Screen::Instances {
-                    let plus_rect = screens::instances::add_button_bounds();
-                    if rect_contains(&plus_rect, card_pos) {
-                        log::info!("instances: + clicked → opening new-instance modal");
-                        self.modal.open();
-                        handled = true;
-                    }
-                }
-
-                // Step 2.754: ✎ rename icon — enters rename mode for
-                // the currently-selected instance.
-                if !handled && pressed && self.screen == Screen::Instances {
-                    if let Some(fonts) = self.fonts.as_ref() {
-                        if let Some(r) = screens::instances::rename_button_bounds(
-                            card_w,
-                            card_h,
-                            fonts,
-                            &self.instances,
-                            &self.instance_prefs,
-                        ) {
-                            if rect_contains(&r, card_pos) {
-                                if let Some(inst) = self
-                                    .instances
-                                    .get(self.instance_prefs.selected)
-                                {
-                                    self.instance_prefs.renaming = true;
-                                    self.instance_prefs.rename_buffer = inst.name.clone();
-                                    self.instance_prefs.rename_focus_time = 0.0;
-                                    log::info!("rename: editing \"{}\"", inst.name);
-                                }
-                                handled = true;
-                            }
-                        }
-                    }
-                }
-
-                // Step 2.755: × delete button — must run before
-                // click-to-select since × sits inside the row's hit-rect.
-                if !handled && pressed && self.screen == Screen::Instances {
-                    if let Some(fonts) = self.fonts.as_ref() {
-                        let order = screens::instances::display_order(
-                            &self.instances,
-                            self.instance_prefs.sort_mode,
-                        );
-                        let row_rects = screens::instances::list_row_bounds(
-                            card_h, fonts, &self.instances, &self.instance_prefs,
-                        );
-                        for (display_idx, row_rect) in row_rects.iter().enumerate() {
-                            let del_rect = screens::instances::delete_button_bounds(*row_rect);
-                            if rect_contains(&del_rect, card_pos) {
-                                let underlying = order[display_idx];
-                                delete_instance(
-                                    &mut self.instances,
-                                    &mut self.instance_prefs,
-                                    underlying,
-                                    self.clock.elapsed,
-                                );
-                                handled = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                // Step 2.76: instance list rows — click-to-select. Click
-                // dispatch uses display order (visual position), then maps
-                // back to the underlying index via `display_order`.
-                if !handled && pressed && self.screen == Screen::Instances {
-                    if let Some(fonts) = self.fonts.as_ref() {
-                        let order = screens::instances::display_order(
-                            &self.instances,
-                            self.instance_prefs.sort_mode,
-                        );
-                        for (display_idx, rect) in screens::instances::list_row_bounds(
-                            card_h, fonts, &self.instances, &self.instance_prefs,
-                        )
-                        .iter()
-                        .enumerate()
-                        {
-                            if rect_contains(rect, card_pos) {
-                                let underlying = order[display_idx];
-                                if underlying != self.instance_prefs.selected {
-                                    log::info!(
-                                        "instances: select {} → {}",
-                                        self.instance_prefs.selected, underlying
-                                    );
-                                    self.instance_prefs.select(&self.instances, underlying);
-                                    self.instance_prefs.selected_at =
-                                        Some(self.clock.elapsed);
-                                }
-                                handled = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                // Step 2.77: sort label cycle.
-                if !handled && pressed && self.screen == Screen::Instances {
-                    if let Some(fonts) = self.fonts.as_ref() {
-                        let r = screens::instances::sort_button_bounds(fonts);
-                        if rect_contains(&r, card_pos) {
-                            self.instance_prefs.sort_mode =
-                                self.instance_prefs.sort_mode.cycle();
-                            log::info!(
-                                "instances: sort → {}",
-                                self.instance_prefs.sort_mode.label()
-                            );
-                            handled = true;
-                        }
-                    }
-                }
-
-                // Step 2.8: instances detail widget interaction. Sliders for
-                // RAM / render distance, plus the Java runtime dropdown.
-                if self.screen == Screen::Instances {
-                    let changed = drive_instance_widgets(
-                        &mut self.instance_prefs,
-                        &self.instances,
-                        self.fonts.as_ref(),
-                        card_pos,
-                        pressed,
-                        card_w,
-                        card_h,
-                    );
-                    if changed {
-                        sync_instance_config(&mut self.instances, &self.instance_prefs);
-                        persistence::save_instances(&self.instances);
-                    }
-                    if !handled && pressed {
-                        handled = handle_instances_press(
-                            &mut self.instance_prefs,
-                            &mut self.instances,
-                            self.fonts.as_ref(),
-                            card_pos,
-                            card_w,
-                            card_h,
-                        );
-                    }
-                }
-
-                // Step 2.9: Launching screen's Retry/Back buttons. Only
-                // active when the JVM has exited non-zero. Retry rebuilds
-                // the LaunchPlan and respawns; Back returns to Instances.
-                if !handled
-                    && pressed
-                    && self.screen == Screen::Launching
-                    && self.launching.ended_in_error()
-                {
-                    let retry_rect =
-                        screens::launching::retry_button_bounds(card_w, card_h);
-                    let back_rect =
-                        screens::launching::cancel_button_bounds(card_w, card_h);
-                    if rect_contains(&retry_rect, card_pos) {
-                        log::info!("launching: Retry clicked");
-                        let inst_name = self.launching.instance_name.clone();
-                        let inst_meta = self.launching.instance_meta.clone();
-                        self.launching.reset_for_retry();
-                        let ok = self.try_real_launch(
-                            self.instance_prefs.selected,
-                            &inst_name,
-                            &inst_meta,
-                            time,
-                        );
-                        if !ok {
-                            // try_real_launch can return false silently
-                            // when something's missing — surface that to
-                            // the user as an error rather than a blank
-                            // screen.
-                            self.launching.push_real_line(
-                                screens::RealSeverity::Warn,
-                                "[ewo] retry could not start launch — see logs above".into(),
-                                time,
-                            );
-                            self.launching.set_real_exit(Some(127), time);
-                        }
-                        handled = true;
-                    } else if rect_contains(&back_rect, card_pos) {
-                        log::info!("launching: Back clicked");
-                        self.launching.exit();
-                        self.screen = Screen::Instances;
-                        handled = true;
-                    }
-                }
-
-                // Step 3: active screen's launch button.
-                if !handled {
-                    if let Some(b) = self.launch_button_bounds(card_w) {
-                        let clicked = self.launch_button.update(card_pos, b, pressed, time);
-                        if clicked {
-                            // start_launch gates a Pending/missing instance
-                            // internally; a plain Launch passes no server.
-                            self.start_launch(self.instance_prefs.selected, None, time);
-                        }
-                        if self.launch_button.hover && pressed {
-                            handled = true;
-                        }
-                    }
-                }
-
-                // Step 4: window drag/resize fallback.
-                if pressed && !handled {
-                    let zone = hit_test(self.cursor, size, scale);
-                    match zone {
-                        Some(Zone::Caption) => {
-                            let _ = window.drag_window();
-                        }
-                        Some(Zone::Resize(dir)) => {
-                            let _ = window.drag_resize_window(dir);
-                        }
-                        None => {
-                            if let Some(b) = self.backdrop.as_mut() {
-                                b.disturb();
-                            }
-                        }
-                    }
-                }
+                self.on_left_mouse(event_loop, &window, state);
             }
 
             WindowEvent::RedrawRequested => {
-                // Skip render + swap entirely when the window can't be
-                // shown. On Windows, `wglSwapBuffers` on an obscured /
-                // minimised window queues presentations in the GL driver
-                // indefinitely (the compositor can't display them, so
-                // they pile up) — that's the per-frame ~6 KB / frame
-                // C++-side leak we hunted.
-                //
-                // Four signals, any of which skips this frame:
-                //  - `Occluded(true)` — winit's official signal. Reliable
-                //    on most platforms but on Win11 it sometimes fails to
-                //    fire when another app takes fullscreen.
-                //  - `is_minimized() == Some(true)` — minimised to taskbar.
-                //  - `Win32 GetForegroundWindow() != our hwnd` — we're not
-                //    the user's active app. The Win32 fallback that fires
-                //    when winit's Focused / Occluded didn't.
-                //  - (`!self.focused` is intentionally NOT a skip signal —
-                //    the user might have a chat window focused while
-                //    watching the launcher animations in another monitor.
-                //    Foreground covers the actually-leak-causing case.)
-                let minimized = window.is_minimized().unwrap_or(false);
-                let foreground = window::is_foreground(&window);
-                if self.occluded || minimized || !foreground {
-                    return;
-                }
-                self.clock.tick();
-                let time = self.clock.elapsed;
-                let dt = self.clock.dt;
-                let screen = self.screen;
-
-                // Smooth screen entrance: stamp the wall-time the screen
-                // changed so the renderer can fade + slide the main menu in.
-                if screen != self.prev_screen {
-                    self.prev_screen = screen;
-                    self.screen_enter_at = time;
-                }
-
-                // Periodic process-memory snapshot — pairs with the Skia
-                // GPU-cache log from `GlBackend::render` so we can tell at
-                // a glance whether memory growth is GPU-side (Skia) or
-                // CPU-side (everything else: log buffers, font caches,
-                // string allocations, leaked Vecs).
-                // LEAK_HUNT_INSTRUMENT — strip before release.
-                // Per-minute memory + allocator snapshot. Pairs with the
-                // Skia cache log from `GlBackend::render` so we can tell
-                // at a glance where memory is going. The `focused /
-                // occluded / minimized / foreground` tail line is the
-                // live state of the four signals we use to decide
-                // whether to skip rendering.
-                if self.clock.frame_count.is_multiple_of(3600) {
-                    if let Some((rss, private)) = window::process_memory() {
-                        log::info!(
-                            "mem: rss {:.1} MB, private {:.1} MB  (focused={} occluded={} minimized={} foreground={})",
-                            rss as f64 / (1024.0 * 1024.0),
-                            private as f64 / (1024.0 * 1024.0),
-                            self.focused,
-                            self.occluded,
-                            window.is_minimized().unwrap_or(false),
-                            window::is_foreground(&window),
-                        );
-                    }
-                    let (ac, ab, fc, fb) = alloc_stats();
-                    let net_count = ac.saturating_sub(fc);
-                    let net_bytes = ab.saturating_sub(fb);
-                    log::info!(
-                        "alloc: net {} live ({:.1} MB) — total {} allocs / {} frees",
-                        net_count,
-                        net_bytes as f64 / (1024.0 * 1024.0),
-                        ac,
-                        fc,
-                    );
-                }
-                // ── end LEAK_HUNT_INSTRUMENT ─────────────────────────────
-
-                // Auto-end celebrate after the configured duration.
-                if let Some(end) = self.celebrate_until {
-                    if time >= end {
-                        if let Some(b) = self.backdrop.as_mut() {
-                            b.celebrate(false);
-                        }
-                        self.celebrate_until = None;
-                    }
-                }
-
-                if let Some(backdrop) = self.backdrop.as_mut() {
-                    backdrop.update(dt);
-                }
-
-                // Tick widget hover animations.
-                self.launch_button.tick(dt);
-                for s in self.menu_items.iter_mut() {
-                    s.tick(dt);
-                }
-                self.prefs.tick(dt);
-                self.instance_prefs.tick(dt);
-                if self.instance_prefs.renaming {
-                    self.instance_prefs.rename_focus_time += dt;
-                }
-                if self.prefs.profile_renaming.is_some() {
-                    self.prefs.profile_rename_focus_time += dt;
-                }
-                self.modal.tick(dt);
-                self.about_modal.tick(dt);
-                self.launcher_link_modal.tick(dt);
-                self.friends_prefs.tick(dt);
-                self.auth.poll();
-                // Social: drain probe results, then make sure every
-                // signed-in account has a probe in flight or done.
-                // `ensure_probed` is idempotent — already-probed UUIDs
-                // are a no-op.
-                self.social.poll();
-                for uuid in self.auth.account_uuids() {
-                    self.social.ensure_probed(&uuid);
-                }
-                // FRIENDS overlay tab — when the friends list changes,
-                // rewrite the per-profile `ewo-friends.txt` snapshot the
-                // in-game cdylib reads. One tab-separated line per accepted
-                // friend: <online 0|1>\t<name>\t<presence>\t<server_addr>.
-                if self.social.take_friends_dirty() {
-                    if let social::FriendsListState::Loaded(list) = self.social.friends() {
-                        use std::fmt::Write as _;
-                        let mut s = String::new();
-                        for e in &list.friends {
-                            let v = friend_entry_to_view(e);
-                            let _ = writeln!(
-                                s,
-                                "{}\t{}\t{}\t{}",
-                                if v.online { 1 } else { 0 },
-                                v.display_name,
-                                v.presence,
-                                v.server_addr.unwrap_or_default(),
-                            );
-                        }
-                        if let Some(dir) = profile::active_dir() {
-                            let _ = std::fs::create_dir_all(&dir);
-                            let _ = std::fs::write(dir.join("ewo-friends.txt"), s);
-                        }
-                    }
-                }
-                // Phase H3: fire a presence heartbeat (rate-gated to 30s
-                // inside `maybe_send_heartbeat`). Only when both an
-                // active account AND a live social_token are available
-                // — i.e. the user has completed the launcher-link flow.
-                let heartbeat_inputs: Option<(String, String)> = self
-                    .auth
-                    .active()
-                    .and_then(|a| {
-                        self.auth
-                            .social_token(&a.uuid)
-                            .map(|t| (a.uuid.clone(), t.to_string()))
-                    });
-                if let Some((mc_uuid, token)) = heartbeat_inputs {
-                    // H6: while a server-join JVM is alive, advertise
-                    // `in_game · <addr>` so friends see (and can join) us.
-                    // `launch_rx` is `Some` only while the child runs; once
-                    // it exits we fall back to the current launcher screen.
-                    let location = match (self.launch_rx.is_some(), self.active_server.as_deref())
-                    {
-                        (true, Some(addr)) => {
-                            social::HeartbeatLocation::InGame { server_addr: addr }
-                        }
-                        _ => social::HeartbeatLocation::InLauncher {
-                            screen: screen_name(self.screen),
-                        },
-                    };
-                    self.social.maybe_send_heartbeat(time, &mc_uuid, &token, location);
-                    // Phase H5: refresh friends list on the 30s cadence.
-                    // Post-mutation refreshes are chained inside the
-                    // social worker thread (see `dispatch_friend_action`).
-                    self.social.maybe_refresh_friends(time, &token);
-                }
-                // Phase H2: harvest a successful launcher-link redemption
-                // immediately — persist the token next to the active MC
-                // account, clear the redemption state, close the modal.
-                let pending_token: Option<(String, String)> = if let
-                    social::LinkRedeemStatus::Success { token, .. } =
-                    self.social.link_redeem()
-                {
-                    let token = token.clone();
-                    self.auth.active().map(|a| (a.uuid.clone(), token))
-                } else {
-                    None
-                };
-                if let Some((uuid, token)) = pending_token {
-                    self.auth.set_social_token(&uuid, token);
-                    self.social.clear_link_redeem();
-                    self.launcher_link_modal.close();
-                }
-                // H6 — poll the public network status only while it's on
-                // screen (the main-menu widget). 15s cadence inside the call.
-                if self.screen == Screen::MainMenu {
-                    self.social.maybe_refresh_server_status(time);
-                }
-                self.versions.poll();
-                self.downloads.poll();
-
-                // Sync per-instance download progress for the list-row
-                // badge. Only Pending instances are interesting; we
-                // clear the map first so completed downloads stop
-                // showing a stale percentage.
-                self.instance_prefs.download_pct.clear();
-                for inst in self.instances.iter() {
-                    if inst.status
-                        != ewo_render::screens::instances::InstanceStatus::Pending
-                    {
-                        continue;
-                    }
-                    let v = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
-                    if let Some(status) = self.downloads.status(v) {
-                        if let Some(total) = status.total {
-                            if total > 0 {
-                                let pct = ((status.downloaded as f64 / total as f64) * 100.0)
-                                    .clamp(0.0, 99.0)
-                                    as u32;
-                                self.instance_prefs
-                                    .download_pct
-                                    .insert(inst.name.clone(), pct);
-                            }
-                        }
-                    }
-                }
-
-                // Drain runtime (bundled-JRE) events. Surface progress
-                // as Info lines on the launching screen; on Done, kick
-                // the JRE-detector cache + retry the pending launch.
-                let runtime_events = self.runtime.poll();
-                for ev in runtime_events {
-                    match ev {
-                        runtime::RuntimeEvent::Resolved { major, info } => {
-                            self.launching.push_real_line(
-                                screens::RealSeverity::Info,
-                                format!(
-                                    "[ewo] resolved Java {} → {} ({:.1} MB)",
-                                    major,
-                                    info.release_name,
-                                    info.size as f32 / 1_048_576.0
-                                ),
-                                time,
-                            );
-                        }
-                        runtime::RuntimeEvent::Progress { downloaded, total } => {
-                            // Drive the real pbar override (visible
-                            // immediately as a smooth fill), and log a
-                            // line every 10% step so the user sees
-                            // discrete checkpoints in the log panel too.
-                            if total > 0 {
-                                let frac = downloaded as f32 / total as f32;
-                                self.launching.set_real_progress(Some(frac));
-                                let pct = frac * 100.0;
-                                let bucket = (pct as u32) / 10 * 10;
-                                if bucket > 0 && bucket % 10 == 0 {
-                                    let line = format!(
-                                        "[ewo] downloading runtime: {:>3}% ({} / {} MB)",
-                                        bucket,
-                                        downloaded / 1_048_576,
-                                        total / 1_048_576,
-                                    );
-                                    self.launching.push_real_line(
-                                        screens::RealSeverity::Info,
-                                        line,
-                                        time,
-                                    );
-                                }
-                            }
-                        }
-                        runtime::RuntimeEvent::Done { major, jre_dir } => {
-                            // Clear the pbar override — synthetic curve
-                            // takes back over while the JVM boots.
-                            self.launching.set_real_progress(None);
-                            self.launching.push_real_line(
-                                screens::RealSeverity::Info,
-                                format!(
-                                    "[ewo] Java {} extracted to {} — retrying launch…",
-                                    major,
-                                    jre_dir.display()
-                                ),
-                                time,
-                            );
-                            launch::jre::invalidate_cache();
-                            // If the launch we deferred is for this
-                            // major, retry it now.
-                            if let Some(p) = self.pending_relaunch.clone() {
-                                if p.waiting_for_major == major {
-                                    self.pending_relaunch = None;
-                                    let ok = self.try_real_launch(
-                                        p.instance_idx,
-                                        &p.instance_name,
-                                        &p.instance_meta,
-                                        time,
-                                    );
-                                    if !ok {
-                                        self.launching.push_real_line(
-                                            screens::RealSeverity::Warn,
-                                            "[ewo] retry failed after JRE install".into(),
-                                            time,
-                                        );
-                                        self.launching.set_real_exit(Some(127), time);
-                                    }
-                                }
-                            }
-                        }
-                        runtime::RuntimeEvent::Failed { major, message } => {
-                            log::warn!("runtime: Java {} fetch failed: {}", major, message);
-                            self.launching.set_real_progress(None);
-                            self.launching.push_real_line(
-                                screens::RealSeverity::Warn,
-                                format!("[ewo] Java {} fetch failed: {}", major, message),
-                                time,
-                            );
-                            self.launching.set_real_exit(Some(127), time);
-                            self.pending_relaunch = None;
-                        }
-                    }
-                }
-
-                // Drain JVM launch events into the launching screen.
-                // Each line, every stage transition, and the exit code
-                // arrives via this channel. When the JVM exits we drop
-                // the receiver — the next launch will create a fresh one.
-                let mut launch_finished = false;
-                if let Some(rx) = self.launch_rx.as_ref() {
-                    while let Ok(event) = rx.try_recv() {
-                        match event {
-                            launch::LaunchEvent::Started { pid } => {
-                                log::info!("launch: JVM started (pid {pid})");
-                                // Record the PID so a zombie JVM (deadlocked
-                                // in native teardown on exit) can be reaped
-                                // before the next launch — see launch::reaper.
-                                self.active_launch_pid = Some(pid);
-                                launch::reaper::record(pid);
-                                // Don't minimize yet — the JVM has only just
-                                // spawned; Minecraft's window is ~10-30s away.
-                                // Arm a fallback deadline instead. We minimize
-                                // the moment the game's window-ready marker shows
-                                // in the log (see the `Line` arm), or when this
-                                // deadline fires, whichever comes first. Restored
-                                // on JVM exit (the `launch_finished` block below).
-                                self.pending_minimize = Some(time + MINIMIZE_FALLBACK_SECS);
-                            }
-                            launch::LaunchEvent::Line { severity, text } => {
-                                // Minimize as soon as the game is visibly coming
-                                // up. These markers are logged right as the client
-                                // creates its render backend / window — the point
-                                // where MC becomes visible — so this tracks "the
-                                // game is on screen now" far better than the spawn
-                                // event does. Only acts while a minimize is armed.
-                                if self.pending_minimize.is_some()
-                                    && is_window_ready_marker(&text)
-                                {
-                                    if let Some(win) = self.window.as_ref() {
-                                        win.set_minimized(true);
-                                    }
-                                    self.pending_minimize = None;
-                                    log::info!("launch: game window up — minimized launcher");
-                                }
-                                let sev = match severity {
-                                    launch::Severity::Info => screens::RealSeverity::Info,
-                                    launch::Severity::Warn => screens::RealSeverity::Warn,
-                                };
-                                self.launching.push_real_line(sev, text, time);
-                            }
-                            launch::LaunchEvent::Exited(code) => {
-                                log::info!("launch: JVM exited code={:?}", code);
-                                self.launching.set_real_exit(code, time);
-                                // Dump the in-memory log to disk so the
-                                // user can grab it later (especially on
-                                // a crash). Best-effort: errors don't
-                                // surface to the UI.
-                                persist_launch_log(
-                                    &self.launching.instance_name,
-                                    self.launching
-                                        .real_log
-                                        .as_deref()
-                                        .unwrap_or(&[]),
-                                    code,
-                                );
-                                launch_finished = true;
-                            }
-                            launch::LaunchEvent::SpawnFailed(msg) => {
-                                log::warn!("launch: spawn failed: {}", msg);
-                                self.launching.push_real_line(
-                                    screens::RealSeverity::Warn,
-                                    format!("[ewo] spawn failed: {}", msg),
-                                    time,
-                                );
-                                self.launching.set_real_exit(Some(127), time);
-                                launch_finished = true;
-                            }
-                        }
-                    }
-                }
-                // Fallback minimize: if the game has been starting for a while
-                // but we never saw a window-ready marker (modded logs vary),
-                // minimize once the armed deadline passes so the hand-off still
-                // happens.
-                if let Some(deadline) = self.pending_minimize {
-                    if time >= deadline {
-                        if let Some(win) = self.window.as_ref() {
-                            win.set_minimized(true);
-                        }
-                        self.pending_minimize = None;
-                        log::info!("launch: minimize fallback fired — minimized launcher");
-                    }
-                }
-
-                if launch_finished {
-                    self.launch_rx = None;
-                    // JVM reported exit — forget its PID so we don't reap a
-                    // recycled PID on the next launch (see launch::reaper).
-                    self.active_launch_pid = None;
-                    launch::reaper::clear();
-                    // A launch that ends before it ever minimized (fast crash,
-                    // spawn failure): disarm so we don't minimize after the fact.
-                    self.pending_minimize = None;
-                    // The game (or a failed spawn) is done — bring the launcher
-                    // back from the taskbar and re-focus it so the user lands on
-                    // the post-launch screen. `set_minimized(false)` is a no-op
-                    // if we never minimized (e.g. a spawn that failed before
-                    // `Started`), so this is safe on every finish path.
-                    if let Some(win) = self.window.as_ref() {
-                        win.set_minimized(false);
-                        win.focus_window();
-                    }
-                }
-
-                // Flip any instances whose download job just finished from
-                // `Pending` to `Ready` and persist. We match on the
-                // version *string* of the most-recent job — same instance
-                // can appear multiple times with different IDs, but the
-                // status flips per-instance.
-                let mut completed_versions: Vec<String> = Vec::new();
-                for (vid, status) in self.downloads.iter_statuses() {
-                    if status.done && status.error.is_none() {
-                        completed_versions.push(vid.clone());
-                    }
-                }
-                if !completed_versions.is_empty() {
-                    let mut any_changed = false;
-                    for inst in self.instances.iter_mut() {
-                        if inst.status == ewo_render::screens::instances::InstanceStatus::Ready {
-                            continue;
-                        }
-                        // Match by the version-string suffix on the meta
-                        // (commit_new_instance writes "<LOADER> · <version>").
-                        let v = match inst.version.rsplit(" · ").next() {
-                            Some(s) => s,
-                            None => &inst.version,
-                        };
-                        if completed_versions.iter().any(|w| w == v) {
-                            inst.status = ewo_render::screens::instances::InstanceStatus::Ready;
-                            any_changed = true;
-                            log::info!(
-                                "instances: \"{}\" → Ready (version {})",
-                                inst.name, v
-                            );
-                        }
-                    }
-                    if any_changed {
-                        persistence::save_instances(&self.instances);
-                    }
-                }
-
-                // Sync the live version manifest into the new-instance
-                // modal's dropdown source. Filter to releases by default;
-                // a "Show snapshots" toggle could later flip the second
-                // arg. List goes from newest → oldest (Mojang's order).
-                if let Some(manifest) = self.versions.manifest() {
-                    let want: Vec<String> = manifest
-                        .filtered_for_dropdown(false)
-                        .iter()
-                        .map(|e| e.id.clone())
-                        .collect();
-                    if want != self.modal.mc_versions {
-                        self.modal.apply_versions(want);
-                    }
-                }
-
-                // Account-tab actions — the press handler records one
-                // request; dispatch it here, where we own `&mut auth`.
-                if let Some(req) = self.prefs.account_request.take() {
-                    match req {
-                        AccountRequest::Add => {
-                            log::info!("auth: add account -> interactive sign-in");
-                            self.auth.start_interactive();
-                        }
-                        AccountRequest::SetActive(uuid) => {
-                            self.auth.set_active(&uuid);
-                        }
-                        AccountRequest::Remove(uuid) => {
-                            self.auth.remove(&uuid);
-                        }
-                        AccountRequest::OpenLauncherLink => {
-                            log::info!("launcher-link modal: open");
-                            self.social.clear_link_redeem();
-                            self.launcher_link_modal.open();
-                        }
-                    }
-                }
-
-                // Profile-tab actions — switch / new / duplicate / delete.
-                if let Some(req) = self.prefs.profile_request.take() {
-                    let applied = match req {
-                        ProfileRequest::Switch(name) => profile::switch(&name),
-                        ProfileRequest::New => {
-                            let (_n, c, s) = profile::create();
-                            Some((c, s))
-                        }
-                        ProfileRequest::Duplicate => {
-                            profile::duplicate(&self.active_profile).map(|(_n, c, s)| (c, s))
-                        }
-                        ProfileRequest::Delete(name) => profile::delete(&name),
-                        ProfileRequest::Rename { index, new_name } => {
-                            if let Some(old) = self.profiles.get(index).cloned() {
-                                profile::rename(&old, &new_name);
-                            }
-                            self.prefs.profile_renaming = None;
-                            self.prefs.profile_rename_buffer.clear();
-                            None // a rename doesn't change the active config
-                        }
-                    };
-                    if let Some((config, settings)) = applied {
-                        self.apply_loaded_config(config, settings);
-                    }
-                    self.profiles = profile::list();
-                    self.active_profile = profile::active_name();
-                    // Keybinds are profile-scoped — the switched-to profile
-                    // carries its own set.
-                    self.keybinds = profile::load_keybinds();
-                }
-
-                // Keybinds-tab actions — arm a rebind or reset to defaults.
-                if let Some(req) = self.prefs.keybind_request.take() {
-                    match req {
-                        KeybindRequest::Capture(idx) => {
-                            if let Some(action) = keybind::REGISTRY.get(idx) {
-                                log::info!("keybind: capturing for {}", action.id);
-                                self.keybind_capture = Some(action.id.to_string());
-                            }
-                        }
-                        KeybindRequest::ResetAll => {
-                            for a in keybind::REGISTRY.iter() {
-                                self.keybinds.insert(a.id.to_string(), a.default);
-                            }
-                            self.keybind_capture = None;
-                            profile::save_keybinds(&self.keybinds);
-                            log::info!("keybind: reset all to defaults");
-                        }
-                    }
-                }
-
-                // Reset preferences — wipe to bundled defaults, persist,
-                // and resync the GL backend's vsync to match.
-                if self.prefs.reset_requested {
-                    self.prefs.reset_requested = false;
-                    self.prefs
-                        .apply_config(&screens::SettingsConfig::default());
-                    profile::save(&self.prefs.to_config(), &self.settings);
-                    if let Some(b) = self.backend.as_ref() {
-                        b.set_vsync(self.prefs.vsync.on);
-                    }
-                    log::info!("reset_prefs: applied defaults");
-                }
-
-                // Modules tab — persist `modules.toml` when an edit landed.
-                if self.prefs.modules_changed {
-                    self.prefs.modules_changed = false;
-                    let (enabled, fov) = self.prefs.modules_snapshot();
-                    profile::save_modules(&enabled, fov);
-                }
-                // PvP-Utils tab — persist `pvp.toml` when an edit landed. The
-                // in-game mod polls the file's mtime each frame and reloads,
-                // so a running game picks the change up immediately.
-                if self.prefs.pvp_changed {
-                    self.prefs.pvp_changed = false;
-                    profile::save_pvp_config(&self.prefs.pvp);
-                }
-                if let Some(overlay) = self.dev_overlay.as_mut() {
-                    overlay.tick(dt);
-                    let density_changed = overlay.apply_to_settings(&mut self.settings);
-                    if density_changed {
-                        if let (Some(window), Some(backdrop)) =
-                            (self.window.as_ref(), self.backdrop.as_mut())
-                        {
-                            // Logical pixels — match `draw_frame`'s coord
-                            // space (post-canvas-scale).
-                            let size = window.inner_size();
-                            let scale = window.scale_factor() as f32;
-                            let logical_w = ((size.width as f32) / scale) as u32;
-                            let logical_h = ((size.height as f32) / scale) as u32;
-                            let (cw, ch) =
-                                app_window::card_content_size(logical_w, logical_h);
-                            backdrop.resize(cw, ch, &self.settings);
-                        }
-                    }
-                    // Mirror dev overlay's sim_error into the launching
-                    // state so the pbar variant matches what the dev pill
-                    // shows. Auto-starts a synthetic launch if needed so
-                    // the error has a bar to render against.
-                    if overlay.sim_error != self.launching.error {
-                        match overlay.sim_error {
-                            Some(variant) => {
-                                if self.launching.start_time.is_none() {
-                                    let (n, m) = self
-                                        .instances
-                                        .get(self.instance_prefs.selected)
-                                        .map(|i| {
-                                            (
-                                                i.name.clone(),
-                                                format!(
-                                                    "{} · ADOPTIUM 21 · {} GB",
-                                                    i.version,
-                                                    self.instance_prefs.ram.value as i32,
-                                                ),
-                                            )
-                                        })
-                                        .unwrap_or_else(|| {
-                                            (
-                                                "Velvet Hours".to_string(),
-                                                "VANILLA · 1.21 · ADOPTIUM 21".to_string(),
-                                            )
-                                        });
-                                    self.launching.enter(time, &n, &m);
-                                }
-                                self.launching.trigger_error(variant, time);
-                            }
-                            None => self.launching.clear_error(),
-                        }
-                    }
-                }
-                if self.screen == Screen::Launching {
-                    self.launching.tick(time, dt);
-                    if self.launching.should_handoff(time) {
-                        log::info!("launching: handoff complete → returning to Instances");
-                        self.launching.exit();
-                        self.screen = Screen::Instances;
-                    }
-                }
-
-                let backdrop_ref = self.backdrop.as_ref();
-                let fonts_ref = self.fonts.as_ref();
-                let launch_button = self.launch_button;
-                let menu_items = self.menu_items;
-                let hovered_tab = self.hovered_tab;
-                let back_link_hover = self.back_link_hover;
-                let min_btn_hover = self.min_btn_hover;
-                let close_btn_hover = self.close_btn_hover;
-                // 0..1 entrance progress for the main menu (fade + slide).
-                let main_menu_enter = if screen == Screen::MainMenu {
-                    ((time - self.screen_enter_at) / 0.34).clamp(0.0, 1.0)
-                } else {
-                    1.0
-                };
-                let settings_tab = self.settings_tab;
-                let theme = &self.theme;
-                let settings = &self.settings;
-                let prefs = &self.prefs;
-                let instance_prefs = &self.instance_prefs;
-                let launching_state = &self.launching;
-                let modal = &self.modal;
-                let about_modal = &self.about_modal;
-                let launcher_link_modal = &self.launcher_link_modal;
-                let friends_prefs = &self.friends_prefs;
-                // Phase H5: build owned per-row Vecs from the social
-                // state. These stack locals outlive the friends_view
-                // binding (same block scope), so the slices the view
-                // holds borrow cleanly from them.
-                let active_has_token = self
-                    .auth
-                    .active()
-                    .and_then(|a| self.auth.social_token(&a.uuid))
-                    .is_some();
-                let (friends_rows, incoming_rows, outgoing_rows, friends_err_msg) =
-                    if active_has_token {
-                        match self.social.friends() {
-                            social::FriendsListState::Loaded(list) => {
-                                let f = list
-                                    .friends
-                                    .iter()
-                                    .map(friend_entry_to_view)
-                                    .collect::<Vec<_>>();
-                                let i = list
-                                    .incoming
-                                    .iter()
-                                    .map(friend_entry_to_view)
-                                    .collect::<Vec<_>>();
-                                let o = list
-                                    .outgoing
-                                    .iter()
-                                    .map(friend_entry_to_view)
-                                    .collect::<Vec<_>>();
-                                (f, i, o, None)
-                            }
-                            social::FriendsListState::Failed(msg) => {
-                                (vec![], vec![], vec![], Some(msg.clone()))
-                            }
-                            _ => (vec![], vec![], vec![], None),
-                        }
-                    } else {
-                        (vec![], vec![], vec![], None)
-                    };
-                let friends_view: FriendsViewState<'_> = if !active_has_token {
-                    FriendsViewState::NotLinked
-                } else if let Some(msg) = friends_err_msg.as_deref() {
-                    FriendsViewState::Failed(msg)
-                } else if matches!(
-                    self.social.friends(),
-                    social::FriendsListState::Unknown
-                        | social::FriendsListState::Loading
-                ) {
-                    FriendsViewState::Loading
-                } else {
-                    FriendsViewState::Loaded {
-                        friends: &friends_rows,
-                        incoming: &incoming_rows,
-                        outgoing: &outgoing_rows,
-                    }
-                };
-                // Phase H2: clone the Failed message into a local so the
-                // LinkRedeemView's &str doesn't borrow self.social (which
-                // would conflict with `self.backend.as_mut()` below).
-                let link_redeem_msg: Option<String> = match self.social.link_redeem() {
-                    social::LinkRedeemStatus::Failed(m) => Some(m.clone()),
-                    _ => None,
-                };
-                let link_redeem: LinkRedeemView<'_> =
-                    match (self.social.link_redeem(), link_redeem_msg.as_deref()) {
-                        (social::LinkRedeemStatus::Submitting, _) => LinkRedeemView::Submitting,
-                        (social::LinkRedeemStatus::Failed(_), Some(m)) => {
-                            LinkRedeemView::Failed(m)
-                        }
-                        _ => LinkRedeemView::Idle,
-                    };
-                let dev_overlay = self.dev_overlay.as_ref();
-                let heading_hover = self.heading_hover;
-                // Build the Account-tab view from the auth store. The row
-                // Vec + the error string are stack locals that AccountView
-                // borrows — keeps `ewo-render` ignorant of auth types.
-                let active_uuid: Option<String> = self.auth.active().map(|a| a.uuid.clone());
-                let account_rows: Vec<AccountRowView<'_>> = self
-                    .auth
-                    .accounts()
-                    .iter()
-                    .map(|a| AccountRowView {
-                        name: &a.name,
-                        uuid: &a.uuid,
-                        active: active_uuid.as_deref() == Some(a.uuid.as_str()),
-                    })
-                    .collect();
-                let err_msg: Option<String> = if let AuthOp::Failed(err) = self.auth.op() {
-                    Some(format_auth_error(err))
-                } else {
-                    None
-                };
-                let account_op = match self.auth.op() {
-                    AuthOp::Idle => AccountOpView::Idle,
-                    AuthOp::Working(stage) => AccountOpView::Working { stage: *stage },
-                    AuthOp::Failed(_) => AccountOpView::Failed {
-                        message: err_msg.as_deref().unwrap_or("auth failed"),
-                    },
-                };
-                let link_status = self.link_status_view();
-                let account_view = AccountView {
-                    accounts: &account_rows,
-                    op: account_op,
-                    link_status,
-                };
-                let profile_rows: Vec<ProfileRowView<'_>> = self
-                    .profiles
-                    .iter()
-                    .map(|n| ProfileRowView {
-                        name: n,
-                        active: *n == self.active_profile,
-                    })
-                    .collect();
-                let profile_view = ProfileView {
-                    profiles: &profile_rows,
-                };
-                // Keybinds-tab view — registry actions resolved against the
-                // active profile's bindings. The chord labels are stack
-                // locals the KeybindRowViews borrow.
-                let keybind_chord_labels: Vec<String> = keybind::REGISTRY
-                    .iter()
-                    .map(|a| {
-                        self.keybinds
-                            .get(a.id)
-                            .copied()
-                            .unwrap_or(a.default)
-                            .label()
-                    })
-                    .collect();
-                let keybind_rows: Vec<KeybindRowView<'_>> = keybind::REGISTRY
-                    .iter()
-                    .zip(&keybind_chord_labels)
-                    .map(|(a, label)| KeybindRowView {
-                        action_label: a.label,
-                        module: a.module,
-                        chord_label: label,
-                        capturing: self.keybind_capture.as_deref() == Some(a.id),
-                    })
-                    .collect();
-                let keybind_view = KeybindView { rows: &keybind_rows };
-                let frame_stats = FrameStats {
-                    fps: self.clock.avg_fps(),
-                    frame_ms: self.clock.avg_dt() * 1000.0,
-                    worst_ms: self.clock.worst_dt() * 1000.0,
-                };
-                let instances = self.instances.as_slice();
-                // H6 — network-status widget view. Clone the snapshot into a
-                // local so the borrowed `tps: &str` doesn't reference
-                // self.social (which would conflict with self.backend.as_mut()
-                // below — same reason as link_redeem_msg above).
-                let server_status_snapshot = self.social.server_status().cloned();
-                let server_widget_view = screens::ServerWidgetView {
-                    data: server_status_snapshot.as_ref().map(|s| screens::ServerWidgetData {
-                        online: s.online,
-                        online_count: s.online_count,
-                        max_players: s.max_players,
-                        tps: &s.tps,
-                    }),
-                    hovered: self.server_widget_hover,
-                };
-                // DPI handling: the GL surface is sized in physical pixels
-                // (winit reports + we forward to `GlBackend::resize` raw).
-                // But hit-testing in this file converts the cursor to
-                // *logical* pixels (`cursor_card_local` divides by
-                // `scale_factor`) so widget bounds in the screens crate are
-                // already laid out against logical dimensions. To keep both
-                // sides in the same coord space, we apply a one-time
-                // `canvas.scale(scale, scale)` at the top of the frame and
-                // pass `draw_frame` the *logical* viewport size. Without
-                // this, on a HiDPI monitor (e.g. 1440p @ 125%) the renderer
-                // would lay widgets out at physical pixel positions while
-                // the hit-test sat in logical space — cursor would land
-                // up-and-left of where the visible widget rendered.
-                let scale = window.scale_factor() as f32;
-                if let (Some(backend), Some(backdrop), Some(fonts)) =
-                    (self.backend.as_mut(), backdrop_ref, fonts_ref)
-                {
-                    backend.render(|canvas, w, h| {
-                        let saved = canvas.save();
-                        canvas.scale((scale, scale));
-                        let w_lp = ((w as f32) / scale).round() as u32;
-                        let h_lp = ((h as f32) / scale).round() as u32;
-                        app_window::draw_frame(
-                            canvas, backdrop, fonts, w_lp, h_lp, time, theme, settings,
-                            screen, hovered_tab, &launch_button, &menu_items, settings_tab, prefs,
-                            instance_prefs, launching_state, modal, about_modal,
-                            launcher_link_modal, link_redeem, dev_overlay, frame_stats,
-                            instances, heading_hover, account_view, profile_view, keybind_view,
-                            friends_prefs, friends_view, server_widget_view,
-                            main_menu_enter, back_link_hover, min_btn_hover, close_btn_hover,
-                        );
-                        canvas.restore_to_count(saved);
-                    });
-                }
-                // Chain the next redraw so animations keep ticking. The
-                // unfocused-skip at the top of this arm short-circuits
-                // before any expensive work, so leaving this on for the
-                // unfocused path is cheap (one re-queue per ~100 ms while
-                // unfocused, throttled by `about_to_wait`'s WaitUntil).
-                if self.focused {
-                    window.request_redraw();
-                }
+                self.on_redraw(&window);
             }
 
             _ => {}
@@ -3376,80 +1201,6 @@ impl ApplicationHandler for App {
             None => event_loop.set_control_flow(ControlFlow::Poll),
         }
     }
-}
-
-#[derive(Copy, Clone, Debug)]
-enum Zone {
-    Caption,
-    Resize(ResizeDirection),
-}
-
-fn hit_test(
-    pos: PhysicalPosition<f64>,
-    size: PhysicalSize<u32>,
-    scale: f64,
-) -> Option<Zone> {
-    let border = RESIZE_BORDER_LP * scale;
-    let caption = CAPTION_HEIGHT_LP * scale;
-    let (x, y) = (pos.x, pos.y);
-    let (w, h) = (size.width as f64, size.height as f64);
-
-    let on_top = y >= 0.0 && y < border;
-    let on_bottom = y > h - border;
-    let on_left = x >= 0.0 && x < border;
-    let on_right = x > w - border;
-
-    use ResizeDirection::*;
-    let dir = match (on_top, on_bottom, on_left, on_right) {
-        (true, _, true, _) => Some(NorthWest),
-        (true, _, _, true) => Some(NorthEast),
-        (_, true, true, _) => Some(SouthWest),
-        (_, true, _, true) => Some(SouthEast),
-        (true, _, _, _) => Some(North),
-        (_, true, _, _) => Some(South),
-        (_, _, true, _) => Some(West),
-        (_, _, _, true) => Some(East),
-        _ => None,
-    };
-    if let Some(d) = dir {
-        return Some(Zone::Resize(d));
-    }
-    // Top-right minimize / close buttons sit in the caption strip but must be
-    // clickable, not a drag handle — exclude them before the caption check.
-    let lx = (x / scale) as f32;
-    let ly = (y / scale) as f32;
-    let (min_btn, close_btn) = app_window::window_button_bounds((w / scale) as f32);
-    if rect_contains(&min_btn, (lx, ly)) || rect_contains(&close_btn, (lx, ly)) {
-        return None;
-    }
-    if y >= 0.0 && y < caption {
-        return Some(Zone::Caption);
-    }
-    None
-}
-
-/// Convert a window-local cursor position (physical px) into card-local
-/// (logical px), matching the coord space widget code uses.
-fn cursor_card_local(cursor: PhysicalPosition<f64>, scale: f64) -> (f32, f32) {
-    let lp_x = cursor.x / scale;
-    let lp_y = cursor.y / scale;
-    ((lp_x - CARD_INSET_LP) as f32, (lp_y - CARD_INSET_LP) as f32)
-}
-
-/// Card content width in card-local logical pixels (window minus 2× card inset).
-fn card_content_width(size: PhysicalSize<u32>, scale: f64) -> f32 {
-    let logical_w = size.width as f64 / scale;
-    (logical_w - 2.0 * CARD_INSET_LP) as f32
-}
-
-/// Card content height in card-local logical pixels.
-fn card_content_height(size: PhysicalSize<u32>, scale: f64) -> f32 {
-    let logical_h = size.height as f64 / scale;
-    (logical_h - 2.0 * CARD_INSET_LP) as f32
-}
-
-fn rect_contains(rect: &skia_safe::Rect, p: (f32, f32)) -> bool {
-    p.0 >= rect.left && p.0 <= rect.right && p.1 >= rect.top && p.1 <= rect.bottom
 }
 
 /// Phase H5: map a `social::FriendEntry` (raw bot payload) to a
@@ -3949,6 +1700,8 @@ fn handle_settings_press(
                     changed = true;
                 }
             }
+            // UI-only: there is no telemetry backend and nothing reads this
+            // flag — the launcher sends no telemetry either way.
             SettingsSlot::Telemetry => {
                 if prefs.telemetry.handle(mouse, rect, true) {
                     log::info!("telemetry: {}", prefs.telemetry.on);
@@ -4349,7 +2102,7 @@ fn handle_modal_press(
             }
             ModalSlot::Create => {
                 modal.create_btn.update(mouse, rect, true, 0.0);
-                if let Some(form) = modal.try_submit() {
+                if let Some(form) = try_submit_modal(modal) {
                     commit_new_instance(instances, instance_prefs, versions, downloads, form, time);
                     modal.close();
                 } else {
@@ -4381,58 +2134,32 @@ fn handle_modal_press(
     true
 }
 
+/// `modal.try_submit()` plus name validation: a name with path separators,
+/// `..`, a reserved device name or control characters is rejected the same
+/// way a blank one is (inline error, modal stays open).
+fn try_submit_modal(
+    modal: &mut NewInstanceModalState,
+) -> Option<screens::new_instance_modal::NewInstanceForm> {
+    let mut form = modal.try_submit()?;
+    match persistence::validate_instance_name(&form.name) {
+        Ok(name) => {
+            form.name = name.to_string();
+            Some(form)
+        }
+        Err(e) => {
+            log::info!("modal: Create blocked — invalid name ({:?})", e);
+            modal.name_error = true;
+            None
+        }
+    }
+}
+
 fn close_other_modal_dropdowns(modal: &mut NewInstanceModalState, keep: ModalSlot) {
     if keep != ModalSlot::Version {
         modal.version.close();
     }
     if keep != ModalSlot::Loader {
         modal.loader.close();
-    }
-}
-
-/// Remove an instance by underlying index. Adjusts `prefs.selected` so
-/// it still points at a valid instance (or the last one, if the user
-/// deleted the currently-selected one) and persists. Refuses to delete
-/// the last remaining instance — there must always be at least one.
-fn delete_instance(
-    instances: &mut Vec<Instance>,
-    prefs: &mut InstancePrefs,
-    underlying_idx: usize,
-    time: f32,
-) {
-    if underlying_idx >= instances.len() || instances.len() <= 1 {
-        log::info!("delete: refused (idx={} len={})", underlying_idx, instances.len());
-        return;
-    }
-    let removed_name = instances[underlying_idx].name.clone();
-    instances.remove(underlying_idx);
-
-    // Re-anchor selection. If we removed something below the cursor,
-    // shift back. If we removed the cursor itself, clamp to the new last
-    // index.
-    if prefs.selected > underlying_idx {
-        prefs.selected -= 1;
-    } else if prefs.selected == underlying_idx {
-        prefs.selected = prefs.selected.min(instances.len().saturating_sub(1));
-    }
-    prefs.sync_from_instance(instances);
-    prefs.detail_scroll = 0.0;
-    prefs.selected_at = Some(time); // play the detail-panel fade for the new view
-    prefs.delete_hover = None;
-    prefs.list_hover = None;
-
-    log::info!("delete: removed \"{}\"", removed_name);
-    persistence::save_instances(instances);
-}
-
-/// Mirror the prefs slider/dropdown values into the currently-selected
-/// instance. Called whenever those widgets fire a change event so the
-/// per-instance config follows the user's edits.
-fn sync_instance_config(instances: &mut Vec<Instance>, prefs: &InstancePrefs) {
-    if let Some(inst) = instances.get_mut(prefs.selected) {
-        inst.ram = prefs.ram.value as u32;
-        inst.render_distance = prefs.render_dist.value as u32;
-        inst.java_runtime = prefs.java_runtime.selected;
     }
 }
 
@@ -4467,16 +2194,7 @@ fn commit_new_instance(
     // Derived before `loader` is moved into `Instance::with_loader` below.
     // The job needs the manifest URL up front so it can fetch + merge
     // before counting bytes for the progress bar.
-    let loader_spec = match &loader {
-        ewo_render::screens::instances::InstanceLoader::Vanilla
-        | ewo_render::screens::instances::InstanceLoader::Native => None,
-        ewo_render::screens::instances::InstanceLoader::Ewo { manifest_url } => {
-            Some(loaders::LoaderSpec {
-                id: "ewo".to_string(),
-                url: manifest_url.clone(),
-            })
-        }
-    };
+    let loader_spec = loader_spec_for(&loader);
     // Seed the instance's mods list from the bundled catalog so the
     // Instances UI shows real toggles immediately. Only Ewo instances get
     // mods — vanilla launches don't run any mods so the list stays empty.
@@ -4495,6 +2213,9 @@ fn commit_new_instance(
     )
     .with_config(form.ram, 16, 0)
     .with_loader(loader);
+    // A fresh folder id — never the name, so a new instance can't inherit
+    // a deleted same-named instance's folder.
+    new_inst.id = persistence::new_instance_id(&form.name, instances);
     // Stamp the new world as "just played" so it leads the list in both
     // newest-first and recently-played sorts until the user launches
     // anything else. New instances are Pending until the download job
@@ -4573,50 +2294,6 @@ fn update_cursor_icon(
     window.set_cursor(icon);
 }
 
-// ╔═══════════════════════════════════════════════════════════════════════╗
-// ║ LEAK_HUNT_INSTRUMENT — strip before release (CLAUDE.md "Leak-hunt    ║
-// ║ instrumentation"). This counting global allocator lets us separate   ║
-// ║ Rust-side from C++-side heap growth: a flat `alloc: net X B` while   ║
-// ║ `mem: rss` climbs proves the leak isn't in Rust. The wrap of         ║
-// ║ `System` is otherwise behaviour-preserving but every alloc / dealloc ║
-// ║ now goes through two atomic adds.                                    ║
-// ╚═══════════════════════════════════════════════════════════════════════╝
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-struct CountingAllocator;
-
-static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
-static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
-static FREE_COUNT: AtomicUsize = AtomicUsize::new(0);
-static FREE_BYTES: AtomicUsize = AtomicUsize::new(0);
-
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
-        System.alloc(layout)
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        FREE_COUNT.fetch_add(1, Ordering::Relaxed);
-        FREE_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
-        System.dealloc(ptr, layout)
-    }
-}
-
-#[global_allocator]
-static GLOBAL: CountingAllocator = CountingAllocator;
-
-fn alloc_stats() -> (usize, usize, usize, usize) {
-    (
-        ALLOC_COUNT.load(Ordering::Relaxed),
-        ALLOC_BYTES.load(Ordering::Relaxed),
-        FREE_COUNT.load(Ordering::Relaxed),
-        FREE_BYTES.load(Ordering::Relaxed),
-    )
-}
-// ── end LEAK_HUNT_INSTRUMENT ──────────────────────────────────────────────
-
 fn main() {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info"),
@@ -4628,15 +2305,6 @@ fn main() {
     if args.mint_rewo_env {
         std::process::exit(mint_rewo_env());
     }
-
-    // LEAK_HUNT_INSTRUMENT — strip before release.
-    // Cap Skia's process-wide CPU caches before any Skia work happens. The
-    // GPU-side cache lives on `DirectContext` and is set in `GlBackend::new`.
-    // Was added during leak-hunt as belt-and-braces; the actual leak turned
-    // out to be unrelated (driver-side present queue on hidden window).
-    ewo_render::gl_backend::cap_skia_global_caches();
-    // ── end LEAK_HUNT_INSTRUMENT ──────────────────────────────────────────
-
     let event_loop = EventLoop::new().expect("failed to create event loop");
     let mut app = App::new(args.dev);
     event_loop.run_app(&mut app).expect("event loop error");
@@ -4678,11 +2346,12 @@ fn mint_rewo_env() -> i32 {
 }
 
 /// Dump the launching screen's in-memory log to
-/// `<config>/EwoClient/instances/<name>/logs/<timestamp>.log`.
+/// `<config>/EwoClient/instances/<id>/logs/<timestamp>.log`.
 /// Best-effort — failures log a warning but don't surface. Each line is
 /// prefixed with its severity tag so stderr lines stay distinguishable
 /// from stdout when grepping.
 fn persist_launch_log(
+    instance_id: &str,
     instance_name: &str,
     lines: &[ewo_render::screens::launching::RealLogLine],
     exit_code: Option<i32>,
@@ -4691,7 +2360,7 @@ fn persist_launch_log(
     if lines.is_empty() {
         return;
     }
-    let Some(mut path) = downloads::paths::instance_dir(instance_name) else {
+    let Some(mut path) = downloads::paths::instance_dir(instance_id) else {
         log::warn!("logs: instance dir unresolvable for {}", instance_name);
         return;
     };

@@ -502,10 +502,10 @@ fn draw_inner(
     let _ = TEXT_MAUVE;
 }
 
-fn state_and_value_for<'a>(
+fn state_and_value_for(
     slot: Slot,
-    state: &'a DevOverlayState,
-) -> (&'a VsliderState, String) {
+    state: &DevOverlayState,
+) -> (&VsliderState, String) {
     match slot {
         Slot::MotionSpeed => (
             &state.motion_speed,

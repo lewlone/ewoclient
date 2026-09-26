@@ -8,7 +8,7 @@ paths:
   - "crates/ewo-launcher/src/profile.rs"
   - "crates/rewo-app/src/modules.rs"
   - "ingame-mod/**"
-  - "PHASE_G_PLAN.md"
+  - "docs/history/PHASE_G_PLAN.md"
 ---
 
 # EwoClient modules — the catalog, the legit / pvp split, PvP Utils

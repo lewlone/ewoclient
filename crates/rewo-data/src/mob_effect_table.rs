@@ -102,10 +102,12 @@ mod tests {
     #[test]
     fn the_table_order_is_the_registrys_protocol_id_order() {
         let Some(paths) = crate::DataPaths::for_version("26.2") else {
+            crate::skip_test!("no local 26.2 data dir");
             return;
         };
         let Ok(reg) = crate::mob_effects::MobEffects::load(&paths.registries_json())
         else {
+            crate::skip_test!("no datagen registries report");
             return;
         };
         assert_eq!(

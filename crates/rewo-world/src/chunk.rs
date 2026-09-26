@@ -38,9 +38,10 @@ pub struct Section {
     /// 2048-byte nibble arrays (4096 cells), if present for this section.
     pub(crate) block_light: Option<Vec<u8>>,
     pub(crate) sky_light: Option<Vec<u8>>,
-    /// Post-decode block edits (Block Update packets) keyed by packed
-    /// section-local index `(y<<8)|(z<<4)|x`. See `Column::set_block`.
-    pub(crate) overrides: std::collections::HashMap<u16, u32>,
+    /// A block update wrote into this section after decode. The server's
+    /// `non_empty` count is not maintained through edits (it would need the
+    /// air-state set), so an edited section is never treated as trivial.
+    pub(crate) edited: bool,
 }
 
 impl Section {
@@ -149,20 +150,17 @@ impl Column {
         let Some(section) = self.sections.get(si) else {
             return 0;
         };
-        // Consult post-decode edits (Block Update packets) first — the query
-        // must reflect the live world, not just the chunk snapshot.
-        section.block_state_with_overrides(lx, y & 15, lz)
+        section.block_state(lx, y & 15, lz)
     }
 
+    /// Apply a block edit (Block Update packets), written straight into the
+    /// section's paletted storage.
     pub fn set_block(&mut self, shape: &DimensionShape, lx: i32, y: i32, lz: i32, state: u32) {
-        // M1: block edits are recorded via a small override map so a Block
-        // Update repaints correctly without rebuilding the paletted storage.
-        // (A full palette-aware writer lands with the mesher's remesh path.)
         if let Some(si) = shape.section_index(y) {
             if let Some(section) = self.sections.get_mut(si) {
-                section
-                    .overrides
-                    .insert(((y & 15) as u16) << 8 | (lz as u16) << 4 | lx as u16, state);
+                let idx = ((y & 15) as usize) << 8 | (lz as usize) << 4 | lx as usize;
+                section.states.set(idx, state, 4096);
+                section.edited = true;
             }
         }
     }
@@ -273,7 +271,7 @@ impl Column {
     pub fn section_is_trivial(&self, idx: usize) -> bool {
         self.sections
             .get(idx)
-            .map(|s| s.non_empty == 0 && s.overrides.is_empty())
+            .map(|s| s.non_empty == 0 && !s.edited)
             .unwrap_or(true)
     }
 
@@ -295,7 +293,7 @@ impl Column {
 
     pub fn digest(&self, shape: &DimensionShape, mut h: u64) -> u64 {
         for (si, section) in self.sections.iter().enumerate() {
-            if section.states.is_uniform_zero() && section.overrides.is_empty() {
+            if section.states.is_uniform_zero() {
                 continue;
             }
             crate::fnv(&mut h, si as u64);
@@ -304,7 +302,7 @@ impl Column {
                 let x = (idx & 15) as i32;
                 let z = ((idx >> 4) & 15) as i32;
                 let y = (idx >> 8) as i32;
-                let state = section.block_state_with_overrides(x, y, z);
+                let state = section.block_state(x, y, z);
                 if state != 0 {
                     crate::fnv(&mut h, ((idx as u64) << 20) | state as u64);
                 }
@@ -312,16 +310,6 @@ impl Column {
         }
         let _ = shape;
         h
-    }
-}
-
-impl Section {
-    fn block_state_with_overrides(&self, x: i32, y: i32, z: i32) -> u32 {
-        let key = ((y as u16) << 8) | ((z as u16) << 4) | x as u16;
-        if let Some(&s) = self.overrides.get(&key) {
-            return s;
-        }
-        self.block_state(x, y, z)
     }
 }
 
@@ -338,7 +326,7 @@ impl Section {
             biomes: Container::single(0),
             block_light: None,
             sky_light: Some(vec![0xFF; 2048]), // both nibbles = 15
-            overrides: std::collections::HashMap::new(),
+            edited: false,
         }
     }
 }
@@ -486,7 +474,7 @@ pub fn read_level_chunk_bits2(
             biomes,
             block_light: None,
             sky_light: None,
-            overrides: std::collections::HashMap::new(),
+            edited: false,
         });
     }
 
@@ -496,7 +484,7 @@ pub fn read_level_chunk_bits2(
     // every field was read and dropped, which is why a chest had never been
     // anything but empty space (see `crate::block_entities`).
     let be_count = r.count("block entities", 1)?;
-    let mut block_entities = Vec::with_capacity(be_count.min(256) as usize);
+    let mut block_entities = Vec::with_capacity(be_count.min(256));
     for _ in 0..be_count {
         let packed_xz = r.u8()?;
         let y = r.i16()?;
@@ -618,7 +606,7 @@ mod tests {
 
     /// Biome cell index `(y<<2 | z)<<2 | x` for section-local quart coords.
     fn bidx(qx: usize, qy: usize, qz: usize) -> usize {
-        ((qy << 2 | qz) << 2 | qx) as usize
+        (qy << 2 | qz) << 2 | qx
     }
 
     /// A biome container buffer holding `cells` (64 entries) as a direct palette

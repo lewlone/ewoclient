@@ -797,7 +797,7 @@ fn check_pixels(
     const CLEAR_LINEAR: [f32; 3] = [1.0, 0.0, 1.0];
     let clear = [CLEAR_LINEAR[0], CLEAR_LINEAR[1], CLEAR_LINEAR[2], 1.0];
 
-    let mut shot = |gpu: &mut Gpu,
+    let shot = |gpu: &mut Gpu,
                     off: &mut Offscreen,
                     wr: &mut WorldRenderer,
                     chrome: rewo_gpu::screen::ScreenDraw,
@@ -993,7 +993,7 @@ fn check_pixels(
     let pair = shot(&mut gpu, &mut off, &mut wr, control, Vec::new())?;
     let wide_row = |gx: i32| px(&pair, (link0.x + gx) as u32 * SCALE as u32, by0 + 8);
     let narrow_row =
-        |gx: i32| px(&pair, (link0.x + gx) as u32 * SCALE as u32, by0 as u32 + 40 * 2 + 8);
+        |gx: i32| px(&pair, (link0.x + gx) as u32 * SCALE as u32, by0 + 40 * 2 + 8);
     let first_tile_matches = (0..197).all(|gx| wide_row(gx) == narrow_row(gx));
     c.record(
         "p6.the_nine_slices_first_tile_is_byte_identical_to_the_one_to_one_blit",

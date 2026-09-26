@@ -184,6 +184,7 @@ impl Modules {
     }
 
     /// Flip a module. Returns the new state (`false` for an unknown id).
+    #[cfg(any(test, feature = "gates"))]
     pub fn toggle(&mut self, id: &str) -> bool {
         match catalog::index_of(id) {
             Some(i) => {
@@ -199,6 +200,7 @@ impl Modules {
         self.zoom_held = held;
     }
 
+    #[cfg(any(test, feature = "gates"))]
     pub fn zoom_held(&self) -> bool {
         self.zoom_held
     }

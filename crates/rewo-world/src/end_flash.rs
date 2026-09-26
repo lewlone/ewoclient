@@ -265,7 +265,7 @@ mod tests {
         if discard {
             r.next_float();
         }
-        let offset = r.next_int(200 - 0 + 1) + 0;
+        let offset = r.next_int(200 + 1);
         let duration = r.next_int(380.min(600 - offset) - 100 + 1) + 100;
         let x_angle = r.next_float() * (10.0 - -60.0) + -60.0;
         let y_angle = r.next_float() * (180.0 - -180.0) + -180.0;

@@ -505,10 +505,69 @@ pub struct MotionStats {
     pub knockback_velocity_delta: f64,
 }
 
+/// Frames the reader thread may queue ahead of the consumer. Bounded so a
+/// server outrunning the client stalls on TCP backpressure instead of growing
+/// this process's memory without limit.
+pub const INBOUND_QUEUE_FRAMES: usize = 4096;
+
+/// How much inbound work one [`PlaySession::pump`] (or the drain inside
+/// [`PlaySession::tick`]) may do before yielding, so a backlog is spread over
+/// frames instead of hitching one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PumpBudget {
+    pub max_packets: usize,
+    pub max_time: std::time::Duration,
+}
+
+impl PumpBudget {
+    /// A per-frame budget for the windowed client.
+    pub const FRAME: PumpBudget = PumpBudget {
+        max_packets: 2048,
+        max_time: std::time::Duration::from_millis(3),
+    };
+    /// No limit — everything queued at the call.
+    pub const UNLIMITED: PumpBudget = PumpBudget {
+        max_packets: usize::MAX,
+        max_time: std::time::Duration::MAX,
+    };
+}
+
+/// Why the reader thread stopped.
+#[derive(Clone, Debug)]
+pub(crate) struct ReaderClosed {
+    reason: String,
+    /// The peer closed the stream (vanilla `disconnect.endOfStream`), as
+    /// opposed to a decode/limit/timeout failure on our side.
+    eof: bool,
+}
+
 pub struct PlaySession {
     writer: crate::NetStream,
     codec: FrameCodec,
-    rx: Receiver<Vec<u8>>,
+    rx: Receiver<Result<Vec<u8>, ReaderClosed>>,
+    /// A handle on the socket, shut down on drop so the reader thread wakes
+    /// and the connection closes promptly.
+    socket: Option<std::net::TcpStream>,
+    /// The budget the last [`Self::pump`] used; `tick`'s own drain honours it
+    /// so the tick cannot undo the frame's pacing.
+    tick_budget: Option<PumpBudget>,
+    /// `Some` while a mid-session configuration phase is running (after
+    /// play's `start_configuration`, before `finish_configuration`).
+    reconfig: Option<crate::config::ConfigData>,
+    /// How many mid-session configuration phases have completed.
+    pub reconfigurations: u32,
+    /// Play packets that failed to decode and were dropped (logged at warn).
+    pub decode_failures: u64,
+    /// Play logins seen; a login after the first follows a reconfiguration.
+    logins: u32,
+    /// The client's `LastSeenMessagesTracker` for signed chat.
+    last_seen: crate::chat_sign::LastSeenTracker,
+    /// The account, kept to refresh the player certificate.
+    auth: Option<crate::crypt::OnlineAuth>,
+    /// An in-flight certificate refresh (runs off-thread; HTTP).
+    signer_refresh: Option<Receiver<Result<crate::chat_sign::ChatSigner, String>>>,
+    /// `AccountProfileKeyPairManager.nextProfileKeyRefreshTime`, epoch-milli.
+    next_key_refresh_ms: i64,
     pub ids: Ids,
     /// What the two blocking configuration tasks asked for and what Rewo
     /// answered (M166), carried over from the `Connection` and appended to by
@@ -679,6 +738,10 @@ pub struct PlaySession {
     /// a stair. An id past the end falls back to "non-air is a full cube",
     /// which is what the flat test worlds want when no bake is supplied.
     pub collide: Vec<Vec<[f32; 6]>>,
+    /// state id → movement behaviour (`BakedAssets::physics`: friction, speed
+    /// and jump factors, climbable, fluids, stuck-in blocks). Empty = every
+    /// block behaves like stone, as before the table existed.
+    pub block_physics: Vec<rewo_data::block_physics::BlockPhysics>,
     /// Per entity-type `(width, height, pushable)` for entity collision.
     /// Empty disables pushing (the harnesses that don't care about mobs).
     pub entity_push: Vec<(f32, f32, bool)>,
@@ -771,6 +834,16 @@ pub struct PlaySession {
     /// `None` (the headless protocol harnesses) → attribute packets are
     /// recognised but store nothing, because nothing can filter them.
     pub entity_types: Option<std::sync::Arc<rewo_data::entity_types::EntityTypes>>,
+    /// `EntityPickTable::resolve` over `entity_types`, cached across ticks —
+    /// the per-type registered dimensions [`SessionPhysics`] builds its entity
+    /// collider boxes from. A cache rather than an app-supplied field because
+    /// the resolution is a pure function of `entity_types`, which the app
+    /// already supplies. `None` (a harness with no registry, or a registry
+    /// the generated table does not cover) → no entity colliders.
+    entity_shapes: Option<std::sync::Arc<rewo_data::entity_pick::EntityPickTable>>,
+    /// Whether [`Self::entity_shapes`] has been attempted, so a version skew
+    /// warns once instead of once per tick.
+    entity_shapes_tried: bool,
     /// The `minecraft:attribute` registry plus the per-entity suppliers (M52).
     /// `None` → as above.
     pub attribute_registry: Option<std::sync::Arc<rewo_data::attributes::AttributeRegistry>>,
@@ -814,6 +887,10 @@ pub struct PlaySession {
     /// Raw mob-effect ids of haste / conduit power / mining fatigue, captured
     /// from `registry_data` — the three effects `getCurrentSwingDuration` reads.
     swing_effect_ids: crate::SwingEffectIds,
+    /// Raw mob-effect ids of jump boost / slow falling / dolphin's grace /
+    /// levitation, captured the same way — the four effects
+    /// [`crate::attributes::apply_movement_effects`] folds into the physics.
+    movement_effect_ids: crate::config::MovementEffectIds,
     /// Chunk global-palette bit width (from the blocks table).
     global_bits: u32,
     /// The `minecraft:dimension_type` registry in raw wire order — index *is*
@@ -830,6 +907,16 @@ pub struct PlaySession {
     pub corrections: u32,
     pub teleports: u32,
     pub block_updates: u32,
+    /// Inbound frames and their bytes, since play began.
+    pub packets_in: u64,
+    pub bytes_in: u64,
+    /// Inbound `level_chunk_with_light` and `keep_alive` packets.
+    pub chunk_packets: u64,
+    pub keepalives: u64,
+    /// Records every inbound frame when set (`rewo net soak --record`); the
+    /// `Connection`'s recorder carries over so login, configuration and play
+    /// land in one file.
+    recorder: Option<crate::record::Recorder>,
     /// Who is riding what (M68), from `set_passengers`.
     pub mounts: crate::motion::Mounts,
     /// M169 — `LocalPlayer.jumpRidingTicks` / `jumpRidingScale`.
@@ -849,6 +936,28 @@ pub struct PlaySession {
     /// [`crate::local_player_data`]. Beside the table for M73's reason: the
     /// table has no row for you.
     local_player_data: crate::local_player_data::LocalPlayerData,
+    /// The local player's `Entity.FLAG_FALL_FLYING`, as `LocalPlayer`
+    /// maintains it: the server's shared flags are the authority (mirrored in
+    /// [`Self::capture_local_metadata`]), `startFallFlying()`'s optimistic set
+    /// is the one local write, and `stopFallFlying()` clears it. It becomes
+    /// [`TickInput::fall_flying`] for the physics tick.
+    ///
+    /// A plain bool beside `local_player_data` rather than in it because that
+    /// struct is the *server's* copy of the local player's entity data, and
+    /// this bit is written locally before the server can have seen anything —
+    /// the same split vanilla has between `SynchedEntityData` and
+    /// `startFallFlying`'s `setSharedFlag`.
+    local_fall_flying: bool,
+    /// `LocalPlayer.wasJumping` — the previous tick's jump key. `aiStep`
+    /// samples it at `:773`, *before* `input.tick()` refreshes the key state,
+    /// so what the elytra take-off line's `!wasJumping` reads is the last
+    /// tick's (the same edge `JumpRiding::tick` keeps its own copy of).
+    was_jump: bool,
+    /// Item ids whose prototype carries `minecraft:glider` — the elytra, and
+    /// anything else `canGlideUsing` would accept. Resolved once from the item
+    /// table in `into_play`: the inventory stores ids and the prototype
+    /// component table is keyed by name.
+    glider_items: Vec<i32>,
     /// `UnderwaterAmbientSoundHandler`, and the previous tick's
     /// submersion that `LocalPlayer.updateIsUnderwater()` compares
     /// against (M142b). The handler itself is stateless; vanilla's
@@ -1516,6 +1625,8 @@ struct LocalPlayerRespawn<'a> {
     last_on_ground: &'a mut bool,
     last_horiz: &'a mut bool,
     last_input_flags: &'a mut u8,
+    // The elytra flag, which is the local player's own shared-flag bit 7.
+    local_fall_flying: &'a mut bool,
 }
 
 impl LocalPlayerRespawn<'_> {
@@ -1574,6 +1685,14 @@ impl LocalPlayerRespawn<'_> {
         // immediately either way.
         if !keep_entity_data {
             *self.health = 20.0;
+            // `DATA_SHARED_FLAGS_ID` is one of the values `assignValues`
+            // carries across on the keep path — bit 2, same as
+            // `DATA_HEALTH_ID` — so the no-keep path is a fresh entity with
+            // `FLAG_FALL_FLYING` low. Clearing it here matters more than it
+            // looks: a glide that outlives its player would otherwise never
+            // end, because the server has no reason to re-state a flag that is
+            // already at its default.
+            *self.local_fall_flying = false;
         }
         *self.food = 20;
         *self.dead = false;
@@ -1655,7 +1774,9 @@ impl<'a> Connection<'a> {
         let reader_codec = FrameCodec {
             compression_threshold: self.codec.compression_threshold,
         };
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let socket = writer.inner.try_clone().ok();
+        let (tx, rx) =
+            std::sync::mpsc::sync_channel::<Result<Vec<u8>, ReaderClosed>>(INBOUND_QUEUE_FRAMES);
         std::thread::Builder::new()
             .name("rewo-net-reader".into())
             .spawn(move || {
@@ -1663,13 +1784,13 @@ impl<'a> Connection<'a> {
                 let mut scratch = Vec::new();
                 loop {
                     let mut packet = Vec::new();
-                    if reader_codec
-                        .read_frame(&mut stream, &mut scratch, &mut packet)
-                        .is_err()
-                    {
-                        return; // socket closed / error → channel drops
+                    if let Err(e) = reader_codec.read_frame(&mut stream, &mut scratch, &mut packet) {
+                        // The reason travels to the session, which turns it
+                        // into the disconnect; the channel then drops.
+                        let _ = tx.send(Err(reader_closed(e)));
+                        return;
                     }
-                    if tx.send(packet).is_err() {
+                    if tx.send(Ok(packet)).is_err() {
                         return;
                     }
                 }
@@ -1685,24 +1806,25 @@ impl<'a> Connection<'a> {
         // arrive before `apply_login_shape` replaces it and the active-dimension
         // fields below stay `None` until it does.
         let world = World::new(DimensionShape::OVERWORLD);
-        let dim_types = self.dim_types.clone();
-        let overworld_clock_id = self.overworld_clock_id;
-        let world_clock_ids = std::mem::take(&mut self.world_clock_ids);
+        let dim_types = self.cfg.dim_types.clone();
+        let overworld_clock_id = self.cfg.overworld_clock_id;
+        let world_clock_ids = std::mem::take(&mut self.cfg.world_clock_ids);
         let visual_effects =
-            crate::effects::VisualEffects::new(self.night_vision_id, self.darkness_id);
-        let swing_effect_ids = self.swing_effect_ids;
+            crate::effects::VisualEffects::new(self.cfg.night_vision_id, self.cfg.darkness_id);
+        let swing_effect_ids = self.cfg.swing_effect_ids;
+        let movement_effect_ids = self.cfg.movement_effect_ids;
         // The enchantment registry, in wire order (M42) — the index is the
         // protocol id a component patch carries.
-        let enchantments = std::mem::take(&mut self.enchantments);
+        let enchantments = std::mem::take(&mut self.cfg.enchantments);
         // The chat-type registry, likewise in wire order (M127) — the index is
         // the id a `ChatType.Bound` names.
-        let chat_types = std::mem::take(&mut self.chat_types);
-        let trim_materials = std::mem::take(&mut self.trim_materials);
-        let trim_patterns = std::mem::take(&mut self.trim_patterns);
+        let chat_types = std::mem::take(&mut self.cfg.chat_types);
+        let trim_materials = std::mem::take(&mut self.cfg.trim_materials);
+        let trim_patterns = std::mem::take(&mut self.cfg.trim_patterns);
         // The tags the server sent during configuration (M69). Moved rather
         // than cloned for the same reason the registries above are: this
         // connection object is finished with them.
-        let tags = std::mem::take(&mut self.tags);
+        let tags = std::mem::take(&mut self.cfg.tags);
         // The brand and the cookie jar (M78). Both arrive during
         // *configuration* — the vanilla server sends `minecraft:brand` from its
         // configuration listener and never repeats it in play — and both are
@@ -1715,20 +1837,18 @@ impl<'a> Connection<'a> {
             delimiter: self.ids.cb_play_bundle_delimiter,
             terminal: self.ids.cb_play_start_configuration,
         });
-        let cat_variants = std::mem::take(&mut self.cat_variants);
-        let wolf_variants = std::mem::take(&mut self.wolf_variants);
-        let frog_variants = std::mem::take(&mut self.frog_variants);
+        let cat_variants = std::mem::take(&mut self.cfg.cat_variants);
+        let wolf_variants = std::mem::take(&mut self.cfg.wolf_variants);
+        let frog_variants = std::mem::take(&mut self.cfg.frog_variants);
+        // The glider items (`minecraft:glider` on the prototype) as ids, so
+        // the elytra take-off line can ask the inventory's chest slot without
+        // a name round-trip. `minecraft:elytra` is one of them.
+        let glider_items = glider_item_ids(&self.data.items);
         // Biome registry parsed during configuration; the `biomeZoomSeed` +
         // dimension holder arrive with the play-login packet (`apply_login_shape`).
         // Access the field directly (not a `&self` method) — `self.stream` was
         // already moved by `split()`, so `self` is partially moved here.
-        let pending_biome_registry = if self.biome_defs.is_empty() {
-            None
-        } else {
-            Some(rewo_world::biome::BiomeRegistry::new(
-                self.biome_defs.clone(),
-            ))
-        };
+        let pending_biome_registry = self.cfg.biome_registry();
         let biome_global_bits = pending_biome_registry
             .as_ref()
             .map(|r| r.global_bits)
@@ -1746,6 +1866,16 @@ impl<'a> Connection<'a> {
             writer,
             codec,
             rx,
+            socket,
+            tick_budget: None,
+            reconfig: None,
+            reconfigurations: 0,
+            decode_failures: 0,
+            logins: 0,
+            last_seen: crate::chat_sign::LastSeenTracker::default(),
+            auth: auth.cloned(),
+            signer_refresh: None,
+            next_key_refresh_ms: 0,
             ids: self.ids,
             latency: std::collections::HashMap::new(),
             gamemodes: std::collections::HashMap::new(),
@@ -1786,6 +1916,7 @@ impl<'a> Connection<'a> {
             world,
             player: PlayerState::at(0.5, 80.0, 0.5),
             collide,
+            block_physics: Vec::new(),
             entity_push: Vec::new(),
             warden_type_id: None,
             armadillo_type_id: None,
@@ -1810,10 +1941,13 @@ impl<'a> Connection<'a> {
             conduit_frame_states: Vec::new(),
             entity_classes: None,
             entity_types: None,
+            entity_shapes: None,
+            entity_shapes_tried: false,
             attribute_registry: None,
             swing_data: None,
             recipe_display_ids: None,
             swing_effect_ids,
+            movement_effect_ids,
             global_bits,
             dim_types,
             overworld_clock_id,
@@ -1822,11 +1956,19 @@ impl<'a> Connection<'a> {
             corrections: 0,
             teleports: 0,
             block_updates: 0,
+            packets_in: 0,
+            bytes_in: 0,
+            chunk_packets: 0,
+            keepalives: 0,
+            recorder: self.recorder.take(),
             mounts: crate::motion::Mounts::new(),
             jump_riding: Default::default(),
             riding_jumps_sent: 0,
             local_attributes: rewo_world::attributes::EntityAttributes::default(),
             local_player_data: crate::local_player_data::LocalPlayerData::default(),
+            local_fall_flying: false,
+            was_jump: false,
+            glider_items,
             ambient_underwater: Default::default(),
             ambient_bubble: Default::default(),
             ambient_biome: Default::default(),
@@ -1926,13 +2068,52 @@ impl<'a> Connection<'a> {
     }
 }
 
+/// Classify a reader-thread failure.
+fn reader_closed(e: rewo_proto::ProtoError) -> ReaderClosed {
+    use std::io::ErrorKind;
+    match e {
+        rewo_proto::ProtoError::Io(io)
+            if matches!(
+                io.kind(),
+                ErrorKind::UnexpectedEof
+                    | ErrorKind::ConnectionReset
+                    | ErrorKind::ConnectionAborted
+                    | ErrorKind::BrokenPipe
+            ) =>
+        {
+            ReaderClosed { reason: format!("connection closed: {io}"), eof: true }
+        }
+        rewo_proto::ProtoError::Io(io)
+            if matches!(io.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) =>
+        {
+            // `ReadTimeoutHandler`'s 30 s → `disconnect.timeout`.
+            ReaderClosed { reason: "timed out".into(), eof: false }
+        }
+        other => ReaderClosed { reason: format!("bad inbound frame: {other}"), eof: false },
+    }
+}
+
+impl Drop for PlaySession {
+    fn drop(&mut self) {
+        if let Some(sock) = self.socket.take() {
+            let _ = sock.shutdown(std::net::Shutdown::Both);
+        }
+    }
+}
+
 impl PlaySession {
     fn send(&mut self, packet: PacketWriter) -> Result<(), String> {
+        if self.reconfig.is_some() {
+            // A play packet in the configuration state is a protocol error
+            // the server kicks for; whatever asked for it (a UI action) is
+            // dropped instead, as vanilla has no play connection to send on.
+            log::debug!("net: play packet dropped during configuration");
+            return Ok(());
+        }
         self.codec
             .write_frame(&mut self.writer, &packet.buf)
             .map_err(|e| format!("send: {e}"))?;
-        self.writer.flush().ok();
-        Ok(())
+        self.writer.flush().map_err(|e| format!("send: {e}"))
     }
 
     fn next_sequence(&mut self) -> i32 {
@@ -1940,12 +2121,30 @@ impl PlaySession {
         self.sequence
     }
 
-    /// Mark a column + its 4 orthogonal neighbors stale for re-meshing.
+    /// Mark a column and all 8 neighbours stale for re-meshing. A column's
+    /// mesh reads one block past each edge — face culling, AO and fluid
+    /// corner heights all sample diagonals — so a whole-column change (load,
+    /// light or biome update) reaches the diagonal columns' corners too.
     fn mark_dirty_around(&mut self, cx: i32, cz: i32) {
-        for (dx, dz) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
-            if self.world.is_loaded((cx + dx) * 16, (cz + dz) * 16) {
-                self.dirty.insert((cx + dx, cz + dz));
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                self.mark_column_dirty(cx + dx, cz + dz);
             }
+        }
+    }
+
+    /// Mark the columns whose meshes can see block `(x, z)`: its own, plus
+    /// the neighbour across each column edge it touches — and the diagonal
+    /// neighbour when it sits on a corner.
+    fn mark_dirty_block(&mut self, x: i32, z: i32) {
+        for (cx, cz) in columns_seeing_block(x, z) {
+            self.mark_column_dirty(cx, cz);
+        }
+    }
+
+    fn mark_column_dirty(&mut self, cx: i32, cz: i32) {
+        if self.world.is_loaded(cx * 16, cz * 16) {
+            self.dirty.insert((cx, cz));
         }
     }
 
@@ -1961,7 +2160,13 @@ impl PlaySession {
     /// Apply a block change and relight around it, marking every column whose
     /// light moved for remesh. `old` is the state before the write.
     fn relight(&mut self, x: i32, y: i32, z: i32, old: u32, new: u32) {
-        if self.light_dampening.is_empty() {
+        self.relight_batch(&[(x, y, z, old, new)]);
+    }
+
+    /// Relight after several block changes at once. The world must already
+    /// hold every new state.
+    fn relight_batch(&mut self, changes: &[(i32, i32, i32, u32, u32)]) {
+        if self.light_dampening.is_empty() || changes.is_empty() {
             return;
         }
         let tables = rewo_world::light::LightTables {
@@ -1971,7 +2176,7 @@ impl PlaySession {
         };
         for (cx, cz) in self
             .light
-            .on_block_change(&mut self.world, tables, x, y, z, old, new)
+            .on_blocks_changed(&mut self.world, tables, changes)
         {
             self.dirty.insert((cx, cz));
         }
@@ -2171,10 +2376,13 @@ impl PlaySession {
 
     /// One 20 Hz tick: drain inbound, run physics, send movement.
     pub fn tick(&mut self, input: &TickInput) -> Result<(), String> {
-        self.drain_inbound()?;
-        if self.disconnect.is_some() {
+        self.drain_inbound(self.tick_budget.unwrap_or(PumpBudget::UNLIMITED))?;
+        // During a mid-session configuration there is no level and no play
+        // listener to tick — vanilla's `ClientPacketListener` is gone.
+        if self.disconnect.is_some() || self.reconfig.is_some() {
             return Ok(());
         }
+        self.tick_chat_key()?;
         // `ClientLevel.tickTime`: once the level exists, every running client
         // tick bumps the game time by one and ticks the world clock against it.
         // This is what advances the day/night cycle smoothly between the
@@ -2288,6 +2496,12 @@ impl PlaySession {
         // release sends `START_RIDING_JUMP`; vanilla's `onPlayerJump` on the
         // vehicle is the client's own cosmetic pending scale and is not
         // modelled.
+        // `LocalPlayer.aiStep`'s `boolean wasJumping = this.input.keyPresses.jump();`
+        // (`:773`), which it samples *before* `this.input.tick()` refreshes the
+        // key state — so what it holds is the PREVIOUS tick's key. The elytra
+        // take-off line's `!wasJumping` is that same edge.
+        let was_jump = self.was_jump;
+        self.was_jump = input.jump;
         let jumpable = self.jumpable_vehicle();
         if let Some(data) = self.jump_riding.tick(input.jump, jumpable) {
             self.send_riding_jump(data)?;
@@ -2324,16 +2538,25 @@ impl PlaySession {
             // *before* `travel`, so the shove lands in this tick's movement.
             self.push_from_entities();
             let collide = std::mem::take(&mut self.collide);
-            let world = &self.world;
-            let shapes = |x: i32, y: i32, z: i32| -> &[[f32; 6]] {
-                let state = world.block_state_at(x, y, z);
-                match collide.get(state as usize) {
-                    Some(boxes) => boxes.as_slice(),
-                    // No table (flat test worlds): non-air collides as a cube.
-                    None if state != 0 => FULL_CUBE,
-                    None => &[],
-                }
+            let block_physics = std::mem::take(&mut self.block_physics);
+            let mut move_attrs = match self.attribute_registry.as_deref() {
+                Some(reg) => crate::attributes::move_attributes(reg, &self.local_attributes),
+                None => physics::MoveAttributes::default(),
             };
+            // `gameplay/fast_lava` is a dimension attribute, not a player one,
+            // so it comes from the active dimension type and not from
+            // `update_attributes`.
+            move_attrs.fast_lava =
+                self.active_dimension_type.as_ref().is_some_and(|d| d.fast_lava);
+            // The effect-driven fields (jump boost, slow falling, dolphin's
+            // grace, levitation) come from the local effect list, not from
+            // `update_attributes`. Built before `self.player` is borrowed
+            // below, so the closure's read of `self.visual_effects` is free.
+            crate::attributes::apply_movement_effects(
+                &mut move_attrs,
+                &self.movement_effect_ids,
+                |id| self.visual_effects.get(id).map(|e| e.amplifier),
+            );
             // M75. `LocalPlayer.aiStep` runs its flight prologue *before*
             // `super.aiStep()` reaches `travel`, so the toggle and the vertical
             // impulse both land in this tick's movement. All three steps live
@@ -2357,18 +2580,87 @@ impl PlaySession {
             }
             let mut owes_packet = step.abilities_changed;
             let abilities = self.abilities;
-            physics::tick_with(
+            // The entity colliders, one shape per entity from the same tables
+            // the crosshair pick uses. The resolution is cached, so all this
+            // reads is a borrow.
+            self.resolve_entity_shapes();
+            let shapes = self.entity_shapes.as_deref();
+            let world = SessionPhysics {
+                blocks: physics::WorldPhysics {
+                    world: &self.world,
+                    collide: &collide,
+                    blocks: &block_physics,
+                },
+                entities: &self.world.entities,
+                mounts: &self.mounts,
+                exclude_root: self
+                    .player_id
+                    .map(|me| self.mounts.root_vehicle(me).unwrap_or(me)),
+                player_y: self.player.y,
+                shapes,
+                classes: self.entity_classes.as_deref(),
+                types: self.entity_types.as_deref(),
+                attributes: self.attribute_registry.as_deref(),
+            };
+            // The elytra take-off line (`LocalPlayer.aiStep:850`), which runs
+            // before `super.aiStep()` reaches `travel`, so a take-off lands in
+            // this tick's movement. `onClimbable()` is asked *before* the move
+            // by that line and by `travelFallFlying`'s stop arm alike, so one
+            // probe serves both.
+            let climbable = physics::is_on_climbable(&self.player, &world, spectator);
+            let wire = match (self.ids.sb_play_player_command, self.player_id) {
+                (Some(id), Some(me)) => Some((id, me)),
+                _ => None,
+            };
+            let takeoff = fall_flying_takeoff(&FallFlyingTakeoff {
+                jump: input.jump,
+                was_jumping: was_jump,
+                just_toggled_creative_flight: step.abilities_changed,
+                on_climbable: climbable,
+                state: &self.player,
+                abilities: &self.abilities,
+                attrs: &move_attrs,
+                fall_flying: self.local_fall_flying,
+                inventory: &self.inventory,
+                glider_items: &self.glider_items,
+                wire,
+            });
+            if takeoff.is_some() {
+                // `Player.startFallFlying()` — `setSharedFlag(7, true)` the
+                // moment the condition holds, before the server can have
+                // answered. The packet goes out below, after the physics,
+                // because `world` borrows `&self.world` across this block and
+                // `send` needs `&mut self`; the wire order is unchanged
+                // (nothing is sent in between).
+                self.local_fall_flying = true;
+            }
+            // The physics reads the flag as `TickInput::fall_flying`.
+            let mut phys = *input;
+            phys.fall_flying = self.local_fall_flying;
+            physics::tick_env(
                 &mut self.player,
-                input,
+                &phys,
                 &abilities,
                 spectator,
                 Some(self.border.collision()),
-                &shapes,
+                &move_attrs,
+                &world,
             );
+            if phys.fall_flying && climbable {
+                // `travelFallFlying`'s climbable arm is `travelInAir(input);
+                // stopFallFlying();` — the tick above ran that arm (physics
+                // keeps its own copy of it for direct callers), so this is the
+                // `stopFallFlying()`, `setSharedFlag(7, false)`.
+                self.local_fall_flying = false;
+            }
+            if let Some(p) = takeoff {
+                self.send(p)?;
+            }
             owes_packet |= self
                 .flight
                 .after_travel(&mut self.abilities, &self.player, spectator);
             self.collide = collide;
+            self.block_physics = block_physics;
             if owes_packet {
                 self.send_abilities()?;
             }
@@ -2390,112 +2682,113 @@ impl PlaySession {
         self.visual_effects.snapshot(partial)
     }
 
-    /// `LocalPlayer.onUpdateAbilities()` — tell the server we changed `flying`.
-    ///
-    /// Sent only when the *client* made the change (a toggle, the spectator
-    /// force-on, or the landing clause); a change that arrived in a
-    /// `ClientboundPlayerAbilitiesPacket` is already the server's own view and
-    /// echoing it back would be noise.
-    fn send_abilities(&mut self) -> Result<(), String> {
-        let p =
-            crate::abilities::serverbound(self.ids.sb_play_player_abilities, self.abilities.flying);
-        self.send(p)
-    }
-
-    /// Decompiled `LocalPlayer.sendPosition` cadence + tick_end + input.
-    fn send_movement(&mut self, input: &TickInput) -> Result<(), String> {
-        // player_input on change (Input.STREAM_CODEC flag order).
-        let flags = (input.forward > 0.0) as u8
-            | (((input.forward < 0.0) as u8) << 1)
-            | (((input.strafe > 0.0) as u8) << 2)
-            | (((input.strafe < 0.0) as u8) << 3)
-            | ((input.jump as u8) << 4)
-            | ((input.sneak as u8) << 5)
-            | ((input.sprint as u8) << 6);
-        if flags != self.last_input_flags {
-            if let Some(id) = self.ids.sb_play_player_input {
-                let mut p = PacketWriter::packet(id);
-                p.u8(flags);
-                self.send(p)?;
+    /// Apply queued inbound packets, at most `budget`'s worth. Vanilla runs
+    /// packet handlers every frame (`Minecraft.runTick` drains the packet
+    /// processor before and independent of the 20 Hz tick), so the windowed
+    /// client calls this once per frame; [`Self::tick`] drains too so headless
+    /// callers that only tick keep working. Returns how many packets it
+    /// applied.
+    /// Tick an idle player at 20 Hz for `duration`, or until the server
+    /// disconnects. Used by `rewo net soak` and `rewo view --host`, so they
+    /// exercise the same packet handling as `rewo live`.
+    pub fn run_idle(&mut self, duration: std::time::Duration) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + duration;
+        let input = TickInput::default();
+        let mut next = std::time::Instant::now();
+        while std::time::Instant::now() < deadline && self.disconnect.is_none() {
+            self.tick(&input)?;
+            next += std::time::Duration::from_millis(50);
+            if let Some(wait) = next.checked_duration_since(std::time::Instant::now()) {
+                std::thread::sleep(wait);
             }
-            self.last_input_flags = flags;
-        }
-
-        let (px, py, pz) = (self.player.x, self.player.y, self.player.z);
-        let (yaw, pitch) = (self.player.yaw, self.player.pitch);
-        let dx = px - self.last_pos.0;
-        let dy = py - self.last_pos.1;
-        let dz = pz - self.last_pos.2;
-        self.reminder += 1;
-        let moved = dx * dx + dy * dy + dz * dz > 4.0e-8 || self.reminder >= 20;
-        let rotated = yaw != self.last_rot.0 || pitch != self.last_rot.1;
-        let move_flags =
-            self.player.on_ground as u8 | ((self.player.horizontal_collision as u8) << 1);
-
-        if moved && rotated {
-            let mut p = PacketWriter::packet(self.ids.sb_play_move_pos_rot);
-            p.f64(px).f64(py).f64(pz).f32(yaw).f32(pitch).u8(move_flags);
-            self.send(p)?;
-        } else if moved {
-            let mut p = PacketWriter::packet(self.ids.sb_play_move_pos);
-            p.f64(px).f64(py).f64(pz).u8(move_flags);
-            self.send(p)?;
-        } else if rotated {
-            let mut p = PacketWriter::packet(self.ids.sb_play_move_rot);
-            p.f32(yaw).f32(pitch).u8(move_flags);
-            self.send(p)?;
-        } else if self.last_on_ground != self.player.on_ground
-            || self.last_horiz != self.player.horizontal_collision
-        {
-            let mut p = PacketWriter::packet(self.ids.sb_play_move_status);
-            p.u8(move_flags);
-            self.send(p)?;
-        }
-        if moved {
-            self.last_pos = (px, py, pz);
-            self.reminder = 0;
-        }
-        if rotated {
-            self.last_rot = (yaw, pitch);
-        }
-        self.last_on_ground = self.player.on_ground;
-        self.last_horiz = self.player.horizontal_collision;
-
-        if let Some(id) = self.ids.sb_play_client_tick_end {
-            self.send(PacketWriter::packet(id))?;
         }
         Ok(())
     }
 
-    fn drain_inbound(&mut self) -> Result<(), String> {
+    /// Count an inbound frame and record it if a recorder is attached.
+    fn note_inbound(&mut self, id: i32, frame: &[u8], body: usize) {
+        self.packets_in += 1;
+        self.bytes_in += frame.len() as u64;
+        if id == self.ids.cb_play_level_chunk {
+            self.chunk_packets += 1;
+        } else if id == self.ids.cb_play_keep_alive {
+            self.keepalives += 1;
+        }
+        let state = if self.reconfig.is_some() {
+            rewo_data::packets::State::Configuration
+        } else {
+            rewo_data::packets::State::Play
+        };
+        if let Some(rec) = self.recorder.as_mut() {
+            if let Err(e) = rec.record(state, id, &frame[body..]) {
+                log::warn!("net: recording failed ({e}); recording stopped");
+                self.recorder = None;
+            }
+        }
+    }
+
+    /// Finish the recording started by `Connection::recorder`, returning the
+    /// number of packets written (`None` if nothing was recording).
+    pub fn finish_recording(&mut self) -> Result<Option<u64>, String> {
+        match self.recorder.take() {
+            Some(rec) => rec.finish().map(Some).map_err(|e| format!("finish recording: {e}")),
+            None => Ok(None),
+        }
+    }
+
+    pub fn pump(&mut self, budget: PumpBudget) -> Result<usize, String> {
+        self.tick_budget = Some(budget);
+        self.drain_inbound(budget)
+    }
+
+    fn drain_inbound(&mut self, budget: PumpBudget) -> Result<usize, String> {
+        let start = std::time::Instant::now();
+        let mut applied = 0usize;
         loop {
+            if applied >= budget.max_packets
+                || (applied > 0 && start.elapsed() >= budget.max_time)
+                || self.disconnect.is_some()
+            {
+                return Ok(applied);
+            }
             let packet = match self.rx.try_recv() {
-                Ok(p) => p,
-                Err(TryRecvError::Empty) => return Ok(()),
+                Ok(Ok(p)) => p,
+                Ok(Err(closed)) => {
+                    self.reader_closed(Some(closed));
+                    return Ok(applied);
+                }
+                Err(TryRecvError::Empty) => return Ok(applied),
                 Err(TryRecvError::Disconnected) => {
-                    if self.disconnect.is_none() {
-                        // `Connection.channelInactive` — the socket went away
-                        // with no packet. Vanilla's reason is
-                        // `disconnect.endOfStream` and its details carry
-                        // neither a report nor a link.
-                        self.disconnect = Some("connection closed".into());
-                        self.disconnect_cause =
-                            Some(rewo_world::disconnect_screen::DisconnectCause::EndOfStream);
-                    }
-                    return Ok(());
+                    self.reader_closed(None);
+                    return Ok(applied);
                 }
             };
+            applied += 1;
             let mut pos = 0;
-            let Ok(id) = rewo_proto::varint::read_varint(&packet, &mut pos) else {
-                continue;
+            let id = match rewo_proto::varint::read_varint(&packet, &mut pos) {
+                Ok(id) => id,
+                Err(e) => {
+                    self.decode_failures += 1;
+                    log::warn!("net: inbound frame with no readable packet id ({e}); dropped");
+                    continue;
+                }
             };
+            self.note_inbound(id, &packet, pos);
+            if self.reconfig.is_some() {
+                self.handle_config(id, &packet[pos..])?;
+                continue;
+            }
             // M78 — bundling, wrapped *around* the dispatch chain rather than
             // folded into it. `PacketBundlePacker` sits between the frame
             // decoder and the listener in vanilla's pipeline, and it sits in
             // the same place here: the `else if` ladder in `handle_packet`
             // stays a plain list of ids and never learns that bundles exist.
             match self.bundle.feed(id, &packet[pos..]) {
-                crate::bundle::Feed::Apply => self.handle_packet(id, &packet[pos..])?,
+                crate::bundle::Feed::Apply => {
+                    let handled = self.handle_packet(id, &packet[pos..]);
+                    self.fold_route_decode_failures();
+                    handled?;
+                }
                 // The opening delimiter, or a sub-packet buffered inside an
                 // open bundle. An unterminated bundle is *withheld* — the
                 // buffer survives this function returning, which is the whole
@@ -2506,9 +2799,12 @@ impl PlaySession {
                     // `handleBundlePacket` is a plain `for` loop over the
                     // sub-packets on one scheduled task, so nothing renders
                     // between them. Here that falls out of applying the run
-                    // inside a single drain.
+                    // inside a single drain — a budget is only checked between
+                    // frames, never inside a bundle.
                     for (sub_id, sub_body) in self.bundle.take() {
-                        self.handle_packet(sub_id, &sub_body)?;
+                        let handled = self.handle_packet(sub_id, &sub_body);
+                        self.fold_route_decode_failures();
+                        handled?;
                     }
                 }
                 // Vanilla throws on the Netty pipeline and the connection dies.
@@ -2527,1194 +2823,213 @@ impl PlaySession {
                         self.disconnect_cause =
                             Some(rewo_world::disconnect_screen::DisconnectCause::ClientError);
                     }
-                    return Ok(());
+                    return Ok(applied);
                 }
             }
         }
     }
 
-    fn handle_packet(&mut self, id: i32, body: &[u8]) -> Result<(), String> {
-        let ids = &self.ids;
-        // Resolved before the ladder because the `take_item_entity` arm below
-        // borrows `self.world` mutably and cannot read `self.player` too.
-        let local_collector = self.local_collector();
-        if id == ids.cb_play_keep_alive {
-            let mut r = PacketReader::new(body);
-            if let Ok(v) = r.i64() {
-                let mut p = PacketWriter::packet(self.ids.sb_play_keep_alive);
-                p.i64(v);
-                self.send(p)?;
-            }
-        } else if id == ids.cb_play_ping {
-            let mut r = PacketReader::new(body);
-            if let Ok(v) = r.i32() {
-                let mut p = PacketWriter::packet(self.ids.sb_play_pong);
-                p.i32(v);
-                self.send(p)?;
-            }
-        } else if id == ids.cb_play_resource_pack_push {
-            // M166. Unlike its configuration twin this blocks nothing — there
-            // is no task queue in play — but vanilla answers it from the same
-            // `ClientCommonPacketListenerImpl.handleResourcePackPush`, so Rewo
-            // answers it from the same `answer_pack_push`. A server that
-            // swaps packs per-world pushes here.
-            let (pack_id, action) =
-                crate::config_tasks::answer_pack_push(body, &mut self.config_tasks);
-            self.send(crate::config_tasks::write_pack_reply(
-                self.ids.sb_play_resource_pack,
-                pack_id,
-                action,
-            ))?;
-        } else if id == ids.cb_play_position {
-            self.apply_teleport(body)?;
-        } else if id == ids.cb_play_player_rotation || id == ids.cb_play_player_look_at {
-            // M76. An arm of its own rather than a `route_*` tail call because
-            // one of the two answers the server immediately and the other does
-            // not — see `apply_player_rotation`.
-            self.apply_player_rotation(id, body)?;
-        } else if id == ids.cb_play_chunk_batch_start {
-            // M74. Empty body — `handleChunkBatchStart` is one call, and it is
-            // the half that makes the reply below adaptive instead of a
-            // differently-wrong constant.
-            let now = self.now_nanos();
-            self.chunk_batch.on_batch_start(now);
-        } else if id == ids.cb_play_chunk_batch_finished {
-            // M74. Was `p.f32(64.0)` — an ~18x over-bid against vanilla's
-            // seeded opening 3.5, on every batch of every session, never
-            // adapting. `batchSize` is a VarInt, and a body that fails to
-            // decode still gets a reply: vanilla always answers, and going
-            // silent here would stall the server's chunk pipeline outright.
-            let now = self.now_nanos();
-            match crate::chunk_batch::read_chunk_batch_finished(body) {
-                Ok(batch_size) => self.chunk_batch.on_batch_finished(batch_size, now),
-                Err(err) => log::debug!("net: chunk_batch_finished decode: {err}"),
-            }
-            let mut p = PacketWriter::packet(self.ids.sb_play_chunk_batch_received);
-            p.f32(self.chunk_batch.desired_chunks_per_tick());
-            self.send(p)?;
-        } else if id == ids.cb_play_level_chunk {
-            let shape = self.world.shape;
-            let mut r = PacketReader::new(body);
-            match rewo_world::chunk::read_level_chunk_bits2(
-                &mut r,
-                &shape,
-                self.global_bits,
-                self.biome_global_bits,
-            ) {
-                Ok(col) => {
-                    let (cx, cz) = (col.cx, col.cz);
-                    self.world.insert_column(cx, cz, col);
-                    // New column changes its own + its neighbors' edge faces.
-                    self.mark_dirty_around(cx, cz);
-                }
-                Err(e) => {
-                    // Counted, not just logged: a decode failure here is what a
-                    // wrong vertical shape looks like from the outside, so the
-                    // count is the meter for "we are decoding chunks against
-                    // the dimension we are actually in".
-                    self.chunk_decode_failures = self.chunk_decode_failures.wrapping_add(1);
-                    log::error!("play: chunk decode failed: {e}");
-                }
-            }
-        } else if Some(id) == ids.cb_play_chunks_biomes {
-            // Biomes changed for already-loaded chunks (`/fillbiome`, worldgen
-            // re-send). Body: a list of {ChunkPos (packed long), VarInt-length
-            // byte array of per-section biome containers}. Replace the loaded
-            // column's biome palettes and remesh the 3×3 (tint reads neighbors).
-            let shape = self.world.shape;
-            let biome_bits = self.biome_global_bits;
-            let mut r = PacketReader::new(body);
-            if let Ok(n) = r.count("chunk biomes", 12) {
-                for _ in 0..n {
-                    let Ok(packed) = r.i64() else { break };
-                    let (cx, cz) = (packed as i32, (packed >> 32) as i32);
-                    // Cap = ClientboundChunksBiomesPacket's TWO_MEGABYTES.
-                    let Ok(buf) = r.byte_array(2_097_152) else {
-                        break;
-                    };
-                    let mut br = PacketReader::new(buf);
-                    match rewo_world::chunk::read_chunk_biomes(&mut br, &shape, biome_bits) {
-                        Ok(containers) => {
-                            self.world.apply_chunks_biomes(cx, cz, containers);
-                            self.mark_dirty_around(cx, cz);
-                        }
-                        Err(e) => log::error!("play: chunks_biomes decode failed: {e}"),
-                    }
-                }
-            }
-        } else if Some(id) == ids.cb_play_light_update {
-            // Lighting changed without a chunk resend (torch placed, cave
-            // mined into). Without this the client's light is frozen at
-            // chunk-load, so a freshly lit cave stays black.
-            let shape = self.world.shape;
-            let mut r = PacketReader::new(body);
-            match (r.varint(), r.varint()) {
-                (Ok(cx), Ok(cz)) => {
-                    if let Some(col) = self.world.column_mut(cx, cz) {
-                        if let Err(e) = rewo_world::chunk::apply_light_update(&mut r, col) {
-                            log::error!("play: light_update decode failed: {e}");
-                        } else {
-                            // Re-light means re-mesh: vertex colours bake the
-                            // light in, so the neighbourhood must remesh too.
-                            self.mark_dirty_around(cx, cz);
-                        }
-                    }
-                    let _ = shape;
-                }
-                _ => log::error!("play: light_update: bad chunk coords"),
-            }
-        } else if id == ids.cb_play_forget_chunk {
-            let mut r = PacketReader::new(body);
-            if let Ok(v) = r.i64() {
-                let (cx, cz) = (v as i32, (v >> 32) as i32);
-                self.world.forget_column(cx, cz);
-                self.dirty.remove(&(cx, cz));
-                self.removed.push((cx, cz));
-            }
-        } else if id == ids.cb_play_block_update {
-            let mut r = PacketReader::new(body);
-            if let (Ok((x, y, z)), Ok(state)) = (r.position(), r.varint()) {
-                let old = self.world.block_state_at(x, y, z);
-                self.world.set_block(x, y, z, state as u32);
-                self.relight(x, y, z, old, state as u32);
-                self.block_updates += 1;
-                self.mark_dirty_around(x >> 4, z >> 4);
-                log::debug!("net: block_update ({x},{y},{z}) = {state}");
-            }
-        } else if crate::route_block_event(
-            id,
-            body,
-            ids,
-            self.block_event_types,
-            self.game_time.unwrap_or(0),
-            &mut self.world,
-        ) {
-            // `ClientboundBlockEventPacket` — a container's viewer count, which
-            // is what drives a chest's lid and a shulker box's lid. Which of
-            // the two (or neither — a bell's ring is also `b0 == 1`) is
-            // selected by the block entity's own type, exactly as vanilla's
-            // virtual `triggerEvent` call is.
-        } else if crate::route_block_entity_data(id, body, ids, &mut self.world) {
-            // `ClientboundBlockEntityDataPacket` (M25) — one block entity's
-            // update tag:
-            //
-            //     BlockPos.STREAM_CODEC                       // packed long
-            //     ByteBufCodecs.registry(BLOCK_ENTITY_TYPE)   // VarInt raw id
-            //     ByteBufCodecs.TRUSTED_COMPOUND_TAG          // network NBT
-            //
-            // `registry(...)` writes the id **raw**, like the dimension holder
-            // M16 had to correct — not the `id + 1` inline scheme.
-        } else if id == ids.cb_play_section_blocks_update {
-            // Multi-block change within one 16³ section — what the server
-            // sends for a `/fill`, an explosion, a piston, or a growing tree.
-            // Without this, any edit to an already-loaded chunk is invisible:
-            // single-block edits arrive as `block_update`, everything else
-            // arrives here.
-            //
-            // Body (ClientboundSectionBlocksUpdatePacket): a packed section
-            // position long, a VarInt count, then one VarLong per change
-            // holding `stateId << 12 | posInSection`.
-            let mut r = PacketReader::new(body);
-            if let (Ok(section), Ok(count)) = (r.u64(), r.varint()) {
-                let (sx, sy, sz) = unpack_section_pos(section);
-                let mut applied = 0;
-                for _ in 0..count.max(0) {
-                    let Ok(packed) = r.varlong() else { break };
-                    let packed = packed as u64;
-                    let state = (packed >> 12) as u32;
-                    let (ox, oy, oz) = unpack_section_offset((packed & 4095) as i32);
-                    let (x, y, z) = (sx * 16 + ox, sy * 16 + oy, sz * 16 + oz);
-                    let old = self.world.block_state_at(x, y, z);
-                    self.world.set_block(x, y, z, state);
-                    self.relight(x, y, z, old, state);
-                    applied += 1;
-                }
-                self.block_updates += applied;
-                self.mark_dirty_around(sx, sz);
-                log::debug!("net: section_blocks_update ({sx},{sy},{sz}) × {applied}");
-            }
-        } else if id == ids.cb_play_set_time {
-            // 26.x replaced the old `(worldAge, timeOfDay)` pair with a game
-            // time plus a map of per-clock states — the day/night cycle is now
-            // a timeline over a registered `WorldClock`, not a hard-coded
-            // formula. Body: `i64 gameTime`, then a VarInt-counted map of
-            // `Holder<WorldClock>` → `{VarLong totalTicks, f32 partial,
-            // f32 rate}`.
-            //
-            // `MinecraftServer.forceGameTimeSynchronization` broadcasts
-            // `SetTime(gameTime, Map.of())` every 20 ticks with an *empty* map;
-            // the client is expected to run each stored clock forward itself
-            // (`ClientClockManager.tick`). Only a real change (join, `/time`
-            // set) carries an explicit clock state. Holding the last total on
-            // an empty map — the previous behaviour — froze the celestials.
-            let mut r = PacketReader::new(body);
-            if let (Ok(game_time), Ok(count)) = (r.i64(), r.varint()) {
-                // A vanilla server sends BOTH the overworld and the_end
-                // clocks, so entries are matched by id — the key is a raw
-                // registry id (`ByteBufCodecs.holderRegistry` writes it plain;
-                // the `id + 1` / direct-holder scheme belongs to a different
-                // codec).
-                let mut entries: Vec<(i32, i64, f32, f32)> = Vec::new();
-                for _ in 0..count.max(0) {
-                    let (holder, total, partial, rate) =
-                        (r.varint(), r.varlong(), r.f32(), r.f32());
-                    let (Ok(holder), Ok(total), Ok(partial), Ok(rate)) =
-                        (holder, total, partial, rate)
-                    else {
-                        break;
-                    };
-                    entries.push((holder, total, partial, rate));
-                }
-                // `ClientLevel.setGameTime`: the server's game time is
-                // authoritative. The per-tick local increment continues from
-                // here, and because this re-anchors `game_time` (and the clock's
-                // `last_game_time` via the advance below) the same client tick's
-                // local `+1` is not double-counted.
-                self.game_time = Some(game_time);
-                self.clocks.handle_updates(game_time, &entries);
-                // Use the ported clock's total once it exists; before any real
-                // clock state, fall back to `gameTime` (best-effort for a
-                // server that never registers one).
-                self.day_ticks = Some(
-                    match self.overworld_clock_id.and_then(|id| self.clocks.peek(id)) {
-                        Some(clock) => clock.total,
-                        None => game_time,
-                    },
-                );
-                log::debug!(
-                    "net: set_time game={game_time} clocks={count} day_ticks={:?}",
-                    self.day_ticks
-                );
-            }
-        } else if id == ids.cb_play_explode {
-            // M68 decoded the physics prefix; M162 walks the tail for the
-            // sound. **Two entry points on purpose**: `read_explode` cannot
-            // fail on tail content, so an untranscribed particle type costs
-            // the sound and never the knockback.
-            match crate::motion::read_explode(body) {
-                Ok((e, _used)) => {
-                    // Vanilla's order, and it is the order of the RNG draws as
-                    // much as of the effects: `handleExplosion` plays the
-                    // sound FIRST (three draws off `Level.random`), then the
-                    // particle, then the tracker, and applies the knockback
-                    // LAST (`ClientPacketListener.java:1357-1375`).
-                    self.queue_explosion_sound(body, &e);
-                    self.apply_explode(&e);
-                }
-                Err(err) => log::debug!("net: explode decode: {err}"),
-            }
-        } else if id == ids.cb_play_set_entity_motion {
-            match crate::motion::read_set_entity_motion(body) {
-                Ok(m) => self.apply_set_entity_motion(&m),
-                Err(err) => log::debug!("net: set_entity_motion decode: {err}"),
-            }
-        } else if id == ids.cb_play_move_vehicle {
-            match crate::motion::read_move_vehicle(body) {
-                Ok(v) => self.apply_move_vehicle(&v),
-                Err(err) => log::debug!("net: move_vehicle decode: {err}"),
-            }
-        } else if Some(id) == ids.cb_play_level_particles
-            || Some(id) == ids.cb_play_level_event
-        {
-            // M37. Both packets feed the same queue; the renderer drains it
-            // and owns the actual spawning, because the particle system needs
-            // the block shapes and the RNG that live on that side.
-            let ev = if Some(id) == ids.cb_play_level_particles {
-                crate::route_level_particles(body, &self.particle_types)
-            } else {
-                crate::route_level_event(body)
-            };
-            if let Some(ev) = ev {
-                log::debug!("net: particle event {ev:?}");
-                self.particle_events.push(ev);
-            }
-            // M140 — the same packet also asks for a sound, and the two are
-            // independent: 2001 (a block breaking) is both, 1000 (a dispenser)
-            // is sound only, and 2000 (smoke) is particle only. Deriving one
-            // from the other would lose whichever the id does not have.
-            if Some(id) == ids.cb_play_level_event {
-                // M162 — the camera is resolved HERE, at packet time, because
-                // `handleLevelEvent` calls `globalLevelEvent` synchronously.
-                // See `route_level_event_sound`'s docs for why this seam and
-                // not the engine's.
-                let camera = Self::camera_eye(&self.player, self.spawned);
-                if let Some(s) = crate::route_level_event_sound(body, camera) {
-                    self.push_sound_event(s);
-                }
-            }
-        } else if id == ids.cb_play_sound
-            || id == ids.cb_play_sound_entity
-            || id == ids.cb_play_stop_sound
-        {
-            // M63 — decode only. The three bodies differ enough that the kind
-            // has to come from the id; deriving it from the body would mean
-            // guessing between a var-int entity id and a fixed i32 position.
-            let kind = if id == ids.cb_play_sound {
-                crate::SoundPacketKind::Positioned
-            } else if id == ids.cb_play_sound_entity {
-                crate::SoundPacketKind::OnEntity
-            } else {
-                crate::SoundPacketKind::Stop
-            };
-            if let Some(ev) = crate::route_sound(kind, body) {
-                log::debug!("net: sound event {ev:?}");
-                self.push_sound_event(ev);
-            }
-        } else if Some(id) == ids.cb_play_block_ack {
-            // Sequence ack — server confirms our predicted change. We don't
-            // predict yet (M3 applies the server's block_update), so this is
-            // just observed for the parity meter.
-            log::debug!("net: block_changed_ack");
-        } else if id == ids.cb_play_login {
-            self.apply_login_shape(body)?;
-            let p = PacketWriter::packet(self.ids.sb_play_player_loaded);
-            self.send(p)?;
-        } else if id == ids.cb_play_respawn {
-            self.apply_respawn(body)?;
-        } else if id == ids.cb_play_update_mob_effect {
-            self.visual_effects.apply_update(body);
-            // The same packet also carries any entity's haste / conduit power /
-            // mining fatigue, which change how long its swing runs (M19).
-            crate::apply_swing_effect(
-                body,
-                &mut self.world.entities,
-                self.swing_effect_ids,
-                true,
-                self.entity_classes.as_deref(),
-            );
-        } else if id == ids.cb_play_remove_mob_effect {
-            self.visual_effects.apply_remove(body);
-            crate::apply_swing_effect(
-                body,
-                &mut self.world.entities,
-                self.swing_effect_ids,
-                false,
-                self.entity_classes.as_deref(),
-            );
-        } else if id == ids.cb_play_add_entity {
-            let mut r = PacketReader::new(body);
-            if let Ok((eid, type_id)) = crate::read_add_entity(&mut r, &mut self.world) {
-                self.post_add_entity_sound_instance(eid, type_id);
-            }
-        } else if id == ids.cb_play_remove_entities {
-            let mut r = PacketReader::new(body);
-            if let Ok(n) = r.count("remove entities", 1) {
-                for _ in 0..n {
-                    if let Ok(eid) = r.varint() {
-                        self.world.entities.remove(eid);
-                        // M68: a removed entity cannot still be riding or be
-                        // ridden. Leaving the seat behind would strand the
-                        // local player "mounted" on a vehicle that no longer
-                        // exists, which suppresses its physics forever.
-                        self.mounts.remove_entity(eid);
-                    }
-                }
-            }
-        } else if id == ids.cb_play_move_entity_pos {
-            let mut r = PacketReader::new(body);
-            if let Ok((eid, dx, dy, dz)) = read_move_delta(&mut r) {
-                if let Some(e) = self.world.entities.get_mut(eid) {
-                    e.nudge(dx, dy, dz);
-                }
-            }
-        } else if id == ids.cb_play_move_entity_pos_rot {
-            let mut r = PacketReader::new(body);
-            let parse = (|| -> rewo_proto::Result<(i32, f64, f64, f64, f32, f32)> {
-                let (eid, dx, dy, dz) = read_move_delta(&mut r)?;
-                let yaw = packed_degrees(r.i8()?);
-                let pitch = packed_degrees(r.i8()?);
-                Ok((eid, dx, dy, dz, yaw, pitch))
-            })();
-            if let Ok((eid, dx, dy, dz, yaw, pitch)) = parse {
-                if let Some(e) = self.world.entities.get_mut(eid) {
-                    e.nudge(dx, dy, dz);
-                    e.set_rot(yaw, pitch);
-                }
-            }
-        } else if id == ids.cb_play_move_entity_rot {
-            let mut r = PacketReader::new(body);
-            let parse = (|| -> rewo_proto::Result<(i32, f32, f32)> {
-                Ok((
-                    r.varint()?,
-                    packed_degrees(r.i8()?),
-                    packed_degrees(r.i8()?),
-                ))
-            })();
-            if let Ok((eid, yaw, pitch)) = parse {
-                if let Some(e) = self.world.entities.get_mut(eid) {
-                    e.set_rot(yaw, pitch);
-                }
-            }
-        } else if id == ids.cb_play_entity_position_sync {
-            // varint id, PositionMoveRotation {pos 3×f64, vel 3×f64, yaw
-            // f32, pitch f32}, bool on_ground.
-            let mut r = PacketReader::new(body);
-            let parse = (|| -> rewo_proto::Result<(i32, [f64; 3], f32, f32)> {
-                let eid = r.varint()?;
-                let pos = [r.f64()?, r.f64()?, r.f64()?];
-                let _vel = [r.f64()?, r.f64()?, r.f64()?];
-                Ok((eid, pos, r.f32()?, r.f32()?))
-            })();
-            if let Ok((eid, pos, yaw, pitch)) = parse {
-                if let Some(e) = self.world.entities.get_mut(eid) {
-                    e.set_target(pos[0], pos[1], pos[2]);
-                    e.set_rot(yaw, pitch);
-                }
-            }
-        } else if id == ids.cb_play_teleport_entity {
-            // varint id, PositionMoveRotation, i32 relative-bits, bool
-            // on_ground — same Relative order as the player teleport
-            // (X=0 Y=1 Z=2 Y_ROT=3 X_ROT=4; velocity deltas 5..7 ignored).
-            let mut r = PacketReader::new(body);
-            let parse = (|| -> rewo_proto::Result<(i32, [f64; 3], f32, f32, i32)> {
-                let eid = r.varint()?;
-                let pos = [r.f64()?, r.f64()?, r.f64()?];
-                let _vel = [r.f64()?, r.f64()?, r.f64()?];
-                let yaw = r.f32()?;
-                let pitch = r.f32()?;
-                Ok((eid, pos, yaw, pitch, r.i32()?))
-            })();
-            if let Ok((eid, pos, yaw, pitch, relatives)) = parse {
-                if let Some(e) = self.world.entities.get_mut(eid) {
-                    let rel = |bit: i32| relatives & (1 << bit) != 0;
-                    let (tx, ty, tz) = (
-                        if rel(0) { e.x + pos[0] } else { pos[0] },
-                        if rel(1) { e.y + pos[1] } else { pos[1] },
-                        if rel(2) { e.z + pos[2] } else { pos[2] },
-                    );
-                    e.set_target(tx, ty, tz);
-                    let yaw = if rel(3) { e.yaw + yaw } else { yaw };
-                    let pitch = if rel(4) { e.pitch + pitch } else { pitch };
-                    e.set_rot(yaw, pitch);
-                }
-            }
-        } else if id == ids.cb_play_rotate_head {
-            // varint id, yHeadRot (packed-degree byte). The server steers the
-            // head toward nearby players, so this is what makes a mob watch you.
-            let mut r = PacketReader::new(body);
-            if let Ok(eid) = r.varint() {
-                if let Ok(b) = r.i8() {
-                    if let Some(e) = self.world.entities.get_mut(eid) {
-                        e.set_head_yaw(packed_degrees(b));
-                    }
-                }
-            }
-        } else if crate::route_set_entity_data(
-            id,
-            body,
-            ids,
-            &mut self.world.entities,
-            crate::MetaKinds {
-                allay: self.allay_type_id,
-                pillager: self.pillager_type_id,
-                sheep: self.sheep_type_id,
-                creaking: self.creaking_type_id,
-                player: self.player_type_id,
-                bee: self.bee_type_id,
-                guardian: self.guardian_type_id,
-                elder_guardian: self.elder_guardian_type_id,
-                variant_kinds: self.variant_type_ids,
-                classes: self.entity_classes.as_deref(),
-                components: self.swing_data.as_ref().map(|d| d.components),
-                // The nametag's language table. Resolving here rather than at
-                // render is what keeps `EntityDraw::name` a borrowed `&str`;
-                // see `MetaKinds::lang`.
-                lang: self.lang.as_deref(),
-            },
-        ) {
-            // M141e: and the local player's own, which the router cannot store.
-            // `handleSetEntityData` is `if (entity != null)` and vanilla's
-            // local player IS in the level, so the server's metadata for you
-            // is processed like anyone else's — but `EntityTable` has no row
-            // for you, so the router returns early on your id and drops it.
-            // Same asymmetry M73 hit with attributes, same fix: decode the
-            // body a second time when it names the camera entity.
-            self.capture_local_metadata(body);
-            // Entity metadata (custom name, pose, gesture state, cube size, and
-            // the polymorphic index-16 BOOLEAN → Allay dancing / baby). The
-            // Allay dance counters then advance in `tick_lerp`.
-            //
-            // M82: and the local player's own, which the line above cannot
-            // store for the reason M73 records two arms down — the entity
-            // table has no row for you. `ServerEntity.sendChanges` broadcasts
-            // through `sendToTrackingPlayersAndSelf`, so the packet really
-            // does arrive.
-            crate::apply_local_player_score(body, self.player_id, &mut self.score);
-        } else if crate::route_damage_event(
-            id,
-            body,
-            ids,
-            &mut self.world.entities,
-            self.entity_classes.as_deref(),
-        ) {
-            // M21: the damage response — arms the hurt clock (red overlay) and
-            // kicks the walk animation, for a tracked living entity only.
-            //
-            // M168: and the local player's own `invulnerableTime = 20`
-            // (`LivingEntity.handleDamageEvent`, `:2044-2048`), which the
-            // line above cannot store for M73's reason — the table has no
-            // row for you. The body opens with the entity id (VarInt).
-            let mut r = PacketReader::new(body);
-            if let (Ok(eid), Some(me)) = (r.varint(), self.player_id) {
-                if eid == me {
-                    self.hud.local_hurt.damage_event();
-                }
-            }
-        } else if crate::route_hurt_animation(
-            id,
-            body,
-            ids,
-            &mut self.world.entities,
-            self.entity_classes.as_deref(),
-            self.player_type_id,
-            self.player_id,
-        ) {
-            // M81: `damage_event`'s twin. It arms the same clock and, for a
-            // player only, stores the yaw the camera tilt leans away from —
-            // the one thing `damage_event` never carries.
-        } else if crate::route_player_combat_kill(
-            id,
-            body,
-            ids,
-            self.player_id,
-            &mut self.death,
-        ) {
-            // M82: you died. The id is always your own, so this is resolved
-            // against the local-player door and never against the entity
-            // table — `REWO_PLAN.md` §0.0 gotcha 13.
-            //
-            // `handlePlayerCombatKill`'s own branch, transcribed: with the
-            // death screen suppressed the client respawns *immediately* and
-            // never records a death at all. Nothing downstream then has to
-            // know the rule.
-            match crate::death_action(self.death.take(), self.game_state.show_death_screen()) {
-                crate::DeathAction::ShowScreen(kill) => self.death = Some(kill),
-                crate::DeathAction::RespawnNow => self.perform_respawn()?,
-                crate::DeathAction::None => {}
-            }
-        } else if crate::route_award_stats(id, body, ids, &mut self.awarded_stats) {
-            // M84: your own statistics, in reply to a `REQUEST_STATS` this
-            // client sent when the screen opened. `setValue`, not `increment`,
-            // and the map is never cleared — see `StatsCounter::apply`.
-            if let Some(pairs) = self.awarded_stats.take() {
-                self.stats.apply(&pairs);
-            }
-        } else if crate::route_block_destruction(
-            id,
-            body,
-            ids,
-            &mut self.world.destruction,
-            self.game_time.unwrap_or(0),
-        ) {
-            // M81: somebody else's mining progress. The stage byte is
-            // unsigned, and anything outside 0..10 retires the record.
-        } else if crate::route_take_item_entity(
-            id,
-            body,
-            ids,
-            &mut self.world,
-            crate::TakeItemKinds {
-                local_player: local_collector,
-                ..self.take_item_kinds
-            },
-        ) {
-            // M81: the pickup animation, and the *client-side* removal of the
-            // collected entity — this packet is not a heads-up that a
-            // `remove_entities` is coming, it is the removal.
-        } else if crate::route_update_attributes(
-            id,
-            body,
-            ids,
-            &mut self.world.entities,
-            self.entity_classes.as_deref(),
-            self.entity_types.as_deref(),
-            self.attribute_registry.as_deref(),
-        ) {
-            // M52: entity attribute snapshots — max health and the rest. Each
-            // snapshot replaces one attribute's base + modifiers, filtered by
-            // the entity type's `AttributeSupplier`.
-            //
-            // M73: and the local player's own, which the line above cannot
-            // store. `handleUpdateAttributes` looks the entity up in the level
-            // and the local player is in it; Rewo's `EntityTable` holds only
-            // entities the server sent an `add_entity` for, and it never sends
-            // one for you. So the same body is decoded a second time and kept
-            // beside the table when it names the camera entity — without it
-            // `entity_interaction_range` would be permanently the registered
-            // default and a creative player's crosshair would stop two blocks
-            // short.
-            self.capture_local_attributes(body);
-        } else if crate::route_inventory(
-            id,
-            body,
-            ids,
-            self.swing_data.as_ref().map(|d| d.components),
-            &mut self.inventory,
-            &mut self.menus,
-            Some(&mut self.stack_details),
-        ) {
-            // M34: the player's own inventory — contents, one slot, or the
-            // server moving the selection. M87: or an open container's, since
-            // the same two packet ids address either menu.
-        } else if crate::route_tags(id, body, ids, &mut self.tags) {
-            // M69 — a datapack reload's `update_tags`. The join-time copy
-            // arrives during configuration and is applied there; this arm is
-            // the mid-session one. Per-registry wholesale replacement, so a
-            // body that fails to decode is dropped whole rather than
-            // half-applied.
-        } else if crate::route_view_area(id, body, ids, &mut self.view_area) {
-            // M67 — the server's view area. Decode and state only; nothing
-            // evicts a column or gates a tick on it yet.
-        } else if crate::route_border(id, body, ids, &mut self.border) {
-        } else if crate::route_ticking(id, body, ids, &mut self.ticking) {
-            // M74 — `/tick rate`, `/tick freeze`, `/tick step`. Decode and
-            // state only; the 20 Hz loop does not consult it yet.
-        } else if crate::route_session(id, body, ids, &mut self.session) {
-            // M78 — the brand, the MOTD, the game rules, the cookie jar, the
-            // two vestigial combat packets, and disguised chat.
-            //
-            // The chat lines are drained here rather than written by the router
-            // so `crate::session` needs no reference to this type. They join
-            // the same log `system_chat` and `player_chat` push to, and at the
-            // same fidelity: the *raw* message, not the decoration, because
-            // decorating needs the `minecraft:chat_type` registry Rewo does not
-            // parse.
-            // `handleDisguisedChatMessage` adds it with `GuiMessageTag.system()`
-            // and a null signature — it is not a signed player message, so it
-            // can never be the target of a `delete_chat`.
-            for chat in self.session.take_chat() {
-                // M127: decorated, as `handleDisguisedChatMessage` does. A
-                // `/say` therefore reads `[Server] hi` rather than `hi`.
-                let decorated = self.decorate_chat(&chat.message, &chat.bound);
-                let spans = self.chat_component_spans(&decorated);
-                let line = rewo_world::chat_style::plain_text(&spans);
-                if line.is_empty() {
-                    continue;
-                }
-                self.chat_log.push(line);
-                self.chat_events.push(crate::chat_wire::ChatEvent::Message {
-                    text: spans,
-                    signature: None,
-                    tag: Some(rewo_world::chat::MessageTag::SYSTEM),
-                    source: rewo_world::chat::MessageSource::Player,
-                });
-            }
-        } else if crate::route_waypoint(id, body, ids, &mut self.waypoints) {
-            // M83 — the locator bar. `handleWaypoint` is two lines: the thread
-            // check and `packet.apply(this.waypointManager)`. There is no
-            // gamerule check and no range check on this side; the server has
-            // already decided both, and the client draws whatever it was told
-            // to track. See `crate::waypoints`.
-        } else if crate::route_hud_state(id, body, ids, &mut self.hud) {
-            // M79 — the title overlay, the XP gauge and the item-cooldown map.
-            // Every one of the seven writes state a renderer reads; none of
-            // them answers the server. See `crate::hud_state`.
-        } else if Some(id) == ids.cb_play_cookie_request {
-            // M78 closes a hole it would otherwise have shipped around: the
-            // *play-state* `cookie_request` was answered only by the M1-era
-            // `Connection::run_play` harness, never by this session, so the
-            // real client left it unanswered entirely. `store_cookie` fills a
-            // jar whose only observable consequence is this reply, and a jar
-            // nothing reads is not a feature.
-            //
-            // `handleRequestCookie` — `send(new ServerboundCookieResponsePacket(
-            // key, serverCookies.get(key)))`. A key we hold answers with its
-            // payload; one we do not answers with nothing, which is the
-            // behaviour the whole client had before M78.
-            let key = PacketReader::new(body).identifier().unwrap_or_default();
-            if let Some(resp_id) = ids.sb_play_cookie_response {
-                let payload = self.session.cookie(&key).map(<[u8]>::to_vec);
-                let resp =
-                    crate::session::write_cookie_response(resp_id, &key, payload.as_deref());
-                self.send(resp)?;
-            }
-        } else if crate::route_client_state(
-            id,
-            body,
-            ids,
-            &mut self.client_state,
-            &self.world.entities,
-            self.player_id,
-        ) {
-            // M74 — difficulty, the camera's target, and the container-close
-            // latch. Decode and state; the app reads the camera and the latch.
-            //
-            // M87 hangs the menu close off this arm rather than off
-            // `route_menu`, because this chain is a sequence of `else if`s and
-            // `container_close` already belongs to this seam. A second seam
-            // claiming the same id would either steal it from M74's counter or
-            // never see it, depending only on which arm came first.
-            if id == ids.cb_play_container_close {
-                self.menus.apply_close();
-            }
-        } else if crate::route_menu(id, body, ids, &mut self.menus) {
-            // M87 — `open_screen` and `container_set_data`. State only so far:
-            // the menu's own item slots arrive when `Inventory` becomes a
-            // layout-driven menu, and nothing renders it yet.
-        } else if id == ids.cb_play_merchant_offers {
-            // M93u. The coverage doc filed this as class C; it needed nothing
-            // Rewo had not already built — `ItemStack` (M34/M41) and the
-            // `TypedDataComponent` walker M52e wrote for `can_place_on`.
-            // The component ids ride on `swing_data`, which is where every
-            // other `read_optional` caller finds them; with no registry yet
-            // there is nothing to decode a stack against, so the packet is
-            // dropped rather than guessed at.
-            match self
-                .swing_data
-                .as_ref()
-                .map(|d| d.components)
-                .ok_or_else(|| "merchant_offers: no component registry".to_string())
-                .and_then(|ids| crate::merchant::parse(body, ids))
-            {
-                Ok(m) => self.merchant = Some(m),
-                // A short or malformed body is dropped whole rather than
-                // applied in part: half a trade list is worse than none, since
-                // the index a click sends addresses the list by position.
-                Err(e) => log::warn!("net: {e}"),
-            }
-        } else if id == ids.cb_play_open_book {
-            // M171. `ClientboundOpenBookPacket(InteractionHand)` — one
-            // enum ordinal. The pages live on the held item's
-            // `written_book_content` (captured in `StackComponents`), so
-            // the app resolves the stack; here we only record the hand.
-            let mut r = PacketReader::new(body);
-            match r.varint() {
-                Ok(hand) => self.open_book_request = Some(hand),
-                Err(e) => log::debug!("net: open_book decode: {e}"),
-            }
-        } else if id == ids.cb_play_open_sign_editor {
-            // M174. `ClientboundOpenSignEditorPacket` — one packed BlockPos
-            // (8 bytes) then one bool. No var-ints anywhere in the body.
-            let mut r = PacketReader::new(body);
-            match (|| -> rewo_proto::Result<((i32, i32, i32), bool)> {
-                Ok((r.position()?, r.u8()? != 0))
-            })() {
-                Ok((pos, front)) => self.open_sign_editor_request = Some((pos, front)),
-                Err(e) => log::debug!("net: open_sign_editor decode: {e}"),
-            }
-        } else if id == ids.cb_play_recipe_book_add
-            || id == ids.cb_play_recipe_book_remove
-            || id == ids.cb_play_recipe_book_settings
-            || id == ids.cb_play_place_ghost_recipe
-        {
-            // M93y. The BOOK is a subsystem Rewo does not have — tabs, search,
-            // filtering, ghost placement — and this is the decode half only.
-            // It is dispatched rather than left resolved-but-ignored because
-            // that class is the one `REWO_PACKET_COVERAGE.md` keeps at zero: a
-            // packet whose id resolves and whose body is dropped reads as
-            // handled to every grep.
-            self.apply_recipe_book(id, body);
-        } else if id == ids.cb_play_update_recipes {
-            // M152. Unlike the four above this one IS consumed: its
-            // `smithing_base` / `smithing_template` / `smithing_addition` sets
-            // are exactly what `SmithingMenu.canMoveIntoInputSlots` tests, and
-            // that guard was the only reason smithing stayed
-            // `QuickMove::Unimplemented` after M93 took the other seven.
-            //
-            // The display registries are BUILT-IN, so they come from the report
-            // rather than the wire (M92's rule) and are needed for the
-            // stonecutter half's `SlotDisplay`s. Their absence is a warn rather
-            // than a decode error: it is a Rewo-side setup failure, not a
-            // malformed packet, and the two should not report the same way.
-            match self.recipe_display_ids.as_ref() {
-                Some(display_ids) => {
-                    match crate::recipe_book::parse_update_recipes(body, display_ids) {
-                        // Replace, never merge — see the field's docs.
-                        Ok(u) => self.recipes = Some(u),
-                        Err(e) => log::warn!("net: {e}"),
-                    }
-                }
-                None => log::warn!("net: update_recipes with no display registries"),
-            }
-        } else if id == ids.cb_play_update_advancements {
-            // M177. The whole feed — reset / added / removed / progress /
-            // show. Applied through `ClientAdvancements`, whose tree insertion
-            // runs in parent-before-child passes because a server may send a
-            // child before its parent inside one packet. A malformed body is
-            // dropped whole: half a tree is worse than a stale one.
-            match crate::advancements::parse_update(body) {
-                Ok(u) => self.advancements.apply_update(u),
-                Err(e) => log::warn!("net: {e}"),
-            }
-        } else if id == ids.cb_play_select_advancements_tab {
-            // M177. `handleSelectAdvancementsTab` resolves the id against the
-            // tree and NEVER tells the server: null clears the selection, an
-            // unknown id resolves to null and ALSO clears it.
-            match crate::advancements::parse_select_tab(body) {
-                Ok(Some(tab)) => {
-                    let resolved = self.advancements.node(&tab).map(|_| tab.clone());
-                    self.advancements.select_tab(resolved.as_deref());
-                }
-                Ok(None) => {
-                    self.advancements.select_tab(None);
-                }
-                Err(e) => log::warn!("net: {e}"),
-            }
-        } else if id == ids.cb_play_game_event {
-            // M33 took the four weather ids; M71 took the other ten. One
-            // decode feeds the weather levels, the client game state and the
-            // local sound queue — see `apply_game_event`.
-            self.apply_game_event(body);
-        } else if id == ids.cb_play_player_abilities {
-            // M75. `handlePlayerAbilities` is six assignments and nothing else —
-            // no derived state, no packet in reply. In particular it does NOT
-            // touch `may_build` (absent from the wire) and does NOT feed
-            // `walkingSpeed` into the movement speed.
-            match crate::abilities::PlayerAbilities::parse(body) {
-                Ok(p) => p.apply_to(&mut self.abilities),
-                // A short body is the one case vanilla's reader would throw on.
-                // Dropping it leaves the abilities we already had, which is
-                // closer to "the packet never arrived" than a partial apply.
-                Err(e) => log::warn!("net: player_abilities: {e}"),
-            }
-        } else if crate::route_animate(
-            id,
-            body,
-            ids,
-            &mut self.world.entities,
-            self.entity_classes.as_deref(),
-        ) {
-            // Combat arm swings (`ClientboundAnimatePacket` actions 0 / 3) — the
-            // swing clock then advances in `EntityTable::tick_lerp`.
-        } else if crate::route_set_equipment(
-            id,
-            body,
-            ids,
-            &mut self.world.entities,
-            self.swing_data.as_ref(),
-            self.entity_classes.as_deref(),
-        ) {
-            // Held items: the swing's duration + animation type come from them.
-        } else if crate::route_entity_event(
-            id,
-            body,
-            ids,
-            &mut self.world.entities,
-            self.warden_type_id,
-            self.armadillo_type_id,
-            self.ticks as i64,
-            self.entity_classes.as_deref(),
-        ) {
-            // Model-visible entity events (warden attack/sonic boom, armadillo
-            // peek) were stamped with the current tick — the renderer measures
-            // the rig's elapsed time from it. `self.ticks` is the in-progress
-            // tick (it increments at the end of `tick()`, after this drain).
-            //
-            // M141g: and the two SOUND events in the same switch. They are
-            // handled here rather than inside `route_entity_event` because
-            // that seam writes the entity table and these push a sound, and
-            // the body is two fixed fields either way.
-            self.entity_event_sound(body);
-        } else if crate::route_move_minecart_along_track(
-            id,
-            body,
-            ids,
-            &mut self.world.entities,
-            self.entity_classes.as_deref(),
-        ) {
-            // M77. An experimental-movement minecart's ONLY movement channel —
-            // `ServerEntity.sendChanges` sends it instead of `move_entity_pos`
-            // / `teleport_entity` / `entity_position_sync`, so the generic
-            // 3-tick lerp is never armed for one of these carts. The schedule
-            // is traversed in `EntityTable::tick_lerp`, before the riders are
-            // placed; see `rewo_world::minecart` for why both interpolations
-            // stay live.
-        } else if crate::route_set_entity_link(
-            id,
-            body,
-            ids,
-            &mut self.world.entities,
-            self.entity_classes.as_deref(),
-        ) {
-            // M77. The leash holder id, stored and not drawn.
-        } else if crate::route_projectile_power(
-            id,
-            body,
-            ids,
-            &mut self.world.entities,
-            self.entity_classes.as_deref(),
-        ) {
-            // M77. `AbstractHurtingProjectile.accelerationPower`.
-        } else if id == ids.cb_play_set_passengers {
-            // Riding (M70). Consumed for `Entity.isVehicle()`, which
-            // suppresses a ridden entity's floating label. It does **not** yet
-            // move a passenger onto its vehicle's position — that is the
-            // separate gap `REWO_PACKET_COVERAGE.md` records against this
-            // packet, and this milestone does not close it.
-            crate::route_set_passengers(id, body, ids, &mut self.world.entities);
-            // Riding, the physics half (M68). Disjoint from the label half
-            // above and deliberately a second read of the same slice: M70
-            // wants the riding graph, M68 wants the local player's own mount
-            // state, and folding either into the other's walk would couple two
-            // milestones that have no reason to share a decode.
-            match crate::motion::read_set_passengers(body) {
-                Ok(p) => self.apply_set_passengers(&p),
-                Err(err) => log::debug!("net: set_passengers decode: {err}"),
-            }
-        } else if id == ids.cb_play_set_player_team {
-            // Scoreboard teams (M62). A body we cannot decode is dropped
-            // whole rather than half-applied: the packet's three sections are
-            // positional, so a short read means the roster we did get is not
-            // the roster the server sent.
-            match crate::teams::parse_set_player_team(body) {
-                Ok(p) => {
-                    self.scoreboard.teams.apply(&p);
-                }
-                Err(e) => log::debug!("play: set_player_team parse: {e}"),
-            }
-        } else if id == ids.cb_play_set_objective {
-            // M65 — the scoreboard's other half. Every arm below drops a body
-            // it cannot decode whole rather than half-applying it, for the
-            // same reason `set_player_team` does: these packets are
-            // positional, so a short read means the values we did get are not
-            // the values the server sent.
-            match crate::scoreboard::parse_set_objective(body, self.number_formats) {
-                Ok(p) => {
-                    self.scoreboard.apply_set_objective(&p);
-                }
-                Err(e) => log::debug!("play: set_objective parse: {e}"),
-            }
-        } else if id == ids.cb_play_set_score {
-            match crate::scoreboard::parse_set_score(body, self.number_formats) {
-                Ok(p) => {
-                    self.scoreboard.apply_set_score(&p);
-                }
-                Err(e) => log::debug!("play: set_score parse: {e}"),
-            }
-        } else if id == ids.cb_play_reset_score {
-            match crate::scoreboard::parse_reset_score(body) {
-                Ok(p) => {
-                    self.scoreboard.apply_reset_score(&p);
-                }
-                Err(e) => log::debug!("play: reset_score parse: {e}"),
-            }
-        } else if id == ids.cb_play_set_display_objective {
-            match crate::scoreboard::parse_set_display_objective(body) {
-                Ok(p) => self.scoreboard.apply_set_display_objective(&p),
-                Err(e) => log::debug!("play: set_display_objective parse: {e}"),
-            }
-        } else if id == ids.cb_play_boss_event {
-            match crate::boss_bar::parse_boss_event(body) {
-                Ok(p) => {
-                    self.boss_bars.apply(&p);
-                }
-                Err(e) => log::debug!("play: boss_event parse: {e}"),
-            }
-        } else if id == ids.cb_play_tab_list {
-            match crate::tab_list_text::parse_tab_list(body) {
-                Ok(p) => self.tab_list_text.apply(&p),
-                Err(e) => log::debug!("play: tab_list parse: {e}"),
-            }
-        } else if id == ids.cb_play_player_info_update {
-            self.apply_player_info(body);
-        } else if id == ids.cb_play_player_info_remove {
-            let mut r = PacketReader::new(body);
-            if let Ok(n) = r.count("player info removes", 16) {
-                for _ in 0..n {
-                    if let Ok(uuid) = r.uuid() {
-                        self.world.entities.remove_name(uuid);
-                        // A departed player's ping is not stale, it is gone --
-                        // keeping it would let the tab list quote a number for
-                        // someone who left. Vanilla drops the whole
-                        // `PlayerInfo`, so the mode and the list order go with
-                        // it. The TEAM does not: `handlePlayerInfoRemove`
-                        // never touches the scoreboard, and a team outlives
-                        // its members leaving.
-                        self.latency.remove(&uuid);
-                        self.gamemodes.remove(&uuid);
-                        self.tab_list_orders.remove(&uuid);
-                        // M151 — `handlePlayerInfoRemove` drops the whole
-                        // `PlayerInfo` *and* removes it from `listedPlayers`
-                        // (`ClientPacketListener.java:1995`).
-                        self.tab_players.forget(uuid);
-                    }
-                }
-            }
-        } else if Some(id) == ids.cb_play_set_health {
-            let mut r = PacketReader::new(body);
-            if let Ok(h) = r.f32() {
-                // `handleSetHealth` is `player.hurtTo(health)` then the two
-                // food setters (`ClientPacketListener.java:1235-1240`); the
-                // hurt window is armed against the health we HAD (M168).
-                self.hud.local_hurt.hurt_to(self.health, h);
-                self.health = h;
-                // food (VarInt) + saturation (f32) follow.
-                if let Ok(f) = r.varint() {
-                    self.food = f;
-                    if let Ok(s) = r.f32() {
-                        self.saturation = s;
-                    }
-                }
-                // `Player.isDeadOrDying()`'s health half. **This used to send
-                // `PERFORM_RESPAWN` from here** (M3, so the headless bot could
-                // recover), and that is not what a vanilla client does:
-                // `handleSetHealth` assigns the three fields and nothing else.
-                // Respawning is a *screen* action, so M82 moved it to
-                // `player_combat_kill` — which is where vanilla decides
-                // between the death screen and an immediate respawn — and left
-                // the flag here. A harness with no screen respawns by draining
-                // [`Self::take_death`], which is the same branch vanilla takes
-                // when `shouldShowDeathScreen()` is false.
-                self.dead = h <= 0.0;
-            }
-        } else if Some(id) == ids.cb_play_system_chat {
-            let mut r = PacketReader::new(body);
-            if let Ok(packet) = crate::chat_wire::SystemChat::read(&mut r) {
-                // `handleSystemChat` branches on `overlay`: true goes to
-                // `handleOverlay`, which is `gui.setOverlayMessage` — the
-                // ACTION BAR, not the chat log. Reading the component and
-                // dropping the bool (which is what this arm used to do) put
-                // every `/title actionbar` line into chat.
-                // M125: resolved here, where the language table is, rather
-                // than at the wire. `handleSystemChat` renders the component,
-                // and a component whose contents are a `TranslatableContents`
-                // renders as its translation — so flattening before the lookup
-                // put `multiplayer.player.joined` on screen where vanilla puts
-                // "Steve joined the game".
-                let spans = self.chat_component_spans(&packet.content);
-                let content = rewo_world::chat_style::plain_text(&spans);
-                if packet.overlay {
-                    // The action bar draws one flat string, so the spans stop
-                    // here rather than being threaded through a second render.
-                    self.chat_events
-                        .push(crate::chat_wire::ChatEvent::Overlay(content));
-                } else if !content.is_empty() {
-                    self.chat_log.push(content);
-                    self.chat_events.push(crate::chat_wire::ChatEvent::Message {
-                        text: spans,
-                        signature: None,
-                        tag: Some(rewo_world::chat::MessageTag::SYSTEM_SINGLE_PLAYER),
-                        source: rewo_world::chat::MessageSource::SystemServer,
-                    });
-                }
-            }
-        } else if Some(id) == ids.cb_play_player_chat {
-            let mut r = PacketReader::new(body);
-            match crate::chat_wire::PlayerChat::read(&mut r) {
-                Ok(chat) => {
-                    // `MessageSignatureCache.push` runs on receipt and BEFORE
-                    // anything decides whether to show the message, because a
-                    // later `delete_chat` may address this signature by the
-                    // index this push assigns it. Feeding the cache only from
-                    // *displayed* messages would leave those indices pointing
-                    // at the wrong signatures.
-                    let last_seen: Vec<Box<crate::chat_wire::Signature>> = chat
-                        .body
-                        .last_seen
-                        .iter()
-                        .filter_map(|p| self.signature_cache.resolve(p))
-                        .collect();
-                    self.signature_cache
-                        .push(&last_seen, chat.signature.as_deref());
-                    let received = self.chat_clock_millis;
-                    // Bound before the `if let` on purpose: the two closures
-                    // borrow `self`, and an `if let` scrutinee's temporaries
-                    // live for the whole block, which would collide with the
-                    // `self.chat_log.push` inside it.
-                    let outcome = crate::chat_wire::show_message(
-                        &chat,
-                        received,
-                        &|content| self.decorate_chat(content, &chat.bound),
-                        &|tag| self.chat_component_text(tag),
-                    );
-                    if let crate::chat_wire::ChatOutcome::Shown { content, tag } = outcome {
-                        // M127: `content` is the DECORATED component now, so
-                        // the store gets `<Steve> hi` rather than `hi`.
-                        //
-                        // Signed chat is a plain `String` on the wire, not a
-                        // component — but vanilla still renders it through
-                        // `StringDecomposer.iterateFormatted`, so a server's
-                        // `§e` is a colour and not two glyphs of garbage. That
-                        // survives the move to a component path: the content is
-                        // wrapped as `Component.literal`, and `chat_style`'s
-                        // walk runs `push_legacy` over a literal's text.
-                        let spans = self.chat_component_spans(&content);
-                        self.chat_log
-                            .push(rewo_world::chat_style::plain_text(&spans));
-                        self.chat_events.push(crate::chat_wire::ChatEvent::Message {
-                            text: spans,
-                            signature: chat.signature,
-                            tag,
-                            source: rewo_world::chat::MessageSource::Player,
-                        });
-                    }
-                }
-                Err(e) => log::warn!("net: player_chat decode failed: {e}"),
-            }
-        } else if id == ids.cb_play_commands {
-            // The argument-type registry is a BUILT-IN one, so it comes from
-            // the report rather than the wire (M92's rule) — and without it
-            // the tree cannot be read past its first non-singleton argument,
-            // which is why a missing table is a warn-and-drop rather than a
-            // partial parse.
-            match self.command_argument_types.as_ref() {
-                Some(types) => {
-                    match crate::commands::read_commands(body, &|i| types.name(i)) {
-                        Ok(tree) => {
-                            log::info!(
-                                "net: command tree — {} nodes, {} top-level",
-                                tree.nodes.len(),
-                                tree.top_level().len()
-                            );
-                            self.commands = tree;
-                        }
-                        Err(e) => log::warn!("net: commands decode failed: {e}"),
-                    }
-                }
-                None => log::debug!("net: commands arrived before the argument-type table"),
-            }
-        } else if id == ids.cb_play_command_suggestions {
-            // `handleCommandSuggestions` is one line:
-            // `suggestionsProvider.completeCustomSuggestions(id, toSuggestions())`.
-            // The id test is the whole of it — a reply to a superseded request
-            // is dropped rather than repainting the popup with the answer to a
-            // prefix already typed past.
-            match crate::suggestion_wire::CommandSuggestionsReply::read(body) {
-                Ok(reply) => {
-                    if let Some(s) = self.suggestions.complete(&reply) {
-                        self.suggestion_reply = Some(s);
-                    } else {
-                        log::debug!(
-                            "net: command_suggestions id {} is not the outstanding request",
-                            reply.id
-                        );
-                    }
-                }
-                Err(e) => log::warn!("net: command_suggestions decode failed: {e}"),
-            }
-        } else if id == ids.cb_play_custom_chat_completions {
-            match crate::suggestion_wire::read_custom_chat_completions(body) {
-                Ok((action, entries)) => self.suggestions.apply_completions(action, &entries),
-                Err(e) => log::warn!("net: custom_chat_completions decode failed: {e}"),
-            }
-        } else if id == ids.cb_play_delete_chat {
-            let mut r = PacketReader::new(body);
-            match crate::chat_wire::read_delete_chat(&mut r) {
-                // An unresolvable packed id is a no-op rather than an error:
-                // vanilla's `unpack` would return null for an empty slot and
-                // `deleteMessageOrDelay` then finds no message. Rewo also
-                // reaches here for an out-of-range id, where vanilla throws —
-                // see `chat_wire`'s module docs.
-                Ok(packed) => match self.signature_cache.resolve(&packed) {
-                    Some(sig) => self
-                        .chat_events
-                        .push(crate::chat_wire::ChatEvent::Delete(sig)),
-                    None => log::debug!("net: delete_chat named an unknown signature"),
-                },
-                Err(e) => log::warn!("net: delete_chat decode failed: {e}"),
-            }
-        } else if id == ids.cb_play_disconnect {
-            // M129 — resolved against the language table rather than
-            // flattened. Every vanilla kick is a `Component.translatable`, so
-            // this was the most translatable-dense component Rewo received and
-            // the one that rendered as a raw key most often. The decode lives
-            // in `rewo_world::disconnect_screen` so a test can reach it.
-            let (reason, cause) =
-                rewo_world::disconnect_screen::read_disconnect(body, self.lang.as_deref());
-            self.disconnect = Some(reason);
-            self.disconnect_cause = Some(cause);
+    /// Fold the `route_*` decode failures the packet's handler swallowed into
+    /// [`Self::decode_failures`], so both halves of the dispatch chain report
+    /// through one counter. Called once per handled packet, after it.
+    fn fold_route_decode_failures(&mut self) {
+        self.decode_failures += crate::take_route_decode_failures();
+    }
+
+    /// A play packet that failed to decode is dropped whole (never half
+    /// applied), logged, and counted in [`Self::decode_failures`].
+    fn decode_failed(&mut self, what: &str, err: impl std::fmt::Display) {
+        self.decode_failures += 1;
+        log::warn!("net: {what}: dropped malformed packet ({err})");
+    }
+
+    /// The reader thread stopped: record why as the disconnect.
+    fn reader_closed(&mut self, closed: Option<ReaderClosed>) {
+        if self.disconnect.is_some() {
+            return;
         }
+        match closed {
+            // `Connection.channelInactive` — the socket went away with no
+            // packet. Vanilla's reason is `disconnect.endOfStream` and its
+            // details carry neither a report nor a link.
+            None | Some(ReaderClosed { eof: true, .. }) => {
+                self.disconnect = Some("connection closed".into());
+                self.disconnect_cause =
+                    Some(rewo_world::disconnect_screen::DisconnectCause::EndOfStream);
+            }
+            // A frame the client could not accept — oversized, badly
+            // compressed, undecryptable — or a read timeout: vanilla's
+            // `exceptionCaught` path.
+            Some(ReaderClosed { reason, eof: false }) => {
+                log::warn!("net: connection lost: {reason}");
+                self.disconnect = Some(reason);
+                self.disconnect_cause =
+                    Some(rewo_world::disconnect_screen::DisconnectCause::ClientError);
+            }
+        }
+    }
+
+    /// One packet of a mid-session configuration phase, through the same
+    /// handler the login-time phase uses.
+    fn handle_config(&mut self, id: i32, body: &[u8]) -> Result<(), String> {
+        let Some(mut cfg) = self.reconfig.take() else {
+            return Ok(());
+        };
+        let mut keepalives = 0u64;
+        let (codec, writer) = (&self.codec, &mut self.writer);
+        let mut send = |p: PacketWriter| -> Result<(), String> {
+            codec
+                .write_frame(writer, &p.buf)
+                .map_err(|e| format!("send: {e}"))?;
+            writer.flush().map_err(|e| format!("send: {e}"))
+        };
+        let step = crate::config::handle_config_packet(
+            crate::config::ConfigCtx {
+                ids: &self.ids,
+                cfg: &mut cfg,
+                session: &mut self.session,
+                tasks: &mut self.config_tasks,
+                keepalives: &mut keepalives,
+            },
+            id,
+            body,
+            &mut send,
+        );
+        match step {
+            Err(e) => {
+                self.reconfig = Some(cfg);
+                Err(e)
+            }
+            Ok(crate::config::ConfigStep::Continue) => {
+                self.reconfig = Some(cfg);
+                Ok(())
+            }
+            Ok(crate::config::ConfigStep::Finished) => {
+                self.finish_reconfiguration(cfg);
+                Ok(())
+            }
+            Ok(crate::config::ConfigStep::Disconnect) => {
+                // Configuration's disconnect body is the same component
+                // `ClientboundDisconnectPacket` carries.
+                let (reason, cause) =
+                    rewo_world::disconnect_screen::read_disconnect(body, self.lang.as_deref());
+                self.disconnect = Some(reason);
+                self.disconnect_cause = Some(cause);
+                Ok(())
+            }
+        }
+    }
+
+    /// `ClientPacketListener.handleConfigurationStart`: acknowledge, drop the
+    /// level (`clearClientLevel`), and switch inbound decoding to the
+    /// configuration state. The server sends nothing in play after this.
+    fn start_reconfiguration(&mut self) -> Result<(), String> {
+        // Vanilla flushes pending chat acknowledgements before leaving play.
+        self.send_chat_ack()?;
+        self.send(PacketWriter::packet(self.ids.sb_play_config_acknowledged))?;
+        log::info!("net: server started configuration → re-entering config");
+        self.clear_level();
+        let fx = self.visual_effects.effect_ids();
+        self.reconfig = Some(crate::config::ConfigData::fresh_with_effect_ids(
+            fx.0,
+            fx.1,
+            self.swing_effect_ids,
+            self.movement_effect_ids,
+        ));
         Ok(())
+    }
+
+    /// `Minecraft.clearClientLevel` — everything that belonged to the level
+    /// goes: columns (queued for the renderer to drop), entities, light,
+    /// clocks, weather, border, the active dimension, mounts. The next play
+    /// `login` rebuilds it all, exactly as the first one did.
+    fn clear_level(&mut self) {
+        self.removed.extend(self.world.column_coords());
+        self.dirty.clear();
+        self.world = World::new(DimensionShape::OVERWORLD);
+        self.light = rewo_world::light::LightEngine::new();
+        self.day_ticks = None;
+        self.clocks.clear();
+        self.game_time = None;
+        self.weather.clear();
+        self.border = rewo_world::border::WorldBorder::default();
+        self.mounts.clear();
+        self.vehicle_pose = None;
+        self.visual_effects.reset_for_respawn();
+        self.spawned = false;
+        self.active_dimension_key = None;
+        self.active_dimension_holder = None;
+        self.active_dimension_type = None;
+        self.end_flash = None;
+        // A new world generation, so anything keyed to the old one (the mesh
+        // pool) discards its in-flight work.
+        self.dimension_generation = self.dimension_generation.wrapping_add(1);
+        // The play listener that owned the rest goes with the level; the
+        // one built after configuration starts empty (`Hud.onDisconnected`
+        // clears the titles and boss bars; the scoreboard, tab list, menus
+        // and advancements are fields of the old `ClientPacketListener`).
+        // Chat survives: vanilla stores and restores its state across.
+        self.tab_players = TabListPlayers::default();
+        self.latency.clear();
+        self.gamemodes.clear();
+        self.tab_list_orders.clear();
+        self.scoreboard = crate::scoreboard::Scoreboard::new();
+        self.boss_bars = crate::boss_bar::BossBars::new();
+        self.tab_list_text = crate::tab_list_text::TabListText::new();
+        self.hud = crate::hud_state::HudState::default();
+        self.advancements = crate::advancements::ClientAdvancements::default();
+        self.inventory = rewo_world::inventory::Inventory::default();
+        self.menus = rewo_world::menu::Menus::new();
+        self.player_id = None;
+        self.bundle = crate::bundle::BundleAssembler::new(crate::bundle::BundleIds {
+            delimiter: self.ids.cb_play_bundle_delimiter,
+            terminal: self.ids.cb_play_start_configuration,
+        });
+    }
+
+    /// `finish_configuration` of a re-entry: adopt what the phase synced. The
+    /// play `login` that follows builds the level against these registries.
+    fn finish_reconfiguration(&mut self, cfg: crate::config::ConfigData) {
+        self.reconfigurations += 1;
+        log::info!(
+            "net: configuration finished → play (reconfiguration #{})",
+            self.reconfigurations
+        );
+        self.dim_types = cfg.dim_types.clone();
+        self.overworld_clock_id = cfg.overworld_clock_id;
+        self.world_clock_ids = cfg.world_clock_ids.clone();
+        self.swing_effect_ids = cfg.swing_effect_ids;
+        self.movement_effect_ids = cfg.movement_effect_ids;
+        self.pending_biome_registry = cfg.biome_registry();
+        self.biome_global_bits = self
+            .pending_biome_registry
+            .as_ref()
+            .map(|r| r.global_bits)
+            .unwrap_or(7);
+        let crate::config::ConfigData {
+            enchantments,
+            chat_types,
+            trim_materials,
+            trim_patterns,
+            cat_variants,
+            wolf_variants,
+            frog_variants,
+            tags,
+            ..
+        } = cfg;
+        self.enchantments = enchantments;
+        self.chat_types = chat_types;
+        self.trim_materials = trim_materials;
+        self.trim_patterns = trim_patterns;
+        self.cat_variants = cat_variants;
+        self.wolf_variants = wolf_variants;
+        self.frog_variants = frog_variants;
+        self.tags = tags;
+    }
+
+    /// Whether a mid-session configuration phase is running.
+    pub fn is_reconfiguring(&self) -> bool {
+        self.reconfig.is_some()
     }
 
     fn apply_teleport(&mut self, body: &[u8]) -> Result<(), String> {
@@ -3730,9 +3045,11 @@ impl PlaySession {
             let relatives = r.i32()?;
             Ok((id, vals, yaw, pitch, relatives))
         })();
-        let Ok((teleport_id, vals, yaw, pitch, relatives)) = parse else {
-            return Ok(());
-        };
+        // Fatal, as vanilla's decoder makes it: a teleport the client cannot
+        // read is one it never accepts, and the server then rejects every
+        // movement packet until it is — a silent desync, not a recoverable one.
+        let (teleport_id, vals, yaw, pitch, relatives) =
+            parse.map_err(|e| format!("play player_position: {e}"))?;
         let rel = |bit: i32| relatives & (1 << bit) != 0;
         // Relative bits (decompiled Relative enum order): X=0 Y=1 Z=2
         // Y_ROT=3 X_ROT=4, deltas 5..7, rotate-delta 8.
@@ -3838,7 +3155,7 @@ impl PlaySession {
             &self.ids,
             crate::player_rotation::LocalRotation {
                 pos: [self.player.x, self.player.y, self.player.z],
-                eye_height: rewo_world::physics::EYE_HEIGHT,
+                eye_height: self.player.eye_height(),
                 yaw: &mut self.player.yaw,
                 pitch: &mut self.player.pitch,
             },
@@ -3919,23 +3236,6 @@ impl PlaySession {
     /// How many `START_RIDING_JUMP`s have been sent (M169).
     pub fn riding_jumps_sent(&self) -> u64 {
         self.riding_jumps_sent
-    }
-
-    /// `LocalPlayer.sendRidingJump` (M169): `ServerboundPlayerCommandPacket(
-    /// this, START_RIDING_JUMP, Mth.floor(getJumpRidingScale() * 100))`.
-    fn send_riding_jump(&mut self, data: i32) -> Result<(), String> {
-        let (Some(id), Some(me)) = (self.ids.sb_play_player_command, self.player_id) else {
-            return Ok(());
-        };
-        let mut p = PacketWriter::packet(id);
-        p.raw(&crate::jump_riding::player_command_body(
-            me,
-            crate::jump_riding::START_RIDING_JUMP,
-            data,
-        ));
-        self.send(p)?;
-        self.riding_jumps_sent += 1;
-        Ok(())
     }
 
     /// `handleExplosion`'s FIRST statement, which M68 dropped on the floor
@@ -4039,23 +3339,20 @@ impl PlaySession {
     /// Letting each build its own is how they come to disagree (M89, four
     /// times now).
     ///
-    /// **`fall_flying` is the one field Rewo cannot answer yet**, and it is
-    /// named here rather than defaulted quietly. The local player's
-    /// `DATA_SHARED_FLAGS_ID` does arrive — the server sends you your own
-    /// metadata — but `route_set_entity_data` writes into `EntityTable`, which
-    /// holds no row for you (M73's asymmetry, hit again). So it answers
-    /// `false`, and the cost is precise: `ElytraOnPlayerSoundInstance`'s guard
-    /// is `time <= 20 || isFallFlying()`, so an elytra sound would play for
-    /// exactly one second and stop. That is not a silence you would blame on
-    /// this function, which is why it is written down. It is also the elytra's
-    /// *trigger* (`onSyncedDataUpdated`'s rising edge), so one decode closes
-    /// both ends and it belongs with the trigger milestone.
+    /// **`fall_flying`** is the flag as `LocalPlayer` keeps it, not as the
+    /// server last stated it: `route_set_entity_data` writes into `EntityTable`,
+    /// which holds no row for the local player (M73's asymmetry), so the
+    /// metadata half lives in `local_player_data` and the local half — the
+    /// optimistic `startFallFlying()` and the `stopFallFlying()` clears — lives
+    /// beside it as `local_fall_flying`. The elytra sound's guard is
+    /// `time <= 20 || isFallFlying()`, so answering the *flag* rather than
+    /// "the server said so" is what keeps the sound up for a whole glide.
     pub fn local_player_view(&self) -> Option<crate::sound_engine::LocalPlayerView> {
         Some(crate::sound_engine::LocalPlayerView {
             id: self.player_id?,
             position: (self.player.x, self.player.y, self.player.z),
             velocity: (self.player.vx, self.player.vy, self.player.vz),
-            fall_flying: self.local_player_data.is_fall_flying(),
+            fall_flying: self.local_fall_flying,
             // `LocalPlayer.isUnderWater()`, which for the LOCAL player is
             // the eye test **alone**: `LocalPlayer` overrides the method to
             // return `wasUnderwater` (`LocalPlayer.java:1172-1175`), and
@@ -4094,6 +3391,15 @@ impl PlaySession {
             self.swing_data.as_ref().map(|d| d.components),
             &mut self.local_player_data,
         );
+        if out.flags_updated {
+            // `onSyncedDataUpdated(DATA_SHARED_FLAGS_ID)` — the server is the
+            // authority on `FLAG_FALL_FLYING`, so whatever it states replaces
+            // the local bit (including an optimistic take-off it has not
+            // answered yet). A body without index 0 leaves the bit standing,
+            // which is why this is gated on `flags_updated` rather than run on
+            // every packet.
+            self.local_fall_flying = self.local_player_data.is_fall_flying();
+        }
         if out.start_elytra_sound {
             if let Some(player) = self.player_id {
                 self.push_sound_event(crate::sounds::SoundEvent::Tickable(
@@ -4310,13 +3616,13 @@ impl PlaySession {
             self.player.z,
             &self.water_states,
         );
-        Some(situational_music_from(
+        situational_music_from(
             in_the_end,
             self.boss_bars.should_play_music(),
             &bg,
             is_creative,
             is_underwater,
-        )?)
+        )
     }
 
     /// Push this tick's situation at the engine, which owns the state machine.
@@ -4860,6 +4166,21 @@ impl PlaySession {
         self.active_dimension_holder = Some(active.holder);
         self.end_flash = end_flash_for_dimension(&active.def);
         self.active_dimension_type = Some(active.def);
+        // `handleLogin` resets the chat state for the listener it builds: a
+        // fresh `LastSeenMessagesTracker` and signature cache, and a new chat
+        // session (`chatSession = null` → `setKeyPair` announces a new one).
+        // The first login's session was announced at `into_play`; a login
+        // after a reconfiguration must announce again or signed chat is
+        // rejected by the server's new listener.
+        self.logins += 1;
+        self.last_seen = crate::chat_sign::LastSeenTracker::default();
+        if self.logins > 1 {
+            self.signature_cache = crate::chat_wire::MessageSignatureCache::default();
+            if let Some(signer) = self.signer.as_mut() {
+                signer.restart_session();
+                self.announce_chat_session()?;
+            }
+        }
         Ok(())
     }
 
@@ -4933,6 +4254,7 @@ impl PlaySession {
             last_on_ground: &mut self.last_on_ground,
             last_horiz: &mut self.last_horiz,
             last_input_flags: &mut self.last_input_flags,
+            local_fall_flying: &mut self.local_fall_flying,
         }
         .apply(info.should_keep(RespawnInfo::KEEP_ENTITY_DATA));
 
@@ -5032,40 +4354,67 @@ impl PlaySession {
         self.send(p)
     }
 
-    pub fn send_chat(&mut self, message: &str) -> Result<(), String> {
-        let Some(id) = self.ids.sb_play_chat else {
-            return Err("chat packet unavailable".into());
-        };
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default();
-        let millis = now.as_millis() as i64;
-        // A signature commits to the seconds-precision timestamp + a random
-        // salt; both must go on the wire exactly as signed.
-        let (salt, signature) = match self.signer.as_mut() {
-            Some(signer) => {
-                let mut salt_bytes = [0u8; 8];
-                rand::Rng::fill(&mut rand::thread_rng(), &mut salt_bytes);
-                let salt = i64::from_be_bytes(salt_bytes);
-                let sig = signer.sign(message, salt, now.as_secs() as i64, &[]);
-                (salt, Some(sig))
-            }
-            None => (0, None),
-        };
-        let mut p = PacketWriter::packet(id);
-        p.string(message).i64(millis).i64(salt);
-        match &signature {
-            Some(sig) => {
-                p.bool(true).raw(sig); // MessageSignature: fixed 256 bytes
-            }
-            None => {
-                p.bool(false);
-            }
+    /// `markMessageAsProcessed`: a signed player message was handled; once
+    /// more than 64 are unacknowledged, tell the server with a `chat_ack`.
+    fn mark_message_processed(
+        &mut self,
+        signature: &crate::chat_wire::Signature,
+        was_shown: bool,
+    ) -> Result<(), String> {
+        if self.last_seen.add_pending(signature, was_shown)
+            && self.last_seen.offset() > crate::chat_sign::PENDING_OFFSET_THRESHOLD
+        {
+            self.send_chat_ack()?;
         }
-        p.varint(0); // last-seen offset
-        p.raw(&[0, 0, 0]); // FixedBitSet(20) acknowledged — none
-        p.u8(0); // checksum 0 = skip verification
-        self.send(p)
+        Ok(())
+    }
+
+    /// `ClientPacketListener.tick`'s key-pair upkeep: once `refreshedAfter`
+    /// has passed (checked at most hourly, as `shouldRefreshKeyPair` is),
+    /// fetch a new certificate off-thread; when it lands, adopt it and
+    /// announce the new chat session (`setKeyPair`).
+    fn tick_chat_key(&mut self) -> Result<(), String> {
+        if let Some(rx) = self.signer_refresh.as_ref() {
+            match rx.try_recv() {
+                Ok(Ok(signer)) => {
+                    self.signer_refresh = None;
+                    self.signer = Some(signer);
+                    self.announce_chat_session()?;
+                    log::info!("net: player certificate refreshed; chat session re-announced");
+                }
+                Ok(Err(e)) => {
+                    self.signer_refresh = None;
+                    log::warn!("net: player certificate refresh failed: {e}");
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.signer_refresh = None,
+            }
+            return Ok(());
+        }
+        let (Some(signer), Some(auth)) = (self.signer.as_ref(), self.auth.as_ref()) else {
+            return Ok(());
+        };
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        if now_ms < self.next_key_refresh_ms || !signer.due_refresh(now_ms) {
+            return Ok(());
+        }
+        // `MINIMUM_PROFILE_KEY_REFRESH_INTERVAL` — one hour between attempts.
+        self.next_key_refresh_ms = now_ms + 60 * 60 * 1000;
+        let auth = auth.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("rewo-cert-refresh".into())
+            .spawn(move || {
+                let _ = tx.send(crate::chat_sign::ChatSigner::fetch(&auth));
+            });
+        match spawned {
+            Ok(_) => self.signer_refresh = Some(rx),
+            Err(e) => log::warn!("net: certificate refresh thread: {e}"),
+        }
+        Ok(())
     }
 
     /// Creative: put `count` of item `item_id` into hotbar `slot` (0..9).
@@ -5372,28 +4721,6 @@ impl PlaySession {
         self.recipe_book_change_settings(book_type)
     }
 
-    /// `ServerboundPlaceRecipePacket` (M98) — click a recipe in the book.
-    ///
-    /// `use_max_items` is shift-held. The container is the SHOWN menu's, on
-    /// M89's rule: a book click belongs to whatever screen is up.
-    /// `AbstractSignEditScreen.removed()` (M174) — the editor's one commit.
-    /// Sent UNCONDITIONALLY on every exit (Done, Esc, the validity tick):
-    /// there is no dirty check and no cancel path in vanilla.
-    pub fn send_sign_update(
-        &mut self,
-        pos: (i32, i32, i32),
-        is_front_text: bool,
-        lines: &[String; 4],
-    ) -> Result<(), String> {
-        let Some(id) = self.ids.sb_play_sign_update else {
-            return Err("sign_update unavailable".into());
-        };
-        let mut p = PacketWriter::packet(id);
-        p.buf
-            .extend_from_slice(&crate::sign_update_body(pos, is_front_text, lines));
-        self.send(p)
-    }
-
     pub fn place_recipe(&mut self, recipe: i32, use_max_items: bool) -> Result<(), String> {
         let Some(id) = self.ids.sb_play_place_recipe else {
             return Err("place_recipe unavailable".into());
@@ -5470,6 +4797,9 @@ impl PlaySession {
         if let Err(e) = self.handle_packet(id, body) {
             log::warn!("net: injected packet {id} failed: {e}");
         }
+        // Fold here too: the thread-local is shared with the drain loop, and a
+        // count left behind would be blamed on the next packet it drains.
+        self.fold_route_decode_failures();
     }
 
     pub fn apply_recipe_book(&mut self, id: i32, body: &[u8]) {
@@ -5592,50 +4922,6 @@ impl PlaySession {
         p.buf.extend_from_slice(&crate::client_command_body(
             crate::ClientCommand::PerformRespawn,
         ));
-        self.send(p)
-    }
-
-    /// `StatsScreen.init()`'s last line —
-    /// `send(new ServerboundClientCommandPacket(REQUEST_STATS))` (M84).
-    ///
-    /// The screen asks; the server answers with `award_stats`. **Vanilla sends
-    /// this from `init()`, so it is re-sent on every window resize**, because
-    /// `init()` is what `repositionElements` runs. Rewo sends it only when the
-    /// screen opens, which is a deliberate deviation: a resize costs a round
-    /// trip in vanilla and buys nothing the client does not already hold.
-    pub fn request_stats(&mut self) -> Result<(), String> {
-        let Some(id) = self.ids.sb_play_client_command else {
-            return Err("client_command unavailable".into());
-        };
-        let mut p = PacketWriter::packet(id);
-        p.buf.extend_from_slice(&crate::client_command_body(
-            crate::ClientCommand::RequestStats,
-        ));
-        self.send(p)
-    }
-
-    /// `ServerboundSeenAdvancementsPacket.openedTab` (M178) — the screen's
-    /// open/init path sends it for the tab it shows.
-    pub fn send_seen_advancements_opened_tab(&mut self, tab: &str) -> Result<(), String> {
-        let Some(id) = self.ids.sb_play_seen_advancements else {
-            return Err("seen_advancements unavailable".into());
-        };
-        let mut p = PacketWriter::packet(id);
-        // Action enum ordinal 0 = OPENED_TAB; then the identifier. CLOSED_SCREEN
-        // writes the ordinal alone (`write`'s guard skips the tab).
-        p.varint(0);
-        p.string(tab);
-        self.send(p)
-    }
-
-    /// `ServerboundSeenAdvancementsPacket.closedScreen` — `removed()` sends it
-    /// unconditionally, no dirty check and no cancel path.
-    pub fn send_seen_advancements_closed_screen(&mut self) -> Result<(), String> {
-        let Some(id) = self.ids.sb_play_seen_advancements else {
-            return Err("seen_advancements unavailable".into());
-        };
-        let mut p = PacketWriter::packet(id);
-        p.varint(1); // CLOSED_SCREEN
         self.send(p)
     }
 
@@ -5766,34 +5052,6 @@ impl PlaySession {
         self.respawn_epoch
     }
 
-    /// Start digging (creative servers break the block on START).
-    /// `ServerboundCommandSuggestionPacket` — ask what completes `command`.
-    ///
-    /// The id and the pending slot are the provider's; see
-    /// [`crate::suggestion_wire`] for why there is only one outstanding
-    /// request and what happens to a reply that misses it.
-    pub fn request_command_suggestions(&mut self, command: &str) -> Result<(), String> {
-        let Some(id) = self.ids.sb_play_command_suggestion else {
-            return Err("command_suggestion unavailable".into());
-        };
-        let (_req, body) = self.suggestions.begin_request(command);
-        let mut p = PacketWriter::packet(id);
-        p.raw(&body);
-        self.send(p)
-    }
-
-    /// Run a server command (unsigned `chat_command`, the string without the
-    /// leading `/`). Used for verification (`/summon …`) when the account is
-    /// op; a normal client mostly sends these too.
-    pub fn send_command(&mut self, command: &str) -> Result<(), String> {
-        let Some(id) = self.ids.sb_play_chat_command else {
-            return Err("chat_command unavailable".into());
-        };
-        let mut p = PacketWriter::packet(id);
-        p.string(command);
-        self.send(p)
-    }
-
     /// The block the eye is looking at (voxel raycast against `solid`), or
     /// `None`. `dir` need not be normalized; `reach` in blocks (~4.5 creative).
     pub fn target_block(
@@ -5866,7 +5124,7 @@ impl PlaySession {
         let Some(id) = self.player_id else {
             return;
         };
-        use rewo_world::entities::{HandItem, InteractionHand};
+        use rewo_world::entities::HandItem;
         let resolve = |slot: Option<rewo_world::inventory::ItemSlot>| -> HandItem {
             let Some(stack) = slot else {
                 return HandItem::Empty;
@@ -6309,8 +5567,6 @@ fn packed_degrees(b: i8) -> f32 {
     b as f32 * (360.0 / 256.0)
 }
 
-/// The unit cube, for blocks with no entry in the collision table.
-static FULL_CUBE: &[[f32; 6]] = &[[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
 
 impl PlaySession {
     /// Vanilla `Entity.push`: entities whose bounding boxes overlap shove each
@@ -6378,53 +5634,33 @@ fn push_delta(dx: f64, dz: f64) -> (f64, f64) {
     (dx / dd * pow * PUSH_SPEED, dz / dd * pow * PUSH_SPEED)
 }
 
-#[cfg(test)]
-mod push_tests {
-    use super::push_delta;
-
-    /// Below vanilla's 0.01 threshold nothing happens (exactly-overlapping
-    /// entities would otherwise divide by ~0).
-    #[test]
-    fn coincident_entities_do_not_push() {
-        assert_eq!(push_delta(0.0, 0.0), (0.0, 0.0));
-        assert_eq!(push_delta(0.005, -0.004), (0.0, 0.0));
-    }
-
-    /// Vanilla's math, computed by hand for a 1-block separation along +x:
-    /// dd = sqrt(absMax(1,0)) = 1, pow = min(1, 1/1) = 1,
-    /// so the impulse is 1/1 * 1 * 0.05 = 0.05 on x and 0 on z.
-    #[test]
-    fn unit_separation_matches_vanilla() {
-        let (x, z) = push_delta(1.0, 0.0);
-        assert!((x - 0.05).abs() < 1e-12, "x={x}");
-        assert_eq!(z, 0.0);
-    }
-
-    /// The push is directional and symmetric under negation.
-    #[test]
-    fn push_is_antisymmetric() {
-        let (ax, az) = push_delta(0.4, -0.3);
-        let (bx, bz) = push_delta(-0.4, 0.3);
-        assert!((ax + bx).abs() < 1e-12 && (az + bz).abs() < 1e-12);
-        assert!(ax > 0.0 && az < 0.0, "points away along the separation");
-    }
-
-    /// Closer than one block, `pow = 1/dd > 1` is clamped to 1 — so the shove
-    /// never exceeds PUSH_SPEED in magnitude per axis component.
-    #[test]
-    fn close_range_push_is_clamped() {
-        let (x, z) = push_delta(0.05, 0.0);
-        assert!(x <= 0.05 + 1e-12, "clamped, got {x}");
-        assert!(x > 0.0 && z == 0.0);
-    }
-}
-
 /// Unpack `SectionPos.asLong`: x in bits 42..63, z in 20..41, y in 0..19.
 ///
 /// All three are signed and two are narrower than a register, so each is
 /// shifted left to put its sign bit at the top before the arithmetic shift
 /// right sign-extends it. Getting this wrong places edits in a different
 /// chunk, which reads as "some blocks never update".
+/// The columns whose meshes read block `(x, z)`: its own column, the
+/// neighbour across each column edge the block lies on, and the diagonal one
+/// when it lies on a corner (AO and fluid corners sample diagonals).
+fn columns_seeing_block(x: i32, z: i32) -> Vec<(i32, i32)> {
+    let (cx, cz) = (x >> 4, z >> 4);
+    let side = |l: i32| -> &'static [i32] {
+        match l {
+            0 => &[0, -1],
+            15 => &[0, 1],
+            _ => &[0],
+        }
+    };
+    let mut out = Vec::with_capacity(4);
+    for &dx in side(x & 15) {
+        for &dz in side(z & 15) {
+            out.push((cx + dx, cz + dz));
+        }
+    }
+    out
+}
+
 fn unpack_section_pos(packed: u64) -> (i32, i32, i32) {
     let v = packed as i64;
     (
@@ -6441,1361 +5677,125 @@ fn unpack_section_offset(pos: i32) -> (i32, i32, i32) {
     ((pos >> 8) & 15, pos & 15, (pos >> 4) & 15)
 }
 
-#[cfg(test)]
-mod section_update_tests {
-    use super::*;
-
-    /// Mirrors `SectionPos.asLong`, so the test states the encoding
-    /// independently of the decoder under test.
-    fn as_long(x: i64, y: i64, z: i64) -> u64 {
-        (((x & 0x3F_FFFF) << 42) | (y & 0xF_FFFF) | ((z & 0x3F_FFFF) << 20)) as u64
-    }
-
-    #[test]
-    fn section_pos_roundtrips_including_negatives() {
-        for (x, y, z) in [
-            (0, 0, 0),
-            (1, 2, 3),
-            (-1, -1, -1),
-            (-3000, -4, 2999),
-            (100, 19, -100),
-        ] {
-            assert_eq!(
-                unpack_section_pos(as_long(x as i64, y as i64, z as i64)),
-                (x, y, z),
-                "section ({x},{y},{z})"
-            );
-        }
-    }
-
-    #[test]
-    fn section_offset_uses_the_x_z_y_nibble_order() {
-        // Vanilla packs `x << 8 | z << 4 | y`.
-        for (x, y, z) in [(0, 0, 0), (15, 15, 15), (1, 2, 3), (9, 4, 7)] {
-            let packed = (x << 8) | (z << 4) | y;
-            assert_eq!(
-                unpack_section_offset(packed),
-                (x, y, z),
-                "offset ({x},{y},{z})"
-            );
-        }
-    }
-
-    #[test]
-    fn a_change_entry_splits_into_state_and_position() {
-        // Wire form: `stateId << 12 | posInSection`.
-        let packed: u64 = (1234u64 << 12) | ((5 << 8) | (6 << 4) | 7);
-        assert_eq!(packed >> 12, 1234);
-        assert_eq!(unpack_section_offset((packed & 4095) as i32), (5, 7, 6));
-    }
+/// Item ids whose prototype carries `minecraft:glider` — the elytra, and
+/// anything else `LivingEntity.canGlideUsing` accepts on its first clause
+/// (`itemStack.has(DataComponents.GLIDER)`).
+///
+/// The prototype is the only place Rewo can see that component
+/// (`item_components_table`): a patch that adds or removes `minecraft:glider`
+/// at runtime is not consulted. `canGlideUsing`'s other two clauses —
+/// `equippable.slot() == slot` and `!nextDamageWillBreak()` — are not
+/// modelled either; see [`chest_is_glider`] for the slot half.
+pub fn glider_item_ids(items: &rewo_data::items::Items) -> Vec<i32> {
+    items
+        .names()
+        .into_iter()
+        .filter(|name| {
+            rewo_data::item_components_table::prototype_has_component(name, "minecraft:glider")
+                == Some(true)
+        })
+        .filter_map(|name| items.id(name))
+        .collect()
 }
 
-#[cfg(test)]
-mod login_dimension_tests {
-    use super::*;
-    use crate::dimension_parse::builtin as fx;
-    use crate::spawn_info::GlobalPos;
-
-    /// A registry in a **deliberately non name-sorted** wire order: the Nether
-    /// is holder 0 and the Overworld is holder 2. Any name-keyed shortcut in the
-    /// selection path fails immediately here.
-    fn registry() -> Vec<DimensionTypeDef> {
-        crate::dimension_parse::parse_dimension_registry_packet(&fx::registry_packet(&[
-            ("minecraft:the_nether", fx::the_nether()),
-            ("minecraft:the_end", fx::the_end()),
-            ("minecraft:overworld", fx::overworld()),
-        ]))
-        .expect("fixture registry must parse")
-        .expect("packet is the dimension_type registry")
-    }
-
-    /// A spawn info naming `level` on dimension-type holder `holder`, with every
-    /// other field filled in so nothing about the case under test depends on a
-    /// default.
-    fn spawn(holder: i32, level: &str) -> CommonPlayerSpawnInfo {
-        CommonPlayerSpawnInfo {
-            dimension_type: holder,
-            dimension: level.into(),
-            seed: 0x0bad_f00d_dead_beefu64 as i64,
-            game_type: 1,
-            previous_game_type: Some(0),
-            is_debug: false,
-            is_flat: false,
-            last_death_location: Some(GlobalPos {
-                dimension: "minecraft:overworld".into(),
-                x: -3,
-                y: -59,
-                z: 7,
-            }),
-            portal_cooldown: 0,
-            sea_level: 63,
-        }
-    }
-
-    /// The pre-login world is a plain Overworld placeholder, so a test that
-    /// lands on the Nether cannot pass by accident.
-    fn placeholder_world() -> World {
-        let world = World::new(DimensionShape::OVERWORLD);
-        assert_eq!(world.shape, DimensionShape::OVERWORLD);
-        assert!(world.has_sky_light());
-        world
-    }
-
-    /// Raw holder 0 is the **first synced entry**, never "inline" and never a
-    /// default: here that entry is the Nether, so the resolved shape is 0..256
-    /// with no skylight rather than the placeholder's -64..320 with skylight.
-    #[test]
-    fn raw_holder_zero_selects_the_first_entry_even_when_it_is_the_nether() {
-        let defs = registry();
-        assert_eq!(defs[0].name, "minecraft:the_nether", "fixture precondition");
-        let mut world = placeholder_world();
-        let active = apply_spawn_info(&mut world, &defs, &spawn(0, "minecraft:the_nether"));
-
-        assert_eq!(active.holder, 0);
-        assert_eq!(active.def.name, "minecraft:the_nether");
-        assert_eq!(active.def.shape, DimensionShape::NETHER);
-        assert!(!active.def.has_sky_light);
-        assert_eq!(active.def.skybox, Skybox::None);
-        // …and the world is now decoding chunks against exactly that.
-        assert_eq!(world.shape, DimensionShape::NETHER);
-        assert_ne!(world.shape, DimensionShape::OVERWORLD);
-        assert!(!world.has_sky_light());
-        assert_eq!(
-            world.cardinal_light_type(),
-            rewo_world::dimension::CardinalLightType::Nether
-        );
-    }
-
-    /// The active level key is `CommonPlayerSpawnInfo.dimension`, NOT the
-    /// selected dimension **type**'s registry name. A datapack level built on
-    /// the vanilla overworld type shares that type's name with
-    /// `minecraft:overworld` — reading the key off `def.name` would report the
-    /// wrong world for every such level, and would be indistinguishable from
-    /// correct on a vanilla-only server.
-    #[test]
-    fn active_level_key_comes_from_the_spawn_info_not_the_type_name() {
-        let defs = registry();
-        let mut world = placeholder_world();
-        let active = apply_spawn_info(&mut world, &defs, &spawn(2, "rewo:mining_world"));
-
-        assert_eq!(active.key, "rewo:mining_world");
-        assert_eq!(active.def.name, "minecraft:overworld");
-        assert_ne!(
-            active.key, active.def.name,
-            "key is the level, not the type"
-        );
-        // The type still resolved normally — the two identifiers are separate,
-        // not alternatives.
-        assert_eq!(active.holder, 2);
-        assert_eq!(world.shape, DimensionShape::OVERWORLD);
-        assert!(world.has_sky_light());
-    }
-
-    /// A holder the synced registry does not contain degrades to the *named*
-    /// unresolved fallback, and the packet's own level key and holder id survive
-    /// verbatim — the diagnostic must still say which world the server claimed.
-    #[test]
-    fn an_unresolved_holder_keeps_the_packets_key_and_holder() {
-        let defs = registry();
-        let mut world = placeholder_world();
-        let active = apply_spawn_info(&mut world, &defs, &spawn(99, "rewo:mining_world"));
-
-        assert_eq!(active.key, "rewo:mining_world");
-        assert_eq!(active.holder, 99);
-        assert_eq!(active.def.name, "rewo:unresolved_dimension_type/99");
-        assert!(
-            defs.iter().all(|d| d.name != active.def.name),
-            "the fallback must never claim to be a synced entry"
-        );
-        assert_eq!(active.def.shape, DimensionShape::OVERWORLD);
-    }
+/// The elytra take-off line's item test: a glider in the **chest** slot.
+///
+/// `LivingEntity.canGlide` loops over every `EquipmentSlot.VALUES` asking
+/// `canGlideUsing(getItemBySlot(slot), slot)`, and since that demands
+/// `slot == equippable.slot()` it can only ever be satisfied by the slot the
+/// item is equippable in. Every vanilla glider is equippable in the chest, so
+/// the loop collapses to this one lookup — `EquipmentSlot.CHEST`'s menu slot,
+/// `ARMOR_MENU_START + 1`. A datapack glider equippable elsewhere is the one
+/// case this reads wrong, and it is named here rather than faked with a slot
+/// table Rewo does not have.
+pub fn chest_is_glider(
+    inventory: &rewo_world::inventory::Inventory,
+    glider_items: &[i32],
+) -> bool {
+    inventory
+        .menu_slot(rewo_world::inventory::ARMOR_MENU_START + 1)
+        .is_some_and(|s| glider_items.contains(&s.item_id))
 }
 
-#[cfg(test)]
-mod respawn_tests {
-    use super::*;
-    use crate::dimension_parse::builtin as fx;
-    use crate::spawn_info::GlobalPos;
-    use rewo_world::entities::EntityState;
+/// `ServerboundPlayerCommandPacket.Action.START_FALL_FLYING` — the seventh
+/// constant of the enum (`ServerboundPlayerCommandPacket.java:55-63`), sent
+/// as the ordinal exactly like [`crate::jump_riding::START_RIDING_JUMP`].
+pub const START_FALL_FLYING: i32 = 6;
 
-    /// The same deliberately non name-sorted registry the login tests use:
-    /// Nether 0, the_end 1, Overworld 2. Any name-keyed shortcut fails here.
-    fn registry() -> Vec<DimensionTypeDef> {
-        crate::dimension_parse::parse_dimension_registry_packet(&fx::registry_packet(&[
-            ("minecraft:the_nether", fx::the_nether()),
-            ("minecraft:the_end", fx::the_end()),
-            ("minecraft:overworld", fx::overworld()),
-        ]))
-        .expect("fixture registry must parse")
-        .expect("packet is the dimension_type registry")
-    }
-
-    const NETHER_HOLDER: i32 = 0;
-    const OVERWORLD_HOLDER: i32 = 2;
-
-    fn spawn(holder: i32, level: &str, seed: i64) -> CommonPlayerSpawnInfo {
-        CommonPlayerSpawnInfo {
-            dimension_type: holder,
-            dimension: level.into(),
-            seed,
-            game_type: 1,
-            previous_game_type: Some(0),
-            is_debug: false,
-            is_flat: false,
-            last_death_location: Some(GlobalPos {
-                dimension: "minecraft:overworld".into(),
-                x: -3,
-                y: -59,
-                z: 7,
-            }),
-            portal_cooldown: 0,
-            sea_level: 63,
-        }
-    }
-
-    /// The world-side session state as plain locals: a `PlaySession` owns a
-    /// socket and cannot be built in a test, but [`WorldTransition`] borrows
-    /// exactly these fields and nothing else.
-    struct Harness {
-        world: World,
-        dirty: std::collections::HashSet<(i32, i32)>,
-        removed: Vec<(i32, i32)>,
-        light: rewo_world::light::LightEngine,
-        day_ticks: Option<i64>,
-        clocks: ClockManager,
-        game_time: Option<i64>,
-        end_flash: Option<rewo_world::end_flash::EndFlashState>,
-        weather: rewo_world::weather::WeatherState,
-        border: rewo_world::border::WorldBorder,
-        biome_zoom_seed: Option<i64>,
-        sea_level: Option<i32>,
-        colormaps: rewo_world::biome::Colormaps,
-        key: Option<String>,
-        holder: Option<i32>,
-        ty: Option<DimensionTypeDef>,
-        generation: u64,
-        transitions: Vec<DimensionTransition>,
-    }
-
-    /// A live-looking Overworld session: **three** loaded columns (two of them
-    /// also queued for re-mesh), an entity, a running world clock, and a
-    /// generation already past 0 so an increment can't be confused with a reset.
-    const OLD_COLUMNS: [(i32, i32); 3] = [(0, 0), (1, -2), (-3, 5)];
-
-    fn overworld_session(defs: &[DimensionTypeDef], generation: u64) -> Harness {
-        let mut world = World::for_dimension(&defs[OVERWORLD_HOLDER as usize]);
-        for (cx, cz) in OLD_COLUMNS {
-            world.ensure_column(cx, cz);
-        }
-        world
-            .entities
-            .add(7, EntityState::new(1, 42, 8.0, 70.0, 8.0, 0.0, 0.0));
-        assert_eq!(world.loaded_columns(), 3, "precondition");
-        assert!(world.has_sky_light(), "precondition");
-        Harness {
-            world,
-            dirty: [(0, 0), (1, -2)].into_iter().collect(),
-            removed: Vec::new(),
-            light: rewo_world::light::LightEngine::new(),
-            day_ticks: Some(189_121),
-            clocks: {
-                let mut m = ClockManager::default();
-                m.last_game_time = 138_341;
-                m.clocks
-                    .push((0, WorldClock::from_state(138_341, 189_121, 0.25, 1.0)));
-                m
-            },
-            game_time: Some(138_341),
-            // Deliberately a live flash on a dimension that has none: a
-            // transition that failed to rebuild it from the NEW dimension
-            // type would otherwise be invisible against a `None` harness.
-            end_flash: Some(rewo_world::end_flash::EndFlashState::default()),
-            // Deliberately a storm: a transition that failed to clear it would
-            // otherwise be invisible against a default-clear harness.
-            weather: {
-                let mut w = rewo_world::weather::WeatherState::default();
-                w.set_rain(0.8);
-                w.set_thunder(0.5);
-                w
-            },
-            // Same argument as the storm: a small off-centre border, so a
-            // transition that failed to reset it would not hide behind the
-            // default's own numbers.
-            border: {
-                let mut b = rewo_world::border::WorldBorder::default();
-                b.set_center(120.0, -64.0);
-                b.set_size(500.0);
-                b.set_warning_blocks(11);
-                b
-            },
-            biome_zoom_seed: Some(0x0bad_f00d),
-            sea_level: Some(63),
-            colormaps: rewo_world::biome::Colormaps::neutral(),
-            key: Some("minecraft:overworld".into()),
-            holder: Some(OVERWORLD_HOLDER),
-            ty: Some(defs[OVERWORLD_HOLDER as usize].clone()),
-            generation,
-            transitions: Vec::new(),
-        }
-    }
-
-    impl Harness {
-        fn respawn(&mut self, defs: &[DimensionTypeDef], spawn: &CommonPlayerSpawnInfo) -> bool {
-            WorldTransition {
-                world: &mut self.world,
-                dirty: &mut self.dirty,
-                removed: &mut self.removed,
-                light: &mut self.light,
-                day_ticks: &mut self.day_ticks,
-                clocks: &mut self.clocks,
-                game_time: &mut self.game_time,
-                weather: &mut self.weather,
-                border: &mut self.border,
-                biome_zoom_seed: &mut self.biome_zoom_seed,
-                sea_level: &mut self.sea_level,
-                biome_registry: None,
-                colormaps: &self.colormaps,
-                active_key: &mut self.key,
-                active_holder: &mut self.holder,
-                active_type: &mut self.ty,
-                end_flash: &mut self.end_flash,
-                generation: &mut self.generation,
-                transitions: &mut self.transitions,
-            }
-            .apply_respawn(defs, spawn)
-        }
-    }
-
-    /// Overworld → Nether: every old column is queued for the renderer to free,
-    /// the world is a *fresh* Nether (0..256, no sky light, no columns, no
-    /// entities), and the per-level clock/dirty/light state is back to its
-    /// pre-`set_time` values.
-    #[test]
-    fn a_changed_key_rebuilds_the_world_and_queues_every_old_column() {
-        let defs = registry();
-        let mut s = overworld_session(&defs, 4);
-        assert!(s.respawn(&defs, &spawn(NETHER_HOLDER, "minecraft:the_nether", -1)));
-
-        // Every old coordinate reached `removed` — exactly once, and only those.
-        let mut removed = s.removed.clone();
-        removed.sort_unstable();
-        let mut expected = OLD_COLUMNS;
-        expected.sort_unstable();
-        assert_eq!(removed, expected, "the renderer must free all three");
-
-        // A fresh Nether, not a re-pointed Overworld.
-        assert_eq!(s.world.shape, DimensionShape::NETHER);
-        assert_ne!(s.world.shape, DimensionShape::OVERWORLD);
-        assert!(!s.world.has_sky_light());
-        assert_eq!(s.world.loaded_columns(), 0, "old columns are gone");
-        assert_eq!(s.world.entities.len(), 0, "entities go with the old world");
-
-        // Light-relevant state: the lighting contract is the Nether's, so an
-        // unloaded read is dark rather than the Overworld's impossible sky 15 —
-        // and the fresh engine has nothing queued from the old shape.
-        assert_eq!(s.world.light_at(0, 70, 0), (0, 0));
-        assert_eq!(s.world.brightness_at(0, 70, 0), 0);
-        let tables = rewo_world::light::LightTables {
-            emission: &[],
-            dampening: &[],
-            face_occludes: &[],
-        };
-        assert!(
-            s.light
-                .on_block_change(&mut s.world, tables, 0, 70, 0, 0, 0)
-                .is_empty(),
-            "a fresh engine touches nothing in an empty world"
-        );
-
-        // Per-level state cleared.
-        assert!(s.dirty.is_empty(), "no stale column is queued for re-mesh");
-        assert_eq!(s.day_ticks, None);
-        assert!(s.clocks.is_empty(), "every clock, not only the overworld's");
-        // `ClientLevel.java:255` builds this from the NEW dimension type, and
-        // the Nether's skybox is `none` — so a level change destroys the
-        // flash rather than carrying it. The harness seeds a live one on
-        // purpose, or a transition that simply never touched the field would
-        // pass.
-        assert!(
-            s.end_flash.is_none(),
-            "the Nether has no end flashes, whatever the old level had"
-        );
-        assert_eq!(s.game_time, None);
-
-        // The new dimension, and the seed the biome layer fiddles with.
-        assert_eq!(s.key.as_deref(), Some("minecraft:the_nether"));
-        assert_eq!(s.holder, Some(NETHER_HOLDER));
-        assert_eq!(
-            s.ty.as_ref().map(|d| d.name.as_str()),
-            Some("minecraft:the_nether")
-        );
-        assert_eq!(s.biome_zoom_seed, Some(-1));
-
-        // Generation incremented by exactly one, and the history is exact.
-        assert_eq!(s.generation, 5);
-        assert_eq!(
-            s.transitions,
-            vec![DimensionTransition {
-                old_key: Some("minecraft:overworld".into()),
-                new_key: "minecraft:the_nether".into(),
-                holder: NETHER_HOLDER,
-                type_name: "minecraft:the_nether".into(),
-                shape: DimensionShape::NETHER,
-                has_sky_light: false,
-                skybox: Skybox::None,
-                ambient_light: 0.1,
-                cardinal_light_type: CardinalLightType::Nether,
-                has_day_timeline: false,
-                generation: 5,
-                // The witnesses: three loaded columns left, three queued for the
-                // renderer to free, none carried into the replacement, no stale
-                // re-mesh entry, and the whole clock back to pre-`set_time`.
-                old_columns: 3,
-                queued_for_removal: 3,
-                removal_queue_len: 3,
-                new_world_columns: 0,
-                dirty_after: 0,
-                clock_reset: true,
-            }]
-        );
-    }
-
-    /// The discard witnesses are *measurements*, not constants: with a
-    /// pre-loaded removal queue the transition still reports exactly what it
-    /// pushed, and the queue length grows to hold both.
-    ///
-    /// This is the property no observer outside the transition can check —
-    /// coordinates cannot prove it, because the Nether loads column (0,0) too.
-    #[test]
-    fn the_discard_witnesses_count_this_transitions_own_push() {
-        let defs = registry();
-        let mut s = overworld_session(&defs, 0);
-        // A column the app has not drained yet, from an earlier unload.
-        s.removed.push((99, 99));
-        assert!(s.respawn(&defs, &spawn(NETHER_HOLDER, "minecraft:the_nether", 7)));
-        let t = &s.transitions[0];
-        assert_eq!(t.old_columns, 3, "the world we left had three columns");
-        assert_eq!(t.queued_for_removal, 3, "this transition pushed three");
-        assert_eq!(t.removal_queue_len, 4, "the pre-existing entry is still queued");
-        assert_eq!(t.new_world_columns, 0);
-        assert_eq!(t.dirty_after, 0);
-        assert!(t.clock_reset);
-        assert_eq!(t.type_name, "minecraft:the_nether");
-        assert_eq!(t.cardinal_light_type, CardinalLightType::Nether);
-        assert_eq!(t.ambient_light, 0.1);
-        assert!(!t.has_day_timeline);
-        assert_eq!(s.removed.len(), 4);
-    }
-
-    /// A respawn naming the level we are already in (the ordinary death
-    /// respawn): the world, its columns, the clock, the generation and the
-    /// history all survive untouched — and so do the dimension type and the
-    /// seed, because vanilla builds no new `ClientLevel` to apply them to.
-    #[test]
-    fn a_same_key_respawn_retains_the_world_generation_and_history() {
-        let defs = registry();
-        let mut s = overworld_session(&defs, 4);
-        let digest = s.world.digest();
-        // A same-key packet that nonetheless names a *different* holder and
-        // seed: neither may be applied behind the retained chunks.
-        assert!(!s.respawn(&defs, &spawn(NETHER_HOLDER, "minecraft:overworld", 999)));
-
-        assert_eq!(s.world.loaded_columns(), 3, "columns retained");
-        assert_eq!(s.world.digest(), digest, "the world is untouched");
-        assert_eq!(s.world.shape, DimensionShape::OVERWORLD);
-        assert!(s.world.has_sky_light());
-        assert_eq!(s.world.entities.len(), 1, "entities retained");
-        assert!(s.removed.is_empty(), "nothing to free");
-        assert_eq!(s.dirty.len(), 2, "re-mesh queue retained");
-
-        assert_eq!(s.day_ticks, Some(189_121));
-        assert_eq!(s.game_time, Some(138_341));
-        assert_eq!(s.clocks.peek(0).unwrap().total, 189_121);
-
-        assert_eq!(s.holder, Some(OVERWORLD_HOLDER), "type not re-applied");
-        assert_eq!(
-            s.ty.as_ref().map(|d| d.name.as_str()),
-            Some("minecraft:overworld")
-        );
-        assert_eq!(s.biome_zoom_seed, Some(0x0bad_f00d), "seed retained");
-        assert_eq!(s.generation, 4, "not a transition");
-        assert!(s.transitions.is_empty(), "history unmoved");
-        assert_eq!(
-            s.weather.rain_level(),
-            0.8,
-            "no new level, so the storm keeps falling"
-        );
-        assert_eq!(s.border.size(), 500.0, "and the same border still stands");
-    }
-
-    /// Weather is `ClientLevel` state: a real dimension change discards it, so
-    /// walking into the Nether cannot carry the Overworld's storm along. The
-    /// harness starts at rain 0.8 / thunder 0.5 so this can fail.
-    #[test]
-    fn a_dimension_change_clears_the_weather() {
-        let defs = registry();
-        let mut s = overworld_session(&defs, 4);
-        assert_eq!(s.weather.rain_level(), 0.8, "precondition");
-        assert!(s.respawn(&defs, &spawn(NETHER_HOLDER, "minecraft:the_nether", 7)));
-        assert_eq!(s.weather.rain_level(), 0.0);
-        assert_eq!(s.weather.thunder_level(), 0.0);
-    }
-
-    /// The border is `ClientLevel` state on the same argument (M80). The
-    /// harness starts at a 500-block border centred on (120, -64) so a
-    /// transition that carried it through would be visible in all three of
-    /// size, centre and warning distance.
-    #[test]
-    fn a_dimension_change_clears_the_world_border() {
-        let defs = registry();
-        let mut s = overworld_session(&defs, 4);
-        assert_eq!(s.border.size(), 500.0, "precondition");
-        assert!(s.respawn(&defs, &spawn(NETHER_HOLDER, "minecraft:the_nether", 7)));
-        assert_eq!(s.border.size(), rewo_world::border::MAX_SIZE);
-        assert_eq!(s.border.center_x(), 0.0);
-        assert_eq!(s.border.center_z(), 0.0);
-        assert_eq!(s.border.warning_blocks(), 5);
-    }
-
-    /// The generation is a counter, not an index: at `u64::MAX` it wraps to 0
-    /// rather than panicking on overflow, and the recorded transition carries
-    /// the wrapped value.
-    #[test]
-    fn the_generation_wraps_at_u64_max() {
-        let defs = registry();
-        let mut s = overworld_session(&defs, u64::MAX);
-        assert!(s.respawn(&defs, &spawn(NETHER_HOLDER, "minecraft:the_nether", 0)));
-        assert_eq!(s.generation, 0);
-        assert_eq!(s.transitions[0].generation, 0);
-    }
-
-    /// Two changes in a row: the history is append-only and oldest-first, and
-    /// the second transition's `old_key` is the first's `new_key`.
-    #[test]
-    fn successive_changes_append_an_oldest_first_history() {
-        let defs = registry();
-        let mut s = overworld_session(&defs, 0);
-        assert!(s.respawn(&defs, &spawn(NETHER_HOLDER, "minecraft:the_nether", 1)));
-        assert!(s.respawn(&defs, &spawn(OVERWORLD_HOLDER, "rewo:mining_world", 2)));
-
-        assert_eq!(s.generation, 2);
-        assert_eq!(s.transitions.len(), 2);
-        assert_eq!(s.transitions[0].new_key, "minecraft:the_nether");
-        assert_eq!(
-            s.transitions[1].old_key.as_deref(),
-            Some("minecraft:the_nether")
-        );
-        assert_eq!(s.transitions[1].new_key, "rewo:mining_world");
-        // The level key is the packet's, the type is the holder's — a datapack
-        // level on the vanilla overworld type keeps both straight.
-        assert_eq!(s.key.as_deref(), Some("rewo:mining_world"));
-        assert_eq!(
-            s.ty.as_ref().map(|d| d.name.as_str()),
-            Some("minecraft:overworld")
-        );
-        assert_eq!(s.world.shape, DimensionShape::OVERWORLD);
-        assert!(s.world.has_sky_light());
-    }
-
-    // -- the camera (M162) -------------------------------------------------
-
-    /// **`None` until the server has positioned us**, which is Rewo's
-    /// `camera.isInitialized()`.
-    ///
-    /// `PlaySession::spawned` goes true on the first `player_position`
-    /// teleport; before it, `self.player` is at whatever the constructor left,
-    /// which is the origin. Handing that out as a camera puts a wither's roar
-    /// two blocks from `(0, 0, 0)` for anyone who spawns anywhere else — and
-    /// `LevelEventHandler.java:66` has no `else`, so vanilla plays nothing at
-    /// all in that state.
-    #[test]
-    fn the_camera_is_absent_until_the_server_positions_us() {
-        let p = moving_player();
-        assert_eq!(PlaySession::camera_eye(&p, false), None);
-        assert!(PlaySession::camera_eye(&p, true).is_some());
-    }
-
-    /// It is the EYE, not the feet.
-    ///
-    /// 1.62 blocks is a quarter of the bearing's own 2.0-block radius, so a
-    /// feet reading is not a rounding difference — it tilts every global
-    /// event's direction noticeably downward, and nothing about the sound's
-    /// distance would look wrong.
-    #[test]
-    fn the_camera_is_the_eye_and_not_the_feet() {
-        let p = moving_player();
-        let got = PlaySession::camera_eye(&p, true).expect("spawned");
-        assert_eq!(got, [p.x, p.y + rewo_world::physics::EYE_HEIGHT, p.z]);
-        assert_ne!(got[1], p.y, "the feet would be 1.62 blocks low");
-        // x and z pass through untouched — a transposed pair would put the
-        // listener somewhere else entirely.
-        assert_eq!((got[0], got[2]), (p.x, p.z));
-        assert_ne!(got[0], got[2], "the fixture must not hide a transposition");
-    }
-
-    // -- the local player --------------------------------------------------
-
-    /// A player mid-flight, so nothing below can pass by starting at a default.
-    fn moving_player() -> PlayerState {
-        PlayerState {
-            vx: 0.25,
-            vy: -0.6,
-            vz: -0.125,
-            yaw: 137.5,
-            pitch: -22.5,
-            on_ground: true,
-            horizontal_collision: true,
-            ..PlayerState::at(120.5, 71.0, -33.25)
-        }
-    }
-
-    struct PlayerHarness {
-        player: PlayerState,
-        health: f32,
-        food: i32,
-        dead: bool,
-        spawned: bool,
-        last_pos: (f64, f64, f64),
-        last_rot: (f32, f32),
-        reminder: u32,
-        last_on_ground: bool,
-        last_horiz: bool,
-        last_input_flags: u8,
-    }
-
-    fn player_harness() -> PlayerHarness {
-        PlayerHarness {
-            player: moving_player(),
-            health: 3.5,
-            food: 6,
-            dead: true,
-            spawned: true,
-            last_pos: (120.5, 71.0, -33.25),
-            last_rot: (137.5, -22.5),
-            reminder: 13,
-            last_on_ground: true,
-            last_horiz: true,
-            last_input_flags: 0b0101_0001,
-        }
-    }
-
-    impl PlayerHarness {
-        fn respawn(&mut self, keep_entity_data: bool) {
-            LocalPlayerRespawn {
-                player: &mut self.player,
-                health: &mut self.health,
-                food: &mut self.food,
-                dead: &mut self.dead,
-                spawned: &mut self.spawned,
-                last_pos: &mut self.last_pos,
-                last_rot: &mut self.last_rot,
-                reminder: &mut self.reminder,
-                last_on_ground: &mut self.last_on_ground,
-                last_horiz: &mut self.last_horiz,
-                last_input_flags: &mut self.last_input_flags,
-            }
-            .apply(keep_entity_data);
-        }
-    }
-
-    /// `dataToKeep` bit 2 (`shouldKeep((byte)2)`): the statements Rewo can
-    /// represent — `setDeltaMovement(old)`, `setYRot(old)`, `setXRot(old)`, and
-    /// the `assignValues` health entry — carry over bit-exactly, and the
-    /// constructor's `lastSentInput` is the old player's rather than
-    /// `Input.EMPTY`.
-    #[test]
-    fn keeping_entity_data_preserves_velocity_and_both_rotations() {
-        let mut h = player_harness();
-        h.respawn(true);
-
-        let old = moving_player();
-        assert_eq!(
-            (h.player.vx, h.player.vy, h.player.vz),
-            (old.vx, old.vy, old.vz)
-        );
-        assert_eq!(h.player.yaw, old.yaw);
-        assert_eq!(h.player.pitch, old.pitch);
-        assert_eq!(h.last_input_flags, 0b0101_0001, "old lastSentInput kept");
-
-        // Everything else is still the fresh entity's — bit 2 keeps entity
-        // *data*, not the entity's position or its send-cadence bookkeeping.
-        assert_eq!((h.player.x, h.player.y, h.player.z), (0.0, 0.0, 0.0));
-        assert!(!h.player.on_ground && !h.player.horizontal_collision);
-        assert_eq!(h.last_pos, (0.0, 0.0, 0.0));
-        assert_eq!(h.last_rot, (0.0, 0.0));
-        assert_eq!(h.reminder, 0);
-        assert!(!h.last_on_ground && !h.last_horiz);
-        // Health is `SynchedEntityData`, so bit 2 preserves the old player's
-        // non-default value exactly; food is `FoodData` and is always fresh.
-        assert_eq!(h.health, 3.5, "DATA_HEALTH_ID carried by assignValues");
-        assert_eq!(h.food, 20, "FoodData is not synched data — always fresh");
-        assert!(!h.dead);
-        assert!(
-            !h.spawned,
-            "not a live participant until the teleport lands"
-        );
-    }
-
-    /// `dataToKeep` 0: `resetPos()` zeroes the delta movement and the X rotation,
-    /// `handleRespawn` then sets the Y rotation to -180, and the constructor
-    /// supplies everything else — including `Input.EMPTY`.
-    #[test]
-    fn without_keep_the_player_is_the_freshly_constructed_one() {
-        let mut h = player_harness();
-        h.respawn(false);
-
-        assert_eq!((h.player.vx, h.player.vy, h.player.vz), (0.0, 0.0, 0.0));
-        assert_eq!(h.player.pitch, 0.0, "resetPos setXRot(0)");
-        assert_eq!(h.player.yaw, -180.0, "handleRespawn setYRot(-180)");
-        assert_eq!(h.last_input_flags, 0, "Input.EMPTY");
-        assert_eq!((h.player.x, h.player.y, h.player.z), (0.0, 0.0, 0.0));
-        assert!(!h.player.on_ground && !h.player.horizontal_collision);
-        assert_eq!(h.last_pos, (0.0, 0.0, 0.0));
-        assert_eq!(h.last_rot, (0.0, 0.0));
-        assert_eq!(h.reminder, 0);
-        assert!(!h.last_on_ground && !h.last_horiz);
-        // No bit 2 → no `assignValues`, so the harness's non-default 3.5 health
-        // is gone and the fresh player's 20 stands.
-        assert_eq!((h.health, h.food), (20.0, 20));
-        assert!(!h.dead);
-        assert!(!h.spawned);
-    }
-
-    /// Bit 1 (`KEEP_ATTRIBUTE_MODIFIERS`) selects `assignAllValues` vs
-    /// `assignBaseValues` on an `AttributeMap` Rewo does not model, so it is a
-    /// documented no-op: the two masks that differ only in bit 1 must land on
-    /// identical player state.
-    #[test]
-    fn the_attribute_modifier_bit_is_a_no_op() {
-        for (a, b) in [
-            (0u8, RespawnInfo::KEEP_ATTRIBUTE_MODIFIERS),
-            (RespawnInfo::KEEP_ENTITY_DATA, RespawnInfo::KEEP_ALL_DATA),
-        ] {
-            let keeps_entity_data = |m: u8| m & RespawnInfo::KEEP_ENTITY_DATA != 0;
-            let mut x = player_harness();
-            x.respawn(keeps_entity_data(a));
-            let mut y = player_harness();
-            y.respawn(keeps_entity_data(b));
-            assert_eq!(
-                (
-                    x.player.vx,
-                    x.player.vy,
-                    x.player.vz,
-                    x.player.yaw,
-                    x.player.pitch
-                ),
-                (
-                    y.player.vx,
-                    y.player.vy,
-                    y.player.vz,
-                    y.player.yaw,
-                    y.player.pitch
-                ),
-                "dataToKeep {a} and {b} differ only in the attribute bit"
-            );
-            assert_eq!(x.last_input_flags, y.last_input_flags);
-            assert_eq!(
-                (x.health, x.food, x.dead, x.spawned),
-                (y.health, y.food, y.dead, y.spawned)
-            );
-        }
-    }
+/// Everything `LocalPlayer.aiStep`'s elytra take-off line reads, gathered so
+/// the decision is one pure call. `PlaySession::tick` is the adapter and has
+/// no tests (M71's lesson), so the line lives here where it can be witnessed.
+pub struct FallFlyingTakeoff<'a> {
+    /// `this.input.keyPresses.jump()` — the **current** tick's key, read after
+    /// `this.input.tick()`.
+    pub jump: bool,
+    /// `wasJumping`: the previous tick's key, sampled at `aiStep:773` before
+    /// `input.tick()`. With `jump` this is the rising edge.
+    pub was_jumping: bool,
+    /// `justToggledCreativeFlight` — the flight toggle turned this tick, which
+    /// takes the same key press and must not also launch an elytra. This is
+    /// [`FlightStep::abilities_changed`](rewo_world::abilities::FlightStep).
+    pub just_toggled_creative_flight: bool,
+    /// `this.onClimbable()` at the pre-move position.
+    pub on_climbable: bool,
+    /// The local player, for `tryToStartFallFlying`'s condition.
+    pub state: &'a PlayerState,
+    /// `Player.canGlide`'s `!this.abilities.flying`.
+    pub abilities: &'a rewo_world::abilities::Abilities,
+    /// `LivingEntity.canGlide`'s levitation test.
+    pub attrs: &'a physics::MoveAttributes,
+    /// `isFallFlying()` as the line's `tryToStartFallFlying` reads it.
+    pub fall_flying: bool,
+    /// The player's `InventoryMenu`, for [`chest_is_glider`].
+    pub inventory: &'a rewo_world::inventory::Inventory,
+    /// [`glider_item_ids`]' output.
+    pub glider_items: &'a [i32],
+    /// `(ServerboundPlayerCommandPacket id, local entity id)`. `None` is
+    /// [`crate::jump_riding`]'s missing-id case: nothing is sent at all.
+    pub wire: Option<(i32, i32)>,
 }
 
-/// The map half of M149c — what `clock_tests`' harness does for itself and so
-/// cannot witness.
-#[cfg(test)]
-mod clock_map_tests {
-    use super::{ClockManager, WorldClock};
-
-    /// A vanilla server sends the Overworld's clock **and** the End's in one
-    /// `set_time`. M12 kept the first and dropped the second; both are held
-    /// now, independently.
-    #[test]
-    fn two_clocks_are_held_and_advance_independently() {
-        let mut m = ClockManager::default();
-        m.handle_updates(1000, &[(0, 5_000, 0.0, 1.0), (1, 77, 0.0, 0.5)]);
-        assert_eq!(m.peek(0).unwrap().total, 5_000);
-        assert_eq!(m.peek(1).unwrap().total, 77);
-
-        // One shared delta, each clock scaling it by its own rate.
-        m.handle_updates(1100, &[]);
-        assert_eq!(m.peek(0).unwrap().total, 5_100, "rate 1 takes the whole delta");
-        assert_eq!(m.peek(1).unwrap().total, 127, "rate 0.5 takes half of it");
+/// `LocalPlayer.aiStep`'s elytra take-off line, end to end:
+///
+/// ```java
+/// if (this.input.keyPresses.jump() && !justToggledCreativeFlight && !wasJumping
+///     && !this.onClimbable() && this.tryToStartFallFlying()) {
+///    this.connection.send(new ServerboundPlayerCommandPacket(
+///        this, ServerboundPlayerCommandPacket.Action.START_FALL_FLYING));
+/// }
+/// ```
+///
+/// `tryToStartFallFlying` is
+/// [`physics::can_start_fall_flying`](rewo_world::physics::can_start_fall_flying)
+/// (which also carries `Player.canGlide`'s and `LivingEntity.canGlide`'s
+/// clauses), with [`chest_is_glider`] standing in for its item scan. The
+/// two-argument packet constructor's `data` is `0`.
+///
+/// Returns the packet to send, or `None` when any conjunct fails. It does
+/// **not** set the flag — `startFallFlying()` is `setSharedFlag(7, true)`, a
+/// separate statement in vanilla and a separate write for the caller, which
+/// must make it before it can borrow the socket.
+pub fn fall_flying_takeoff(i: &FallFlyingTakeoff<'_>) -> Option<PacketWriter> {
+    if !(i.jump && !i.just_toggled_creative_flight && !i.was_jumping && !i.on_climbable) {
+        return None;
     }
-
-    /// `getTotalTicks` is `computeIfAbsent` (`ClientClockManager.java:15-17,
-    /// 41-43`), so **asking creates**. The created instance is not inert: it
-    /// carries `rate = 1.0` and counts up from the next tick.
-    ///
-    /// Returning 0 without creating looks identical on the tick you ask and
-    /// diverges forever after — and for the End flash it is the difference
-    /// between a schedule that runs and one pinned in interval 0, where
-    /// `EndFlashState` never flashes.
-    #[test]
-    fn reading_an_unsent_clock_creates_it_and_it_then_advances() {
-        let mut m = ClockManager::default();
-        m.handle_updates(1000, &[(0, 5_000, 0.0, 1.0)]);
-        assert!(m.peek(7).is_none(), "not there before it is asked for");
-
-        assert_eq!(m.total_ticks(7), 0, "a fresh instance reads zero");
-        assert!(m.peek(7).is_some(), "and asking is what created it");
-
-        m.handle_updates(1050, &[]);
-        assert_eq!(m.peek(7).unwrap().total, 50, "rate 1.0, so it counts up");
-        assert_eq!(m.peek(0).unwrap().total, 5_050, "and the other is unaffected");
-    }
-
-    /// `lastTickGameTime` is the **manager's**, not the instance's
-    /// (`ClientClockManager.java:19-21`): a clock minted between two ticks
-    /// receives the whole delta on the next one, not just the part after it
-    /// appeared.
-    #[test]
-    fn a_minted_clock_inherits_the_managers_last_tick_time() {
-        let mut m = ClockManager::default();
-        m.handle_updates(1000, &[(0, 0, 0.0, 1.0)]);
-        // Minted at "1000" as far as the manager is concerned.
-        assert_eq!(m.total_ticks(3), 0);
-        m.handle_updates(1020, &[]);
-        assert_eq!(
-            m.peek(3).unwrap().total,
-            20,
-            "the whole 20-tick delta, because the manager's clock is shared"
-        );
-    }
-
-    /// The tick-then-overwrite order, at the map level: an entry in the same
-    /// packet lands on the explicit value, not the advanced one.
-    #[test]
-    fn an_explicit_entry_overwrites_the_advance_it_shares_a_packet_with() {
-        let mut m = ClockManager::default();
-        m.handle_updates(100, &[(0, 5_000, 0.0, 1.0)]);
-        m.handle_updates(120, &[(0, 0, 0.0, 1.0)]);
-        assert_eq!(m.peek(0).unwrap().total, 0, "/time set beats the +20 advance");
-    }
-
-    /// `clear` is the level boundary — every clock, not only the overworld's,
-    /// and the shared last-tick time with them.
-    #[test]
-    fn clear_drops_every_clock_and_the_shared_time() {
-        let mut m = ClockManager::default();
-        m.handle_updates(1000, &[(0, 1, 0.0, 1.0), (1, 2, 0.0, 1.0)]);
-        m.clear();
-        assert!(m.is_empty());
-        assert_eq!(m.last_game_time, 0);
-        // And a clock minted after the clear starts from the new baseline
-        // rather than inheriting the old level's game time.
-        m.tick(50);
-        assert_eq!(m.total_ticks(0), 0);
-        m.tick(60);
-        assert_eq!(m.peek(0).unwrap().total, 10);
-    }
-
-    /// `peek` must not mint — it is M12's day-tick fallback's only caller, and
-    /// that fallback is defined by the *absence* of a clock.
-    #[test]
-    fn peek_does_not_mint() {
-        let mut m = ClockManager::default();
-        assert!(m.peek(0).is_none());
-        assert!(m.is_empty(), "peeking created nothing");
-        let _ = m.total_ticks(0);
-        assert!(!m.is_empty(), "and total_ticks is what does create");
-    }
-
-    /// `ClientLevel.java:255`'s ternary, over the four vanilla skyboxes.
-    ///
-    /// The battery's argument for this existing: a mutation giving **every**
-    /// dimension a flash survived the whole suite, because the only witness
-    /// that could see it drove the respawn transition and the *login* path
-    /// builds its level somewhere no test can reach.
-    #[test]
-    fn only_an_end_skybox_gets_a_flash() {
-        use rewo_world::dimension::{DimensionTypeDef, Skybox};
-        let with = |s: Skybox| {
-            let mut d = DimensionTypeDef::unresolved_holder(0);
-            d.skybox = s;
-            super::end_flash_for_dimension(&d).is_some()
-        };
-        assert!(with(Skybox::End), "the End");
-        assert!(!with(Skybox::Overworld), "the Overworld and its caves");
-        assert!(!with(Skybox::None), "the Nether");
-        // And a fresh one really is fresh — `EndFlashState`'s zeroed default
-        // is what makes its first interval silent (M149a), so a flash handed
-        // a used state would flash immediately on arrival.
-        let mut d = DimensionTypeDef::unresolved_holder(0);
-        d.skybox = Skybox::End;
-        assert_eq!(
-            super::end_flash_for_dimension(&d),
-            Some(rewo_world::end_flash::EndFlashState::default())
-        );
-    }
-
-    /// The three outcomes of `getDefaultClockTime`, which look like one
-    /// number and are not.
-    ///
-    /// A dimension declaring **no** clock and one naming an **unknown** clock
-    /// both read 0 forever; a dimension naming a real clock the server has
-    /// never sent reads 0 *once* and then counts. Collapsing any two of them
-    /// is invisible on the tick you look and permanent afterwards.
-    #[test]
-    fn default_clock_time_has_three_outcomes() {
-        use rewo_world::dimension::{DimensionTypeDef, Skybox};
-
-        let ids = vec!["minecraft:overworld".to_string(), "minecraft:the_end".to_string()];
-        let dim = |clock: Option<&str>| {
-            let mut d = DimensionTypeDef::unresolved_holder(0);
-            d.skybox = Skybox::End;
-            d.default_clock = clock.map(str::to_string);
-            d
-        };
-
-        // 1. No clock declared — the Nether's case. Permanent zero.
-        let mut m = ClockManager::default();
-        m.handle_updates(1000, &[(0, 5_000, 0.0, 1.0)]);
-        let nether = dim(None);
-        assert_eq!(super::default_clock_time(Some(&nether), &ids, &mut m), 0);
-        m.handle_updates(2000, &[]);
-        assert_eq!(
-            super::default_clock_time(Some(&nether), &ids, &mut m),
-            0,
-            "still zero a thousand ticks later"
-        );
-        assert_eq!(m.clocks.len(), 1, "and nothing was minted for it");
-
-        // 2. Named but absent from the registry. Also permanently zero.
-        let bogus = dim(Some("modded:elsewhere"));
-        assert_eq!(super::default_clock_time(Some(&bogus), &ids, &mut m), 0);
-        m.handle_updates(3000, &[]);
-        assert_eq!(super::default_clock_time(Some(&bogus), &ids, &mut m), 0);
-        assert_eq!(m.clocks.len(), 1, "an unknown name mints nothing");
-
-        // 3. Named, real, never sent. Zero once, then counting.
-        let end = dim(Some("minecraft:the_end"));
-        assert_eq!(
-            super::default_clock_time(Some(&end), &ids, &mut m),
-            0,
-            "the first read is what creates it"
-        );
-        m.handle_updates(3100, &[]);
-        assert_eq!(
-            super::default_clock_time(Some(&end), &ids, &mut m),
-            100,
-            "and from there it advances like any other clock"
-        );
-
-        // And the id really is the registry position, not a guess: the End's
-        // clock is index 1, so a server state for holder 1 lands on it.
-        m.handle_updates(3100, &[(1, 42_000, 0.0, 1.0)]);
-        assert_eq!(super::default_clock_time(Some(&end), &ids, &mut m), 42_000);
-        assert_eq!(
-            super::default_clock_time(None, &ids, &mut m),
-            0,
-            "no active dimension at all is the same permanent zero"
-        );
-    }
-
-    /// The `WorldClock` fields a minted instance carries, stated rather than
-    /// implied: vanilla's `ClockInstance` defaults are `totalTicks = 0`,
-    /// `partialTick = 0`, and **`rate = 1.0F`** — a zero rate would freeze it.
-    #[test]
-    fn a_minted_instance_has_rate_one() {
-        let mut m = ClockManager::default();
-        let _ = m.total_ticks(4);
-        assert_eq!(
-            *m.peek(4).unwrap(),
-            WorldClock {
-                total: 0,
-                partial: 0.0,
-                rate: 1.0,
-                last_game_time: 0,
-            }
-        );
-    }
-}
-
-#[cfg(test)]
-mod clock_tests {
-    use super::{ClockManager, WorldClock};
-
-    const OVERWORLD: Option<i32> = Some(0);
-
-    /// Seed a production [`ClockManager`] with the single clock these tests
-    /// were written against.
-    fn manager(clock: Option<WorldClock>, id: Option<i32>) -> ClockManager {
-        let mut m = ClockManager::default();
-        if let (Some(c), Some(id)) = (clock, id) {
-            m.last_game_time = c.last_game_time;
-            m.clocks.push((id, c));
-        }
-        m
-    }
-
-    /// The shape M12's tests were written against, now a **harness over the
-    /// production `ClockManager`** rather than a function of its own.
-    ///
-    /// Every claim below still lands on `ClockManager::handle_updates` — the
-    /// tick-then-overwrite order and all of `WorldClock::advance`'s
-    /// arithmetic. What this wrapper does itself is the map bookkeeping, which
-    /// is why that is graded separately by `clock_map_tests` rather than here:
-    /// a harness cannot witness itself.
-    fn apply_set_time(
-        clock: &mut Option<WorldClock>,
-        overworld_id: Option<i32>,
-        game_time: i64,
-        entries: &[(i32, i64, f32, f32)],
+    if !physics::can_start_fall_flying(
+        i.state,
+        i.abilities,
+        i.attrs,
+        i.fall_flying,
+        chest_is_glider(i.inventory, i.glider_items),
     ) {
-        let mut m = manager(*clock, overworld_id);
-        m.handle_updates(game_time, entries);
-        *clock = overworld_id.and_then(|id| m.peek(id)).copied();
+        return None;
     }
-
-    /// The same shape for the local `+1`, over the production function.
-    fn local_tick_time(
-        game_time: Option<i64>,
-        clock: &mut Option<WorldClock>,
-    ) -> Option<(i64, i64)> {
-        let mut m = manager(*clock, OVERWORLD);
-        let out = super::local_tick_time(game_time, &mut m, OVERWORLD);
-        *clock = OVERWORLD.and_then(|id| m.peek(id)).copied();
-        out
-    }
-
-    /// The join packet establishes the clock from an explicit state — total and
-    /// last-game-time come straight from the wire. (The real server session
-    /// showed `game=138341` establishing `total=189121`.)
-    #[test]
-    fn initial_explicit_state_establishes_the_clock() {
-        let mut clock = None;
-        apply_set_time(&mut clock, OVERWORLD, 138341, &[(0, 189121, 0.0, 1.0)]);
-        let c = clock.expect("clock established");
-        assert_eq!(c.total, 189121);
-        assert_eq!(c.last_game_time, 138341);
-        assert_eq!(c.partial, 0.0);
-        assert_eq!(c.rate, 1.0);
-    }
-
-    /// The 20-tick `forceGameTimeSynchronization` sync carries an EMPTY map; at
-    /// rate 1 it must advance `total` by the exact game-time delta. This is the
-    /// frozen-clock regression: the old code held the last total here.
-    #[test]
-    fn empty_map_advances_by_the_game_time_delta_at_rate_one() {
-        let mut clock = Some(WorldClock::from_state(138341, 189121, 0.0, 1.0));
-        // The real diagnostic's game times after the join, deltas 3/20/20/20.
-        for (game_time, expected_total) in [
-            (138344, 189124),
-            (138364, 189144),
-            (138384, 189164),
-            (138404, 189184),
-        ] {
-            apply_set_time(&mut clock, OVERWORLD, game_time, &[]);
-            let c = clock.unwrap();
-            assert_eq!(c.total, expected_total, "at game {game_time}");
-            assert_eq!(c.last_game_time, game_time);
-        }
-    }
-
-    /// A paused world (`/tick freeze`, or `doDaylightCycle false` reported as
-    /// rate 0) must NOT advance on empty syncs, however large the delta.
-    #[test]
-    fn paused_rate_zero_holds_total() {
-        let mut clock = Some(WorldClock::from_state(1000, 500, 0.0, 0.0));
-        apply_set_time(&mut clock, OVERWORLD, 1020, &[]);
-        apply_set_time(&mut clock, OVERWORLD, 5000, &[]);
-        let c = clock.unwrap();
-        assert_eq!(c.total, 500, "paused clock frozen");
-        assert_eq!(c.last_game_time, 5000, "still anchors to gameTime");
-    }
-
-    /// A fractional rate proves the floor + partial carry: at rate 0.5 a
-    /// single-tick advance banks half a tick, and the second single tick rolls
-    /// the carry over into one whole `total` tick.
-    #[test]
-    fn fractional_rate_floors_and_carries_the_remainder() {
-        let mut clock = Some(WorldClock::from_state(0, 0, 0.0, 0.5));
-
-        apply_set_time(&mut clock, OVERWORLD, 1, &[]); // +0.5 → floor 0, carry 0.5
-        let c = clock.unwrap();
-        assert_eq!(c.total, 0, "half a tick banks nothing yet");
-        assert!((c.partial - 0.5).abs() < 1e-9, "carry {}", c.partial);
-
-        apply_set_time(&mut clock, OVERWORLD, 2, &[]); // 0.5 + 0.5 = 1.0 → floor 1
-        let c = clock.unwrap();
-        assert_eq!(c.total, 1, "carry rolls into one whole tick");
-        assert!(c.partial.abs() < 1e-9, "carry reset, got {}", c.partial);
-    }
-
-    /// A negative `rate` (a clock running backward) proves the floor rounds
-    /// toward negative infinity, not toward zero: starting at partial 0.25, one
-    /// tick at rate -0.5 gives newPartial -0.25, `floor(-0.25) == -1` (NOT 0), so
-    /// `total` BORROWS a whole tick (10 → 9) and the remainder is a POSITIVE
-    /// `-0.25 - (-1) == 0.75`. A truncate-toward-zero floor would wrongly leave
-    /// `total` at 10 with a negative carry.
-    #[test]
-    fn negative_rate_floors_toward_negative_infinity_with_positive_carry() {
-        let mut clock = Some(WorldClock::from_state(0, 10, 0.25, -0.5));
-
-        apply_set_time(&mut clock, OVERWORLD, 1, &[]); // 0.25 - 0.5 = -0.25 → floor -1
-        let c = clock.unwrap();
-        assert_eq!(c.total, 9, "borrowed one whole tick from total");
-        assert!(
-            (c.partial - 0.75).abs() < 1e-6,
-            "positive carry {}",
-            c.partial
-        );
-        assert_eq!(c.last_game_time, 1);
-    }
-
-    /// Vanilla `handleUpdates` order: a packet that both advances (non-empty
-    /// game-time delta) AND carries an explicit overworld state must land on the
-    /// explicit value — the advance happens first and is then overwritten.
-    #[test]
-    fn explicit_state_overwrites_after_the_advance() {
-        let mut clock = Some(WorldClock::from_state(100, 5000, 0.0, 1.0));
-        // Delta 20 would advance to 5020, but the explicit reset wins.
-        apply_set_time(&mut clock, OVERWORLD, 120, &[(0, 0, 0.0, 1.0)]);
-        let c = clock.unwrap();
-        assert_eq!(c.total, 0, "explicit /time set overrides the advance");
-        assert_eq!(c.last_game_time, 120);
-    }
-
-    /// The_end's clock is present in the map but must not touch the overworld —
-    /// entries are matched by registry id, and the overworld still advances.
-    #[test]
-    fn a_non_overworld_entry_only_advances_the_overworld() {
-        let mut clock = Some(WorldClock::from_state(100, 5000, 0.0, 1.0));
-        // id 1 is the_end; the overworld advances by the delta, id 1 ignored.
-        apply_set_time(&mut clock, OVERWORLD, 120, &[(1, 999, 0.0, 1.0)]);
-        assert_eq!(
-            clock.unwrap().total,
-            5020,
-            "overworld advanced, the_end skipped"
-        );
-    }
-
-    /// `Mth.floor` returns a Java `int`, so a `newPartialTicks` past `i32::MAX`
-    /// must saturate `fullTicks` to `i32::MAX` — NOT the far larger `i64::MAX` a
-    /// direct `f64 as i64` cast would give. At rate 1 a 5-billion-tick delta
-    /// (well past `i32::MAX ≈ 2.147e9`) banks exactly `i32::MAX` whole ticks and
-    /// carries the ~2.85e9 remainder against that saturated value. The buggy
-    /// direct-i64 path would instead bank the full 5e9 and carry 0.
-    #[test]
-    fn huge_positive_partial_saturates_full_to_i32_max() {
-        let mut clock = Some(WorldClock::from_state(0, 0, 0.0, 1.0));
-        // delta = 5_000_000_000 (exact in f64), newPartialTicks = 5e9.
-        apply_set_time(&mut clock, OVERWORLD, 5_000_000_000, &[]);
-        let c = clock.unwrap();
-        assert_eq!(
-            c.total,
-            i64::from(i32::MAX),
-            "double→int saturates to i32::MAX, not i64::MAX (direct i64 would be 5e9)"
-        );
-        assert!(
-            c.partial.is_finite() && c.partial > 2.8e9,
-            "remainder taken against the i32-saturated full, not the true floor (got {})",
-            c.partial
-        );
-        assert_eq!(c.last_game_time, 5_000_000_000);
-    }
-
-    /// A `NaN` rate poisons the arithmetic: `newPartialTicks` is `NaN`,
-    /// `Mth.floor`'s `double→int` narrowing maps `NaN` to `0` (so `total` holds),
-    /// and the `(float)(NaN - 0)` carry is `NaN`. This must not panic.
-    #[test]
-    fn nan_rate_floors_to_zero_and_poisons_the_carry() {
-        let mut clock = Some(WorldClock::from_state(0, 100, 0.0, f32::NAN));
-        apply_set_time(&mut clock, OVERWORLD, 1, &[]);
-        let c = clock.unwrap();
-        assert_eq!(
-            c.total, 100,
-            "NaN floors to 0 (NaN→int is 0), total unchanged"
-        );
-        assert!(
-            c.partial.is_nan(),
-            "NaN rate poisons the carry, got {}",
-            c.partial
-        );
-        assert_eq!(c.last_game_time, 1);
-    }
-
-    /// `gameTime - lastTickGameTime` is `long` subtraction that wraps
-    /// two's-complement — `i64::MAX - i64::MIN` wraps to `-1`, not a debug panic.
-    /// At rate 1 that -1 delta borrows exactly one whole tick from `total`.
-    #[test]
-    fn delta_subtraction_wraps_rather_than_panics() {
-        let mut clock = Some(WorldClock::from_state(i64::MIN, 5000, 0.0, 1.0));
-        // i64::MAX.wrapping_sub(i64::MIN) == -1 → newPartialTicks = -1.0.
-        apply_set_time(&mut clock, OVERWORLD, i64::MAX, &[]);
-        let c = clock.unwrap();
-        assert_eq!(
-            c.total, 4999,
-            "wrapped delta of -1 borrows one tick, no panic"
-        );
-        assert_eq!(c.last_game_time, i64::MAX);
-    }
-
-    /// `totalTicks += fullTicks` is `long` addition that wraps two's-complement —
-    /// `i64::MAX + 1` wraps to `i64::MIN`, not a debug overflow panic.
-    #[test]
-    fn total_addition_wraps_rather_than_panics() {
-        let mut clock = Some(WorldClock::from_state(0, i64::MAX, 0.0, 1.0));
-        // delta 1 at rate 1 → fullTicks 1 → i64::MAX.wrapping_add(1).
-        apply_set_time(&mut clock, OVERWORLD, 1, &[]);
-        let c = clock.unwrap();
-        assert_eq!(
-            c.total,
-            i64::MIN,
-            "wrapping_add overflow wraps to i64::MIN, no panic"
-        );
-        assert_eq!(c.last_game_time, 1);
-    }
-
-    // -- `ClientLevel.tickTime`: the local per-tick advance -----------------
-
-    /// Before the first `set_time` the client game-time is `None`, so
-    /// `ClientLevel.tickTime` has nothing to run — the local tick is a no-op and
-    /// the renderer keeps reading full daylight.
-    #[test]
-    fn local_tick_before_first_set_time_is_a_no_op() {
-        let mut clock = None;
-        assert_eq!(local_tick_time(None, &mut clock), None);
-        assert!(clock.is_none());
-    }
-
-    /// After an explicit join establishes the clock, each running client tick
-    /// advances it by exactly one — N local ticks add N. This is the path the
-    /// sync-only clock lacked: it moved in 20-tick jumps and fell short of the
-    /// elapsed ticks (the measured +75 over 80 ticks).
-    #[test]
-    fn join_then_n_local_ticks_advance_n() {
-        let mut clock = None;
-        // Join carries an explicit overworld state; `set_time` also anchors the
-        // client game-time to the packet value (the `setGameTime` step).
-        apply_set_time(&mut clock, OVERWORLD, 1000, &[(0, 5000, 0.0, 1.0)]);
-        let mut game_time = Some(1000);
-        for i in 1..=64 {
-            let (gt, day) = local_tick_time(game_time, &mut clock).unwrap();
-            game_time = Some(gt);
-            assert_eq!(gt, 1000 + i, "game_time advances one per tick");
-            assert_eq!(day, 5000 + i, "day_ticks advances one per tick at rate 1");
-        }
-        assert_eq!(clock.unwrap().total, 5064);
-        assert_eq!(game_time, Some(1064));
-    }
-
-    /// The no-double-count invariant: the 20-tick `forceGameTimeSynchronization`
-    /// sync at the game time the client already predicted contributes a
-    /// zero-delta advance on its own, leaving exactly the one local `+1` for
-    /// that tick. (In `PlaySession::tick` the sync is drained before the local
-    /// advance, so both run against the same clock in one tick.)
-    #[test]
-    fn empty_sync_at_predicted_time_adds_zero_then_one_local_tick() {
-        // The client has locally ticked its clock up to game 1020 (clock 5020).
-        let mut clock = Some(WorldClock::from_state(1020, 5020, 0.0, 1.0));
-        let game_time = Some(1020);
-
-        // A drained empty sync carries the *already-predicted* game time 1020 →
-        // `setGameTime` is a no-op and `handleUpdates` advances by delta 0.
-        apply_set_time(&mut clock, OVERWORLD, 1020, &[]);
-        assert_eq!(
-            clock.unwrap().total,
-            5020,
-            "empty sync at the predicted time adds zero"
-        );
-
-        // Then this tick's single local `+1`.
-        let (gt, day) = local_tick_time(game_time, &mut clock).unwrap();
-        assert_eq!(gt, 1021);
-        assert_eq!(day, 5021, "exactly one tick banked, no double count");
-    }
-
-    /// A server sync whose game time DIFFERS from the client's prediction
-    /// re-anchors the clock to the server value (a forward jump banks the gap, a
-    /// backward jump borrows it), and the same tick's local `+1` then continues
-    /// from the corrected value.
-    #[test]
-    fn server_correction_reanchors_then_local_tick() {
-        // Forward correction: the client predicted 1000, the server is at 1005.
-        let mut clock = Some(WorldClock::from_state(1000, 5000, 0.0, 1.0));
-        apply_set_time(&mut clock, OVERWORLD, 1005, &[]); // advance delta +5
-        assert_eq!(
-            clock.unwrap().total,
-            5005,
-            "forward re-anchor banks the 5-tick gap"
-        );
-        let (gt, day) = local_tick_time(Some(1005), &mut clock).unwrap();
-        assert_eq!(
-            (gt, day),
-            (1006, 5006),
-            "local +1 continues from the correction"
-        );
-
-        // Backward correction: the client predicted 2000, the server is at 1997.
-        let mut clock = Some(WorldClock::from_state(2000, 9000, 0.0, 1.0));
-        apply_set_time(&mut clock, OVERWORLD, 1997, &[]); // advance delta -3
-        assert_eq!(
-            clock.unwrap().total,
-            8997,
-            "backward re-anchor borrows the 3-tick gap"
-        );
-        let (gt, day) = local_tick_time(Some(1997), &mut clock).unwrap();
-        assert_eq!(
-            (gt, day),
-            (1998, 8998),
-            "local +1 continues from the correction"
-        );
-    }
-
-    /// A paused world (rate 0) advances the client game-time counter every tick
-    /// but leaves the clock `total` frozen — the day/night cycle holds while the
-    /// world keeps counting ticks (and the clock still re-anchors to `gameTime`).
-    #[test]
-    fn rate_zero_holds_total_while_game_time_advances() {
-        let mut clock = Some(WorldClock::from_state(1000, 500, 0.0, 0.0));
-        let mut game_time = Some(1000);
-        for i in 1..=10 {
-            let (gt, day) = local_tick_time(game_time, &mut clock).unwrap();
-            game_time = Some(gt);
-            assert_eq!(gt, 1000 + i, "game_time still counts up");
-            assert_eq!(day, 500, "paused clock frozen");
-        }
-        let c = clock.unwrap();
-        assert_eq!(c.total, 500);
-        assert_eq!(c.last_game_time, 1010, "clock still re-anchors to gameTime");
-    }
-
-    /// The local `+1` is Java `long` addition (`getGameTime() + 1L`) and wraps
-    /// two's-complement: at `i64::MAX` the next tick's game-time is `i64::MIN`,
-    /// no debug-overflow panic. The clock's own wrapping delta then reads +1
-    /// across the boundary (`i64::MIN.wrapping_sub(i64::MAX) == 1`).
-    #[test]
-    fn local_game_time_wraps_at_i64_max() {
-        let mut clock = Some(WorldClock::from_state(i64::MAX, 5000, 0.0, 1.0));
-        let (gt, day) = local_tick_time(Some(i64::MAX), &mut clock).unwrap();
-        assert_eq!(gt, i64::MIN, "game_time wraps to i64::MIN, no panic");
-        assert_eq!(
-            day, 5001,
-            "clock's wrapping delta reads one tick across the wrap"
-        );
-        assert_eq!(clock.unwrap().last_game_time, i64::MIN);
-    }
-
-    /// Best-effort fallback: a server that sends `set_time` but never an
-    /// overworld clock state leaves `overworld_clock` `None`; the local tick
-    /// still advances the day-tick by falling back to the raw game time (one per
-    /// tick), rather than only jumping on packets.
-    #[test]
-    fn no_explicit_clock_falls_back_to_game_time_each_tick() {
-        let mut clock: Option<WorldClock> = None;
-        // `set_time` with an entry for the_end (id 1) only — overworld unmatched.
-        apply_set_time(&mut clock, OVERWORLD, 200, &[(1, 999, 0.0, 1.0)]);
-        assert!(clock.is_none(), "no overworld clock established");
-        let mut game_time = Some(200);
-        for i in 1..=5 {
-            let (gt, day) = local_tick_time(game_time, &mut clock).unwrap();
-            game_time = Some(gt);
-            assert_eq!(day, 200 + i, "fallback day-tick advances one per tick");
-        }
-    }
+    let (id, me) = i.wire?;
+    let mut p = PacketWriter::packet(id);
+    p.raw(&crate::jump_riding::player_command_body(
+        me,
+        START_FALL_FLYING,
+        0,
+    ));
+    Some(p)
 }
 
 /// `ContainerInput.PICKUP`'s wire id. The enum's codec is
@@ -7829,443 +5829,6 @@ pub(crate) fn write_hashed_stack(p: &mut PacketWriter, slot: Option<rewo_world::
     }
 }
 
-#[cfg(test)]
-mod ping_tests {
-    //! M52c — the ping the client can actually know.
-    //!
-    //! These build the `player_info_update` body by hand and run it through
-    //! the production `apply_player_info`, so the action bitmask, the entry
-    //! walk and the latency slot are all exercised together. A local
-    //! reimplementation would pass while the real decoder desynced.
-
-    use super::*;
-
-    /// Encode a var-int the way the wire does.
-    fn varint(out: &mut Vec<u8>, mut v: i32) {
-        loop {
-            let mut b = (v & 0x7F) as u8;
-            v = ((v as u32) >> 7) as i32;
-            if v != 0 {
-                b |= 0x80;
-            }
-            out.push(b);
-            if v == 0 {
-                break;
-            }
-        }
-    }
-
-    /// A body carrying UPDATE_LATENCY (action bit 4) for one uuid.
-    fn latency_body(entries: &[(u128, i32)]) -> Vec<u8> {
-        let mut b = Vec::new();
-        b.push(1u8 << 4); // only UPDATE_LATENCY
-        varint(&mut b, entries.len() as i32);
-        for (uuid, ms) in entries {
-            b.extend_from_slice(&uuid.to_be_bytes());
-            varint(&mut b, *ms);
-        }
-        b
-    }
-
-    #[test]
-    fn update_latency_is_parsed_rather_than_discarded() {
-        assert_eq!(parse_player_info_latency(&latency_body(&[(7, 42)])), [(7, 42)]);
-    }
-
-    #[test]
-    fn several_players_are_walked_independently() {
-        // The walk advances uuid-then-latency per entry; a mis-sized skip
-        // corrupts every entry after it rather than failing.
-        assert_eq!(
-            parse_player_info_latency(&latency_body(&[(1, 10), (2, 250), (3, 0)])),
-            [(1, 10), (2, 250), (3, 0)],
-            "a reported zero is a value, not unknown"
-        );
-    }
-
-    #[test]
-    fn a_negative_latency_is_a_state_not_a_decode_error() {
-        // PlayerTabOverlay buckets latency < 0 into the no-connection icon, so
-        // the wire really does carry negatives; clamping at decode would erase
-        // a state vanilla renders.
-        assert_eq!(parse_player_info_latency(&latency_body(&[(9, -1)])), [(9, -1)]);
-    }
-
-    #[test]
-    fn an_unset_latency_action_yields_nothing() {
-        // Sensitivity partner: a mask without bit 4 must not invent an entry.
-        // Reading the field unconditionally would fabricate a ping AND desync
-        // the walk.
-        let mut b = Vec::new();
-        b.push(1u8 << 3);
-        varint(&mut b, 1);
-        b.extend_from_slice(&7u128.to_be_bytes());
-        b.push(1);
-        assert!(parse_player_info_latency(&b).is_empty());
-    }
-
-    #[test]
-    fn an_action_before_latency_must_be_walked_first() {
-        // LISTED (3) then LATENCY (4). Skipping the bool makes the walk read
-        // it AS the varint and report 1ms -- a plausible number, which is
-        // what makes it dangerous.
-        let mut b = Vec::new();
-        b.push((1u8 << 3) | (1u8 << 4));
-        varint(&mut b, 1);
-        b.extend_from_slice(&7u128.to_be_bytes());
-        b.push(1);
-        varint(&mut b, 200);
-        assert_eq!(parse_player_info_latency(&b), [(7, 200)]);
-    }
-}
-
-#[cfg(test)]
-mod player_info_field_tests {
-    //! M62 — the two `player_info_update` fields the tab list's first two
-    //! sort keys come from: `UPDATE_GAME_MODE` (action 2) and
-    //! `UPDATE_LIST_ORDER` (action 6). Both were read into a discard.
-    //!
-    //! Every body is built by hand and run through the production
-    //! `parse_player_info`, so the bitmask and the entry walk are what is
-    //! under test.
-
-    use super::*;
-
-    fn varint(out: &mut Vec<u8>, mut v: i32) {
-        loop {
-            let mut b = (v & 0x7F) as u8;
-            v = ((v as u32) >> 7) as i32;
-            if v != 0 {
-                b |= 0x80;
-            }
-            out.push(b);
-            if v == 0 {
-                break;
-            }
-        }
-    }
-
-    /// A one-entry body carrying exactly the actions in `mask`, with each
-    /// set action's payload appended by `fields` in bit order.
-    fn one_entry(mask: u8, uuid: u128, fields: &[u8]) -> Vec<u8> {
-        let mut b = vec![mask];
-        varint(&mut b, 1);
-        b.extend_from_slice(&uuid.to_be_bytes());
-        b.extend_from_slice(fields);
-        b
-    }
-
-    #[test]
-    fn the_game_mode_action_is_kept_rather_than_discarded() {
-        let (e, res) = parse_player_info(&one_entry(1 << 2, 7, &[3]));
-        assert!(res.is_ok());
-        assert_eq!(e[0].gamemode, Some(GameMode::Spectator));
-        assert!(e[0].gamemode.unwrap().is_spectator());
-    }
-
-    #[test]
-    fn the_tab_list_order_action_is_kept_rather_than_discarded() {
-        let mut f = Vec::new();
-        varint(&mut f, 42);
-        let (e, res) = parse_player_info(&one_entry(1 << 6, 7, &f));
-        assert!(res.is_ok());
-        assert_eq!(e[0].tab_list_order, Some(42));
-    }
-
-    #[test]
-    fn an_out_of_range_game_mode_id_is_survival_rather_than_an_error() {
-        // `GameType.byId` is ByIdMap.continuous(..., ZERO), so 9 -> values[0].
-        // An error here would drop a packet vanilla renders fine.
-        let (e, res) = parse_player_info(&one_entry(1 << 2, 7, &[9]));
-        assert!(res.is_ok());
-        assert_eq!(e[0].gamemode, Some(GameMode::Survival));
-    }
-
-    #[test]
-    fn an_unset_action_leaves_the_field_absent_rather_than_defaulted() {
-        // The sensitivity partner for both. The packet is a DELTA: filling in
-        // `Survival` / `0` here would tell the tab list a spectator had
-        // switched to survival on every latency-only update, and the sort
-        // would visibly reshuffle.
-        let mut f = Vec::new();
-        varint(&mut f, 55);
-        let (e, _) = parse_player_info(&one_entry(1 << 4, 7, &f));
-        assert_eq!(e[0].latency, Some(55));
-        assert_eq!(e[0].gamemode, None);
-        assert_eq!(e[0].tab_list_order, None);
-    }
-
-    #[test]
-    fn a_mis_sized_earlier_action_would_report_a_plausible_wrong_order() {
-        // GAME_MODE (2) then LIST_ORDER (6), with a two-byte var-int mode so
-        // a one-byte skip is observable. Read correctly the order is 7; a
-        // walk that assumed a single byte reads the mode's continuation byte
-        // as the order and reports 1 -- a number nothing downstream can
-        // reject.
-        let mut f = Vec::new();
-        varint(&mut f, 129); // two bytes: 0x81 0x01 -> mode id 129, ZERO -> Survival
-        varint(&mut f, 7);
-        let body = one_entry((1 << 2) | (1 << 6), 7, &f);
-        let (e, res) = parse_player_info(&body);
-        assert!(res.is_ok());
-        assert_eq!(e[0].gamemode, Some(GameMode::Survival));
-        assert_eq!(e[0].tab_list_order, Some(7));
-
-        // The mis-sized walk, run over the same bytes.
-        let mut r = PacketReader::new(&body);
-        let _ = r.u8().unwrap();
-        let _ = r.count("player info entries", 16).unwrap();
-        let _ = r.uuid().unwrap();
-        let _ = r.u8().unwrap(); // one byte where the mode is two
-        assert_eq!(
-            r.varint().unwrap(),
-            1,
-            "the mis-sized walk must report a plausible wrong order, not fail"
-        );
-    }
-
-    #[test]
-    fn several_entries_carry_their_own_values() {
-        // Two entries under one mask, which is the shape a real join sends.
-        // A walk that lost a byte in the first entry would attribute the
-        // second's fields to the wrong uuid.
-        let mut b = vec![(1u8 << 2) | (1u8 << 6)];
-        varint(&mut b, 2);
-        b.extend_from_slice(&1u128.to_be_bytes());
-        b.push(3); // spectator
-        varint(&mut b, 10);
-        b.extend_from_slice(&2u128.to_be_bytes());
-        b.push(1); // creative
-        varint(&mut b, 20);
-
-        let (e, res) = parse_player_info(&b);
-        assert!(res.is_ok());
-        assert_eq!(e.len(), 2);
-        assert_eq!((e[0].uuid, e[0].gamemode, e[0].tab_list_order), (1, Some(GameMode::Spectator), Some(10)));
-        assert_eq!((e[1].uuid, e[1].gamemode, e[1].tab_list_order), (2, Some(GameMode::Creative), Some(20)));
-    }
-
-    #[test]
-    fn a_truncated_entry_keeps_the_fields_it_completed() {
-        // The body promises a mode and an order and stops after the mode.
-        // The completed field must survive, because that is what the
-        // pre-M62 field-at-a-time decoder did and losing it would silently
-        // discard a whole packet's worth of state on one short read.
-        let mut b = vec![(1u8 << 2) | (1u8 << 6)];
-        varint(&mut b, 1);
-        b.extend_from_slice(&7u128.to_be_bytes());
-        b.push(3);
-        let (e, res) = parse_player_info(&b);
-        assert!(res.is_err());
-        assert_eq!(e[0].gamemode, Some(GameMode::Spectator));
-        assert_eq!(e[0].tab_list_order, None);
-    }
-}
-
-#[cfg(test)]
-mod m151_tab_list_fields {
-    //! M151 — the three `player_info_update` actions the tab list needs and
-    //! M62 left decoded-and-dropped: `UPDATE_LISTED` (3), `UPDATE_DISPLAY_NAME`
-    //! (5) and `UPDATE_HAT` (7).
-    //!
-    //! Every body is built by hand and run through the production
-    //! `parse_player_info`, so the bitmask and the entry walk are the subject —
-    //! and `UPDATE_DISPLAY_NAME` is the one action in this packet whose payload
-    //! is a variable-length component, so a walk that read it wrongly would
-    //! desynchronise everything after it rather than merely mis-report a field.
-
-    use super::*;
-    use rewo_proto::nbt::Nbt;
-
-    fn varint(out: &mut Vec<u8>, mut v: i32) {
-        loop {
-            let mut b = (v & 0x7F) as u8;
-            v = ((v as u32) >> 7) as i32;
-            if v != 0 {
-                b |= 0x80;
-            }
-            out.push(b);
-            if v == 0 {
-                break;
-            }
-        }
-    }
-
-    fn one_entry(mask: u8, uuid: u128, fields: &[u8]) -> Vec<u8> {
-        let mut b = vec![mask];
-        varint(&mut b, 1);
-        b.extend_from_slice(&uuid.to_be_bytes());
-        b.extend_from_slice(fields);
-        b
-    }
-
-    /// A network-NBT bare `TAG_String` — the shape a trusted component takes
-    /// on the wire.
-    fn nbt_string_bytes(s: &str) -> Vec<u8> {
-        let mut b = vec![8u8];
-        b.extend_from_slice(&(s.len() as u16).to_be_bytes());
-        b.extend_from_slice(s.as_bytes());
-        b
-    }
-
-    #[test]
-    fn the_listed_action_is_kept_rather_than_discarded() {
-        let (e, res) = parse_player_info(&one_entry(1 << 3, 7, &[1]));
-        assert!(res.is_ok());
-        assert_eq!(e[0].listed, Some(true));
-        let (e, res) = parse_player_info(&one_entry(1 << 3, 7, &[0]));
-        assert!(res.is_ok());
-        assert_eq!(e[0].listed, Some(false));
-    }
-
-    #[test]
-    fn the_hat_action_is_kept_rather_than_discarded() {
-        let (e, res) = parse_player_info(&one_entry(1 << 7, 7, &[0]));
-        assert!(res.is_ok());
-        assert_eq!(e[0].show_hat, Some(false));
-    }
-
-    /// The double `Option`, both halves.
-    ///
-    /// The field is `optional(TRUSTED_STREAM_CODEC)`, so a present action can
-    /// still carry a null — and `applyPlayerInfoUpdate` assigns it
-    /// unconditionally, which is how a server takes a custom name back down.
-    #[test]
-    fn a_present_display_name_action_can_still_carry_a_null() {
-        let mut f = vec![1u8];
-        f.extend_from_slice(&nbt_string_bytes("Boss"));
-        let (e, res) = parse_player_info(&one_entry(1 << 5, 7, &f));
-        assert!(res.is_ok());
-        assert_eq!(e[0].display_name, Some(Some(Nbt::String("Boss".into()))));
-
-        // Present action, null field: "clear it".
-        let (e, res) = parse_player_info(&one_entry(1 << 5, 7, &[0]));
-        assert!(res.is_ok());
-        assert_eq!(e[0].display_name, Some(None));
-
-        // Absent action: "unchanged". Three states, and collapsing any two of
-        // them loses a behaviour a real server uses.
-        let (e, _) = parse_player_info(&one_entry(1 << 3, 7, &[1]));
-        assert_eq!(e[0].display_name, None);
-    }
-
-    /// The desynchronising case: a display name is variable-length, so an
-    /// action after it reads garbage if the component is not fully walked.
-    ///
-    /// LIST_ORDER (6) follows DISPLAY_NAME (5). A walk that skipped the
-    /// component's body would read the NBT tag byte 8 as the order — a
-    /// plausible number nothing downstream can reject.
-    #[test]
-    fn an_action_after_the_display_name_needs_the_component_fully_walked() {
-        let mut f = vec![1u8];
-        f.extend_from_slice(&nbt_string_bytes("Boss"));
-        varint(&mut f, 77);
-        let (e, res) = parse_player_info(&one_entry((1 << 5) | (1 << 6), 7, &f));
-        assert!(res.is_ok());
-        assert_eq!(e[0].tab_list_order, Some(77));
-
-        // The skipping walk, over the same bytes: it lands on the tag byte.
-        let body = one_entry((1 << 5) | (1 << 6), 7, &f);
-        let mut r = PacketReader::new(&body);
-        let _ = r.u8().unwrap();
-        let _ = r.count("player info entries", 16).unwrap();
-        let _ = r.uuid().unwrap();
-        let _ = r.bool().unwrap();
-        assert_eq!(
-            r.varint().unwrap(),
-            8,
-            "a walk that stopped at the presence byte reports the NBT tag as the order"
-        );
-    }
-
-    /// The production state application, driven by production-decoded bodies.
-    ///
-    /// **`TabListPlayers::apply`, not a copy of it.** The first cut of this
-    /// test reimplemented the set arithmetic inline, and M151's mutation
-    /// battery duly reported "UPDATE_LISTED only ever ADDS" as SURVIVED — the
-    /// test was grading its own copy while the client ran the other one, which
-    /// is M45's `install_shapes` shape. The arithmetic moved out of
-    /// `PlaySession` (unreachable from any test — M71) so this could call it.
-    fn apply_body(t: &mut TabListPlayers, body: &[u8]) {
-        for e in parse_player_info(body).0 {
-            t.apply(&e);
-        }
-    }
-
-    /// `UPDATE_LISTED`'s arm is an add/remove on a set, so `false` for someone
-    /// never added is a no-op and there is no stored third state.
-    #[test]
-    fn listed_is_a_set_membership_and_defaults_to_absent() {
-        let mut t = TabListPlayers::default();
-        // A player described by a latency-only update is NOT listed: the
-        // default is exclusion, which is what keeps a vanished player off the
-        // list while their skin and team still resolve.
-        let mut f = Vec::new();
-        varint(&mut f, 40);
-        apply_body(&mut t, &one_entry(1 << 4, 7, &f));
-        assert!(!t.listed.contains(&7));
-
-        apply_body(&mut t, &one_entry(1 << 3, 7, &[1]));
-        assert!(t.listed.contains(&7));
-        assert_eq!(t.listed_players(), [7]);
-        // …and a later `false` REMOVES. A client that only ever added would
-        // keep a vanished player on the list forever.
-        apply_body(&mut t, &one_entry(1 << 3, 7, &[0]));
-        assert!(!t.listed.contains(&7));
-        assert!(t.listed_players().is_empty());
-        // A second `false` is inert rather than an error.
-        apply_body(&mut t, &one_entry(1 << 3, 7, &[0]));
-        assert!(!t.listed.contains(&7));
-    }
-
-    /// `handlePlayerInfoRemove` takes the uuid out of `listedPlayers` as well
-    /// as out of `playerInfoMap`. Nothing else ever removes one.
-    #[test]
-    fn forgetting_a_player_takes_them_off_the_list() {
-        let mut t = TabListPlayers::default();
-        let mut f = vec![1u8]; // listed
-        f.push(1); // showHat
-        apply_body(&mut t, &one_entry((1 << 3) | (1 << 7), 7, &f));
-        assert_eq!(t.listed_players(), [7]);
-        t.forget(7);
-        assert!(t.listed_players().is_empty());
-        assert!(t.show_hats.is_empty());
-    }
-
-    /// `PlayerInfo.showHat` initialises to **true** (`PlayerInfo.java:21`).
-    ///
-    /// The one absent value in this type that does not mean "the server has
-    /// not said": there is no question a caller could ask that unsent answers
-    /// differently from shown, which is why the accessor owns the default
-    /// rather than the map.
-    #[test]
-    fn an_unsent_hat_reads_as_shown() {
-        let mut t = TabListPlayers::default();
-        assert!(t.show_hat(7), "a player nobody described wears their hat");
-        apply_body(&mut t, &one_entry(1 << 7, 7, &[0]));
-        assert!(!t.show_hat(7));
-        apply_body(&mut t, &one_entry(1 << 7, 7, &[1]));
-        assert!(t.show_hat(7));
-        // Still true for anyone else, which is what says the map is per-uuid
-        // and not a global flag.
-        assert!(t.show_hat(9));
-    }
-
-    /// A display override arrives, then a null one clears it.
-    #[test]
-    fn a_null_display_name_clears_through_the_production_apply() {
-        let mut t = TabListPlayers::default();
-        let mut f = vec![1u8];
-        f.push(8); // TAG_String
-        f.extend_from_slice(&4u16.to_be_bytes());
-        f.extend_from_slice(b"Boss");
-        apply_body(&mut t, &one_entry(1 << 5, 7, &f));
-        assert!(t.display_name(7).is_some());
-        apply_body(&mut t, &one_entry(1 << 5, 7, &[0]));
-        assert!(t.display_name(7).is_none());
-    }
-}
-
 /// The decision half of [`PlaySession::situational_music`], over plain values.
 ///
 /// **Split out because `PlaySession` has no test module anywhere in the repo**
@@ -8288,56 +5851,208 @@ pub fn situational_music_from(
     background.select(is_creative, is_underwater).cloned()
 }
 
-#[cfg(test)]
-mod m146_music {
-    use super::situational_music_from;
-    use rewo_world::music::{musics, BackgroundMusic};
+// ── The entity colliders (`EntityGetter.getEntityCollisions`) ────────────
 
-    /// **The End boss beats the biome, and only in the End.**
-    #[test]
-    fn the_dragon_needs_both_the_dimension_and_the_bar() {
-        let bg = BackgroundMusic::of_sound("minecraft:music.game.end");
-        // Both: the dragon.
-        assert_eq!(
-            situational_music_from(true, true, &bg, false, false).unwrap().sound,
-            "minecraft:music.dragon"
-        );
-        // A boss bar elsewhere — a wither in the Overworld — is the biome's.
-        assert_eq!(
-            situational_music_from(false, true, &bg, false, false).unwrap().sound,
-            "minecraft:music.game.end"
-        );
-        // The End with no boss is also the biome's.
-        assert_eq!(
-            situational_music_from(true, false, &bg, false, false).unwrap().sound,
-            "minecraft:music.game.end"
-        );
-    }
+/// `Entity.canBeCollidedWith` — which kinds get in the player's way. The
+/// decompile has exactly three overrides: `AbstractBoat` (always `true`),
+/// `Shulker` (`isAlive()`) and `HappyGhast` (conditional); everything else
+/// inherits `Entity`'s `false`, **minecarts included** (they override
+/// `canCollideWith`, which filters a minecart's own pushes instead).
+///
+/// Resolved from the registry **name** — the wire gives us type ids and no
+/// class hierarchy — the same name-list rule `EntityTypes::pushable` keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CollideKind {
+    /// `AbstractBoat.canBeCollidedWith` — every `*_boat`, `*_chest_boat`,
+    /// `*_raft` and `*_chest_raft`.
+    Always,
+    /// `Shulker.canBeCollidedWith` — `isAlive()`.
+    WhileAlive,
+    /// `HappyGhast.canBeCollidedWith` — see [`happy_ghast_collides`].
+    HappyGhast,
+    /// `Entity.canBeCollidedWith` — `false`.
+    Never,
+}
 
-    /// The selection flags reach `select`, in its own priority order.
-    #[test]
-    fn creative_and_underwater_reach_the_selection() {
-        let bg = BackgroundMusic::overworld().with_underwater(musics::under_water());
-        let pick = |c, u| {
-            situational_music_from(false, false, &bg, c, u)
-                .unwrap()
-                .sound
-        };
-        assert_eq!(pick(false, false), "minecraft:music.game");
-        assert_eq!(pick(true, false), "minecraft:music.creative");
-        assert_eq!(pick(false, true), "minecraft:music.under_water");
-        assert_eq!(pick(true, true), "minecraft:music.under_water", "water wins");
-    }
-
-    /// A place that offers nothing offers nothing — **not** the game track.
-    ///
-    /// `orElse(null)` is the last word in vanilla's method, and an empty record
-    /// really is reachable: `OverworldBiomes.java:596` declares one.
-    #[test]
-    fn an_empty_record_is_silence_rather_than_a_default() {
-        assert!(situational_music_from(false, false, &BackgroundMusic::empty(), false, false).is_none());
-        // …and the dragon still overrides it, because that arm returns before
-        // the record is consulted at all.
-        assert!(situational_music_from(true, true, &BackgroundMusic::empty(), false, false).is_some());
+/// [`CollideKind`] for a registry name (`"minecraft:oak_chest_boat"`).
+pub fn collide_kind(name: &str) -> CollideKind {
+    let short = name.strip_prefix("minecraft:").unwrap_or(name);
+    if short.ends_with("_boat") || short.ends_with("_raft") {
+        CollideKind::Always
+    } else if short == "shulker" {
+        CollideKind::WhileAlive
+    } else if short == "happy_ghast" {
+        CollideKind::HappyGhast
+    } else {
+        CollideKind::Never
     }
 }
+
+/// `HappyGhast.canBeCollidedWith`, as far as a client can evaluate it: not a
+/// baby, alive, and — when the local player is standing on it
+/// (`position().y >= bb.maxY`) — unconditionally. The other arm is
+/// `isVehicle() && other instanceof HappyGhast ? true : isOnStillTimeout()`,
+/// and `other` is never a happy ghast here, so it ends at `isOnStillTimeout()`
+/// (`staysStill() || serverStillTimeout > 0`) — neither half of which reaches
+/// a client. So a *hovering* ghast is not a collider here. The gap is
+/// one-sided: it can miss a collider vanilla has, never invent one.
+fn happy_ghast_collides(baby: bool, alive: bool, player_y: f64, bb_max_y: f64) -> bool {
+    !baby && alive && player_y >= bb_max_y
+}
+
+/// The live [`physics::PhysicsWorld`] for [`PlaySession::tick`]: the world's
+/// block shapes, plus the entity shapes `Entity.collide` collects ahead of
+/// them (and of the world border) in `collectCollidersIgnoringWorldBorder`.
+///
+/// A plain struct of borrowed facts, split out of the tick for the same
+/// reason [`situational_music_from`] is: a `PlaySession` owns a socket and
+/// cannot be built in a test, so the rules live where `play::tests` can drive
+/// them.
+pub struct SessionPhysics<'a> {
+    /// Blocks (and the border, where the caller passes one) as they were
+    /// before entity colliders existed.
+    pub blocks: physics::WorldPhysics<'a>,
+    /// `Level.getEntities`'s population — every spawned entity.
+    pub entities: &'a rewo_world::entities::EntityTable,
+    /// `set_passengers`' riding graph, for `Entity.isPassengerOfSameVehicle`.
+    pub mounts: &'a crate::motion::Mounts,
+    /// The local player's `getRootVehicle()`: an entity sharing it is out.
+    pub exclude_root: Option<i32>,
+    /// The local player's feet y — `position().y` in [`happy_ghast_collides`].
+    pub player_y: f64,
+    /// Per-type registered dimensions, as the crosshair pick resolves them.
+    pub shapes: Option<&'a rewo_data::entity_pick::EntityPickTable>,
+    /// Which types descend from `LivingEntity` — whose box `getAgeScale()`
+    /// and the `SCALE` attribute can move.
+    pub classes: Option<&'a rewo_data::entity_types::EntityClasses>,
+    /// The registry names [`collide_kind`] is keyed by.
+    pub types: Option<&'a rewo_data::entity_types::EntityTypes>,
+    /// The `minecraft:attribute` registry, for the `SCALE` factor.
+    pub attributes: Option<&'a rewo_data::attributes::AttributeRegistry>,
+}
+
+impl physics::PhysicsWorld for SessionPhysics<'_> {
+    fn collision(&self, x: i32, y: i32, z: i32) -> &[[f32; 6]] {
+        self.blocks.collision(x, y, z)
+    }
+    fn block(&self, x: i32, y: i32, z: i32) -> rewo_data::block_physics::BlockPhysics {
+        self.blocks.block(x, y, z)
+    }
+    fn has_chunk(&self, x: i32, z: i32) -> bool {
+        self.blocks.has_chunk(x, z)
+    }
+    fn min_y(&self) -> i32 {
+        self.blocks.min_y()
+    }
+
+    /// `EntityGetter.getEntityCollisions(testArea)`: every entity that
+    /// `canBeCollidedWith` and is not on the player's own vehicle, one box
+    /// each, if that box overlaps the search area.
+    ///
+    /// `search` is the caller's `aabb.expandTowards(movement)` already
+    /// inflated by `1.0E-7`, which is what `getEntities` selects over — so a
+    /// merely touching box counts, exactly as in vanilla.
+    ///
+    /// Two vanilla filters are not reproduced: `NO_SPECTATORS`, because Rewo
+    /// does not track remote players' game modes, and `getEntities`'s order,
+    /// which the per-axis clipping of `collideWithShapes` is insensitive to.
+    fn entity_colliders(&self, search: [f64; 6]) -> Vec<[f64; 6]> {
+        let (Some(shapes), Some(types)) = (self.shapes, self.types) else {
+            // No registry or no shape table: nothing can be classified or
+            // sized, so no colliders — what the headless harnesses want, and
+            // the safe reading of a version skew.
+            return Vec::new();
+        };
+        let search = rewo_world::entity_pick::Aabb::new(
+            [search[0], search[1], search[2]],
+            [search[3], search[4], search[5]],
+        );
+        let mut out = Vec::new();
+        for (id, e) in self.entities.iter() {
+            let name = types.name(e.type_id).unwrap_or("");
+            let kind = collide_kind(name);
+            if kind == CollideKind::Never {
+                continue;
+            }
+            // `Entity.canCollideWith`'s `!isPassengerOfSameVehicle(e)`: the
+            // two share a *root* vehicle, so the boat the player rides and any
+            // co-passenger on it are both out.
+            if let Some(root) = self.exclude_root {
+                if self.mounts.root_vehicle(id).unwrap_or(id) == root {
+                    continue;
+                }
+            }
+            let Some(shape) = shapes.get(e.type_id) else { continue };
+            let living = self.classes.is_some_and(|c| c.is_living(e.type_id));
+            let scale = match (living, self.attributes) {
+                (true, Some(reg)) => rewo_world::attributes::resolve(
+                    self.entities.attributes(id), Some(name), "scale", reg)
+                    .map_or(1.0, |(v, _)| v as f32),
+                _ => 1.0,
+            };
+            // `Entity.getBoundingBox()` at the tick's own position —
+            // `render_pos(1.0)`, not the render lerp: this is the box the
+            // move collides against.
+            let bb = rewo_world::entity_pick::bounding_box(
+                e.render_pos(1.0),
+                &rewo_world::entity_pick::DimensionInputs {
+                    width: shape.width,
+                    height: shape.height,
+                    living,
+                    avatar: e.type_id == types.player_id,
+                    pose: self.entities.pose(id),
+                    baby: self.entities.is_baby(id),
+                    scale,
+                },
+            );
+            // `LivingEntity.isAlive()` = `!isRemoved() && getHealth() > 0`;
+            // a removed entity is not in this table at all.
+            let alive = !self.entities.death_state(id).is_dead_or_dying();
+            let collides = match kind {
+                CollideKind::Always => true,
+                CollideKind::WhileAlive => alive,
+                CollideKind::HappyGhast => happy_ghast_collides(
+                    self.entities.is_baby(id),
+                    alive,
+                    self.player_y,
+                    bb.max[1],
+                ),
+                CollideKind::Never => false,
+            };
+            if collides && bb.intersects(&search) {
+                out.push([bb.min[0], bb.min[1], bb.min[2], bb.max[0], bb.max[1], bb.max[2]]);
+            }
+        }
+        out
+    }
+}
+
+impl PlaySession {
+    /// Fill [`Self::entity_shapes`] from [`Self::entity_types`] once per
+    /// session: [`rewo_data::entity_pick::EntityPickTable::resolve`] covers
+    /// every registered type or fails whole, and it is a table build no tick
+    /// should repeat. Leaving it `None` — a harness without a registry, or a
+    /// registry the generated table does not cover (logged once) — reads as
+    /// "no entity colliders", which is the seam's own default.
+    fn resolve_entity_shapes(&mut self) {
+        if self.entity_shapes_tried {
+            return;
+        }
+        self.entity_shapes_tried = true;
+        if let Some(types) = self.entity_types.as_deref() {
+            self.entity_shapes = match rewo_data::entity_pick::EntityPickTable::resolve(types) {
+                Ok(t) => Some(std::sync::Arc::new(t)),
+                Err(e) => {
+                    log::warn!("entity colliders disabled: {e}");
+                    None
+                }
+            };
+        }
+    }
+}
+
+mod dispatch;
+mod outgoing;
+
+#[cfg(test)]
+mod tests;

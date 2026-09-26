@@ -54,9 +54,9 @@ use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::overlay::OverlayDraw;
 use rewo_gpu::world::{perspective_reverse_z, WorldLightmapState, WorldRenderer};
 use rewo_gpu::Gpu;
-use rewo_mesh::{pack_layer, MeshVertex, TINT_WHITE};
+use rewo_mesh::{light_coords, pack_light_word, MeshVertex, TINT_WHITE};
 use rewo_world::lightmap::{
-    darkness_lightmap, mth_cos, rgb24_to_vec3, sample, LightmapState, DEFAULT_AMBIENT_COLOR,
+    darkness_lightmap, mth_cos, rgb24_to_vec3, sample, texel, LightmapState, DEFAULT_AMBIENT_COLOR,
 };
 
 use crate::stats::OverlayRing;
@@ -430,23 +430,16 @@ fn run_cases(
         }
     }
 
-    // --- Case 8: the M15 packed vertex colour. Every case above renders an
-    // exact-white quad so it isolates the lightmap — which also means none of
-    // them exercises the reconstruction `world.vert` now performs. M15 stopped
-    // storing the per-vertex colour and rebuilt it on the GPU from the discrete
-    // shade/AO codes plus lossless tint bytes; white is precisely the input
-    // (`1.0 * 1.0 * 255/255`) under which a broken reconstruction still reads
-    // correct, so only a non-white render can grade it.
-    //
-    // The inputs are chosen non-degenerate in every factor: shade 1 (0.5, not
-    // the 1.0 identity), AO 1 (0.65, not the AO_NONE identity), and a tint whose
-    // three bytes differ and none of which is 255. A dropped shade bit, a
-    // swapped AO index, a channel transpose, or a regression in the `/255`
-    // divide `world.vert`'s `precise` qualifier protects all move the result.
+    // --- Case 8: the vertex colour. Every case above renders an exact-white
+    // quad so it isolates the lightmap — which also means none of them
+    // exercises the colour attribute (`R8G8B8A8_UNORM`, vanilla's `Color`):
+    // white is precisely the input under which a broken colour path still
+    // reads correct, so only a non-white render can grade it. The three bytes
+    // differ and none is 0 or 255, so a channel transpose or a lost byte
+    // moves the result. Then the smooth-light sample: a light coordinate
+    // between two whole levels must land between their texels, bilinearly.
     {
-        const SHADE: u8 = 1; // FACE_SHADE[1] == 0.5
-        const AO: u8 = 1; // AO_LEVELS[1] == 0.65
-        const TINT: [u8; 3] = [120, 200, 60];
+        const COLOR: [u8; 3] = [60, 100, 30];
         // Mid-lit and non-clamped, so the colour factors show up as real
         // dimming rather than saturating against the top of the range.
         const BLOCK: u8 = 12;
@@ -461,24 +454,17 @@ fn run_cases(
         // bit-layout regression fails as itself rather than as a colour
         // mismatch. Release asserts — lightmapshot runs in release, where a
         // `debug_assert!` would silently compile out.
-        let probe = MeshVertex::new([0.0, 64.0, 0.0], [0.0, 0.0], 0, BLOCK, SKY, SHADE, AO, TINT);
-        assert_eq!(probe.shade_code(), SHADE, "shade code must survive packing");
-        assert_eq!(probe.ao_code(), AO, "AO code must survive packing");
-        assert_eq!(probe.tint_rgb(), TINT, "tint bytes must survive packing");
+        let probe = MeshVertex::new([0.0, 64.0, 0.0], [0.0, 0.0], 0, light_coords(BLOCK, SKY), COLOR);
+        assert_eq!(probe.color_rgb(), COLOR, "colour bytes must survive packing");
         assert_eq!(
-            probe.light & 0x00FF_FFFF,
-            pack_layer(0, BLOCK, SKY),
-            "the shade/AO bits must not disturb the historical layer/light word"
+            (probe.block_light(), probe.sky_light()),
+            (BLOCK, SKY),
+            "light levels must survive packing"
         );
-        let scalar = rewo_mesh::FACE_SHADE[SHADE as usize] * rewo_mesh::AO_LEVELS[AO as usize];
-        let color: [f32; 3] = std::array::from_fn(|c| scalar * (TINT[c] as f32 / 255.0));
+        let color: [f32; 3] = std::array::from_fn(|c| COLOR[c] as f32 / 255.0);
         println!(
-            "[lightmapshot] packed-colour inputs: shade {SHADE} (×{:.2}) · AO {AO} (×{:.2}) · tint {TINT:?} → colour ({:.4}, {:.4}, {:.4})",
-            rewo_mesh::FACE_SHADE[SHADE as usize],
-            rewo_mesh::AO_LEVELS[AO as usize],
-            color[0],
-            color[1],
-            color[2]
+            "[lightmapshot] vertex colour {COLOR:?} -> ({:.4}, {:.4}, {:.4})",
+            color[0], color[1], color[2]
         );
 
         // (a) Absolute: the texel is white, so the stored linear value is
@@ -486,7 +472,7 @@ fn run_cases(
         let name_c = "packed-color-b12s8";
         let (ec, lmc) = expected_srgb_colored(BLOCK, SKY, &cpu_state(&gs), color);
         let ac = render_quad_colored(
-            gpu, off, wr, view_proj, draw, name_c, BLOCK, SKY, gs, false, args, SHADE, AO, TINT,
+            gpu, off, wr, view_proj, draw, name_c, light_coords(BLOCK, SKY), gs, false, args, COLOR,
         )?;
         compare_case(failures, name_c, ac, ec, lmc);
 
@@ -525,6 +511,28 @@ fn run_cases(
                     color[c]
                 ));
             }
+        }
+
+        // (c) Smooth light: block 12.5 (smooth 200) at sky 8 is the bilinear
+        //     midpoint of the block-12 and block-13 texels. Graded against the
+        //     CPU mirror of the filter, and against both neighbours: it must be
+        //     strictly between them, or the fraction was dropped.
+        let name_s = "smooth-b12.5s8";
+        let coords = 200 | (SKY as i32 * 16) << 16;
+        let lm = rewo_world::lightmap::sample_smooth(200, SKY * 16, &cpu_state(&gs));
+        let es: [u8; 3] =
+            std::array::from_fn(|c| (linear_to_srgb(lm[c]) * 255.0).round().clamp(0.0, 255.0) as u8);
+        let smooth = render_quad_colored(gpu, off, wr, view_proj, draw, name_s, coords, gs, false, args, TINT_WHITE)?;
+        compare_case(failures, name_s, smooth, es, lm);
+        let lo = render_quad(gpu, off, wr, view_proj, draw, "smooth-b12s8", BLOCK, SKY, gs, false, args)?;
+        let hi = render_quad(gpu, off, wr, view_proj, draw, "smooth-b13s8", BLOCK + 1, SKY, gs, false, args)?;
+        if !(luma(lo) < luma(smooth) && luma(smooth) < luma(hi)) {
+            failures.push(format!(
+                "{name_s}: luma {} is not strictly between block 12 ({}) and block 13 ({}) — the smooth fraction was not sampled",
+                luma(smooth),
+                luma(lo),
+                luma(hi)
+            ));
         }
     }
 
@@ -1047,55 +1055,32 @@ fn render_quad(
     translucent: bool,
     args: &LightmapshotArgs,
 ) -> Result<[u8; 3], String> {
-    // Shade code 0 (`FACE_SHADE[0] == 1.0`) + AO_NONE (`AO_LEVELS[3] == 1.0`) +
-    // white tint bytes reconstruct to EXACTLY (1,1,1) in the vertex shader:
-    // `1.0 * 1.0 * (255/255)`. This quad must stay pure white so it isolates the
-    // lightmap; the assertions below pin that on the CPU side too. They are
-    // `assert_eq!`, not `debug_assert_eq!` — lightmapshot runs in release, where
-    // a debug assertion would silently compile out.
-    let probe = MeshVertex::new(
-        [0.0, 64.0, 0.0],
-        [0.0, 0.0],
-        0,
-        block,
-        sky,
-        0,
-        rewo_mesh::AO_NONE,
-        TINT_WHITE,
-    );
+    // White colour bytes decode to EXACTLY (1,1,1) (`255/255`), so this quad
+    // isolates the lightmap; the assertions below pin that on the CPU side. They
+    // are `assert_eq!`, not `debug_assert_eq!` — lightmapshot runs in release,
+    // where a debug assertion would silently compile out.
+    let coords = light_coords(block, sky);
+    let probe = MeshVertex::new([0.0, 64.0, 0.0], [0.0, 0.0], 0, coords, TINT_WHITE);
     assert_eq!(
         probe.reconstructed_color(),
         [1.0, 1.0, 1.0],
         "the lightmap probe quad must decode to exact white"
     );
     assert_eq!(
-        probe.light & 0x00FF_FFFF,
-        pack_layer(0, block, sky),
-        "packed light word must preserve the pack_layer lower 24 bits"
+        probe.light,
+        pack_light_word(0, coords),
+        "the packed light word must carry the case's light coordinates"
     );
 
     render_quad_colored(
-        gpu,
-        off,
-        wr,
-        view_proj,
-        draw,
-        name,
-        block,
-        sky,
-        gpu_state,
-        translucent,
-        args,
-        0,
-        rewo_mesh::AO_NONE,
-        TINT_WHITE,
+        gpu, off, wr, view_proj, draw, name, coords, gpu_state, translucent, args, TINT_WHITE,
     )
 }
 
 /// The general form of [`render_quad`]: the same upload → render → readback,
-/// with the quad's per-vertex colour left to the caller via `shade_code`,
-/// `ao_code` and `tint_rgb`. Passing `(0, AO_NONE, TINT_WHITE)` reproduces the
-/// exact-white probe quad.
+/// with the quad's light coordinates (`LightCoordsUtil` packed, smooth
+/// fractions allowed) and colour bytes left to the caller. `TINT_WHITE`
+/// reproduces the exact-white probe quad.
 #[allow(clippy::too_many_arguments)]
 fn render_quad_colored(
     gpu: &mut Gpu,
@@ -1104,14 +1089,11 @@ fn render_quad_colored(
     view_proj: [[f32; 4]; 4],
     draw: &OverlayDraw,
     name: &str,
-    block: u8,
-    sky: u8,
+    coords: i32,
     gpu_state: WorldLightmapState,
     translucent: bool,
     args: &LightmapshotArgs,
-    shade_code: u8,
-    ao_code: u8,
-    tint_rgb: [u8; 3],
+    color: [u8; 3],
 ) -> Result<[u8; 3], String> {
     wr.set_lightmap_state(gpu_state);
 
@@ -1119,9 +1101,7 @@ fn render_quad_colored(
     // with the case's block/sky levels. Winding is irrelevant (the world
     // pipeline culls no faces).
     let y = 64.0f32;
-    let vert = |pos: [f32; 3], uv: [f32; 2]| {
-        MeshVertex::new(pos, uv, 0, block, sky, shade_code, ao_code, tint_rgb)
-    };
+    let vert = |pos: [f32; 3], uv: [f32; 2]| MeshVertex::new(pos, uv, 0, coords, color);
     let verts = [
         vert([0.0, y, 0.0], [0.0, 0.0]),
         vert([16.0, y, 0.0], [1.0, 0.0]),
@@ -1183,11 +1163,11 @@ fn cpu_state(g: &WorldLightmapState) -> LightmapState {
     }
 }
 
-/// The independent CPU expectation: sample the lightmap, encode linear→sRGB,
-/// round to bytes. Returns `(sRGB bytes, linear lm)`. The caller must not use
-/// this for the black-texel NaN case (`sample` returns NaN there).
+/// The independent CPU expectation: the lightmap texel as the RGBA8 texture
+/// stores it (`lightmap::texel`), encoded linear→sRGB, rounded to bytes.
+/// Returns `(sRGB bytes, linear lm)`.
 fn expected_srgb(block: u8, sky: u8, cpu: &LightmapState) -> ([u8; 3], [f32; 3]) {
-    let lm = sample(block, sky, cpu);
+    let lm = texel(block, sky, cpu);
     let px: [u8; 3] =
         std::array::from_fn(|c| (linear_to_srgb(lm[c]) * 255.0).round().clamp(0.0, 255.0) as u8);
     (px, lm)
@@ -1198,18 +1178,15 @@ fn expected_srgb(block: u8, sky: u8, cpu: &LightmapState) -> ([u8; 3], [f32; 3])
 /// The fragment computes `c.rgb * v_color * lm` and the synthetic texel is
 /// white, so the stored linear value is `colour * lm`. `expected_srgb` is
 /// exactly this specialized to a white colour; passing `[1.0; 3]` here
-/// reproduces it. `colour` is derived independently from the legacy
-/// `FACE_SHADE`/`AO_LEVELS` tables and the raw tint bytes — not from
-/// `MeshVertex`'s own accessor — which is what makes this an independent
-/// oracle for the packed-colour case rather than a restatement of the GPU's
-/// own arithmetic.
+/// reproduces it. `colour` is the case's bytes over 255, computed from the
+/// constant rather than from `MeshVertex`'s own accessor.
 fn expected_srgb_colored(
     block: u8,
     sky: u8,
     cpu: &LightmapState,
     color: [f32; 3],
 ) -> ([u8; 3], [f32; 3]) {
-    let lm = sample(block, sky, cpu);
+    let lm = texel(block, sky, cpu);
     let px: [u8; 3] = std::array::from_fn(|c| {
         (linear_to_srgb(lm[c] * color[c]) * 255.0)
             .round()

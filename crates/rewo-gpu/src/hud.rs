@@ -9,8 +9,7 @@
 //! top-left origin) — no depth.
 
 use ash::vk;
-use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
-use gpu_allocator::MemoryLocation;
+use gpu_allocator::vulkan::Allocation;
 
 use crate::entities::create_texture;
 use crate::world::DEPTH_FORMAT;
@@ -22,7 +21,8 @@ const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
 /// truncated frame simply loses its last blits — so the budget is sized
 /// well past the worst case an 80-row tab list with hearts can reach.
 const MAX_VERTS: usize = 16384;
-const RING: usize = 2;
+/// Set once this pass has dropped geometry past its budget.
+static TRUNCATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const ATLAS_W: u32 = 256;
 /// M155 raised this from 64 to make room for the tab list's face pool at
 /// y=64..80. **Safe because every `Rect` divides by this constant** and every
@@ -265,9 +265,7 @@ pub struct HudPass {
     image: vk::Image,
     image_alloc: Option<Allocation>,
     view: vk::ImageView,
-    bufs: [vk::Buffer; RING],
-    allocs: [Option<Allocation>; RING],
-    cursor: usize,
+    ring: crate::buf_ring::BufRing,
     verts: u32,
     // Atlas placements.
     hotbar: Rect,
@@ -599,35 +597,12 @@ impl HudPass {
                 .map_err(|e| format!("hud layout: {e}"))?;
             let pipeline = build_pipeline(&device, layout, color_format)?;
 
-            let mut bufs = [vk::Buffer::null(); RING];
-            let mut allocs: [Option<Allocation>; RING] = [None, None];
-            for (i, slot) in allocs.iter_mut().enumerate() {
-                let buffer = device
-                    .create_buffer(
-                        &vk::BufferCreateInfo::default()
-                            .size(MAX_VERTS as u64 * VERTEX_STRIDE)
-                            .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
-                            .sharing_mode(vk::SharingMode::EXCLUSIVE),
-                        None,
-                    )
-                    .map_err(|e| format!("hud vbuf: {e}"))?;
-                let req = device.get_buffer_memory_requirements(buffer);
-                let alloc = gpu
-                    .allocator
-                    .allocate(&AllocationCreateDesc {
-                        name: "hud-verts",
-                        requirements: req,
-                        location: MemoryLocation::CpuToGpu,
-                        linear: true,
-                        allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-                    })
-                    .map_err(|e| format!("hud vbuf alloc: {e}"))?;
-                device
-                    .bind_buffer_memory(buffer, alloc.memory(), alloc.offset())
-                    .map_err(|e| format!("hud vbuf bind: {e}"))?;
-                bufs[i] = buffer;
-                *slot = Some(alloc);
-            }
+            let ring = crate::buf_ring::BufRing::with_capacity(
+                gpu,
+                "hud-verts",
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                MAX_VERTS as u64 * VERTEX_STRIDE,
+            )?;
 
             Ok(Self {
                 layout,
@@ -639,9 +614,7 @@ impl HudPass {
                 image,
                 image_alloc: Some(image_alloc),
                 view,
-                bufs,
-                allocs,
-                cursor: 0,
+                ring,
                 verts: 0,
                 hotbar,
                 selection,
@@ -727,7 +700,6 @@ impl HudPass {
         let scale = gui_scale(w, h);
         let (sw, sh) = (w / scale, h / scale);
 
-        self.cursor = (self.cursor + 1) % RING;
         let mut v: Vec<Vertex> = Vec::with_capacity(256);
         // A quad whose *pixel* size comes from the caller rather than the
         // sprite. `blitSprite(…, 182, 5, 0, 0, left, top, progress, 5)` is a
@@ -751,6 +723,8 @@ impl HudPass {
                 for (pos, uv) in corners {
                     if v.len() < MAX_VERTS {
                         v.push(Vertex { pos, uv, color });
+                    } else {
+                        crate::buf_ring::warn_truncated(&TRUNCATED, "hud", MAX_VERTS);
                     }
                 }
             };
@@ -909,26 +883,23 @@ impl HudPass {
         v.rotate_right(0);
         v.rotate_right(0);
         self.verts = v.len() as u32;
-        if let Some(slice) = self.allocs[self.cursor]
-            .as_mut()
-            .and_then(|a| a.mapped_slice_mut())
-        {
-            let bytes: &[u8] =
-                // `VERTEX_STRIDE`, not a literal. A hardcoded 16 beside a
-                // named stride is exactly what M21 found silently uploading
-                // 36 of every 52 bytes in the entity pass, and this line was
-                // that shape until the vertex grew.
-                unsafe {
-                    std::slice::from_raw_parts(
-                        v.as_ptr() as *const u8,
-                        v.len() * VERTEX_STRIDE as usize,
-                    )
-                };
-            slice[..bytes.len()].copy_from_slice(bytes);
-        }
-        if self.verts == 0 {
+        let bytes: &[u8] =
+            // `VERTEX_STRIDE`, not a literal. A hardcoded 16 beside a
+            // named stride is exactly what M21 found silently uploading
+            // 36 of every 52 bytes in the entity pass, and this line was
+            // that shape until the vertex grew.
+            unsafe {
+                std::slice::from_raw_parts(
+                    v.as_ptr() as *const u8,
+                    v.len() * VERTEX_STRIDE as usize,
+                )
+            };
+        
+        let kept = self.ring.write_fixed(bytes, 6 * VERTEX_STRIDE as usize);
+        self.verts = (kept / VERTEX_STRIDE as usize) as u32;
+        let Some(vbuf) = self.ring.bind() else {
             return;
-        }
+        };
 
         let device = &gpu.device;
         unsafe {
@@ -956,7 +927,7 @@ impl HudPass {
                 0,
                 std::slice::from_raw_parts(screen.as_ptr() as *const u8, 8),
             );
-            device.cmd_bind_vertex_buffers(cb, 0, &[self.bufs[self.cursor]], &[0]);
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             device.cmd_draw(cb, self.verts, 1, 0, 0);
         }
     }
@@ -1050,6 +1021,7 @@ impl HudPass {
     }
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
+        self.ring.destroy(gpu);
         unsafe {
             let device = &gpu.device;
             device.destroy_pipeline(self.pipeline, None);
@@ -1059,12 +1031,6 @@ impl HudPass {
             device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
-            for b in self.bufs {
-                device.destroy_buffer(b, None);
-            }
-        }
-        for a in self.allocs.iter_mut().filter_map(|a| a.take()) {
-            let _ = gpu.allocator.free(a);
         }
         if let Some(a) = self.image_alloc.take() {
             let _ = gpu.allocator.free(a);
@@ -1841,7 +1807,7 @@ mod selected_item_name_tests {
     fn the_fade_is_the_last_ten_ticks_only() {
         assert_eq!(tool_highlight_alpha(40), 255);
         assert_eq!(tool_highlight_alpha(11), 255);
-        assert_eq!(tool_highlight_alpha(10), 256_i32.min(255));
+        assert_eq!(tool_highlight_alpha(10), 255);
         assert_eq!(tool_highlight_alpha(9), 230);
         assert_eq!(tool_highlight_alpha(5), 128);
         assert_eq!(tool_highlight_alpha(1), 25);

@@ -157,7 +157,6 @@
 
 use std::collections::BTreeMap;
 
-use rewo_proto::nbt::Nbt;
 use rewo_proto::reader::PacketReader;
 use rewo_proto::Result;
 
@@ -658,6 +657,7 @@ pub fn write_cookie_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rewo_proto::nbt::Nbt;
 
     fn ids() -> SessionIds {
         SessionIds {

@@ -719,7 +719,7 @@ pub fn enchant_row_hovered(i: usize, gui_x: f64, gui_y: f64) -> bool {
 /// a tooltip, and the row above the top offers a tooltip without highlighting.
 pub fn enchant_tooltip_hovered(i: usize, gui_x: f64, gui_y: f64) -> bool {
     let (top, h) = ((14 + 19 * i as i32) as f64, 17.0);
-    gui_x >= 59.0 && gui_x < 60.0 + 108.0 + 1.0 && gui_y >= top - 1.0 && gui_y < top + h + 1.0
+    (59.0..60.0 + 108.0 + 1.0).contains(&gui_x) && gui_y >= top - 1.0 && gui_y < top + h + 1.0
 }
 
 /// Where row `i`'s cost numeral is drawn, given its rendered width.

@@ -2,7 +2,7 @@
 paths:
   - "crates/ewo-jni/**"
   - "ingame-mod/**"
-  - "PHASE_E_PLAN.md"
+  - "docs/history/PHASE_E_PLAN.md"
 ---
 
 # In-game HUD — `ewo-jni` cdylib + the `ewo-hud` Fabric mod
@@ -10,7 +10,7 @@ paths:
 `ewo-render`'s Skia stack painting inside a running Minecraft (Phase E, E0–E7,
 plus Phase F's dashboard). The modules and legit/pvp split have their own rule
 (`ewo-modules.md`). Full history: `docs/history/ewoclient-v2-phases.md` and
-`PHASE_E_PLAN.md` (now a record).
+`docs/history/PHASE_E_PLAN.md` (now a record).
 
 ## Locked architecture (do not regress)
 
@@ -38,9 +38,9 @@ plus Phase F's dashboard). The modules and legit/pvp split have their own rule
 - Java→Rust: **`EwoHudData`**, a shared direct `ByteBuffer` the mod fills each
   frame. Rust reads it through `GetDirectBufferAddress` (`jni-sys`), and
   `nativeRender()` takes no args. `SCHEMA_VERSION` guards the byte-for-byte
-  mirror between `EwoHudData.java` and `hud.rs` (currently **10**).
+  mirror between `EwoHudData.java` and `hud/mod.rs`.
 - Rust→Java: **`EwoModuleData`**, the mirror image, for module state
-  (`modules.rs`, currently **3**). **Bump both sides together.** The 2026-05-26
+  (`modules.rs`). **Bump both sides together.** The 2026-05-26
   bump reached Java only, and the drift guard sat inert for three months. A test
   now pins the pairing.
 - Overlay tab strip (`OverlayView::ALL`): HOME · HUD · CROSSHAIR · MODULES ·

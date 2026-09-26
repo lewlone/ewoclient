@@ -46,6 +46,7 @@ const K_SKY_LIGHT_COLOR: &str = "minecraft:visual/sky_light_color";
 const K_SKY_LIGHT_FACTOR: &str = "minecraft:visual/sky_light_factor";
 const K_CLOUD_COLOR: &str = "minecraft:visual/cloud_color";
 const K_CLOUD_HEIGHT: &str = "minecraft:visual/cloud_height";
+const K_FAST_LAVA: &str = "minecraft:gameplay/fast_lava";
 
 /// The timeline whose presence in the resolved holder set turns the day cycle
 /// on. Grounded in `data/minecraft/timeline/day.json`.
@@ -62,6 +63,9 @@ const JSON_DEFAULT_SKY_LIGHT_FACTOR: f32 = 1.0;
 /// `CLOUD_COLOR`'s attribute default — fully transparent, i.e. no clouds.
 const JSON_DEFAULT_CLOUD_COLOR: i32 = 0;
 const JSON_DEFAULT_CLOUD_HEIGHT: f32 = 192.33;
+/// `FAST_LAVA`'s attribute default — `AttributeTypes.BOOLEAN`, off. The Nether
+/// alone writes `"minecraft:gameplay/fast_lava": true`.
+const JSON_DEFAULT_FAST_LAVA: bool = false;
 
 /// One `data/minecraft/dimension_type/*.json` file, read raw and graded.
 #[derive(Clone, Debug, PartialEq)]
@@ -84,6 +88,10 @@ pub struct JsonDimension {
     /// defaulted so the gate can actually catch a wrong cloud colour.
     pub cloud_color: i32,
     pub cloud_height: f32,
+    /// `gameplay/fast_lava` — `AttributeTypes.BOOLEAN`, off unless the file
+    /// says otherwise. The Nether's `true` is what makes its lava currents
+    /// push at `0.007` instead of `0.0023333…` (`Entity.java:1672`).
+    pub fast_lava: bool,
     /// `default_clock` — the raw identifier string, read straight off the
     /// file. Absent is a real state (`the_nether.json` declares none), and
     /// `getClockTimeTicks`'s `.orElse(0L)` makes it a permanent zero rather
@@ -134,6 +142,7 @@ impl JsonDimension {
             sky_light_factor: self.sky_light_factor,
             cloud_color: self.cloud_color,
             cloud_height: self.cloud_height,
+            fast_lava: self.fast_lava,
             default_clock: self.default_clock.clone(),
             ambient_sounds: self.ambient_sounds.clone(),
             background_music: self.background_music.clone(),
@@ -193,6 +202,7 @@ impl JsonDimension {
         eq!("ambient_sounds", d.ambient_sounds, want.ambient_sounds);
         eq!("background_music", d.background_music, want.background_music);
         eq!("cloud_height", d.cloud_height, want.cloud_height);
+        eq!("fast_lava", d.fast_lava, want.fast_lava);
         eq!("default_clock", d.default_clock, want.default_clock);
         eq!("sky_light_color", d.sky_light_color, want.sky_light_color);
         eq!(
@@ -421,6 +431,24 @@ fn load_one(data_root: &Path, name: &str, path: &Path) -> Result<JsonDimension, 
             .ok_or_else(|| at(&format!("attribute `{K_CLOUD_HEIGHT}` is not a number")))?
             as f32,
     };
+    // `gameplay/fast_lava` is `AttributeTypes.BOOLEAN`: a JSON `true`/`false`,
+    // where the wire form carries a numeric tag. It is the Nether's alone, and
+    // it is what makes its lava push at `0.007` rather than `0.0023333…`.
+    let fast_lava = match attr(K_FAST_LAVA) {
+        None => {
+            defaulted.push("attributes.gameplay/fast_lava");
+            JSON_DEFAULT_FAST_LAVA
+        }
+        Some(Value::Object(_)) => {
+            return Err(at(&format!(
+                "attribute `{K_FAST_LAVA}` uses the {{modifier, argument}} form, \
+                 which the client does not model"
+            )))
+        }
+        Some(v) => v
+            .as_bool()
+            .ok_or_else(|| at(&format!("attribute `{K_FAST_LAVA}` is not a boolean")))?,
+    };
     // `default_clock` is a top-level field, not an attribute — a bare
     // identifier string, or absent.
     let default_clock = match root.get("default_clock") {
@@ -498,6 +526,7 @@ fn load_one(data_root: &Path, name: &str, path: &Path) -> Result<JsonDimension, 
         sky_light_factor,
         cloud_color,
         cloud_height,
+        fast_lava,
         default_clock,
         ambient_sounds,
         background_music,
@@ -669,187 +698,6 @@ fn opt_color(v: Option<&Value>, key: &str) -> Result<Option<i32>, String> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The four entries this gate grades, read from the real decompiled tree.
-    /// Fails closed — there is no "the files were not there so we skipped"
-    /// arm, because that is exactly the hole this oracle exists to close.
-    fn decompiled() -> Vec<JsonDimension> {
-        load(
-            &default_data_root("26.2"),
-            &[
-                "minecraft:overworld",
-                "minecraft:overworld_caves",
-                "minecraft:the_end",
-                "minecraft:the_nether",
-            ],
-        )
-        .expect("the decompiled dimension_type JSON must be readable")
-    }
-
-    /// Every raw field the client consumes, read out of the shipped files.
-    /// If a datagen file changes, this is the first thing that fails.
-    #[test]
-    fn the_decompiled_json_holds_the_fields_this_client_consumes() {
-        let dims = decompiled();
-        assert_eq!(dims.len(), 4);
-
-        let ow = &dims[0];
-        assert_eq!(ow.name, "minecraft:overworld");
-        assert_eq!((ow.min_y, ow.height), (-64, 384));
-        assert!(ow.has_sky_light);
-        assert_eq!(ow.ambient_light, 0.0);
-        assert!(!ow.has_fixed_time, "overworld.json omits has_fixed_time");
-        assert_eq!(
-            ow.skybox,
-            Skybox::Overworld,
-            "absent skybox → codec default"
-        );
-        assert_eq!(ow.cardinal, CardinalLightType::Default);
-        assert_eq!(ow.sky_color, Some(0xFF78_A7FFu32 as i32));
-        assert_eq!(ow.fog_color, Some(0xFFC0_D8FFu32 as i32));
-        assert_eq!(ow.ambient_light_color, 0xFF0A_0A0Au32 as i32);
-        assert_eq!(ow.sky_light_color, JSON_DEFAULT_SKY_LIGHT_COLOR);
-        assert_eq!(ow.sky_light_factor, JSON_DEFAULT_SKY_LIGHT_FACTOR);
-        assert!(ow.has_day_timeline);
-        assert!(ow.defaulted.contains(&"skybox"));
-        assert!(ow.defaulted.contains(&"has_fixed_time"));
-
-        // Caves differs only in `has_ceiling`, which the client never reads.
-        let caves = &dims[1];
-        assert_eq!(caves.name, "minecraft:overworld_caves");
-        assert_eq!(caves.to_def(), {
-            let mut d = ow.to_def();
-            d.name = caves.name.clone();
-            d
-        });
-
-        let end = &dims[2];
-        assert_eq!((end.min_y, end.height), (0, 256));
-        assert!(end.has_sky_light, "the End has a sky light engine");
-        assert_eq!(end.ambient_light, 0.25);
-        assert!(end.has_fixed_time);
-        assert_eq!(end.skybox, Skybox::End);
-        assert_eq!(end.sky_color, Some(0xFF00_0000u32 as i32));
-        assert_eq!(end.fog_color, Some(0xFF18_1318u32 as i32));
-        assert_eq!(end.ambient_light_color, 0xFF3F_473Fu32 as i32);
-        assert_eq!(end.sky_light_color, 0xFFAC_60CDu32 as i32);
-        assert_eq!(end.sky_light_factor, 0.0);
-        assert!(!end.has_day_timeline);
-
-        let nether = &dims[3];
-        assert_eq!((nether.min_y, nether.height), (0, 256));
-        assert!(!nether.has_sky_light);
-        assert_eq!(nether.ambient_light, 0.1);
-        assert!(nether.has_fixed_time);
-        assert_eq!(nether.skybox, Skybox::None);
-        assert_eq!(nether.cardinal, CardinalLightType::Nether);
-        // Absent, not black: the_nether.json carries no sky/fog colour at all.
-        assert_eq!(nether.sky_color, None);
-        assert_eq!(nether.fog_color, None);
-        assert_eq!(nether.ambient_light_color, 0xFF30_2821u32 as i32);
-        assert_eq!(nether.sky_light_color, 0xFF7A_7AFFu32 as i32);
-        assert_eq!(nether.sky_light_factor, 0.0);
-        assert!(!nether.has_day_timeline);
-    }
-
-    /// `has_day_timeline` is decided by the `timelines` holder set, and
-    /// `has_fixed_time` by its own field: the End and the Nether both fix time
-    /// *and* have no day timeline, but nothing in the derivation links them —
-    /// the Overworld proves the "no fixed time, day timeline" corner and the
-    /// resolution below never reads `has_fixed_time` at all.
-    #[test]
-    fn the_day_timeline_comes_from_the_timelines_tag_not_has_fixed_time() {
-        let dims = decompiled();
-        for d in &dims {
-            let expanded_day = d.timeline_ids.iter().any(|t| t == DAY_TIMELINE);
-            assert_eq!(d.has_day_timeline, expanded_day);
-        }
-        assert_eq!(dims[0].timelines_raw, vec!["#minecraft:in_overworld"]);
-        assert_eq!(dims[2].timelines_raw, vec!["#minecraft:in_end"]);
-        assert_eq!(dims[3].timelines_raw, vec!["#minecraft:in_nether"]);
-        // The Overworld: day cycle on, time not fixed.
-        assert!(dims[0].has_day_timeline && !dims[0].has_fixed_time);
-        // The End / Nether: time fixed, day cycle off — but for the separate
-        // reason that their tag simply does not contain `minecraft:day`.
-        assert!(dims[2].has_fixed_time && !dims[2].has_day_timeline);
-        assert!(dims[3].has_fixed_time && !dims[3].has_day_timeline);
-        assert!(!dims[2].timeline_ids.contains(&DAY_TIMELINE.to_string()));
-        // `#minecraft:universal` is shared by all three and carries no day.
-        for d in &dims {
-            assert!(
-                d.timeline_ids
-                    .contains(&"minecraft:villager_schedule".to_string()),
-                "{}: {:?}",
-                d.name,
-                d.timeline_ids
-            );
-        }
-    }
-
-    /// The shipped tag tree is what proves the day-cycle mapping: only
-    /// `#minecraft:in_overworld` expands to `minecraft:day`, and it does so
-    /// without reference to `has_fixed_time`.
-    #[test]
-    fn the_timeline_tags_decide_the_day_cycle() {
-        let root = default_data_root("26.2");
-        let mut ids = BTreeSet::new();
-        resolve_timeline(
-            &root,
-            "#minecraft:in_overworld",
-            &mut ids,
-            &mut BTreeSet::new(),
-            0,
-        )
-        .unwrap();
-        assert!(ids.contains(DAY_TIMELINE), "{ids:?}");
-        for tag in ["#minecraft:in_nether", "#minecraft:in_end"] {
-            let mut ids = BTreeSet::new();
-            resolve_timeline(&root, tag, &mut ids, &mut BTreeSet::new(), 0).unwrap();
-            assert!(!ids.contains(DAY_TIMELINE), "{tag}: {ids:?}");
-        }
-    }
-
-    /// A holder set naming a timeline the tree does not ship is an error, not a
-    /// quiet `false`.
-    #[test]
-    fn an_unshipped_timeline_is_an_error() {
-        let root = default_data_root("26.2");
-        let mut ids = BTreeSet::new();
-        assert!(resolve_timeline(
-            &root,
-            "minecraft:no_such_timeline",
-            &mut ids,
-            &mut BTreeSet::new(),
-            0
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn a_missing_directory_fails_closed() {
-        let missing = std::env::temp_dir().join("rewo-no-such-decompile");
-        let _ = std::fs::remove_dir_all(&missing);
-        let err = load(&missing, &["minecraft:overworld"]).unwrap_err();
-        assert!(err.contains("does not exist"), "{err}");
-    }
-
-    #[test]
-    fn colours_are_six_digit_opaque_hex() {
-        assert_eq!(
-            opt_color(Some(&Value::String("#78a7ff".into())), "k").unwrap(),
-            Some(0xFF78_A7FFu32 as i32)
-        );
-        assert_eq!(opt_color(None, "k").unwrap(), None);
-        // The 8-digit form (`cloud_color`) is not what the consumed keys use.
-        assert!(opt_color(Some(&Value::String("#ccffffff".into())), "k").is_err());
-        assert!(opt_color(Some(&Value::String("#zz00ff".into())), "k").is_err());
-        assert!(opt_color(Some(&serde_json::json!({"modifier": "x"})), "k").is_err());
-    }
-}
-
 /// `audio/ambient_sounds` out of a dimension-type JSON file.
 ///
 /// Hand-written against `AmbientSounds.CODEC` rather than shared with the
@@ -976,4 +824,195 @@ fn json_background_music(
         creative_music: one("creative")?,
         underwater_music: one("underwater")?,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The four entries this gate grades, read from the real decompiled tree.
+    /// `None` (a recorded skip) only when the decompile is absent altogether,
+    /// as on CI; `REWO_REQUIRE_ASSETS=1` turns that skip into a failure. A
+    /// decompile that is present but unreadable still fails.
+    fn decompiled() -> Option<Vec<JsonDimension>> {
+        let root = default_data_root("26.2");
+        if !root.join("dimension_type").is_dir() {
+            rewo_data::skip_test!("no local 26.2 decompile at {}", root.display());
+            return None;
+        }
+        Some(load(
+            &root,
+            &[
+                "minecraft:overworld",
+                "minecraft:overworld_caves",
+                "minecraft:the_end",
+                "minecraft:the_nether",
+            ],
+        )
+        .expect("the decompiled dimension_type JSON must be readable"))
+    }
+
+    /// Every raw field the client consumes, read out of the shipped files.
+    /// If a datagen file changes, this is the first thing that fails.
+    #[test]
+    fn the_decompiled_json_holds_the_fields_this_client_consumes() {
+        let Some(dims) = decompiled() else { return };
+        assert_eq!(dims.len(), 4);
+
+        let ow = &dims[0];
+        assert_eq!(ow.name, "minecraft:overworld");
+        assert_eq!((ow.min_y, ow.height), (-64, 384));
+        assert!(ow.has_sky_light);
+        assert_eq!(ow.ambient_light, 0.0);
+        assert!(!ow.has_fixed_time, "overworld.json omits has_fixed_time");
+        assert_eq!(
+            ow.skybox,
+            Skybox::Overworld,
+            "absent skybox → codec default"
+        );
+        assert_eq!(ow.cardinal, CardinalLightType::Default);
+        assert_eq!(ow.sky_color, Some(0xFF78_A7FFu32 as i32));
+        assert_eq!(ow.fog_color, Some(0xFFC0_D8FFu32 as i32));
+        assert_eq!(ow.ambient_light_color, 0xFF0A_0A0Au32 as i32);
+        assert_eq!(ow.sky_light_color, JSON_DEFAULT_SKY_LIGHT_COLOR);
+        assert_eq!(ow.sky_light_factor, JSON_DEFAULT_SKY_LIGHT_FACTOR);
+        assert!(ow.has_day_timeline);
+        assert!(ow.defaulted.contains(&"skybox"));
+        assert!(ow.defaulted.contains(&"has_fixed_time"));
+
+        // Caves differs only in `has_ceiling`, which the client never reads.
+        let caves = &dims[1];
+        assert_eq!(caves.name, "minecraft:overworld_caves");
+        assert_eq!(caves.to_def(), {
+            let mut d = ow.to_def();
+            d.name = caves.name.clone();
+            d
+        });
+
+        let end = &dims[2];
+        assert_eq!((end.min_y, end.height), (0, 256));
+        assert!(end.has_sky_light, "the End has a sky light engine");
+        assert_eq!(end.ambient_light, 0.25);
+        assert!(end.has_fixed_time);
+        assert_eq!(end.skybox, Skybox::End);
+        assert_eq!(end.sky_color, Some(0xFF00_0000u32 as i32));
+        assert_eq!(end.fog_color, Some(0xFF18_1318u32 as i32));
+        assert_eq!(end.ambient_light_color, 0xFF3F_473Fu32 as i32);
+        assert_eq!(end.sky_light_color, 0xFFAC_60CDu32 as i32);
+        assert_eq!(end.sky_light_factor, 0.0);
+        assert!(!end.has_day_timeline);
+
+        let nether = &dims[3];
+        assert_eq!((nether.min_y, nether.height), (0, 256));
+        assert!(!nether.has_sky_light);
+        assert_eq!(nether.ambient_light, 0.1);
+        assert!(nether.has_fixed_time);
+        assert_eq!(nether.skybox, Skybox::None);
+        assert_eq!(nether.cardinal, CardinalLightType::Nether);
+        // Absent, not black: the_nether.json carries no sky/fog colour at all.
+        assert_eq!(nether.sky_color, None);
+        assert_eq!(nether.fog_color, None);
+        assert_eq!(nether.ambient_light_color, 0xFF30_2821u32 as i32);
+        assert_eq!(nether.sky_light_color, 0xFF7A_7AFFu32 as i32);
+        assert_eq!(nether.sky_light_factor, 0.0);
+        assert!(!nether.has_day_timeline);
+    }
+
+    /// `has_day_timeline` is decided by the `timelines` holder set, and
+    /// `has_fixed_time` by its own field: the End and the Nether both fix time
+    /// *and* have no day timeline, but nothing in the derivation links them —
+    /// the Overworld proves the "no fixed time, day timeline" corner and the
+    /// resolution below never reads `has_fixed_time` at all.
+    #[test]
+    fn the_day_timeline_comes_from_the_timelines_tag_not_has_fixed_time() {
+        let Some(dims) = decompiled() else { return };
+        for d in &dims {
+            let expanded_day = d.timeline_ids.iter().any(|t| t == DAY_TIMELINE);
+            assert_eq!(d.has_day_timeline, expanded_day);
+        }
+        assert_eq!(dims[0].timelines_raw, vec!["#minecraft:in_overworld"]);
+        assert_eq!(dims[2].timelines_raw, vec!["#minecraft:in_end"]);
+        assert_eq!(dims[3].timelines_raw, vec!["#minecraft:in_nether"]);
+        // The Overworld: day cycle on, time not fixed.
+        assert!(dims[0].has_day_timeline && !dims[0].has_fixed_time);
+        // The End / Nether: time fixed, day cycle off — but for the separate
+        // reason that their tag simply does not contain `minecraft:day`.
+        assert!(dims[2].has_fixed_time && !dims[2].has_day_timeline);
+        assert!(dims[3].has_fixed_time && !dims[3].has_day_timeline);
+        assert!(!dims[2].timeline_ids.contains(&DAY_TIMELINE.to_string()));
+        // `#minecraft:universal` is shared by all three and carries no day.
+        for d in &dims {
+            assert!(
+                d.timeline_ids
+                    .contains(&"minecraft:villager_schedule".to_string()),
+                "{}: {:?}",
+                d.name,
+                d.timeline_ids
+            );
+        }
+    }
+
+    /// The shipped tag tree is what proves the day-cycle mapping: only
+    /// `#minecraft:in_overworld` expands to `minecraft:day`, and it does so
+    /// without reference to `has_fixed_time`.
+    #[test]
+    fn the_timeline_tags_decide_the_day_cycle() {
+        let root = default_data_root("26.2");
+        if !root.join("tags/timeline").is_dir() {
+            rewo_data::skip_test!("no local 26.2 decompile at {}", root.display());
+            return;
+        }
+        let mut ids = BTreeSet::new();
+        resolve_timeline(
+            &root,
+            "#minecraft:in_overworld",
+            &mut ids,
+            &mut BTreeSet::new(),
+            0,
+        )
+        .unwrap();
+        assert!(ids.contains(DAY_TIMELINE), "{ids:?}");
+        for tag in ["#minecraft:in_nether", "#minecraft:in_end"] {
+            let mut ids = BTreeSet::new();
+            resolve_timeline(&root, tag, &mut ids, &mut BTreeSet::new(), 0).unwrap();
+            assert!(!ids.contains(DAY_TIMELINE), "{tag}: {ids:?}");
+        }
+    }
+
+    /// A holder set naming a timeline the tree does not ship is an error, not a
+    /// quiet `false`.
+    #[test]
+    fn an_unshipped_timeline_is_an_error() {
+        let root = default_data_root("26.2");
+        let mut ids = BTreeSet::new();
+        assert!(resolve_timeline(
+            &root,
+            "minecraft:no_such_timeline",
+            &mut ids,
+            &mut BTreeSet::new(),
+            0
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_missing_directory_fails_closed() {
+        let missing = std::env::temp_dir().join("rewo-no-such-decompile");
+        let _ = std::fs::remove_dir_all(&missing);
+        let err = load(&missing, &["minecraft:overworld"]).unwrap_err();
+        assert!(err.contains("does not exist"), "{err}");
+    }
+
+    #[test]
+    fn colours_are_six_digit_opaque_hex() {
+        assert_eq!(
+            opt_color(Some(&Value::String("#78a7ff".into())), "k").unwrap(),
+            Some(0xFF78_A7FFu32 as i32)
+        );
+        assert_eq!(opt_color(None, "k").unwrap(), None);
+        // The 8-digit form (`cloud_color`) is not what the consumed keys use.
+        assert!(opt_color(Some(&Value::String("#ccffffff".into())), "k").is_err());
+        assert!(opt_color(Some(&Value::String("#zz00ff".into())), "k").is_err());
+        assert!(opt_color(Some(&serde_json::json!({"modifier": "x"})), "k").is_err());
+    }
 }

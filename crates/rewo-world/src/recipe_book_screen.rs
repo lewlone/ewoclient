@@ -1692,11 +1692,11 @@ mod tests {
     #[test]
     fn the_icons_and_the_chrome_agree_about_how_many_slots_there_are() {
         let v = view(5, 3, 2);
-        let cells = book_chrome(v, &vec![(true, false); ITEMS_PER_PAGE], BookHover::default())
+        let cells = book_chrome(v, &[(true, false); ITEMS_PER_PAGE], BookHover::default())
             .into_iter()
             .filter(|q| matches!(q.sprite, BookSprite::Slot(_)))
             .count();
-        let items = book_icons(v, &[], &vec![false; ITEMS_PER_PAGE])
+        let items = book_icons(v, &[], &[false; ITEMS_PER_PAGE])
             .into_iter()
             .filter(|i| matches!(i.kind, BookIconKind::Slot { .. }))
             .count();
@@ -1710,7 +1710,7 @@ mod tests {
         let mut v = view(ITEMS_PER_PAGE, 1, 0);
         v.tabs = 0;
         for multi in [false, true] {
-            for i in book_icons(v, &[], &vec![multi; ITEMS_PER_PAGE]) {
+            for i in book_icons(v, &[], &[multi; ITEMS_PER_PAGE]) {
                 let BookIconKind::Slot { index, .. } = i.kind else { continue };
                 let (sx, sy) = grid_slot(index);
                 assert!(i.x >= sx && i.x + 16 <= sx + SLOT_SIZE, "slot {index} x");
@@ -2171,8 +2171,8 @@ mod tests {
         assert!(!place_closes_book(false));
         // Tied to the SAME threshold the layout uses, so the book cannot
         // decide it is beside the menu for one purpose and over it for another.
-        assert_eq!(place_closes_book(width_too_narrow(320)), true);
-        assert_eq!(place_closes_book(width_too_narrow(640)), false);
+        assert!(place_closes_book(width_too_narrow(320)));
+        assert!(!place_closes_book(width_too_narrow(640)));
     }
 
     /// The arrows are the only two whose tooltip depends on state, and it is

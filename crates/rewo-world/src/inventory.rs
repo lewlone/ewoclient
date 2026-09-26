@@ -1137,7 +1137,7 @@ impl Inventory {
                     let left = stack.count - amount;
                     changed.push((
                         index as u16,
-                        (left > 0).then(|| ItemSlot { count: left, ..stack }),
+                        (left > 0).then_some(ItemSlot { count: left, ..stack }),
                     ));
                     carried = Some(ItemSlot { count: amount, ..stack });
                 }
@@ -1180,7 +1180,7 @@ impl Inventory {
                         let left = stack.count - amount;
                         changed.push((
                             index as u16,
-                            (left > 0).then(|| ItemSlot { count: left, ..stack }),
+                            (left > 0).then_some(ItemSlot { count: left, ..stack }),
                         ));
                         held.count += amount;
                         carried = Some(held);
@@ -1538,7 +1538,7 @@ impl Inventory {
                 let is_pattern = p.loom_pattern && !item.provides_banner_patterns_removed;
                 return Some(vec![match slot {
                     3 => (player..end, true),
-                    0 | 1 | 2 => (player..end, false),
+                    0..=2 => (player..end, false),
                     // Tested in this order, and each branch CONSUMES — a
                     // banner with slot 0 already taken moves nothing rather
                     // than falling through to the dye slot or the hotbar.
@@ -3844,7 +3844,7 @@ impl Inventory {
             button,
             changed: vec![(
                 index as u16,
-                (left > 0).then(|| ItemSlot { count: left, ..stack }),
+                (left > 0).then_some(ItemSlot { count: left, ..stack }),
             )],
             carried: self.carried,
         })
@@ -3916,7 +3916,7 @@ impl Inventory {
                 }
                 carried.count += take;
                 let left = target.count - take;
-                slots[i] = (left > 0).then(|| ItemSlot { count: left, ..target });
+                slots[i] = (left > 0).then_some(ItemSlot { count: left, ..target });
                 changed.retain(|&(s, _)| s != i as u16);
                 changed.push((i as u16, slots[i]));
             }
@@ -4071,7 +4071,7 @@ impl Inventory {
             changed,
             // `source.setCount(remaining)` — an exhausted cursor is empty,
             // not a stack of zero.
-            carried: (remaining > 0).then(|| ItemSlot { count: remaining, ..source }),
+            carried: (remaining > 0).then_some(ItemSlot { count: remaining, ..source }),
         })
     }
 

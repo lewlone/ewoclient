@@ -289,15 +289,11 @@ def impl_class(body):
     return m.group(1) if m else None
 
 
-def main():
-    src = open(BLOCKS, encoding="utf8", errors="replace").read()
-    classes = scan_block_classes()
-    id_tables = scan_id_tables()
-    single_ids = scan_single_ids()
-    known = set(json.load(open(REGISTRY, encoding="utf8")).keys())
+def property_helpers(src):
+    """`Blocks.java` helper factories that return `BlockBehaviour.Properties`.
 
-    # -- helper factories that return Properties ----------------------------
-    # e.g. `private static BlockBehaviour.Properties leavesProperties(...) { … }`
+    e.g. `private static BlockBehaviour.Properties leavesProperties(...) { … }`
+    """
     helpers = {}
     for m in re.finditer(
         r"(?:private|public)\s+static\s+BlockBehaviour\.Properties\s+(\w+)\s*\(", src
@@ -313,6 +309,73 @@ def main():
                     break
             j += 1
         helpers[m.group(1)] = src[brace : j + 1]
+    return helpers
+
+
+def iter_registrations(src, helpers):
+    """Yield `(field, registry name, parts, impl class, weather state)`.
+
+    Every block `Blocks.java` registers, single fields first and then the
+    `ColorCollection` / `WeatheringCopperCollection` families. `parts` is the
+    registration call followed by the `BlockBehaviour.Properties` helper
+    bodies inlined after it (`leavesProperties(...)` and friends), so builder
+    calls that arrive through a helper are visible to the matcher exactly as
+    the direct ones are; `"\\n".join(parts)` is the flattened text. Keeping
+    them apart lets a caller tell a helper's call from the chain's own — the
+    chain runs last, so its calls win. The field name is what
+    `ofLegacyCopy(FIELD)` / `ofFullCopy(FIELD)` refer to, so callers resolving
+    property inheritance can key on it.
+    """
+    single_ids = scan_single_ids()
+    id_tables = scan_id_tables()
+
+    # -- single-field registrations -----------------------------------------
+    for m in re.finditer(
+        r"public\s+static\s+final\s+Block\s+([A-Z0-9_]+)\s*=\s*\w+\s*\(", src, re.M
+    ):
+        body = balanced(src, m.end() - 1)
+        parts = [body]
+        for hname, hbody in helpers.items():
+            if hname + "(" in body or any(hname + "(" in p for p in parts):
+                parts.append(hbody)
+        # Prefer the id reference over the field name — they differ for a
+        # handful of blocks (POTTED_AZALEA -> potted_azalea_bush).
+        ref = re.search(r"Block(?:Item)?Ids\.(\w+)", body)
+        name = single_ids.get(ref.group(1)) if ref else None
+        yield m.group(1), name or m.group(1).lower(), parts, impl_class(body), None
+
+    # -- family registrations ------------------------------------------------
+    # `ColorCollection<Block> STAINED_GLASS = ColorCollection.registerBlocks(
+    #      BlockItemIds.STAINED_GLASS, …)` registers 16 (copper: 8) blocks whose
+    # names come from the id table.
+    for m in re.finditer(
+        r"public\s+static\s+final\s+(?:Color|WeatheringCopper)Collection<Block>\s+"
+        r"([A-Z0-9_]+)\s*=\s*\w+\s*\.\s*registerBlocks\s*\(", src, re.M
+    ):
+        body = balanced(src, m.end() - 1)
+        ref = re.search(r"BlockItemIds\.(\w+)", body)
+        if not ref:
+            continue
+        names = id_tables.get(ref.group(1))
+        if not names:
+            print(f"  no id table for BlockItemIds.{ref.group(1)}", file=sys.stderr)
+            continue
+        cls = impl_class(body)
+        parts = [body]
+        for hname, hbody in helpers.items():
+            if hname + "(" in body or any(hname + "(" in p for p in parts):
+                parts.append(hbody)
+        for name, state_idx in names:
+            yield m.group(1), name, parts, cls, state_idx
+
+
+def main():
+    src = open(BLOCKS, encoding="utf8", errors="replace").read()
+    classes = scan_block_classes()
+    known = set(json.load(open(REGISTRY, encoding="utf8")).keys())
+
+    # -- helper factories that return Properties ----------------------------
+    helpers = property_helpers(src)
 
     emission = {}       # name -> constant emission
     lit_emission = {}   # name -> emission while the `lit` property is true
@@ -360,44 +423,9 @@ def main():
             if d is not None:
                 damp_over[name] = d
 
-    # -- single-field registrations -----------------------------------------
-    for m in re.finditer(
-        r"public\s+static\s+final\s+Block\s+([A-Z0-9_]+)\s*=\s*\w+\s*\(", src, re.M
-    ):
-        body = balanced(src, m.end() - 1)
-        expanded = body
-        for hname, hbody in helpers.items():
-            if hname + "(" in expanded:
-                expanded += "\n" + hbody
-        # Prefer the id reference over the field name — they differ for a
-        # handful of blocks (POTTED_AZALEA -> potted_azalea_bush).
-        ref = re.search(r"Block(?:Item)?Ids\.(\w+)", body)
-        name = single_ids.get(ref.group(1)) if ref else None
-        record(name or m.group(1).lower(), expanded, impl_class(body))
-
-    # -- family registrations ------------------------------------------------
-    # `ColorCollection<Block> STAINED_GLASS = ColorCollection.registerBlocks(
-    #      BlockItemIds.STAINED_GLASS, …)` registers 16 (copper: 8) blocks whose
-    # names come from the id table.
-    for m in re.finditer(
-        r"public\s+static\s+final\s+(?:Color|WeatheringCopper)Collection<Block>\s+"
-        r"[A-Z0-9_]+\s*=\s*\w+\s*\.\s*registerBlocks\s*\(", src, re.M
-    ):
-        body = balanced(src, m.end() - 1)
-        ref = re.search(r"BlockItemIds\.(\w+)", body)
-        if not ref:
-            continue
-        names = id_tables.get(ref.group(1))
-        if not names:
-            print(f"  no id table for BlockItemIds.{ref.group(1)}", file=sys.stderr)
-            continue
-        cls = impl_class(body)
-        expanded = body
-        for hname, hbody in helpers.items():
-            if hname + "(" in expanded:
-                expanded += "\n" + hbody
-        for name, state_idx in names:
-            record(name, expanded, cls, state_idx)
+    # -- registrations (single fields, then families) ------------------------
+    for _field, name, parts, cls, state_idx in iter_registrations(src, helpers):
+        record(name, "\n".join(parts), cls, state_idx)
 
     if missing:
         print(

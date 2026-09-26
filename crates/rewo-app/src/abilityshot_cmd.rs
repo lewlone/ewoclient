@@ -863,7 +863,7 @@ fn check_flight_physics(c: &mut Checker) {
     let (solid, ghost) = (descend(false), descend(true));
     c.record(
         "w5.flight_still_collides",
-        solid >= -1e-9 && solid < 0.5,
+        (-1e-9..0.5).contains(&solid),
         format!("flying down lands at y={solid:.5} (want 0)"),
     );
 
@@ -1320,8 +1320,8 @@ fn check_session(c: &mut Checker, ids: &Ids) {
 
     // w9.an_unrelated_id_is_not_claimed.
     // MUTATION: `route_session` returning `true` unconditionally. It sits in
-    // an `else if` ladder and, in `Connection::run_play`, in the fallthrough
-    // arm — a router that claimed every id would swallow every packet after it.
+    // an `else if` ladder — a router that claimed every id would swallow
+    // every packet after it.
     let mut s2 = SessionState::default();
     let claimed = route_session(ids.cb_play_keep_alive, &[0; 8], ids, &mut s2);
     c.record(
@@ -1389,7 +1389,7 @@ fn check_session(c: &mut Checker, ids: &Ids) {
     // the jar is only observable through the reply, so a jar that filled
     // correctly behind a reply that still wrote `false` would be
     // indistinguishable from the old client. Graded on the produced bytes,
-    // through the same writer `Connection::answer_cookie_request` calls.
+    // through the same writer the session's cookie reply uses.
     let mut jar = SessionState::default();
     let empty = write_cookie_response(7, "mynet:session", jar.cookie("mynet:session"));
     jar.store_cookie("mynet:session".into(), vec![0xde, 0xad, 0xbe]);

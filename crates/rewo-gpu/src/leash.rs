@@ -139,7 +139,7 @@ fn add_vertex_pair(
     };
     let block = lerp_i(start_packed.0, end_packed.0);
     let sky = lerp_i(start_packed.1, end_packed.1);
-    let mut light = lm(block, sky);
+    let light = lm(block, sky);
 
     let mut color = [0.0f32; 3];
     for c in 0..3 {

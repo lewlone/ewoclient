@@ -8,6 +8,8 @@
 //! this crate consumes them. Wiring the generator run into the launcher's
 //! Native-instance setup is an M1-followon.
 
+pub mod test_support;
+pub mod ao_facts_table;
 pub mod asset_index;
 pub mod assets;
 pub mod attributes;
@@ -16,8 +18,11 @@ pub mod beacon_payment_table;
 pub mod block_entity_models;
 pub mod block_entity_types;
 pub mod block_light;
+pub mod block_physics;
+pub mod block_props;
 pub mod blocks;
 pub mod cem;
+pub mod collision_table;
 pub mod command_argument_types;
 pub mod chest_states;
 pub mod copper_golem_poses;

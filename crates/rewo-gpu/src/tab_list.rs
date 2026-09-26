@@ -1241,7 +1241,7 @@ mod tests {
         let input = TabListInput::new(400, true, 500); // deliberately over-wide
         let l = layout(&input, &e);
         assert_eq!(l.columns, 3);
-        let desired = 3 * (FACE_ADVANCE + 500 + 0 + SLOT_EXTRA_WIDTH);
+        let desired = 3 * ((FACE_ADVANCE + 500) + SLOT_EXTRA_WIDTH);
         assert_eq!(l.slot_width, desired.min(400 - SCREEN_MARGIN) / 3);
         assert_eq!(l.slot_width, 350 / 3);
     }

@@ -326,6 +326,10 @@ pub fn dropdown_options(slot: Slot) -> Option<&'static [&'static str]> {
 /// each, instead of treating those as global preferences.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Instance {
+    /// Stable on-disk key: the instance's folder is `instances/<id>/`.
+    /// Assigned by the launcher (empty until then); `name` is display-only.
+    #[serde(default)]
+    pub id: String,
     pub name: String,
     pub version: String,
     /// Human-readable last-played string ("moments ago", "yesterday")
@@ -410,6 +414,7 @@ fn default_status() -> InstanceStatus {
 impl Instance {
     pub fn new(name: String, version: String, last_played: String, mods: Vec<ModInfo>) -> Self {
         Self {
+            id: String::new(),
             name,
             version,
             last_played,
@@ -531,7 +536,7 @@ pub fn default_instances() -> Vec<Instance> {
 
 /// Mods of the instance at index `selected`. Returns an empty slice if
 /// the index is out of range.
-pub fn instance_mods<'a>(instances: &'a [Instance], selected: usize) -> &'a [ModInfo] {
+pub fn instance_mods(instances: &[Instance], selected: usize) -> &[ModInfo] {
     instances.get(selected).map(|i| i.mods.as_slice()).unwrap_or(&[])
 }
 
@@ -1298,7 +1303,7 @@ fn draw_head(
             caret.set_style(PaintStyle::Stroke);
             caret.set_stroke_width(2.0);
             caret.set_color4f(
-                Color4f::new(255.0 / 255.0, 246.0 / 255.0, 240.0 / 255.0, alpha),
+                Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, alpha),
                 None,
             );
             canvas.draw_line((caret_x, caret_top), (caret_x, caret_bottom), &caret);
@@ -1697,7 +1702,7 @@ fn draw_mod_row(
             pearl_r * 1.6,
             skia_safe::gradient_shader::GradientShaderColors::ColorsInSpace(
                 &[
-                    Color4f::new(255.0 / 255.0, 246.0 / 255.0, 240.0 / 255.0, 1.0),
+                    Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, 1.0),
                     Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 1.0),
                     Color4f::new(201.0 / 255.0, 165.0 / 255.0, 212.0 / 255.0, 1.0),
                 ],

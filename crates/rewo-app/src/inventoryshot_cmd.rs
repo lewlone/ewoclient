@@ -1373,11 +1373,11 @@ fn check_preview(c: &mut Checker) {
     let no_turn = {
         let (_, _, gs) = gui_origin(sw, sh);
         let s = gs * 30.0;
-        let mv = glam::Mat4::from_translation(glam::Vec3::new(rw / 2.0, rh / 2.0, 0.0))
+        
+        glam::Mat4::from_translation(glam::Vec3::new(rw / 2.0, rh / 2.0, 0.0))
             * glam::Mat4::from_scale(glam::Vec3::new(s, s, -s))
             * glam::Mat4::from_translation(glam::Vec3::new(0.0, BB / 2.0 + 0.0625, 0.0))
-            * glam::Mat4::from_rotation_z(std::f32::consts::PI);
-        mv
+            * glam::Mat4::from_rotation_z(std::f32::consts::PI)
     };
     let arm = glam::Vec4::new(0.35, 1.4, 0.0, 1.0);
     let turned = vp * arm;
@@ -1748,7 +1748,7 @@ fn check_rarity(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
     // `rarity.unwrap_or(0)` is exactly `patch.unwrap_or(COMMON)`.
     let disc = "minecraft:music_disc_13";
     let got = stack_rarity(Some(disc), None, false);
-    let patch_only: i32 = None.unwrap_or(DEFAULT_RARITY);
+    let patch_only: i32 = DEFAULT_RARITY;
     c.record(
         "r1.a_music_disc_with_an_empty_patch_is_uncommon",
         got == UNCOMMON && patch_only == COMMON,
@@ -1769,7 +1769,7 @@ fn check_rarity(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
         .map_while(|i| items.name(i))
         .collect();
     let non_default: Vec<&&str> = names.iter().filter(|n| rarity(n) != DEFAULT_RARITY).collect();
-    let buckets = [UNCOMMON, RARE, EPIC].map(|r| names.iter().filter(|n| rarity(**n) == r).count());
+    let buckets = [UNCOMMON, RARE, EPIC].map(|r| names.iter().filter(|n| rarity(n) == r).count());
     c.record(
         "r2.the_prototype_table_covers_a_hundred_and_fifteen_items",
         non_default.len() == 115 && buckets == [78, 18, 19] && DEFAULT_RARITY == COMMON,
@@ -2274,7 +2274,7 @@ fn check_components(c: &mut Checker, paths: &DataPaths) -> Result<(), String> {
 
 /// The enchantment registry and the tooltip lines it unlocks (M42).
 fn check_enchantments(c: &mut Checker, baked: &assets::BakedAssets, jar: &std::path::Path) {
-    use rewo_net::enchantment_parse::{parse_enchantment_registry, EnchantmentDef};
+    use rewo_net::enchantment_parse::parse_enchantment_registry;
 
     let text = &baked.enchantment_text;
     // The two tags and the strings all come out of the client jar.
@@ -2784,7 +2784,7 @@ fn check_advanced_tooltip(
         key,
         lang,
     );
-    let id_line = rendered.get(1).map(|l| rewo_gpu::tooltip::line_text(l));
+    let id_line = rendered.get(1).map(rewo_gpu::tooltip::line_text);
     let as_key = lang.get(key);
     let dark_gray = rendered.get(1).and_then(|l| l.first()).map(|s| s.color);
     c.record(
@@ -2802,8 +2802,8 @@ fn check_advanced_tooltip(
         ),
     );
 
-    let dur_line = rendered.first().map(|l| rewo_gpu::tooltip::line_text(l));
-    let count_line = rendered.get(2).map(|l| rewo_gpu::tooltip::line_text(l));
+    let dur_line = rendered.first().map(rewo_gpu::tooltip::line_text);
+    let count_line = rendered.get(2).map(rewo_gpu::tooltip::line_text);
     // MUTATION — the two arguments swapped, run through the same formatter.
     let swapped = lang
         .get("item.durability")
@@ -3968,7 +3968,7 @@ fn pixels_inner(
     // The GUI pass works in screen pixels and ignores the world's matrix
     // entirely, so any view-projection will do.
     let vp = glam::Mat4::IDENTITY.to_cols_array_2d();
-    let mut shot = |gpu: &mut Gpu,
+    let shot = |gpu: &mut Gpu,
                     off: &mut Offscreen,
                     wr: &mut WorldRenderer,
                     v: &[rewo_gpu::gui_item::GuiItemVertex]|

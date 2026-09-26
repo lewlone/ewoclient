@@ -368,7 +368,7 @@ pub fn read_server_links(body: &[u8]) -> Result<Vec<UntrustedEntry>> {
     // guarded by the buffer. The floor is 2 bytes: one for the `Either` flag
     // and one for a zero-length URL.
     let n = r.count("server links", 2)?;
-    let mut out = Vec::with_capacity(n.min(64) as usize);
+    let mut out = Vec::with_capacity(n.min(64));
     for _ in 0..n {
         let label = if r.bool()? {
             // `Either.left` — the enum. See the module docs: the flag is

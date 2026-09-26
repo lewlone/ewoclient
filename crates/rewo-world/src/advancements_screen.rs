@@ -834,7 +834,7 @@ mod tests {
         assert!(!TabKind::Above.is_mouse_over(0, 0, 0, 0.0, -27.5), "left edge excluded");
         assert!(!TabKind::Above.is_mouse_over(0, 0, 0, 1.0, -28.0), "top edge excluded");
 
-        let mut t = Tab::new(TabKind::Above, 0, &node("r", None, 1.0, 1.0));
+        let t = Tab::new(TabKind::Above, 0, &node("r", None, 1.0, 1.0));
         let (sx, sy) = t.scroll_int();
         let w = &t.widgets[0];
         // Widget at floor(28)=28, floor(27)=27; box 26 wide INCLUSIVE.

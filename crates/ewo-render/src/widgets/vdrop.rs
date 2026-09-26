@@ -584,7 +584,7 @@ fn draw_menu_rows(
                 3.0,
                 gradient_shader::GradientShaderColors::ColorsInSpace(
                     &[
-                        Color4f::new(255.0 / 255.0, 240.0 / 255.0, 244.0 / 255.0, 1.0),
+                        Color4f::new(1.0, 240.0 / 255.0, 244.0 / 255.0, 1.0),
                         Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 1.0),
                     ],
                     None,

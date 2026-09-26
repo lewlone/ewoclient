@@ -84,13 +84,18 @@ public final class EwoModuleData {
      *  in a matched pvp pairing it's 26. Indices at or past this value have
      *  not been written and read as disabled / zero. */
     public static int moduleCount() {
-        return buffer == null ? 0 : buffer.getInt(4);
+        if (!ready()) {
+            return 0;
+        }
+        // Clamped to what fits the buffer so a bad count can't index past it.
+        return Math.max(0, Math.min(buffer.getInt(4), (CAPACITY - OFF_RECORDS) / RECORD));
     }
 
     /** Whether module {@code index} is currently enabled. Out-of-range
-     *  (including assist slots in a legit-build pairing) returns false. */
+     *  (including assist slots in a legit-build pairing), or a block Rust has
+     *  not written with the expected schema, returns false. */
     public static boolean enabled(int index) {
-        if (buffer == null || index < 0 || index >= moduleCount()) {
+        if (!ready() || index < 0 || index >= moduleCount()) {
             return false;
         }
         return buffer.getInt(OFF_RECORDS + index * RECORD) != 0;
@@ -99,7 +104,7 @@ public final class EwoModuleData {
     /** Setting {@code slot} (0..{@link #MAX_SETTINGS_PER_MODULE}-1) of module
      *  {@code index}. */
     public static float setting(int index, int slot) {
-        if (buffer == null || index < 0 || index >= moduleCount()
+        if (!ready() || index < 0 || index >= moduleCount()
                 || slot < 0 || slot >= MAX_SETTINGS_PER_MODULE) {
             return 0f;
         }

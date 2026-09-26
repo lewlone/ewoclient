@@ -2490,7 +2490,7 @@ fn draw_pvp_utils_tab(
         p.set_color(TEXT_PEARL);
         let (_, m) = label_font.metrics();
         canvas.draw_str(
-            &format!("Zone {}", i + 1),
+            format!("Zone {}", i + 1),
             (layout.list_region.left, row_y + m.cap_height * 0.5),
             &label_font,
             &p,

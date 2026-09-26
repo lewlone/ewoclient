@@ -3,6 +3,9 @@
 //! Rotations are radians, positions model px with the vanilla posVec
 //! y-negation baked in. Scale channels are omitted (unsupported).
 
+// Values are vanilla's own keyframe literals.
+#![allow(clippy::approx_constant, clippy::excessive_precision)]
+
 use crate::mobs::{KfChannel, KfDef, KfFrame, KfTarget};
 
 /// FROG_WALK (C:\Users\valtteri\AppData\Roaming\EwoClient\rewo\26.2\decompiled\net\minecraft\client\animation\definitions\FrogAnimation.java | 9 channels, 0 scale skipped)

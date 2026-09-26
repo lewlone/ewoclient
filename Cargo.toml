@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "crates/ewo-core",
     "crates/ewo-render",
-    "crates/ewo-ui",
     "crates/ewo-launcher",
     "crates/ewo-jni",
     "crates/rewo-gpu",
@@ -22,7 +21,7 @@ edition = "2021"
 authors = ["Valtteri Saarinen"]
 license = "Proprietary"
 repository = ""
-rust-version = "1.80"
+rust-version = "1.89"  # verified: `cargo +1.89 check --workspace --all-targets --features rewo-app/gates`; deps (font-types) need 1.89
 
 [workspace.dependencies]
 # Window + input
@@ -109,7 +108,6 @@ rsa = { version = "0.9", features = ["sha2"] }
 # Internal
 ewo-core = { path = "crates/ewo-core" }
 ewo-render = { path = "crates/ewo-render" }
-ewo-ui = { path = "crates/ewo-ui" }
 rewo-gpu = { path = "crates/rewo-gpu" }
 rewo-proto = { path = "crates/rewo-proto" }
 rewo-data = { path = "crates/rewo-data" }
@@ -126,6 +124,8 @@ rewo-audio = { path = "crates/rewo-audio" }
 version = "0.58"
 features = [
     "Win32_Foundation",
+    # auth.toml secrets (DPAPI)
+    "Win32_Security_Cryptography",
     "Win32_Graphics_Dwm",
     # Windows DirectComposition backend (true per-pixel-alpha rounded corners):
     # Skia's D3D12 backend renders into a composition swapchain with
@@ -136,14 +136,9 @@ features = [
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_DirectComposition",
-    # LEAK_HUNT_INSTRUMENT — these two enable `GetProcessMemoryInfo` in
-    # `crates/ewo-launcher/src/window/win32.rs::process_memory`. Strip
-    # them when the leak-hunt instrumentation is removed.
+    # launch::reaper — OpenProcess / GetProcessTimes / TerminateProcess on
+    # the game processes this launcher spawned.
     "Win32_System_Threading",
-    "Win32_System_ProcessStatus",
-    # Process enumeration for launch::reaper — reap a windowless zombie
-    # java.exe holding an instance's natives dir locked before a relaunch.
-    "Win32_System_Diagnostics_ToolHelp",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_HiDpi",
 ]
@@ -160,6 +155,22 @@ opt-level = 1
 opt-level = 3
 [profile.dev.package.skia-bindings]
 opt-level = 3
+
+# Lints every crate opts into (`[lints] workspace = true`). The allows are the
+# ones whose "fix" would damage the code rather than improve it:
+[workspace.lints.rust]
+# Test names capitalise the word the test is about (`..._by_the_MENU_not_...`).
+non_snake_case = "allow"
+
+[workspace.lints.clippy]
+# Float literals and comparisons are transcribed from the decompile; shortening
+# `0.0023333333333333335` or rewriting `!(a < b)` (Java's NaN-aware form) would
+# break the line-for-line correspondence the code is checked against.
+excessive_precision = "allow"
+neg_cmp_op_on_partial_ord = "allow"
+# Judgement lints the transcriptions trip constantly (vanilla signatures).
+too_many_arguments = "allow"
+type_complexity = "allow"
 
 [profile.release]
 opt-level = 3

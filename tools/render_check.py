@@ -118,7 +118,7 @@ def main():
     # the gate reported the unmutated ~50% frame count, and the mutation read
     # as SURVIVED — the same shape as the leftover-mutant-binary hazard the
     # `*_mutate.py` batteries carry a rebuild for, running the other way round.
-    b = subprocess.run(["cargo", "build", "-p", "rewo-app"], cwd=ROOT)
+    b = subprocess.run(["cargo", "build", "-p", "rewo-app", "--features", "gates"], cwd=ROOT)
     if b.returncode != 0:
         sys.exit("cargo build failed -- nothing below would be about this tree")
     if not os.path.exists(REWO):

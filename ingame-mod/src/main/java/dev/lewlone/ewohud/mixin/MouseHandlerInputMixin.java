@@ -14,6 +14,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import dev.lewlone.ewohud.EwoHudMod;
 import dev.lewlone.ewohud.EwoHudNative;
 import dev.lewlone.ewohud.EwoOverlayScreen;
 import dev.lewlone.ewohud.EwoQuickEdit;
@@ -45,6 +46,9 @@ public class MouseHandlerInputMixin {
     @Inject(method = "onButton", at = @At("HEAD"), cancellable = true)
     private void ewo$onButton(long windowHandle, MouseButtonInfo info, int action,
                               CallbackInfo ci) {
+        if (!EwoHudMod.nativeReady) {
+            return; // no native bridge — every call below would throw UnsatisfiedLinkError
+        }
         Minecraft mc = Minecraft.getInstance();
         if (mc == null) {
             return;

@@ -8,6 +8,9 @@
 //! child's offset rides through its parent's ROTATION, not just its
 //! translation, which is why the chain is kept rather than pre-summed.
 
+// Angles are vanilla's own float literals (0.7854F, not PI/4).
+#![allow(clippy::approx_constant)]
+
 use super::block_entity_models::StatueBox;
 
 /// One `PartPose`: an offset and a rest rotation in radians.

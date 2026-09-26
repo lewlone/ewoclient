@@ -1,5 +1,13 @@
 # REWO_PLAN.md — Rewo: the from-scratch native Minecraft client
 
+> **Read first (2026-09-25):** an independent review found several claims in
+> this plan were scoped narrower than stated ("0 VUIDs" without synchronization
+> validation; "CORRECTIONS 0" on flat ground only; light parity on the
+> full-recompute path only). Findings and fix status: `docs/REVIEW-2026-09.md`.
+> Current numbers come from `cargo test --workspace` and `python tools/gates.py`,
+> not from the prose below.
+
+
 **Rewo** (from "rewolution", as Ewo came from "ewolution") is a from-scratch
 Rust Minecraft: Java Edition client speaking the vanilla protocol, rendered
 with raw Vulkan. This file is the plan of record. It supersedes both the

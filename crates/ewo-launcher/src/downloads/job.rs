@@ -16,11 +16,13 @@
 //! downloads stay on disk so a retry resumes from where it left off
 //! (sha1-verify against existing files; skip if good).
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime};
 
 use sha1::{Digest, Sha1};
 
@@ -197,7 +199,10 @@ fn run_job(config: JobConfig, tx: Sender<JobEvent>) {
         if let Some(art) = &lib.downloads.artifact {
             let path = match paths::library_path(&art.path) {
                 Some(p) => p,
-                None => continue,
+                None => {
+                    let _ = tx.send(JobEvent::Failed(format!("library {}: unsafe or unresolvable path {:?}", lib.name, art.path)));
+                    return;
+                }
             };
             if let Err(e) = ensure_file(&agent, &art.url, &art.sha1, art.size, &path) {
                 let _ = tx.send(JobEvent::Failed(format!(
@@ -217,7 +222,10 @@ fn run_job(config: JobConfig, tx: Sender<JobEvent>) {
             if let Some(art) = lib.downloads.classifiers.get(&natives_key) {
                 let path = match paths::library_path(&art.path) {
                     Some(p) => p,
-                    None => continue,
+                    None => {
+                        let _ = tx.send(JobEvent::Failed(format!("native {}: unsafe or unresolvable path {:?}", lib.name, art.path)));
+                        return;
+                    }
                 };
                 if let Err(e) = ensure_file(&agent, &art.url, &art.sha1, art.size, &path) {
                     let _ = tx.send(JobEvent::Failed(format!(
@@ -278,14 +286,15 @@ fn run_job(config: JobConfig, tx: Sender<JobEvent>) {
 
     // Stage 5 — asset blobs.
     let _ = tx.send(JobEvent::StageStart(Stage::Assets));
-    for (_name, obj) in &index.objects {
-        let url = match asset_url(&obj.hash) {
-            Some(u) => u,
-            None => continue,
-        };
-        let path = match paths::asset_object_path(&obj.hash) {
-            Some(p) => p,
-            None => continue,
+    for (name, obj) in &index.objects {
+        // The hash becomes a path + URL; anything but a sha1 is malformed.
+        let (Some(url), Some(path)) = (asset_url(&obj.hash), paths::asset_object_path(&obj.hash))
+        else {
+            let _ = tx.send(JobEvent::Failed(format!(
+                "asset {}: malformed hash {:?}",
+                name, obj.hash
+            )));
+            return;
         };
         if let Err(e) = ensure_file(&agent, &url, &obj.hash, obj.size, &path) {
             let _ = tx.send(JobEvent::Failed(format!(
@@ -338,8 +347,8 @@ fn native_classifier_for(lib: &crate::versions::per_version::Library) -> Option<
 /// Called by the launch path after Phase D's loader merge so loader-added
 /// libraries (which weren't in the vanilla `PerVersion` Phase B saw at
 /// instance-setup time) get pulled before the JVM spawns. Idempotent +
-/// cheap when everything's already present — `ensure_file`'s exists+size
-/// check skips downloaded artifacts.
+/// cheap when everything's already present — `ensure_file` skips files whose
+/// sha1 already verifies (hashed once per session, then size+mtime cached).
 pub fn ensure_libraries(pv: &PerVersion) -> Result<(), String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(60))
@@ -367,9 +376,86 @@ pub fn ensure_libraries(pv: &PerVersion) -> Result<(), String> {
     Ok(())
 }
 
+/// Files already sha1-verified this session, keyed by path, with the size +
+/// mtime they had when verified. Re-verifying every existing file on every
+/// launch costs ~1 s per GB (the full 26.x asset set is several hundred MB),
+/// so a file is hashed once per launcher session and trusted afterwards only
+/// while its size and mtime are unchanged.
+static VERIFIED: Mutex<Option<HashMap<PathBuf, (u64, SystemTime, String)>>> = Mutex::new(None);
+
+fn verified_cached(dest: &Path, meta: &fs::Metadata, sha1: &str) -> bool {
+    let Ok(mtime) = meta.modified() else {
+        return false;
+    };
+    let guard = VERIFIED.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .as_ref()
+        .and_then(|m| m.get(dest))
+        .is_some_and(|(size, t, h)| *size == meta.len() && *t == mtime && h == sha1)
+}
+
+fn remember_verified(dest: &Path, sha1: &str) {
+    let Ok(meta) = fs::metadata(dest) else {
+        return;
+    };
+    let Ok(mtime) = meta.modified() else {
+        return;
+    };
+    let mut guard = VERIFIED.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .get_or_insert_with(HashMap::new)
+        .insert(dest.to_path_buf(), (meta.len(), mtime, sha1.to_string()));
+}
+
+fn sha1_file(path: &Path) -> std::io::Result<String> {
+    let mut f = fs::File::open(path)?;
+    let mut hasher = Sha1::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex(&hasher.finalize()))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// `<dest>.part` — downloads land here and are renamed into place only once
+/// verified, so a crash or a bad body never leaves a trusted-looking file.
+fn part_path(dest: &Path) -> PathBuf {
+    let mut name = dest.file_name().unwrap_or_default().to_os_string();
+    name.push(".part");
+    dest.with_file_name(name)
+}
+
+/// Whether an existing `dest` already has the expected content.
+fn existing_is_valid(dest: &Path, sha1: &str, expected_size: u64) -> bool {
+    let Ok(meta) = fs::metadata(dest) else {
+        return false;
+    };
+    if !meta.is_file() || (expected_size != 0 && meta.len() != expected_size) {
+        return false;
+    }
+    if verified_cached(dest, &meta, sha1) {
+        return true;
+    }
+    match sha1_file(dest) {
+        Ok(h) if h == sha1 => {
+            remember_verified(dest, sha1);
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Download `url` to `dest`, verify the file's sha1 against `expected_sha1`,
 /// and confirm size matches. Skips the network if the file exists with
-/// a matching hash already.
+/// a matching hash already. HTTP(S) downloads must carry a sha1.
 fn ensure_file(
     agent: &ureq::Agent,
     url: &str,
@@ -383,17 +469,17 @@ fn ensure_file(
     // against the source's edits; sha1-pinning would force the user to
     // bump the manifest on every rebuild. Always re-copy + trust the file.
     let local_path = crate::util::file_url_to_path(url);
-    if local_path.is_none() && dest.exists() {
-        // HTTP path: quick check: size match → assume sha1 matches. Faster
-        // startup when most of the tree is already on disk. Full sha1
-        // verify on a stricter "verify" pass we'll add later if needed.
-        if let Ok(meta) = fs::metadata(dest) {
-            if meta.len() == expected_size {
-                return Ok(());
-            }
+    let expected_sha1 = expected_sha1.to_ascii_lowercase();
+    if local_path.is_none() {
+        if !(url.starts_with("https://") || url.starts_with("http://")) {
+            return Err(format!("unsupported URL scheme: {}", url));
         }
-        // Size mismatch — re-download.
-        let _ = fs::remove_file(dest);
+        if !paths::is_sha1_hex(&expected_sha1) {
+            return Err(format!("no sha1 for {} — refusing an unverifiable download", url));
+        }
+        if existing_is_valid(dest, &expected_sha1, expected_size) {
+            return Ok(());
+        }
     }
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
@@ -412,43 +498,49 @@ fn ensure_file(
             .map_err(|e| format!("GET {}: {}", url, e))?;
         Box::new(resp.into_reader())
     };
-    let mut file = fs::File::create(dest).map_err(|e| format!("create {}: {}", dest.display(), e))?;
-    let mut hasher = Sha1::new();
-    let mut buf = [0u8; 64 * 1024];
-    let mut written: u64 = 0;
-    loop {
-        let n = reader
-            .read(&mut buf)
-            .map_err(|e| format!("read body: {}", e))?;
-        if n == 0 {
-            break;
+    let part = part_path(dest);
+    let result = (|| {
+        let mut file =
+            fs::File::create(&part).map_err(|e| format!("create {}: {}", part.display(), e))?;
+        let mut hasher = Sha1::new();
+        let mut buf = [0u8; 64 * 1024];
+        let mut written: u64 = 0;
+        loop {
+            let n = reader
+                .read(&mut buf)
+                .map_err(|e| format!("read body: {}", e))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+            file.write_all(&buf[..n])
+                .map_err(|e| format!("write {}: {}", part.display(), e))?;
+            written += n as u64;
         }
-        hasher.update(&buf[..n]);
-        file.write_all(&buf[..n])
-            .map_err(|e| format!("write {}: {}", dest.display(), e))?;
-        written += n as u64;
+        drop(file);
+        if local_path.is_none() {
+            let got_hex = hex(&hasher.finalize());
+            if got_hex != expected_sha1 {
+                return Err(format!(
+                    "sha1 mismatch (got {}, expected {})",
+                    got_hex, expected_sha1
+                ));
+            }
+            if expected_size != 0 && written != expected_size {
+                return Err(format!(
+                    "size mismatch (got {}, expected {})",
+                    written, expected_size
+                ));
+            }
+        }
+        fs::rename(&part, dest).map_err(|e| format!("rename {}: {}", dest.display(), e))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&part);
+    } else if local_path.is_none() {
+        remember_verified(dest, &expected_sha1);
     }
-    if local_path.is_some() {
-        // Local file — verification was already opted out above. Done.
-        return Ok(());
-    }
-    let got = hasher.finalize();
-    let got_hex: String = got.iter().map(|b| format!("{:02x}", b)).collect();
-    if !expected_sha1.is_empty() && got_hex != expected_sha1 {
-        let _ = fs::remove_file(dest);
-        return Err(format!(
-            "sha1 mismatch (got {}, expected {})",
-            got_hex, expected_sha1
-        ));
-    }
-    if expected_size != 0 && written != expected_size {
-        let _ = fs::remove_file(dest);
-        return Err(format!(
-            "size mismatch (got {}, expected {})",
-            written, expected_size
-        ));
-    }
-    Ok(())
+    result
 }
 
 /// Build the HTTP headers needed to download a private-repo GitHub
@@ -494,6 +586,56 @@ fn is_github_release_asset_url(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn agent() -> ureq::Agent {
+        ureq::AgentBuilder::new().timeout(Duration::from_secs(1)).build()
+    }
+
+    #[test]
+    fn http_download_without_sha1_is_refused_before_any_request() {
+        let dest = std::env::temp_dir().join("ewo-nosha-test.jar");
+        let err = ensure_file(&agent(), "https://example.invalid/x.jar", "", 0, &dest).unwrap_err();
+        assert!(err.contains("no sha1"), "{err}");
+        let err = ensure_file(&agent(), "ftp://example.invalid/x.jar", "", 0, &dest).unwrap_err();
+        assert!(err.contains("unsupported"), "{err}");
+    }
+
+    #[test]
+    fn existing_file_must_match_its_sha1_not_just_its_size() {
+        let dir = std::env::temp_dir().join(format!("ewo-verify-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("lib.jar");
+        fs::write(&dest, b"hello").unwrap();
+        // sha1("hello")
+        let good = "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d";
+        let bad = "0000000000000000000000000000000000000000";
+        assert!(!existing_is_valid(&dest, bad, 5), "same size, wrong hash must not pass");
+        assert!(existing_is_valid(&dest, good, 5));
+        assert!(!existing_is_valid(&dest, good, 6), "size mismatch");
+        // A good existing file short-circuits without touching the network.
+        ensure_file(&agent(), "https://example.invalid/lib.jar", good, 5, &dest).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_url_copies_through_part_file() {
+        let dir = std::env::temp_dir().join(format!("ewo-fileurl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.jar");
+        fs::write(&src, b"jar").unwrap();
+        let url = if cfg!(windows) {
+            format!("file:///{}", src.to_string_lossy().replace('\\', "/"))
+        } else {
+            format!("file://{}", src.to_string_lossy())
+        };
+        let dest = dir.join("out").join("dest.jar");
+        ensure_file(&agent(), &url, "", 0, &dest).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"jar");
+        assert!(!part_path(&dest).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     // The token-set and token-absent cases share one test on purpose:
     // `EWO_LOADER_TOKEN` is a process-global env var and Rust runs tests

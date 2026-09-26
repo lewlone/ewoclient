@@ -386,7 +386,7 @@ pub struct Node {
 
 impl Node {
     /// Walks up the parent chain to this subtree's root id.
-    pub fn root_of<'a>(&self, nodes: &'a HashMap<String, Node>) -> String {
+    pub fn root_of(&self, nodes: &HashMap<String, Node>) -> String {
         let mut cur = self;
         let mut guard = 0usize;
         while let Some(p) = &cur.parent {
@@ -412,6 +412,7 @@ impl Node {
 /// `ObjectLinkedOpenHashSet`), because the screen's tab strip iterates
 /// `roots()` and each tab's widgets arrive in task order. `nodes` itself is a
 /// plain map — nothing iterates it.
+#[derive(Default)]
 pub struct ClientAdvancements {
     nodes: HashMap<String, Node>,
     roots: Vec<String>,
@@ -425,18 +426,6 @@ pub struct ClientAdvancements {
     pub show_advancements: bool,
 }
 
-impl Default for ClientAdvancements {
-    fn default() -> Self {
-        Self {
-            nodes: HashMap::new(),
-            roots: Vec::new(),
-            tasks: Vec::new(),
-            progress: HashMap::new(),
-            selected_tab: None,
-            show_advancements: false,
-        }
-    }
-}
 
 impl ClientAdvancements {
     /// `ClientAdvancements.update` (`ClientAdvancements.java:36-69`) +
@@ -607,7 +596,7 @@ impl ClientAdvancements {
         Some(self
             .progress
             .get(id)
-            .map_or(false, |p| p.is_done(&node.advancement.requirements)))
+            .is_some_and(|p| p.is_done(&node.advancement.requirements)))
     }
 
     /// The roots, in insertion order — the screen's tab strip.

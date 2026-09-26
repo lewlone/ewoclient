@@ -28,6 +28,11 @@ path = "src/main.rs"
 # same signature so a caller cannot tell them apart.
 audio = ["dep:rewo-audio"]
 
+# The `*shot` verification gates, `live --render-check`, and the REWO_* test
+# knobs (see src/knobs.rs). Off by default so a shipped `rewo` contains none of
+# them; `tools/gates.py` and `tools/render_check.py` build with it.
+gates = []
+
 [dependencies]
 # Optional; see the `audio` feature above.
 rewo-audio = { workspace = true, optional = true }
@@ -35,7 +40,7 @@ rewo-gpu = { workspace = true }
 rewo-net = { workspace = true }
 rewo-data = { workspace = true }
 rewo-world = { workspace = true }
-rewo-mesh = { workspace = true }
+rewo-mesh = { workspace = true, features = ["oracle"] }
 rewo-proto = { workspace = true }
 # M52 module port: the module CATALOG only (`ewo_core::modules`), which is
 # plain &'static data. rewo-gpu deliberately does NOT get this dep -- the
@@ -56,4 +61,10 @@ raw-window-handle = { workspace = true }
 clap = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
+# The system clipboard for the edit boxes (vanilla's `KeyboardHandler.getClipboard`).
+# Text only; Wayland through the data-control protocol, X11 and Windows natively.
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 tracy-client = { workspace = true }
+
+[lints]
+workspace = true

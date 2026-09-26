@@ -49,7 +49,8 @@ use crate::Gpu;
 /// vec4 rect + vec4 params.
 const INSTANCE_STRIDE: u64 = 32;
 const MAX_SHELLS: usize = 256;
-const RING: usize = 2;
+/// Set once this pass has dropped geometry past its budget.
+static TRUNCATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The plate's palette — **data, not constants**.
 ///
@@ -138,9 +139,7 @@ pub struct VelvetChromePass {
     style_buf: vk::Buffer,
     style_alloc: Option<Allocation>,
     pipeline: vk::Pipeline,
-    bufs: [vk::Buffer; RING],
-    allocs: [Option<Allocation>; RING],
-    cursor: usize,
+    ring: crate::buf_ring::BufRing,
     instances: u32,
 }
 
@@ -234,35 +233,12 @@ impl VelvetChromePass {
                 .map_err(|e| format!("velvet chrome layout: {e}"))?;
             let pipeline = build_pipeline(&device, layout, color_format)?;
 
-            let mut bufs = [vk::Buffer::null(); RING];
-            let mut allocs: [Option<Allocation>; RING] = [None, None];
-            for (i, slot) in allocs.iter_mut().enumerate() {
-                let buffer = device
-                    .create_buffer(
-                        &vk::BufferCreateInfo::default()
-                            .size(INSTANCE_STRIDE * MAX_SHELLS as u64)
-                            .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
-                            .sharing_mode(vk::SharingMode::EXCLUSIVE),
-                        None,
-                    )
-                    .map_err(|e| format!("velvet chrome buffer: {e}"))?;
-                let req = device.get_buffer_memory_requirements(buffer);
-                let alloc = gpu
-                    .allocator
-                    .allocate(&AllocationCreateDesc {
-                        name: "velvet-chrome-instances",
-                        requirements: req,
-                        location: MemoryLocation::CpuToGpu,
-                        linear: true,
-                        allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-                    })
-                    .map_err(|e| format!("velvet chrome alloc: {e}"))?;
-                device
-                    .bind_buffer_memory(buffer, alloc.memory(), alloc.offset())
-                    .map_err(|e| format!("velvet chrome bind: {e}"))?;
-                bufs[i] = buffer;
-                *slot = Some(alloc);
-            }
+            let ring = crate::buf_ring::BufRing::with_capacity(
+                gpu,
+                "velvet-chrome-instances",
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                INSTANCE_STRIDE * MAX_SHELLS as u64,
+            )?;
             Ok(Self {
                 layout,
                 set_layout,
@@ -271,9 +247,7 @@ impl VelvetChromePass {
                 style_buf,
                 style_alloc: Some(style_alloc),
                 pipeline,
-                bufs,
-                allocs,
-                cursor: 0,
+                ring,
                 instances: 0,
             })
         }
@@ -286,24 +260,23 @@ impl VelvetChromePass {
         extent: vk::Extent2D,
         shells: &[Shell],
     ) {
-        self.cursor = (self.cursor + 1) % RING;
+        if shells.len() > MAX_SHELLS {
+            crate::buf_ring::warn_truncated(&TRUNCATED, "velvet-chrome", MAX_SHELLS);
+        }
         let n = shells.len().min(MAX_SHELLS);
         self.instances = n as u32;
-        if let Some(slice) = self.allocs[self.cursor]
-            .as_mut()
-            .and_then(|a| a.mapped_slice_mut())
-        {
-            let bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    shells.as_ptr() as *const u8,
-                    n * INSTANCE_STRIDE as usize,
-                )
-            };
-            slice[..bytes.len()].copy_from_slice(bytes);
-        }
-        if n == 0 {
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                shells.as_ptr() as *const u8,
+                n * INSTANCE_STRIDE as usize,
+            )
+        };
+        
+        let kept = self.ring.write_fixed(bytes, INSTANCE_STRIDE as usize);
+        self.instances = (kept / INSTANCE_STRIDE as usize) as u32;
+        let Some(vbuf) = self.ring.bind() else {
             return;
-        }
+        };
         let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
         let device = &gpu.device;
         unsafe {
@@ -327,7 +300,7 @@ impl VelvetChromePass {
                 0,
                 std::slice::from_raw_parts(screen.as_ptr() as *const u8, 8),
             );
-            device.cmd_bind_vertex_buffers(cb, 0, &[self.bufs[self.cursor]], &[0]);
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             // Six vertices expanded in the shader; one instance per shell.
             device.cmd_draw(cb, 6, self.instances, 0, 0);
         }
@@ -343,6 +316,7 @@ impl VelvetChromePass {
     }
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
+        self.ring.destroy(gpu);
         unsafe {
             let device = gpu.device.clone();
             device.destroy_pipeline(self.pipeline, None);
@@ -352,12 +326,6 @@ impl VelvetChromePass {
             device.destroy_buffer(self.style_buf, None);
             if let Some(a) = self.style_alloc.take() {
                 let _ = gpu.allocator.free(a);
-            }
-            for (buf, alloc) in self.bufs.iter().zip(self.allocs.iter_mut()) {
-                device.destroy_buffer(*buf, None);
-                if let Some(a) = alloc.take() {
-                    let _ = gpu.allocator.free(a);
-                }
             }
         }
     }

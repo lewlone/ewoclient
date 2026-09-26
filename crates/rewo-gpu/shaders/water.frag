@@ -1,6 +1,4 @@
 #version 450
-#extension GL_GOOGLE_include_directive : require
-#include "lightmap.glsl"
 // Translucent (water) pass: same inputs as world.frag, but the texture's
 // alpha rides through to the blender (water_still ships alpha 180) instead
 // of the opaque path's alpha-test. Distance fog fades the rgb toward the
@@ -35,10 +33,9 @@ layout(location = 3) in vec3 v_worldpos;
 layout(location = 0) out vec4 out_color;
 
 void main() {
-    // Low 16 bits = texture layer, upper bits = the two light levels.
-    vec4 c = texture(u_tex, vec3(v_uv, float(v_layer & 0xFFFFu)));
-    vec3 lm = lm_light(v_layer, pc.light, pc.sky_col, lmx.ambient.rgb);
-    vec3 rgb = c.rgb * v_color * lm;
+    vec4 c = texture(u_tex, vec3(v_uv, float(v_layer)));
+    // `v_color` already carries the lightmap (world.vert, per vertex).
+    vec3 rgb = c.rgb * v_color;
     float dist = distance(pc.cam_fog.xyz, v_worldpos);
     // `total_fog_value` — the MAX of the render-distance band (the push
     // block's, which dissolves the chunk edge into the sky) and the

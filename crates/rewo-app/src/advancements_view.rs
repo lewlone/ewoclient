@@ -357,7 +357,7 @@ impl AdvDrag {
 fn resolve_display(
     d: &rewo_net::advancements::WireDisplay,
     _lang: &Language,
-    advance: &[u8; 256],
+    _advance: &[u8; 256],
     measure: &dyn Fn(&str) -> i32,
     _done: bool,
     _percent: f32,
@@ -428,7 +428,7 @@ fn find_optimal_lines(
         if dist <= 10.0 {
             return split;
         }
-        if best.as_ref().map_or(true, |(bd, _)| dist < *bd) {
+        if best.as_ref().is_none_or(|(bd, _)| dist < *bd) {
             best = Some((dist, split));
         }
     }
@@ -729,7 +729,7 @@ pub fn lines(
 
     // The layout header: `addTitleHeader(TITLE)` centres the 9px-tall text in
     // the 33-tall header band → y = 12.
-    let mut push =
+    let push =
         |out: &mut Vec<OwnedTextLine>, text: &str, x: i32, y: i32, rgb: u32, centered: bool| {
             if text.is_empty() {
                 return;
@@ -757,7 +757,7 @@ pub fn lines(
 
     push(
         &mut out,
-        &lang.or_key("gui.advancements"),
+        lang.or_key("gui.advancements"),
         screen_width / 2,
         12,
         0xFF_FFFF,
@@ -820,7 +820,7 @@ pub fn lines(
             // title falls back to the plain TITLE component there.
             push(
                 &mut out,
-                &lang.or_key("advancements.empty"),
+                lang.or_key("advancements.empty"),
                 in_x + asm::INSIDE_W / 2,
                 in_y + 52,
                 0xFF_FFFF,
@@ -828,7 +828,7 @@ pub fn lines(
             );
             push(
                 &mut out,
-                &lang.or_key("advancements.sad_label"),
+                lang.or_key("advancements.sad_label"),
                 in_x + asm::INSIDE_W / 2,
                 in_y + asm::INSIDE_H - 9,
                 0xFF_FFFF,

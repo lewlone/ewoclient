@@ -1064,15 +1064,13 @@ mod tests {
         // A chain of `with_any_potion` deeper than the bound is abandoned
         // rather than recursed. The variants have DIFFERENT body lengths, so a
         // reader that loses its place desyncs the rest of the packet.
-        let deep: Vec<u8> = std::iter::repeat(2u8)
-            .take(MAX_DEPTH as usize + 2)
+        let deep: Vec<u8> = std::iter::repeat_n(2u8, MAX_DEPTH as usize + 2)
             .chain([0])
             .collect();
         assert!(slot(&mut PacketReader::new(&deep), &i, 0).is_err());
         // …and one just inside it is fine, so the bound is not merely "any
         // nesting fails".
-        let ok: Vec<u8> = std::iter::repeat(2u8)
-            .take(MAX_DEPTH as usize - 1)
+        let ok: Vec<u8> = std::iter::repeat_n(2u8, MAX_DEPTH as usize - 1)
             .chain([0])
             .collect();
         assert!(slot(&mut PacketReader::new(&ok), &i, 0).is_ok());

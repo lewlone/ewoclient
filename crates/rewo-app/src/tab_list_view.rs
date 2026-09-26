@@ -660,6 +660,7 @@ pub fn text(
 /// Exposed so a gate can assert the reservation *happened* on an online-mode
 /// server rather than inferring it from a slot width, and so the gap is a named
 /// thing in the code rather than an absence.
+#[cfg(any(test, feature = "gates"))]
 pub fn face_rects(layout: &tab_list::TabListLayout) -> Vec<(usize, tab_list::Rect)> {
     layout
         .entries

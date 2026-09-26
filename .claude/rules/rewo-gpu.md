@@ -3,7 +3,7 @@ paths:
   - "crates/rewo-gpu/**"
   - "crates/rewo-mesh/**"
   - "crates/rewo-app/src/*shot_cmd.rs"
-  - "crates/rewo-app/src/live_cmd.rs"
+  - "crates/rewo-app/src/live_cmd/**"
   - "crates/rewo-app/src/demo_cmd.rs"
   - "crates/rewo-app/src/bench_cmd.rs"
   - "REWO_VELVET_UI_PLAN.md"
@@ -30,6 +30,11 @@ Reasoning per rule: `docs/rewo/milestones-*.md`. Measurements: `REWO_PLAN.md` §
 - `MeshVertex` is a packed 28 bytes. Greedy meshing merges only uniform cube
   faces and **never +Y**. Look for hardcoded `len * N` beside `VERTEX_STRIDE`
   whenever a vertex grows (M21, M109).
+- **Terrain lighting is vanilla's** (`rewo-mesh/src/smooth_light.rs`, a port of
+  `BlockModelLighter`): the mesher writes the finished 8-bit vertex colour and
+  smooth light coordinates, and `world.vert` samples the lightmap per vertex.
+  Don't move lighting back to the fragment stage or store float colours; both
+  drift from vanilla.
 - Item display transforms: `ItemTransform.Deserializer` multiplies translation
   by 0.0625 and clamps **before** apply. Shade with the rotated normal.
 

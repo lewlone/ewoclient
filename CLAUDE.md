@@ -38,7 +38,8 @@ Author identity for both repos: `lewlone <valtteri.e.saarinen@gmail.com>`.
 
 | You're working on | Read |
 |---|---|
-| Rewo, anything | `HANDOFF.md` (current prompt), then `REWO_PLAN.md` §0.0 (numbers, gates, gotchas), then `AGENT_LOOP_BRIEF.md` (process) |
+| Anything: what's broken or open | `docs/REVIEW-2026-09.md` (independent review, 2026-09-25, and fix status; anything listed there as open is open) |
+| Rewo, anything | `REWO_PLAN.md` §0.0 (numbers, gates, gotchas). The old session handoffs (`HANDOFF.md`, `AGENT_LOOP_BRIEF.md`) are retired to `docs/history/` |
 | Rewo packets | `REWO_PACKET_COVERAGE.md` (its table is machine-checked by a test in `ids.rs`) |
 | Rewo audio / Velvet HUD / feature choice | `REWO_AUDIO_PLAN.md` / `REWO_VELVET_UI_PLAN.md` / `REWO_FEATURE_SURVEY.md` |
 | Launcher visuals | `StyleSheet1`, `StyleSheet2`, the `.htm` prototype, `style/*.png` |
@@ -78,6 +79,36 @@ Code comments cite sections of this file by name. They now live here:
 | Rewo milestone record | `docs/rewo/milestones-M0-M86.md`, `docs/rewo/milestones-M87-M142.md` |
 | Session "Update" footers (M143–M180 and earlier) | `docs/history/claude-md-session-log.md` |
 
+## Commands
+
+```bash
+cargo build --workspace
+cargo test --workspace --no-fail-fast       # unit tests (some skip without local assets)
+REWO_REQUIRE_ASSETS=1 cargo test --workspace  # a test that would skip fails instead
+python tools/gates.py                        # every `rewo *shot --check` gate + demo PNG hash
+python tools/gates.py --only mobshot,itemshot
+python tools/render_check.py                 # stages a fresh vanilla server, runs `rewo live --render-check`
+cargo run -p ewo-launcher                    # launcher (add --dev for the tweaks overlay)
+cargo run -p rewo-app -- live --host HOST:PORT
+cargo build -p rewo-app --features gates     # gate subcommands, `live --render-check`, `play`, REWO_* test knobs
+powershell ingame-mod/build.ps1 [-Pvp]       # builds ewo-jni + the mod jar AND deploys it
+powershell package.ps1                       # release bundle into dist/EwoClient
+python tools/regen_agents_mirror.py          # after editing this file: regenerate AGENTS.md
+```
+
+- **Local-only inputs.** Most gates and several tests need
+  `%APPDATA%/EwoClient/rewo/26.2/` (datagen reports + a Vineflower decompile of
+  the user's own client jar) and a Vulkan device with the SDK's validation
+  layers. CI (`.github/workflows/ci.yml`, required check `test` on `main`) runs
+  only build + `cargo test` + clippy, so run the gates yourself.
+- A test that needs local assets calls `rewo_data::skip_test!("reason")`, never
+  returns silently: it prints `SKIP:`, and panics under `REWO_REQUIRE_ASSETS=1`.
+- **Gate rules** (enforced by `tools/gates.py`): a gate passes only if it exits
+  0 **and** its output has no Vulkan validation error. The demo PNG's expected
+  hash lives in `tools/demo_hash.txt`; change it only in a commit that
+  intentionally changes rendering, and say why. `render_check.py` insists on
+  the debug binary (validation is only on in debug builds).
+
 ## Non-negotiables (design rules — never violate)
 
 From the prototype author's intent. They're load-bearing:
@@ -112,7 +143,7 @@ asset CDN and, once the user links an account, the social API.
   on glutin. There's no uncapped frame rate on Windows.
 - **Renderer (Rewo): raw Vulkan via `ash`**, GLSL compiled by `glslc` from the
   Vulkan SDK.
-- **Layout:** `taffy`. **Window:** `winit` 0.30, custom frame, no native
+- **Layout:** hand-rolled (`taffy` is a workspace dependency but unused). **Window:** `winit` 0.30, custom frame, no native
   titlebar. Wayland only on Linux, no X11, no macOS.
 - **Concurrency:** single-threaded plus `std::thread` + `mpsc`. **No
   tokio/smol.** Rayon only where profiling demands it (Rewo's mesh pool).
@@ -121,7 +152,7 @@ asset CDN and, once the user links an account, the social API.
 - **Fonts:** bundled variable TTFs in `assets/fonts/`, never system fonts.
   English only.
 - **Crates:** `ewo-core` (types, tokens, easing, module catalog; no graphics),
-  `ewo-render`, `ewo-ui`, `ewo-launcher` (binary), `ewo-jni` (in-game cdylib),
+  `ewo-render`, `ewo-launcher` (binary), `ewo-jni` (in-game cdylib),
   and `rewo-{proto,data,world,net,mesh,gpu,audio,app}` (binary `rewo`). Add a
   crate only for a structural reason: boundaries follow what changes together.
 

@@ -53,8 +53,7 @@ fn main() {
     let glass = |edge: f32, strength: f32, disperse: f32, specular: f32| {
         Kind::Glass(Params { edge, strength, disperse, specular, ..Params::WIDGET })
     };
-    let variants = vec![
-        Variant {
+    let variants = [Variant {
             label: "CURRENT · flat wine 0.50".into(),
             kind: Kind::Current,
 
@@ -90,8 +89,7 @@ fn main() {
                 ..Params::WIDGET
             }),
 
-        },
-    ];
+        }];
 
     let (w, h) = (1000i32, 860i32);
     let mut surface = surfaces::raster_n32_premul((w, h)).expect("surface");

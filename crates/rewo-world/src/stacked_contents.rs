@@ -285,7 +285,7 @@ impl RecipePicker {
     /// `isPathIndexItem` — the path alternates item, ingredient, item, …, so
     /// an EVEN index holds an item.
     fn is_path_index_item(index: usize) -> bool {
-        index % 2 == 0
+        index.is_multiple_of(2)
     }
 
     fn try_pick(&mut self, contents: &mut StackedContents, capacity: i32) -> bool {
@@ -599,7 +599,7 @@ mod tests {
                 Ingredient::of(
                     &(0..3)
                         .filter(|b| m >> b & 1 == 1)
-                        .map(|b| b as i32 + 1)
+                        .map(|b| b + 1)
                         .collect::<Vec<_>>(),
                 )
             })

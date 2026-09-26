@@ -1476,7 +1476,7 @@ mod tests {
     /// apart.
     #[test]
     fn a_pitched_up_stream_is_fed_faster() {
-        let mut at_pitch = |pitch: f32| {
+        let at_pitch = |pitch: f32| {
             let (mut sink, _) = sink_with_stream(1, 44_100, None);
             for call in [
                 ChannelCall::SetPitch(pitch),

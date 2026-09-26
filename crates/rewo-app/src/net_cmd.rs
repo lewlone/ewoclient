@@ -98,21 +98,37 @@ fn soak(
         conn.recorder =
             Some(record::Recorder::create(path).map_err(|e| format!("create recording: {e}"))?);
     }
-    let (stats, world) =
-        conn.run_session(host, port, username, Duration::from_secs_f32(seconds))?;
+    // The same PlaySession `rewo live` runs: an idle player ticked at 20 Hz,
+    // so the soak exercises the live packet handling, not a second copy of it.
+    let mut session = conn.into_play(
+        host,
+        port,
+        username,
+        None,
+        Vec::new(),
+        data.blocks.global_palette_bits,
+        rewo_world::biome::Colormaps::neutral(),
+    )?;
+    let tick_error = session.run_idle(Duration::from_secs_f32(seconds)).err();
+    let recorded = session.finish_recording()?;
+    let world = &session.world;
+    let reached_play = session.spawned;
+    let disconnect = tick_error.or_else(|| session.disconnect.clone());
 
     println!("[rewo-m1] soak against {host}:{port} for {seconds:.0}s");
-    println!("[rewo-m1] reached play: {}", stats.reached_play);
+    println!("[rewo-m1] reached play: {reached_play}");
     println!(
-        "[rewo-m1] packets in: {}  bytes in: {}  keepalives: {}  teleports: {}",
-        stats.packets_in, stats.bytes_in, stats.keepalives, stats.teleports
+        "[rewo-m1] packets in: {}  bytes in: {}  keepalives: {}  teleports: {}  decode failures: {}",
+        session.packets_in, session.bytes_in, session.keepalives, session.teleports,
+        session.decode_failures
     );
     println!(
         "[rewo-m1] chunks decoded: {}  columns resident: {}",
-        stats.chunks, stats.loaded_columns
+        session.chunk_packets,
+        world.loaded_columns()
     );
-    println!("[rewo-m1] world digest: {:#018x}", stats.world_digest);
-    if let Some(reason) = &stats.disconnect_reason {
+    println!("[rewo-m1] world digest: {:#018x}", world.digest());
+    if let Some(reason) = &disconnect {
         println!("[rewo-m1] disconnect: {reason}");
     }
     if query.len() == 3 {
@@ -121,12 +137,12 @@ fn soak(
         let name = data.blocks.block_name(state).unwrap_or("<unknown>");
         println!("[rewo-m1] block at ({x},{y},{z}) = state {state} ({name})");
     }
-    if let Some(path) = &record_path {
-        println!("[rewo-m1] recording written to {}", path.display());
+    if let (Some(path), Some(n)) = (&record_path, recorded) {
+        println!("[rewo-m1] recording written to {} ({n} packets)", path.display());
     }
 
     // The soak is only meaningful if we actually got into the world.
-    if !stats.reached_play {
+    if !reached_play {
         return Err("never reached the Play phase".into());
     }
     Ok(())

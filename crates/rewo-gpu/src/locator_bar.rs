@@ -73,8 +73,7 @@
 //! `world/waypoints/TrackedWaypoint.java`, `util/{Mth,ARGB}.java`.
 
 use ash::vk;
-use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
-use gpu_allocator::MemoryLocation;
+use gpu_allocator::vulkan::Allocation;
 
 use crate::hud::HudSpriteData;
 use crate::world::DEPTH_FORMAT;
@@ -918,7 +917,8 @@ pub fn expand_nine_slice(src: &HudSpriteData<'_>, out_w: u32) -> Vec<u8> {
 
 const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
 const MAX_VERTS: usize = 2048;
-const RING: usize = 2;
+/// Set once this pass has dropped geometry past its budget.
+static TRUNCATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const ATLAS_W: u32 = 256;
 const ATLAS_H: u32 = 32;
 /// How many dot sprites the atlas has room for on its one 9-px row.
@@ -974,9 +974,7 @@ pub struct LocatorBarPass {
     image: vk::Image,
     image_alloc: Option<Allocation>,
     view: vk::ImageView,
-    bufs: [vk::Buffer; RING],
-    allocs: [Option<Allocation>; RING],
-    cursor: usize,
+    ring: crate::buf_ring::BufRing,
     verts: u32,
     background: Rect,
     /// `[up frame 0, up frame 1, down frame 0, down frame 1]`.
@@ -1145,35 +1143,12 @@ impl LocatorBarPass {
                 .map_err(|e| format!("locator layout: {e}"))?;
             let pipeline = build_pipeline(&device, layout, color_format)?;
 
-            let mut bufs = [vk::Buffer::null(); RING];
-            let mut allocs: [Option<Allocation>; RING] = Default::default();
-            for i in 0..RING {
-                let buf = device
-                    .create_buffer(
-                        &vk::BufferCreateInfo::default()
-                            .size(VERTEX_STRIDE * MAX_VERTS as u64)
-                            .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
-                            .sharing_mode(vk::SharingMode::EXCLUSIVE),
-                        None,
-                    )
-                    .map_err(|e| format!("locator buffer: {e}"))?;
-                let req = device.get_buffer_memory_requirements(buf);
-                let alloc = gpu
-                    .allocator
-                    .allocate(&AllocationCreateDesc {
-                        name: "locator_bar",
-                        requirements: req,
-                        location: MemoryLocation::CpuToGpu,
-                        linear: true,
-                        allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-                    })
-                    .map_err(|e| format!("locator alloc: {e}"))?;
-                device
-                    .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
-                    .map_err(|e| format!("locator bind: {e}"))?;
-                bufs[i] = buf;
-                allocs[i] = Some(alloc);
-            }
+            let ring = crate::buf_ring::BufRing::with_capacity(
+                gpu,
+                "locator-bar-verts",
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                VERTEX_STRIDE * MAX_VERTS as u64,
+            )?;
 
             Ok(LocatorBarPass {
                 layout,
@@ -1185,9 +1160,7 @@ impl LocatorBarPass {
                 image,
                 image_alloc: Some(image_alloc),
                 view,
-                bufs,
-                allocs,
-                cursor: 0,
+                ring,
                 verts: 0,
                 background,
                 arrows,
@@ -1214,7 +1187,6 @@ impl LocatorBarPass {
         let scale = crate::hud::gui_scale(w, h);
         let (sw, sh) = (w / scale, h / scale);
 
-        self.cursor = (self.cursor + 1) % RING;
         let mut v: Vec<Vertex> = Vec::with_capacity(128);
         let mut quad = |x: f32, y: f32, r: &Rect, color: u32| {
             let (px, py) = (x * scale, y * scale);
@@ -1242,6 +1214,8 @@ impl LocatorBarPass {
                         uv,
                         color: c,
                     });
+                } else {
+                    crate::buf_ring::warn_truncated(&TRUNCATED, "locator-bar", MAX_VERTS);
                 }
             }
         };
@@ -1268,21 +1242,18 @@ impl LocatorBarPass {
         }
 
         self.verts = v.len() as u32;
-        if let Some(slice) = self.allocs[self.cursor]
-            .as_mut()
-            .and_then(|a| a.mapped_slice_mut())
-        {
-            let bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    v.as_ptr() as *const u8,
-                    v.len() * VERTEX_STRIDE as usize,
-                )
-            };
-            slice[..bytes.len()].copy_from_slice(bytes);
-        }
-        if self.verts == 0 {
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                v.as_ptr() as *const u8,
+                v.len() * VERTEX_STRIDE as usize,
+            )
+        };
+        
+        let kept = self.ring.write_fixed(bytes, 6 * VERTEX_STRIDE as usize);
+        self.verts = (kept / VERTEX_STRIDE as usize) as u32;
+        let Some(vbuf) = self.ring.bind() else {
             return;
-        }
+        };
 
         let device = &gpu.device;
         unsafe {
@@ -1306,12 +1277,13 @@ impl LocatorBarPass {
                 0,
                 std::slice::from_raw_parts(screen.as_ptr() as *const u8, 8),
             );
-            device.cmd_bind_vertex_buffers(cb, 0, &[self.bufs[self.cursor]], &[0]);
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             device.cmd_draw(cb, self.verts, 1, 0, 0);
         }
     }
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
+        self.ring.destroy(gpu);
         unsafe {
             let device = &gpu.device;
             device.destroy_pipeline(self.pipeline, None);
@@ -1321,12 +1293,6 @@ impl LocatorBarPass {
             device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
-            for b in self.bufs {
-                device.destroy_buffer(b, None);
-            }
-        }
-        for a in self.allocs.iter_mut().filter_map(|a| a.take()) {
-            let _ = gpu.allocator.free(a);
         }
         if let Some(a) = self.image_alloc.take() {
             let _ = gpu.allocator.free(a);
@@ -1693,7 +1659,7 @@ mod tests {
     #[test]
     fn the_nine_slice_tiles_its_middle() {
         // A 12-wide source: columns 0..5 left, 5..7 the 2-px tile, 7..12 right.
-        let mut rgba = vec![0u8; 12 * 1 * 4];
+        let mut rgba = vec![0u8; 12 * 4];
         for x in 0..12usize {
             rgba[x * 4] = x as u8;
         }

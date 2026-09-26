@@ -65,7 +65,8 @@ Full history: `docs/history/ewoclient-v1.md` (Steps 1–16) and
 - `auth/`: Microsoft OAuth + PKCE → XBL → XSTS → Minecraft Services
   (`chain.rs`), loopback redirect on `127.0.0.1` (`loopback.rs`), background
   runner (`service.rs`), `AccountStore { active, accounts[] }` in `auth.toml`
-  (**plaintext**; DPAPI/keychain is a TODO before distribution). The Entra app
+  (refresh/social tokens DPAPI-sealed on Windows by `auth/secret.rs`, legacy
+  plaintext migrates on load; 0600 plaintext elsewhere). The Entra app
   `f901fc74-7e36-439d-80a8-c2e548f47fdc` is on Mojang's allowlist.
 - `versions/`: master manifest (6 h cache) and per-version manifests (sha1,
   permanent cache). `manifest::is_supported` is a **curated allowlist**. Don't

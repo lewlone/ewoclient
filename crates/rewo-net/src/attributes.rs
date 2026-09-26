@@ -142,9 +142,104 @@ pub fn apply_local_attributes(
     stored
 }
 
+/// `LivingEntity.SPRINTING_MODIFIER_ID`. The physics applies sprint from its
+/// input, so the value it reads must not already include it.
+const SPRINTING_MODIFIER: &str = "minecraft:sprinting";
+
+/// An attribute's value with the sprint modifier removed.
+fn value_without_sprint(
+    inst: &rewo_world::attributes::Instance,
+    def: &rewo_data::entity_attributes::AttrDef,
+) -> f64 {
+    let mut inst = inst.clone();
+    inst.modifiers.retain(|m| m.id != SPRINTING_MODIFIER);
+    inst.value(def)
+}
+
+/// The local player's movement attributes, from the last `update_attributes`
+/// snapshot. An attribute the server has not sent keeps the vanilla player
+/// default. Effect-driven fields (jump boost, slow falling, ...) are left at
+/// their defaults here; [`apply_movement_effects`] fills them.
+pub fn move_attributes(
+    reg: &rewo_data::attributes::AttributeRegistry,
+    attrs: &rewo_world::attributes::EntityAttributes,
+) -> rewo_world::physics::MoveAttributes {
+    fill_move_attributes(|name| {
+        let id = reg.id_of(name)?;
+        Some(value_without_sprint(attrs.get(id)?, reg.def(id)?))
+    })
+}
+
+fn fill_move_attributes(
+    value: impl Fn(&str) -> Option<f64>,
+) -> rewo_world::physics::MoveAttributes {
+    let d = rewo_world::physics::MoveAttributes::default();
+    let get = |name: &str, fallback: f64| value(name).unwrap_or(fallback);
+    rewo_world::physics::MoveAttributes {
+        movement_speed: get("movement_speed", d.movement_speed),
+        jump_strength: get("jump_strength", d.jump_strength),
+        step_height: get("step_height", d.step_height),
+        gravity: get("gravity", d.gravity),
+        sneaking_speed: get("sneaking_speed", d.sneaking_speed),
+        water_movement_efficiency: get("water_movement_efficiency", d.water_movement_efficiency),
+        friction_modifier: get("friction_modifier", d.friction_modifier),
+        air_drag_modifier: get("air_drag_modifier", d.air_drag_modifier),
+        ..d
+    }
+}
+
+/// Fold the local player's active movement effects into a
+/// [`rewo_world::physics::MoveAttributes`].
+///
+/// `amplifier_of` resolves a raw `mob_effect` registry id to the active
+/// effect's amplifier. Both `None`es mean "not active": an id the server never
+/// synced can never match, and an effect the list does not hold leaves the
+/// field at its default — a `None` here is never a zero amplifier.
+pub fn apply_movement_effects(
+    attrs: &mut rewo_world::physics::MoveAttributes,
+    ids: &crate::config::MovementEffectIds,
+    amplifier_of: impl Fn(i32) -> Option<i32>,
+) {
+    attrs.jump_boost = ids.jump_boost.and_then(&amplifier_of);
+    attrs.levitation = ids.levitation.and_then(&amplifier_of);
+    attrs.slow_falling = ids.slow_falling.and_then(&amplifier_of).is_some();
+    attrs.dolphins_grace = ids.dolphins_grace.and_then(&amplifier_of).is_some();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn move_attributes_default_when_unsent_and_read_when_sent() {
+        let d = rewo_world::physics::MoveAttributes::default();
+        let none = fill_move_attributes(|_| None);
+        assert_eq!(none.movement_speed, d.movement_speed);
+        assert_eq!(none.gravity, d.gravity);
+        let some = fill_move_attributes(|n| (n == "step_height").then_some(1.0));
+        assert_eq!(some.step_height, 1.0);
+        assert_eq!(some.jump_strength, d.jump_strength);
+    }
+
+    #[test]
+    fn sprint_modifier_is_excluded_from_movement_speed() {
+        use rewo_world::attributes::{Instance, Modifier, Operation};
+        let def = rewo_data::entity_attributes::ATTRIBUTES
+            .iter()
+            .find(|a| a.name == "movement_speed")
+            .expect("movement_speed is a vanilla attribute");
+        let modifier = |id: &str, amount| Modifier {
+            id: id.into(),
+            amount,
+            operation: Operation::AddMultipliedTotal,
+        };
+        let inst = Instance {
+            base: 0.1,
+            modifiers: vec![modifier(SPRINTING_MODIFIER, 0.3), modifier("minecraft:speed", 0.2)],
+        };
+        let got = value_without_sprint(&inst, def);
+        assert!((got - 0.1 * 1.2).abs() < 1e-12, "got {got}");
+    }
 
     /// Build a body independently of any writer under test.
     fn varint(v: i32, out: &mut Vec<u8>) {
@@ -270,5 +365,59 @@ mod tests {
             .expect("decode");
         let ids: Vec<i32> = p.snapshots.iter().map(|s| s.attribute).collect();
         assert_eq!(ids, vec![23, 1, 0]);
+    }
+
+    /// All four fields equal `MoveAttributes::default()`'s — the "effects not
+    /// active" baseline the other two movement-effect tests depart from.
+    fn assert_effect_fields_default(attrs: &rewo_world::physics::MoveAttributes) {
+        let d = rewo_world::physics::MoveAttributes::default();
+        assert_eq!(attrs.jump_boost, d.jump_boost);
+        assert_eq!(attrs.slow_falling, d.slow_falling);
+        assert_eq!(attrs.dolphins_grace, d.dolphins_grace);
+        assert_eq!(attrs.levitation, d.levitation);
+    }
+
+    #[test]
+    fn movement_effects_absent_leave_defaults() {
+        // Every effect id resolves, but the effect list holds none of them.
+        let ids = crate::config::MovementEffectIds {
+            jump_boost: Some(1),
+            slow_falling: Some(2),
+            dolphins_grace: Some(3),
+            levitation: Some(4),
+        };
+        let mut attrs = rewo_world::physics::MoveAttributes::default();
+        apply_movement_effects(&mut attrs, &ids, |_| None);
+        assert_effect_fields_default(&attrs);
+    }
+
+    #[test]
+    fn movement_effects_map_amplifiers() {
+        let ids = crate::config::MovementEffectIds {
+            jump_boost: Some(1),
+            slow_falling: Some(2),
+            dolphins_grace: Some(3),
+            levitation: Some(4),
+        };
+        let mut attrs = rewo_world::physics::MoveAttributes::default();
+        apply_movement_effects(&mut attrs, &ids, |id| match id {
+            1 => Some(2),
+            2 => Some(0),
+            _ => None,
+        });
+        assert_eq!(attrs.jump_boost, Some(2));
+        assert!(attrs.slow_falling);
+        assert!(!attrs.dolphins_grace);
+        assert_eq!(attrs.levitation, None);
+    }
+
+    #[test]
+    fn movement_effects_unresolved_id_is_inactive() {
+        // Ids the server never synced: an amplifier the list reports for some
+        // other effect must not leak into these fields.
+        let ids = crate::config::MovementEffectIds::default();
+        let mut attrs = rewo_world::physics::MoveAttributes::default();
+        apply_movement_effects(&mut attrs, &ids, |_| Some(5));
+        assert_effect_fields_default(&attrs);
     }
 }

@@ -421,7 +421,7 @@ pub fn load_pack(zip_path: &Path) -> Result<EtfPack, String> {
     for (key, base_rel, bw, bh) in crate::assets::mob_texture_specs() {
         let Some(stem) = base_rel.strip_suffix(".png") else { continue };
         let path = format!("{TEXTURES_ROOT}{stem}{suffix}.png");
-        if !names.iter().any(|n| *n == path) {
+        if !names.contains(&path) {
             continue;
         }
         let Ok(mut entry) = zip.by_name(&path) else { continue };
@@ -518,7 +518,7 @@ fn resolve_texture(
     // A reference to the vanilla texture resolves even though the pack
     // doesn't contain it — in Minecraft the name is a resource location,
     // looked up through the pack stack down to the jar.
-    if candidates.iter().any(|c| *c == vanilla) {
+    if candidates.contains(&vanilla) {
         return Some(None);
     }
     candidates

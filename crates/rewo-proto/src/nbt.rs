@@ -6,7 +6,50 @@
 use crate::reader::PacketReader;
 use crate::{ProtoError, Result};
 
-const MAX_DEPTH: u32 = 128;
+/// `NbtAccounter`'s `MAX_STACK_DEPTH`: compounds and lists push one level.
+const MAX_DEPTH: u32 = 512;
+
+/// `NbtAccounter.DEFAULT_NBT_QUOTA` — the heap budget vanilla's untrusted
+/// network codecs (`ByteBufCodecs.TAG` / `COMPOUND_TAG`) read one tag under.
+pub const DEFAULT_QUOTA: u64 = 2 * 1024 * 1024;
+
+/// `NbtAccounter`: a per-root heap estimate, charged with vanilla's own
+/// per-tag costs *before* allocating, so a small packet cannot expand into a
+/// huge tree (e.g. a list claiming millions of one-byte elements).
+struct Accounter {
+    quota: u64,
+    usage: u64,
+    depth: u32,
+}
+
+impl Accounter {
+    fn account(&mut self, size: u64) -> Result<()> {
+        if self.usage.saturating_add(size) > self.quota {
+            return Err(ProtoError::Nbt(format!(
+                "tag too big: {} + {size} bytes over quota {}",
+                self.usage, self.quota
+            )));
+        }
+        self.usage += size;
+        Ok(())
+    }
+
+    fn account_n(&mut self, per: u64, count: u64) -> Result<()> {
+        self.account(per.saturating_mul(count))
+    }
+
+    fn push(&mut self) -> Result<()> {
+        if self.depth >= MAX_DEPTH {
+            return Err(ProtoError::Nbt(format!("depth > {MAX_DEPTH}")));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    fn pop(&mut self) {
+        self.depth -= 1;
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Nbt {
@@ -28,8 +71,17 @@ pub enum Nbt {
 impl Nbt {
     /// Read a network-NBT value: tag byte, then payload (no name).
     pub fn read_network(r: &mut PacketReader) -> Result<Nbt> {
+        Self::read_network_with_quota(r, DEFAULT_QUOTA)
+    }
+
+    /// [`Self::read_network`] under an explicit `NbtAccounter` quota.
+    pub fn read_network_with_quota(r: &mut PacketReader, quota: u64) -> Result<Nbt> {
         let tag = r.u8()?;
-        read_payload(r, tag, 0)
+        if tag == 0 {
+            return Ok(Nbt::End);
+        }
+        let mut acc = Accounter { quota, usage: 0, depth: 0 };
+        read_payload(r, tag, &mut acc)
     }
 
     pub fn get(&self, key: &str) -> Option<&Nbt> {
@@ -132,50 +184,82 @@ fn unwrap_list_element(tag: Nbt) -> Nbt {
     }
 }
 
-fn read_payload(r: &mut PacketReader, tag: u8, depth: u32) -> Result<Nbt> {
-    if depth > MAX_DEPTH {
-        return Err(ProtoError::Nbt("depth limit exceeded".into()));
+/// The fewest wire bytes one payload of `tag` can occupy — the floor a list's
+/// claimed count is checked against before anything is allocated.
+fn min_payload_bytes(tag: u8) -> usize {
+    match tag {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        3 | 5 => 4,
+        4 | 6 => 8,
+        7 | 11 | 12 => 4,
+        8 => 2,
+        9 => 5,
+        _ => 1,
     }
+}
+
+fn read_payload(r: &mut PacketReader, tag: u8, acc: &mut Accounter) -> Result<Nbt> {
     Ok(match tag {
-        0 => Nbt::End,
-        1 => Nbt::Byte(r.i8()?),
-        2 => Nbt::Short(r.i16()?),
-        3 => Nbt::Int(r.i32()?),
-        4 => Nbt::Long(r.i64()?),
-        5 => Nbt::Float(r.f32()?),
-        6 => Nbt::Double(r.f64()?),
+        0 => {
+            acc.account(8)?;
+            Nbt::End
+        }
+        1 => {
+            acc.account(9)?;
+            Nbt::Byte(r.i8()?)
+        }
+        2 => {
+            acc.account(10)?;
+            Nbt::Short(r.i16()?)
+        }
+        3 => {
+            acc.account(12)?;
+            Nbt::Int(r.i32()?)
+        }
+        4 => {
+            acc.account(16)?;
+            Nbt::Long(r.i64()?)
+        }
+        5 => {
+            acc.account(12)?;
+            Nbt::Float(r.f32()?)
+        }
+        6 => {
+            acc.account(16)?;
+            Nbt::Double(r.f64()?)
+        }
         7 => {
+            acc.account(24)?;
             let raw_len = r.i32()?;
             let len = checked_len(r, raw_len, 1)?;
+            acc.account_n(1, len as u64)?;
             Nbt::ByteArray(r.take(len)?.to_vec())
         }
-        8 => Nbt::String(read_string(r)?),
+        8 => {
+            acc.account(36)?;
+            let s = read_string(r)?;
+            acc.account_n(2, utf16_len(&s))?;
+            Nbt::String(s)
+        }
         9 => {
-            let elem_tag = r.u8()?;
-            let raw_len = r.i32()?;
-            let len = checked_len(r, raw_len, 1)?;
-            let mut items = Vec::with_capacity(len.min(4096));
-            for _ in 0..len {
-                items.push(unwrap_list_element(read_payload(r, elem_tag, depth + 1)?));
-            }
-            Nbt::List(items)
+            acc.push()?;
+            let list = read_list(r, acc);
+            acc.pop();
+            list?
         }
         10 => {
-            let mut entries = Vec::new();
-            loop {
-                let child_tag = r.u8()?;
-                if child_tag == 0 {
-                    break;
-                }
-                let name = read_string(r)?;
-                let value = read_payload(r, child_tag, depth + 1)?;
-                entries.push((name, value));
-            }
-            Nbt::Compound(entries)
+            acc.push()?;
+            let compound = read_compound(r, acc);
+            acc.pop();
+            compound?
         }
         11 => {
+            acc.account(24)?;
             let raw_len = r.i32()?;
             let len = checked_len(r, raw_len, 4)?;
+            acc.account_n(4, len as u64)?;
             let mut items = Vec::with_capacity(len);
             for _ in 0..len {
                 items.push(r.i32()?);
@@ -183,8 +267,10 @@ fn read_payload(r: &mut PacketReader, tag: u8, depth: u32) -> Result<Nbt> {
             Nbt::IntArray(items)
         }
         12 => {
+            acc.account(24)?;
             let raw_len = r.i32()?;
             let len = checked_len(r, raw_len, 8)?;
+            acc.account_n(8, len as u64)?;
             let mut items = Vec::with_capacity(len);
             for _ in 0..len {
                 items.push(r.i64()?);
@@ -195,7 +281,56 @@ fn read_payload(r: &mut PacketReader, tag: u8, depth: u32) -> Result<Nbt> {
     })
 }
 
-/// Guard NBT array lengths against the bytes actually present.
+/// `ListTag.loadList`.
+fn read_list(r: &mut PacketReader, acc: &mut Accounter) -> Result<Nbt> {
+    acc.account(36)?;
+    let elem_tag = r.u8()?;
+    let raw_len = r.i32()?;
+    // `if (typeId == 0 && count > 0) throw "Missing type on ListTag"` — without
+    // it a list of End elements costs no wire bytes per element.
+    if elem_tag == 0 && raw_len > 0 {
+        return Err(ProtoError::Nbt("missing type on list".into()));
+    }
+    let len = checked_len(r, raw_len, min_payload_bytes(elem_tag))?;
+    acc.account_n(4, len as u64)?;
+    let mut items = Vec::with_capacity(len.min(4096));
+    for _ in 0..len {
+        items.push(unwrap_list_element(read_payload(r, elem_tag, acc)?));
+    }
+    Ok(Nbt::List(items))
+}
+
+/// `CompoundTag.loadCompound`.
+fn read_compound(r: &mut PacketReader, acc: &mut Accounter) -> Result<Nbt> {
+    acc.account(48)?;
+    let mut entries = Vec::new();
+    loop {
+        let child_tag = r.u8()?;
+        if child_tag == 0 {
+            break;
+        }
+        let name = read_string(r)?;
+        acc.account(28)?;
+        acc.account_n(2, utf16_len(&name))?;
+        let value = read_payload(r, child_tag, acc)?;
+        // Vanilla charges this only for a new key; always charging is the
+        // cheap, conservative choice (duplicate keys are malformed anyway).
+        acc.account(36)?;
+        entries.push((name, value));
+    }
+    Ok(Nbt::Compound(entries))
+}
+
+/// Java `String.length()`.
+fn utf16_len(s: &str) -> u64 {
+    if s.is_ascii() {
+        s.len() as u64
+    } else {
+        s.encode_utf16().count() as u64
+    }
+}
+
+// Guard NBT array lengths against the bytes actually present.
 fn checked_len(r: &PacketReader, len: i32, min_elem: usize) -> Result<usize> {
     if len < 0 || (len as usize).saturating_mul(min_elem) > r.remaining() {
         return Err(ProtoError::Nbt(format!(
@@ -365,6 +500,63 @@ mod tests {
                 Nbt::Compound(vec![("".into(), Nbt::Int(1))])
             )])
         );
+    }
+
+    /// `ListTag.loadList`'s "Missing type on ListTag": an End-typed list with
+    /// a positive count costs no wire bytes per element, so without this a
+    /// few bytes could claim billions of elements.
+    #[test]
+    fn an_end_typed_list_with_elements_is_rejected() {
+        let mut buf = vec![9u8, 0];
+        buf.extend_from_slice(&(i32::MAX).to_be_bytes());
+        assert!(Nbt::read_network(&mut PacketReader::new(&buf)).is_err());
+        // An empty End-typed list is how vanilla writes `[]`, and is fine.
+        let buf = wire_list(0, &[]);
+        assert_eq!(
+            Nbt::read_network(&mut PacketReader::new(&buf)).unwrap(),
+            Nbt::List(vec![])
+        );
+    }
+
+    /// The `NbtAccounter` quota: a list of one-byte tags costs 9 + 4 = 13
+    /// accounted bytes per element, so ~200k elements fit in well under the
+    /// 8 MiB packet cap on the wire yet exceed the 2 MiB quota.
+    #[test]
+    fn the_default_quota_bounds_a_wide_list() {
+        let n = 200_000usize;
+        let mut buf = vec![9u8, 1];
+        buf.extend_from_slice(&(n as i32).to_be_bytes());
+        buf.extend(std::iter::repeat_n(0u8, n));
+        assert!(Nbt::read_network(&mut PacketReader::new(&buf)).is_err());
+        // The same list reads under a larger explicit quota.
+        let big = Nbt::read_network_with_quota(&mut PacketReader::new(&buf), 64 << 20).unwrap();
+        assert!(matches!(big, Nbt::List(v) if v.len() == n));
+        // And a modest one reads under the default.
+        let small = wire_list(3, &vec![int_payload(1); 1000]);
+        assert!(Nbt::read_network(&mut PacketReader::new(&small)).is_ok());
+    }
+
+    #[test]
+    fn nesting_past_512_is_rejected() {
+        // 513 nested lists of lists.
+        let mut deep = Vec::new();
+        deep.push(9u8);
+        for _ in 0..512 {
+            deep.push(9);
+            deep.extend_from_slice(&1i32.to_be_bytes());
+        }
+        deep.push(0);
+        deep.extend_from_slice(&0i32.to_be_bytes());
+        assert!(Nbt::read_network(&mut PacketReader::new(&deep)).is_err());
+        // 512 levels read fine.
+        let mut ok = vec![9u8];
+        for _ in 0..511 {
+            ok.push(9);
+            ok.extend_from_slice(&1i32.to_be_bytes());
+        }
+        ok.push(0);
+        ok.extend_from_slice(&0i32.to_be_bytes());
+        assert!(Nbt::read_network(&mut PacketReader::new(&ok)).is_ok());
     }
 
     #[test]

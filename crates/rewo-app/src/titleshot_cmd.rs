@@ -422,14 +422,11 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
     c.record(
         "w1.the_seven_ids_resolve_and_are_distinct",
         distinct.len() == 7,
-        format!(
-            "{}",
-            seven
+        seven
                 .iter()
                 .map(|(n, id)| format!("{n}={id}"))
                 .collect::<Vec<_>>()
-                .join(" ")
-        ),
+                .join(" ").to_string(),
     );
 
     let mut state = HudState::default();
@@ -617,10 +614,8 @@ fn check_wire(c: &mut Checker, ids: &Ids) {
         s.experience.display_start_tick == i32::MIN + 1
             && s.experience.level == 9
             && s.experience.total == 400,
-        format!(
-            "start tick still the sentinel after a 1 -> 9 level change \
-             (MUTATION: keying the re-arm on any field makes it 200)"
-        ),
+        "start tick still the sentinel after a 1 -> 9 level change \
+             (MUTATION: keying the re-arm on any field makes it 200)".to_string(),
     );
 
     // w12 — duration 0 is a removal.
@@ -1230,7 +1225,7 @@ fn check_pixels(
 
     // -- the title, in magenta ------------------------------------------------
 
-    let mut shot = |gpu: &mut Gpu,
+    let shot = |gpu: &mut Gpu,
                     off: &mut Offscreen,
                     wr: &mut WorldRenderer,
                     lines: Vec<rewo_gpu::world::OwnedTextLine>,
@@ -1530,7 +1525,7 @@ fn check_pixels(
         widths.push((p, edge));
         if let Some(d) = &args.out_dir {
             std::fs::create_dir_all(d).map_err(|e| format!("out-dir: {e}"))?;
-            let _ = off.save_png(&mut gpu, &d.join(format!("titleshot_xp_{p}.png")));
+            let _ = off.save_png(&gpu, &d.join(format!("titleshot_xp_{p}.png")));
         }
     }
     let want = |gui_px: i32| (bar_left * SCALE + gui_px * SCALE - 1) as u32;
@@ -1709,7 +1704,7 @@ fn check_pixels(
             ),
         );
         if let Some(d) = &args.out_dir {
-            let _ = off.save_png(&mut gpu, &d.join(format!("titleshot_cd_{cooldown}.png")));
+            let _ = off.save_png(&gpu, &d.join(format!("titleshot_cd_{cooldown}.png")));
         }
     }
 

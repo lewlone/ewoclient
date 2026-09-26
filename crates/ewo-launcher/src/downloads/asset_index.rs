@@ -38,7 +38,7 @@ pub struct AssetObject {
 
 /// Build the CDN URL for an asset blob given its sha1 hash.
 pub fn asset_url(hash: &str) -> Option<String> {
-    if hash.len() < 2 {
+    if !super::paths::is_sha1_hex(hash) {
         return None;
     }
     Some(format!("{}/{}/{}", ASSETS_CDN_BASE, &hash[..2], hash))

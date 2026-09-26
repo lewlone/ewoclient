@@ -267,11 +267,15 @@ pub struct Ids {
     pub sb_play_client_tick_end: Option<i32>,
     pub sb_play_chat: Option<i32>,
     pub sb_play_chat_command: Option<i32>,
+    /// `ServerboundChatCommandSignedPacket` — a command with signed `message` arguments.
+    pub sb_play_chat_command_signed: Option<i32>,
     /// `ServerboundCommandSuggestionPacket` (M114) — a VarInt request id then
     /// the command being typed, capped at **32500** UTF-16 units (neither
     /// `readUtf`'s default nor the chat field's 256).
     pub sb_play_command_suggestion: Option<i32>,
     pub sb_play_chat_session_update: Option<i32>,
+    /// `ServerboundChatAckPacket` — one VarInt offset.
+    pub sb_play_chat_ack: Option<i32>,
     pub sb_play_set_creative_slot: Option<i32>,
     pub sb_play_set_carried_item: Option<i32>,
     pub sb_play_player_action: i32,
@@ -744,8 +748,10 @@ impl Ids {
             sb_play_client_tick_end: opt!(p, P, S, "client_tick_end"),
             sb_play_chat: opt!(p, P, S, "chat"),
             sb_play_chat_command: opt!(p, P, S, "chat_command"),
+            sb_play_chat_command_signed: opt!(p, P, S, "chat_command_signed"),
             sb_play_command_suggestion: opt!(p, P, S, "command_suggestion"),
             sb_play_chat_session_update: opt!(p, P, S, "chat_session_update"),
+            sb_play_chat_ack: opt!(p, P, S, "chat_ack"),
             sb_play_set_creative_slot: opt!(p, P, S, "set_creative_mode_slot"),
             sb_play_set_carried_item: opt!(p, P, S, "set_carried_item"),
             sb_play_player_action: req!(p, P, S, "player_action"),
@@ -882,9 +888,12 @@ mod coverage_table_tests {
     /// rather than calling it, because calling it needs a `Packets` and
     /// therefore the datagen report.
     const IDS_SRC: &str = include_str!("ids.rs");
-    /// The dispatch chain. `play.rs` holds `PlaySession::handle`'s `else if`
-    /// ladder; `lib.rs` holds the `route_*` seams.
-    const PLAY_SRC: &str = include_str!("play.rs");
+    /// The dispatch chain: `play/dispatch.rs` holds `handle_packet`'s `else if`
+    /// ladder, `play/mod.rs` the drain loop, `lib.rs` the `route_*` seams.
+    /// `play/tests.rs` is deliberately excluded — an id named only in a test
+    /// is not dispatched.
+    const PLAY_SRC: &str = include_str!("play/mod.rs");
+    const DISPATCH_SRC: &str = include_str!("play/dispatch.rs");
     const LIB_SRC: &str = include_str!("lib.rs");
 
     /// Whether `hay` contains `needle` delimited by non-identifier characters.
@@ -945,7 +954,7 @@ mod coverage_table_tests {
     fn is_dispatched(field: &str) -> bool {
         let by_table_a = format!(": ids.{field}");
         let by_table_b = format!(": self.ids.{field}");
-        [PLAY_SRC, LIB_SRC].iter().any(|src| {
+        [PLAY_SRC, DISPATCH_SRC, LIB_SRC].iter().any(|src| {
             src.lines().any(|line| {
                 let t = line.trim();
                 !t.starts_with("//")

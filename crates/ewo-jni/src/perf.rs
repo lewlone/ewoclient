@@ -170,7 +170,7 @@ impl Perf {
         self.last_entry = Some(now);
         let mode = self.mode();
         self.frame += 1;
-        if self.frame % WINDOW == 0 {
+        if self.frame.is_multiple_of(WINDOW) {
             self.flush_window();
         }
         mode

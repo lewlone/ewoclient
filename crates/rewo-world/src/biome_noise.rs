@@ -244,9 +244,9 @@ impl SimplexNoise {
         let y2 = y0 - 1.0 + 2.0 * g2;
         let ii = i & 0xFF;
         let jj = j & 0xFF;
-        let gi0 = (self.p(ii + self.p(jj)) % 12) as i32;
-        let gi1 = (self.p(ii + i1 + self.p(jj + j1)) % 12) as i32;
-        let gi2 = (self.p(ii + 1 + self.p(jj + 1)) % 12) as i32;
+        let gi0 = self.p(ii + self.p(jj)) % 12;
+        let gi1 = self.p(ii + i1 + self.p(jj + j1)) % 12;
+        let gi2 = self.p(ii + 1 + self.p(jj + 1)) % 12;
         let n0 = Self::get_corner_noise_3d(gi0, x0, y0, 0.0, 0.5);
         let n1 = Self::get_corner_noise_3d(gi1, x1, y1, 0.0, 0.5);
         let n2 = Self::get_corner_noise_3d(gi2, x2, y2, 0.0, 0.5);

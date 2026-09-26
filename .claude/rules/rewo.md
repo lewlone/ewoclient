@@ -3,8 +3,6 @@ paths:
   - "crates/rewo-*/**"
   - "tools/**"
   - "REWO_*.md"
-  - "HANDOFF.md"
-  - "AGENT_LOOP_BRIEF.md"
 ---
 
 # Rewo — the from-scratch native Minecraft client (cross-cutting rules)
@@ -18,12 +16,12 @@ launcher as a `Native` instance and is **not** a JVM/mod project, so none of the
 
 ## Where the truth lives (read in this order)
 
-1. **`HANDOFF.md`**: the current continuation prompt, rewritten each session.
+1. **`docs/REVIEW-2026-09.md`**: the independent review and what is still open.
 2. **`REWO_PLAN.md` §0.0**: current measurements, gate list, the live-check
    recipe, load-bearing gotchas, known issues. **Its numbers are maintained and
    its forward-looking prose is not.** Check `git log --oneline` before trusting
    a paragraph. §15 is the per-milestone log.
-3. `AGENT_LOOP_BRIEF.md`: process rules. `REWO_PACKET_COVERAGE.md`: which
+3. `docs/history/AGENT_LOOP_BRIEF.md`: process rules (retired, still sound). `REWO_PACKET_COVERAGE.md`: which
    packets are handled (its table is **machine-checked by a unit test in
    `ids.rs`**, so update it in the same change as `ids.rs`).
 4. Subsystem plans: `REWO_AUDIO_PLAN.md`, `REWO_VELVET_UI_PLAN.md` (a visual

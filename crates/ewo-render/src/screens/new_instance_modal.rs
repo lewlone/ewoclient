@@ -996,7 +996,7 @@ fn draw_text_input(
             caret_paint.set_style(PaintStyle::Stroke);
             caret_paint.set_stroke_width(1.5);
             caret_paint.set_color4f(
-                Color4f::new(255.0 / 255.0, 246.0 / 255.0, 240.0 / 255.0, alpha),
+                Color4f::new(1.0, 246.0 / 255.0, 240.0 / 255.0, alpha),
                 None,
             );
             canvas.draw_line((caret_x, caret_top), (caret_x, caret_bottom), &caret_paint);

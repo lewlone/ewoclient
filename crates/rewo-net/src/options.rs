@@ -1,4 +1,4 @@
-//! `Options` — the two client options Rewo has and `options.txt` (M157).
+//! `Options` — the client options Rewo has and `options.txt` (M157).
 //!
 //! # Two options, not the three §0.0 named
 //!
@@ -34,7 +34,7 @@
 use crate::music::MusicFrequency;
 use crate::sounds::SoundSource;
 
-/// `options.txt`'s two entries that Rewo has (M157).
+/// `options.txt`'s entries that Rewo has (M157's pair, M173's volumes, `ao`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Options {
     /// `options.music_frequency` — how often a music track starts.
@@ -48,6 +48,17 @@ pub struct Options {
     /// by `LightningBolt.tick` rather than by a packet. Rewo has no lightning
     /// entity, so the second is recorded rather than wired.
     pub hide_lightning_flash: bool,
+    /// `options.ambientOcclusion` — vanilla's "Smooth Lighting" (`options.ao`).
+    ///
+    /// Off, every block takes vanilla's FLAT lighting (`tesselateFlat`'s
+    /// `gray(shade)` per face) instead of the per-vertex light blend + ambient
+    /// occlusion the mesher otherwise bakes in, so the consumer is the chunk
+    /// mesher (`MeshInputs::smooth_lighting` in `rewo-mesh`) and a live change
+    /// re-meshes every loaded column — vanilla's `createBoolean` `onValueUpdate`
+    /// (`Options.java:236-239`) does `operateOnLevelExtractor(
+    /// LevelExtractor::allChanged)` for the same reason: the vertex light is in
+    /// the mesh, not in a shader uniform.
+    pub smooth_lighting: bool,
     /// `Options.soundSourceVolumes` (M173) — the eleven sliders, indexed by
     /// [`SoundSource::ordinal`]. File keys are `soundCategory_<name>` with
     /// the SINGULAR `getName()` strings (`soundCategory_block`, not
@@ -57,11 +68,15 @@ pub struct Options {
 }
 
 impl Default for Options {
-    /// Vanilla's declared defaults: `MusicFrequency.DEFAULT` and `false`.
+    /// Vanilla's declared defaults: `MusicFrequency.DEFAULT`, `false` for
+    /// `hideLightningFlashes`, and `true` for `ao`.
     fn default() -> Self {
         Self {
             music_frequency: MusicFrequency::Default,
             hide_lightning_flash: false,
+            // `OptionInstance.createBoolean("options.ao", true, ..)`
+            // (`Options.java:236`) — ON unless the file says otherwise.
+            smooth_lighting: true,
             // `createSoundSliderOptionInstance(.., 1.0, ..)` — every slider
             // starts at full.
             sound_volumes: [1.0; 11],
@@ -73,6 +88,9 @@ impl Default for Options {
 pub const KEY_MUSIC_FREQUENCY: &str = "musicFrequency";
 /// `options.hideLightningFlashes`' key in the file.
 pub const KEY_HIDE_LIGHTNING: &str = "hideLightningFlashes";
+/// `options.ambientOcclusion`'s key in the file — the two-letter `ao`, not
+/// the caption key `options.ao` and not the Java field name.
+pub const KEY_AO: &str = "ao";
 
 /// `MusicFrequency.getSerializedName()` (`MusicManager.java:190-193`).
 ///
@@ -170,6 +188,20 @@ impl Options {
                 }
                 _ => false,
             },
+            // `ao` is `Codec.BOOL` like the line above: bare JSON, so `TRUE`
+            // is not a value (`LenientJsonParser` is lenient about quoting,
+            // not about case).
+            KEY_AO => match raw.trim() {
+                "true" => {
+                    self.smooth_lighting = true;
+                    true
+                }
+                "false" => {
+                    self.smooth_lighting = false;
+                    true
+                }
+                _ => false,
+            },
             key => match volume_source(key) {
                 Some(source) => {
                     // `Codec.withAlternative(Codec.doubleRange(0.0, 1.0),
@@ -216,20 +248,29 @@ impl Options {
         o
     }
 
-    /// The lines this writes back, in `processOptions` order.
+    /// The lines this writes back, in `processOptions` order: `ao` leads (the
+    /// first entry of `processDumpedOptions`, `Options.java:1503`), then
+    /// `hideLightningFlashes` (`:1565`), then `musicFrequency` (`:1616`) and
+    /// the `soundCategory_*` sliders (`:1627`).
     ///
     /// **Only the options Rewo has.** Vanilla's `save` rewrites the whole file
     /// from its own field set, which would DELETE every entry Rewo does not
     /// model — a vanilla client sharing the directory would lose its render
     /// distance, its keybinds and its volumes. So the caller merges rather than
     /// replaces; see [`Options::merge_into`].
+    ///
+    /// (The order `merge_into` substitutes in place is this one — its `owned`
+    /// list is indexed against `to_lines`'s output.)
     pub fn to_lines(self) -> Vec<String> {
         let mut out = vec![
+            // `encodeStart(JsonOps.INSTANCE, ..)` writes a boolean bare — no
+            // quotes, unlike the string option below.
+            format!("{KEY_AO}:{}", self.smooth_lighting),
+            format!("{KEY_HIDE_LIGHTNING}:{}", self.hide_lightning_flash),
             format!(
                 "{KEY_MUSIC_FREQUENCY}:\"{}\"",
                 frequency_name(self.music_frequency)
             ),
-            format!("{KEY_HIDE_LIGHTNING}:{}", self.hide_lightning_flash),
         ];
         for source in SoundSource::ALL {
             // GSON prints a double with its decimal point (`1.0`, `0.5`);
@@ -248,14 +289,18 @@ impl Options {
     /// Rewrite `existing` with this option set, preserving every other line.
     ///
     /// **This is the difference between Rewo and vanilla's `save`, and it is
-    /// deliberate.** Vanilla owns the whole file; Rewo models two of its
+    /// deliberate.** Vanilla owns the whole file; Rewo models a handful of its
     /// roughly eighty entries, so a wholesale rewrite would silently discard
     /// the rest. A line whose key Rewo owns is replaced in place — keeping the
     /// file's order stable — and one it does not is copied through untouched.
     pub fn merge_into(self, existing: &str) -> String {
         let mine = self.to_lines();
-        let mut owned: Vec<String> =
-            vec![KEY_MUSIC_FREQUENCY.to_string(), KEY_HIDE_LIGHTNING.to_string()];
+        // Same order as `to_lines`'s output — index `i` below pairs the two.
+        let mut owned: Vec<String> = vec![
+            KEY_AO.to_string(),
+            KEY_HIDE_LIGHTNING.to_string(),
+            KEY_MUSIC_FREQUENCY.to_string(),
+        ];
         for source in SoundSource::ALL {
             owned.push(volume_key(source));
         }
@@ -366,7 +411,7 @@ mod tests {
     #[test]
     fn a_string_option_is_quoted_and_a_bare_word_is_still_read() {
         assert_eq!(
-            Options::default().to_lines()[0],
+            Options::default().to_lines()[2],
             "musicFrequency:\"DEFAULT\"",
             "encodeStart(JsonOps) quotes a string"
         );
@@ -381,14 +426,45 @@ mod tests {
     fn every_value_round_trips_through_the_file() {
         for f in FREQUENCY_CYCLE {
             for hide in [false, true] {
-                let o = Options {
-                    music_frequency: f,
-                    hide_lightning_flash: hide,
-                    sound_volumes: [1.0; 11],
-                };
-                assert_eq!(Options::parse(&o.to_lines().join("\n")), o);
+                for smooth in [false, true] {
+                    let o = Options {
+                        music_frequency: f,
+                        hide_lightning_flash: hide,
+                        smooth_lighting: smooth,
+                        sound_volumes: [1.0; 11],
+                    };
+                    assert_eq!(Options::parse(&o.to_lines().join("\n")), o);
+                }
             }
         }
+    }
+
+    /// **`ao` is a bare JSON boolean and defaults to ON.**
+    ///
+    /// `OptionInstance.createBoolean("options.ao", true, ..)` (`Options.java:
+    /// 236`) — `true` is the declared default, so a file with no `ao` line
+    /// meshes with smooth lighting; `hideLightningFlashes` defaults the other
+    /// way. The value is written unquoted (`Codec.BOOL` through
+    /// `encodeStart(JsonOps)`), in contrast to the QUOTED string option, and
+    /// the lines are in `processOptions` order — `ao` first.
+    #[test]
+    fn smooth_lighting_is_a_json_boolean_that_defaults_on() {
+        let o = Options::default();
+        assert!(o.smooth_lighting, "vanilla's declared default is ON");
+        assert_eq!(
+            o.to_lines().iter().take(3).map(String::as_str).collect::<Vec<_>>(),
+            ["ao:true", "hideLightningFlashes:false", "musicFrequency:\"DEFAULT\""],
+            "the booleans are bare JSON, the string is quoted, `ao` leads"
+        );
+
+        let mut o = Options::default();
+        assert!(o.apply_line("ao:false"));
+        assert!(!o.smooth_lighting);
+        assert!(o.apply_line("ao:true"));
+        assert!(o.smooth_lighting);
+        assert!(!o.apply_line("ao:TRUE"), "JSON booleans are lowercase");
+        assert!(!o.apply_line("ao:1"), "only the two spellings `true`/`false`");
+        assert!(o.smooth_lighting, "a bad line is skipped, not reset");
     }
 
     /// **Rewo merges where vanilla rewrites, and dropping that would delete a
@@ -465,6 +541,7 @@ mod tests {
         let o = Options {
             music_frequency: MusicFrequency::Constant,
             hide_lightning_flash: true,
+            smooth_lighting: true,
             sound_volumes: [1.0; 11],
         };
         let out = o.merge_into(existing);
@@ -475,6 +552,10 @@ mod tests {
         assert!(
             out.contains("hideLightningFlashes:true"),
             "one we own but the file lacked is appended"
+        );
+        assert!(
+            out.contains("ao:true"),
+            "`ao` is ours now too, and the file lacked it"
         );
         // Replaced IN PLACE rather than appended, so the file's order is stable
         // across saves and a diff stays readable.

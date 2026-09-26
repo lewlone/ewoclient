@@ -45,7 +45,9 @@ impl std::error::Error for FetchError {}
 /// Fetch a loader manifest by URL. `id` is the loader's logical name and
 /// keys the on-disk copy at `<config>/EwoClient/shared/loaders/<id>.json`.
 ///
-/// HTTP and `file://` schemes are supported. Other schemes return
+/// `https://` and `file://` schemes are supported. Plain `http://` is
+/// rejected: the manifest names every jar on the classpath, so it must not
+/// be swappable in transit. Other schemes return
 /// `FetchError::Other`.
 ///
 /// The fetch happens every call — there is no TTL cache. The on-disk copy
@@ -57,7 +59,7 @@ pub fn get_or_fetch(id: &str, url: &str) -> Result<LoaderManifest, FetchError> {
         log::info!("loader: reading {} from file {}", id, path.display());
         fs::read_to_string(&path)
             .map_err(|e| FetchError::Network(format!("read {}: {}", path.display(), e)))?
-    } else if url.starts_with("http://") || url.starts_with("https://") {
+    } else if url.starts_with("https://") {
         log::info!("loader: fetching {} from {}", id, url);
         fetch_http(url)?
     } else {
@@ -66,12 +68,34 @@ pub fn get_or_fetch(id: &str, url: &str) -> Result<LoaderManifest, FetchError> {
 
     let parsed: LoaderManifest = serde_json::from_str(&body)
         .map_err(|e| FetchError::Parse(e.to_string()))?;
+    if url.starts_with("https://") {
+        reject_local_libraries(&parsed)?;
+    }
 
     if let Err(e) = save_cached(id, &body) {
         log::warn!("loader: cache write failed: {}", e);
     }
 
     Ok(parsed)
+}
+
+/// A manifest from the network may not name local files: `file://` libraries
+/// are copied without a hash check, so a remote manifest could otherwise put
+/// any file on the user's disk onto the game classpath. Local (`file://`)
+/// manifests keep that ability for the EwoLoader dev loop.
+fn reject_local_libraries(manifest: &LoaderManifest) -> Result<(), FetchError> {
+    for lib in &manifest.libraries {
+        let artifacts = lib.downloads.artifact.iter().chain(lib.downloads.classifiers.values());
+        for a in artifacts {
+            if !a.url.starts_with("https://") {
+                return Err(FetchError::Other(format!(
+                    "remote loader manifest lists a non-https library: {} ({})",
+                    lib.name, a.url
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn fetch_http(url: &str) -> Result<String, FetchError> {
@@ -112,7 +136,7 @@ fn save_cached(id: &str, raw_body: &str) -> Result<(), FetchError> {
         fs::create_dir_all(parent)
             .map_err(|e| FetchError::Disk(format!("mkdir {}: {}", parent.display(), e)))?;
     }
-    fs::write(&path, raw_body)
+    crate::util::atomic_write(&path, raw_body.as_bytes())
         .map_err(|e| FetchError::Disk(format!("write {}: {}", path.display(), e)))?;
     log::info!("loader: cached {} to {}", id, path.display());
     Ok(())
@@ -123,6 +147,25 @@ mod tests {
     use super::*;
     use std::env;
     use std::io::Write;
+
+    fn manifest_with_library_url(url: &str) -> LoaderManifest {
+        serde_json::from_str(&format!(
+            r#"{{"id":"t","inheritsFrom":"26.2","mainClass":"M","libraries":[
+                {{"name":"a:b:1","downloads":{{"artifact":
+                    {{"path":"a/b.jar","sha1":"00","size":1,"url":"{url}"}}}}}}]}}"#
+        ))
+        .expect("test manifest parses")
+    }
+
+    #[test]
+    fn remote_manifest_may_not_name_local_or_http_libraries() {
+        let ok = manifest_with_library_url("https://maven.example/a/b.jar");
+        assert!(reject_local_libraries(&ok).is_ok());
+        for bad in ["file:///C:/Windows/evil.jar", "http://maven.example/a/b.jar"] {
+            let m = manifest_with_library_url(bad);
+            assert!(reject_local_libraries(&m).is_err(), "{bad} must be rejected");
+        }
+    }
 
     #[test]
     fn file_url_round_trips_through_get_or_fetch() {
@@ -167,10 +210,11 @@ mod tests {
 
     #[test]
     fn unsupported_scheme_errors() {
-        let err = get_or_fetch("nope", "ftp://example.com/x.json").unwrap_err();
-        match err {
-            FetchError::Other(_) => {}
-            other => panic!("expected Other, got {:?}", other),
+        for url in ["ftp://example.com/x.json", "http://example.com/x.json"] {
+            match get_or_fetch("nope", url).unwrap_err() {
+                FetchError::Other(_) => {}
+                other => panic!("expected Other for {url}, got {:?}", other),
+            }
         }
     }
 }

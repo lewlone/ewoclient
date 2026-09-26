@@ -51,6 +51,9 @@ $out = New-Object System.Text.StringBuilder
 [void]$out.AppendLine('//! Rotations are radians, positions model px with the vanilla posVec')
 [void]$out.AppendLine('//! y-negation baked in. Scale channels are omitted (unsupported).')
 [void]$out.AppendLine('')
+[void]$out.AppendLine("// Values are vanilla's own keyframe literals.")
+[void]$out.AppendLine('#![allow(clippy::approx_constant, clippy::excessive_precision)]')
+[void]$out.AppendLine('')
 [void]$out.AppendLine('use crate::mobs::{KfChannel, KfDef, KfFrame, KfTarget};')
 [void]$out.AppendLine('')
 

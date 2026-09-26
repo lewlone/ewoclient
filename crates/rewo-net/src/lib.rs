@@ -35,6 +35,7 @@ pub mod commands;
 pub mod dispatcher;
 pub mod chunk_batch;
 pub mod client_state;
+pub mod config;
 pub mod config_tasks;
 pub mod component_wire;
 pub mod crypt;
@@ -63,6 +64,7 @@ pub mod server_links;
 pub mod session;
 pub mod selector;
 pub mod sidebar;
+pub mod signed_command;
 pub mod skins;
 pub mod slot_ranges;
 pub mod snbt;
@@ -83,15 +85,14 @@ pub mod waypoints;
 use std::borrow::Cow;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rewo_data::packets::State;
-use rewo_data::{blocks::Blocks, GameData};
+use rewo_data::GameData;
 use rewo_proto::frame::FrameCodec;
-use rewo_proto::nbt::Nbt;
 use rewo_proto::reader::PacketReader;
 use rewo_proto::writer::PacketWriter;
-use rewo_world::dimension::{DimensionShape, DimensionTypeDef};
+use rewo_world::dimension::DimensionTypeDef;
 use rewo_world::World;
 
 use ids::Ids;
@@ -104,18 +105,46 @@ fn de(e: rewo_proto::ProtoError) -> String {
     format!("decode: {e}")
 }
 
+thread_local! {
+    /// How many `route_*` helpers on this thread dropped an undecodable body.
+    static ROUTE_DECODE_FAILURES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A `route_*` helper dropped a packet whose body did not decode — the `route_*`
+/// half of [`play::PlaySession::decode_failed`]. Only a body that fails to
+/// *decode* counts: a well-formed packet ignored on purpose (an untracked
+/// entity, a wrong kind, an unmodelled event) is not a failure.
+pub(crate) fn route_decode_failed(what: &str, err: impl std::fmt::Display) {
+    ROUTE_DECODE_FAILURES.with(|c| c.set(c.get() + 1));
+    log::warn!("net: {what}: malformed packet body ({err})");
+}
+
+/// [`route_decode_failed`] and then `None`, the shape most `route_*` helpers
+/// give up in.
+fn route_decode_none<T>(what: &str, err: impl std::fmt::Display) -> Option<T> {
+    route_decode_failed(what, err);
+    None
+}
+
+/// Take and reset the `route_*` decode-failure count on this thread; the
+/// session folds it into [`play::PlaySession::decode_failures`] per packet.
+pub fn take_route_decode_failures() -> u64 {
+    ROUTE_DECODE_FAILURES.with(|c| c.replace(0))
+}
+
 /// Parse the play-login prefix (`ClientboundLoginPacket` up to and including the
 /// `CommonPlayerSpawnInfo` dimension-type holder) and return the holder id.
 ///
 /// The holder is `DimensionType.STREAM_CODEC = ByteBufCodecs.holderRegistry` =
 /// an `idMapper`, so it is the **raw 0-based registry id** — there is NO
 /// `0=inline`/`id+1` convention (that belongs to the different
-/// `ByteBufCodecs.holder` codec). Shared by the live `Connection`, the replay
-/// path, and the unit tests.
+/// `ByteBufCodecs.holder` codec). Test-only: the live session and the replay
+/// path read the same prefix through `spawn_info::read_login_prefix`.
 ///
 /// The holder is the *first* field of the embedded `CommonPlayerSpawnInfo`, so
 /// this is `spawn_info::read_login_prefix` plus one VarInt — callers that need
 /// the rest of the block read it with `CommonPlayerSpawnInfo::read` instead.
+#[cfg(test)]
 pub(crate) fn parse_login_dimension_holder(packet: &[u8]) -> rewo_proto::Result<i32> {
     let mut r = PacketReader::new(packet);
     spawn_info::read_login_prefix(&mut r)?;
@@ -267,61 +296,8 @@ pub struct Connection<'a> {
     /// What the two blocking configuration tasks asked for and what Rewo
     /// answered (M166). Moved onto the `PlaySession` at `into_play`.
     config_tasks: config_tasks::ConfigTaskLog,
-    /// The `minecraft:dimension_type` registry in raw wire order — index *is*
-    /// the holder registry id. One vector of unified definitions, not the
-    /// M14-era parallel `dim_shapes` / `dim_attrs` pair that a holder id could
-    /// index inconsistently.
-    dim_types: Vec<DimensionTypeDef>,
-    /// Registry id of the `minecraft:overworld` world clock (see
-    /// `parse_registry_data`); `None` on a server that syncs no clocks.
-    overworld_clock_id: Option<i32>,
-    /// The whole `minecraft:world_clock` registry **in raw wire order**, so
-    /// the index *is* the holder id a `set_time` entry carries.
-    ///
-    /// M12 captured only the overworld's id, which is all the day/night cycle
-    /// needs. M149c wants the rest because a dimension's `default_clock` names
-    /// its clock by **identifier**, and the two registries arrive in the same
-    /// `registry_data` batch with no ordering guarantee — so the name-to-id
-    /// step has to be a lookup at use time (M62's lazy two-step) rather than a
-    /// resolution at parse time.
-    world_clock_ids: Vec<String>,
-    /// Raw `minecraft:mob_effect` registry ids for `night_vision` / `darkness`,
-    /// so the M13 lightmap can match the effect packets.
-    ///
-    /// **Resolved from the datagen report, not from `registry_data` (M92c).**
-    /// They were read off the wire until M92c, inside a
-    /// `registry == "minecraft:mob_effect"` branch that cannot fire:
-    /// `registry_data` carries only `RegistryDataLoader.SYNCHRONIZED_REGISTRIES`
-    /// and `Registries.MOB_EFFECT` is not one of them — it is a
-    /// `BuiltInRegistries` entry the server never sends. So these stayed `None`
-    /// for the whole session and night vision and darkness never engaged live,
-    /// which no gate could see because `lightmapshot` is serverless and builds
-    /// the effect state itself. The wire branch below is kept as an override
-    /// for a server that does sync the registry; the report is the default.
-    night_vision_id: Option<i32>,
-    darkness_id: Option<i32>,
-    /// Raw `minecraft:mob_effect` ids of the three effects that change a swing's
-    /// duration (M19). Same source and same history as the two above — these
-    /// were the other three ids M92c found unresolved.
-    swing_effect_ids: SwingEffectIds,
-    /// `minecraft:worldgen/biome` registry in raw wire order (M14 biome tint).
-    biome_defs: Vec<rewo_world::biome::BiomeDef>,
-    /// The `minecraft:enchantment` registry in wire order — the index is the
-    /// protocol id a component patch carries (M42).
-    enchantments: Vec<crate::enchantment_parse::EnchantmentDef>,
-    /// The `minecraft:chat_type` registry in wire order — the index is the id
-    /// a `ChatType.Bound`'s `holder` VarInt names, minus one (M127).
-    chat_types: Vec<crate::chat_type_parse::ChatTypeDef>,
-    trim_materials: Vec<crate::trim_parse::TrimMaterialDef>,
-    trim_patterns: Vec<crate::trim_parse::TrimPatternDef>,
-    /// The three metadata-variant registries (M64), in raw wire order.
-    cat_variants: Vec<crate::variant_parse::MobVariantDef>,
-    wolf_variants: Vec<crate::variant_parse::MobVariantDef>,
-    frog_variants: Vec<crate::variant_parse::MobVariantDef>,
-    /// The server's datapack tags (M69), applied during configuration and
-    /// handed to the play session. Decode and state only — nothing reads them
-    /// yet; `crate::tags` says what wiring them would take.
-    tags: crate::tags::TagOverrides,
+    /// The registries and tags configuration synced — see [`config::ConfigData`].
+    cfg: config::ConfigData,
     /// The session facts that arrive in **configuration** and belong to the
     /// whole connection (M78): the server brand, and the cookie jar
     /// `cookie_request` answers from. Both are fields of vanilla's *common*
@@ -338,6 +314,11 @@ impl<'a> Connection<'a> {
         stream
             .set_read_timeout(Some(Duration::from_secs(30)))
             .map_err(|e| format!("set timeout: {e}"))?;
+        // A stalled peer must fail a write rather than block the send path
+        // (and with it the render thread) forever.
+        stream
+            .set_write_timeout(Some(Duration::from_secs(20)))
+            .map_err(|e| format!("set timeout: {e}"))?;
         stream.set_nodelay(true).ok();
         let ids = Ids::resolve(&data.packets)?;
         Ok(Self {
@@ -350,27 +331,7 @@ impl<'a> Connection<'a> {
             packet: Vec::new(),
             recorder: None,
             config_tasks: config_tasks::ConfigTaskLog::default(),
-            dim_types: Vec::new(),
-            overworld_clock_id: None,
-            world_clock_ids: Vec::new(),
-            // M92c — from the report. `mob_effect` is a built-in registry, so
-            // this is the authority and `registry_data` never carries it.
-            night_vision_id: data.mob_effects.id_of("minecraft:night_vision"),
-            darkness_id: data.mob_effects.id_of("minecraft:darkness"),
-            swing_effect_ids: SwingEffectIds {
-                haste: data.mob_effects.id_of("minecraft:haste"),
-                conduit_power: data.mob_effects.id_of("minecraft:conduit_power"),
-                mining_fatigue: data.mob_effects.id_of("minecraft:mining_fatigue"),
-            },
-            biome_defs: Vec::new(),
-            enchantments: Vec::new(),
-            chat_types: Vec::new(),
-            trim_materials: Vec::new(),
-            cat_variants: Vec::new(),
-            wolf_variants: Vec::new(),
-            frog_variants: Vec::new(),
-            trim_patterns: Vec::new(),
-            tags: crate::tags::TagOverrides::default(),
+            cfg: config::ConfigData::new(data),
             session: crate::session::SessionState::default(),
         })
     }
@@ -378,7 +339,8 @@ impl<'a> Connection<'a> {
     fn send(&mut self, packet: PacketWriter) -> Result<(), String> {
         self.codec
             .write_frame(&mut self.stream, &packet.buf)
-            .map_err(|e| format!("send: {e}"))
+            .map_err(|e| format!("send: {e}"))?;
+        self.stream.flush().map_err(|e| format!("send: {e}"))
     }
 
     /// Read one inbound packet into `self.packet`, returning (id, body_range).
@@ -546,515 +508,59 @@ impl<'a> Connection<'a> {
         self.send(info)
     }
 
-    /// Run configuration until FinishConfiguration → Play.
+    /// Run configuration until FinishConfiguration → Play, through the one
+    /// handler a mid-session re-entry uses too ([`config::handle_config_packet`]).
     fn run_configuration(&mut self, stats: &mut SessionStats) -> Result<(), String> {
         self.send_config_openers()?;
+        self.run_config_packets(stats)
+    }
+
+    /// The configuration loop without the client openers (vanilla sends brand
+    /// and client information once, from the login listener).
+    fn run_config_packets(&mut self, stats: &mut SessionStats) -> Result<(), String> {
         loop {
             let Some((id, body)) = self.recv()? else {
                 return Err("connection closed during configuration".into());
             };
             self.record_inbound(id, body);
-            match id {
-                x if x == self.ids.cb_config_keep_alive => {
-                    let ka = i64::from_be_bytes(self.packet[body..body + 8].try_into().unwrap());
-                    let mut resp = PacketWriter::packet(self.ids.sb_config_keep_alive);
-                    resp.i64(ka);
-                    self.send(resp)?;
-                    stats.keepalives += 1;
-                }
-                x if x == self.ids.cb_config_ping => {
-                    let ping = i32::from_be_bytes(self.packet[body..body + 4].try_into().unwrap());
-                    let mut resp = PacketWriter::packet(self.ids.sb_config_pong);
-                    resp.i32(ping);
-                    self.send(resp)?;
-                }
-                x if x == self.ids.cb_config_select_known_packs => {
-                    // Reply with an empty list = "I have none cached, send me
-                    // everything" (the full RegistryData follows).
-                    let mut resp = PacketWriter::packet(self.ids.sb_config_select_known_packs);
-                    resp.varint(0);
-                    self.send(resp)?;
-                }
-                x if x == self.ids.cb_config_registry_data => {
-                    self.parse_registry_data(body)?;
-                }
-                x if x == self.ids.cb_config_update_tags => {
-                    // M69 — the server's datapack tags. This is where a
-                    // vanilla server sends them on a normal join; the play
-                    // copy (`route_tags`) is the datapack-reload case. Both
-                    // reach the same walk.
-                    apply_update_tags(&self.packet[body..], &mut self.tags);
-                }
-                x if x == self.ids.cb_config_code_of_conduct => {
-                    // M166 — the FIRST of the two blocking tasks
-                    // (`addOptionalTasks` appends it ahead of the resource
-                    // pack), and the one whose name was already sitting in the
-                    // comment on the ignore arm below. Until this reply exists
-                    // the server's task queue never advances and
-                    // `finish_configuration` never arrives.
-                    match config_tasks::read_code_of_conduct(&self.packet[body..]) {
-                        Ok(text) => {
-                            log::info!(
-                                "net: accepting the server's code of conduct ({} chars)",
-                                text.chars().count()
-                            );
-                            self.config_tasks.codes_of_conduct.push(text);
-                        }
-                        Err(err) => {
-                            // Answer anyway. The body is one string and the
-                            // reply carries none of it, so a failed decode
-                            // costs the log line above and nothing else —
-                            // whereas going silent costs the whole connection.
-                            log::warn!("net: code_of_conduct decode: {err} — accepting regardless");
-                            self.config_tasks.codes_of_conduct.push(String::new());
-                        }
-                    }
-                    let ack = config_tasks::write_code_of_conduct_accept(
-                        self.ids.sb_config_accept_code_of_conduct,
-                    );
-                    self.send(ack)?;
-                }
-                x if x == self.ids.cb_config_resource_pack_push => {
-                    // M166 — the second blocking task. See `config_tasks` for
-                    // why the reply is FAILED_DOWNLOAD and not DECLINED.
-                    // Disjoint-field borrow: the body is read out of
-                    // `self.packet` while the log is written -- one function,
-                    // two fields, no clone.
-                    let (id, action) =
-                        config_tasks::answer_pack_push(&self.packet[body..], &mut self.config_tasks);
-                    self.send(config_tasks::write_pack_reply(
-                        self.ids.sb_config_resource_pack,
-                        id,
-                        action,
-                    ))?;
-                }
-                x if x == self.ids.cb_config_finish => {
-                    let ack = PacketWriter::packet(self.ids.sb_config_finish);
-                    self.send(ack)?;
+            let packet = std::mem::take(&mut self.packet);
+            let (codec, stream) = (&self.codec, &mut self.stream);
+            let mut send = |p: PacketWriter| -> Result<(), String> {
+                codec
+                    .write_frame(stream, &p.buf)
+                    .map_err(|e| format!("send: {e}"))?;
+                stream.flush().map_err(|e| format!("send: {e}"))
+            };
+            let step = config::handle_config_packet(
+                config::ConfigCtx {
+                    ids: &self.ids,
+                    cfg: &mut self.cfg,
+                    session: &mut self.session,
+                    tasks: &mut self.config_tasks,
+                    keepalives: &mut stats.keepalives,
+                },
+                id,
+                &packet[body..],
+                &mut send,
+            );
+            self.packet = packet;
+            match step? {
+                config::ConfigStep::Continue => {}
+                config::ConfigStep::Finished => {
                     self.state = State::Play;
                     log::info!("net: configuration finished → play");
                     return Ok(());
                 }
-                x if Some(x) == self.ids.cb_config_cookie_request => {
-                    self.answer_cookie_request(body, self.ids.sb_config_cookie_response)?;
-                }
-                x if x == self.ids.cb_config_custom_payload => {
-                    // M78 — and this is the copy that actually fires: the
-                    // vanilla server sends `minecraft:brand` from its
-                    // configuration listener's opening burst and never sends
-                    // another. `serverBrand` is a field of the *common*
-                    // listener both states extend, so the two ids are one
-                    // store; see `crate::session`.
-                    crate::session::apply(
-                        crate::session::SessionPacket::CustomPayload,
-                        &self.packet[body..],
-                        &mut self.session,
-                    );
-                }
-                x if x == self.ids.cb_config_store_cookie => {
-                    // M78 — the other `common` packet. A transfer-driven
-                    // network sets cookies on whichever side of the state
-                    // boundary it happens to be on, and the jar is one store.
-                    crate::session::apply(
-                        crate::session::SessionPacket::StoreCookie,
-                        &self.packet[body..],
-                        &mut self.session,
-                    );
-                }
-                x if x == self.ids.cb_config_server_links => {
-                    // M85 — the third `common` packet, and the state a vanilla
-                    // server actually sends it in. `serverLinks` is a field of
-                    // the same common listener the brand and the cookie jar
-                    // are, so it crosses into play with them (`into_play`).
-                    crate::session::apply(
-                        crate::session::SessionPacket::ServerLinks,
-                        &self.packet[body..],
-                        &mut self.session,
-                    );
-                }
-                x if x == self.ids.cb_config_disconnect => {
+                config::ConfigStep::Disconnect => {
                     let mut r = PacketReader::new(&self.packet[body..]);
-                    // On the LIVE path — `PlaySession::into_play` calls
-                    // `run_configuration` — but `Connection` has no language
-                    // table and `GameData` deliberately does not carry one, and
-                    // this arm returns `Err(String)` to a log line rather than
-                    // to a screen. M163 left it; see the table on
-                    // `component_wire::nbt_text`.
+                    // `Connection` has no language table, and this arm returns
+                    // `Err(String)` to a log line rather than to a screen.
                     let reason = r.nbt().map(|n| n.to_plain_text()).unwrap_or_default();
                     stats.disconnect_reason = Some(reason.clone());
                     return Err(format!("config disconnect: {reason}"));
                 }
-                // NOT update_tags -- that is handled ~57 lines above (M69), and NOT
-                // either blocking task -- both are answered above (M166). What
-                // is left is genuinely inert: enabled_features, reset_chat,
-                // transfer, custom_report_details, the dialog pair, and
-                // resource_pack_pop (deliberately unresolved -- see
-                // `config_tasks`). None of them blocks the server's task queue.
-                //
-                // This comment named `code_of_conduct` and `update_tags` while
-                // both of those hung or dropped real traffic, which is the
-                // shape to watch for: an ignore arm that LISTS what it ignores
-                // reads as deliberate whether or not anyone checked.
-                _ => {}
             }
         }
-    }
-
-    /// Decode one Configuration `registry_data` packet.
-    ///
-    /// The `minecraft:dimension_type` registry is the one that can fail the
-    /// connection: it is the only registry here whose entries the client
-    /// *must* understand exactly (a wrong vertical shape mis-decodes every
-    /// chunk, a wrong `has_skylight` invents light), so `dimension_parse`
-    /// returns a `Result` and it propagates. The remaining registries are
-    /// id-capture only and stay tolerant.
-    fn parse_registry_data(&mut self, body: usize) -> Result<(), String> {
-        let mut r = PacketReader::new(&self.packet[body..]);
-        let Ok(registry) = r.identifier() else {
-            return Ok(());
-        };
-        let Ok(count) = r.count("registry entries", 1) else {
-            return Ok(());
-        };
-        if registry == crate::enchantment_parse::ENCHANTMENT_REGISTRY {
-            // Datapack-driven, so both the contents and the id order are the
-            // server's — nothing here may be assumed from bootstrap order.
-            self.enchantments = crate::enchantment_parse::parse_enchantment_registry(&mut r, count);
-            log::info!("net: {} enchantment(s) synced", self.enchantments.len());
-            return Ok(());
-        }
-        // M127: the chat-type registry, datapack-driven for the same reason —
-        // the index is the id `ChatType.Bound`'s `holder` VarInt names.
-        if registry == crate::chat_type_parse::CHAT_TYPE_REGISTRY {
-            self.chat_types = crate::chat_type_parse::parse_chat_type_registry(&mut r, count);
-            log::info!("net: {} chat type(s) synced", self.chat_types.len());
-            return Ok(());
-        }
-        // M48: the two trim registries, datapack-driven for the same reason.
-        if registry == crate::trim_parse::TRIM_MATERIAL_REGISTRY {
-            self.trim_materials = crate::trim_parse::parse_trim_material_registry(&mut r, count);
-            log::info!("net: {} trim material(s) synced", self.trim_materials.len());
-            return Ok(());
-        }
-        if registry == crate::trim_parse::TRIM_PATTERN_REGISTRY {
-            self.trim_patterns = crate::trim_parse::parse_trim_pattern_registry(&mut r, count);
-            log::info!("net: {} trim pattern(s) synced", self.trim_patterns.len());
-            return Ok(());
-        }
-        // M64: the three mob-variant registries, datapack-driven for the
-        // same reason — the index is the raw holder id the metadata carries.
-        if registry == crate::variant_parse::CAT_VARIANT_REGISTRY {
-            self.cat_variants = crate::variant_parse::parse_single_asset_registry(&mut r, count);
-            log::info!("net: {} cat variant(s) synced", self.cat_variants.len());
-            return Ok(());
-        }
-        if registry == crate::variant_parse::WOLF_VARIANT_REGISTRY {
-            self.wolf_variants = crate::variant_parse::parse_wolf_variant_registry(&mut r, count);
-            log::info!("net: {} wolf variant(s) synced", self.wolf_variants.len());
-            return Ok(());
-        }
-        if registry == crate::variant_parse::FROG_VARIANT_REGISTRY {
-            self.frog_variants = crate::variant_parse::parse_single_asset_registry(&mut r, count);
-            log::info!("net: {} frog variant(s) synced", self.frog_variants.len());
-            return Ok(());
-        }
-        if registry == dimension_parse::DIMENSION_TYPE_REGISTRY {
-            self.dim_types = dimension_parse::parse_dimension_registry(&mut r, count)?;
-            log::info!("net: {} dimension type(s) synced", self.dim_types.len());
-            return Ok(());
-        }
-        // The day/night timeline runs on the `minecraft:overworld` world
-        // clock, and `set_time` keys its clock map by raw registry id. The id
-        // is capture-able here rather than assumed from bootstrap order.
-        let is_clock = registry == "minecraft:world_clock";
-        if is_clock {
-            self.world_clock_ids.clear();
-        }
-        // The M13 camera lightmap keys night-vision / darkness off their raw
-        // `mob_effect` registry ids, captured here rather than assumed from
-        // bootstrap order (exactly like the world clock above).
-        let is_mob_effect = registry == "minecraft:mob_effect";
-        // M14: the biome registry, in raw wire order, drives per-biome tint.
-        let is_biome = registry == "minecraft:worldgen/biome";
-        if is_biome {
-            self.biome_defs.clear();
-        }
-        for idx in 0..count {
-            let Ok(entry_name) = r.identifier() else {
-                return Ok(());
-            };
-            if is_clock {
-                if entry_name == "minecraft:overworld" {
-                    self.overworld_clock_id = Some(idx as i32);
-                }
-                // Pushed in iteration order, so the position is the id. Never
-                // sorted, and never derived from bootstrap order — M64's
-                // alphabetisation trap.
-                self.world_clock_ids.push(entry_name.clone());
-            }
-            if is_mob_effect {
-                match entry_name.as_str() {
-                    "minecraft:night_vision" => self.night_vision_id = Some(idx as i32),
-                    "minecraft:darkness" => self.darkness_id = Some(idx as i32),
-                    // M19: `getCurrentSwingDuration`'s dig-speed / fatigue terms.
-                    "minecraft:haste" => self.swing_effect_ids.haste = Some(idx as i32),
-                    "minecraft:conduit_power" => {
-                        self.swing_effect_ids.conduit_power = Some(idx as i32)
-                    }
-                    "minecraft:mining_fatigue" => {
-                        self.swing_effect_ids.mining_fatigue = Some(idx as i32)
-                    }
-                    _ => {}
-                }
-            }
-            let has_nbt = r.bool().unwrap_or(false);
-            if !has_nbt {
-                if is_biome {
-                    // A biome with no NBT is degenerate; keep raw order intact
-                    // with a neutral default so indices still line up.
-                    self.biome_defs
-                        .push(crate::biome_parse::parse_biome(&entry_name, &Nbt::End));
-                }
-                continue;
-            }
-            let Ok(nbt) = r.nbt() else {
-                return Ok(());
-            };
-            if is_biome {
-                self.biome_defs
-                    .push(crate::biome_parse::parse_biome(&entry_name, &nbt));
-            }
-        }
-        if is_biome {
-            log::info!("net: {} biome(s) synced", self.biome_defs.len());
-        }
-        Ok(())
-    }
-
-    /// `handleRequestCookie` — `send(new ServerboundCookieResponsePacket(
-    /// packet.key(), this.serverCookies.get(packet.key())))`.
-    ///
-    /// The reply is **whatever the jar holds**, and `Map.get` returning `null`
-    /// is what makes it a `writeNullable` of nothing. Before M78 nothing ever
-    /// called `store_cookie`, so this always wrote `false` and a
-    /// transfer-driven network watched its session forget itself on every hop.
-    /// The empty-jar path is unchanged; what changed is that the jar can now be
-    /// non-empty.
-    fn answer_cookie_request(&mut self, body: usize, resp_id: i32) -> Result<(), String> {
-        let mut r = PacketReader::new(&self.packet[body..]);
-        let key = r.identifier().unwrap_or_default();
-        let payload = self.session.cookie(&key).map(<[u8]>::to_vec);
-        let resp = crate::session::write_cookie_response(resp_id, &key, payload.as_deref());
-        self.send(resp)
-    }
-
-    // -- play --------------------------------------------------------------
-
-    /// Run the Play phase until `deadline`, applying packets to `world`.
-    fn run_play(
-        &mut self,
-        world: &mut World,
-        stats: &mut SessionStats,
-        deadline: Instant,
-    ) -> Result<(), String> {
-        stats.reached_play = true;
-        while Instant::now() < deadline {
-            let Some((id, body)) = self.recv()? else {
-                log::info!("net: server closed the play connection");
-                return Ok(());
-            };
-            self.record_inbound(id, body);
-            stats.packets_in += 1;
-            stats.bytes_in += (self.packet.len() - body) as u64;
-
-            match id {
-                x if x == self.ids.cb_play_keep_alive => {
-                    let ka = i64::from_be_bytes(self.packet[body..body + 8].try_into().unwrap());
-                    let mut resp = PacketWriter::packet(self.ids.sb_play_keep_alive);
-                    resp.i64(ka);
-                    self.send(resp)?;
-                    stats.keepalives += 1;
-                }
-                x if x == self.ids.cb_play_ping => {
-                    let ping = i32::from_be_bytes(self.packet[body..body + 4].try_into().unwrap());
-                    let mut resp = PacketWriter::packet(self.ids.sb_play_pong);
-                    resp.i32(ping);
-                    self.send(resp)?;
-                }
-                x if x == self.ids.cb_play_login => {
-                    self.handle_play_login(world, body)?;
-                }
-                x if x == self.ids.cb_play_position => {
-                    self.handle_teleport(body, stats)?;
-                }
-                x if x == self.ids.cb_play_chunk_batch_finished => {
-                    // Ack with a desired rate so chunks keep streaming.
-                    let mut resp = PacketWriter::packet(self.ids.sb_play_chunk_batch_received);
-                    resp.f32(16.0);
-                    self.send(resp)?;
-                }
-                x if x == self.ids.cb_play_level_chunk => {
-                    self.handle_chunk(world, body, stats);
-                }
-                x if x == self.ids.cb_play_forget_chunk => {
-                    let mut r = PacketReader::new(&self.packet[body..]);
-                    if let Ok(v) = r.i64() {
-                        let cx = v as i32;
-                        let cz = (v >> 32) as i32;
-                        world.forget_column(cx, cz);
-                    }
-                }
-                x if x == self.ids.cb_play_block_update => {
-                    self.handle_block_update(world, body);
-                }
-                x if x == self.ids.cb_play_add_entity => {
-                    self.handle_add_entity(world, body);
-                }
-                x if x == self.ids.cb_play_remove_entities => {
-                    let mut r = PacketReader::new(&self.packet[body..]);
-                    if let Ok(n) = r.count("remove entities", 1) {
-                        for _ in 0..n {
-                            if let Ok(eid) = r.varint() {
-                                world.entities.remove(eid);
-                            }
-                        }
-                    }
-                }
-                x if Some(x) == self.ids.cb_play_start_configuration => {
-                    // Server pulls us back to config (datapack reload etc).
-                    let ack = PacketWriter::packet(self.ids.sb_play_config_acknowledged);
-                    self.send(ack)?;
-                    self.state = State::Configuration;
-                    log::info!("net: server started configuration → re-entering config");
-                    self.run_configuration(stats)?;
-                    stats.reached_play = true;
-                }
-                x if Some(x) == self.ids.cb_play_cookie_request => {
-                    if let Some(resp_id) = self.ids.sb_play_cookie_response {
-                        self.answer_cookie_request(body, resp_id)?;
-                    }
-                }
-                x if x == self.ids.cb_play_disconnect => {
-                    let mut r = PacketReader::new(&self.packet[body..]);
-                    let reason = r.nbt().map(|n| n.to_plain_text()).unwrap_or_default();
-                    stats.disconnect_reason = Some(reason.clone());
-                    log::warn!("net: play disconnect: {reason}");
-                    return Ok(());
-                }
-                _ => {
-                    // M78. The M1 soak/replay harness sees the same seven
-                    // session packets the play session does, and routing them
-                    // here keeps the brand and the cookie jar true on this path
-                    // too. `route_session` returns `false` for every other id,
-                    // which is what makes it safe as the fallthrough.
-                    //
-                    // The eighth, `bundle_delimiter`, is deliberately *not*
-                    // handled here: this loop renders no frames, so
-                    // reassembling a bundle would change nothing measurable.
-                    // See [`bundle`].
-                    route_session(id, &self.packet[body..], &self.ids, &mut self.session);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn handle_play_login(&mut self, world: &mut World, body: usize) -> Result<(), String> {
-        let holder = parse_login_dimension_holder(&self.packet[body..]).map_err(de)?;
-        let def = login_dimension_type(holder, &self.dim_types);
-        // The world was created before login, so re-point it at the dimension
-        // we actually joined. It holds no columns yet, which is what makes an
-        // in-place `apply_dimension_type` sound here.
-        world.apply_dimension_type(&def);
-        log::info!(
-            "net: play login — dimension {} (holder {holder}): min_y={} height={} \
-             sky_light={} cardinal={}",
-            def.name,
-            def.shape.min_y,
-            def.shape.height,
-            def.has_sky_light,
-            def.cardinal_light_type.name(),
-        );
-        // Signal we've loaded (keeps some servers from stalling).
-        let loaded = PacketWriter::packet(self.ids.sb_play_player_loaded);
-        self.send(loaded)?;
-        Ok(())
-    }
-
-    fn handle_teleport(&mut self, body: usize, stats: &mut SessionStats) -> Result<(), String> {
-        let teleport_id = {
-            let mut r = PacketReader::new(&self.packet[body..]);
-            r.varint().map_err(de)?
-        };
-        let mut ack = PacketWriter::packet(self.ids.sb_play_accept_teleport);
-        ack.varint(teleport_id);
-        self.send(ack)?;
-        stats.teleports += 1;
-        Ok(())
-    }
-
-    fn handle_chunk(&mut self, world: &mut World, body: usize, stats: &mut SessionStats) {
-        let blocks: &Blocks = &self.data.blocks;
-        let mut r = PacketReader::new(&self.packet[body..]);
-        match rewo_world::chunk::read_level_chunk(&mut r, &world.shape, blocks) {
-            Ok(column) => {
-                world.insert_column(column.cx, column.cz, column);
-                stats.chunks += 1;
-            }
-            Err(e) => {
-                // A decode failure is a real bug in the wire model — surface it.
-                log::error!("net: chunk decode failed: {e}");
-            }
-        }
-    }
-
-    fn handle_block_update(&mut self, world: &mut World, body: usize) {
-        let mut r = PacketReader::new(&self.packet[body..]);
-        if let (Ok((x, y, z)), Ok(state)) = (r.position(), r.varint()) {
-            world.set_block(x, y, z, state as u32);
-        }
-    }
-
-    fn handle_add_entity(&mut self, world: &mut World, body: usize) {
-        let mut r = PacketReader::new(&self.packet[body..]);
-        let _ = read_add_entity(&mut r, world);
-    }
-
-    // -- driver ------------------------------------------------------------
-
-    /// Full session: login → config → play until `run_for`, applying to a
-    /// fresh world. Returns stats + the world (for digest / queries).
-    pub fn run_session(
-        mut self,
-        host: &str,
-        port: u16,
-        username: &str,
-        run_for: Duration,
-    ) -> Result<(SessionStats, World), String> {
-        let mut stats = SessionStats {
-            packets_in: 0,
-            bytes_in: 0,
-            chunks: 0,
-            keepalives: 0,
-            teleports: 0,
-            reached_play: false,
-            disconnect_reason: None,
-            world_digest: 0,
-            loaded_columns: 0,
-        };
-        self.login_offline(host, port, username)?;
-        self.run_configuration(&mut stats)?;
-        let mut world = World::new(DimensionShape::OVERWORLD);
-        let deadline = Instant::now() + run_for;
-        self.run_play(&mut world, &mut stats, deadline)?;
-        stats.world_digest = world.digest();
-        stats.loaded_columns = world.loaded_columns();
-        if let Some(rec) = self.recorder.take() {
-            let n = rec.finish().map_err(|e| format!("finish recording: {e}"))?;
-            log::info!("net: recorded {n} inbound packets");
-        }
-        let _ = self.stream.flush();
-        Ok((stats, world))
     }
 
     fn record_inbound(&mut self, id: i32, body: usize) {
@@ -1130,6 +636,7 @@ pub(crate) fn apply_entity_event(
     // A short / malformed body decodes to nothing (a truncated packet is not
     // an animation).
     let (Ok(eid), Ok(event)) = (r.i32(), r.i8()) else {
+        route_decode_failed("entity_event", "truncated body");
         return;
     };
     // Unknown entity → ignore (it may not be tracked / already despawned).
@@ -1193,6 +700,8 @@ pub fn route_block_entity_data(
         // packet cannot paint one into thin air.
         let applied = world.set_block_entity_data(pos, type_id, data);
         log::debug!("net: block_entity_data ({x},{y},{z}) type={type_id} applied={applied}");
+    } else {
+        route_decode_failed("block_entity_data", "truncated body");
     }
     true
 }
@@ -1240,6 +749,8 @@ pub fn route_block_event(
             .block_entities
             .trigger_block_event(types, pos, b0, b1, game_time);
         log::debug!("net: block_event ({x},{y},{z}) b0={b0} b1={b1} consumed={consumed}");
+    } else {
+        route_decode_failed("block_event", "truncated body");
     }
     true
 }
@@ -1312,24 +823,28 @@ pub(crate) fn apply_damage_event(
 ) {
     let mut r = PacketReader::new(body);
     let Ok(eid) = r.varint() else {
+        route_decode_failed("damage_event", "truncated entity id");
         return;
     };
     // Walk the rest of the body even though none of it is model-visible: a
     // decoder that stops early is a decoder that desyncs.
     if r.varint().is_err() {
-        return; // damage type holder (raw registry id)
+        route_decode_failed("damage_event", "truncated damage type holder");
+        return;
     }
     if r.varint().is_err() || r.varint().is_err() {
+        route_decode_failed("damage_event", "truncated source entity ids");
         return; // cause / direct entity ids, each written as id + 1
     }
     match r.bool() {
         Ok(true) => {
             if r.take(24).is_err() {
+                route_decode_failed("damage_event", "truncated source position");
                 return; // source position: 3 × f64
             }
         }
         Ok(false) => {}
-        Err(_) => return,
+        Err(e) => return route_decode_failed("damage_event", e),
     }
     let Some(type_id) = entities.get(eid).map(|e| e.type_id) else {
         return; // getEntity(id) == null
@@ -1407,6 +922,7 @@ pub(crate) fn apply_hurt_animation(
 ) {
     let mut r = PacketReader::new(body);
     let (Ok(eid), Ok(yaw)) = (r.varint(), r.f32()) else {
+        route_decode_failed("hurt_animation", "truncated body");
         return;
     };
     let is_player = if Some(eid) == local_player {
@@ -1467,6 +983,7 @@ pub(crate) fn apply_block_destruction(
 ) {
     let mut r = PacketReader::new(body);
     let (Ok(id), Ok((x, y, z)), Ok(progress)) = (r.varint(), r.position(), r.u8()) else {
+        route_decode_failed("block_destruction", "truncated body");
         return;
     };
     destruction.set(id, [x, y, z], progress as i32, game_time);
@@ -1530,8 +1047,12 @@ pub struct CombatKill {
 /// vanilla drops it silently, and so does this.
 pub(crate) fn apply_player_combat_kill(body: &[u8], local_player: Option<i32>) -> Option<CombatKill> {
     let mut r = PacketReader::new(body);
-    let player_id = r.varint().ok()?;
-    let message = r.nbt().ok()?;
+    let Ok(player_id) = r.varint() else {
+        return route_decode_none("player_combat_kill", "truncated player id");
+    };
+    let Ok(message) = r.nbt() else {
+        return route_decode_none("player_combat_kill", "truncated message");
+    };
     if local_player != Some(player_id) {
         log::debug!("net: player_combat_kill for {player_id}, not the local player");
         return None;
@@ -1749,7 +1270,9 @@ pub fn container_slot_state_changed_body(
 /// truncated statistics list is worth more than a dropped one.
 pub fn apply_award_stats(body: &[u8]) -> Option<Vec<(rewo_world::stats::StatKey, i32)>> {
     let mut r = PacketReader::new(body);
-    let count = r.varint().ok()?;
+    let Ok(count) = r.varint() else {
+        return route_decode_none("award_stats", "truncated count");
+    };
     if count < 0 {
         log::warn!("net: award_stats with a negative count {count}");
         return None;
@@ -1762,6 +1285,7 @@ pub fn apply_award_stats(body: &[u8]) -> Option<Vec<(rewo_world::stats::StatKey,
         out.push((rewo_world::stats::StatKey::new(type_id, value_id), amount));
     }
     if out.len() != count as usize {
+        route_decode_failed("award_stats", format!("truncated at {} of {count}", out.len()));
         log::warn!(
             "net: award_stats truncated at {} of {count} entries",
             out.len()
@@ -1897,6 +1421,7 @@ pub(crate) fn apply_take_item_entity(
 ) {
     let mut r = PacketReader::new(body);
     let (Ok(item_id), Ok(player_id), Ok(amount)) = (r.varint(), r.varint(), r.varint()) else {
+        route_decode_failed("take_item_entity", "truncated body");
         return;
     };
     let Some(from) = world.entities.get(item_id) else {
@@ -2029,6 +1554,7 @@ pub(crate) fn apply_update_attributes(
     // Decode first and completely: a body that does not fully parse changes
     // nothing, so a malformed packet can never half-apply.
     let Some(packet) = crate::attributes::parse(body) else {
+        route_decode_failed("update_attributes", "malformed body");
         return;
     };
     let Some(type_id) = entities.get(packet.entity_id).map(|e| e.type_id) else {
@@ -2109,6 +1635,11 @@ pub fn route_update_attributes(
 /// unregistered type id is likewise inert — that is vanilla's own behaviour,
 /// not a tolerance added here.
 pub fn apply_game_event(body: &[u8], weather: &mut rewo_world::weather::WeatherState) -> bool {
+    // `game_event::apply` reports "no event" for a short body and for an
+    // unregistered type id alike; decode up front to tell the two apart.
+    if let Err(e) = game_event::decode(body) {
+        route_decode_failed("game_event", e);
+    }
     // The bool has always meant "was it a weather event", not "did a level
     // move" — `RAIN_LEVEL_CHANGE` to the level already held is still weather.
     game_event::apply(
@@ -2250,6 +1781,7 @@ pub fn apply_container_set_content(
 ) -> bool {
     let mut r = rewo_proto::reader::PacketReader::new(body);
     let (Ok(container), Ok(state_id), Ok(count)) = (r.varint(), r.varint(), r.varint()) else {
+        route_decode_failed("container_set_content", "truncated header");
         return false;
     };
     if container != expect_container {
@@ -2265,10 +1797,14 @@ pub fn apply_container_set_content(
             Ok(s) => slots.push(s),
             // Abandoned mid-list: everything after this point is garbage, so
             // the packet is dropped whole and the previous contents stand.
-            Err(()) => return false,
+            Err(()) => {
+                route_decode_failed("container_set_content", "truncated slot");
+                return false;
+            }
         }
     }
     let Ok(carried) = read_slot(&mut r, components) else {
+        route_decode_failed("container_set_content", "truncated carried stack");
         return false;
     };
     // The tooltip text is recorded before the contents, so a slot is never
@@ -2300,12 +1836,14 @@ pub fn apply_container_set_slot(
 ) -> bool {
     let mut r = rewo_proto::reader::PacketReader::new(body);
     let (Ok(container), Ok(state_id), Ok(slot)) = (r.varint(), r.varint(), r.i16()) else {
+        route_decode_failed("container_set_slot", "truncated header");
         return false;
     };
     if container != expect_container {
         return false;
     }
     let Ok((item, text, detail)) = read_slot(&mut r, components) else {
+        route_decode_failed("container_set_slot", "truncated stack");
         return false;
     };
     if let Some((fingerprint, text)) = text {
@@ -2347,6 +1885,7 @@ pub fn apply_set_player_inventory(
     use rewo_world::inventory::IndexWrite;
     let mut r = rewo_proto::reader::PacketReader::new(body);
     let Ok(index) = r.varint() else {
+        route_decode_failed("set_player_inventory", "truncated slot index");
         return IndexWrite::OutOfRange;
     };
     // The stack is read before the index is judged, deliberately: a body whose
@@ -2354,6 +1893,7 @@ pub fn apply_set_player_inventory(
     // text is worth recording. Judging first would also mean the two failure
     // modes ("bad index" and "bad stack") could not be told apart.
     let Ok((item, text, detail)) = read_slot(&mut r, components) else {
+        route_decode_failed("set_player_inventory", "truncated stack");
         return IndexWrite::OutOfRange;
     };
     if let Some((fingerprint, text)) = text {
@@ -2384,6 +1924,7 @@ pub fn apply_set_cursor_item(
 ) -> bool {
     let mut r = rewo_proto::reader::PacketReader::new(body);
     let Ok((item, text, detail)) = read_slot(&mut r, components) else {
+        route_decode_failed("set_cursor_item", "truncated stack");
         return false;
     };
     if let Some((fingerprint, text)) = text {
@@ -2407,6 +1948,7 @@ pub fn apply_set_held_slot(
 ) -> bool {
     let mut r = rewo_proto::reader::PacketReader::new(body);
     let Ok(slot) = r.varint() else {
+        route_decode_failed("set_held_slot", "truncated slot");
         return false;
     };
     inventory.set_selected(slot)
@@ -2510,7 +2052,16 @@ pub(crate) fn container_target<'a>(
     inventory: &'a mut rewo_world::inventory::Inventory,
     menus: &'a mut rewo_world::menu::Menus,
 ) -> Option<(i32, &'a mut rewo_world::inventory::Inventory)> {
-    let container = rewo_proto::reader::PacketReader::new(body).varint().ok()?;
+    let container = match rewo_proto::reader::PacketReader::new(body).varint() {
+        Ok(container) => container,
+        // The seam serves two packet ids and has no way to say which one it is
+        // without a signature change that would ripple into `menu.rs`'s
+        // witnesses, so the two are named together.
+        Err(e) => {
+            route_decode_failed("container_set_content/container_set_slot", e);
+            return None;
+        }
+    };
     if container == rewo_world::inventory::PLAYER_CONTAINER_ID {
         return Some((container, inventory));
     }
@@ -2597,6 +2148,7 @@ pub fn apply_update_tags(body: &[u8], overrides: &mut crate::tags::TagOverrides)
             true
         }
         Err(e) => {
+            route_decode_failed("update_tags", &e);
             log::debug!("net: update_tags decode: {e}");
             false
         }
@@ -2761,7 +2313,10 @@ pub fn parse_set_passengers(body: &[u8]) -> rewo_proto::Result<(i32, Vec<i32>)> 
 pub(crate) fn apply_set_passengers(body: &[u8], entities: &mut rewo_world::entities::EntityTable) {
     match parse_set_passengers(body) {
         Ok((vehicle, riders)) => entities.set_passengers(vehicle, riders),
-        Err(e) => log::debug!("play: set_passengers parse: {e}"),
+        Err(e) => {
+            route_decode_failed("set_passengers", &e);
+            log::debug!("play: set_passengers parse: {e}");
+        }
     }
 }
 
@@ -2785,6 +2340,7 @@ pub(crate) fn apply_set_entity_data<'a>(
     let kinds: MetaKinds = kinds.into();
     let mut r = PacketReader::new(body);
     let Ok(eid) = r.varint() else {
+        route_decode_failed("set_entity_data", "truncated entity id");
         return;
     };
     // Vanilla drops metadata for an entity it isn't tracking (getEntity == null).
@@ -3178,6 +2734,7 @@ pub(crate) fn apply_move_minecart(
     let (eid, steps) = match parse_move_minecart(body) {
         Ok(v) => v,
         Err(e) => {
+            route_decode_failed("move_minecart_along_track", &e);
             log::debug!("play: move_minecart_along_track parse: {e}");
             return;
         }
@@ -3251,6 +2808,7 @@ pub(crate) fn apply_set_entity_link(
     let (source, dest) = match parse_set_entity_link(body) {
         Ok(v) => v,
         Err(e) => {
+            route_decode_failed("set_entity_link", &e);
             log::debug!("play: set_entity_link parse: {e}");
             return;
         }
@@ -3310,6 +2868,7 @@ pub(crate) fn apply_projectile_power(
     let (eid, power) = match parse_projectile_power(body) {
         Ok(v) => v,
         Err(e) => {
+            route_decode_failed("projectile_power", &e);
             log::debug!("play: projectile_power parse: {e}");
             return;
         }
@@ -3383,6 +2942,7 @@ pub(crate) fn apply_animate(
     let mut r = PacketReader::new(body);
     // A short / malformed body decodes to nothing.
     let (Ok(eid), Ok(action)) = (r.varint(), r.u8()) else {
+        route_decode_failed("animate", "truncated body");
         return;
     };
     // `getEntity(id) == null` → the whole packet is inert.
@@ -3458,6 +3018,7 @@ pub(crate) fn apply_set_equipment(
     use rewo_world::entities::{HandItem, HeldItem, InteractionHand};
     let mut r = PacketReader::new(body);
     let Ok(eid) = r.varint() else {
+        route_decode_failed("set_equipment", "truncated entity id");
         return;
     };
     let Some(type_id) = entities.get(eid).map(|e| e.type_id) else {
@@ -3467,10 +3028,14 @@ pub(crate) fn apply_set_equipment(
         return; // `instanceof LivingEntity` failed
     }
     loop {
+        // The `do/while` exits on a slot id with its high bit clear, so this
+        // only fails for a body that ran out mid-list.
         let Ok(slot_id) = r.i8() else {
+            route_decode_failed("set_equipment", "truncated slot list");
             return;
         };
         let Ok(slot) = item_stack::read_optional(&mut r, data.components) else {
+            route_decode_failed("set_equipment", "truncated stack");
             return; // truncated — stop, don't guess at the rest
         };
         let hand = match slot_id & 127 {
@@ -3515,7 +3080,7 @@ pub(crate) fn apply_set_equipment(
                     // practice and is still written as a suppression rather
                     // than a default, because "unreachable" is not "impossible".
                     SwingResolution::Exact(swing) => {
-                        match item_stack::resolve_use(&s, &data.use_profiles) {
+                        match item_stack::resolve_use(s, &data.use_profiles) {
                             Some(use_profile) => HandItem::Held(HeldItem {
                                 item_id: s.item_id,
                                 swing,
@@ -3683,22 +3248,27 @@ pub fn route_level_particles(
 ) -> Option<rewo_world::particles::ParticleEvent> {
     use rewo_world::particles::{ParticleCommand, ParticleEvent, ParticleKind};
     let mut r = PacketReader::new(body);
-    let override_limiter = r.bool().ok()?;
-    let always_show = r.bool().ok()?;
-    let x = r.f64().ok()?;
-    let y = r.f64().ok()?;
-    let z = r.f64().ok()?;
-    let x_dist = r.f32().ok()?;
-    let y_dist = r.f32().ok()?;
-    let z_dist = r.f32().ok()?;
-    let max_speed = r.f32().ok()?;
-    let count = r.i32().ok()?;
-    let type_id = r.varint().ok()?;
+    // The fixed prefix is read as one row so a body that runs out half-way is
+    // one failure, not eleven.
+    let head = (
+        r.bool(), r.bool(), r.f64(), r.f64(), r.f64(),
+        r.f32(), r.f32(), r.f32(), r.f32(), r.i32(), r.varint(),
+    );
+    let (
+        Ok(override_limiter), Ok(always_show), Ok(x), Ok(y), Ok(z), Ok(x_dist),
+        Ok(y_dist), Ok(z_dist), Ok(max_speed), Ok(count), Ok(type_id),
+    ) = head
+    else {
+        return route_decode_none("level_particles", "truncated body");
+    };
     let kind = ParticleKind::from_registry_name(types.name(type_id)?)?;
     // `BlockParticleOption` appends the block state as a VarInt; every other
     // kind here is a `SimpleParticleType` with an empty options body.
     let block_state = if Some(type_id) == types.block_id {
-        r.varint().ok()?.max(0) as u32
+        let Ok(state) = r.varint() else {
+            return route_decode_none("level_particles", "truncated block state");
+        };
+        state.max(0) as u32
     } else {
         0
     };
@@ -3728,10 +3298,11 @@ pub fn route_level_particles(
 pub fn route_level_event(body: &[u8]) -> Option<rewo_world::particles::ParticleEvent> {
     use rewo_world::particles::{ParticleEvent, LEVEL_EVENT_DESTROY_BLOCK};
     let mut r = PacketReader::new(body);
-    let kind = r.i32().ok()?;
-    let (x, y, z) = r.position().ok()?;
-    let data = r.i32().ok()?;
-    let _global = r.bool().ok()?;
+    let (Ok(kind), Ok((x, y, z)), Ok(data), Ok(_global)) =
+        (r.i32(), r.position(), r.i32(), r.bool())
+    else {
+        return route_decode_none("level_event", "truncated body");
+    };
     if kind != LEVEL_EVENT_DESTROY_BLOCK {
         return None;
     }
@@ -3929,10 +3500,11 @@ pub fn route_level_event_sound(
 ) -> Option<crate::sounds::SoundEvent> {
     use rewo_data::level_event_sounds::Placement;
     let mut r = PacketReader::new(body);
-    let kind = r.i32().ok()?;
-    let (x, y, z) = r.position().ok()?;
-    let data = r.i32().ok()?;
-    let global = r.bool().ok()?;
+    let (Ok(kind), Ok((x, y, z)), Ok(data), Ok(global)) =
+        (r.i32(), r.position(), r.i32(), r.bool())
+    else {
+        return route_decode_none("level_event", "truncated body");
+    };
 
     // `global` is matched rather than ignored: `globalLevelEvent` and
     // `levelEvent` are disjoint switches, so a mismatched flag is silence in
@@ -4029,7 +3601,7 @@ mod level_event_sound_tests {
     fn body(kind: i32, x: i64, y: i64, z: i64, data: i32, global: bool) -> Vec<u8> {
         let packed = ((x & 0x3FF_FFFF) << 38) | ((z & 0x3FF_FFFF) << 12) | (y & 0xFFF);
         let mut b = kind.to_be_bytes().to_vec();
-        b.extend_from_slice(&(packed as i64).to_be_bytes());
+        b.extend_from_slice(&packed.to_be_bytes());
         b.extend_from_slice(&data.to_be_bytes());
         b.push(u8::from(global));
         b
@@ -4466,10 +4038,19 @@ pub enum SoundPacketKind {
 pub fn route_sound(kind: SoundPacketKind, body: &[u8]) -> Option<sounds::SoundEvent> {
     use sounds::SoundEvent;
     let mut r = PacketReader::new(body);
-    match kind {
-        SoundPacketKind::Positioned => sounds::PositionedSound::read(&mut r).ok().map(SoundEvent::At),
-        SoundPacketKind::OnEntity => sounds::EntitySound::read(&mut r).ok().map(SoundEvent::OnEntity),
-        SoundPacketKind::Stop => sounds::StopSound::read(&mut r).ok().map(SoundEvent::Stop),
+    let what = match kind {
+        SoundPacketKind::Positioned => "sound",
+        SoundPacketKind::OnEntity => "entity_sound",
+        SoundPacketKind::Stop => "stop_sound",
+    };
+    let read = match kind {
+        SoundPacketKind::Positioned => sounds::PositionedSound::read(&mut r).map(SoundEvent::At),
+        SoundPacketKind::OnEntity => sounds::EntitySound::read(&mut r).map(SoundEvent::OnEntity),
+        SoundPacketKind::Stop => sounds::StopSound::read(&mut r).map(SoundEvent::Stop),
+    };
+    match read {
+        Ok(event) => Some(event),
+        Err(e) => route_decode_none(what, e),
     }
 }
 
@@ -4498,7 +4079,10 @@ pub fn route_view_area(
     let Some(kind) = view_area::kind_for_id(id, table) else {
         return false;
     };
-    view_area::apply(kind, body, area);
+    // `apply` decodes in `view_area.rs`, so the packet is named by its kind.
+    if !view_area::apply(kind, body, area) {
+        route_decode_failed("view_area", format!("{kind:?} body"));
+    }
     true
 }
 
@@ -4529,6 +4113,7 @@ pub fn route_border(
         return false;
     };
     if !border::apply(kind, body, border) {
+        route_decode_failed("border", format!("{kind:?} body"));
         log::debug!("net: border {kind:?} decode failed ({} bytes)", body.len());
     }
     true
@@ -4561,6 +4146,7 @@ pub fn route_waypoint(
         return false;
     }
     if !waypoints::apply(body, store) {
+        route_decode_failed("waypoint", "malformed body");
         log::debug!("net: waypoint decode failed ({} bytes)", body.len());
     }
     true
@@ -4595,7 +4181,9 @@ pub fn route_client_state(
     let Some(kind) = client_state::kind_for_id(id, table) else {
         return false;
     };
-    client_state::apply(kind, body, state, entities, local_player);
+    if !client_state::apply(kind, body, state, entities, local_player) {
+        route_decode_failed("client_state", format!("{kind:?} body"));
+    }
     true
 }
 
@@ -4619,7 +4207,9 @@ pub fn route_ticking(
     let Some(kind) = ticking::kind_for_id(id, table) else {
         return false;
     };
-    ticking::apply(kind, body, manager);
+    if !ticking::apply(kind, body, manager) {
+        route_decode_failed("ticking", format!("{kind:?} body"));
+    }
     true
 }
 
@@ -4649,7 +4239,9 @@ pub fn route_session(
     let Some(kind) = session::kind_for_id(id, table) else {
         return false;
     };
-    session::apply(kind, body, state);
+    if !session::apply(kind, body, state) {
+        route_decode_failed("session", format!("{kind:?} body"));
+    }
     true
 }
 
@@ -4680,7 +4272,9 @@ pub fn route_hud_state(
     let Some(kind) = hud_state::kind_for_id(id, table) else {
         return false;
     };
-    hud_state::apply(kind, body, state);
+    if !hud_state::apply(kind, body, state) {
+        route_decode_failed("hud_state", format!("{kind:?} body"));
+    }
     true
 }
 
@@ -4703,6 +4297,7 @@ pub(crate) fn skip_lpvec3(r: &mut PacketReader) -> rewo_proto::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rewo_world::dimension::DimensionShape;
 
     /// Build a realistic `ClientboundLoginPacket` prefix up to (and including)
     /// the dimension-type holder, for the given holder id + dimension names.
@@ -5179,6 +4774,13 @@ mod animate_tests {
         };
         apply_swing_effect(&[5, 3, 1, 100, 0], &mut t, ids, true, Some(&classes()));
         assert_eq!(t.current_swing_duration(5), Some(6), "no haste applied");
+        // The equipment half needs the real item registry for its tables.
+        let Some(paths) = rewo_data::DataPaths::for_version("26.2")
+            .filter(|p| p.registries_json().exists())
+        else {
+            rewo_data::skip_test!("no local 26.2 datagen report (equipment half)");
+            return;
+        };
         let comps = DataComponentIds {
             max_damage: 4,
             stored_enchantments: 12,
@@ -5204,9 +4806,9 @@ mod animate_tests {
             writable_book_content: 23,
         };
         let data = super::item_stack::SwingWireData {
-            prototypes: unreachable_prototypes(),
+            prototypes: unreachable_prototypes(&paths),
             components: comps,
-            use_profiles: unreachable_use_profiles(),
+            use_profiles: unreachable_use_profiles(&paths),
         };
         apply_set_equipment(&equipment_body(5, 0, 949), &mut t, &data, Some(&classes()));
         assert_eq!(t.hand_item(5, InteractionHand::MainHand), HandItem::Empty);
@@ -5235,17 +4837,15 @@ mod animate_tests {
     /// real registry — these unit tests only need the *gate*, so the table is
     /// never consulted (the entity is rejected first). `swingshot` covers the
     /// resolved path against the live registry.
-    fn unreachable_prototypes() -> rewo_data::swing_anim::SwingAnimations {
+    fn unreachable_prototypes(paths: &rewo_data::DataPaths) -> rewo_data::swing_anim::SwingAnimations {
         // A registry-less table is impossible to build honestly, so borrow the
-        // real one if the reports are present and skip the assertion otherwise.
-        let paths = rewo_data::DataPaths::for_version("26.2").expect("config dir");
+        // real one; the caller skips when the reports are absent.
         let items = rewo_data::items::Items::load(&paths.registries_json())
             .expect("registries.json for the equipment gate test");
         rewo_data::swing_anim::SwingAnimations::resolve(&items).expect("prototypes")
     }
 
-    fn unreachable_use_profiles() -> rewo_data::use_item::UseProfiles {
-        let paths = rewo_data::DataPaths::for_version("26.2").expect("config dir");
+    fn unreachable_use_profiles(paths: &rewo_data::DataPaths) -> rewo_data::use_item::UseProfiles {
         let items = rewo_data::items::Items::load(&paths.registries_json())
             .expect("registries.json for the equipment gate test");
         rewo_data::use_item::UseProfiles::resolve(&items).expect("use profiles")
@@ -5932,8 +5532,13 @@ mod award_stats_tests {
     /// pass just as well if they came back from a wire branch that never runs.
     #[test]
     fn the_effect_ids_come_from_the_report_because_the_wire_never_carries_them() {
-        let Some(paths) = rewo_data::DataPaths::for_version("26.2") else {
-            return; // no local datagen -- nothing to grade against
+        // `for_version` is `Some` whenever the config dir exists, so the file
+        // itself is what decides.
+        let Some(paths) = rewo_data::DataPaths::for_version("26.2")
+            .filter(|p| p.registries_json().exists())
+        else {
+            rewo_data::skip_test!("no local 26.2 datagen report");
+            return;
         };
         let m = rewo_data::mob_effects::MobEffects::load(&paths.registries_json())
             .expect("the report must carry minecraft:mob_effect");
@@ -5960,5 +5565,45 @@ mod award_stats_tests {
             client_command_body(ClientCommand::PerformRespawn),
             vec![0u8]
         );
+    }
+}
+
+#[cfg(test)]
+mod route_decode_failure_tests {
+    //! [`super::route_decode_failed`] as seen through
+    //! [`super::route_level_event`]: a `route_*` seam that takes a bare body
+    //! (no `Ids`, no world) and has both a give-up and a deliberate-ignore case.
+
+    use super::{route_level_event, take_route_decode_failures};
+
+    fn body(kind: i32) -> Vec<u8> {
+        let packed = ((7i64 & 0x3FF_FFFF) << 38) | ((-3i64 & 0x3FF_FFFF) << 12) | (64i64 & 0xFFF);
+        let mut b = kind.to_be_bytes().to_vec();
+        b.extend_from_slice(&packed.to_be_bytes());
+        b.extend_from_slice(&1234i32.to_be_bytes());
+        b.push(0);
+        b
+    }
+
+    #[test]
+    fn route_decode_failure_is_counted() {
+        // Another test on this thread may have left a count behind.
+        let _ = take_route_decode_failures();
+        // `&[]` cannot produce even the event kind, so the body gives up on its
+        // first read — one failure, not one per field.
+        assert!(route_level_event(&[]).is_none());
+        assert_eq!(take_route_decode_failures(), 1);
+        // Taking resets: the second take is zero.
+        assert_eq!(take_route_decode_failures(), 0);
+    }
+
+    #[test]
+    fn route_ignored_packet_is_not_counted() {
+        let _ = take_route_decode_failures();
+        // Event 1000 is a well-formed `level_event` this milestone does not
+        // simulate: it decodes in full and is ignored on purpose, which is not
+        // a decode failure.
+        assert!(route_level_event(&body(1000)).is_none());
+        assert_eq!(take_route_decode_failures(), 0);
     }
 }

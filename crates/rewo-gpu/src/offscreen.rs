@@ -360,12 +360,14 @@ impl Offscreen {
 
             let cbs = [vk::CommandBufferSubmitInfo::default().command_buffer(self.cb)];
             let submit = vk::SubmitInfo2::default().command_buffer_infos(&cbs);
+            let serial = gpu.clock.begin_submit();
             device
                 .queue_submit2(gpu.graphics_queue, std::slice::from_ref(&submit), self.fence)
                 .map_err(|e| format!("submit: {e}"))?;
             device
                 .wait_for_fences(&[self.fence], true, u64::MAX)
                 .map_err(|e| format!("wait fence: {e}"))?;
+            gpu.clock.mark_retired(serial);
             device
                 .reset_fences(&[self.fence])
                 .map_err(|e| format!("reset fence: {e}"))?;

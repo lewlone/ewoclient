@@ -523,7 +523,7 @@ fn grey_stages() -> Vec<Vec<u8>> {
 fn floor_quad() -> (Vec<MeshVertex>, Vec<u32>) {
     let y = 65.0f32;
     let v = |x: f32, z: f32, u: f32, w: f32| {
-        MeshVertex::new([x, y, z], [u, w], 0, 15, 15, 0, 3, [255, 255, 255])
+        MeshVertex::new([x, y, z], [u, w], 0, rewo_mesh::light_coords(15, 15), [255, 255, 255])
     };
     (
         vec![

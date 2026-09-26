@@ -431,7 +431,7 @@ fn float(r: &mut StringReader) -> Result<(), ReaderError> {
         text.push('-');
     }
     skip_whitespace(r);
-    let mut finish = |r: &mut StringReader, text: &mut String| -> Result<(), ReaderError> {
+    let finish = |r: &mut StringReader, text: &mut String| -> Result<(), ReaderError> {
         let single = float_suffix(r).unwrap_or(false);
         finite(text, single)
     };

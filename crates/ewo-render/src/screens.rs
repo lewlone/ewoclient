@@ -1,10 +1,7 @@
 //! Screens — composed UI surfaces drawn on top of the backdrop.
 //!
-//! Build-sequence step 7+ scaffold. Currently houses the main menu only;
-//! other screens (instances, settings tabs, launching) land in step 13.
-//! When `ewo-ui` widgets land (step 10+), most of this moves there — for now
-//! the screens are pure-text static compositions in `ewo-render` so they ship
-//! ahead of the widget pipeline.
+//! Every launcher screen (main menu, instances, settings, launching, friends)
+//! and the modals.
 
 pub mod about_modal;
 pub mod dev_overlay;

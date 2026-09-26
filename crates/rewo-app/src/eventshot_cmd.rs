@@ -49,6 +49,9 @@
 //! is a separate *sensitivity* discriminator, not an accuracy bound; the
 //! expected numbers themselves are exact.
 
+// Expected angles are the decompile's literals, not std constants.
+#![allow(clippy::approx_constant)]
+
 use clap::Args as ClapArgs;
 use rewo_data::{entity_types::EntityTypes, packets::Packets, DataPaths};
 use rewo_gpu::entities::{oracle_part_deltas, OracleInputs};

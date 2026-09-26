@@ -63,7 +63,6 @@ use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::tab_list::{self, PingIcon, ScoreColumn};
 use rewo_gpu::world::{SkyMode, WorldRenderer};
 use rewo_gpu::Gpu;
-use rewo_proto::nbt::Nbt;
 use rewo_world::chat_style::ChatStyle;
 
 use crate::tab_list_view::{self, TabListLookups, TabListView};
@@ -903,7 +902,7 @@ fn check_pixels(
     let px = SCALE as f32;
     let width_of = move |t: &str, style: ChatStyle| rewo_gpu::text::width_styled(t, &advance, style.bold);
 
-    let mut shot = |gpu: &mut Gpu,
+    let shot = |gpu: &mut Gpu,
                     off: &mut Offscreen,
                     wr: &mut WorldRenderer,
                     fills: Vec<rewo_gpu::hud::HudFill>,
@@ -1842,7 +1841,7 @@ fn check_pixels(
         wr.set_hud_fills(tab_list_view::fills(&hlayout));
         wr.set_hud_icons(tab_list_view::icons(&hview, &hlayout));
         wr.set_text(tab_list_view::text(&hview, &hlayout, px, &width_of));
-        off.render(&mut gpu, Some((&mut wr, vp)), &overlay_draw, clear)?;
+        off.render(&gpu, Some((&mut wr, vp)), &overlay_draw, clear)?;
         off.save_png(&gpu, &dir.join("tablist.png"))?;
         println!("[tablistshot] wrote {}", dir.join("tablist.png").display());
     }

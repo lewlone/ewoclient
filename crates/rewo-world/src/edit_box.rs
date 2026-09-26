@@ -262,7 +262,7 @@ impl EditBox {
     /// focusedTime` the quotient is 0.
     pub fn cursor_visible(&self, now_ms: u64) -> bool {
         let since = now_ms.saturating_sub(self.focused_time_ms.unwrap_or(now_ms));
-        (since / CURSOR_BLINK_INTERVAL_MS) % 2 == 0
+        (since / CURSOR_BLINK_INTERVAL_MS).is_multiple_of(2)
     }
 
     pub fn is_focused(&self) -> bool {

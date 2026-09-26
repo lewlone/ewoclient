@@ -4,7 +4,7 @@ paths:
   - "crates/ewo-render/src/screens/friends.rs"
   - "crates/ewo-render/src/screens/launcher_link_modal.rs"
   - "crates/ewo-jni/src/social.rs"
-  - "PHASE_H_PLAN.md"
+  - "docs/history/PHASE_H_PLAN.md"
 ---
 
 # Social — friends, presence, launcher-link, join (Phase H)
@@ -13,7 +13,8 @@ Plugs the launcher into the user's own Minecraft network (formerly
 "chickenedin", **renamed Frogsy in mid-2026**; verify domains before relying on
 any). Don't build a parallel social stack. Full history:
 `docs/history/ewoclient-v2-phases.md` ("Phase H — Social") and
-`PHASE_H_PLAN.md` (partly stale).
+`docs/history/PHASE_H_PLAN.md` (partly stale). The API host `chickenedin.com`
+no longer resolves (the network was renamed Frogsy); see `docs/REVIEW-2026-09.md`.
 
 **Offline-first holds.** Signed out means zero network calls. Signed in but
 unlinked means MS-auth calls only. Social calls start only once there's a

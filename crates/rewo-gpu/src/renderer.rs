@@ -26,13 +26,18 @@ struct Frame {
     pool: vk::CommandPool,
     cb: vk::CommandBuffer,
     image_available: vk::Semaphore,
-    render_finished: vk::Semaphore,
     fence: vk::Fence,
+    /// The `Gpu` frame serial of this slot's last submission, if any.
+    serial: Option<u64>,
 }
 
 pub struct Renderer {
     pub swapchain: Swapchain,
     frames: Vec<Frame>,
+    /// Present-wait semaphores, one per **swapchain image** — a semaphore may
+    /// only be re-signalled once the presentation that waited on it has
+    /// completed, and only re-acquiring that image proves it has.
+    render_finished: Vec<vk::Semaphore>,
     overlay: OverlayPipeline,
     overlay_res: Vec<OverlayFrameRes>,
     query_pool: vk::QueryPool,
@@ -93,9 +98,6 @@ impl Renderer {
                 let image_available = device
                     .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
                     .map_err(|e| format!("semaphore: {e}"))?;
-                let render_finished = device
-                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-                    .map_err(|e| format!("semaphore: {e}"))?;
                 let fence = device
                     .create_fence(
                         &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
@@ -106,8 +108,8 @@ impl Renderer {
                     pool,
                     cb,
                     image_available,
-                    render_finished,
                     fence,
+                    serial: None,
                 });
             }
             let query_pool = device
@@ -119,9 +121,10 @@ impl Renderer {
                 )
                 .map_err(|e| format!("query pool: {e}"))?;
 
-            Ok(Self {
+            let mut me = Self {
                 swapchain,
                 frames,
+                render_finished: Vec::new(),
                 overlay,
                 overlay_res,
                 query_pool,
@@ -131,8 +134,24 @@ impl Renderer {
                 preferred_present,
                 depth: None,
                 last_gpu_ms: None,
-            })
+            };
+            me.ensure_present_semaphores(gpu)?;
+            Ok(me)
         }
+    }
+
+    /// Grow `render_finished` to one semaphore per swapchain image. Never
+    /// shrinks: a surplus semaphore is merely unused after a recreate.
+    fn ensure_present_semaphores(&mut self, gpu: &Gpu) -> Result<(), String> {
+        while self.render_finished.len() < self.swapchain.images.len() {
+            let s = unsafe {
+                gpu.device
+                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+                    .map_err(|e| format!("semaphore: {e}"))?
+            };
+            self.render_finished.push(s);
+        }
+        Ok(())
     }
 
     pub fn present_mode(&self) -> vk::PresentModeKHR {
@@ -168,7 +187,8 @@ impl Renderer {
             return Ok(());
         }
         self.swapchain
-            .recreate(gpu, width, height, self.preferred_present)
+            .recreate(gpu, width, height, self.preferred_present)?;
+        self.ensure_present_semaphores(gpu)
     }
 
     /// Unconditional recreate — for OUT_OF_DATE/suboptimal recovery, where
@@ -178,7 +198,8 @@ impl Renderer {
             return Ok(());
         }
         self.swapchain
-            .recreate(gpu, width, height, self.preferred_present)
+            .recreate(gpu, width, height, self.preferred_present)?;
+        self.ensure_present_semaphores(gpu)
     }
 
     pub fn render(
@@ -199,7 +220,10 @@ impl Renderer {
         unsafe {
             device
                 .wait_for_fences(&[frame.fence], true, u64::MAX)
-                .map_err(|e| format!("wait fence: {e}"))?;
+                .map_err(|e| vk_err("wait fence", e))?;
+            if let Some(serial) = frame.serial {
+                gpu.clock.mark_retired(serial);
+            }
 
             // This slot's queries are from `fif` frames ago, complete now.
             if self.frames_submitted >= self.fif as u64 {
@@ -226,12 +250,12 @@ impl Renderer {
             ) {
                 Ok(pair) => pair,
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return Ok(RenderOutcome::NeedsRecreate),
-                Err(e) => return Err(format!("acquire: {e}")),
+                Err(e) => return Err(vk_err("acquire", e)),
             };
 
-            device
-                .reset_fences(&[frame.fence])
-                .map_err(|e| format!("reset fence: {e}"))?;
+            // The fence is reset only immediately before the submit that
+            // re-signals it: an early `?` in between must not leave it
+            // unsignalled, or the next wait on this slot hangs forever.
             device
                 .reset_command_pool(frame.pool, vk::CommandPoolResetFlags::empty())
                 .map_err(|e| format!("reset pool: {e}"))?;
@@ -384,8 +408,9 @@ impl Renderer {
             let waits = [vk::SemaphoreSubmitInfo::default()
                 .semaphore(frame.image_available)
                 .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)];
+            let render_finished = self.render_finished[image_index as usize];
             let signals = [vk::SemaphoreSubmitInfo::default()
-                .semaphore(frame.render_finished)
+                .semaphore(render_finished)
                 .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)];
             let cbs = [vk::CommandBufferSubmitInfo::default().command_buffer(frame.cb)];
             let submit = vk::SubmitInfo2::default()
@@ -393,12 +418,25 @@ impl Renderer {
                 .command_buffer_infos(&cbs)
                 .signal_semaphore_infos(&signals);
             device
-                .queue_submit2(gpu.graphics_queue, std::slice::from_ref(&submit), frame.fence)
-                .map_err(|e| format!("submit: {e}"))?;
+                .reset_fences(&[frame.fence])
+                .map_err(|e| vk_err("reset fence", e))?;
+            let serial = gpu.clock.begin_submit();
+            if let Err(e) = device.queue_submit2(
+                gpu.graphics_queue,
+                std::slice::from_ref(&submit),
+                frame.fence,
+            ) {
+                // Re-signal the fence with an empty submit so the slot stays
+                // waitable; if the device is lost this fails too and the error
+                // below is what the caller sees.
+                let _ = device.queue_submit2(gpu.graphics_queue, &[], frame.fence);
+                return Err(vk_err("submit", e));
+            }
+            self.frames[self.cursor].serial = Some(serial);
 
             let swapchains = [self.swapchain.handle];
             let indices = [image_index];
-            let present_waits = [frame.render_finished];
+            let present_waits = [render_finished];
             let present_info = vk::PresentInfoKHR::default()
                 .wait_semaphores(&present_waits)
                 .swapchains(&swapchains)
@@ -410,7 +448,7 @@ impl Renderer {
             {
                 Ok(sub) => suboptimal |= sub,
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => suboptimal = true,
-                Err(e) => return Err(format!("present: {e}")),
+                Err(e) => return Err(vk_err("present", e)),
             }
 
             self.cursor = (self.cursor + 1) % self.fif;
@@ -430,8 +468,10 @@ impl Renderer {
             for f in self.frames.drain(..) {
                 device.destroy_fence(f.fence, None);
                 device.destroy_semaphore(f.image_available, None);
-                device.destroy_semaphore(f.render_finished, None);
                 device.destroy_command_pool(f.pool, None);
+            }
+            for s in self.render_finished.drain(..) {
+                device.destroy_semaphore(s, None);
             }
             device.destroy_query_pool(self.query_pool, None);
         }
@@ -440,5 +480,16 @@ impl Renderer {
         }
         self.overlay.destroy(gpu, &mut self.overlay_res);
         self.swapchain.destroy(gpu);
+    }
+}
+
+/// A Vulkan error as a message, naming device loss explicitly — it is the one
+/// failure no caller can recover from, and `ERROR_DEVICE_LOST` alone reads like
+/// a transient.
+fn vk_err(what: &str, e: vk::Result) -> String {
+    if e == vk::Result::ERROR_DEVICE_LOST {
+        format!("{what}: GPU device lost (driver reset or crash) - cannot continue")
+    } else {
+        format!("{what}: {e}")
     }
 }

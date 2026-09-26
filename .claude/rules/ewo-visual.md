@@ -1,7 +1,6 @@
 ---
 paths:
   - "crates/ewo-render/**"
-  - "crates/ewo-ui/**"
   - "crates/ewo-core/src/theme.rs"
   - "crates/ewo-core/src/color.rs"
   - "crates/ewo-core/src/easing.rs"

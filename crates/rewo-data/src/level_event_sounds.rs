@@ -703,11 +703,11 @@ mod tests {
     #[test]
     fn every_named_sound_is_in_the_real_sound_event_registry() {
         let Some(paths) = crate::DataPaths::for_version("26.2") else {
-            eprintln!("SKIP: no config dir");
+            crate::skip_test!("no config dir");
             return;
         };
         if !paths.registries_json().exists() {
-            eprintln!("SKIP: no datagen report");
+            crate::skip_test!("no datagen report");
             return;
         }
         let registry =
@@ -726,11 +726,11 @@ mod tests {
     fn every_named_sound_resolves_to_a_file_through_sounds_json() {
         use crate::sounds_json::{load_from_asset_store, shared_assets_dir};
         let Some(root) = shared_assets_dir() else {
-            eprintln!("SKIP: no config dir");
+            crate::skip_test!("no config dir");
             return;
         };
         if !root.join("indexes/32.json").exists() {
-            eprintln!("SKIP: no asset store");
+            crate::skip_test!("no asset store");
             return;
         }
         let idx = load_from_asset_store(&root, "32").expect("load");

@@ -237,7 +237,7 @@ fn draw_handle(
         halo_r,
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(255.0 / 255.0, 230.0 / 255.0, 238.0 / 255.0, 0.55 * drag_boost),
+                Color4f::new(1.0, 230.0 / 255.0, 238.0 / 255.0, 0.55 * drag_boost),
                 Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.20 * drag_boost),
                 Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.0),
             ],
@@ -263,7 +263,7 @@ fn draw_handle(
         core_r * 1.6,
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(255.0 / 255.0, 240.0 / 255.0, 244.0 / 255.0, 1.0),
+                Color4f::new(1.0, 240.0 / 255.0, 244.0 / 255.0, 1.0),
                 Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 1.0),
                 Color4f::new(180.0 / 255.0, 116.0 / 255.0, 145.0 / 255.0, 1.0),
             ],

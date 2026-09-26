@@ -21,6 +21,9 @@
 //! - Face labels ([`Facing`]) are vanilla's model-space names: `Down` is the
 //!   minY plane, which is the **world-top** face after the y-flip.
 
+// Angles are vanilla's float literals (e.g. 0.3927F), transcribed exactly.
+#![allow(clippy::approx_constant)]
+
 /// Vanilla's `translate(0, -1.501, 0)` in model px (1.501 · 16).
 pub const MODEL_EYE_Y: f32 = 24.016;
 

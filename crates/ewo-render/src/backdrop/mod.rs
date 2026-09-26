@@ -52,6 +52,8 @@ const CACHE_REFRESH_HZ: f32 = 20.0;
 /// Cached render of the four slow backdrop layers, blitted every frame.
 struct SlowCache {
     image: Image,
+    /// `gl_backend::gpu_generation` the image was rendered under.
+    generation: u64,
     w: i32,
     h: i32,
     /// Wall-clock seconds at which `image` was rendered.
@@ -132,7 +134,7 @@ impl Backdrop {
         }
 
         let need_refresh = match self.slow_cache.borrow().as_ref() {
-            Some(c) if c.w == wi && c.h == hi => {
+            Some(c) if c.w == wi && c.h == hi && c.generation == crate::gl_backend::gpu_generation() => {
                 time - c.last_refresh >= 1.0 / CACHE_REFRESH_HZ
             }
             _ => true,
@@ -152,6 +154,7 @@ impl Backdrop {
                     let image = surface.image_snapshot();
                     *self.slow_cache.borrow_mut() = Some(SlowCache {
                         image,
+                        generation: crate::gl_backend::gpu_generation(),
                         w: wi,
                         h: hi,
                         last_refresh: time,

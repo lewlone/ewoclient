@@ -656,7 +656,7 @@ fn check_cloud_pixels(
     let placement = rewo_gpu::clouds::placement(EYE, 90.0, 0, 0.0, tex.width, tex.height);
     let faces = tex.build_mesh(placement.relative_pos, placement.cell_x, placement.cell_z, CloudStatus::Fancy, 8);
 
-    let mut shot = |gpu: &mut Gpu, off: &mut Offscreen, color: i32| -> Result<Vec<u8>, String> {
+    let shot = |gpu: &mut Gpu, off: &mut Offscreen, color: i32| -> Result<Vec<u8>, String> {
         let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
         wr.set_camera([EYE[0] as f32, EYE[1] as f32, EYE[2] as f32]);
         wr.set_sky_mode(SkyMode::None);
@@ -795,7 +795,7 @@ fn check_weather_pixels(
         [WEYE[0] as f32, WEYE[1] as f32, WEYE[2] as f32 - 1.0],
     );
 
-    let mut shot = |gpu: &mut Gpu,
+    let shot = |gpu: &mut Gpu,
                     off: &mut Offscreen,
                     rain: Vec<WeatherColumn>,
                     snow: Vec<WeatherColumn>,

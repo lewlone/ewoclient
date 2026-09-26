@@ -34,7 +34,7 @@ public final class EwoHudMod implements ClientModInitializer {
         Path dll = resolveNativeLibrary();
         if (dll == null) {
             System.err.println("[ewo-hud] could not locate ewo_jni.dll — HUD spike disabled. "
-                    + "Set -Dewo.hud.nativePath=<path> or build crates/ewo-jni.");
+                    + "Set -Dewo.jni.path=<path> or build crates/ewo-jni.");
             return;
         }
         try {
@@ -107,28 +107,74 @@ public final class EwoHudMod implements ClientModInitializer {
         killer.start();
     }
 
+    private static final String DLL_NAME = "ewo_jni.dll";
+
     /**
-     * Locate {@code ewo_jni.dll}: an explicit {@code -Dewo.hud.nativePath}
-     * override first, then the EwoClientV3 cargo build outputs.
+     * Locate {@code ewo_jni.dll}, in order:
+     * <ol>
+     *   <li>an explicit {@code -Dewo.jni.path} (or legacy {@code -Dewo.hud.nativePath});</li>
+     *   <li>a dll next to the mod jar, then in the game (instance) dir;</li>
+     *   <li>the EwoClientV3 cargo outputs — release before debug, except that a
+     *       debug build newer than the release build wins (the active dev loop).</li>
+     * </ol>
      */
     private static Path resolveNativeLibrary() {
-        String override = System.getProperty("ewo.hud.nativePath");
-        if (override != null && !override.isEmpty()) {
-            Path p = Paths.get(override);
-            if (Files.isRegularFile(p)) {
-                return p;
+        for (String prop : new String[] { "ewo.jni.path", "ewo.hud.nativePath" }) {
+            String override = System.getProperty(prop);
+            if (override != null && !override.isEmpty()) {
+                Path p = Paths.get(override);
+                if (Files.isRegularFile(p)) {
+                    return found(p, "-D" + prop);
+                }
+                System.err.println("[ewo-hud] " + prop + " set but no file there: " + p);
             }
-            System.err.println("[ewo-hud] ewo.hud.nativePath set but no file there: " + p);
+        }
+
+        try {
+            Path jar = Paths.get(EwoHudMod.class.getProtectionDomain().getCodeSource()
+                    .getLocation().toURI());
+            Path beside = (Files.isDirectory(jar) ? jar : jar.getParent()).resolve(DLL_NAME);
+            if (Files.isRegularFile(beside)) {
+                return found(beside, "beside the mod jar");
+            }
+        } catch (Exception ignored) {
+            // No usable code source (e.g. a dev classpath) — fall through.
+        }
+        Path gameDir = Paths.get(System.getProperty("user.dir", ".")).resolve(DLL_NAME);
+        if (Files.isRegularFile(gameDir)) {
+            return found(gameDir, "game dir");
         }
 
         Path target = Paths.get(System.getProperty("user.home", "."))
                 .resolve("Desktop").resolve("EwoClientV3").resolve("target");
-        for (String profile : new String[] { "debug", "release" }) {
-            Path p = target.resolve(profile).resolve("ewo_jni.dll");
-            if (Files.isRegularFile(p)) {
-                return p;
-            }
+        Path release = target.resolve("release").resolve(DLL_NAME);
+        Path debug = target.resolve("debug").resolve(DLL_NAME);
+        boolean hasRelease = Files.isRegularFile(release);
+        boolean hasDebug = Files.isRegularFile(debug);
+        if (hasRelease && hasDebug) {
+            return mtime(debug) > mtime(release)
+                    ? found(debug, "cargo debug (newer than release)")
+                    : found(release, "cargo release");
+        }
+        if (hasRelease) {
+            return found(release, "cargo release");
+        }
+        if (hasDebug) {
+            return found(debug, "cargo debug");
         }
         return null;
+    }
+
+    private static Path found(Path p, String how) {
+        System.err.println("[ewo-hud] using " + DLL_NAME + " from " + how + ": " + p);
+        return p;
+    }
+
+    private static long mtime(Path p) {
+        try {
+            return Files.getLastModifiedTime(p).toMillis();
+        } catch (Exception e) {
+            return 0L;
+        }
     }
 }

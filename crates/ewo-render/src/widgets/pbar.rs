@@ -259,11 +259,11 @@ fn draw_flow(
         ),
         gradient_shader::GradientShaderColors::ColorsInSpace(
             &[
-                Color4f::new(255.0 / 255.0, 240.0 / 255.0, 244.0 / 255.0, 0.0),
-                Color4f::new(255.0 / 255.0, 240.0 / 255.0, 244.0 / 255.0, 0.35 * opacity),
-                Color4f::new(255.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0, 0.55 * opacity),
-                Color4f::new(255.0 / 255.0, 240.0 / 255.0, 244.0 / 255.0, 0.35 * opacity),
-                Color4f::new(255.0 / 255.0, 240.0 / 255.0, 244.0 / 255.0, 0.0),
+                Color4f::new(1.0, 240.0 / 255.0, 244.0 / 255.0, 0.0),
+                Color4f::new(1.0, 240.0 / 255.0, 244.0 / 255.0, 0.35 * opacity),
+                Color4f::new(1.0, 1.0, 1.0, 0.55 * opacity),
+                Color4f::new(1.0, 240.0 / 255.0, 244.0 / 255.0, 0.35 * opacity),
+                Color4f::new(1.0, 240.0 / 255.0, 244.0 / 255.0, 0.0),
             ],
             None,
         ),
@@ -305,7 +305,7 @@ fn draw_bloom(canvas: &Canvas, rect: &Rect, state: PbarState) {
         )
     } else {
         (
-            Color4f::new(255.0 / 255.0, 230.0 / 255.0, 238.0 / 255.0, 0.9 * bloom_alpha),
+            Color4f::new(1.0, 230.0 / 255.0, 238.0 / 255.0, 0.9 * bloom_alpha),
             Color4f::new(229.0 / 255.0, 184.0 / 255.0, 197.0 / 255.0, 0.4 * bloom_alpha),
         )
     };
@@ -409,7 +409,7 @@ fn draw_error_shimmer(
 /// fill, 1.4s silk easing, diameter 4px → 320px, opacity 0.9 → 0.0,
 /// border 2px → 1px.
 fn draw_complete_ring(canvas: &Canvas, fill_rect: &Rect, age: f32) {
-    if age < 0.0 || age > RING_DURATION {
+    if !(0.0..=RING_DURATION).contains(&age) {
         return;
     }
     let t = age / RING_DURATION;

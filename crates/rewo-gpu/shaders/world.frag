@@ -1,6 +1,4 @@
 #version 450
-#extension GL_GOOGLE_include_directive : require
-#include "lightmap.glsl"
 // Sample the block texture array (SRGB image → linear values), apply the
 // baked face shade, then fade toward the fog color with distance so the
 // world melts into the sky at the render-distance edge (fog color = sky
@@ -37,14 +35,13 @@ layout(location = 3) in vec3 v_worldpos;
 layout(location = 0) out vec4 out_color;
 
 void main() {
-    // The low 16 bits are the texture layer; the upper bits carry the two
-    // light levels (`rewo_mesh::pack_layer`).
-    vec4 c = texture(u_tex, vec3(v_uv, float(v_layer & 0xFFFFu)));
+    vec4 c = texture(u_tex, vec3(v_uv, float(v_layer)));
     if (c.a < 0.5) {
         discard;
     }
-    vec3 lm = lm_light(v_layer, pc.light, pc.sky_col, lmx.ambient.rgb);
-    vec3 rgb = c.rgb * v_color * lm;
+    // `v_color` is vanilla's `vertexColor`: the vertex color times the
+    // lightmap, sampled per vertex in world.vert.
+    vec3 rgb = c.rgb * v_color;
     float dist = distance(pc.cam_fog.xyz, v_worldpos);
     // `total_fog_value` — the MAX of the render-distance band (the push
     // block's, which dissolves the chunk edge into the sky) and the

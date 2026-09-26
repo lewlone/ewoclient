@@ -59,6 +59,76 @@ pub struct Quad {
     pub tint: TintSource,
     /// Apply directional face shading (false for plants/torches).
     pub shade: bool,
+    /// The face's material is `ChunkSectionLayer.TRANSLUCENT` — its sprite
+    /// has a partially transparent pixel under the face's UV rect, or the
+    /// model forces it (`force_translucent`). Such quads draw in the blended
+    /// pass rather than the alpha-tested one.
+    pub translucent: bool,
+}
+
+/// Per-state face-culling facts the mesher needs beyond [`RenderKind`].
+///
+/// Faces are in the mesher/asset order `[up, down, north, south, west, east]`
+/// (see [`FACE_NAMES`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CullInfo {
+    /// Faces whose `getFaceOcclusionShape` is `Shapes.block()` — i.e. the
+    /// state `canOcclude()` and its shape covers that whole face. A neighbour
+    /// face against one of these is never drawn (`Block.shouldRenderFace`).
+    pub occludes: u8,
+    /// `Block.skipRendering` rule: 0 none, 1 a same-block neighbour
+    /// (`HalfTransparentBlock`, `PowderSnowBlock`), 2 `IronBarsBlock`'s
+    /// connected rule, 3 a same-block neighbour on the Y axis only
+    /// (`MangroveRootsBlock`). See `crate::block_props::SKIP_RENDERING`.
+    pub skip: u8,
+    /// The block (not state) this state belongs to — the `neighbor.is(this)`
+    /// test. A per-bake ordinal.
+    pub block: u16,
+    /// Pane / bars horizontal connections (`north`/`south`/`west`/`east`
+    /// properties), as face bits.
+    pub connect: u8,
+    /// Member of `#minecraft:bars`.
+    pub bars: bool,
+    /// A `RenderKind::Cube` whose faces sample a translucent material.
+    pub translucent: bool,
+    /// `isCollisionShapeFullBlock` — the shape term of the ambient-occlusion
+    /// rules below, and what the mesher's smooth lighting treats as an
+    /// occluding neighbour. `BlockBehaviour.getShadeBrightness` defaults to
+    /// 0.2 for these and 1.0 otherwise, but see [`Self::shade_dark`] for the
+    /// class overrides.
+    pub ao_occluder: bool,
+    /// `BlockState.isViewBlocking(level, pos)` — does this state block the
+    /// view through it (vanilla's smooth lighting skips the face shading of
+    /// a neighbour behind one).
+    ///
+    /// The default predicate is the one `BlockBehaviour.Properties` builds
+    /// `isSuffocating` with — `blocksMotion() && isCollisionShapeFullBlock`
+    /// — and the `isViewBlocking` field initializer captures that same
+    /// lambda, so a later `.isSuffocating(...)` override does NOT change it
+    /// (every real `.isSuffocating` site in `Blocks.java` is paired with an
+    /// identical `.isViewBlocking`). Per-block and per-state overrides live
+    /// in `crate::ao_facts_table::VIEW_BLOCKING` / `VIEW_BLOCKING_STATE`.
+    pub view_blocking: bool,
+    /// `BlockBehaviour.getShadeBrightness(level, pos) == 0.2F` (the other
+    /// value vanilla returns is 1.0F). Default
+    /// `isCollisionShapeFullBlock ? 0.2F : 1.0F` — i.e. [`Self::ao_occluder`]
+    /// — with class overrides (barrier/light/structure_void/glass family →
+    /// 1.0F, mud/soul_sand → 0.2F, snow layer → `layers == 8`) in
+    /// `crate::ao_facts_table::SHADE` / `SHADE_STATE`.
+    pub shade_dark: bool,
+    /// `BlockState.emissiveRendering()` — vanilla shades this state's model
+    /// quads as if fully lit (magma; an ACTIVE sculk sensor).
+    /// `Blocks.java` has exactly two call sites; everyone else keeps the
+    /// `BlockBehaviour.Properties` default `var0 -> false`.
+    pub emissive_rendering: bool,
+    /// `BlockStateModelPart.useAmbientOcclusion()` of the FIRST model part
+    /// the state resolves to — `ModelBlockRenderer.tesselateBlock` gates on
+    /// `this.parts.getFirst().useAmbientOcclusion()`, not on a per-part or
+    /// per-face value. That is the block model's `"ambientocclusion"` key,
+    /// default true and inherited through `parent`. A state with no model
+    /// part (a fluid, an invisible block) has nothing to shade and keeps
+    /// vanilla's `ModelBlockRenderer.ambientOcclusion` default `true`.
+    pub ambient_occlusion: bool,
 }
 
 /// Per-state render classification, indexed by global state id.
@@ -212,6 +282,131 @@ pub const FALLING_WATERLOGGED: &[&str] = &[
     "minecraft:waxed_weathered_copper_grate",
     "minecraft:waxed_oxidized_copper_grate",
 ];
+
+/// Evaluate one `(property, operator, value)` rule from `crate::ao_facts_table`
+/// against a state's `blocks.json` property map.
+///
+/// `==` is a string comparison (the form `blocks.json` stores properties in);
+/// `>=` is numeric (snow's `LAYERS >= 8`). Those are the only two operators
+/// `tools/gen_ao_facts.py` emits, so anything else is a table bug and panics.
+/// A property the state does not declare fails the comparison, matching a
+/// `getValue` on a property the state cannot hold.
+fn fact_holds(
+    props: Option<&serde_json::Map<String, serde_json::Value>>,
+    property: &str,
+    op: &str,
+    value: &str,
+) -> bool {
+    let Some(v) = props.and_then(|p| p.get(property)).and_then(|v| v.as_str()) else {
+        return false;
+    };
+    match op {
+        "==" => v == value,
+        ">=" => match (v.parse::<f64>(), value.parse::<f64>()) {
+            (Ok(have), Ok(want)) => have >= want,
+            _ => false,
+        },
+        other => unreachable!("ao_facts_table: unknown operator {other:?}"),
+    }
+}
+
+/// `BlockStateBase.blocksMotion()` — `block != COBWEB && block !=
+/// BAMBOO_SAPLING && isSolid()`. Only consulted for a state whose collision
+/// shape is a full block, where `isSolid()`'s shape heuristic is already
+/// satisfied and [`is_solid`] reduces to the three `Properties` flags.
+fn blocks_motion(block: &str) -> bool {
+    !crate::ao_facts_table::BLOCKS_MOTION_EXCLUDED.contains(&block) && is_solid(block)
+}
+
+/// `BlockStateBase.isSolid()` / `calculateSolid()` for a state whose collision
+/// shape is a full block.
+///
+/// `calculateSolid()` is `forceSolidOn` → true, `forceSolidOff` → false, a
+/// `dynamicShape` cache miss → false, else `bounds.getSize() >= 0.729…`
+/// (`getSize` is the **mean** extent, so a full block passes trivially). For
+/// the full-shape states this is used for, only the three `Properties` flags
+/// decide — which is exactly what `crate::ao_facts_table` lists.
+fn is_solid(block: &str) -> bool {
+    if crate::ao_facts_table::FORCE_SOLID_ON.contains(&block) {
+        return true;
+    }
+    if crate::ao_facts_table::FORCE_SOLID_OFF.contains(&block) {
+        return false;
+    }
+    // `dynamicShape()` skips the shape cache, and a null cache reads false.
+    !crate::ao_facts_table::DYNAMIC_SHAPE.contains(&block)
+}
+
+/// `BlockState.isViewBlocking(level, pos)` — [`CullInfo::view_blocking`].
+///
+/// `block` is the full registry name, `ao_occluder` the state's
+/// `isCollisionShapeFullBlock`. The default predicate is the one
+/// `BlockBehaviour.Properties` starts `isSuffocating` with —
+/// `blocksMotion() && isCollisionShapeFullBlock` — because the
+/// `isViewBlocking` field initializer captures that same lambda object: a
+/// later `.isSuffocating(...)` override does not reach it.
+fn is_view_blocking(
+    block: &str,
+    props: Option<&serde_json::Map<String, serde_json::Value>>,
+    ao_occluder: bool,
+) -> bool {
+    for (b, kind) in crate::ao_facts_table::VIEW_BLOCKING {
+        if *b == block {
+            // 1 `Blocks::always`, 2 `Blocks::never`, 3 the shulker boxes'
+            // `NOT_CLOSED_SHULKER` block-entity lid predicate, approximated
+            // as "closed" (true) — see the generated header.
+            return *kind != 2;
+        }
+    }
+    for (b, property, op, value) in crate::ao_facts_table::VIEW_BLOCKING_STATE {
+        if *b == block {
+            return fact_holds(props, property, op, value);
+        }
+    }
+    ao_occluder && blocks_motion(block)
+}
+
+/// `BlockBehaviour.getShadeBrightness(level, pos) == 0.2F` —
+/// [`CullInfo::shade_dark`].
+fn shade_dark(
+    block: &str,
+    props: Option<&serde_json::Map<String, serde_json::Value>>,
+    ao_occluder: bool,
+) -> bool {
+    for (b, dark) in crate::ao_facts_table::SHADE {
+        if *b == block {
+            return *dark == 1;
+        }
+    }
+    for (b, property, op, value) in crate::ao_facts_table::SHADE_STATE {
+        if *b == block {
+            return fact_holds(props, property, op, value);
+        }
+    }
+    // The default is `isCollisionShapeFullBlock ? 0.2F : 1.0F`.
+    ao_occluder
+}
+
+/// `BlockState.emissiveRendering()` — [`CullInfo::emissive_rendering`].
+///
+/// `Blocks.java` sets it twice: magma's `var0 -> true`, and the sculk
+/// sensors' phase predicate (which `ofLegacyCopy` also hands to
+/// `calibrated_sculk_sensor`). Everyone else keeps `Properties`' default
+/// `var0 -> false`.
+fn emissive_rendering(
+    block: &str,
+    props: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> bool {
+    if crate::ao_facts_table::EMISSIVE_ALWAYS.contains(&block) {
+        return true;
+    }
+    for (b, property, op, value) in crate::ao_facts_table::EMISSIVE_STATE {
+        if *b == block {
+            return fact_holds(props, property, op, value);
+        }
+    }
+    false
+}
 
 /// Which biome color a face's `tintindex` layer draws — the metadata the M14
 /// dynamic-tint mesh path reads (a faithful transcription of the decompiled
@@ -415,6 +610,10 @@ pub struct BakedAssets {
     /// `model_collision`) — slabs, stairs, fences, … — so a player can stand
     /// on a slab and can't walk through a fence.
     pub collide: Vec<Vec<[f32; 6]>>,
+    /// Per-state face-culling facts for the mesher (see [`CullInfo`]).
+    pub cull: Vec<CullInfo>,
+    /// Per-state movement behaviour for the player physics.
+    pub physics: Vec<crate::block_physics::BlockPhysics>,
     /// Per-state light emission 0..15 (`torch` = 14, `glowstone` = 15).
     /// Extracted from the decompile by `tools/gen_block_light.py`; see
     /// [`crate::block_light`].
@@ -1292,6 +1491,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         animations: Vec::new(),
         grass_tint,
         foliage_tint,
+        forced_layers: std::collections::HashSet::new(),
     };
 
     let mut render = vec![RenderKind::Invisible; max_id + 1];
@@ -1299,6 +1499,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     let mut water = vec![false; max_id + 1];
     let mut bubble_column_drag: Vec<Option<bool>> = vec![None; max_id + 1];
     let mut collide: Vec<Vec<[f32; 6]>> = vec![Vec::new(); max_id + 1];
+    let mut cull = vec![CullInfo::default(); max_id + 1];
+    let mut physics = vec![crate::block_physics::BlockPhysics::AIR; max_id + 1];
     let mut emission = vec![0u8; max_id + 1];
     let mut dampening = vec![0u8; max_id + 1];
     let mut face_occludes = vec![0u8; max_id + 1];
@@ -1330,12 +1532,79 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             .map(|&(b, gate, gv, vp, map)| (b, (gate, gv, vp, map)))
             .collect();
 
-    for (block_name, def) in blocks {
+    let constant_collision: HashMap<&str, &[[f32; 6]]> =
+        crate::collision_table::COLLISION.iter().copied().collect();
+    let no_collision: std::collections::HashSet<&str> =
+        crate::collision_table::NO_COLLISION.iter().copied().collect();
+    let skip_rules: HashMap<&str, u8> =
+        crate::block_props::SKIP_RENDERING.iter().copied().collect();
+    for (block_ord, (block_name, def)) in blocks.iter().enumerate() {
         let states = def
             .get("states")
             .and_then(|s| s.as_array())
             .ok_or_else(|| format!("blocks.json: {block_name} has no states"))?;
         let short = block_name.strip_prefix("minecraft:").unwrap_or(block_name);
+        // Culling identity + movement behaviour: shape-independent, so filled
+        // for every state before any branch below can `continue`.
+        let skip = skip_rules.get(block_name.as_str()).copied().unwrap_or(0);
+        let bars = crate::block_props::BARS_TAG.contains(&block_name.as_str());
+        let water_block = matches!(short, "water" | "bubble_column");
+        for state in states {
+            let Some(id) = state.get("id").and_then(|i| i.as_u64()) else {
+                continue;
+            };
+            let props = state.get("properties").and_then(|p| p.as_object());
+            let on = |k: &str| props.and_then(|p| p.get(k)).and_then(|v| v.as_str()) == Some("true");
+            let mut connect = 0u8;
+            if skip == 2 {
+                // Mesher face order: north 2, south 3, west 4, east 5.
+                for (bit, k) in [(2, "north"), (3, "south"), (4, "west"), (5, "east")] {
+                    if on(k) {
+                        connect |= 1 << bit;
+                    }
+                }
+            }
+            cull[id as usize] = CullInfo {
+                occludes: 0,
+                skip,
+                block: block_ord as u16,
+                connect,
+                bars,
+                translucent: false,
+                ao_occluder: false,
+                // The four smooth-lighting facts need the state's collision
+                // shape and models, so the second pass overwrites them. A
+                // fluid `continue`s before that pass and keeps these values,
+                // which are right for it: not view-blocking, shades like a
+                // non-occluder, never emissive, and `ambient_occlusion` is
+                // vanilla's `ModelBlockRenderer` default `true` (no model
+                // part, nothing to shade).
+                view_blocking: false,
+                shade_dark: false,
+                emissive_rendering: false,
+                ambient_occlusion: true,
+            };
+            let mut phys = crate::block_physics::BlockPhysics::resolve(block_name, props, water_block);
+            if short == "water" || short == "lava" {
+                let level = props
+                    .and_then(|p| p.get("level"))
+                    .and_then(|l| l.as_str())
+                    .and_then(|l| l.parse::<u8>().ok())
+                    .unwrap_or(0);
+                let own_height = crate::block_physics::fluid_own_height(level);
+                phys.fluid = if short == "lava" {
+                    crate::block_physics::PhysFluid::Lava { own_height }
+                } else {
+                    crate::block_physics::PhysFluid::Water { own_height }
+                };
+            } else if carried_water(block_name.as_str(), on("waterlogged")).is_some() {
+                // Every carried fluid is a source (`getOwnHeight` 8/9).
+                phys.fluid = crate::block_physics::PhysFluid::Water {
+                    own_height: crate::block_physics::fluid_own_height(0),
+                };
+            }
+            physics[id as usize] = phys;
+        }
         // Fluids have no usable blockstate models (vanilla hardcodes their
         // renderer) — classify by name, keyed on the `level` property.
         if short == "water" || short == "lava" {
@@ -1422,18 +1691,50 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             // Collision shape: a solid state is the unit cube; otherwise a
             // curated family may collide with its model geometry. Everything
             // else stays empty (today's behaviour).
-            collide[id as usize] = if solid[id as usize] {
+            // The outline the light and culling tables read: a full cube, or
+            // a curated family's model geometry (fences stretched to 1.5).
+            let shape_boxes = if solid[id as usize] {
                 vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
             } else if let (Some(tall), Some(bs)) = (model_collision(short), bs.as_ref()) {
                 let refs = baker.state_refs(bs, props);
-                let boxes = baker.collision_boxes(&refs, tall);
-                if !boxes.is_empty() {
-                    stats.shaped_collision_states += 1;
-                }
-                boxes
+                baker.collision_boxes(&refs, tall)
             } else {
                 Vec::new()
             };
+            // Collision: the block class's own shape where the decompile gives
+            // it (`crate::collision_table`), a few state-dependent classes
+            // transcribed in `special_collision`, else the outline above, else
+            // the model's geometry for a colliding block with none.
+            collide[id as usize] = if let Some(b) = special_collision(short, props) {
+                b
+            } else if let Some(b) = constant_collision.get(block_name.as_str()) {
+                b.to_vec()
+            } else if no_collision.contains(block_name.as_str()) {
+                Vec::new()
+            } else if !shape_boxes.is_empty() {
+                shape_boxes.clone()
+            } else if let Some(bs) = bs.as_ref() {
+                let refs = baker.state_refs(bs, props);
+                baker.collision_boxes(&refs, false)
+            } else {
+                Vec::new()
+            };
+            cull[id as usize].ao_occluder = collide[id as usize] == [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+            // The three `BlockBehaviour` facts the mesher's vanilla smooth
+            // lighting asks per state, plus the model's ambient occlusion
+            // (the FIRST model part's `useAmbientOcclusion()`).
+            let ao_occluder = cull[id as usize].ao_occluder;
+            cull[id as usize].view_blocking =
+                is_view_blocking(block_name.as_str(), props, ao_occluder);
+            cull[id as usize].shade_dark = shade_dark(block_name.as_str(), props, ao_occluder);
+            cull[id as usize].emissive_rendering =
+                emissive_rendering(block_name.as_str(), props);
+            cull[id as usize].ambient_occlusion = bs
+                .as_ref()
+                .is_none_or(|bs| baker.first_model_ambient_occlusion(bs, props));
+            if !collide[id as usize].is_empty() && !solid[id as usize] {
+                stats.shaped_collision_states += 1;
+            }
 
             // Light. Vanilla's rule (BlockBehaviour.getLightDampening) is
             //     isSolidRender ? 15 : propagatesSkylightDown ? 0 : 1
@@ -1468,8 +1769,15 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             // leaves out of that list essentially never covers a whole face
             // (a fence post is 6/16 wide), so a false positive is inert.
             if !full_cube && !no_occlude.contains(block_name.as_str()) {
-                face_occludes[id as usize] = face_coverage(&collide[id as usize]);
+                face_occludes[id as usize] = face_coverage(&shape_boxes);
             }
+            // `getFaceOcclusionShape`: `canOcclude ? getShape : empty`. A full
+            // shape covers all six faces; a partial one the faces it spans.
+            cull[id as usize].occludes = if full_cube && !no_occlude.contains(block_name.as_str()) {
+                0b11_1111
+            } else {
+                faces_to_mesher_order(face_occludes[id as usize])
+            };
             // M164 — the water this state CARRIES (see `BakedAssets::fluid`).
             // Two disjoint families: the `waterlogged=true` states, and the five
             // blocks whose override is unconditional.
@@ -1539,6 +1847,24 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             || matches!(render[id], RenderKind::Fluid { lava: false, .. });
     }
 
+    // Translucency, now that every layer exists and every forced reference
+    // has been seen.
+    const FULL_UV: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    for quads in &mut models {
+        for q in quads.iter_mut() {
+            q.translucent = baker.forced_layers.contains(&q.layer)
+                || layer_has_translucent(&baker.layers, &baker.animations, q.layer, q.uv);
+        }
+    }
+    for (id, kind) in render.iter().enumerate() {
+        if let RenderKind::Cube { faces, .. } = kind {
+            cull[id].translucent = faces.iter().any(|&l| {
+                baker.forced_layers.contains(&l)
+                    || layer_has_translucent(&baker.layers, &baker.animations, l, FULL_UV)
+            });
+        }
+    }
+
     // M22: held items, after every block layer exists (block items copy them).
     let held_items = baker.bake_held_items(&trims);
 
@@ -1571,6 +1897,8 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         fluid,
         bubble_column_drag,
         collide,
+        cull,
+        physics,
         emission,
         dampening,
         face_occludes,
@@ -1681,7 +2009,7 @@ fn bake_particle_sprites(jar: Jar) -> Option<ParticleSprites> {
 /// ratios are accepted — a non-divisor would need filtering, and silently
 /// blurring a particle sprite is worse than not drawing it.
 fn upscale_to_tex_size(rgba: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
-    if w == 0 || h == 0 || TEX_SIZE % w != 0 || TEX_SIZE % h != 0 {
+    if w == 0 || h == 0 || !TEX_SIZE.is_multiple_of(w) || !TEX_SIZE.is_multiple_of(h) {
         return None;
     }
     if rgba.len() < (w * h * 4) as usize {
@@ -2921,7 +3249,8 @@ fn bake_font(jar: Jar) -> Option<BakedFont> {
     // Patch one opaque-white texel into the space glyph's cell (guaranteed
     // blank — and text layout never emits quads for spaces, so it can't
     // show). Solid quads (nametag backgrounds, capsules) sample it.
-    let (wx, wy) = ((32 % 16) * cell, (32 / 16) * cell);
+    let space = u32::from(b' ');
+    let (wx, wy) = ((space % 16) * cell, (space / 16) * cell);
     let wi = ((wy as usize) * px + wx as usize) * 4;
     atlas[wi..wi + 4].copy_from_slice(&[255, 255, 255, 255]);
 
@@ -3003,12 +3332,16 @@ struct Baker<'a> {
     animations: Vec<AnimatedLayer>,
     grass_tint: [u8; 3],
     foliage_tint: [u8; 3],
+    /// Layers some model referenced through a `force_translucent` texture.
+    forced_layers: std::collections::HashSet<u16>,
 }
 
 /// A model with its parent chain flattened: merged textures + all elements.
 #[derive(Clone)]
 struct ResolvedModel {
     textures: HashMap<String, String>,
+    /// Texture variables defined as `{sprite, force_translucent: true}`.
+    forced: std::collections::HashSet<String>,
     elements: Vec<serde_json::Value>,
     ambient_occlusion: bool,
 }
@@ -3113,6 +3446,28 @@ impl<'a> Baker<'a> {
         }
     }
 
+    /// `BlockStateModelPart.useAmbientOcclusion()` of the FIRST model part a
+    /// state resolves to.
+    ///
+    /// `ModelBlockRenderer.tesselateBlock` gates on
+    /// `this.parts.getFirst().useAmbientOcclusion()`, so one part decides for
+    /// the whole state — here, the first of [`Self::state_refs`]'s refs in
+    /// blockstate file order (the same "first" the cube fast-path reads). The
+    /// value is the model's `"ambientocclusion"` key, default true and
+    /// inherited through `parent`, exactly as `ResolvedModel` flattens it.
+    /// No resolvable model → `true`, vanilla's `ModelBlockRenderer` default.
+    fn first_model_ambient_occlusion(
+        &mut self,
+        bs: &BlockState,
+        props: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> bool {
+        let Some(first) = self.state_refs(bs, props).into_iter().next() else {
+            return true;
+        };
+        self.resolve_model(&first.model)
+            .is_none_or(|m| m.ambient_occlusion)
+    }
+
     /// Collision boxes for one state, in block-local `0..1`, taken from the
     /// referenced models' elements and rotated by each ref's blockstate
     /// rotation (stairs/fences pick a rotated model per facing, so the shape
@@ -3185,6 +3540,10 @@ impl<'a> Baker<'a> {
             let tex_name = resolve_texture_var(tex, &resolved.textures)?;
             layers[i] = self.layer_for(&tex_name, foliage_of(&tex_name, tint.foliage))?;
             raw_layers[i] = self.layer_for(&tex_name, TintKind::None)?;
+            if texture_var_forced(tex, &resolved.textures, &resolved.forced) {
+                self.forced_layers.insert(layers[i]);
+                self.forced_layers.insert(raw_layers[i]);
+            }
             tints[i] = resolve_tint_source(tint.layers, tintindex_of(face), tint.upper_half);
         }
         Some(RenderKind::Cube {
@@ -3198,9 +3557,16 @@ impl<'a> Baker<'a> {
         let Some(resolved) = self.resolve_model(&r.model) else {
             return;
         };
-        let shade_default = resolved.ambient_occlusion; // proxy; real shade is per-element
         for el in &resolved.elements {
-            self.element_quads(el, &resolved.textures, r.x, r.y, tint, shade_default, out);
+            self.element_quads(
+                el,
+                &resolved.textures,
+                &resolved.forced,
+                r.x,
+                r.y,
+                tint,
+                out,
+            );
         }
     }
 
@@ -3209,10 +3575,10 @@ impl<'a> Baker<'a> {
         &mut self,
         el: &serde_json::Value,
         textures: &HashMap<String, String>,
+        forced: &std::collections::HashSet<String>,
         rot_x: i32,
         rot_y: i32,
         tint: TintInfo,
-        _shade_default: bool,
         out: &mut Vec<Quad>,
     ) {
         let (Some(from), Some(to)) = (box_coords(el, "from"), box_coords(el, "to")) else {
@@ -3239,6 +3605,10 @@ impl<'a> Baker<'a> {
             let Some(raw_layer) = self.layer_for(&tex_name, TintKind::None) else {
                 continue;
             };
+            if texture_var_forced(tex, textures, forced) {
+                self.forced_layers.insert(layer);
+                self.forced_layers.insert(raw_layer);
+            }
             let tint_src = resolve_tint_source(tint.layers, tintindex_of(face), tint.upper_half);
             let has_cull = face.get("cullface").is_some();
 
@@ -3279,6 +3649,8 @@ impl<'a> Baker<'a> {
                 dir,
                 tint: tint_src,
                 shade,
+                // Resolved after the bake, once every forced layer is known.
+                translucent: false,
             });
         }
     }
@@ -3651,12 +4023,14 @@ impl<'a> Baker<'a> {
                 if parent.contains("builtin/") {
                     ResolvedModel {
                         textures: HashMap::new(),
+                        forced: Default::default(),
                         elements: Vec::new(),
                         ambient_occlusion: true,
                     }
                 } else {
                     self.resolve_model(parent).unwrap_or(ResolvedModel {
                         textures: HashMap::new(),
+                        forced: Default::default(),
                         elements: Vec::new(),
                         ambient_occlusion: true,
                     })
@@ -3664,6 +4038,7 @@ impl<'a> Baker<'a> {
             }
             None => ResolvedModel {
                 textures: HashMap::new(),
+                forced: Default::default(),
                 elements: Vec::new(),
                 ambient_occlusion: true,
             },
@@ -3682,6 +4057,17 @@ impl<'a> Baker<'a> {
                 });
                 if let Some(name) = name {
                     out.textures.insert(var.clone(), name);
+                    // A child redefining a variable replaces the parent's
+                    // flag along with its sprite.
+                    let forced = value
+                        .get("force_translucent")
+                        .and_then(|f| f.as_bool())
+                        .unwrap_or(false);
+                    if forced {
+                        out.forced.insert(var.clone());
+                    } else {
+                        out.forced.remove(var);
+                    }
                 }
             }
         }
@@ -4126,6 +4512,27 @@ fn when_matches(
 
 // -- textures ----------------------------------------------------------------
 
+/// Whether a texture reference reaches its sprite through a variable that
+/// the model defined with `force_translucent: true`.
+fn texture_var_forced<'a>(
+    mut tex_ref: &'a str,
+    textures: &'a HashMap<String, String>,
+    forced: &std::collections::HashSet<String>,
+) -> bool {
+    let mut last = false;
+    for _ in 0..8 {
+        let Some(var) = tex_ref.strip_prefix('#') else {
+            return last;
+        };
+        last = forced.contains(var);
+        match textures.get(var) {
+            Some(t) => tex_ref = t,
+            None => return false,
+        }
+    }
+    false
+}
+
 fn resolve_texture_var<'a>(
     mut tex_ref: &'a str,
     textures: &'a HashMap<String, String>,
@@ -4257,6 +4664,386 @@ fn tint_rgb(rgba: &mut [u8], color: [u8; 3]) {
             px[c] = ((px[c] as u16 * color[c] as u16) / 255) as u8;
         }
     }
+}
+
+/// Rotate a block-local `0..1` box by a blockstate rotation (multiples of 90°
+/// about X then Y, vanilla's `x`/`y` model fields). Axis-aligned boxes stay
+/// axis-aligned at right angles, so this is a corner swap, not a real rotation.
+fn rotate_box(b: [f32; 6], x_deg: i32, y_deg: i32) -> [f32; 6] {
+    let mut lo = [b[0], b[1], b[2]];
+    let mut hi = [b[3], b[4], b[5]];
+    let steps = |d: i32| d.rem_euclid(360) / 90;
+    for _ in 0..steps(x_deg) {
+        // x rotation: y -> z, z -> -y (about the block centre)
+        let (l, h) = (lo, hi);
+        lo[1] = 1.0 - h[2];
+        hi[1] = 1.0 - l[2];
+        lo[2] = l[1];
+        hi[2] = h[1];
+    }
+    for _ in 0..steps(y_deg) {
+        // y rotation: x -> z, z -> -x
+        let (l, h) = (lo, hi);
+        lo[0] = 1.0 - h[2];
+        hi[0] = 1.0 - l[2];
+        lo[2] = l[0];
+        hi[2] = h[0];
+    }
+    [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]]
+}
+
+/// Whether a non-full-cube block should collide using its *model* geometry,
+/// and whether that shape is fence-tall.
+///
+/// Vanilla stores collision shapes in Java code, not in any datagen report, so
+/// there is no ground-truth table to generate from (unlike the entity
+/// hierarchies in `rewo-gpu::vanilla_hier`). Deriving shapes for *every* block
+/// would be wrong in the obvious direction — torches, plants, rails and
+/// redstone all have models but no collision, so the player would bump into
+/// flowers. This list is therefore deliberately conservative: it names only
+/// families whose model matches vanilla's collision closely, and everything
+/// outside it keeps the previous behaviour (a full cube when `solid`, else
+/// nothing). It can only ever *add* collision where we're confident.
+fn model_collision(short: &str) -> Option<bool> {
+    // Fence-likes: vanilla collides them 1.5 blocks tall so they can't be
+    // jumped. Checked before `_fence` since `_fence_gate` also ends in `_gate`.
+    if short.ends_with("_fence") || short == "fence" || short.ends_with("_fence_gate")
+        || short.ends_with("_wall") || short == "wall"
+    {
+        return Some(true);
+    }
+    // `_trapdoor` must precede `_door` — it also ends with "door".
+    let model_shaped = short.ends_with("_slab")
+        || short.ends_with("_stairs")
+        || short.ends_with("_trapdoor")
+        || short.ends_with("_door")
+        || short.ends_with("_carpet")
+        || short == "snow"
+        || short.ends_with("_bed")
+        || short.ends_with("chest")
+        || short.ends_with("_shulker_box")
+        || short == "shulker_box"
+        || short.ends_with("cauldron")
+        || short.ends_with("anvil")
+        || short == "hopper"
+        || short == "composter"
+        || short == "stonecutter"
+        || short == "enchanting_table"
+        || short == "end_portal_frame"
+        || short == "daylight_detector"
+        || short == "grindstone"
+        || short == "lectern"
+        || short == "cake"
+        // The rest of vanilla's `useShapeForLightOcclusion` set. These carry
+        // real collision shapes too, but they earn their place here because
+        // light occlusion is computed from these boxes: a block with no boxes
+        // has no occluding faces, so farmland would let light fall straight
+        // through it where vanilla stops it at the full bottom face.
+        || short == "farmland"
+        || short == "dirt_path"
+        || short == "sculk_sensor"
+        || short == "sculk_shrieker"
+        || short == "shelf"
+        || short == "piston"
+        || short == "sticky_piston"
+        || short == "piston_head";
+    model_shaped.then_some(false)
+}
+
+/// Neighbour offsets matching the bit order of [`BakedAssets::face_occludes`]
+/// and the light engine's neighbour loop: −X, +X, −Y, +Y, −Z, +Z.
+pub const FACE_DIRS: [(i32, i32, i32); 6] = [
+    (-1, 0, 0),
+    (1, 0, 0),
+    (0, -1, 0),
+    (0, 1, 0),
+    (0, 0, -1),
+    (0, 0, 1),
+];
+
+/// Which of the six faces this box list fully covers.
+///
+/// Vanilla compares real `VoxelShape`s; every vanilla block shape lies on
+/// 1/16 boundaries, so rasterising each face at 16×16 and asking whether every
+/// cell is covered gives the same answer for the shapes that matter, without
+/// carrying a shape algebra. Boxes are block-local `0..1`.
+/// Rotate block-local boxes given for a NORTH-facing variant to `facing`
+/// (`Shapes.rotateHorizontal`: Y rotations about the block centre).
+fn rotate_horizontal(boxes: &[[f32; 6]], facing: &str) -> Vec<[f32; 6]> {
+    boxes
+        .iter()
+        .map(|b| {
+            let (x0, z0, x1, z1) = (b[0], b[2], b[3], b[5]);
+            let (a, c, d, e) = match facing {
+                // (x, z) -> (1 - z, x)
+                "east" => (1.0 - z1, x0, 1.0 - z0, x1),
+                "south" => (1.0 - x1, 1.0 - z1, 1.0 - x0, 1.0 - z0),
+                // (x, z) -> (z, 1 - x)
+                "west" => (z0, 1.0 - x1, z1, 1.0 - x0),
+                _ => (x0, z0, x1, z1),
+            };
+            [a, b[1], c, d, b[4], e]
+        })
+        .collect()
+}
+
+/// Collision for state-dependent classes whose shape the decompile gives as
+/// per-state constants but the generator cannot evaluate, and whose render
+/// model has no geometry to fall back to (block-entity rendered).
+fn special_collision(
+    short: &str,
+    props: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<Vec<[f32; 6]>> {
+    let prop = |k: &str| props.and_then(|p| p.get(k)).and_then(|v| v.as_str()).unwrap_or("");
+    const P: f32 = 1.0 / 16.0;
+    let cw = |d: &str| match d {
+        "north" => "east",
+        "east" => "south",
+        "south" => "west",
+        _ => "north",
+    };
+    let ccw = |d: &str| match d {
+        "north" => "west",
+        "west" => "south",
+        "south" => "east",
+        _ => "north",
+    };
+    let opposite = |d: &str| cw(cw(d));
+    let name = format!("minecraft:{short}");
+    let arms = |north_arm: [f32; 6], post: Option<[f32; 6]>, open: &dyn Fn(&str) -> bool| {
+        let mut out: Vec<[f32; 6]> = post.into_iter().collect();
+        for dir in ["north", "east", "south", "west"] {
+            if open(dir) {
+                out.extend(rotate_horizontal(&[north_arm], dir));
+            }
+        }
+        out
+    };
+    let bars = crate::block_props::SKIP_RENDERING.iter().any(|(n, k)| *n == name && *k == 2);
+    if bars || crate::block_props::FENCES_TAG.contains(&name.as_str()) {
+        // `CrossCollisionBlock` collision: `column(post, 0, h)` plus
+        // `boxZ(arm, 0, h, 0, 8)` per connected side. `IronBarsBlock`
+        // (bars, panes) is (2, 16), `FenceBlock` is (4, 24).
+        let (w, h) = if bars { (2.0, 16.0) } else { (4.0, 24.0) };
+        let (a, b) = (0.5 - w / 2.0 * P, 0.5 + w / 2.0 * P);
+        return Some(arms(
+            [a, 0.0, 0.0, b, h * P, 0.5],
+            Some([a, 0.0, a, b, h * P, b]),
+            &|d| prop(d) == "true",
+        ));
+    }
+    if crate::block_props::WALLS_TAG.contains(&name.as_str()) {
+        // `WallBlock` collision: `column(8, 0, 24)` if `up`, and
+        // `boxZ(6, 0, 24, 0, 11)` for every side that is not `none`.
+        let post = (prop("up") == "true").then_some([4.0 * P, 0.0, 4.0 * P, 12.0 * P, 1.5, 12.0 * P]);
+        return Some(arms(
+            [5.0 * P, 0.0, 0.0, 11.0 * P, 1.5, 11.0 * P],
+            post,
+            &|d| !matches!(prop(d), "" | "none"),
+        ));
+    }
+    if crate::block_props::FENCE_GATES.contains(&name.as_str()) {
+        // `FenceGateBlock`: empty while open, else `column(16, 4, 0, 24)`
+        // across the facing's axis.
+        if prop("open") == "true" {
+            return Some(Vec::new());
+        }
+        return Some(match prop("facing") {
+            "east" | "west" => vec![[6.0 * P, 0.0, 0.0, 10.0 * P, 1.5, 1.0]],
+            _ => vec![[0.0, 0.0, 6.0 * P, 1.0, 1.5, 10.0 * P]],
+        });
+    }
+    // `ChainBlock` / `RodBlock`: `rotateAllAxis(cube(w, w, 16))` along the
+    // block's axis (a chain's `axis`, a rod's `facing`), w = 3 / 4.
+    let rod = short == "end_rod" || short.ends_with("lightning_rod");
+    if rod || (short.ends_with("_chain") && props.is_some_and(|p| p.contains_key("axis"))) {
+        let w = if rod { 4.0 } else { 3.0 };
+        let (a, b) = (0.5 - w / 2.0 * P, 0.5 + w / 2.0 * P);
+        let axis = match if rod { prop("facing") } else { prop("axis") } {
+            "x" | "east" | "west" => 0,
+            "z" | "north" | "south" => 2,
+            _ => 1,
+        };
+        let mut bx = [a, a, a, b, b, b];
+        bx[axis] = 0.0;
+        bx[axis + 3] = 1.0;
+        return Some(vec![bx]);
+    }
+    if short.ends_with("pointed_dripstone") {
+        // `SpeleothemBlock.getShape` by thickness (the random XZ render
+        // offset vanilla also moves it by is not modelled).
+        let (w, y0, y1) = match prop("thickness") {
+            "tip_merge" => (6.0, 0.0, 16.0),
+            "tip" if prop("vertical_direction") == "down" => (6.0, 5.0, 16.0),
+            "tip" => (6.0, 0.0, 11.0),
+            "frustum" => (8.0, 0.0, 16.0),
+            "middle" => (10.0, 0.0, 16.0),
+            _ => (12.0, 0.0, 16.0),
+        };
+        let (a, b) = (0.5 - w / 2.0 * P, 0.5 + w / 2.0 * P);
+        return Some(vec![[a, y0 * P, a, b, y1 * P, b]]);
+    }
+    if short == "powder_snow" {
+        // `PowderSnowBlock.getCollisionShape`: empty for an entity that cannot
+        // walk on it (no leather boots). The `fallDistance > 2.5` landing box
+        // is context the bake cannot see.
+        return Some(Vec::new());
+    }
+    if short == "snow" {
+        // `SnowLayerBlock.getCollisionShape`: `SHAPES[layers - 1]`, 2/16 each.
+        let layers: f32 = prop("layers").parse().unwrap_or(1.0);
+        let h = (layers - 1.0) * 2.0 * P;
+        return Some(if h > 0.0 { vec![[0.0, 0.0, 0.0, 1.0, h, 1.0]] } else { Vec::new() });
+    }
+    if short.ends_with("chest") && short != "ender_chest" {
+        // `ChestBlock.getShape`: SINGLE `column(14, 0, 14)`; a double half is
+        // `boxZ(14, 0, 14, 0, 15)` turned toward the connected half
+        // (LEFT → facing clockwise, RIGHT → counter-clockwise).
+        let facing = prop("facing");
+        return Some(match prop("type") {
+            "left" => rotate_horizontal(&[[P, 0.0, 0.0, 15.0 * P, 14.0 * P, 15.0 * P]], cw(facing)),
+            "right" => rotate_horizontal(&[[P, 0.0, 0.0, 15.0 * P, 14.0 * P, 15.0 * P]], ccw(facing)),
+            _ => vec![[P, 0.0, P, 15.0 * P, 14.0 * P, 15.0 * P]],
+        });
+    }
+    if short.ends_with("shulker_box") {
+        // Closed: `Shapes.block()` (the lid's reach needs the block entity).
+        return Some(vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]);
+    }
+    if short.ends_with("_bed") {
+        // `BedBlock.SHAPES[connected.opposite()]`: a 3..9 slab and two legs at
+        // the far end, given for NORTH. HEAD connects toward `facing.opposite`.
+        let key = if prop("part") == "head" { prop("facing") } else { opposite(prop("facing")) };
+        let north = [
+            [0.0, 3.0 * P, 0.0, 1.0, 9.0 * P, 1.0],
+            [0.0, 0.0, 0.0, 3.0 * P, 3.0 * P, 3.0 * P],
+            [13.0 * P, 0.0, 0.0, 1.0, 3.0 * P, 3.0 * P],
+        ];
+        return Some(rotate_horizontal(&north, key));
+    }
+    let is_head = (short.ends_with("_skull") || short.ends_with("_head")) && short != "piston_head";
+    if is_head {
+        let piglin = short.starts_with("piglin");
+        let half = if piglin { 5.0 * P } else { 4.0 * P };
+        if short.contains("_wall_") {
+            // `WallSkullBlock` / `PiglinWallSkullBlock`: boxZ(8|10, 8, 8, 16).
+            let north = [[0.5 - half, 4.0 * P, 0.5, 0.5 + half, 12.0 * P, 1.0]];
+            return Some(rotate_horizontal(&north, prop("facing")));
+        }
+        return Some(vec![[0.5 - half, 0.0, 0.5 - half, 0.5 + half, 0.5, 0.5 + half]]);
+    }
+    None
+}
+
+/// [`FACE_DIRS`]-order face bits → mesher order (`[up, down, north, south,
+/// west, east]`).
+pub fn faces_to_mesher_order(dirs: u8) -> u8 {
+    // mesher face -> FACE_DIRS index
+    const REMAP: [u8; 6] = [3, 2, 4, 5, 0, 1];
+    let mut out = 0;
+    for (m, d) in REMAP.iter().enumerate() {
+        if dirs & (1 << d) != 0 {
+            out |= 1 << m;
+        }
+    }
+    out
+}
+
+/// `NativeImage.computeTransparency` over a UV rect of one layer (and every
+/// frame of it, when animated): whether any pixel has an alpha strictly
+/// between 0 and 255 — the `ChunkSectionLayer.TRANSLUCENT` criterion.
+fn layer_has_translucent(
+    layers: &[Vec<u8>],
+    animations: &[AnimatedLayer],
+    layer: u16,
+    uv: [[f32; 2]; 4],
+) -> bool {
+    let Some(base) = layers.get(layer as usize) else {
+        return false;
+    };
+    let side = ((base.len() / 4) as f64).sqrt() as usize;
+    if side == 0 {
+        return false;
+    }
+    let (mut u0, mut v0, mut u1, mut v1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for [u, v] in uv {
+        u0 = u0.min(u);
+        v0 = v0.min(v);
+        u1 = u1.max(u);
+        v1 = v1.max(v);
+    }
+    // `SpriteContents.computeTransparency`: floor the low edge, ceil the high.
+    let clamp = |x: f32| (x.max(0.0) * side as f32) as f64;
+    let x0 = clamp(u0).floor() as usize;
+    let y0 = clamp(v0).floor() as usize;
+    let x1 = (clamp(u1).ceil() as usize).min(side);
+    let y1 = (clamp(v1).ceil() as usize).min(side);
+    let scan = |px: &[u8]| {
+        (y0..y1).any(|y| {
+            (x0..x1).any(|x| {
+                let a = px.get((y * side + x) * 4 + 3).copied().unwrap_or(255);
+                a != 0 && a != 255
+            })
+        })
+    };
+    match animations.iter().find(|a| a.layer == layer) {
+        Some(anim) => anim.frames.iter().any(|f| scan(f)),
+        None => scan(base),
+    }
+}
+
+fn face_coverage(boxes: &[[f32; 6]]) -> u8 {
+    if boxes.is_empty() {
+        return 0;
+    }
+    const EPS: f32 = 1.0e-4;
+    let mut mask = 0u8;
+    for (f, (dx, dy, dz)) in FACE_DIRS.iter().enumerate() {
+        // The two axes spanning this face, and the plane the face sits on.
+        let (axis, positive) = match (dx, dy, dz) {
+            (-1, 0, 0) => (0, false),
+            (1, 0, 0) => (0, true),
+            (0, -1, 0) => (1, false),
+            (0, 1, 0) => (1, true),
+            (0, 0, -1) => (2, false),
+            _ => (2, true),
+        };
+        let (u_axis, v_axis) = match axis {
+            0 => (1, 2),
+            1 => (0, 2),
+            _ => (0, 1),
+        };
+        let mut covered = [[false; 16]; 16];
+        for b in boxes {
+            // Only boxes flush with this face occlude across it.
+            let flush = if positive {
+                b[axis + 3] >= 1.0 - EPS
+            } else {
+                b[axis] <= EPS
+            };
+            if !flush {
+                continue;
+            }
+            let (u0, u1) = (b[u_axis], b[u_axis + 3]);
+            let (v0, v1) = (b[v_axis], b[v_axis + 3]);
+            for (ui, row) in covered.iter_mut().enumerate() {
+                let uc = (ui as f32 + 0.5) / 16.0;
+                if uc < u0 || uc > u1 {
+                    continue;
+                }
+                for (vi, cell) in row.iter_mut().enumerate() {
+                    let vc = (vi as f32 + 0.5) / 16.0;
+                    if vc >= v0 && vc <= v1 {
+                        *cell = true;
+                    }
+                }
+            }
+        }
+        if covered.iter().all(|row| row.iter().all(|c| *c)) {
+            mask |= 1 << f;
+        }
+    }
+    mask
 }
 
 #[cfg(test)]
@@ -4412,165 +5199,264 @@ mod tests {
         // 16×16 grid of 2-px cells; light up column 1 of glyph 'A' (65).
         let (size, cell) = (32u32, 2u32);
         let mut atlas = vec![0u8; (size * size * 4) as usize];
-        let (cx, cy) = ((65 % 16) * cell, (65 / 16) * cell);
+        let (cx, cy) = (cell, (65 / 16) * cell);
         atlas[((cy * size + cx + 1) * 4 + 3) as usize] = 255;
         let adv = font_advances(&atlas, size, cell);
         assert_eq!(adv[65], 3, "rightmost col 1 → advance 1+2");
         assert_eq!(adv[32], 4, "blank space cell advances 4");
     }
-}
 
-/// Rotate a block-local `0..1` box by a blockstate rotation (multiples of 90°
-/// about X then Y, vanilla's `x`/`y` model fields). Axis-aligned boxes stay
-/// axis-aligned at right angles, so this is a corner swap, not a real rotation.
-fn rotate_box(b: [f32; 6], x_deg: i32, y_deg: i32) -> [f32; 6] {
-    let mut lo = [b[0], b[1], b[2]];
-    let mut hi = [b[3], b[4], b[5]];
-    let steps = |d: i32| ((d % 360) + 360) % 360 / 90;
-    for _ in 0..steps(x_deg) {
-        // x rotation: y -> z, z -> -y (about the block centre)
-        let (l, h) = (lo, hi);
-        lo[1] = 1.0 - h[2];
-        hi[1] = 1.0 - l[2];
-        lo[2] = l[1];
-        hi[2] = h[1];
-    }
-    for _ in 0..steps(y_deg) {
-        // y rotation: x -> z, z -> -x
-        let (l, h) = (lo, hi);
-        lo[0] = 1.0 - h[2];
-        hi[0] = 1.0 - l[2];
-        lo[2] = l[0];
-        hi[2] = h[0];
-    }
-    [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]]
-}
+    // -- The four smooth-lighting facts ------------------------------------
+    //
+    // `BlockState.isViewBlocking`, `getShadeBrightness == 0.2F`,
+    // `emissiveRendering`, and the first model part's `useAmbientOcclusion`
+    // — what `rewo-mesh`'s vanilla smooth-lighting port asks per state. They
+    // are only meaningful against the real bake, so these tests skip when the
+    // local 26.2 client jar / datagen report is absent.
 
-/// Whether a non-full-cube block should collide using its *model* geometry,
-/// and whether that shape is fence-tall.
-///
-/// Vanilla stores collision shapes in Java code, not in any datagen report, so
-/// there is no ground-truth table to generate from (unlike the entity
-/// hierarchies in `rewo-gpu::vanilla_hier`). Deriving shapes for *every* block
-/// would be wrong in the obvious direction — torches, plants, rails and
-/// redstone all have models but no collision, so the player would bump into
-/// flowers. This list is therefore deliberately conservative: it names only
-/// families whose model matches vanilla's collision closely, and everything
-/// outside it keeps the previous behaviour (a full cube when `solid`, else
-/// nothing). It can only ever *add* collision where we're confident.
-fn model_collision(short: &str) -> Option<bool> {
-    // Fence-likes: vanilla collides them 1.5 blocks tall so they can't be
-    // jumped. Checked before `_fence` since `_fence_gate` also ends in `_gate`.
-    if short.ends_with("_fence") || short == "fence" || short.ends_with("_fence_gate")
-        || short.ends_with("_wall") || short == "wall"
-    {
-        return Some(true);
-    }
-    // `_trapdoor` must precede `_door` — it also ends with "door".
-    let model_shaped = short.ends_with("_slab")
-        || short.ends_with("_stairs")
-        || short.ends_with("_trapdoor")
-        || short.ends_with("_door")
-        || short.ends_with("_carpet")
-        || short == "snow"
-        || short.ends_with("_bed")
-        || short.ends_with("chest")
-        || short.ends_with("_shulker_box")
-        || short == "shulker_box"
-        || short.ends_with("cauldron")
-        || short.ends_with("anvil")
-        || short == "hopper"
-        || short == "composter"
-        || short == "stonecutter"
-        || short == "enchanting_table"
-        || short == "end_portal_frame"
-        || short == "daylight_detector"
-        || short == "grindstone"
-        || short == "lectern"
-        || short == "cake"
-        // The rest of vanilla's `useShapeForLightOcclusion` set. These carry
-        // real collision shapes too, but they earn their place here because
-        // light occlusion is computed from these boxes: a block with no boxes
-        // has no occluding faces, so farmland would let light fall straight
-        // through it where vanilla stops it at the full bottom face.
-        || short == "farmland"
-        || short == "dirt_path"
-        || short == "sculk_sensor"
-        || short == "sculk_shrieker"
-        || short == "shelf"
-        || short == "piston"
-        || short == "sticky_piston"
-        || short == "piston_head";
-    model_shaped.then_some(false)
-}
-
-/// Neighbour offsets matching the bit order of [`BakedAssets::face_occludes`]
-/// and the light engine's neighbour loop: −X, +X, −Y, +Y, −Z, +Z.
-pub const FACE_DIRS: [(i32, i32, i32); 6] = [
-    (-1, 0, 0),
-    (1, 0, 0),
-    (0, -1, 0),
-    (0, 1, 0),
-    (0, 0, -1),
-    (0, 0, 1),
-];
-
-/// Which of the six faces this box list fully covers.
-///
-/// Vanilla compares real `VoxelShape`s; every vanilla block shape lies on
-/// 1/16 boundaries, so rasterising each face at 16×16 and asking whether every
-/// cell is covered gives the same answer for the shapes that matter, without
-/// carrying a shape algebra. Boxes are block-local `0..1`.
-fn face_coverage(boxes: &[[f32; 6]]) -> u8 {
-    if boxes.is_empty() {
-        return 0;
-    }
-    const EPS: f32 = 1.0e-4;
-    let mut mask = 0u8;
-    for (f, (dx, dy, dz)) in FACE_DIRS.iter().enumerate() {
-        // The two axes spanning this face, and the plane the face sits on.
-        let (axis, positive) = match (dx, dy, dz) {
-            (-1, 0, 0) => (0, false),
-            (1, 0, 0) => (0, true),
-            (0, -1, 0) => (1, false),
-            (0, 1, 0) => (1, true),
-            (0, 0, -1) => (2, false),
-            _ => (2, true),
-        };
-        let (u_axis, v_axis) = match axis {
-            0 => (1, 2),
-            1 => (0, 2),
-            _ => (0, 1),
-        };
-        let mut covered = [[false; 16]; 16];
-        for b in boxes {
-            // Only boxes flush with this face occlude across it.
-            let flush = if positive {
-                b[axis + 3] >= 1.0 - EPS
-            } else {
-                b[axis] <= EPS
-            };
-            if !flush {
-                continue;
+    /// The real bake plus the raw `blocks.json`, built once and shared.
+    fn real() -> Option<&'static (BakedAssets, serde_json::Value)> {
+        static REAL: std::sync::OnceLock<Option<(BakedAssets, serde_json::Value)>> =
+            std::sync::OnceLock::new();
+        REAL.get_or_init(|| {
+            let paths = crate::DataPaths::for_version("26.2")?;
+            let blocks = paths.blocks_json();
+            if !blocks.is_file() {
+                return None;
             }
-            let (u0, u1) = (b[u_axis], b[u_axis + 3]);
-            let (v0, v1) = (b[v_axis], b[v_axis + 3]);
-            for (ui, row) in covered.iter_mut().enumerate() {
-                let uc = (ui as f32 + 0.5) / 16.0;
-                if uc < u0 || uc > u1 {
-                    continue;
-                }
-                for (vi, cell) in row.iter_mut().enumerate() {
-                    let vc = (vi as f32 + 0.5) / 16.0;
-                    if vc >= v0 && vc <= v1 {
-                        *cell = true;
-                    }
+            // `<config>/EwoClient/rewo/26.2` → `<config>/EwoClient/shared/…`.
+            let jar = paths
+                .root
+                .parent()?
+                .parent()?
+                .join("shared/versions/26.2/26.2.jar");
+            if !jar.is_file() {
+                return None;
+            }
+            let raw = crate::read_json_file(&blocks).ok()?;
+            Some((bake(&jar, &blocks).expect("bake"), raw))
+        })
+        .as_ref()
+    }
+
+    /// Every state id of `block` whose `blocks.json` property map contains
+    /// `props` (the report lists all of a state's properties, so a caller
+    /// names only the ones it cares about). Panics on an empty match, so a
+    /// test can never pass vacuously on a property it made up.
+    fn states_where(raw: &serde_json::Value, block: &str, props: &[(&str, &str)]) -> Vec<usize> {
+        let states = raw
+            .get(block)
+            .and_then(|b| b.get("states"))
+            .and_then(|s| s.as_array())
+            .unwrap_or_else(|| panic!("{block} has no states in blocks.json"));
+        let ids: Vec<usize> = states
+            .iter()
+            .filter(|s| {
+                props.iter().all(|(k, v)| {
+                    s.get("properties")
+                        .and_then(|p| p.get(*k))
+                        .and_then(|x| x.as_str())
+                        .is_some_and(|x| x == *v)
+                })
+            })
+            .map(|s| s.get("id").and_then(|i| i.as_u64()).expect("state id") as usize)
+            .collect();
+        assert!(!ids.is_empty(), "{block} has no state matching {props:?}");
+        ids
+    }
+
+    /// The four defaults, on one state per test case where they agree:
+    /// `isViewBlocking`'s `blocksMotion() && isCollisionShapeFullBlock`
+    /// predicate (true for a full cube that is none of cobweb /
+    /// bamboo_sapling / forceSolidOff / dynamicShape), `getShadeBrightness`'s
+    /// `isCollisionShapeFullBlock ? 0.2F : 1.0F` default, `Properties`'
+    /// `emissiveRendering = var0 -> false`, and `cube_all` → `cube` →
+    /// `block/block`, none of which sets `"ambientocclusion"`.
+    #[test]
+    fn stone_takes_every_default() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for id in states_where(raw, "minecraft:stone", &[]) {
+            let c = &baked.cull[id];
+            assert!(c.ao_occluder, "stone collides as a full block ({id})");
+            assert!(c.view_blocking, "stone blocks the view ({id})");
+            assert!(c.shade_dark, "stone shades 0.2F ({id})");
+            assert!(!c.emissive_rendering, "stone ({id})");
+            assert!(c.ambient_occlusion, "stone model AO ({id})");
+        }
+    }
+
+    /// Glass collides as a full block, yet `TransparentBlock`'s
+    /// `getShadeBrightness` is 1.0F and GLASS's `.isViewBlocking(Blocks::never)`
+    /// says it never blocks the view — so both facts have to come from the
+    /// class/registration override, not from `isCollisionShapeFullBlock`
+    /// (`ao_occluder` is asserted true to show the override is doing the
+    /// work). `TintedGlassBlock` extends `TransparentBlock` for the shade
+    /// side and declares `Blocks::never` itself (its `ofLegacyCopy(GLASS)`
+    /// would NOT have carried `isViewBlocking` over); the stained family
+    /// inherits both through `StainedGlassBlock extends TransparentBlock` and
+    /// the shared glass properties.
+    #[test]
+    fn glass_family_is_bright_and_never_view_blocking() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for block in [
+            "minecraft:glass",
+            "minecraft:red_stained_glass",
+            "minecraft:tinted_glass",
+        ] {
+            for id in states_where(raw, block, &[]) {
+                let c = &baked.cull[id];
+                assert!(c.ao_occluder, "{block} collides as a full block ({id})");
+                assert!(!c.view_blocking, "{block} ({id})");
+                assert!(!c.shade_dark, "{block} shades 1.0F ({id})");
+            }
+        }
+    }
+
+    /// `leavesProperties` sets both `isSuffocating(Blocks::never)` and
+    /// `isViewBlocking(Blocks::never)` — leaves do not block the view even
+    /// where their shape would say otherwise. `LeavesBlock extends Block`
+    /// (not `TransparentBlock`), so `getShadeBrightness` keeps the shape
+    /// default: `shade_dark == ao_occluder` here.
+    #[test]
+    fn oak_leaves_never_block_the_view() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for id in states_where(raw, "minecraft:oak_leaves", &[]) {
+            let c = &baked.cull[id];
+            assert!(!c.view_blocking, "oak_leaves ({id})");
+            assert_eq!(c.shade_dark, c.ao_occluder, "oak_leaves uses the default ({id})");
+        }
+    }
+
+    /// `MudBlock` and `SoulSandBlock` return 0.2F from `getShadeBrightness`
+    /// although their collision shape is 14/16 tall, not a full block — and
+    /// both registrations call `.isViewBlocking(Blocks::always)`, so they do
+    /// block the view despite the shape as well.
+    #[test]
+    fn mud_and_soul_sand_shade_dark_without_a_full_block() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for block in ["minecraft:mud", "minecraft:soul_sand"] {
+            for id in states_where(raw, block, &[]) {
+                let c = &baked.cull[id];
+                assert!(!c.ao_occluder, "{block} is 14/16 tall ({id})");
+                assert!(c.shade_dark, "{block} shades 0.2F anyway ({id})");
+                assert!(c.view_blocking, "{block} blocks the view anyway ({id})");
+            }
+        }
+    }
+
+    /// `SnowLayerBlock.getShadeBrightness` is `LAYERS == 8 ? 0.2F : 1.0F`,
+    /// and SNOW registers `isViewBlocking((statex, …) ->
+    /// statex.getValue(LAYERS) >= 8)`. Both are property rules, so one block
+    /// splits per state — `snow` is also `forceSolidOff()`, which is why the
+    /// default predicate would never have fired for it.
+    #[test]
+    fn snow_shades_and_blocks_by_layer_count() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for id in states_where(raw, "minecraft:snow", &[("layers", "8")]) {
+            let c = &baked.cull[id];
+            assert!(c.shade_dark, "snow layers=8 shades 0.2F ({id})");
+            assert!(c.view_blocking, "snow layers=8 blocks the view ({id})");
+        }
+        for layers in ["1", "7"] {
+            for id in states_where(raw, "minecraft:snow", &[("layers", layers)]) {
+                let c = &baked.cull[id];
+                assert!(!c.shade_dark, "snow layers={layers} shades 1.0F ({id})");
+                assert!(!c.view_blocking, "snow layers={layers} ({id})");
+            }
+        }
+    }
+
+    /// `Blocks.java`'s `.emissiveRendering(var0 -> true)` — magma alone.
+    #[test]
+    fn magma_block_renders_emissively() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for id in states_where(raw, "minecraft:magma_block", &[]) {
+            assert!(baked.cull[id].emissive_rendering, "magma_block ({id})");
+        }
+    }
+
+    /// The other `emissiveRendering` call site: the sculk sensors' phase
+    /// predicate `SculkSensorBlock.getPhase(state) == ACTIVE`, which
+    /// `ofLegacyCopy(SCULK_SENSOR)` hands to `calibrated_sculk_sensor`
+    /// unchanged (`ofLegacyCopy` DOES carry `emissiveRendering`, unlike
+    /// `isViewBlocking`).
+    #[test]
+    fn sculk_sensors_renders_emissively_only_while_active() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for block in ["minecraft:sculk_sensor", "minecraft:calibrated_sculk_sensor"] {
+            for id in states_where(raw, block, &[("sculk_sensor_phase", "active")]) {
+                assert!(baked.cull[id].emissive_rendering, "{block} active ({id})");
+            }
+            for phase in ["inactive", "cooldown"] {
+                for id in states_where(raw, block, &[("sculk_sensor_phase", phase)]) {
+                    assert!(
+                        !baked.cull[id].emissive_rendering,
+                        "{block} {phase} ({id})"
+                    );
                 }
             }
         }
-        if covered.iter().all(|row| row.iter().all(|c| *c)) {
-            mask |= 1 << f;
+    }
+
+    /// `useAmbientOcclusion()` is the model's `"ambientocclusion"` key as
+    /// `ResolvedModel` flattens it through `parent`, and the FIRST model part
+    /// decides. `block/template_torch.json` sets it false (torch's own model
+    /// inherits that), `cube_all`'s chain never sets it (default true).
+    #[test]
+    fn ambient_occlusion_comes_from_the_first_model() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for id in states_where(raw, "minecraft:torch", &[]) {
+            assert!(
+                !baked.cull[id].ambient_occlusion,
+                "template_torch sets ambientocclusion:false ({id})"
+            );
+        }
+        for id in states_where(raw, "minecraft:stone", &[]) {
+            assert!(baked.cull[id].ambient_occlusion, "cube_all defaults true ({id})");
         }
     }
-    mask
+
+    /// `pistonProperties` gives piston and sticky_piston the same
+    /// `NOT_EXTENDED_PISTON` predicate (`!getValue(EXTENDED)`) — the one fact
+    /// here that flips between two states of the same block, which is why it
+    /// cannot be a per-block table entry.
+    #[test]
+    fn piston_blocks_the_view_only_while_retracted() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for block in ["minecraft:piston", "minecraft:sticky_piston"] {
+            for id in states_where(raw, block, &[("extended", "false")]) {
+                assert!(baked.cull[id].view_blocking, "{block} retracted ({id})");
+            }
+            for id in states_where(raw, block, &[("extended", "true")]) {
+                assert!(!baked.cull[id].view_blocking, "{block} extended ({id})");
+            }
+        }
+    }
 }

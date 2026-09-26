@@ -89,7 +89,7 @@ pub enum LinkStatus {
 /// The user enters a 6-digit code in the link modal; the launcher POSTs
 /// it to `/api/launcher/link`; the bot returns a `social_token` we then
 /// hand off to `AuthService::set_social_token`.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum LinkRedeemStatus {
     /// No redemption in flight; the modal is just an input field.
     Idle,
@@ -99,6 +99,22 @@ pub enum LinkRedeemStatus {
     Success { token: String, discord_id: String },
     /// Redemption failed. String is a user-facing short message.
     Failed(String),
+}
+
+/// Hand-written so the social token never reaches a log via `{:?}`.
+impl std::fmt::Debug for LinkRedeemStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Idle => f.write_str("Idle"),
+            Self::Submitting => f.write_str("Submitting"),
+            Self::Success { discord_id, .. } => f
+                .debug_struct("Success")
+                .field("token", &"<redacted>")
+                .field("discord_id", discord_id)
+                .finish(),
+            Self::Failed(m) => f.debug_tuple("Failed").field(m).finish(),
+        }
+    }
 }
 
 /// Phase H5: cached friends list state. Refreshed by polling

@@ -483,7 +483,7 @@ impl DimensionCheck {
         // -- the full property matrix, against the independent expectation ---
         expect
             .grade("live", holder as usize, def)
-            .map_err(|e| at(e))?;
+            .map_err(&at)?;
 
         // -- the world must equal the active definition ----------------------
         let w = &session.world;
@@ -808,6 +808,9 @@ mod tests {
             // behaviour, and the transparent colour is why it has no clouds.
             cloud_color: DEFAULT_CLOUD_COLOR,
             cloud_height: DEFAULT_CLOUD_HEIGHT,
+            // `gameplay/fast_lava` — the one vanilla dimension whose lava
+            // currents push at `0.007` rather than `0.0023333…`.
+            fast_lava: true,
             // The Nether declares no `default_clock` either — the only vanilla
             // dimension that does not. `getClockTimeTicks`'s `.orElse(0L)`
             // then makes `getDefaultClockTime()` a permanent zero there,

@@ -23,12 +23,9 @@
 //! with depth-write off. Both mask alpha writes (render discipline #2) and
 //! take pre-linearized vertex colors (discipline #1).
 //!
-//! Buffers are a ring flipped on each `set_draws`, [`RING`] slots long. The
-//! comment that stood here said "2-slot … with the frame driver fence-pacing at
-//! most 2 frames in flight, the slot being rewritten retired two submissions
-//! ago" — which was the wrong count *and* the wrong reasoning: `set_draws` runs
-//! before the frame's fence wait, not after it, so a slot must survive
-//! `fif + 1` frames rather than `fif`. See [`RING`] (M86).
+//! Vertices live in a [`crate::buf_ring::BufRing`] written by `set_draws`.
+//! `set_draws` runs before the frame's fence wait, so a slot must survive
+//! `fif + 1` frames rather than `fif` — the ring's own rule (M86).
 //!
 //! Verification knob: `REWO_MOB_DEBUG_TEX=1` replaces every mob texture
 //! with facelabel colors (each box-UV face rect painted its
@@ -48,25 +45,9 @@ pub use crate::mobs::EntityModelKind;
 
 const VERTEX_STRIDE: u64 = 52; // 3 pos + 2 uv + 4 rgba + 3 light + 1 hurt f32s
 /// ~500 capsules' worth (a flat-world slime herd alone reaches 129
-/// entities ≈ 65k verts). 9.4 MB × 2 ring slots — cheap; the CPU soup
+/// entities ≈ 65k verts). 13.6 MB per ring slot — cheap; the CPU soup
 /// build is the real ceiling long before this is.
 const MAX_VERTS: usize = 262_144;
-/// Slots in the vertex ring — `MAX_FRAMES_IN_FLIGHT + 1`, the same rule
-/// [`crate::buf_ring::BUF_RING`] states and for the same reason.
-///
-/// **This was 2 until M86, and 2 is one short at the default `--fif 2`.**
-/// `set_draws` runs in the app's frame loop *before* `Renderer::render`, so the
-/// most recent fence wait was the previous frame's: frames `n-1` and `n-2` may
-/// both still be reading when frame `n` writes. A 2-slot ring hands frame `n`
-/// the slot frame `n-2` is on. Nothing catches it — the write is a CPU memcpy
-/// into a mapped allocation, not a `vkDestroy`, so core validation is silent
-/// and the only symptom is entity geometry that is briefly some other frame's.
-///
-/// Argued from that derivation, not measured: this milestone has no gate that
-/// can see a CPU/GPU data race, and the ~27 MB it costs
-/// (`MAX_VERTS × VERTEX_STRIDE × 2` extra slots, per `EntityPass`) buys
-/// correctness at every `--fif` the knob permits rather than at one.
-const RING: usize = crate::MAX_FRAMES_IN_FLIGHT + 1;
 /// Capsule tessellation: segments around Y × profile bands.
 const SEGMENTS: usize = 12;
 /// Nametag world scale per font pixel at cell=8 (vanilla's 0.025).
@@ -916,9 +897,7 @@ pub struct EntityPass {
     image: vk::Image,
     image_alloc: Option<Allocation>,
     view: vk::ImageView,
-    bufs: [vk::Buffer; RING],
-    allocs: [Option<Allocation>; RING],
-    cursor: usize,
+    ring: crate::buf_ring::BufRing,
     solid_verts: u32,
     text_verts: u32,
     /// Unit capsule shell: (position [0..1 y, ±0.5 xz], normal).
@@ -1175,7 +1154,7 @@ impl EntityPass {
 
         // Facelabel verification mode: replace every mob texture with per-
         // face solid colors so a render proves texture-face correspondence.
-        let debug_tex = std::env::var("REWO_MOB_DEBUG_TEX").map_or(false, |v| v == "1");
+        let debug_tex = std::env::var("REWO_MOB_DEBUG_TEX").is_ok_and(|v| v == "1");
 
         // Build each registry mob whose textures are all present.
         let mut models: Vec<Option<MobModel>> = (0..EntityModelKind::COUNT).map(|_| None).collect();
@@ -1217,8 +1196,8 @@ impl EntityPass {
             };
             if debug_tex {
                 for q in &m.quads {
-                    if !paint_debug_rect(&mut atlas, origins[q.tex], q, &mut painted) {
-                        if ambiguous_tex.insert(def.textures[q.tex]) {
+                    if !paint_debug_rect(&mut atlas, origins[q.tex], q, &mut painted)
+                        && ambiguous_tex.insert(def.textures[q.tex]) {
                             log::info!(
                                 "mob debug-tex: {} ({:?} {:?} quad) repaints a texel with a new label",
                                 def.textures[q.tex],
@@ -1226,7 +1205,6 @@ impl EntityPass {
                                 q.facing
                             );
                         }
-                    }
                 }
             }
             // Vanilla emissive layers: the same geometry, filtered to the
@@ -1430,35 +1408,12 @@ impl EntityPass {
                 vk::CompareOp::GREATER_OR_EQUAL,
             )?;
 
-            let mut bufs = [vk::Buffer::null(); RING];
-            let mut allocs: [Option<Allocation>; RING] = std::array::from_fn(|_| None);
-            for i in 0..RING {
-                let buffer = device
-                    .create_buffer(
-                        &vk::BufferCreateInfo::default()
-                            .size(MAX_VERTS as u64 * VERTEX_STRIDE)
-                            .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
-                            .sharing_mode(vk::SharingMode::EXCLUSIVE),
-                        None,
-                    )
-                    .map_err(|e| format!("entity vbuf: {e}"))?;
-                let req = device.get_buffer_memory_requirements(buffer);
-                let alloc = gpu
-                    .allocator
-                    .allocate(&AllocationCreateDesc {
-                        name: "entity-verts",
-                        requirements: req,
-                        location: MemoryLocation::CpuToGpu,
-                        linear: true,
-                        allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-                    })
-                    .map_err(|e| format!("entity vbuf alloc: {e}"))?;
-                device
-                    .bind_buffer_memory(buffer, alloc.memory(), alloc.offset())
-                    .map_err(|e| format!("entity vbuf bind: {e}"))?;
-                bufs[i] = buffer;
-                allocs[i] = Some(alloc);
-            }
+            let ring = crate::buf_ring::BufRing::with_capacity(
+                gpu,
+                "entity-verts",
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                MAX_VERTS as u64 * VERTEX_STRIDE,
+            )?;
 
             Ok(Self {
                 layout,
@@ -1480,9 +1435,7 @@ impl EntityPass {
                 image,
                 image_alloc: Some(image_alloc),
                 view,
-                bufs,
-                allocs,
-                cursor: 0,
+                ring,
                 solid_verts: 0,
                 text_verts: 0,
                 capsule: unit_capsule(),
@@ -1522,9 +1475,8 @@ impl EntityPass {
     /// Reserve the next dynamic skin slot, upload a 64×64 RGBA skin into it,
     /// and return the normalized UV offset relocating the default player
     /// quads onto it (feed to `EntityDraw::skin_uv`). `rgba` must be
-    /// `64*64*4` bytes. Stalls on `wait_idle` — skins arrive rarely (once
-    /// per player at join), so the one-off is cheaper than tracking
-    /// per-frame fences against the shared atlas.
+    /// `64*64*4` bytes. The upload is an ordered, asynchronous transfer
+    /// (see [`upload_region`]) — no idle.
 
     /// Install the baked held-item models (M22). Textures are *not* uploaded
     /// here: 26.2 ships 1233 of them and the atlas band holds 1024 slots, so
@@ -1556,7 +1508,7 @@ impl EntityPass {
         };
         let mut result = Ok(());
         for name in names {
-            let Some(model) = items.any(*name) else {
+            let Some(model) = items.any(name) else {
                 continue;
             };
             for q in &model.quads {
@@ -1808,7 +1760,6 @@ impl EntityPass {
         cam_pos: [f32; 3],
     ) {
         self.cam_pos = cam_pos;
-        self.cursor = (self.cursor + 1) % RING;
         let mut verts: Vec<Vertex> = Vec::with_capacity(1024);
         // The glint's own range, built alongside the geometry it sits on and
         // appended after the nametags — see [`GlintSink`].
@@ -1959,28 +1910,33 @@ impl EntityPass {
         verts.append(&mut armor_glint_verts);
         let armor_glint_end = verts.len();
         verts.append(&mut emissive_verts);
-        self.solid_verts = solid as u32;
-        self.text_verts = (text_end - solid) as u32;
-        self.glint_verts = (glint_end - text_end) as u32;
-        self.trim_verts = (trim_end - glint_end) as u32;
-        self.armor_glint_verts = (armor_glint_end - trim_end) as u32;
-        self.emissive_verts = (verts.len() - armor_glint_end) as u32;
-        let total = verts.len();
-        if let Some(slice) = self.allocs[self.cursor]
-            .as_mut()
-            .and_then(|a| a.mapped_slice_mut())
-        {
-            // Clamp to the buffer. The per-emitter `MAX_VERTS` guards bound
-            // each range on its own, but five ranges are appended after them,
-            // so their sum can exceed the allocation — and the copy below would
-            // panic rather than degrade. Whole vertices only, so a truncated
-            // frame drops geometry instead of corrupting it.
-            let total = total.min(MAX_VERTS);
-            let bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(verts.as_ptr() as *const u8, total * VERTEX_STRIDE as usize)
-            };
-            slice[..bytes.len()].copy_from_slice(bytes);
-        }
+        let counts = [
+            solid,
+            text_end - solid,
+            glint_end - text_end,
+            trim_end - glint_end,
+            armor_glint_end - trim_end,
+            verts.len() - armor_glint_end,
+        ]
+        .map(|c| c as u32);
+        // The per-emitter `MAX_VERTS` guards bound each range on its own, but
+        // five ranges are appended after the solid one, so their sum can
+        // exceed the ring slot. The slot keeps a prefix; every range count is
+        // clamped to that same prefix so no draw reads past what was uploaded.
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                verts.as_ptr() as *const u8,
+                verts.len() * VERTEX_STRIDE as usize,
+            )
+        };
+        let kept = self.ring.write_fixed(bytes, VERTEX_STRIDE as usize) / VERTEX_STRIDE as usize;
+        let [s0, s1, s2, s3, s4, s5] = clamp_ranges(counts, kept as u32);
+        self.solid_verts = s0;
+        self.text_verts = s1;
+        self.glint_verts = s2;
+        self.trim_verts = s3;
+        self.armor_glint_verts = s4;
+        self.emissive_verts = s5;
     }
 
     /// Draw one mob model: per-part vanilla `setupAnim` rotation about the
@@ -3053,7 +3009,14 @@ impl EntityPass {
     }
 
     /// Shared draw state (viewport, descriptor, push, vertex buffer).
-    unsafe fn bind_common(&self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) {
+    ///
+    /// `false` when this frame uploaded nothing, in which case the caller must
+    /// not draw.
+    #[must_use]
+    unsafe fn bind_common(&self, gpu: &Gpu, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4], extent: vk::Extent2D) -> bool {
+        let Some(vbuf) = self.ring.bind() else {
+            return false;
+        };
         let device = &gpu.device;
         let viewport = vk::Viewport::default()
             .y(extent.height as f32)
@@ -3077,7 +3040,8 @@ impl EntityPass {
             0,
             std::slice::from_raw_parts(view_proj.as_ptr() as *const u8, 64),
         );
-        device.cmd_bind_vertex_buffers(cb, 0, &[self.bufs[self.cursor]], &[0]);
+        device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
+        true
     }
 
     /// Opaque capsules — draw before any translucent content.
@@ -3086,7 +3050,9 @@ impl EntityPass {
             return;
         }
         unsafe {
-            self.bind_common(gpu, cb, view_proj, extent);
+            if !self.bind_common(gpu, cb, view_proj, extent) {
+                return;
+            }
             let device = &gpu.device;
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.solid_pipeline);
             device.cmd_draw(cb, self.solid_verts, 1, 0, 0);
@@ -3110,7 +3076,9 @@ impl EntityPass {
             return;
         }
         unsafe {
-            self.bind_common(gpu, cb, view_proj, extent);
+            if !self.bind_common(gpu, cb, view_proj, extent) {
+                return;
+            }
             let device = &gpu.device;
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.emissive_pipeline);
             // Last range in the buffer — see the storage comment in `set_draws`.
@@ -3329,7 +3297,9 @@ impl EntityPass {
             return;
         }
         unsafe {
-            self.bind_common(gpu, cb, view_proj, extent);
+            if !self.bind_common(gpu, cb, view_proj, extent) {
+                return;
+            }
             let device = &gpu.device;
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
             // The glint sheet, not the entity atlas — `bind_common` bound the
@@ -3366,7 +3336,9 @@ impl EntityPass {
             return;
         }
         unsafe {
-            self.bind_common(gpu, cb, view_proj, extent);
+            if !self.bind_common(gpu, cb, view_proj, extent) {
+                return;
+            }
             gpu.device
                 .cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
             gpu.device.cmd_draw(
@@ -3385,7 +3357,9 @@ impl EntityPass {
             return;
         }
         unsafe {
-            self.bind_common(gpu, cb, view_proj, extent);
+            if !self.bind_common(gpu, cb, view_proj, extent) {
+                return;
+            }
             let device = &gpu.device;
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.text_pipeline);
             device.cmd_draw(cb, self.text_verts, 1, self.solid_verts, 0);
@@ -3423,17 +3397,32 @@ impl EntityPass {
             device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
-            for b in self.bufs {
-                device.destroy_buffer(b, None);
-            }
         }
-        for a in self.allocs.iter_mut().filter_map(|a| a.take()) {
-            let _ = gpu.allocator.free(a);
-        }
+        self.ring.destroy(gpu);
         if let Some(a) = self.image_alloc.take() {
             let _ = gpu.allocator.free(a);
         }
     }
+}
+
+/// Clamp the six storage-ordered vertex ranges (solid | text | glint | trim |
+/// armor_glint | emissive) to the `kept` vertices that fit the ring slot. The
+/// cut is a prefix, so the range it falls in is shortened (to whole triangles)
+/// and every later range is empty; offsets derived by summing the earlier
+/// counts stay correct.
+fn clamp_ranges(counts: [u32; 6], kept: u32) -> [u32; 6] {
+    let mut left = kept;
+    let mut out = [0u32; 6];
+    for (o, &c) in out.iter_mut().zip(&counts) {
+        if c <= left {
+            *o = c;
+            left -= c;
+        } else {
+            *o = left / 3 * 3;
+            left = 0;
+        }
+    }
+    out
 }
 
 /// Unit capsule triangle soup: y ∈ [0, 1], xz ∈ [−0.5, 0.5]. Profile =
@@ -5533,8 +5522,11 @@ fn blit_tex(atlas: &mut [u8], tex: Option<&[u8]>, x: u32, y: u32, w: u32, h: u32
 
 /// Copy `rgba` (`width*height*4`) into an already-initialized, already-
 /// sampled atlas `image` at offset (x, y): SHADER_READ_ONLY → TRANSFER_DST
-/// → SHADER_READ_ONLY, fence-waited. `wait_idle` first so no in-flight
-/// frame samples the atlas mid-write (rare call — see `upload_skin`).
+/// → SHADER_READ_ONLY. Asynchronous: the leading barrier's first scope covers
+/// every earlier submission, so frames already queued finish sampling before
+/// the copy, and later frames see it; the staging buffer and command pool are
+/// released through deferred destruction once the next frame retires. No
+/// idle, no fence wait.
 pub(crate) fn upload_region(
     gpu: &mut Gpu,
     image: vk::Image,
@@ -5548,7 +5540,7 @@ pub(crate) fn upload_region(
     if rgba.len() != expect {
         return Err(format!("upload_region: {} bytes, want {expect}", rgba.len()));
     }
-    gpu.wait_idle();
+    gpu.collect_garbage();
     unsafe {
         let device = gpu.device.clone();
         let staging = device
@@ -5643,24 +5635,18 @@ pub(crate) fn upload_region(
             &vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&to_read)),
         );
         device.end_command_buffer(cb).map_err(|e| format!("skin end: {e}"))?;
-        let fence = device
-            .create_fence(&vk::FenceCreateInfo::default(), None)
-            .map_err(|e| format!("skin fence: {e}"))?;
         let cbs = [vk::CommandBufferSubmitInfo::default().command_buffer(cb)];
-        device
-            .queue_submit2(
-                gpu.graphics_queue,
-                &[vk::SubmitInfo2::default().command_buffer_infos(&cbs)],
-                fence,
-            )
-            .map_err(|e| format!("skin submit: {e}"))?;
-        device
-            .wait_for_fences(&[fence], true, u64::MAX)
-            .map_err(|e| format!("skin wait: {e}"))?;
-        device.destroy_fence(fence, None);
-        device.destroy_command_pool(pool, None);
-        device.destroy_buffer(staging, None);
-        let _ = gpu.allocator.free(salloc);
+        let submitted = device.queue_submit2(
+            gpu.graphics_queue,
+            &[vk::SubmitInfo2::default().command_buffer_infos(&cbs)],
+            vk::Fence::null(),
+        );
+        gpu.defer_destroy(move |g| {
+            g.device.destroy_command_pool(pool, None);
+            g.device.destroy_buffer(staging, None);
+            let _ = g.allocator.free(salloc);
+        });
+        submitted.map_err(|e| format!("skin submit: {e}"))?;
     }
     Ok(())
 }
@@ -6532,6 +6518,19 @@ mod tests {
     /// *not* a multiple of the caps and drew the same conclusion from it, which
     /// is a non-sequitur — the test was right and the reasoning beside it was
     /// not. A cap that was not a power of two would genuinely skip here.
+    #[test]
+    fn clamped_ranges_never_exceed_the_upload() {
+        // Everything fits: untouched.
+        assert_eq!(clamp_ranges([6, 3, 3, 0, 0, 3], 100), [6, 3, 3, 0, 0, 3]);
+        // The cut lands in the glint range: it shrinks to whole triangles and
+        // every later range is empty.
+        let c = clamp_ranges([90, 6, 30, 12, 6, 6], 110);
+        assert_eq!(c, [90, 6, 12, 0, 0, 0]);
+        assert!(c.iter().sum::<u32>() <= 110);
+        // Nothing uploaded, nothing drawn.
+        assert_eq!(clamp_ranges([3, 3, 3, 3, 3, 3], 0), [0; 6]);
+    }
+
     #[test]
     fn slot_ring_survives_a_cursor_rollover() {
         let mut r: SlotRing<u32> = SlotRing::new(64);

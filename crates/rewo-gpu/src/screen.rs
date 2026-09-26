@@ -64,8 +64,7 @@
 //! otherwise spill into what sits below it.
 
 use ash::vk;
-use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
-use gpu_allocator::MemoryLocation;
+use gpu_allocator::vulkan::Allocation;
 
 use crate::container::{build_pipeline, Rect, Vertex};
 use crate::entities::create_texture;
@@ -83,7 +82,8 @@ const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
 /// past that [`push_quad`] drops the overflow rather than corrupting the
 /// buffer, which is the same degradation M85 documented.
 const MAX_VERTS: usize = 16384;
-const RING: usize = 2;
+/// Set once this pass has dropped geometry past its budget.
+static TRUNCATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const ATLAS_W: u32 = 512;
 // 512 as of M172: the 192x192 book background did not fit the 256-tall
 // atlas. Every pre-M172 placement is unchanged in TEXELS, and the `uv`
@@ -360,9 +360,7 @@ pub struct ScreenPass {
     image: vk::Image,
     image_alloc: Option<Allocation>,
     view: vk::ImageView,
-    bufs: [vk::Buffer; RING],
-    allocs: [Option<Allocation>; RING],
-    cursor: usize,
+    ring: crate::buf_ring::BufRing,
     /// The head segment's vertex count — backdrop + menu background, drawn
     /// under the full-extent scissor before any batch.
     head_verts: u32,
@@ -439,7 +437,7 @@ impl ScreenPass {
         // known at compile time, and a stable placement means the UVs below
         // are readable constants instead of a lookup.
         let mut sheets = vec![((0u32, 0u32), (0u32, 0u32)); SHEET_COUNT];
-        let mut put = |atlas: &mut Vec<u8>,
+        let put = |atlas: &mut Vec<u8>,
                        sheets: &mut Vec<((u32, u32), (u32, u32))>,
                        s: Sheet,
                        data: &crate::hud::HudSpriteData<'_>,
@@ -749,13 +747,12 @@ impl ScreenPass {
         };
         let pipeline = build_pipeline(&device, layout, color_format)?;
 
-        let mut bufs = [vk::Buffer::null(); RING];
-        let mut allocs: [Option<Allocation>; RING] = [None, None];
-        for i in 0..RING {
-            let (b, a) = new_vertex_buffer(gpu)?;
-            bufs[i] = b;
-            allocs[i] = Some(a);
-        }
+        let ring = crate::buf_ring::BufRing::with_capacity(
+            gpu,
+            "screen-verts",
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            VERTEX_STRIDE * MAX_VERTS as u64,
+        )?;
         Ok(Self {
             layout,
             set_layout,
@@ -766,9 +763,7 @@ impl ScreenPass {
             image,
             image_alloc: Some(image_alloc),
             view,
-            bufs,
-            allocs,
-            cursor: 0,
+            ring,
             head_verts: 0,
             verts: 0,
             scissor_batches: Vec::new(),
@@ -784,7 +779,6 @@ impl ScreenPass {
     pub fn set_state(&mut self, extent: vk::Extent2D, draw: &ScreenDraw) {
         let (w, h) = (extent.width.max(1) as f32, extent.height.max(1) as f32);
         let scale = crate::hud::gui_scale(w, h);
-        self.cursor = (self.cursor + 1) % RING;
         let mut v: Vec<Vertex> = Vec::with_capacity(64);
 
         // 1. The backdrop, over everything the world drew, in *screen* pixels
@@ -888,23 +882,19 @@ impl ScreenPass {
 
         self.verts = v.len() as u32;
         self.head_verts = head_end;
-        if let Some(alloc) = self.allocs[self.cursor].as_ref() {
-            if let Some(ptr) = alloc.mapped_ptr() {
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        v.as_ptr() as *const u8,
-                        ptr.as_ptr() as *mut u8,
-                        std::mem::size_of_val(&v[..]),
-                    );
-                }
-            }
-        }
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(&v[..]))
+        };
+        self.ring.write_fixed(bytes, VERTEX_STRIDE as usize);
     }
 
     pub fn draw(&self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
         if self.verts == 0 {
             return;
         }
+        let Some(vbuf) = self.ring.bind() else {
+            return;
+        };
         let device = &gpu.device;
         unsafe {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
@@ -930,7 +920,7 @@ impl ScreenPass {
                 0,
                 bytemuck::cast_slice(&push),
             );
-            device.cmd_bind_vertex_buffers(cb, 0, &[self.bufs[self.cursor]], &[0]);
+            device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             // The head (backdrop, menu background) under the full-extent
             // scissor…
             device.cmd_draw(cb, self.head_verts, 1, 0, 0);
@@ -961,6 +951,7 @@ impl ScreenPass {
 
     pub fn destroy(&mut self, gpu: &mut Gpu) {
         gpu.wait_idle();
+        self.ring.destroy(gpu);
         let device = gpu.device.clone();
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
@@ -970,17 +961,9 @@ impl ScreenPass {
             device.destroy_sampler(self.sampler, None);
             device.destroy_image_view(self.view, None);
             device.destroy_image(self.image, None);
-            for b in self.bufs {
-                device.destroy_buffer(b, None);
-            }
         }
         if let Some(a) = self.image_alloc.take() {
             let _ = gpu.allocator.free(a);
-        }
-        for a in self.allocs.iter_mut() {
-            if let Some(a) = a.take() {
-                let _ = gpu.allocator.free(a);
-            }
         }
     }
 }
@@ -1235,6 +1218,7 @@ fn push_quad(
         ([x, y + qh], [r.u0, r.v1], c1),
     ];
     if v.len() + corners.len() > MAX_VERTS {
+        crate::buf_ring::warn_truncated(&TRUNCATED, "screen", MAX_VERTS);
         return;
     }
     for (pos, uv, color) in corners {
@@ -1242,34 +1226,3 @@ fn push_quad(
     }
 }
 
-fn new_vertex_buffer(gpu: &mut Gpu) -> Result<(vk::Buffer, Allocation), String> {
-    let size = VERTEX_STRIDE * MAX_VERTS as u64;
-    let buf = unsafe {
-        gpu.device
-            .create_buffer(
-                &vk::BufferCreateInfo::default()
-                    .size(size)
-                    .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
-                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
-                None,
-            )
-            .map_err(|e| format!("screen vertex buffer: {e}"))?
-    };
-    let req = unsafe { gpu.device.get_buffer_memory_requirements(buf) };
-    let alloc = gpu
-        .allocator
-        .allocate(&AllocationCreateDesc {
-            name: "screen-verts",
-            requirements: req,
-            location: MemoryLocation::CpuToGpu,
-            linear: true,
-            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-        })
-        .map_err(|e| format!("screen vertex alloc: {e}"))?;
-    unsafe {
-        gpu.device
-            .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
-            .map_err(|e| format!("screen bind: {e}"))?;
-    }
-    Ok((buf, alloc))
-}

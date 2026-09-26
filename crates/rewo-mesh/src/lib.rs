@@ -1,13 +1,15 @@
-//! rewo-mesh — M4 mesher: full-cube fast path with ambient occlusion, plus
-//! the general model-quad path for everything else (stairs, slabs, fences,
-//! glass, plants, torches, …).
+//! rewo-mesh — M4 mesher: full-cube fast path, plus the general model-quad
+//! path for everything else (stairs, slabs, fences, glass, plants, torches, …).
 //!
-//! Per-vertex color = directional face shade × AO × biome tint (white when
-//! untinted). As of M15 that product is **not stored**: the 28-byte
-//! [`MeshVertex`] carries the discrete shade and AO *codes* plus lossless tint
-//! bytes, and `world.vert` reconstructs the identical float sequence. Block and
-//! sky light stay packed *separately* in the same word (see [`pack_layer`]) and
-//! are combined in the shader, so the time of day never forces a remesh.
+//! **Lighting is vanilla's**, per `ModelBlockRenderer.tesselateBlock`: with
+//! smooth lighting on, a block that emits no light and whose model uses ambient
+//! occlusion goes through `BlockModelLighter.prepareQuadAmbientOcclusion`
+//! ([`smooth_light`]); everything else through `prepareQuadFlat`. Each vertex
+//! stores what vanilla's vertex stores: the 8-bit RGB color (`ARGB.gray` of the
+//! AO brightness, scaled by the cardinal face shade, times the tint) and the
+//! two light channels in `LightCoordsUtil` smooth units (vanilla's `UV2`). The
+//! shader samples the lightmap per vertex from those, so the time of day never
+//! forces a remesh. See [`MeshVertex`].
 //!
 //! Biome tint is applied at mesh time (M14): a dynamic Grass/Foliage/DryFoliage/
 //! Water face selects the *raw* (un-tinted) atlas layer and carries its resolved
@@ -19,15 +21,14 @@
 //! once, not once per face.
 //!
 //! **Greedy meshing (M15).** The M4 note said greedy was impossible here
-//! because per-vertex AO makes coplanar faces non-mergeable. That is true only
-//! for faces whose four corner AO codes *differ*: across such a face the
+//! because per-vertex lighting makes coplanar faces non-mergeable. That is true
+//! only for faces whose four vertices *differ*: across such a face the
 //! rasterizer interpolates a gradient that a merged rectangle cannot reproduce.
-//! A face whose four AO codes are all equal has no gradient at all, so replacing
-//! N of them with one rectangle is mathematically identical — the same shade,
-//! the same AO level, the same repeated texture. [`mesh_column`] therefore
-//! splits the cube path in two: uniform-AO faces on the five non-up directions
-//! enter a per-(face, plane) mask and are merged; up (+Y) faces and non-uniform
-//! faces fall back to the legacy unit quad, byte-for-byte. The up carve-out is
+//! A face whose four vertices carry the same light and color has no gradient at
+//! all, so replacing N of them with one rectangle is mathematically identical.
+//! [`mesh_column`] therefore splits the cube path in two: uniform faces on the
+//! five non-up directions enter a per-(face, plane) mask and are merged; up
+//! (+Y) faces and non-uniform faces fall back to the unit quad, byte-for-byte. The up carve-out is
 //! empirical, not structural — the merge site in [`mesh_column`] records what
 //! merging it measured. Models and fluids never merge — they run the untouched
 //! [`emit_model`] / [`emit_fluid`] path.
@@ -38,11 +39,12 @@
 
 pub mod crumbling;
 pub mod pool;
+pub mod smooth_light;
 
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
-use rewo_data::assets::{CarriedFluid, RenderKind, TintSource};
+use rewo_data::assets::{CarriedFluid, CullInfo, RenderKind, TintSource};
 use rewo_world::World;
 
 /// Vanilla `Options.biomeBlendRadius` default — the `(2r+1)²` block-tint window.
@@ -71,9 +73,8 @@ struct TintCache {
 
 /// Dynamic biome tint (lossless RGB bytes) for a tinted face, or `None` to
 /// fall back to the legacy pre-tinted layer (no biome context or an untinted
-/// face). Stored verbatim in `MeshVertex::tint`; `world.vert` folds it in
-/// alongside shade/AO when it reconstructs the color — the camera sky/fog is a
-/// separate uniform, so this never re-runs on a time-of-day change.
+/// face). Multiplied into the vertex color the way vanilla's `multiplyColor`
+/// does (see [`block_vertex_color`]).
 ///
 /// Results for the four dynamic resolvers are memoized in `cache`, keyed by the
 /// **actually sampled** block position + resolver. `GrassBelow` (doubleTallGrass
@@ -111,93 +112,101 @@ fn biome_tint(
     Some(rgb)
 }
 
-// -- packed vertex bit layout (M15) -----------------------------------------
-// `light` word: layer[0..15] | block[16..19] | sky[20..23] | shade[24..26] |
-// ao[27..28] | reserved[29..31]. The lower 24 bits are exactly `pack_layer`'s
-// historical contract, untouched.
-const SHADE_SHIFT: u32 = 24;
-const SHADE_MASK: u32 = 0b111;
-const AO_SHIFT: u32 = 27;
-const AO_MASK: u32 = 0b11;
+// -- packed vertex -----------------------------------------------------------
 
-/// Pack the discrete shade/AO codes into the high bits of a `pack_layer` word.
-pub fn pack_light_word(layer: u32, block: u8, sky: u8, shade_code: u8, ao_code: u8) -> u32 {
-    // Release assert, not `debug_assert!`: `SHADE_MASK` is 3 bits (0..=7) while
-    // `FACE_SHADE` has 7 entries, so the reserved code 7 fits the mask and would
-    // pack silently — then index out of bounds in
-    // `MeshVertex::reconstructed_color` (and in `world.vert`, where an
-    // out-of-range constant-array index is undefined). 0..=6 are the valid
-    // codes; 7 fails closed here, at the one boundary every emitter goes
-    // through.
-    assert!(
-        (shade_code as usize) < FACE_SHADE.len(),
-        "shade_code {} out of range: FACE_SHADE has {} entries (valid 0..={})",
-        shade_code,
-        FACE_SHADE.len(),
-        FACE_SHADE.len() - 1
-    );
-    debug_assert!((ao_code as usize) < AO_LEVELS.len());
-    pack_layer(layer, block, sky)
-        | ((shade_code as u32 & SHADE_MASK) << SHADE_SHIFT)
-        | ((ao_code as u32 & AO_MASK) << AO_SHIFT)
+/// `LightCoordsUtil.FULL_BRIGHT` = `pack(15, 15)`.
+pub const FULL_BRIGHT: i32 = 15 << 4 | 15 << 20;
+
+/// `LightCoordsUtil.pack(block, sky)` — whole light levels in vanilla's packed
+/// light coordinates (block in bits 4..7, sky in bits 20..23).
+pub const fn light_coords(block: u8, sky: u8) -> i32 {
+    (block as i32) << 4 | (sky as i32) << 20
 }
 
-/// Pack lossless tint bytes + a reserved flag byte.
-pub fn pack_tint(rgb: [u8; 3], flags: u8) -> u32 {
-    (rgb[0] as u32) | ((rgb[1] as u32) << 8) | ((rgb[2] as u32) << 16) | ((flags as u32) << 24)
+/// `LightCoordsUtil.max` — the brighter of two coordinates, per channel.
+fn light_max(a: i32, b: i32) -> i32 {
+    let block = ((a >> 4) & 15).max((b >> 4) & 15);
+    let sky = ((a >> 20) & 15).max((b >> 20) & 15);
+    block << 4 | sky << 20
 }
 
-/// White tint — the legacy/untinted path. `255/255 == 1.0` exactly, so a
-/// reconstructed color is bit-identical to the old `c * 1.0`.
+/// The vertex's `light` word: `layer[0..15] | block[16..23] | sky[24..31]`.
+///
+/// The two light channels are vanilla's `UV2` pair: `LightCoordsUtil` smooth
+/// units, i.e. `smoothBlock(coords)` / `smoothSky(coords)`, a light level ×16
+/// plus the fraction smooth lighting blends in (0..=240). They stay separate to
+/// the shader, which is what lets the time of day re-light the world without a
+/// remesh.
+pub fn pack_light_word(layer: u32, coords: i32) -> u32 {
+    debug_assert!(layer <= 0xFFFF, "texture layer {layer} exceeds 16 bits");
+    let block = (coords & 0xFF) as u32;
+    let sky = ((coords >> 16) & 0xFF) as u32;
+    (layer & 0xFFFF) | block << 16 | sky << 24
+}
+
+/// White tint — the untinted path; multiplying by it is the identity.
 pub const TINT_WHITE: [u8; 3] = [255, 255, 255];
 
-/// **28 bytes.** World-space position stays full `f32` (the M4 invariant: the
-/// mesher emits world space and the shader adds no column origin).
+/// `ARGB.as8BitChannel(value)` = `Mth.floor(value * 255.0F)`.
+fn as_8bit_channel(value: f32) -> i32 {
+    (value * 255.0f32).floor() as i32
+}
+
+/// The vertex color vanilla's block renderer produces, bit for bit:
+/// `ARGB.gray(brightness)` (`prepareQuadAmbientOcclusion` / `prepareQuadFlat`),
+/// then `QuadInstance.scaleColor(shade)` (`ARGB.scaleRGB`: `(int)(c * shade)`
+/// clamped), then `multiplyColor(tint)` (`ARGB.multiply`: `a * b / 255`).
 ///
-/// - `pos`   f32x3 (12) — world space, unchanged
-/// - `uv`    f32x2 (8)  — **exact**; see below
-/// - `light` u32 (4) — see the bit layout above
-/// - `tint`  u32 (4) — lossless RGB bytes + reserved flags
+/// The flat path is `brightness = shade, shade = 1.0`: vanilla's
+/// `prepareQuadFlat` puts the cardinal shade into `gray` directly and never
+/// scales. [`TINT_WHITE`] is the identity of the last step, which is what an
+/// untinted quad (`tintIndex == -1`) skips.
+pub fn block_vertex_color(brightness: f32, shade: f32, tint: [u8; 3]) -> [u8; 3] {
+    let gray = as_8bit_channel(brightness);
+    let scaled = ((gray as f32 * shade) as i32).clamp(0, 255);
+    tint.map(|t| (scaled * t as i32 / 255) as u8)
+}
+
+/// `ARGB.scaleRGB(tintColor, shade)` on an opaque tint — the fluid renderer's
+/// vertex color (`FluidRenderer`, which never goes through `gray`).
+fn scale_rgb(tint: [u8; 3], shade: f32) -> [u8; 3] {
+    tint.map(|t| ((t as f32 * shade) as i32).clamp(0, 255) as u8)
+}
+
+/// **28 bytes**, the same fields vanilla's block vertex carries.
+///
+/// - `pos`   f32x3 (12) — world space (the mesher emits world space and the
+///   shader adds no column origin)
+/// - `uv`    f32x2 (8)  — exact; see below
+/// - `light` u32 (4)   — see [`pack_light_word`]
+/// - `color` u32 (4)   — `r[0..7] g[8..15] b[16..23]`, byte 3 = 255; the GPU
+///   reads it as `R8G8B8A8_UNORM`, the same conversion vanilla's `Color`
+///   attribute gets
 ///
 /// A 24-byte variant storing UV as f16 was built and **rejected**: `emit_fluid`
 /// emits surface UVs of the form `1.0 - k/9` (vanilla's 8/9 source height), and
 /// `1/9` is not a dyadic rational, so no f16 represents it. The resulting
 /// ~2.7e-5 UV error is only ~0.0004 texel, but it lands on a texel boundary and
 /// flipped nearest-neighbour sampling on 6 demo pixels (max channel delta 25),
-/// breaking byte-identical rendering. Baked *model* UVs are all k/16 and were
-/// exact (2,982,592 components, 0 inexact) — the fluid family is the one f16
-/// cannot carry, so UV stays f32.
-///
-/// The per-vertex color is **not** stored; the vertex shader reconstructs it as
-/// `FACE_SHADE[shade] * AO_LEVELS[ao] * (tint_rgb / 255)`, in that order, which
-/// is the identical float sequence the mesher used to run on the CPU.
+/// breaking byte-identical rendering. So UV stays f32.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, PartialEq, Debug)]
 pub struct MeshVertex {
     pub pos: [f32; 3],
     pub uv: [f32; 2],
     pub light: u32,
-    pub tint: u32,
+    pub color: u32,
 }
 
 impl MeshVertex {
-    /// The one constructor. Takes ordinary f32 UV + discrete codes + lossless
-    /// tint bytes, so no call site hand-assembles the layout.
-    pub fn new(
-        pos: [f32; 3],
-        uv: [f32; 2],
-        layer: u32,
-        block: u8,
-        sky: u8,
-        shade_code: u8,
-        ao_code: u8,
-        tint_rgb: [u8; 3],
-    ) -> Self {
+    /// The one constructor: `coords` is vanilla packed light
+    /// (`LightCoordsUtil`), `color` the finished 8-bit vertex color.
+    pub fn new(pos: [f32; 3], uv: [f32; 2], layer: u32, coords: i32, color: [u8; 3]) -> Self {
         Self {
             pos,
             uv,
-            light: pack_light_word(layer, block, sky, shade_code, ao_code),
-            tint: pack_tint(tint_rgb, 0),
+            light: pack_light_word(layer, coords),
+            color: pack_color(color),
         }
     }
 
@@ -211,45 +220,44 @@ impl MeshVertex {
         (self.light & 0xFFFF) as u16
     }
 
+    /// Block light in smooth units (`LightCoordsUtil.smoothBlock`, 0..=240).
+    pub fn block_smooth(&self) -> u8 {
+        ((self.light >> 16) & 0xFF) as u8
+    }
+
+    /// Sky light in smooth units (`LightCoordsUtil.smoothSky`, 0..=240).
+    pub fn sky_smooth(&self) -> u8 {
+        ((self.light >> 24) & 0xFF) as u8
+    }
+
+    /// Whole block light level (`LightCoordsUtil.block`: the smooth value's
+    /// integer part).
     pub fn block_light(&self) -> u8 {
-        ((self.light >> 16) & 15) as u8
+        self.block_smooth() >> 4
     }
 
+    /// Whole sky light level (`LightCoordsUtil.sky`).
     pub fn sky_light(&self) -> u8 {
-        ((self.light >> 20) & 15) as u8
+        self.sky_smooth() >> 4
     }
 
-    pub fn shade_code(&self) -> u8 {
-        ((self.light >> SHADE_SHIFT) & SHADE_MASK) as u8
-    }
-
-    pub fn ao_code(&self) -> u8 {
-        ((self.light >> AO_SHIFT) & AO_MASK) as u8
-    }
-
-    pub fn tint_rgb(&self) -> [u8; 3] {
+    pub fn color_rgb(&self) -> [u8; 3] {
         [
-            (self.tint & 0xFF) as u8,
-            ((self.tint >> 8) & 0xFF) as u8,
-            ((self.tint >> 16) & 0xFF) as u8,
+            (self.color & 0xFF) as u8,
+            ((self.color >> 8) & 0xFF) as u8,
+            ((self.color >> 16) & 0xFF) as u8,
         ]
     }
 
-    pub fn tint_flags(&self) -> u8 {
-        ((self.tint >> 24) & 0xFF) as u8
-    }
-
-    /// CPU mirror of `world.vert`'s reconstruction — the same operations in the
-    /// same order, so oracles can compare against the legacy float formula.
+    /// The color as the vertex shader sees it: `R8G8B8A8_UNORM`, `c / 255`.
     pub fn reconstructed_color(&self) -> [f32; 3] {
-        let c = FACE_SHADE[self.shade_code() as usize] * AO_LEVELS[self.ao_code() as usize];
-        let rgb = self.tint_rgb();
-        [
-            c * (rgb[0] as f32 / 255.0),
-            c * (rgb[1] as f32 / 255.0),
-            c * (rgb[2] as f32 / 255.0),
-        ]
+        self.color_rgb().map(|c| c as f32 / 255.0)
     }
+}
+
+/// Pack an opaque RGB color into the vertex's `color` word.
+pub fn pack_color(rgb: [u8; 3]) -> u32 {
+    (rgb[0] as u32) | ((rgb[1] as u32) << 8) | ((rgb[2] as u32) << 16) | 0xFF00_0000
 }
 
 pub struct ColumnMesh {
@@ -298,54 +306,11 @@ const FACE_OFFSETS: [(i32, i32, i32); 6] = [
     (-1, 0, 0),
     (1, 0, 0),
 ];
-/// Directional face shade, indexed by the vertex's 3-bit shade code.
-/// **Mirrored verbatim in `shaders/world.vert`** — keep both in sync.
-///
-/// Codes 0..=5 are the M15 assignment and are frozen: they are exactly
-/// `CardinalLighting::DEFAULT` in the mesher's face order `[up, down, north,
-/// south, west, east]`, so under the default table a face's code *is* its
-/// direction and code 0 doubles as the `shade: false` identity
-/// (`FACE_SHADE[0] == 1.0`). Nothing may renumber them — every Overworld mesh
-/// byte and the greedy oracle's expansion (which reads the code back as a face
-/// direction) depend on it.
-///
-/// M16 appends **code 6 = 0.9**, the one factor `CardinalLighting::NETHER`
-/// introduces (its up *and* down). Code 7 stays reserved: it is inside the
-/// 3-bit mask but outside this table, and [`pack_light_word`] rejects it in
-/// release builds rather than letting it index out of bounds here or in the
-/// shader.
-pub const FACE_SHADE: [f32; 7] = [1.0, 0.5, 0.8, 0.8, 0.6, 0.6, 0.9];
-
-/// **The one face → shade-code mapping**, driven by the world's dimension.
-///
-/// Both mesher paths, all three geometry kinds (cube, model, fluid) and the
-/// greedy merge key resolve a face's shade through here, so a face's stored
-/// code cannot depend on which emitter produced it.
-///
-/// The rule is a lookup, not a search: a face whose dimension leaves its factor
-/// at the default keeps its historical code — which is what makes every
-/// Overworld/default mesh byte-identical to pre-M16, including the two pairs
-/// (north/south, west/east) that share a value and would otherwise collapse
-/// onto one code. Only a face the dimension actually moves (Nether up/down,
-/// 1.0/0.5 → 0.9) looks the new factor up, and finds code 6.
-///
-/// Fail-closed: a factor that is in no `FACE_SHADE` entry has no representable
-/// code, so this panics rather than packing a wrong shade. Vanilla ships
-/// exactly the two tables `CardinalLightType` names, so that is unreachable
-/// today — it exists so a third table cannot be added silently.
-pub fn face_shade_code(world: &World, face: usize) -> u8 {
-    let want = world.cardinal_light().by_mesh_face(face);
-    if FACE_SHADE[face] == want {
-        return face as u8;
-    }
-    match FACE_SHADE.iter().position(|f| *f == want) {
-        Some(code) => code as u8,
-        None => panic!(
-            "cardinal light factor {want} for face {face} has no FACE_SHADE code \
-             (dimension {:?}); add it to FACE_SHADE *and* shaders/world.vert",
-            world.cardinal_light_type()
-        ),
-    }
+/// `CardinalLighting.byFace` for a mesher face (`[up, down, north, south,
+/// west, east]`) under the world's dimension: 0.5/1.0/0.8/0.6 by default, the
+/// Nether's 0.9 up and down.
+pub fn face_shade(world: &World, face: usize) -> f32 {
+    world.cardinal_light().by_mesh_face(face)
 }
 
 /// Unit-cube face corners + UV, matching asset face order.
@@ -397,33 +362,184 @@ const FACE_AXES: [(usize, usize, (i32, i32, i32)); 6] = [
     (2, 1, (-1, 0, 0)), // west: u=z, v=y
     (2, 1, (1, 0, 0)),  // east
 ];
-/// AO level 0..3 → brightness, indexed by the vertex's 2-bit AO code.
-/// **Mirrored verbatim in `shaders/world.vert`** — keep both in sync.
-pub const AO_LEVELS: [f32; 4] = [0.45, 0.65, 0.82, 1.0];
-/// The AO code meaning "no occlusion" — `AO_LEVELS[AO_NONE] == 1.0`, so model
-/// and fluid faces reproduce their old un-AO'd color exactly.
-pub const AO_NONE: u8 = 3;
-
-/// Pack a texture layer with the two light channels.
+/// Everything the mesher reads per block state, borrowed.
 ///
-/// Vanilla keeps block and sky light **separate** all the way to the shader:
-/// they are combined additively there, and the sky half is scaled by the time
-/// of day (`SKY_LIGHT_FACTOR`). Collapsing them to one number in the mesh
-/// would bake the time of day into the geometry and force a full remesh at
-/// every sunrise.
-///
-/// The layer index needs 16 bits (a few thousand layers) and each channel
-/// needs 4, so all three ride in the existing `u32` — the vertex does not
-/// grow. Layout: `layer | block << 16 | sky << 20`.
-pub fn pack_layer(layer: u32, block: u8, sky: u8) -> u32 {
-    debug_assert!(layer <= 0xFFFF, "texture layer {layer} exceeds 16 bits");
-    (layer & 0xFFFF) | ((block as u32 & 15) << 16) | ((sky as u32 & 15) << 20)
+/// `cull` may be empty (or shorter than `render`): a state with no entry falls
+/// back to the legacy rule — a `RenderKind::Cube` occludes all six faces, is a
+/// full opaque block to the lighting, and nothing is translucent — which is
+/// what every synthetic fixture relies on. `emission` / `dampening` may be
+/// empty the same way (no emitters; a cube dampens 15, anything else 0).
+#[derive(Clone, Copy)]
+pub struct MeshInputs<'a> {
+    pub render: &'a [RenderKind],
+    pub models: &'a [Vec<rewo_data::assets::Quad>],
+    pub fluid: &'a [Option<CarriedFluid>],
+    pub cull: &'a [CullInfo],
+    /// `BlockState.getLightEmission()` per state.
+    pub emission: &'a [u8],
+    /// `BlockState.getLightDampening()` per state.
+    pub dampening: &'a [u8],
+    /// Vanilla's "Smooth Lighting" option (`Options.ambientOcclusion`, on by
+    /// default): off, every block takes the flat path.
+    pub smooth_lighting: bool,
 }
 
-fn is_full_cube(table: &[RenderKind], state: u32) -> bool {
-    matches!(table.get(state as usize), Some(RenderKind::Cube { .. }))
+impl<'a> MeshInputs<'a> {
+    /// The production tables of a bake, smooth lighting on.
+    pub fn from_baked(b: &'a rewo_data::assets::BakedAssets) -> Self {
+        Self {
+            render: &b.render,
+            models: &b.models,
+            fluid: &b.fluid,
+            cull: &b.cull,
+            emission: &b.emission,
+            dampening: &b.dampening,
+            smooth_lighting: true,
+        }
+    }
+
+    /// Only the geometry tables; no per-state lighting facts (the legacy
+    /// fallbacks of [`MeshInputs`] apply), smooth lighting on.
+    pub fn geometry(
+        render: &'a [RenderKind],
+        models: &'a [Vec<rewo_data::assets::Quad>],
+        fluid: &'a [Option<CarriedFluid>],
+    ) -> Self {
+        Self {
+            render,
+            models,
+            fluid,
+            cull: &[],
+            emission: &[],
+            dampening: &[],
+            smooth_lighting: true,
+        }
+    }
 }
 
+/// The per-state lookups the emitters share.
+#[derive(Clone, Copy)]
+struct Tables<'a> {
+    render: &'a [RenderKind],
+    cull: &'a [CullInfo],
+    emission: &'a [u8],
+    dampening: &'a [u8],
+    smooth_lighting: bool,
+}
+
+impl<'a> Tables<'a> {
+    fn new(inputs: &MeshInputs<'a>) -> Self {
+        Self {
+            render: inputs.render,
+            cull: inputs.cull,
+            emission: inputs.emission,
+            dampening: inputs.dampening,
+            smooth_lighting: inputs.smooth_lighting,
+        }
+    }
+
+    fn get(&self, state: usize) -> Option<&'a RenderKind> {
+        self.render.get(state)
+    }
+
+    fn info(&self, state: u32) -> CullInfo {
+        match self.cull.get(state as usize) {
+            Some(c) => *c,
+            None => {
+                let cube = self.is_cube(state);
+                CullInfo {
+                    occludes: if cube { 0b11_1111 } else { 0 },
+                    ao_occluder: cube,
+                    view_blocking: cube,
+                    shade_dark: cube,
+                    ambient_occlusion: true,
+                    ..CullInfo::default()
+                }
+            }
+        }
+    }
+
+    fn emission(&self, state: u32) -> u8 {
+        self.emission.get(state as usize).copied().unwrap_or(0)
+    }
+
+    fn dampening(&self, state: u32) -> u8 {
+        match self.dampening.get(state as usize) {
+            Some(d) => *d,
+            None if self.is_cube(state) => 15,
+            None => 0,
+        }
+    }
+
+    /// `LightCoordsUtil.getLightCoords(BrightnessGetter.DEFAULT, level, state,
+    /// pos)`: `FULL_BRIGHT` for an emissive-rendering state, else the stored
+    /// light at `pos`, with the block channel raised to the state's own
+    /// emission (`withBlock`).
+    fn light_coords(&self, world: &World, state: u32, x: i32, y: i32, z: i32) -> i32 {
+        if self.info(state).emissive_rendering {
+            return FULL_BRIGHT;
+        }
+        let (block, sky) = world.light_at(x, y, z);
+        let packed = light_coords(block, sky);
+        let emission = self.emission(state);
+        if block < emission {
+            packed & 0xFF_0000 | (emission as i32) << 4
+        } else {
+            packed
+        }
+    }
+
+    /// `ModelBlockRenderer.tesselateBlock`'s choice: smooth lighting on, the
+    /// state emits no light, and its (first) model uses ambient occlusion.
+    fn uses_ao(&self, state: u32) -> bool {
+        self.smooth_lighting && self.emission(state) == 0 && self.info(state).ambient_occlusion
+    }
+
+    fn is_cube(&self, state: u32) -> bool {
+        matches!(self.render.get(state as usize), Some(RenderKind::Cube { .. }))
+    }
+
+    /// `neighbor.getFaceOcclusionShape(face) == Shapes.block()` — `face` is
+    /// the neighbour's own face (the one touching us).
+    fn occludes(&self, state: u32, face: usize) -> bool {
+        self.info(state).occludes & (1 << face) != 0
+    }
+
+    /// `Block.shouldRenderFace(state, neighbor, face)` for the two cases Rewo
+    /// can decide exactly: a fully occluding neighbour face, and
+    /// `skipRendering`. Partial-shape against partial-shape pairs (two slabs
+    /// side by side) are drawn — vanilla culls some of those via
+    /// `Shapes.joinIsNotEmpty`, which needs per-face shapes the bake does not
+    /// carry; the result is hidden overdraw, never a hole.
+    fn should_render(&self, state: u32, neighbor: u32, face: usize) -> bool {
+        let opp = face ^ 1;
+        if self.occludes(neighbor, opp) {
+            return false;
+        }
+        let s = self.info(state);
+        if s.skip == 0 {
+            return true;
+        }
+        let n = self.info(neighbor);
+        let same = n.block == s.block && self.cull.get(neighbor as usize).is_some();
+        let skip = match s.skip {
+            // `HalfTransparentBlock` / `PowderSnowBlock`: `neighbor.is(this)`.
+            1 => same,
+            // `IronBarsBlock`: same block, or both in `#bars` (every pane and
+            // bar declares all four connection properties).
+            2 => {
+                (same || (n.bars && s.bars))
+                    && (face < 2 || (s.connect & (1 << face) != 0 && n.connect & (1 << opp) != 0))
+            }
+            // `MangroveRootsBlock`: same block on the Y axis.
+            3 => same && face < 2,
+            _ => false,
+        };
+        !skip
+    }
+}
+
+#[cfg(any(test, feature = "oracle"))]
 /// The **frozen pre-greedy mesher** — one unit quad per visible face, in scan
 /// order. Kept verbatim as the oracle the optimized [`mesh_column`] is graded
 /// against: expanding its rectangles back into unit faces must reproduce this
@@ -436,6 +552,25 @@ pub(crate) fn mesh_column_reference(
     cx: i32,
     cz: i32,
 ) -> Option<ColumnMesh> {
+    mesh_column_reference_with(
+        world,
+        MeshInputs::geometry(table, models, carried),
+        cx,
+        cz,
+    )
+}
+
+#[cfg(any(test, feature = "oracle"))]
+/// [`mesh_column_reference`] over full [`MeshInputs`].
+pub(crate) fn mesh_column_reference_with(
+    world: &World,
+    inputs: MeshInputs<'_>,
+    cx: i32,
+    cz: i32,
+) -> Option<ColumnMesh> {
+    let table = Tables::new(&inputs);
+    let ao = AoView { world, table };
+    let (models, carried) = (inputs.models, inputs.fluid);
     let col = world.column(cx, cz)?;
     let shape = world.shape;
     let base_x = cx * 16;
@@ -470,7 +605,7 @@ pub(crate) fn mesh_column_reference(
                     let state = world.block_state_at(wx, y, wz);
                     // `SectionCompiler.compile:89-97` — the fluid first, then
                     // the block, as two independent draws at one position.
-                    if let Some(f) = fluid_at(table, carried, state) {
+                    if let Some(f) = fluid_at(table.render, carried, state) {
                         // Water blends → translucent set; lava is opaque (and
                         // fullbright) → opaque set.
                         let (fv, fi) = if f.lava {
@@ -506,14 +641,16 @@ pub(crate) fn mesh_column_reference(
                             tint,
                         }) => {
                             visible_cube_faces += emit_cube(
-                                world,
-                                table,
+                                &ao,
                                 &mut tint_cache,
                                 &mut vertices,
                                 &mut indices,
+                                &mut tvertices,
+                                &mut tindices,
                                 wx,
                                 y,
                                 wz,
+                                state,
                                 faces,
                                 raw_faces,
                                 tint,
@@ -522,15 +659,17 @@ pub(crate) fn mesh_column_reference(
                         }
                         Some(RenderKind::Model(idx)) => {
                             emit_model(
-                                world,
-                                table,
+                                &ao,
                                 models,
                                 &mut tint_cache,
                                 &mut vertices,
                                 &mut indices,
+                                &mut tvertices,
+                                &mut tindices,
                                 wx,
                                 y,
                                 wz,
+                                state,
                                 *idx,
                             );
                             bump(y as f32);
@@ -572,18 +711,17 @@ pub(crate) fn mesh_column_reference(
 /// The merge identity of a mergeable cube face.
 ///
 /// `state` is in the key alongside the packed words on purpose: two different
-/// blocks can legitimately share an atlas layer on one face, and `light`/`tint`
+/// blocks can legitimately share an atlas layer on one face, and `light`/`color`
 /// are lossy summaries of *appearance*, not of *material*. Keying on the block
 /// state as well makes coalescence a deliberate "same block" decision rather
 /// than a coincidence of packed bits.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct FaceKey {
     state: u32,
-    /// The exact `pack_light_word` output — layer, block/sky light, the face's
-    /// shade code, and the (uniform) AO code.
+    /// The exact `pack_light_word` output — layer and the (uniform) light.
     light: u32,
-    /// The exact `pack_tint` output.
-    tint: u32,
+    /// The exact `pack_color` output — the (uniform) vertex color.
+    color: u32,
 }
 
 /// One face direction's plane masks.
@@ -710,7 +848,7 @@ fn emit_rect(
     width: i32,
     height: i32,
     light: u32,
-    tint: u32,
+    color: u32,
 ) {
     let (au, av, _) = FACE_AXES[face];
     let base_idx = vertices.len() as u32;
@@ -730,7 +868,7 @@ fn emit_rect(
             pos,
             uv: [uv[0] * width as f32, uv[1] * height as f32],
             light,
-            tint,
+            color,
         });
     }
     indices.extend_from_slice(&[
@@ -788,7 +926,7 @@ fn greedy_plane(
             }
             let base = mask_base_block(face, plane, u0 as i32, v0 as i32, base_x, base_z, y0);
             emit_rect(
-                vertices, indices, face, base, w as i32, h as i32, key.light, key.tint,
+                vertices, indices, face, base, w as i32, h as i32, key.light, key.color,
             );
             rects += 1;
         }
@@ -813,6 +951,27 @@ pub fn mesh_column(
     cx: i32,
     cz: i32,
 ) -> Option<ColumnMesh> {
+    mesh_column_with(
+        world,
+        MeshInputs::geometry(table, models, carried),
+        cx,
+        cz,
+    )
+}
+
+/// [`mesh_column`] over full [`MeshInputs`] — the production entry point,
+/// which also culls against non-occluding cubes (glass, leaves, ice, …),
+/// applies `skipRendering`, and routes translucent materials into
+/// [`ColumnMesh::tvertices`].
+pub fn mesh_column_with(
+    world: &World,
+    inputs: MeshInputs<'_>,
+    cx: i32,
+    cz: i32,
+) -> Option<ColumnMesh> {
+    let table = Tables::new(&inputs);
+    let ao = AoView { world, table };
+    let (models, carried) = (inputs.models, inputs.fluid);
     let col = world.column(cx, cz)?;
     let shape = world.shape;
     let base_x = cx * 16;
@@ -875,7 +1034,7 @@ pub fn mesh_column(
                     // the block, as two independent draws at one position. A
                     // waterlogged stair runs BOTH arms; a `LiquidBlock` only
                     // this one (its render shape is INVISIBLE).
-                    if let Some(f) = fluid_at(table, carried, state) {
+                    if let Some(f) = fluid_at(table.render, carried, state) {
                         let (fv, fi) = if f.lava {
                             (&mut vertices, &mut indices)
                         } else {
@@ -908,14 +1067,15 @@ pub fn mesh_column(
                             raw_faces,
                             tint,
                         }) => {
+                            let translucent = table.info(state).translucent;
                             for face in 0..6 {
                                 let Some(cf) = cube_face(
-                                    world,
-                                    table,
+                                    &ao,
                                     &mut tint_cache,
                                     wx,
                                     y,
                                     wz,
+                                    state,
                                     face,
                                     faces,
                                     raw_faces,
@@ -924,10 +1084,25 @@ pub fn mesh_column(
                                     continue;
                                 };
                                 visible_cube_faces += 1;
-                                // A face whose four corner AO codes agree has no
+                                // Translucent material: blended pass, unit
+                                // quads (the per-column sort needs no merge).
+                                if translucent {
+                                    push_cube_face(
+                                        &mut tvertices,
+                                        &mut tindices,
+                                        wx,
+                                        y,
+                                        wz,
+                                        face,
+                                        &cf,
+                                    );
+                                    unit_fallback_faces += 1;
+                                    continue;
+                                }
+                                // A face whose four vertices agree has no
                                 // gradient to lose, so it may merge. Anything
                                 // else must stay a unit quad — and so must every
-                                // up (+Y) face, whatever its AO.
+                                // up (+Y) face, whatever its lighting.
                                 //
                                 // The up carve-out is a measurement, not a
                                 // structural limit, and the measurement does not
@@ -949,11 +1124,7 @@ pub fn mesh_column(
                                 // diagnosed. The other five directions came out
                                 // byte-identical under the same comparison, so
                                 // they merge and up keeps the legacy unit quads.
-                                if face != 0
-                                    && cf.ao[0] == cf.ao[1]
-                                    && cf.ao[0] == cf.ao[2]
-                                    && cf.ao[0] == cf.ao[3]
-                                {
+                                if face != 0 && cf.lit.uniform() {
                                     greedy_candidate_faces += 1;
                                     masks.insert(
                                         face,
@@ -964,12 +1135,9 @@ pub fn mesh_column(
                                             state,
                                             light: pack_light_word(
                                                 cf.layer as u32,
-                                                cf.lb,
-                                                cf.ls,
-                                                cf.shade,
-                                                cf.ao[0],
+                                                cf.lit.coords[0],
                                             ),
-                                            tint: pack_tint(cf.tint_rgb, 0),
+                                            color: pack_color(cf.lit.color[0]),
                                         },
                                     );
                                 } else {
@@ -989,15 +1157,17 @@ pub fn mesh_column(
                         }
                         Some(RenderKind::Model(idx)) => {
                             emit_model(
-                                world,
-                                table,
+                                &ao,
                                 models,
                                 &mut tint_cache,
                                 &mut vertices,
                                 &mut indices,
+                                &mut tvertices,
+                                &mut tindices,
                                 wx,
                                 y,
                                 wz,
+                                state,
                                 *idx,
                             );
                             bump(y as f32);
@@ -1162,14 +1332,14 @@ fn fluid_h(level: u8) -> f32 {
 /// block's type IS water, so it answers here.
 fn fluid_level(
     world: &World,
-    table: &[RenderKind],
+    table: Tables<'_>,
     carried: &[Option<CarriedFluid>],
     x: i32,
     y: i32,
     z: i32,
     want_lava: bool,
 ) -> Option<u8> {
-    let f = fluid_at(table, carried, world.block_state_at(x, y, z))?;
+    let f = fluid_at(table.render, carried, world.block_state_at(x, y, z))?;
     (f.lava == want_lava).then_some(f.level)
 }
 
@@ -1193,7 +1363,7 @@ fn fluid_level(
 #[allow(clippy::too_many_arguments)]
 fn emit_fluid(
     world: &World,
-    table: &[RenderKind],
+    table: Tables<'_>,
     carried: &[Option<CarriedFluid>],
     cache: &mut TintCache,
     vertices: &mut Vec<MeshVertex>,
@@ -1243,32 +1413,21 @@ fn emit_fluid(
     let (z0, z1) = (wz as f32, wz as f32 + 1.0);
     let yf = y as f32;
 
-    // Face light mirrors the cube path (the cell the face looks into); lava
-    // emits its own block light, so it stays bright in an unlit cave.
-    let light = |x: i32, yy: i32, z: i32| -> (u8, u8) {
-        if lava {
-            (15, 0)
-        } else {
-            world.light_at(x, yy, z)
-        }
-    };
-    // Fluid faces carry flat directional shade and no AO, so the AO code is the
-    // identity level (AO_LEVELS[AO_NONE] == 1.0). The shade is the active
-    // dimension's code for the face's direction (M16) — identity under the
-    // default table, so the five call sites below read as the old literals.
-    let mut quad = |p: [([f32; 3], [f32; 2]); 4], shade_code: u8, l: (u8, u8)| {
+    // `FluidRenderer.getLightCoords(level, pos)`: the brighter of the cell and
+    // the one above, each through `LightCoordsUtil.getLightCoords` (so lava's
+    // own emission lights it). The top and the sides sample the fluid's cell,
+    // the bottom the cell below it.
+    let lc = |x: i32, yy: i32, z: i32| table.light_coords(world, world.block_state_at(x, yy, z), x, yy, z);
+    let fluid_light = |yy: i32| light_max(lc(wx, yy, wz), lc(wx, yy + 1, wz));
+    // `ARGB.scaleRGB(tintColor, factor)`: `up()` on top, `down()` below, and
+    // `up() * north()` / `up() * west()` on the Z / X sides.
+    let cardinal = world.cardinal_light();
+    let up = cardinal.by_mesh_face(0);
+    let mut quad = |p: [([f32; 3], [f32; 2]); 4], factor: f32, coords: i32| {
+        let color = scale_rgb(tint_rgb, factor);
         let base = vertices.len() as u32;
         for (pos, uv) in p {
-            vertices.push(MeshVertex::new(
-                pos,
-                uv,
-                fluid_layer as u32,
-                l.0,
-                l.1,
-                shade_code,
-                AO_NONE,
-                tint_rgb,
-            ));
+            vertices.push(MeshVertex::new(pos, uv, fluid_layer as u32, coords, color));
         }
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     };
@@ -1282,8 +1441,8 @@ fn emit_fluid(
                 ([x1, yf + h11, z1], [1.0, 1.0]),
                 ([x0, yf + h01, z1], [0.0, 1.0]),
             ],
-            face_shade_code(world, 0),
-            light(wx, y + 1, wz),
+            up,
+            fluid_light(y),
         );
     }
     // Sides — skip against the same fluid or a full opaque cube.
@@ -1341,11 +1500,13 @@ fn emit_fluid(
         // and belongs to whoever takes that on.
         if same(nx, y, nz)
             || f.self_occludes & (1 << face) != 0
-            || is_full_cube(table, world.block_state_at(nx, y, nz))
+            || table.occludes(world.block_state_at(nx, y, nz), face ^ 1)
         {
             continue;
         }
-        quad(corners, face_shade_code(world, face), light(nx, y, nz));
+        // `faceDir.getAxis() == Z ? north() : west()`.
+        let side = cardinal.by_mesh_face(if face < 4 { 2 } else { 4 });
+        quad(corners, up * side, fluid_light(y));
     }
     // Bottom — against anything that isn't fluid, isn't covered by our own
     // shape, and isn't a full cube. Vanilla's `renderDown` has TWO neighbour
@@ -1355,7 +1516,7 @@ fn emit_fluid(
     // on the sides.
     if !same(wx, y - 1, wz)
         && f.self_occludes & (1 << 1) == 0
-        && !is_full_cube(table, world.block_state_at(wx, y - 1, wz))
+        && !table.occludes(world.block_state_at(wx, y - 1, wz), 0)
     {
         quad(
             [
@@ -1364,9 +1525,131 @@ fn emit_fluid(
                 ([x1, yf, z1], [1.0, 1.0]),
                 ([x1, yf, z0], [1.0, 0.0]),
             ],
-            face_shade_code(world, 1),
-            light(wx, y - 1, wz),
+            cardinal.by_mesh_face(1),
+            fluid_light(y - 1),
         );
+    }
+}
+
+/// [`smooth_light::AoWorld`] over the chunk snapshot and the per-state tables:
+/// each question reads the block state at the position, then the table.
+struct AoView<'a> {
+    world: &'a World,
+    table: Tables<'a>,
+}
+
+impl AoView<'_> {
+    fn state(&self, (x, y, z): (i32, i32, i32)) -> u32 {
+        self.world.block_state_at(x, y, z)
+    }
+}
+
+impl smooth_light::AoWorld for AoView<'_> {
+    fn light_coords(&self, p: (i32, i32, i32)) -> i32 {
+        self.table.light_coords(self.world, self.state(p), p.0, p.1, p.2)
+    }
+
+    fn shade_brightness(&self, p: (i32, i32, i32)) -> f32 {
+        if self.table.info(self.state(p)).shade_dark {
+            0.2
+        } else {
+            1.0
+        }
+    }
+
+    fn is_view_blocking(&self, p: (i32, i32, i32)) -> bool {
+        self.table.info(self.state(p)).view_blocking
+    }
+
+    fn light_dampening(&self, p: (i32, i32, i32)) -> i32 {
+        self.table.dampening(self.state(p)) as i32
+    }
+
+    /// `isShapeFullBlock(getOcclusionShape())`: every face occludes.
+    fn is_solid_render(&self, p: (i32, i32, i32)) -> bool {
+        self.table.info(self.state(p)).occludes == 0b11_1111
+    }
+
+    fn is_collision_shape_full_block(&self, p: (i32, i32, i32)) -> bool {
+        self.table.info(self.state(p)).ao_occluder
+    }
+}
+
+/// Mesher face order (`[up, down, north, south, west, east]`) →
+/// [`smooth_light::Face`].
+const SMOOTH_FACE: [smooth_light::Face; 6] = [
+    smooth_light::Face::Up,
+    smooth_light::Face::Down,
+    smooth_light::Face::North,
+    smooth_light::Face::South,
+    smooth_light::Face::West,
+    smooth_light::Face::East,
+];
+
+/// One quad's per-vertex light coordinates and colors.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct LitQuad {
+    coords: [i32; 4],
+    color: [[u8; 3]; 4],
+}
+
+impl LitQuad {
+    /// All four vertices identical — nothing for the rasterizer to
+    /// interpolate, so the face may merge with its equals.
+    fn uniform(&self) -> bool {
+        (1..4).all(|i| self.coords[i] == self.coords[0] && self.color[i] == self.color[0])
+    }
+}
+
+/// Light one quad of the block `state` at `(wx, y, wz)` the way
+/// `ModelBlockRenderer.tesselateBlock` does, then tint it (`putQuadWithTint`).
+///
+/// `verts` are block-local, in any corner order. `dir` is the quad's
+/// direction (mesher order), `cull` its cull face (vanilla's per-direction
+/// quad list; `None` for the unculled list), `shade` its `materialInfo.shade`.
+#[allow(clippy::too_many_arguments)]
+fn light_quad(
+    ao: &AoView<'_>,
+    state: u32,
+    (wx, y, wz): (i32, i32, i32),
+    verts: &[[f32; 3]; 4],
+    dir: usize,
+    cull: Option<usize>,
+    shade: bool,
+    tint: [u8; 3],
+) -> LitQuad {
+    let world = ao.world;
+    // `quad.materialInfo().shade() ? cardinalLighting.byFace(direction) :
+    // cardinalLighting.up()` — both paths.
+    let shade_factor = face_shade(world, if shade { dir } else { 0 });
+    let pos = (wx, y, wz);
+    if ao.table.uses_ao(state) {
+        let face = SMOOTH_FACE[dir];
+        let order = smooth_light::face_info_order(verts, face);
+        let light = smooth_light::quad_ambient_occlusion(ao, pos, face, order.map(|i| verts[i]));
+        let mut out = LitQuad {
+            coords: [0; 4],
+            color: [[0; 3]; 4],
+        };
+        for (k, &i) in order.iter().enumerate() {
+            out.coords[i] = light.light_coords[k];
+            out.color[i] = block_vertex_color(light.brightness[k], shade_factor, tint);
+        }
+        out
+    } else {
+        // `tesselateFlat`: a culled quad samples its cull face's neighbour; an
+        // unculled one `prepareQuadFlat(..., -1)`, i.e. the neighbour only for a
+        // `faceCubic` quad. Either way the *own* state decides emission.
+        let (ox, oy, oz) = match cull {
+            Some(c) => FACE_OFFSETS[c],
+            None if smooth_light::face_cubic(ao, pos, SMOOTH_FACE[dir], verts) => FACE_OFFSETS[dir],
+            None => (0, 0, 0),
+        };
+        let coords = ao.table.light_coords(world, state, wx + ox, y + oy, wz + oz);
+        LitQuad {
+            coords: [coords; 4],
+            color: [block_vertex_color(shade_factor, 1.0, tint); 4],
+        }
     }
 }
 
@@ -1376,90 +1659,63 @@ fn emit_fluid(
 /// fallback path's vertices are computed by the *same* code — they cannot drift.
 struct CubeFace {
     layer: u16,
-    tint_rgb: [u8; 3],
-    lb: u8,
-    ls: u8,
-    /// AO code per `FACE_CORNERS[face]` index.
-    ao: [u8; 4],
-    /// [`face_shade_code`] for this face under the world's dimension. Resolved
-    /// once, here, so the greedy merge key and the unit quad cannot disagree.
-    shade: u8,
+    /// Per `FACE_CORNERS[face]` vertex.
+    lit: LitQuad,
 }
 
 /// Resolve one cube face, or `None` if a full-cube neighbour culls it.
 #[allow(clippy::too_many_arguments)]
 fn cube_face(
-    world: &World,
-    table: &[RenderKind],
+    ao: &AoView<'_>,
     cache: &mut TintCache,
     wx: i32,
     y: i32,
     wz: i32,
+    state: u32,
     face: usize,
     faces: &[u16; 6],
     raw_faces: &[u16; 6],
     tint: &[TintSource; 6],
 ) -> Option<CubeFace> {
+    let world = ao.world;
     let (dx, dy, dz) = FACE_OFFSETS[face];
-    let (nx, ny, nz) = (wx + dx, y + dy, wz + dz);
-    if is_full_cube(table, world.block_state_at(nx, ny, nz)) {
+    if !ao.table.should_render(state, world.block_state_at(wx + dx, y + dy, wz + dz), face) {
         return None;
     }
-    let (lb, ls) = world.light_at(nx, ny, nz);
     // Dynamic biome tint (or the legacy pre-tinted layer + white). The same
     // (wx,y,wz)+resolver recurs across the 6 faces; the cache serves it once.
     let (layer, tint_rgb) = match biome_tint(world, cache, wx, y, wz, tint[face]) {
         Some(rgb) => (raw_faces[face], rgb),
         None => (faces[face], TINT_WHITE),
     };
-    let (uu, vv, (fnx, fny, fnz)) = FACE_AXES[face];
-    let mut ao = [0u8; 4];
-    for (i, (corner, _uv)) in FACE_CORNERS[face].iter().enumerate() {
-        // AO from the three neighbors around this corner, in the layer
-        // just outside the face.
-        let su = 2 * corner[uu] as i32 - 1;
-        let sv = 2 * corner[vv] as i32 - 1;
-        let mut off_u = [0i32; 3];
-        off_u[uu] = su;
-        let mut off_v = [0i32; 3];
-        off_v[vv] = sv;
-        let np = [wx + fnx, y + fny, wz + fnz];
-        let s1 = solid(
-            world,
-            table,
-            [np[0] + off_u[0], np[1] + off_u[1], np[2] + off_u[2]],
-        );
-        let s2 = solid(
-            world,
-            table,
-            [np[0] + off_v[0], np[1] + off_v[1], np[2] + off_v[2]],
-        );
-        let sc = solid(
-            world,
-            table,
-            [
-                np[0] + off_u[0] + off_v[0],
-                np[1] + off_u[1] + off_v[1],
-                np[2] + off_u[2] + off_v[2],
-            ],
-        );
-        ao[i] = if s1 && s2 {
-            0
-        } else {
-            3 - (s1 as u8 + s2 as u8 + sc as u8)
-        };
-    }
-    Some(CubeFace {
-        layer,
-        tint_rgb,
-        lb,
-        ls,
-        ao,
-        shade: face_shade_code(world, face),
-    })
+    let verts = FACE_CORNERS[face].map(|(corner, _)| corner);
+    // A cube face is a shaded quad culled against its own direction.
+    let lit = light_quad(ao, state, (wx, y, wz), &verts, face, Some(face), true, tint_rgb);
+    Some(CubeFace { layer, lit })
 }
 
-/// Emit one resolved cube face as a legacy unit quad.
+/// Whether a model quad is a whole block face: axis-aligned on the block
+/// boundary of its direction and spanning the full face.
+#[cfg(test)]
+fn full_face(verts: &[[f32; 3]; 4], dir: usize) -> bool {
+    let (uu, vv, (nx, ny, nz)) = FACE_AXES[dir];
+    let n = [nx, ny, nz];
+    let an = 3 - uu - vv;
+    let plane = if n[an] > 0 { 1.0 } else { 0.0 };
+    let (mut umin, mut umax, mut vmin, mut vmax) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    for v in verts {
+        if (v[an] - plane).abs() > 1e-5 {
+            return false;
+        }
+        umin = umin.min(v[uu]);
+        umax = umax.max(v[uu]);
+        vmin = vmin.min(v[vv]);
+        vmax = vmax.max(v[vv]);
+    }
+    umin.abs() < 1e-5 && vmin.abs() < 1e-5 && (umax - 1.0).abs() < 1e-5 && (vmax - 1.0).abs() < 1e-5
+}
+
+/// Emit one resolved cube face as a unit quad.
 fn push_cube_face(
     vertices: &mut Vec<MeshVertex>,
     indices: &mut Vec<u32>,
@@ -1479,11 +1735,8 @@ fn push_cube_face(
             ],
             *uv,
             f.layer as u32,
-            f.lb,
-            f.ls,
-            f.shade,
-            f.ao[i],
-            f.tint_rgb,
+            f.lit.coords[i],
+            f.lit.color[i],
         ));
     }
     indices.extend_from_slice(&[
@@ -1497,27 +1750,34 @@ fn push_cube_face(
 }
 
 /// Emit every visible face of one cube as unit quads. Returns the face count.
+#[cfg(any(test, feature = "oracle"))]
 #[allow(clippy::too_many_arguments)]
 fn emit_cube(
-    world: &World,
-    table: &[RenderKind],
+    ao: &AoView<'_>,
     cache: &mut TintCache,
     vertices: &mut Vec<MeshVertex>,
     indices: &mut Vec<u32>,
+    tvertices: &mut Vec<MeshVertex>,
+    tindices: &mut Vec<u32>,
     wx: i32,
     y: i32,
     wz: i32,
+    state: u32,
     faces: &[u16; 6],
     raw_faces: &[u16; 6],
     tint: &[TintSource; 6],
 ) -> u32 {
+    let (v, i) = if ao.table.info(state).translucent {
+        (tvertices, tindices)
+    } else {
+        (vertices, indices)
+    };
     let mut visible = 0;
     for face in 0..6 {
-        let Some(f) = cube_face(world, table, cache, wx, y, wz, face, faces, raw_faces, tint)
-        else {
+        let Some(f) = cube_face(ao, cache, wx, y, wz, state, face, faces, raw_faces, tint) else {
             continue;
         };
-        push_cube_face(vertices, indices, wx, y, wz, face, &f);
+        push_cube_face(v, i, wx, y, wz, face, &f);
         visible += 1;
     }
     visible
@@ -1525,61 +1785,52 @@ fn emit_cube(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_model(
-    world: &World,
-    table: &[RenderKind],
+    ao: &AoView<'_>,
     models: &[Vec<rewo_data::assets::Quad>],
     cache: &mut TintCache,
     vertices: &mut Vec<MeshVertex>,
     indices: &mut Vec<u32>,
+    tvertices: &mut Vec<MeshVertex>,
+    tindices: &mut Vec<u32>,
     wx: i32,
     y: i32,
     wz: i32,
+    state: u32,
     model_idx: u32,
 ) {
+    let world = ao.world;
     let Some(quads) = models.get(model_idx as usize) else {
         return;
     };
-    // Model quads get flat (per-face) shading; AO on arbitrary quads is an
-    // M4-followon. Light is sampled from the cell the quad FACES, not the
-    // block's own — vanilla's `renderModelFaceFlat` does the same. Sampling
-    // the block's own cell reads the inside of a solid block, which is always
-    // dark: grass_block renders as a Model (cube + overlay), so the whole
-    // ground plane of an overworld would light at zero.
-    let own_light = world.light_at(wx, y, wz);
     for quad in quads {
-        if quad.cull >= 0 {
-            let (dx, dy, dz) = FACE_OFFSETS[quad.cull as usize];
-            if is_full_cube(table, world.block_state_at(wx + dx, y + dy, wz + dz)) {
+        let cull = (quad.cull >= 0).then_some(quad.cull as usize);
+        if let Some(face) = cull {
+            let (dx, dy, dz) = FACE_OFFSETS[face];
+            if !ao.table.should_render(state, world.block_state_at(wx + dx, y + dy, wz + dz), face) {
                 continue;
             }
         }
-        // A shaded quad takes its direction's code under the active dimension
-        // (M16), which is the identity `quad.dir` in every default-lit world.
-        // `shade: false` means an unshaded quad and stays code 0 in *every*
-        // dimension: FACE_SHADE[0] is exactly 1.0, so it reproduces the old
-        // `1.0` multiplier bit-for-bit — vanilla's unshaded quads ignore
-        // cardinal lighting the same way.
-        let shade_code = if quad.shade {
-            face_shade_code(world, quad.dir as usize)
-        } else {
-            0
-        };
-        // A quad facing into a solid neighbour (an interior face) has nothing
-        // to sample, so it keeps the block's own cell.
-        let (odx, ody, odz) = FACE_OFFSETS[quad.dir as usize];
-        let (nbx, nby, nbz) = (wx + odx, y + ody, wz + odz);
-        let (own_block, own_sky) = if is_full_cube(table, world.block_state_at(nbx, nby, nbz)) {
-            own_light
-        } else {
-            world.light_at(nbx, nby, nbz)
-        };
         // Dynamic biome tint (raw layer + tint color) or the legacy pre-tinted
-        // layer. The tint is per-quad; AO/shade still vary per-vertex. A model's
-        // quads at one block share a resolver+position, so the cache serves them
-        // all from one computation.
+        // layer. A model's quads at one block share a resolver+position, so the
+        // cache serves them all from one computation.
         let (layer, tint_rgb) = match biome_tint(world, cache, wx, y, wz, quad.tint) {
             Some(rgb) => (quad.raw_layer, rgb),
             None => (quad.layer, TINT_WHITE),
+        };
+        let lit = light_quad(
+            ao,
+            state,
+            (wx, y, wz),
+            &quad.verts,
+            quad.dir as usize,
+            cull,
+            quad.shade,
+            tint_rgb,
+        );
+        let (vertices, indices) = if quad.translucent {
+            (&mut *tvertices, &mut *tindices)
+        } else {
+            (&mut *vertices, &mut *indices)
         };
         let base_idx = vertices.len() as u32;
         for i in 0..4 {
@@ -1591,11 +1842,8 @@ fn emit_model(
                 ],
                 quad.uv[i],
                 layer as u32,
-                own_block,
-                own_sky,
-                shade_code,
-                AO_NONE,
-                tint_rgb,
+                lit.coords[i],
+                lit.color[i],
             ));
         }
         indices.extend_from_slice(&[
@@ -1609,1451 +1857,10 @@ fn emit_model(
     }
 }
 
-fn solid(world: &World, table: &[RenderKind], p: [i32; 3]) -> bool {
-    is_full_cube(table, world.block_state_at(p[0], p[1], p[2]))
-}
-
-// -- M15 greedy oracle: emitted-geometry decoder ----------------------------
-//
-// A merged rectangle is deliberately *not* byte-comparable to the N unit quads
-// it replaces, so diffing raw buffers against the reference could only ever say
-// "different". The oracle therefore inverts the emitter: it re-derives each
-// quad's face, plane, anchor block and extent purely from the emitted vertex
-// positions, checks every corner against the generic scaling rule, and then
-// enumerates the unit faces the rectangle covers. Comparing *that* expansion
-// against `mesh_column_reference`'s is what proves the merge lost nothing.
-//
-// This lives in production (not `mod tests`) because `check_greedy_oracle` is a
-// release-compiled gate. `mod tests` wraps these with `.expect(...)`, so both
-// graders run the identical decode and cannot drift apart.
-
-/// One unit face as both mesher paths must agree on it.
-///
-/// `light24` is the lower 24 bits (layer + block/sky light); the shade code
-/// rides in `face` and AO is kept per corner, so nothing is smuggled through a
-/// masked-off bit. Field order is the sort order — face, then block, then
-/// appearance.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
-pub(crate) struct UnitFace {
-    pub face: u8,
-    pub block: [i32; 3],
-    pub light24: u32,
-    pub ao: [u8; 4],
-    pub tint: u32,
-}
-
-/// A unit face plus the dimensions of the rectangle it was emitted inside.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct ExpandedFace {
-    pub f: UnitFace,
-    pub w: i32,
-    pub h: i32,
-}
-
-/// Split a vertex/index stream into quads, checking the `[0,1,2,0,2,3]` pattern
-/// every emitter in this file uses.
-pub(crate) fn split_quads(v: &[MeshVertex], idx: &[u32]) -> Result<Vec<[MeshVertex; 4]>, String> {
-    if v.len() % 4 != 0 {
-        return Err(format!(
-            "geometry is not whole quads: {} vertices is not a multiple of 4",
-            v.len()
-        ));
-    }
-    if idx.len() != v.len() / 4 * 6 {
-        return Err(format!(
-            "index count {} is not 6 per quad for {} vertices",
-            idx.len(),
-            v.len()
-        ));
-    }
-    for q in 0..v.len() / 4 {
-        let b = (q * 4) as u32;
-        if idx[q * 6..q * 6 + 6] != [b, b + 1, b + 2, b, b + 2, b + 3] {
-            return Err(format!(
-                "quad {q} winding: indices {:?} are not [{b},{},{},{b},{},{}]",
-                &idx[q * 6..q * 6 + 6],
-                b + 1,
-                b + 2,
-                b + 2,
-                b + 3
-            ));
-        }
-    }
-    Ok(v.chunks_exact(4)
-        .map(|c| [c[0], c[1], c[2], c[3]])
-        .collect())
-}
-
-/// Expand cube geometry back into the unit faces it covers.
-pub(crate) fn expand_unit_faces(
-    v: &[MeshVertex],
-    idx: &[u32],
-) -> Result<Vec<ExpandedFace>, String> {
-    expand_quad_list(&split_quads(v, idx)?)
-}
-
-/// [`expand_unit_faces`] over an already-selected quad list. A mixed column's
-/// opaque stream also carries model and fluid quads, which are not axis-aligned
-/// unit faces and must be filtered out before this runs.
-pub(crate) fn expand_quad_list(qs: &[[MeshVertex; 4]]) -> Result<Vec<ExpandedFace>, String> {
-    let mut out = Vec::new();
-    for q in qs.iter().copied() {
-        // The decoder recovers a quad's direction from its shade code, which is
-        // only a bijection under `CardinalLighting::DEFAULT` (M16: the Nether
-        // maps up *and* down onto code 6). The oracle column is a default-lit
-        // world, so this holds there; anything else is refused rather than
-        // indexed out of `FACE_AXES`.
-        let face = q[0].shade_code() as usize;
-        if face >= FACE_OFFSETS.len() {
-            return Err(format!(
-                "shade code {face} is not a face direction — unit-face expansion only decodes DEFAULT cardinal lighting"
-            ));
-        }
-        let (au, av, _) = FACE_AXES[face];
-        let an = 3 - au - av; // the remaining axis: 0+1+2 == 3
-        let plane = q[0].pos[an];
-        for vtx in &q {
-            if vtx.pos[an] != plane {
-                return Err(format!(
-                    "face {face}: plane axis {an} is not constant ({} vs {plane})",
-                    vtx.pos[an]
-                ));
-            }
-        }
-        let span = |axis: usize| {
-            let lo = q.iter().map(|x| x.pos[axis]).fold(f32::MAX, f32::min);
-            let hi = q.iter().map(|x| x.pos[axis]).fold(f32::MIN, f32::max);
-            (lo, hi)
-        };
-        let (umin, umax) = span(au);
-        let (vmin, vmax) = span(av);
-        let (w, h) = ((umax - umin) as i32, (vmax - vmin) as i32);
-        if w < 1 || h < 1 {
-            return Err(format!("face {face}: degenerate rectangle {w}x{h}"));
-        }
-
-        // Anchor block: the face's own axis sits at `plane` minus whichever side
-        // of the block the face is on (up/south/east are the +1 side).
-        let mut base = [0i32; 3];
-        base[au] = umin as i32;
-        base[av] = vmin as i32;
-        base[an] = (plane - FACE_CORNERS[face][0].0[an]) as i32;
-
-        // Every corner must match the generic emitter rule exactly, and the UV
-        // must scale with the extent (repeat, not stretch).
-        for (i, (corner, uv)) in FACE_CORNERS[face].iter().enumerate() {
-            let mut expect = [
-                base[0] as f32 + corner[0],
-                base[1] as f32 + corner[1],
-                base[2] as f32 + corner[2],
-            ];
-            if corner[au] == 1.0 {
-                expect[au] += (w - 1) as f32;
-            }
-            if corner[av] == 1.0 {
-                expect[av] += (h - 1) as f32;
-            }
-            if q[i].pos != expect {
-                return Err(format!(
-                    "face {face} corner {i} position {:?} != expected {expect:?} for a {w}x{h} rectangle at {base:?}",
-                    q[i].pos
-                ));
-            }
-            let expect_uv = [uv[0] * w as f32, uv[1] * h as f32];
-            if q[i].uv != expect_uv {
-                return Err(format!(
-                    "face {face} corner {i} uv {:?} != expected {expect_uv:?} (a rectangle must repeat its texture, not stretch it)",
-                    q[i].uv
-                ));
-            }
-        }
-
-        let light24 = q[0].light & 0x00FF_FFFF;
-        let tint = q[0].tint;
-        for vtx in &q {
-            if vtx.light & 0x00FF_FFFF != light24 {
-                return Err(format!(
-                    "face {face} at {base:?}: layer/light is not per-quad ({:#08x} vs {light24:#08x})",
-                    vtx.light & 0x00FF_FFFF
-                ));
-            }
-            if vtx.tint != tint {
-                return Err(format!(
-                    "face {face} at {base:?}: tint is not per-quad ({:#010x} vs {tint:#010x})",
-                    vtx.tint
-                ));
-            }
-        }
-        let ao = [
-            q[0].ao_code(),
-            q[1].ao_code(),
-            q[2].ao_code(),
-            q[3].ao_code(),
-        ];
-        for dv in 0..h {
-            for du in 0..w {
-                let mut block = base;
-                block[au] += du;
-                block[av] += dv;
-                out.push(ExpandedFace {
-                    f: UnitFace {
-                        face: face as u8,
-                        block,
-                        light24,
-                        ao,
-                        tint,
-                    },
-                    w,
-                    h,
-                });
-            }
-        }
-    }
-    Ok(out)
-}
-
-// -- M15 greedy oracle: the adversarial cube gate ---------------------------
-
-/// Vanilla's spruce/birch `BlockTintSources.constant` colors — a real pair of
-/// distinct constants, used here as the tint-boundary material.
-const ORACLE_SPRUCE_RGB: [u8; 3] = [97, 153, 97];
-const ORACLE_BIRCH_RGB: [u8; 3] = [128, 167, 85];
-
-// Fixture block states (indices into `oracle_table`).
-const OS_GRANITE: u32 = 1;
-const OS_DIORITE: u32 = 2;
-const OS_CUTOUT: u32 = 3;
-const OS_SPRUCE: u32 = 4;
-const OS_BIRCH: u32 = 5;
-
-/// The atlas layer `GRANITE`, `DIORITE` and `CUTOUT` all carry on their **down**
-/// face. Deliberately shared: it makes the block state the only thing that can
-/// separate them in a down plane.
-const OS_SHARED_DOWN_LAYER: u16 = 11;
-/// The layer `SPRUCE`/`BIRCH` resolve to once the Constant tint engages (their
-/// `raw_faces`). Observing this rather than `OS_TINT_LEGACY_LAYER` is what
-/// proves the tint path actually ran.
-const OS_TINT_RAW_LAYER: u16 = 51;
-const OS_TINT_LEGACY_LAYER: u16 = 50;
-
-/// The fixture's render table.
-///
-/// Every cube carries *distinct* layers per direction, so a merge that crossed a
-/// face boundary would show up in the layer index. The three opaque materials
-/// share exactly one layer — the down face — which is the material-boundary
-/// probe. `CUTOUT` stands in for an alpha-tested block: `RenderKind::Cube` is
-/// the pass's only cube representation (there is no cutout flag in the mesh
-/// path), so a cutout block is a `Cube` with its own layers, and what the gate
-/// grades is that it stays semantically present and never coalesces with a
-/// neighbouring material.
-fn oracle_table() -> Vec<RenderKind> {
-    let opaque = |faces: [u16; 6]| RenderKind::Cube {
-        faces,
-        raw_faces: faces,
-        tint: [TintSource::None; 6],
-    };
-    let tinted = |rgb: [u8; 3]| RenderKind::Cube {
-        faces: [OS_TINT_LEGACY_LAYER; 6],
-        raw_faces: [OS_TINT_RAW_LAYER; 6],
-        tint: [TintSource::Constant(rgb); 6],
-    };
-    vec![
-        RenderKind::Invisible,
-        opaque([10, OS_SHARED_DOWN_LAYER, 12, 13, 14, 15]), // GRANITE
-        opaque([20, OS_SHARED_DOWN_LAYER, 22, 23, 24, 25]), // DIORITE
-        opaque([30, OS_SHARED_DOWN_LAYER, 32, 33, 34, 35]), // CUTOUT (alpha-test)
-        tinted(ORACLE_SPRUCE_RGB),
-        tinted(ORACLE_BIRCH_RGB),
-    ]
-}
-
-/// A minimal biome context. `TintSource::Constant` short-circuits *after*
-/// `biome_tint`'s `world.biome_context()?` gate, so without a context attached
-/// the tint materials would silently fall back to the legacy pre-tinted layer
-/// and the tint-boundary probe would be vacuous. Nothing here is consulted — a
-/// constant tint reads no registry and no colormap — it only opens the gate.
-fn oracle_biome_context() -> rewo_world::biome::BiomeContext {
-    use rewo_world::biome::{BiomeContext, BiomeDef, BiomeRegistry, Colormaps, GrassModifier};
-    let def = BiomeDef {
-        music_volume: None,
-        name: "rewo:oracle".into(),
-        temperature: 0.5,
-        downfall: 0.5,
-        water_color: 0,
-        grass_override: None,
-        foliage_override: None,
-        dry_foliage_override: None,
-        grass_modifier: GrassModifier::None,
-        sky_color: None,
-        fog_color: None,
-            has_precipitation: true,
-        temperature_modifier: Default::default(),
-        ambient_sounds: None,
-        background_music: None,
-    };
-    BiomeContext::new(
-        std::sync::Arc::new(BiomeRegistry::new(vec![def])),
-        Colormaps::neutral(),
-        0,
-    )
-}
-
-/// The adversarial column — one column at (0,0) holding every property the gate
-/// grades. Regions are separated by at least one block of air on the axis that
-/// matters, so each probe is independent of the others (AO reaches one cell past
-/// a face, so a one-block gap is enough).
-///
-/// - **A** `x1..6 z1..6 y60..69` GRANITE — the merge core. Its four walls are
-///   6×10 and straddle the `y=64` section floor; its floor is a 6×6; its 36 tops
-///   are the up carve-out.
-/// - **B** `x1..6 z=10 y64..69` GRANITE + an occluder at `(2,65,9)` — the AO
-///   discontinuity. The occluder sits diagonally off the wall's north side, so
-///   it darkens single corners of nearby faces without culling them.
-/// - **C/D** `x8..15 z1..9 y=62` — three z-bands of GRANITE / DIORITE / CUTOUT
-///   sharing one down layer: the material + cutout boundary.
-/// - **E** `x8..15 z11..14` at `y=66` and `y=70` — the light boundaries; the
-///   pokes land on the *sampled neighbour* cells (`y=65` block, `y=69` sky),
-///   because a face reads light from the cell it faces, not from its own.
-/// - **F** `x1..8 z11..14 y=62` — SPRUCE | BIRCH, the constant-tint boundary.
-fn oracle_world() -> World {
-    use rewo_world::dimension::DimensionShape;
-    use rewo_world::light::Channel;
-
-    let mut w = World::new(DimensionShape::OVERWORLD);
-    w.ensure_column(0, 0);
-    w.set_biome_context(std::sync::Arc::new(oracle_biome_context()));
-
-    // A — the merge core, crossing the y=64 section floor.
-    for x in 1..=6 {
-        for z in 1..=6 {
-            for y in 60..=69 {
-                w.set_block(x, y, z, OS_GRANITE);
-            }
-        }
-    }
-
-    // B — the AO discontinuity wall + its diagonal occluder.
-    for x in 1..=6 {
-        for y in 64..=69 {
-            w.set_block(x, y, 10, OS_GRANITE);
-        }
-    }
-    w.set_block(2, 65, 9, OS_GRANITE);
-
-    // C/D — three materials, one shared down layer, one plane.
-    for x in 8..=15 {
-        for z in 1..=9 {
-            let state = match z {
-                1..=3 => OS_GRANITE,
-                4..=6 => OS_DIORITE,
-                _ => OS_CUTOUT,
-            };
-            w.set_block(x, 62, z, state);
-        }
-    }
-
-    // E — one plate per light channel.
-    for x in 8..=15 {
-        for z in 11..=14 {
-            w.set_block(x, 66, z, OS_GRANITE); // grades block light at y=65
-            w.set_block(x, 70, z, OS_GRANITE); // grades sky light at y=69
-        }
-    }
-
-    // F — the constant-tint boundary.
-    for x in 1..=8 {
-        for z in 11..=14 {
-            w.set_block(x, 62, z, if x <= 4 { OS_SPRUCE } else { OS_BIRCH });
-        }
-    }
-
-    // The light discontinuities. `Column::empty_lit` already carries a full
-    // sky array (every nibble 15) and no block array (reads 0), so poking one
-    // channel in one region cannot disturb any other face's light.
-    let shape = w.shape;
-    if let Some(col) = w.column_mut(0, 0) {
-        for x in 12..=15 {
-            for z in 11..=14 {
-                col.set_light(&shape, Channel::Block, x, 65, z, 12);
-                col.set_light(&shape, Channel::Sky, x, 69, z, 7);
-            }
-        }
-    }
-    w
-}
-
-// -- M15 greedy oracle: the legacy (non-cube) controls ----------------------
-//
-// Only the cube path can merge. Models and fluids run the untouched
-// `emit_model` / `emit_fluid` code, so for them the optimized mesher must be
-// *byte-identical* to the reference — a strictly stronger claim than the cube
-// path's semantic equality, and the one that proves the greedy pass did not
-// perturb scan order, buffer interleaving or the opaque/translucent split.
-//
-// These are the constructions `mod tests` already uses, hoisted into production
-// so the controls and the unit tests are provably the same fixture (the tests
-// delegate to them). The combined water+lava test column is split into two
-// single-fluid controls so each stream is graded on its own.
-
-/// States: 0 air, 1 an opaque cube (unplaced here), 2 water, 3 lava.
-fn oracle_fluid_table() -> Vec<RenderKind> {
-    vec![
-        RenderKind::Invisible,
-        RenderKind::Cube {
-            faces: [0; 6],
-            raw_faces: [0; 6],
-            tint: [TintSource::None; 6],
-        },
-        RenderKind::Fluid {
-            layer: 1,
-            raw_layer: 1,
-            level: 0,
-            lava: false,
-        },
-        RenderKind::Fluid {
-            layer: 2,
-            raw_layer: 2,
-            level: 0,
-            lava: true,
-        },
-    ]
-}
-
-fn oracle_model_table() -> Vec<RenderKind> {
-    vec![RenderKind::Invisible, RenderKind::Model(0)]
-}
-
-/// Two quads: an unculled shaded one facing north, and a culled unshaded one
-/// facing south — so the control covers the cull branch, the `shade: false`
-/// branch and the raw/legacy layer split.
-fn oracle_model_quads() -> Vec<Vec<rewo_data::assets::Quad>> {
-    use rewo_data::assets::Quad;
-    vec![vec![
-        Quad {
-            verts: [
-                [0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [1.0, 1.0, 0.0],
-                [0.0, 1.0, 0.0],
-            ],
-            uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
-            layer: 7,
-            raw_layer: 8,
-            cull: -1,
-            dir: 2,
-            tint: TintSource::None,
-            shade: true,
-        },
-        Quad {
-            verts: [
-                [0.0, 0.0, 1.0],
-                [1.0, 0.0, 1.0],
-                [1.0, 1.0, 1.0],
-                [0.0, 1.0, 1.0],
-            ],
-            uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
-            layer: 9,
-            raw_layer: 9,
-            cull: 3,
-            dir: 3,
-            tint: TintSource::None,
-            shade: false,
-        },
-    ]]
-}
-
-/// A patch of models spanning the `y=64` section boundary, to exercise ordering.
-fn oracle_model_world() -> World {
-    use rewo_world::dimension::DimensionShape;
-    let mut w = World::new(DimensionShape::OVERWORLD);
-    w.ensure_column(0, 0);
-    for x in 3..7 {
-        for z in 3..7 {
-            w.set_block(x, 63, z, 1);
-            w.set_block(x, 64, z, 1);
-        }
-    }
-    w
-}
-
-/// Water only — a two-deep pool, so the control covers the submerged-cell
-/// full-height branch as well as the surface.
-fn oracle_water_world() -> World {
-    use rewo_world::dimension::DimensionShape;
-    let mut w = World::new(DimensionShape::OVERWORLD);
-    w.ensure_column(0, 0);
-    for x in 3..7 {
-        for z in 3..7 {
-            w.set_block(x, 62, z, 2);
-            w.set_block(x, 63, z, 2);
-        }
-    }
-    w
-}
-
-/// Lava only — opaque and fullbright, so it lands in the *opaque* stream.
-fn oracle_lava_world() -> World {
-    use rewo_world::dimension::DimensionShape;
-    let mut w = World::new(DimensionShape::OVERWORLD);
-    w.ensure_column(0, 0);
-    for x in 3..7 {
-        for z in 3..7 {
-            w.set_block(x + 8, 62, z, 3);
-        }
-    }
-    w
-}
-
-/// Geometry a legacy (non-cube) control produced. Identical in both meshers by
-/// construction, so one set of counts describes both.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct LegacyControlCounts {
-    pub opaque_vertices: usize,
-    pub opaque_indices: usize,
-    pub translucent_vertices: usize,
-    pub translucent_indices: usize,
-}
-
-// -- M164: the waterlogged controls ----------------------------------------
-//
-// Face indices below are the MESHER's, except inside `CarriedFluid`, whose
-// `self_occludes` is `rewo_data::assets::FACE_DIRS`-ordered (see
-// `SELF_OCCLUDE_REMAP`). `DOWN` is `FACE_DIRS` index 2 and `UP` is 3.
-
-/// `self_occludes` for a shape flush with the bottom of its block (a bottom
-/// slab, a stair's lower step) — `FACE_DIRS` order.
-const ORACLE_OCC_DOWN: u8 = 1 << 2;
-/// `self_occludes` for a shape flush with the top of its block (a top slab).
-const ORACLE_OCC_UP: u8 = 1 << 3;
-/// All six — a `type=double` slab, and the ONLY shape in the fixture that
-/// occludes a SIDE. Without it the side half of `shouldRenderFace` has no
-/// witness at all, which is how M164's battery first found it SURVIVING.
-///
-/// Measured against the real bake, the 68 full-cube carriers are exactly the
-/// waterlogged double slabs (`blockentityshot` names them) — but **that state
-/// is command-only**, and an earlier version of this comment called it "the
-/// common real case", which is backwards. `SlabBlock.getStateForPlacement:72`
-/// writes `WATERLOGGED, false` the moment a slab becomes DOUBLE, and
-/// `placeLiquid` / `canPlaceLiquid` (`:106-113`) both refuse a DOUBLE slab, so
-/// `type=double, waterlogged=true` is reachable only through `/setblock`, a
-/// structure or a datapack. It is a real state that vanilla renders this way,
-/// so the fixture stays; what was wrong was the reason given for it. The side
-/// rule's *ordinary* case is a waterlogged stair — 1,536 of the 2,560
-/// waterlogged stair states carry a side bit, measured in `blockentityshot`.
-const ORACLE_OCC_ALL: u8 = 0b11_1111;
-
-/// A DRY `Model(0)`; the two waterlogged states below share its geometry.
-const WL_DRY: u32 = 4;
-/// The same model, waterlogged, with a bottom-slab occlusion shape.
-const WL_BOTTOM_SLAB: u32 = 5;
-/// The same model, waterlogged, with a top-slab occlusion shape.
-const WL_TOP_SLAB: u32 = 6;
-/// The same model, waterlogged, occluding on every face — a double slab.
-const WL_DOUBLE_SLAB: u32 = 7;
-/// A plain water source (`oracle_fluid_table`'s).
-const WL_WATER: u32 = 2;
-
-/// [`oracle_fluid_table`] (0 air, 1 an opaque cube, 2 water, **3 LAVA**) plus
-/// three `Model(0)` states.
-///
-/// The three models share one model index deliberately: the only input that
-/// differs between the dry control and the two waterlogged blocks is the
-/// carried-fluid table, so a difference in the output cannot come from the
-/// geometry. `oracle_waterlogged_states_are_what_they_are_named` pins the
-/// indices — an earlier draft of this fixture counted the base table as three
-/// entries rather than four and graded LAVA as its "dry model", and the only
-/// thing that noticed was the opaque-byte-identity witness.
-fn oracle_waterlogged_table() -> Vec<RenderKind> {
-    let mut t = oracle_fluid_table();
-    debug_assert_eq!(t.len(), WL_DRY as usize);
-    for _ in WL_DRY..=WL_DOUBLE_SLAB {
-        t.push(RenderKind::Model(0));
-    }
-    t
-}
-
-fn oracle_waterlogged_carried() -> Vec<Option<CarriedFluid>> {
-    let wl = |self_occludes| {
-        Some(CarriedFluid {
-            layer: 1,
-            raw_layer: 1,
-            level: 0,
-            falling: false,
-            self_occludes,
-        })
-    };
-    let mut c: Vec<Option<CarriedFluid>> = vec![None; WL_DOUBLE_SLAB as usize + 1];
-    c[WL_BOTTOM_SLAB as usize] = wl(ORACLE_OCC_DOWN);
-    c[WL_TOP_SLAB as usize] = wl(ORACLE_OCC_UP);
-    c[WL_DOUBLE_SLAB as usize] = wl(ORACLE_OCC_ALL);
-    c
-}
-
-/// One block of `state` in mid-air at (2, 62, 2) — nothing below, so the
-/// fluid's down face is decided by the block's OWN occlusion shape alone.
-fn oracle_waterlogged_world(state: u32) -> World {
-    use rewo_world::dimension::DimensionShape;
-    let mut w = World::new(DimensionShape::OVERWORLD);
-    w.ensure_column(0, 0);
-    w.set_block(2, 62, 2, state);
-    w
-}
-
-/// A water source at (8, 62, 2) with `east` at (9, 62, 2) — the `same()`
-/// witness. Everything else is air, so the only face in the plane x = 9 is the
-/// pool's east side and (if `east` carries water) that block's west side.
-fn oracle_pool_beside(east: u32) -> World {
-    use rewo_world::dimension::DimensionShape;
-    let mut w = World::new(DimensionShape::OVERWORLD);
-    w.ensure_column(0, 0);
-    w.set_block(8, 62, 2, WL_WATER);
-    w.set_block(9, 62, 2, east);
-    w
-}
-
-/// Classify a translucent stream's fluid quads by geometry alone — `(top, side,
-/// bottom)`. Reads the emitted vertices, not the emitter: a bottom face has all
-/// four vertices on the block floor, a top face none, a side face two.
-fn fluid_face_counts(v: &[MeshVertex], floor: f32) -> (usize, usize, usize) {
-    let (mut top, mut side, mut bottom) = (0, 0, 0);
-    for q in v.chunks_exact(4) {
-        match q.iter().filter(|x| (x.pos[1] - floor).abs() < 1e-6).count() {
-            4 => bottom += 1,
-            0 => top += 1,
-            _ => side += 1,
-        }
-    }
-    (top, side, bottom)
-}
-
-/// Quads whose four vertices all sit on the plane `x`.
-fn quads_on_x_plane(v: &[MeshVertex], x: f32) -> usize {
-    v.chunks_exact(4)
-        .filter(|q| q.iter().all(|p| (p.pos[0] - x).abs() < 1e-6))
-        .count()
-}
-
-/// What [`check_waterlogged`] measured. Every number is observed — the checker
-/// returns `Err` before a report exists if any of them is wrong.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct WaterloggedFaceCounts {
-    /// `(top, side, bottom)` for the bottom-slab-shaped waterlogged block.
-    pub bottom_slab: (usize, usize, usize),
-    /// The same for the top-slab-shaped one.
-    pub top_slab: (usize, usize, usize),
-    /// And for the one that occludes on all six faces.
-    pub double_slab: (usize, usize, usize),
-    /// Translucent quads the DRY twin produced. Must be 0.
-    pub dry_translucent_quads: usize,
-    /// `ColumnMesh::carried_fluid_cells` for the bottom-slab world / the dry one.
-    pub carried_cells: (u32, u32),
-    /// Quads in the plane x = 9 with a waterlogged / a dry east neighbour.
-    pub pool_plane_faces: (usize, usize),
-}
-
-/// Grade the M164 waterlogged path. Serverless, asset-free, and driven through
-/// the production [`mesh_column`] — the fixture supplies only the two tables the
-/// bake supplies in production.
-fn check_waterlogged() -> Result<WaterloggedFaceCounts, String> {
-    let table = oracle_waterlogged_table();
-    let carried = oracle_waterlogged_carried();
-    let models = oracle_model_quads();
-    // The fixture's own indices, asserted before anything is graded against
-    // them: `WL_DRY` must be a model that carries nothing, and the two
-    // waterlogged states must be the SAME model that does. Without this the
-    // checker happily grades whatever happens to sit at those indices.
-    for (st, want_carried) in [
-        (WL_DRY, false),
-        (WL_BOTTOM_SLAB, true),
-        (WL_TOP_SLAB, true),
-        (WL_DOUBLE_SLAB, true),
-    ] {
-        if !matches!(table.get(st as usize), Some(RenderKind::Model(0))) {
-            return Err(format!(
-                "waterlogged fixture: state {st} is {:?}, not Model(0)",
-                table.get(st as usize)
-            ));
-        }
-        if carried.get(st as usize).copied().flatten().is_some() != want_carried {
-            return Err(format!(
-                "waterlogged fixture: state {st} carries {:?}, expected carried={want_carried}",
-                carried.get(st as usize)
-            ));
-        }
-    }
-    let mesh = |state: u32| {
-        mesh_column(
-            &oracle_waterlogged_world(state),
-            &table,
-            &models,
-            &carried,
-            0,
-            0,
-        )
-    };
-
-    // 1. One state, two draws (`SectionCompiler.compile:89-97`). The dry twin is
-    //    the same `RenderKind::Model` with the same model index, so the only
-    //    input that differs is the carried-fluid table.
-    let wl = mesh(WL_BOTTOM_SLAB).ok_or("waterlogged: the bottom-slab world meshed to nothing")?;
-    let dry = mesh(WL_DRY).ok_or("waterlogged: the dry world meshed to nothing")?;
-    if wl.vertices.is_empty() {
-        return Err("waterlogged: the block's own model produced no opaque geometry".into());
-    }
-    if wl.tvertices.is_empty() {
-        return Err(
-            "waterlogged: the block carried water and produced NO translucent geometry — this is the whole feature"
-                .into(),
-        );
-    }
-    if !dry.tvertices.is_empty() {
-        return Err(format!(
-            "waterlogged: the DRY twin produced {} translucent vertices — the carried-fluid table, not the render kind, must decide",
-            dry.tvertices.len()
-        ));
-    }
-    if bytemuck::cast_slice::<_, u8>(&wl.vertices) != bytemuck::cast_slice::<_, u8>(&dry.vertices) {
-        return Err(
-            "waterlogged: the block's own opaque geometry changed when it carried water — the two draws must be independent"
-                .into(),
-        );
-    }
-    if (wl.carried_fluid_cells, dry.carried_fluid_cells) != (1, 0) {
-        return Err(format!(
-            "waterlogged: carried_fluid_cells is {} / {}, expected 1 / 0",
-            wl.carried_fluid_cells, dry.carried_fluid_cells
-        ));
-    }
-
-    // 2. `isFaceOccludedBySelf` on the down face, and its ABSENCE on the up one.
-    //    The two worlds differ in exactly one bit of `self_occludes`.
-    let top = mesh(WL_TOP_SLAB).ok_or("waterlogged: the top-slab world meshed to nothing")?;
-    let a = fluid_face_counts(&wl.tvertices, 62.0);
-    let b = fluid_face_counts(&top.tvertices, 62.0);
-    if a != (1, 4, 0) {
-        return Err(format!(
-            "waterlogged: a block whose own DOWN face is covered emitted (top,side,bottom) {a:?}, expected (1,4,0) — `shouldRenderFace` (FluidRenderer:56-60) must suppress the down face"
-        ));
-    }
-    if b != (1, 4, 1) {
-        return Err(format!(
-            "waterlogged: a block whose own UP face is covered emitted (top,side,bottom) {b:?}, expected (1,4,1) — `renderUp` (FluidRenderer:77) does NOT go through `shouldRenderFace`, so the top face survives, and the self mask must not touch the sides"
-        ));
-    }
-    // The real case: a `type=double` slab occludes on every direction, so
-    // `shouldRenderFace` suppresses all four sides AND the bottom, and the ONE
-    // face vanilla still draws is the top — which is the whole point of
-    // `renderUp` skipping the self test. The two witnesses above cannot see the
-    // side half of the test at all (their masks name only up and down), which
-    // M164's mutation battery found by watching a dropped side test survive.
-    let d = mesh(WL_DOUBLE_SLAB).ok_or("waterlogged: the double-slab world meshed to nothing")?;
-    let dbl = fluid_face_counts(&d.tvertices, 62.0);
-    if dbl != (1, 0, 0) {
-        return Err(format!(
-            "waterlogged: a block that occludes on ALL SIX faces emitted (top,side,bottom) {dbl:?}, expected (1,0,0) — every face but the top goes through `shouldRenderFace`, and the top does not"
-        ));
-    }
-
-    // 3. `isNeighborSameFluid` — an ordinary pool must stop drawing toward a
-    //    waterlogged block, because that block's fluid type IS water.
-    let near = |east: u32| {
-        mesh_column(&oracle_pool_beside(east), &table, &models, &carried, 0, 0)
-            .ok_or("waterlogged: a pool world meshed to nothing")
-    };
-    let toward_wl = quads_on_x_plane(&near(WL_BOTTOM_SLAB)?.tvertices, 9.0);
-    let toward_dry = quads_on_x_plane(&near(WL_DRY)?.tvertices, 9.0);
-    if (toward_wl, toward_dry) != (0, 1) {
-        return Err(format!(
-            "waterlogged: the plane x=9 holds {toward_wl} quads beside a waterlogged block and {toward_dry} beside a dry one, expected 0 and 1 — `same()` decides face suppression for ORDINARY pools too, so a version that only knows `RenderKind::Fluid` leaves a visible internal wall in every underwater build"
-        ));
-    }
-
-    Ok(WaterloggedFaceCounts {
-        bottom_slab: a,
-        top_slab: b,
-        double_slab: dbl,
-        dry_translucent_quads: dry.tvertices.len() / 4,
-        carried_cells: (wl.carried_fluid_cells, dry.carried_fluid_cells),
-        pool_plane_faces: (toward_wl, toward_dry),
-    })
-}
-
-/// Grade one legacy control: the optimized mesher must reproduce the reference
-/// **byte for byte** on both streams, touch no cube metrics, and actually
-/// produce the stream(s) the fixture exists to cover.
-#[allow(clippy::too_many_arguments)]
-fn oracle_check_legacy_control(
-    world: &World,
-    table: &[RenderKind],
-    models: &[Vec<rewo_data::assets::Quad>],
-    carried: &[Option<CarriedFluid>],
-    what: &str,
-    want_opaque: bool,
-    want_translucent: bool,
-) -> Result<LegacyControlCounts, String> {
-    let r = mesh_column_reference(world, table, models, carried, 0, 0)
-        .ok_or_else(|| format!("{what} control: the reference mesher produced nothing"))?;
-    let o = mesh_column(world, table, models, carried, 0, 0)
-        .ok_or_else(|| format!("{what} control: the optimized mesher produced nothing"))?;
-
-    // Non-vacuity first: a control that emitted nothing would "match" trivially.
-    if want_opaque && o.vertices.is_empty() {
-        return Err(format!(
-            "{what} control is vacuous: the opaque stream is empty, but this fixture exists to populate it"
-        ));
-    }
-    if !want_opaque && !o.vertices.is_empty() {
-        return Err(format!(
-            "{what} control: {} vertices reached the opaque stream, which this fixture must leave empty",
-            o.vertices.len()
-        ));
-    }
-    if want_translucent && o.tvertices.is_empty() {
-        return Err(format!(
-            "{what} control is vacuous: the translucent stream is empty, but this fixture exists to populate it"
-        ));
-    }
-    if !want_translucent && !o.tvertices.is_empty() {
-        return Err(format!(
-            "{what} control: {} vertices reached the translucent stream, which this fixture must leave empty",
-            o.tvertices.len()
-        ));
-    }
-
-    // Byte equality on both streams — models and fluids never merge, so nothing
-    // about their geometry may change.
-    let (ov, rv) = (
-        bytemuck::cast_slice::<_, u8>(&o.vertices),
-        bytemuck::cast_slice::<_, u8>(&r.vertices),
-    );
-    if ov != rv {
-        let at = ov
-            .iter()
-            .zip(rv)
-            .position(|(a, b)| a != b)
-            .map(|i| format!("first differing byte at {i}"))
-            .unwrap_or_else(|| format!("lengths {} vs {}", ov.len(), rv.len()));
-        return Err(format!(
-            "{what} control: opaque vertex bytes are not identical to the reference ({at}) — a non-cube path must pass through the greedy mesher untouched"
-        ));
-    }
-    if o.indices != r.indices {
-        return Err(format!(
-            "{what} control: opaque indices differ from the reference ({} vs {} entries)",
-            o.indices.len(),
-            r.indices.len()
-        ));
-    }
-    let (otv, rtv) = (
-        bytemuck::cast_slice::<_, u8>(&o.tvertices),
-        bytemuck::cast_slice::<_, u8>(&r.tvertices),
-    );
-    if otv != rtv {
-        let at = otv
-            .iter()
-            .zip(rtv)
-            .position(|(a, b)| a != b)
-            .map(|i| format!("first differing byte at {i}"))
-            .unwrap_or_else(|| format!("lengths {} vs {}", otv.len(), rtv.len()));
-        return Err(format!(
-            "{what} control: translucent vertex bytes are not identical to the reference ({at})"
-        ));
-    }
-    if o.tindices != r.tindices {
-        return Err(format!(
-            "{what} control: translucent indices differ from the reference ({} vs {} entries)",
-            o.tindices.len(),
-            r.tindices.len()
-        ));
-    }
-    if (o.y_min, o.y_max) != (r.y_min, r.y_max) {
-        return Err(format!(
-            "{what} control: vertical bounds differ ({}..{} vs {}..{})",
-            o.y_min, o.y_max, r.y_min, r.y_max
-        ));
-    }
-
-    // Nothing here is a cube, so every cube metric must be zero — otherwise the
-    // greedy path is claiming faces it does not own.
-    let metrics = (
-        o.visible_cube_faces,
-        o.greedy_candidate_faces,
-        o.greedy_quads,
-        o.unit_fallback_faces,
-    );
-    if metrics != (0, 0, 0, 0) {
-        return Err(format!(
-            "{what} control: cube metrics are {metrics:?}, expected all zero — models and fluids are not cube faces"
-        ));
-    }
-
-    Ok(LegacyControlCounts {
-        opaque_vertices: o.vertices.len(),
-        opaque_indices: o.indices.len(),
-        translucent_vertices: o.tvertices.len(),
-        translucent_indices: o.tindices.len(),
-    })
-}
-
-/// What [`check_greedy_oracle`] measured. Every number is observed, not
-/// assumed — the checker returns `Err` before building one of these if any
-/// property failed.
-#[derive(Clone, Debug)]
-pub struct GreedyOracleReport {
-    /// Unit faces the frozen reference mesher emitted (one quad each).
-    pub reference_unit_faces: usize,
-    pub reference_quads: usize,
-    /// Quads the optimized mesher emitted — for this cube-only fixture, every
-    /// one is a cube rectangle (merged or 1×1 fallback).
-    pub optimized_quads: usize,
-    pub optimized_cube_rects: usize,
-    pub vertex_reduction_percent: f32,
-    pub index_reduction_percent: f32,
-    pub visible_cube_faces: u32,
-    pub greedy_candidate_faces: u32,
-    pub greedy_quads: u32,
-    pub unit_fallback_faces: u32,
-    /// Largest rectangle area emitted per face direction, indexed by face
-    /// (0=up, 1=down, 2=north, 3=south, 4=west, 5=east).
-    pub max_rect_area_per_face: [i32; 6],
-    pub up_faces: usize,
-    pub max_up_rect_area: i32,
-    /// Rectangles whose vertical span strictly crosses the `y=64` section floor.
-    pub section_crossing_rects: usize,
-    pub nonuniform_ao_faces: usize,
-    /// The largest rectangle in the same plane as the AO fallbacks.
-    pub ao_plane_max_rect_area: i32,
-    /// The three shared-layer material strips, in scan order.
-    pub material_boundary_rects: [(i32, i32); 3],
-    pub material_boundary_layer: u16,
-    /// Unit faces owned by the cutout material (identical in both meshers).
-    pub cutout_faces: usize,
-    pub block_light_boundary_rects: [(i32, i32); 2],
-    pub sky_light_boundary_rects: [(i32, i32); 2],
-    pub tint_boundary_rects: [(i32, i32); 2],
-    pub tint_boundary_layer: u16,
-    pub tint_boundary_words: [u32; 2],
-    pub deterministic_runs: usize,
-
-    // -- legacy (non-cube) controls: byte-identical to the reference ---------
-    //
-    // The three booleans are always `true` in a returned report — the checker
-    // fails before constructing one otherwise. They exist so a caller printing
-    // the report can state plainly that each control ran and matched, and the
-    // counts show it was not vacuous.
-    pub model_only_identical: bool,
-    pub model_only: LegacyControlCounts,
-    pub water_only_identical: bool,
-    pub water_only: LegacyControlCounts,
-    pub lava_only_identical: bool,
-    pub lava_only: LegacyControlCounts,
-    /// M164 — a waterlogged model, which produces BOTH streams from one state.
-    pub waterlogged_identical: bool,
-    pub waterlogged: LegacyControlCounts,
-    pub waterlogged_faces: WaterloggedFaceCounts,
-}
-
-/// Locate the single expanded entry covering one unit face.
-fn oracle_face_at(
-    exp: &[ExpandedFace],
-    face: u8,
-    block: [i32; 3],
-    what: &str,
-) -> Result<ExpandedFace, String> {
-    let hits: Vec<_> = exp
-        .iter()
-        .filter(|e| e.f.face == face && e.f.block == block)
-        .collect();
-    match hits.len() {
-        1 => Ok(*hits[0]),
-        n => Err(format!(
-            "{what}: face {face} of {block:?} is covered {n} times, expected exactly once"
-        )),
-    }
-}
-
-fn oracle_rect_at(
-    exp: &[ExpandedFace],
-    face: u8,
-    block: [i32; 3],
-    what: &str,
-) -> Result<(i32, i32), String> {
-    oracle_face_at(exp, face, block, what).map(|e| (e.w, e.h))
-}
-
-/// Assert a rectangle's exact extent.
-fn oracle_expect_rect(
-    exp: &[ExpandedFace],
-    face: u8,
-    block: [i32; 3],
-    want: (i32, i32),
-    what: &str,
-) -> Result<(i32, i32), String> {
-    let got = oracle_rect_at(exp, face, block, what)?;
-    if got != want {
-        return Err(format!(
-            "{what}: face {face} of {block:?} merged into a {}x{} rectangle, expected {}x{}",
-            got.0, got.1, want.0, want.1
-        ));
-    }
-    Ok(got)
-}
-
-/// **The M15 acceptance gate.** Grades the production [`mesh_column`] against
-/// the frozen [`mesh_column_reference`] on one adversarial cube column.
-///
-/// The comparison is *semantic*, not byte-wise: the optimized rectangles are
-/// expanded back into the unit faces they cover (see [`expand_unit_faces`]) and
-/// that set — face direction, owning block, lower-24 layer/light, all four AO
-/// codes, tint word — must equal the reference's exactly. A byte diff cannot
-/// express this, because a merged rectangle is *supposed* to differ from the N
-/// unit quads it replaces.
-///
-/// Serverless and asset-free: no jar, no network, no Vulkan. Compiled into
-/// release builds on purpose — it is the gate, not a test fixture, and it never
-/// calls the test harness (`mod tests` calls *it*).
-///
-/// Returns `Err` with a property-specific message on the first failure.
-pub fn check_greedy_oracle() -> Result<GreedyOracleReport, String> {
-    let world = oracle_world();
-    let table = oracle_table();
-
-    let r = mesh_column_reference(&world, &table, &[], &[], 0, 0)
-        .ok_or("reference mesher produced nothing for the oracle column")?;
-    let o = mesh_column(&world, &table, &[], &[], 0, 0)
-        .ok_or("optimized mesher produced nothing for the oracle column")?;
-
-    // The fixture is cube-only, so nothing may reach the translucent stream and
-    // every opaque quad must be a cube rectangle.
-    if !o.tvertices.is_empty() || !r.tvertices.is_empty() {
-        return Err(format!(
-            "cube-only fixture produced translucent geometry ({} optimized / {} reference vertices)",
-            o.tvertices.len(),
-            r.tvertices.len()
-        ));
-    }
-
-    let exp = expand_unit_faces(&o.vertices, &o.indices)?;
-    let exp_ref = expand_unit_faces(&r.vertices, &r.indices)?;
-
-    // -- 1. metrics invariants ------------------------------------------------
-    if o.visible_cube_faces != r.visible_cube_faces {
-        return Err(format!(
-            "visible cube faces disagree: optimized {} vs reference {} — the two scans no longer see the same surface",
-            o.visible_cube_faces, r.visible_cube_faces
-        ));
-    }
-    if o.visible_cube_faces != o.greedy_candidate_faces + o.unit_fallback_faces {
-        return Err(format!(
-            "metrics: {} visible cube faces != {} candidates + {} fallbacks",
-            o.visible_cube_faces, o.greedy_candidate_faces, o.unit_fallback_faces
-        ));
-    }
-    if o.greedy_quads > o.greedy_candidate_faces {
-        return Err(format!(
-            "metrics: {} rectangles from only {} candidates — a rectangle must consume at least one",
-            o.greedy_quads, o.greedy_candidate_faces
-        ));
-    }
-    if o.greedy_quads == 0 {
-        return Err("metrics: the fixture merged nothing — greedy_quads is 0".into());
-    }
-    if o.unit_fallback_faces == 0 {
-        return Err(
-            "metrics: the fixture produced no fallback — up faces and AO discontinuities must fall back"
-                .into(),
-        );
-    }
-    let optimized_quads = o.vertices.len() / 4;
-    if optimized_quads != (o.greedy_quads + o.unit_fallback_faces) as usize {
-        return Err(format!(
-            "metrics: {optimized_quads} emitted quads != {} rectangles + {} fallbacks (a model/fluid quad leaked into a cube-only fixture?)",
-            o.greedy_quads, o.unit_fallback_faces
-        ));
-    }
-    if exp.len() != o.visible_cube_faces as usize {
-        return Err(format!(
-            "the optimized output expands to {} unit faces but the scan saw {} visible cube faces",
-            exp.len(),
-            o.visible_cube_faces
-        ));
-    }
-
-    // -- 2. the merge actually paid off --------------------------------------
-    if o.vertices.len() >= r.vertices.len() || o.indices.len() >= r.indices.len() {
-        return Err(format!(
-            "no reduction: optimized {} verts / {} indices vs reference {} / {}",
-            o.vertices.len(),
-            r.vertices.len(),
-            o.indices.len(),
-            r.indices.len()
-        ));
-    }
-    let pct = |opt: usize, refr: usize| (1.0 - opt as f32 / refr as f32) * 100.0;
-    let vertex_reduction_percent = pct(o.vertices.len(), r.vertices.len());
-    let index_reduction_percent = pct(o.indices.len(), r.indices.len());
-
-    // -- 3. every enabled direction really merged ----------------------------
-    let mut max_rect_area_per_face = [0i32; 6];
-    for e in &exp {
-        let slot = &mut max_rect_area_per_face[e.f.face as usize];
-        *slot = (*slot).max(e.w * e.h);
-    }
-    const DIR_NAME: [&str; 6] = ["up", "down", "north", "south", "west", "east"];
-    for face in 1..6 {
-        if max_rect_area_per_face[face] <= 1 {
-            return Err(format!(
-                "direction {} ({face}) never merged: its largest rectangle covers {} unit face(s), expected >1",
-                DIR_NAME[face], max_rect_area_per_face[face]
-            ));
-        }
-    }
-    // The five walls/floors the fixture is built to produce, pinned exactly.
-    oracle_expect_rect(&exp, 1, [1, 60, 1], (6, 6), "region A floor")?;
-    oracle_expect_rect(&exp, 2, [1, 60, 1], (6, 10), "region A north wall")?;
-    oracle_expect_rect(&exp, 3, [1, 60, 6], (6, 10), "region A south wall")?;
-    oracle_expect_rect(&exp, 4, [1, 60, 1], (6, 10), "region A west wall")?;
-    oracle_expect_rect(&exp, 5, [6, 60, 1], (6, 10), "region A east wall")?;
-
-    // -- 4. the up carve-out --------------------------------------------------
-    let ups: Vec<_> = exp.iter().filter(|e| e.f.face == 0).collect();
-    if ups.is_empty() {
-        return Err("the fixture emitted no up faces — the up carve-out is untested".into());
-    }
-    for e in &ups {
-        if e.w != 1 || e.h != 1 {
-            return Err(format!(
-                "up face of {:?} merged into a {}x{} rectangle — every up (+Y) face must stay a unit quad (see the merge site in mesh_column for the canonical-pixel measurement)",
-                e.f.block, e.w, e.h
-            ));
-        }
-    }
-
-    // -- 5. rectangles cross the section floor -------------------------------
-    let section_crossing_rects = split_quads(&o.vertices, &o.indices)?
-        .into_iter()
-        .filter(|q| {
-            let lo = q.iter().map(|v| v.pos[1]).fold(f32::MAX, f32::min);
-            let hi = q.iter().map(|v| v.pos[1]).fold(f32::MIN, f32::max);
-            lo < 64.0 && hi > 64.0
-        })
-        .count();
-    if section_crossing_rects == 0 {
-        return Err(
-            "no rectangle crossed the y=64 section floor — masks must span the column's whole occupied height"
-                .into(),
-        );
-    }
-
-    // -- 6. AO discontinuity falls back, its neighbours still merge -----------
-    let mut nonuniform_ao_faces = 0usize;
-    let mut nonuniform_vertical = 0usize;
-    for e in &exp {
-        if e.f.ao.iter().any(|a| *a != e.f.ao[0]) {
-            nonuniform_ao_faces += 1;
-            if e.f.face != 0 {
-                nonuniform_vertical += 1;
-            }
-            if e.w != 1 || e.h != 1 {
-                return Err(format!(
-                    "face {} of {:?} has non-uniform corner AO {:?} yet merged into a {}x{} rectangle — a rectangle cannot reproduce a corner gradient",
-                    e.f.face, e.f.block, e.f.ao, e.w, e.h
-                ));
-            }
-        }
-    }
-    if nonuniform_vertical == 0 {
-        // Two ways to land here, and the caller needs to tell them apart: either
-        // the fixture stopped generating a discontinuity (the probe went vacuous
-        // — up faces fall back regardless, so a top plane cannot grade this
-        // rule), or the mesher merged the non-uniform faces and *flattened* their
-        // gradient to one corner's code, which erases the evidence. The
-        // surface-equality check below catches the second case explicitly.
-        return Err(
-            "no non-uniform-AO vertical face reached the output — either the fixture stopped producing a discontinuity, or the mesher merged one and flattened its corner gradient"
-                .into(),
-        );
-    }
-    // The fallback must be local to the discontinuity, not a plane-wide bail-out:
-    // the far half of that same north plane is one rectangle.
-    let ao_plane_max_rect_area = exp
-        .iter()
-        .filter(|e| e.f.face == 2 && e.f.block[2] == 10)
-        .map(|e| e.w * e.h)
-        .max()
-        .unwrap_or(0);
-    if ao_plane_max_rect_area <= 1 {
-        return Err(format!(
-            "the AO-discontinuity plane (north, z=10) merged nothing (largest rectangle covers {ao_plane_max_rect_area} unit face(s)) — the fallback must be local to the discontinuity, not plane-wide"
-        ));
-    }
-    oracle_expect_rect(&exp, 2, [4, 64, 10], (3, 6), "AO plane, unoccluded half")?;
-
-    // -- 7. material boundary with a shared layer ----------------------------
-    let strips = [
-        oracle_face_at(&exp, 1, [8, 62, 1], "material strip GRANITE")?,
-        oracle_face_at(&exp, 1, [8, 62, 4], "material strip DIORITE")?,
-        oracle_face_at(&exp, 1, [8, 62, 7], "material strip CUTOUT")?,
-    ];
-    let material_boundary_layer = (strips[0].f.light24 & 0xFFFF) as u16;
-    if material_boundary_layer != OS_SHARED_DOWN_LAYER {
-        return Err(format!(
-            "material boundary probe is vacuous: the down layer is {material_boundary_layer}, expected the shared {OS_SHARED_DOWN_LAYER}"
-        ));
-    }
-    for (i, s) in strips.iter().enumerate() {
-        if s.f.light24 != strips[0].f.light24 || s.f.tint != strips[0].f.tint {
-            return Err(format!(
-                "material strip {i} differs in layer/light/tint ({:#08x}/{:#010x} vs {:#08x}/{:#010x}) — the probe must isolate the block state as the only discriminator",
-                s.f.light24, s.f.tint, strips[0].f.light24, strips[0].f.tint
-            ));
-        }
-        if s.f.ao != strips[0].f.ao {
-            return Err(format!(
-                "material strip {i} differs in AO {:?} vs {:?} — the probe must isolate the block state",
-                s.f.ao, strips[0].f.ao
-            ));
-        }
-        if (s.w, s.h) != (8, 3) {
-            return Err(format!(
-                "material strip {i} is a {}x{} rectangle, expected 8x3 — with an identical layer, light, tint and AO, the only thing that may keep these three states apart is the block state in the merge key",
-                s.w, s.h
-            ));
-        }
-    }
-
-    // -- 8. the cutout material stays present and separate -------------------
-    let is_cutout = |b: [i32; 3]| b[1] == 62 && (8..=15).contains(&b[0]) && (7..=9).contains(&b[2]);
-    let cutout_faces = exp.iter().filter(|e| is_cutout(e.f.block)).count();
-    let cutout_faces_ref = exp_ref.iter().filter(|e| is_cutout(e.f.block)).count();
-    if cutout_faces == 0 {
-        return Err("the cutout material emitted no faces — it must stay semantically present through the greedy path".into());
-    }
-    if cutout_faces != cutout_faces_ref {
-        return Err(format!(
-            "the cutout material lost faces: {cutout_faces} optimized vs {cutout_faces_ref} reference"
-        ));
-    }
-
-    // -- 9. light discontinuities are not crossed ----------------------------
-    let block_lo = oracle_face_at(&exp, 1, [8, 66, 11], "block-light plate, unlit half")?;
-    let block_hi = oracle_face_at(&exp, 1, [12, 66, 11], "block-light plate, lit half")?;
-    if block_lo.f.light24 == block_hi.f.light24 {
-        return Err(format!(
-            "block-light probe is vacuous: both halves carry light word {:#08x} — the poke did not reach the sampled neighbour cells at y=65",
-            block_lo.f.light24
-        ));
-    }
-    for (s, half) in [(block_lo, "unlit"), (block_hi, "lit")] {
-        if (s.w, s.h) != (4, 4) {
-            return Err(format!(
-                "block-light {half} half is a {}x{} rectangle, expected 4x4 — a rectangle must not span a block-light discontinuity",
-                s.w, s.h
-            ));
-        }
-    }
-    let sky_lo = oracle_face_at(&exp, 1, [8, 70, 11], "sky-light plate, bright half")?;
-    let sky_hi = oracle_face_at(&exp, 1, [12, 70, 11], "sky-light plate, dim half")?;
-    if sky_lo.f.light24 == sky_hi.f.light24 {
-        return Err(format!(
-            "sky-light probe is vacuous: both halves carry light word {:#08x} — the poke did not reach the sampled neighbour cells at y=69",
-            sky_lo.f.light24
-        ));
-    }
-    for (s, half) in [(sky_lo, "bright"), (sky_hi, "dim")] {
-        if (s.w, s.h) != (4, 4) {
-            return Err(format!(
-                "sky-light {half} half is a {}x{} rectangle, expected 4x4 — a rectangle must not span a sky-light discontinuity",
-                s.w, s.h
-            ));
-        }
-    }
-
-    // -- 10. the constant-tint boundary is not crossed -----------------------
-    //
-    // A tint is a property of the block state, so `TintSource::Constant` cannot
-    // produce a *same-state* tint change — the two sides necessarily differ in
-    // state too. What this grades is therefore the observable property (no
-    // rectangle spans the tint change) plus the fact that the split cannot be
-    // attributed to layer or light: both sides carry an identical `light24`.
-    // Check 7 above separately proves the state field splits a shared layer.
-    let spruce = oracle_face_at(&exp, 1, [1, 62, 11], "tint boundary, spruce half")?;
-    let birch = oracle_face_at(&exp, 1, [5, 62, 11], "tint boundary, birch half")?;
-    let tint_boundary_layer = (spruce.f.light24 & 0xFFFF) as u16;
-    if tint_boundary_layer != OS_TINT_RAW_LAYER {
-        return Err(format!(
-            "tint boundary probe is vacuous: the face resolved to layer {tint_boundary_layer}, not the raw {OS_TINT_RAW_LAYER} — the Constant tint path did not engage (is the biome context attached?)"
-        ));
-    }
-    if spruce.f.light24 != birch.f.light24 {
-        return Err(format!(
-            "tint boundary probe is impure: the halves also differ in layer/light ({:#08x} vs {:#08x}), so a split would not prove the tint was honoured",
-            spruce.f.light24, birch.f.light24
-        ));
-    }
-    if spruce.f.tint == birch.f.tint {
-        return Err(format!(
-            "tint boundary probe is vacuous: both halves carry tint word {:#010x}",
-            spruce.f.tint
-        ));
-    }
-    if spruce.f.tint != pack_tint(ORACLE_SPRUCE_RGB, 0)
-        || birch.f.tint != pack_tint(ORACLE_BIRCH_RGB, 0)
-    {
-        return Err(format!(
-            "tint boundary: the emitted tint words {:#010x}/{:#010x} are not the fixture's constants {:#010x}/{:#010x} — the constant tint is not carried losslessly",
-            spruce.f.tint,
-            birch.f.tint,
-            pack_tint(ORACLE_SPRUCE_RGB, 0),
-            pack_tint(ORACLE_BIRCH_RGB, 0)
-        ));
-    }
-    for (s, half) in [(spruce, "spruce"), (birch, "birch")] {
-        if (s.w, s.h) != (4, 4) {
-            return Err(format!(
-                "tint boundary {half} half is a {}x{} rectangle, expected 4x4 — a rectangle must not span a tint change",
-                s.w, s.h
-            ));
-        }
-    }
-
-    // -- 11. the whole surface, face for face --------------------------------
-    let mut got: Vec<UnitFace> = exp.iter().map(|e| e.f).collect();
-    let mut want: Vec<UnitFace> = exp_ref.iter().map(|e| e.f).collect();
-    got.sort();
-    want.sort();
-    if got.len() != want.len() {
-        return Err(format!(
-            "expanded surface size differs: optimized {} unit faces vs reference {}",
-            got.len(),
-            want.len()
-        ));
-    }
-    if let Some((i, (g, w))) = got.iter().zip(&want).enumerate().find(|(_, (g, w))| g != w) {
-        return Err(format!(
-            "expanded surface differs at sorted face {i}: optimized {g:?} vs reference {w:?}"
-        ));
-    }
-
-    // -- 12. determinism ------------------------------------------------------
-    let deterministic_runs = 4;
-    for run in 0..deterministic_runs {
-        let again = mesh_column(&world, &table, &[], &[], 0, 0)
-            .ok_or("determinism: a rerun produced nothing")?;
-        if bytemuck::cast_slice::<_, u8>(&again.vertices)
-            != bytemuck::cast_slice::<_, u8>(&o.vertices)
-        {
-            return Err(format!(
-                "determinism: rerun {run} emitted different vertex bytes — the masks must be index-ordered arrays, not hash maps"
-            ));
-        }
-        if again.indices != o.indices {
-            return Err(format!(
-                "determinism: rerun {run} emitted different indices"
-            ));
-        }
-        if (again.greedy_quads, again.unit_fallback_faces)
-            != (o.greedy_quads, o.unit_fallback_faces)
-        {
-            return Err(format!(
-                "determinism: rerun {run} reported {}/{} rectangles/fallbacks vs {}/{}",
-                again.greedy_quads,
-                again.unit_fallback_faces,
-                o.greedy_quads,
-                o.unit_fallback_faces
-            ));
-        }
-    }
-
-    // -- 13. legacy controls: models and fluids pass through untouched -------
-    //
-    // The cube path is graded semantically because a rectangle is *supposed* to
-    // differ from the faces it replaces. Models and fluids merge nothing, so
-    // they are held to byte equality — which is what proves the greedy pass
-    // left scan order, buffer layout and the opaque/translucent split alone.
-    let model_only = oracle_check_legacy_control(
-        &oracle_model_world(),
-        &oracle_model_table(),
-        &oracle_model_quads(),
-        &[],
-        "model-only",
-        true,  // models land in the opaque stream
-        false, // and never in the translucent one
-    )?;
-    let fluid_table = oracle_fluid_table();
-    let water_only = oracle_check_legacy_control(
-        &oracle_water_world(),
-        &fluid_table,
-        &[],
-        &[],
-        "water-only",
-        false, // water blends, so the opaque stream must stay empty
-        true,
-    )?;
-    let lava_only = oracle_check_legacy_control(
-        &oracle_lava_world(),
-        &fluid_table,
-        &[],
-        &[],
-        "lava-only",
-        true, // lava is opaque and fullbright
-        false,
-    )?;
-    // M164 — one waterlogged block. The only control that must populate BOTH
-    // streams, because it is the only fixture where one block state runs both
-    // of `SectionCompiler`'s draws.
-    let waterlogged = oracle_check_legacy_control(
-        &oracle_waterlogged_world(WL_BOTTOM_SLAB),
-        &oracle_waterlogged_table(),
-        &oracle_model_quads(),
-        &oracle_waterlogged_carried(),
-        "waterlogged",
-        true, // the block's own model
-        true, // and the water it carries
-    )?;
-    let waterlogged_faces = check_waterlogged()?;
-
-    Ok(GreedyOracleReport {
-        reference_unit_faces: exp_ref.len(),
-        reference_quads: r.vertices.len() / 4,
-        optimized_quads,
-        optimized_cube_rects: optimized_quads,
-        vertex_reduction_percent,
-        index_reduction_percent,
-        visible_cube_faces: o.visible_cube_faces,
-        greedy_candidate_faces: o.greedy_candidate_faces,
-        greedy_quads: o.greedy_quads,
-        unit_fallback_faces: o.unit_fallback_faces,
-        max_rect_area_per_face,
-        up_faces: ups.len(),
-        max_up_rect_area: max_rect_area_per_face[0],
-        section_crossing_rects,
-        nonuniform_ao_faces,
-        ao_plane_max_rect_area,
-        material_boundary_rects: [
-            (strips[0].w, strips[0].h),
-            (strips[1].w, strips[1].h),
-            (strips[2].w, strips[2].h),
-        ],
-        material_boundary_layer,
-        cutout_faces,
-        block_light_boundary_rects: [(block_lo.w, block_lo.h), (block_hi.w, block_hi.h)],
-        sky_light_boundary_rects: [(sky_lo.w, sky_lo.h), (sky_hi.w, sky_hi.h)],
-        tint_boundary_rects: [(spruce.w, spruce.h), (birch.w, birch.h)],
-        tint_boundary_layer,
-        tint_boundary_words: [spruce.f.tint, birch.f.tint],
-        deterministic_runs,
-        model_only_identical: true,
-        model_only,
-        water_only_identical: true,
-        water_only,
-        lava_only_identical: true,
-        lava_only,
-        waterlogged_identical: true,
-        waterlogged,
-        waterlogged_faces,
-    })
-}
+#[cfg(any(test, feature = "oracle"))]
+mod oracle;
+#[cfg(any(test, feature = "oracle"))]
+pub use oracle::*;
 
 #[cfg(test)]
 mod tests {
@@ -3376,6 +2183,7 @@ mod tests {
             dir: 2, // north
             tint: TintSource::Water,
             shade: false, // c = 1.0 → color is exactly the tint
+            translucent: false,
         }]];
 
         // Legacy: no biome context → white color, pre-tinted layer 7.
@@ -3385,11 +2193,7 @@ mod tests {
         let m = mesh_column(&w, &table, &models, &[], 0, 0).expect("meshed");
         let v = m.vertices[0];
         assert_eq!(v.layer_index(), 7, "legacy path uses the pre-tinted layer");
-        assert_eq!(
-            v.tint_rgb(),
-            TINT_WHITE,
-            "legacy path carries white tint bytes"
-        );
+        assert_eq!(v.color_rgb(), TINT_WHITE, "legacy path carries a white color");
         assert_eq!(
             v.reconstructed_color(),
             [1.0, 1.0, 1.0],
@@ -3424,11 +2228,9 @@ mod tests {
         let m2 = mesh_column(&w, &table, &models, &[], 0, 0).expect("meshed");
         let v2 = m2.vertices[0];
         assert_eq!(v2.layer_index(), 8, "biome path uses the RAW layer");
-        assert_eq!(
-            v2.tint_rgb(),
-            [100, 0, 0],
-            "tint bytes are carried losslessly"
-        );
+        // Open air, unshaded: gray(1.0) = 255, times the tint (vanilla
+        // `ARGB.multiply`, 255 * 100 / 255 = 100) — the tint exactly.
+        assert_eq!(v2.color_rgb(), [100, 0, 0], "the tint is carried exactly");
         let c2 = v2.reconstructed_color();
         assert!(
             (c2[0] - 100.0 / 255.0).abs() < 1e-6,
@@ -3439,130 +2241,98 @@ mod tests {
         assert_eq!(c2[2], 0.0);
     }
 
-    // -- M15 packed vertex ABI ---------------------------------------------
+    // -- packed vertex ABI --------------------------------------------------
 
     #[test]
     fn packed_vertex_is_exactly_28_bytes_with_expected_offsets() {
         assert_eq!(std::mem::size_of::<MeshVertex>(), 28, "packed vertex size");
         assert_eq!(std::mem::align_of::<MeshVertex>(), 4, "packed vertex align");
         // Offsets the Vulkan attribute descriptions hard-code.
-        let v = MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, 0, 0, AO_NONE, TINT_WHITE);
+        let v = MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, TINT_WHITE);
         let base = &v as *const _ as usize;
         assert_eq!(&v.pos as *const _ as usize - base, 0, "pos offset");
         assert_eq!(&v.uv as *const _ as usize - base, 12, "uv offset");
         assert_eq!(&v.light as *const _ as usize - base, 20, "light offset");
-        assert_eq!(&v.tint as *const _ as usize - base, 24, "tint offset");
+        assert_eq!(&v.color as *const _ as usize - base, 24, "color offset");
     }
 
-    /// Every shade code × every AO level must reconstruct the *legacy* float
-    /// formula bit-for-bit: `FACE_SHADE[face] * AO_LEVELS[ao] * (rgb/255)`.
+    /// `block_vertex_color` against values derived by hand from vanilla's
+    /// `ARGB` arithmetic (f32 products, `Mth.floor`, `(int)` truncation, and
+    /// `a * b / 255` integer division).
     #[test]
-    fn reconstruction_matches_legacy_formula_for_every_shade_and_ao() {
-        for face in 0..FACE_SHADE.len() {
-            for ao in 0..AO_LEVELS.len() {
-                for rgb in [
-                    [255u8, 255, 255],
-                    [100, 0, 0],
-                    [1, 2, 3],
-                    [0, 0, 0],
-                    [91, 163, 163],
-                ] {
-                    let v = MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, 0, face as u8, ao as u8, rgb);
-                    assert_eq!(v.shade_code(), face as u8);
-                    assert_eq!(v.ao_code(), ao as u8);
-                    // The legacy CPU sequence, verbatim.
-                    let c = FACE_SHADE[face] * AO_LEVELS[ao];
-                    let legacy = [
-                        c * (rgb[0] as f32 / 255.0),
-                        c * (rgb[1] as f32 / 255.0),
-                        c * (rgb[2] as f32 / 255.0),
-                    ];
-                    let got = v.reconstructed_color();
-                    for i in 0..3 {
-                        assert_eq!(
-                            got[i].to_bits(),
-                            legacy[i].to_bits(),
-                            "face {face} ao {ao} rgb {rgb:?} channel {i}: {got:?} vs {legacy:?}"
-                        );
-                    }
-                }
-            }
+    fn block_vertex_color_is_vanillas_integer_arithmetic() {
+        // Open-air cube faces: gray(1.0) = floor(255.0) = 255, then
+        // (int)(255 * shade): 1.0 -> 255; 0.5 -> 127 (127.5); f32 0.8 =
+        // 0.800000011920929 -> 204.0000030 -> 204; f32 0.6 -> 153.0000061 -> 153.
+        assert_eq!(block_vertex_color(1.0, 1.0, TINT_WHITE), [255; 3]);
+        assert_eq!(block_vertex_color(1.0, 0.5, TINT_WHITE), [127; 3]);
+        assert_eq!(block_vertex_color(1.0, 0.8, TINT_WHITE), [204; 3]);
+        assert_eq!(block_vertex_color(1.0, 0.6, TINT_WHITE), [153; 3]);
+        // Nether up/down: f32 0.9 = 0.899999976 -> 229.4999939 -> 229.
+        assert_eq!(block_vertex_color(1.0, 0.9, TINT_WHITE), [229; 3]);
+        // An AO corner of 0.8 on a 0.8 face: floor(0.8f * 255) = 204, then
+        // (int)(204 * 0.8f) = (int)163.2000024 = 163; tinted (100, 0, 0):
+        // 163 * 100 / 255 = 16300 / 255 = 63 (63.92 truncated).
+        assert_eq!(block_vertex_color(0.8, 0.8, TINT_WHITE), [163; 3]);
+        assert_eq!(block_vertex_color(0.8, 0.8, [100, 0, 0]), [63, 0, 0]);
+        // The flat path is gray(shade) with no scale: gray(0.6) = 153.
+        assert_eq!(block_vertex_color(0.6, 1.0, TINT_WHITE), [153; 3]);
+        // The darkest AO corner: (0.2 + 0.2 + 0.2 + 0.2) * 0.25 = 0.2 in f32
+        // (0.200000003); floor(0.2f * 255) = floor(51.0000008) = 51.
+        assert_eq!(block_vertex_color(0.2, 1.0, TINT_WHITE), [51; 3]);
+        // White is the identity of the tint step for every gray.
+        for g in 0..=255u8 {
+            let b = g as f32 / 255.0;
+            let white = block_vertex_color(b, 1.0, TINT_WHITE);
+            assert_eq!(white, [as_8bit_channel(b) as u8; 3], "gray {g}");
         }
     }
 
-    /// White tint + shade 0 + AO_NONE must be EXACTLY 1.0 (the lightmapshot
-    /// probe quad depends on this).
+    /// The fluid color is `ARGB.scaleRGB(tint, factor)`, never `gray`.
     #[test]
-    fn white_untinted_vertex_reconstructs_exact_one() {
-        let v = MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, 0, 0, AO_NONE, TINT_WHITE);
-        assert_eq!(v.reconstructed_color(), [1.0, 1.0, 1.0]);
-        assert_eq!(FACE_SHADE[0], 1.0);
-        assert_eq!(AO_LEVELS[AO_NONE as usize], 1.0);
+    fn fluid_color_is_scale_rgb_of_the_tint() {
+        // Water tint 0x3F76E4 on a north side in the Overworld:
+        // factor up() * north() = 1.0 * 0.8f; (int)(63 * 0.8f) = 50,
+        // (int)(118 * 0.8f) = 94, (int)(228 * 0.8f) = 182.
+        assert_eq!(scale_rgb([63, 118, 228], 1.0 * 0.8), [50, 94, 182]);
+        // Lava is untinted (-1): 255 * down() = 127.
+        assert_eq!(scale_rgb(TINT_WHITE, 0.5), [127; 3]);
     }
 
     #[test]
-    fn tint_bytes_roundtrip_losslessly_for_every_value() {
+    fn color_bytes_roundtrip_with_opaque_alpha() {
         for c in 0u16..=255 {
             let rgb = [c as u8, (255 - c) as u8, (c as u8).wrapping_mul(7)];
-            let v = MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, 0, 0, AO_NONE, rgb);
-            assert_eq!(v.tint_rgb(), rgb, "tint byte roundtrip");
-            assert_eq!(v.tint_flags(), 0, "flags default clear");
+            let v = MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, rgb);
+            assert_eq!(v.color_rgb(), rgb, "color byte roundtrip");
+            assert_eq!(v.color >> 24, 0xFF, "alpha byte is opaque");
+            assert_eq!(v.reconstructed_color(), rgb.map(|b| b as f32 / 255.0));
         }
+        assert_eq!(MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, TINT_WHITE).reconstructed_color(), [1.0; 3]);
     }
 
-    /// The packed word must preserve `pack_layer`'s lower-24-bit contract for
-    /// every layer index and every light nibble pair.
+    /// The light word carries the layer and both smooth channels losslessly,
+    /// fractions included; the whole levels are the smooth values' high nibble.
     #[test]
-    fn light_word_preserves_pack_layer_lower_24_bits() {
+    fn light_word_carries_layer_and_smooth_light() {
         for layer in [0u32, 1, 7, 499, 500, 4095, 0xFFFF] {
             for block in 0u8..16 {
                 for sky in [0u8, 1, 7, 15] {
-                    for shade in 0..FACE_SHADE.len() as u8 {
-                        for ao in 0..AO_LEVELS.len() as u8 {
-                            let v = MeshVertex::new(
-                                [0.0; 3], [0.0; 2], layer, block, sky, shade, ao, TINT_WHITE,
-                            );
-                            assert_eq!(
-                                v.light & 0x00FF_FFFF,
-                                pack_layer(layer, block, sky),
-                                "lower 24 bits must equal pack_layer"
-                            );
-                            assert_eq!(v.layer_index(), layer as u16);
-                            assert_eq!(v.block_light(), block);
-                            assert_eq!(v.sky_light(), sky);
-                            assert_eq!(v.shade_code(), shade);
-                            assert_eq!(v.ao_code(), ao);
-                        }
-                    }
+                    let coords = light_coords(block, sky);
+                    let v = MeshVertex::new([0.0; 3], [0.0; 2], layer, coords, TINT_WHITE);
+                    assert_eq!(v.layer_index(), layer as u16);
+                    assert_eq!((v.block_light(), v.sky_light()), (block, sky));
+                    assert_eq!((v.block_smooth(), v.sky_smooth()), (block * 16, sky * 16));
                 }
             }
         }
-    }
-
-    /// An out-of-range shade code is rejected **at the packing boundary**, in
-    /// release builds too. `SHADE_MASK` is 3 bits, so the reserved code 7
-    /// survives masking intact — nothing downstream of `pack_light_word` would
-    /// notice until `MeshVertex::reconstructed_color` indexed `FACE_SHADE[7]`
-    /// out of bounds (and `world.vert` did the same, where it is undefined
-    /// rather than a panic).
-    #[test]
-    fn pack_light_word_rejects_the_reserved_shade_code() {
-        // The mask alone cannot catch 7: it round-trips through SHADE_MASK.
-        assert_eq!(
-            7u32 & SHADE_MASK,
-            7,
-            "mask would accept 7 — the assert must not"
-        );
-
-        let reserved = std::panic::catch_unwind(|| pack_light_word(0, 0, 0, 7, AO_NONE));
-        assert!(reserved.is_err(), "shade_code 7 must panic at pack time");
-
-        // 0..=6 are the valid codes, and the boundary is exactly FACE_SHADE.len().
-        for code in 0..FACE_SHADE.len() as u8 {
-            let ok = std::panic::catch_unwind(move || pack_light_word(0, 0, 0, code, AO_NONE));
-            assert!(ok.is_ok(), "shade_code {code} is valid and must not panic");
-        }
-        assert_eq!(FACE_SHADE.len(), 7, "codes 0..=6 exist, 7 is reserved");
+        // A smoothBlend result keeps its fraction: 196 = 12.25 levels of sky,
+        // 56 = 3.5 levels of block (`smoothPack(56, 196)`).
+        let v = MeshVertex::new([0.0; 3], [0.0; 2], 3, 56 | 196 << 16, TINT_WHITE);
+        assert_eq!((v.block_smooth(), v.sky_smooth()), (56, 196));
+        assert_eq!((v.block_light(), v.sky_light()), (3, 12));
+        assert_eq!(v.layer_index(), 3);
+        assert_eq!(light_coords(15, 15), FULL_BRIGHT);
     }
 
     /// UV transport is **exact for every family the mesher emits** — there is no
@@ -3571,8 +2341,7 @@ mod tests {
     /// could not represent, and it flipped 6 demo pixels at a texel boundary.
     #[test]
     fn uv_is_stored_exactly_for_every_emitted_family() {
-        let store =
-            |x: f32| MeshVertex::new([0.0; 3], [x, x], 0, 0, 0, 0, AO_NONE, TINT_WHITE).uv_f32()[0];
+        let store = |x: f32| MeshVertex::new([0.0; 3], [x, x], 0, 0, TINT_WHITE).uv_f32()[0];
 
         // Integer spans 0..=16 (what greedy will emit).
         for i in 0..=16u32 {
@@ -3611,7 +2380,7 @@ mod tests {
             [0.0625, 0.9375],
             [1.0 - 8.0 / 9.0, 4.0 / 9.0],
         ] {
-            let v = MeshVertex::new([0.0; 3], uv, 0, 0, 0, 0, AO_NONE, TINT_WHITE);
+            let v = MeshVertex::new([0.0; 3], uv, 0, 0, TINT_WHITE);
             assert_eq!(v.uv_f32(), uv, "uv must round-trip exactly");
             assert_eq!(v.uv, uv, "uv is stored verbatim");
         }
@@ -3873,13 +2642,14 @@ mod tests {
     #[test]
     fn unit_rect_is_bit_identical_to_the_legacy_unit_quad() {
         for face in 0..6 {
+            let coords = light_coords(5, 9);
+            let color = [3, 200, 71];
             let cf = CubeFace {
                 layer: 12,
-                tint_rgb: [3, 200, 71],
-                lb: 5,
-                ls: 9,
-                ao: [2; 4],
-                shade: face as u8,
+                lit: LitQuad {
+                    coords: [coords; 4],
+                    color: [color; 4],
+                },
             };
             let (mut lv, mut li) = (Vec::new(), Vec::new());
             push_cube_face(&mut lv, &mut li, 4, -9, 6, face, &cf);
@@ -3891,8 +2661,8 @@ mod tests {
                 [4, -9, 6],
                 1,
                 1,
-                pack_light_word(12, 5, 9, face as u8, 2),
-                pack_tint([3, 200, 71], 0),
+                pack_light_word(12, coords),
+                pack_color(color),
             );
             assert_eq!(
                 bytemuck::cast_slice::<_, u8>(&gv),
@@ -4143,9 +2913,10 @@ mod tests {
             .find(|e| e.f.face == 2 && e.f.block == [6, 64, 6])
             .expect("north face of (6,64,6) must exist");
         assert!(
-            disc.f.ao.iter().any(|a| *a != disc.f.ao[0]),
-            "this face's AO must actually be non-uniform: {:?}",
-            disc.f.ao
+            !disc.f.uniform(),
+            "this face's corners must actually differ: light {:x?}, color {:x?}",
+            disc.f.light,
+            disc.f.color
         );
         assert_eq!(
             (disc.w, disc.h),
@@ -4275,6 +3046,7 @@ mod tests {
             dir: 2,
             tint: TintSource::None,
             shade: true,
+            translucent: false,
         }]];
 
         let mut w = World::new(DimensionShape::OVERWORLD);
@@ -4435,8 +3207,12 @@ mod tests {
         assert_eq!(rep.material_boundary_rects, [(8, 3); 3]);
         assert_eq!(rep.material_boundary_layer, OS_SHARED_DOWN_LAYER);
         assert!(rep.cutout_faces > 0);
-        assert_eq!(rep.block_light_boundary_rects, [(4, 4); 2]);
-        assert_eq!(rep.sky_light_boundary_rects, [(4, 4); 2]);
+        // Smooth lighting blends each light boundary: the unlit/bright half
+        // keeps x 8..=10 whole (3 wide, all 4 rows), while the 4-wide lit/dim
+        // half borders unlit cells on every edge (x = 11 and 16, z = 10 and
+        // 15), so only its 2x2 interior (x 13..=14, z 12..=13) is uniform.
+        assert_eq!(rep.block_light_boundary_rects, [(3, 4), (2, 2)]);
+        assert_eq!(rep.sky_light_boundary_rects, [(3, 4), (2, 2)]);
         assert_eq!(rep.tint_boundary_rects, [(4, 4); 2]);
         assert_eq!(rep.tint_boundary_layer, OS_TINT_RAW_LAYER);
         assert_ne!(rep.tint_boundary_words[0], rep.tint_boundary_words[1]);
@@ -4572,92 +3348,30 @@ mod tests {
             .unwrap_or_else(|| panic!("quad normal {n:?} is not axis-aligned"))
     }
 
-    /// The mapping itself, against the transcribed tables, for both dimensions.
+    /// `face_shade` is `CardinalLighting.byFace` of the world's dimension.
     #[test]
-    fn face_shade_code_is_the_dimension_cardinal_table() {
+    fn face_shade_is_the_dimension_cardinal_table() {
         use rewo_world::dimension::CardinalLighting;
-
-        // DEFAULT: the code IS the direction, and codes 0..=5 keep their exact
-        // M15 values — this is what makes every Overworld mesh byte unchanged.
         let d = World::new(DimensionShape::OVERWORLD);
-        for face in 0..6 {
-            assert_eq!(
-                face_shade_code(&d, face),
-                face as u8,
-                "default face {face} must keep its historical code"
-            );
-            assert_eq!(
-                FACE_SHADE[face_shade_code(&d, face) as usize],
-                CardinalLighting::DEFAULT.by_mesh_face(face),
-                "default face {face} factor"
-            );
-        }
-        assert_eq!(FACE_SHADE[..6], [1.0, 0.5, 0.8, 0.8, 0.6, 0.6]);
-
-        // NETHER: up and down move to the appended code 6; the four sides are
-        // unchanged, so they must keep their own codes rather than collapsing
-        // onto whichever entry happens to share their value first.
         let n = nether_world();
-        assert_eq!(face_shade_code(&n, 0), 6, "nether up");
-        assert_eq!(face_shade_code(&n, 1), 6, "nether down");
-        for face in 2..6 {
-            assert_eq!(
-                face_shade_code(&n, face),
-                face as u8,
-                "nether side {face} is not moved by the dimension"
-            );
-        }
         for face in 0..6 {
-            assert_eq!(
-                FACE_SHADE[face_shade_code(&n, face) as usize],
-                CardinalLighting::NETHER.by_mesh_face(face),
-                "nether face {face} factor"
-            );
+            assert_eq!(face_shade(&d, face), CardinalLighting::DEFAULT.by_mesh_face(face));
+            assert_eq!(face_shade(&n, face), CardinalLighting::NETHER.by_mesh_face(face));
         }
-        assert_eq!(FACE_SHADE[6], 0.9, "code 6 is the Nether up/down factor");
+        assert_eq!(face_shade(&n, 0), 0.9, "nether up");
+        assert_eq!(face_shade(&n, 1), 0.9, "nether down");
     }
 
-    /// Code 6 reconstructs exactly the legacy float sequence at 0.9 — the same
-    /// claim `reconstruction_matches_legacy_formula_for_every_shade_and_ao`
-    /// makes for 0..=5, stated on its own for the new entry.
+    /// A Nether plate in open air: every corner's AO brightness is 1.0 (all
+    /// samples are air, shade 1.0), so each face is `(int)(255 * byFace)` —
+    /// 229 top and bottom (f32 0.9 * 255 = 229.49..), 204 north/south, 153
+    /// west/east — in both mesher paths. The bottom plane still merges.
     #[test]
-    fn shade_code_six_reconstructs_the_nether_factor() {
-        for ao in 0..AO_LEVELS.len() {
-            for rgb in [[255u8, 255, 255], [100, 0, 0], [1, 2, 3], [91, 163, 163]] {
-                let v = MeshVertex::new([0.0; 3], [0.0; 2], 0, 0, 0, 6, ao as u8, rgb);
-                assert_eq!(v.shade_code(), 6, "code 6 survives packing");
-                let c = 0.9f32 * AO_LEVELS[ao];
-                let legacy = [
-                    c * (rgb[0] as f32 / 255.0),
-                    c * (rgb[1] as f32 / 255.0),
-                    c * (rgb[2] as f32 / 255.0),
-                ];
-                let got = v.reconstructed_color();
-                for i in 0..3 {
-                    assert_eq!(
-                        got[i].to_bits(),
-                        legacy[i].to_bits(),
-                        "ao {ao} rgb {rgb:?} channel {i}: {got:?} vs {legacy:?}"
-                    );
-                }
-            }
-        }
-        // And it is distinguishable from every frozen code, so it cannot be a
-        // renumbering of one of them.
-        for code in 0..6 {
-            assert_ne!(FACE_SHADE[code], FACE_SHADE[6], "code {code} vs 6");
-        }
-    }
-
-    /// A Nether cube: its top *and* bottom carry code 6 (0.9), its four sides
-    /// keep their own codes, and both mesher paths agree. The bottom plane still
-    /// merges — the resolved code rides in the merge key, so faces that share it
-    /// coalesce and faces that do not, cannot.
-    #[test]
-    fn nether_cube_top_and_bottom_use_code_six() {
+    fn nether_plate_faces_take_the_nether_cardinal_shade() {
         let mut w = nether_world();
         plate(&mut w, 4, 5, 10, 4, 5, 1); // a 2×2 plate of STONE
         let table = cube_table();
+        let want = [229u8, 229, 204, 204, 153, 153];
 
         for (what, m) in [
             (
@@ -4670,29 +3384,12 @@ mod tests {
             ),
         ] {
             let qs = quads(&m.vertices, &m.indices);
-            assert!(!qs.is_empty(), "{what}: nothing meshed");
             let mut seen = [0usize; 6];
             for q in &qs {
                 let face = face_of_quad(q);
                 seen[face] += 1;
-                let want = if face <= 1 { 6 } else { face as u8 };
                 for v in q {
-                    assert_eq!(
-                        v.shade_code(),
-                        want,
-                        "{what}: face {face} must carry shade code {want}"
-                    );
-                    assert_eq!(
-                        FACE_SHADE[v.shade_code() as usize],
-                        if face <= 1 {
-                            0.9
-                        } else if face <= 3 {
-                            0.8
-                        } else {
-                            0.6
-                        },
-                        "{what}: face {face} shade factor"
-                    );
+                    assert_eq!(v.color_rgb(), [want[face]; 3], "{what}: face {face}");
                 }
             }
             for face in 0..6 {
@@ -4701,40 +3398,38 @@ mod tests {
         }
 
         // The optimized path still merges the bottom plane into one 2×2
-        // rectangle, all of it at code 6.
+        // rectangle; up faces never merge (M15 carve-out).
         let o = mesh_column(&w, &table, &[], &[], 0, 0).expect("optimized");
-        let downs: Vec<_> = quads(&o.vertices, &o.indices)
-            .into_iter()
-            .filter(|q| face_of_quad(q) == 1)
-            .collect();
-        assert_eq!(downs.len(), 1, "the four bottoms merge into one rectangle");
-        assert_eq!(downs[0][0].shade_code(), 6);
         let span = |q: &[MeshVertex; 4], axis: usize| {
             let lo = q.iter().map(|v| v.pos[axis]).fold(f32::MAX, f32::min);
             let hi = q.iter().map(|v| v.pos[axis]).fold(f32::MIN, f32::max);
             hi - lo
         };
+        let of_face = |f: usize| -> Vec<_> {
+            quads(&o.vertices, &o.indices).into_iter().filter(|q| face_of_quad(q) == f).collect()
+        };
+        let downs = of_face(1);
+        assert_eq!(downs.len(), 1, "the four bottoms merge into one rectangle");
         assert_eq!((span(&downs[0], 0), span(&downs[0], 2)), (2.0, 2.0));
-        // Up faces never merge (M15 carve-out), and each still carries code 6.
-        let ups: Vec<_> = quads(&o.vertices, &o.indices)
-            .into_iter()
-            .filter(|q| face_of_quad(q) == 0)
-            .collect();
+        let ups = of_face(0);
         assert_eq!(ups.len(), 4, "one unit quad per top");
         for q in &ups {
-            assert_eq!(q[0].shade_code(), 6);
             assert_eq!((span(q, 0), span(q, 2)), (1.0, 1.0));
         }
     }
 
-    /// Model quads and fluid faces take the same mapping: a shaded quad follows
-    /// the dimension, an unshaded one stays code 0 in *every* dimension.
+    /// Model quads and fluid faces follow the dimension too. A shaded model
+    /// quad takes `byFace(direction)`; an **unshaded** one takes `up()` — 1.0
+    /// by default but 0.9 in the Nether (`prepareQuadAmbientOcclusion` /
+    /// `prepareQuadFlat`: `shade() ? byFace(direction) : up()`). Fluids scale
+    /// their tint by `up()` on top, `down()` below and `up() * north()` /
+    /// `up() * west()` on the sides.
     #[test]
-    fn nether_model_and_fluid_faces_use_the_dimension_mapping() {
+    fn nether_model_and_fluid_faces_follow_the_dimension() {
         use rewo_data::assets::Quad;
 
-        let quad_at = |dir: u8, shade: bool, y: f32| Quad {
-            verts: [[0.0, y, 0.0], [1.0, y, 0.0], [1.0, y, 1.0], [0.0, y, 1.0]],
+        let quad = |verts: [[f32; 3]; 4], dir: u8, shade: bool| Quad {
+            verts,
             uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             layer: 7,
             raw_layer: 7,
@@ -4742,183 +3437,55 @@ mod tests {
             dir,
             tint: TintSource::None,
             shade,
+            translucent: false,
         };
-        // Three quads: shaded up (moved by the Nether), shaded north (not
-        // moved), unshaded up (never shaded at all).
+        // Shaded full top (y = 1), shaded full north face (z = 0), unshaded
+        // mid-height horizontal quad. All sample open air: brightness 1.0.
         let models = vec![vec![
-            quad_at(0, true, 0.0),
-            quad_at(2, true, 0.5),
-            quad_at(0, false, 1.0),
+            quad([[0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]], 0, true),
+            quad([[1.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], 2, true),
+            quad([[0.0, 0.5, 0.0], [1.0, 0.5, 0.0], [1.0, 0.5, 1.0], [0.0, 0.5, 1.0]], 0, false),
         ]];
         let table = oracle_model_table();
+        let overworld = || {
+            let mut w = World::new(DimensionShape::OVERWORLD);
+            w.ensure_column(0, 0);
+            w
+        };
 
-        for (what, mut w, want) in [
-            (
-                "default",
-                {
-                    let mut w = World::new(DimensionShape::OVERWORLD);
-                    w.ensure_column(0, 0);
-                    w
-                },
-                [0u8, 2, 0],
-            ),
-            ("nether", nether_world(), [6, 2, 0]),
-        ] {
+        // (int)(255 * f): 1.0 -> 255, 0.8 -> 204, 0.9 -> 229.
+        for (what, mut w, want) in [("default", overworld(), [255u8, 204, 255]), ("nether", nether_world(), [229, 204, 229])] {
             w.set_block(4, 10, 4, 1);
             let m = mesh_column(&w, &table, &models, &[], 0, 0).expect("model meshed");
-            let codes: Vec<u8> = quads(&m.vertices, &m.indices)
+            let got: Vec<u8> = quads(&m.vertices, &m.indices)
                 .iter()
-                .map(|q| q[0].shade_code())
+                .map(|q| {
+                    assert!(q.iter().all(|v| v.color_rgb() == q[0].color_rgb()), "{what}: uniform quad");
+                    q[0].color_rgb()[0]
+                })
                 .collect();
-            assert_eq!(codes, want, "{what}: model quad shade codes");
-            // Every quad's four vertices agree (the code is per-quad).
-            for q in quads(&m.vertices, &m.indices) {
-                assert!(q.iter().all(|v| v.shade_code() == q[0].shade_code()));
-            }
+            assert_eq!(got, want, "{what}: model quad grays");
         }
 
-        // Fluids: a water source's top and bottom move to code 6 in the Nether,
-        // its sides do not; in a default world every face keeps its direction.
+        // A lone water source (no biome: white tint). Default: top 255, bottom
+        // (int)(255 * 0.5) = 127, N/S (int)(255 * 0.8) = 204, W/E 153. Nether:
+        // top and bottom 229; N/S (int)(255 * f32(0.9 * 0.8)) = (int)183.6 = 183;
+        // W/E (int)(255 * f32(0.9 * 0.6)) = (int)137.7 = 137.
         let ftable = fluid_table();
-        for (what, mut w, up_down) in [
-            (
-                "default",
-                {
-                    let mut w = World::new(DimensionShape::OVERWORLD);
-                    w.ensure_column(0, 0);
-                    w
-                },
-                [0u8, 1],
-            ),
-            ("nether", nether_world(), [6, 6]),
+        for (what, mut w, want) in [
+            ("default", overworld(), [255u8, 127, 204, 204, 153, 153]),
+            ("nether", nether_world(), [229, 229, 183, 183, 137, 137]),
         ] {
-            w.set_block(4, 10, 4, 2); // a lone water source: all six faces visible
+            w.set_block(4, 10, 4, 2);
             let m = mesh_column(&w, &ftable, &[], &[], 0, 0).expect("fluid meshed");
             let qs = quads(&m.tvertices, &m.tindices);
             assert_eq!(qs.len(), 6, "{what}: a lone source emits six faces");
-            let mut seen = [false; 6];
             for q in &qs {
                 let face = fluid_face_of_quad(q, [4, 10, 4]);
-                assert!(!seen[face], "{what}: face {face} emitted twice");
-                seen[face] = true;
-                let want = match face {
-                    0 => up_down[0],
-                    1 => up_down[1],
-                    f => f as u8,
-                };
                 for v in q {
-                    assert_eq!(v.shade_code(), want, "{what}: fluid face {face}");
+                    assert_eq!(v.color_rgb(), [want[face]; 3], "{what}: fluid face {face}");
                 }
             }
-        }
-    }
-
-    /// **The default-world byte guarantee.** In a `CardinalLighting::DEFAULT`
-    /// world the shade byte of every emitted vertex is exactly the pre-M16 rule
-    /// — the face's own direction index for cube and fluid faces, `quad.dir` (or
-    /// 0 when unshaded) for model quads — on a fixture that runs all three
-    /// paths through both meshers. The direction is recovered from the quad's
-    /// winding, so nothing about it comes from the shade code being graded.
-    ///
-    /// The shade code is the only vertex field M16 touches, so this pins the
-    /// whole default output byte-identical to M15. `check_greedy_oracle`'s
-    /// unchanged report (see `production_greedy_oracle_passes_and_measures_a_real_fixture`)
-    /// is the second half of that claim: its decoder reads the shade code back
-    /// *as* a face direction on the adversarial column.
-    #[test]
-    fn default_world_shade_bytes_are_the_legacy_per_direction_codes() {
-        use rewo_data::assets::Quad;
-
-        let mut table = cube_table();
-        table.push(RenderKind::Fluid {
-            layer: 30,
-            raw_layer: 30,
-            level: 0,
-            lava: false,
-        }); // 3
-        table.push(RenderKind::Fluid {
-            layer: 31,
-            raw_layer: 31,
-            level: 0,
-            lava: true,
-        }); // 4
-        table.push(RenderKind::Model(0)); // 5
-        let models = vec![vec![Quad {
-            verts: [
-                [0.2, 0.0, 0.2],
-                [0.8, 0.0, 0.2],
-                [0.8, 1.0, 0.2],
-                [0.2, 1.0, 0.2],
-            ],
-            uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
-            layer: 40,
-            raw_layer: 40,
-            cull: -1,
-            dir: 2,
-            tint: TintSource::None,
-            shade: true,
-        }]];
-
-        let mut w = World::new(DimensionShape::OVERWORLD);
-        w.ensure_column(0, 0);
-        plate(&mut w, 1, 14, 62, 1, 14, 1);
-        plate(&mut w, 4, 9, 63, 4, 9, 2);
-        w.set_block(2, 63, 2, 1); // an AO discontinuity, so fallbacks run too
-        w.set_block(12, 63, 12, 5); // model
-        w.set_block(11, 63, 3, 3); // water
-        w.set_block(3, 63, 11, 4); // lava
-
-        // The mapping is the identity here, which is precisely the pre-M16
-        // constant every emitter used to write.
-        for face in 0..6 {
-            assert_eq!(face_shade_code(&w, face), face as u8);
-        }
-
-        for (what, m) in [
-            (
-                "reference",
-                mesh_column_reference(&w, &table, &models, &[], 0, 0).expect("reference"),
-            ),
-            (
-                "optimized",
-                mesh_column(&w, &table, &models, &[], 0, 0).expect("optimized"),
-            ),
-        ] {
-            let mut checked = 0usize;
-            for (stream, qs) in [
-                ("opaque", quads(&m.vertices, &m.indices)),
-                ("translucent", quads(&m.tvertices, &m.tindices)),
-            ] {
-                for q in &qs {
-                    // Three emitters, three ways to recover the direction the
-                    // shade byte is supposed to encode. Layer 40 is the model
-                    // quad, whose direction is declared (`dir: 2`) rather than
-                    // geometric; 30/31 are the two fluid cells, graded by plane;
-                    // everything else is a cube face, graded by winding.
-                    let want = match q[0].layer_index() {
-                        40 => 2,
-                        30 => fluid_face_of_quad(q, [11, 63, 3]) as u8,
-                        31 => fluid_face_of_quad(q, [3, 63, 11]) as u8,
-                        _ => face_of_quad(q) as u8,
-                    };
-                    for v in q {
-                        assert_eq!(
-                            v.shade_code(),
-                            want,
-                            "{what}/{stream}: shade byte is not the legacy per-direction code"
-                        );
-                        assert!(
-                            v.shade_code() < 6,
-                            "{what}/{stream}: a default world must never emit an M16 code"
-                        );
-                    }
-                    checked += 1;
-                }
-            }
-            assert!(
-                checked > 100,
-                "{what}: fixture is too small: {checked} quads"
-            );
         }
     }
 
@@ -4930,5 +3497,268 @@ mod tests {
         let table = cube_table();
         assert!(mesh_column_reference(&w, &table, &[], &[], 0, 0).is_none());
         assert!(mesh_column(&w, &table, &[], &[], 0, 0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod occlusion_tests {
+    use super::*;
+    use rewo_world::dimension::DimensionShape;
+
+    const AIR: u32 = 0;
+    const STONE: u32 = 1;
+    const GLASS: u32 = 2;
+    const STAINED: u32 = 3;
+    const WATER: u32 = 4;
+    const PANE_EW: u32 = 5;
+    const PANE_N: u32 = 6;
+    const BOTTOM_SLAB: u32 = 7;
+
+    fn cube(layer: u16) -> RenderKind {
+        RenderKind::Cube {
+            faces: [layer; 6],
+            raw_faces: [layer; 6],
+            tint: [TintSource::None; 6],
+        }
+    }
+
+    fn render() -> Vec<RenderKind> {
+        vec![
+            RenderKind::Invisible,
+            cube(1),
+            cube(2),
+            cube(3),
+            RenderKind::Fluid {
+                layer: 4,
+                raw_layer: 4,
+                level: 0,
+                lava: false,
+            },
+            RenderKind::Invisible,
+            RenderKind::Invisible,
+            RenderKind::Invisible,
+        ]
+    }
+
+    /// Shaped like the bake: stone occludes every face; glass and stained
+    /// glass occlude none and skip a same-block neighbour; a bottom slab
+    /// covers its own bottom face.
+    fn cull() -> Vec<CullInfo> {
+        let mut c = vec![CullInfo::default(); 8];
+        for (i, info) in c.iter_mut().enumerate() {
+            info.block = i as u16;
+        }
+        c[STONE as usize].occludes = 0b11_1111;
+        for s in [STONE, GLASS, STAINED] {
+            c[s as usize].ao_occluder = true;
+        }
+        // Stone is suffocating and dark to AO; glass (`TransparentBlock`,
+        // `isViewBlocking(never)`) is neither, though its collision is full.
+        c[STONE as usize].view_blocking = true;
+        c[STONE as usize].shade_dark = true;
+        for info in c.iter_mut() {
+            info.ambient_occlusion = true;
+        }
+        c[GLASS as usize].skip = 1;
+        c[STAINED as usize].skip = 1;
+        c[STAINED as usize].translucent = true;
+        c[PANE_EW as usize] = CullInfo {
+            skip: 2,
+            block: 5,
+            connect: (1 << 4) | (1 << 5),
+            ..CullInfo::default()
+        };
+        // Same block as PANE_EW, connected north only.
+        c[PANE_N as usize] = CullInfo {
+            skip: 2,
+            block: 5,
+            connect: 1 << 2,
+            ..CullInfo::default()
+        };
+        c[BOTTOM_SLAB as usize].occludes = 1 << 1;
+        c
+    }
+
+    fn world(blocks: &[((i32, i32, i32), u32)]) -> World {
+        let mut w = World::new(DimensionShape::OVERWORLD);
+        w.ensure_column(0, 0);
+        for &((x, y, z), s) in blocks {
+            w.set_block(x, y, z, s);
+        }
+        w
+    }
+
+    fn mesh(w: &World, cull: &[CullInfo]) -> ColumnMesh {
+        let r = render();
+        let inputs = MeshInputs { cull, ..MeshInputs::geometry(&r, &[], &[]) };
+        mesh_column_with(w, inputs, 0, 0).expect("meshed")
+    }
+
+    fn quads(v: &[MeshVertex]) -> usize {
+        v.len() / 4
+    }
+
+    /// Glass does not occlude: the stone face against it is drawn (before, it
+    /// was culled — a see-through hole), and the glass face against the stone
+    /// is culled, because stone does.
+    #[test]
+    fn a_face_against_glass_is_drawn_and_glass_against_stone_is_not() {
+        let w = world(&[((4, 10, 4), STONE), ((5, 10, 4), GLASS)]);
+        let m = mesh(&w, &cull());
+        assert_eq!(quads(&m.vertices), 6 + 5);
+        assert!(m.tvertices.is_empty());
+        // Legacy (no cull table): glass counts as an opaque cube, 5 + 5.
+        let legacy = mesh(&w, &[]);
+        assert_eq!(quads(&legacy.vertices), 10);
+    }
+
+    /// `HalfTransparentBlock.skipRendering`: glass against glass draws no
+    /// shared face, from either side.
+    #[test]
+    fn same_block_glass_skips_the_shared_faces() {
+        let w = world(&[((4, 10, 4), GLASS), ((5, 10, 4), GLASS)]);
+        // (Counted as unit faces: coplanar faces of one state merge.)
+        assert_eq!(mesh(&w, &cull()).visible_cube_faces, 10);
+        // A different half-transparent block does not skip.
+        let w = world(&[((4, 10, 4), GLASS), ((5, 10, 4), STAINED)]);
+        let m = mesh(&w, &cull());
+        assert_eq!(quads(&m.vertices), 6);
+        assert_eq!(quads(&m.tvertices), 6);
+    }
+
+    /// A translucent cube goes to the blended set, whole.
+    #[test]
+    fn translucent_cubes_route_to_the_translucent_set() {
+        let w = world(&[((4, 10, 4), STAINED)]);
+        let m = mesh(&w, &cull());
+        assert!(m.vertices.is_empty());
+        assert_eq!(quads(&m.tvertices), 6);
+    }
+
+    /// `FluidRenderer.isFaceOccludedByNeighbor`: water's side is hidden by a
+    /// neighbour whose face occlusion shape is the full block — stone — and
+    /// drawn against glass, which has none.
+    #[test]
+    fn water_sides_are_drawn_against_glass_but_not_stone() {
+        let side_quads = |n: u32| {
+            let w = world(&[((4, 10, 4), WATER), ((5, 10, 4), n)]);
+            let m = mesh(&w, &cull());
+            // East-facing water quads sit on the x = 5 plane.
+            m.tvertices
+                .chunks_exact(4)
+                .filter(|q| q.iter().all(|v| v.pos[0] == 5.0))
+                .count()
+        };
+        assert_eq!(side_quads(STONE), 0);
+        assert_eq!(side_quads(GLASS), 1);
+    }
+
+    /// A partial shape culls exactly the faces it covers: a cube's top against
+    /// a bottom slab's bottom is hidden, its sides are not.
+    #[test]
+    fn a_slab_bottom_culls_the_face_below_it() {
+        let w = world(&[((4, 10, 4), STONE), ((4, 11, 4), BOTTOM_SLAB)]);
+        assert_eq!(quads(&mesh(&w, &cull()).vertices), 5);
+    }
+
+    /// `IronBarsBlock.skipRendering`: panes stacked vertically always skip;
+    /// side by side only when both are connected toward each other.
+    #[test]
+    fn pane_skip_follows_the_connection_rule() {
+        let r = render();
+        let c = cull();
+        let t = Tables::new(&MeshInputs { cull: &c, ..MeshInputs::geometry(&r, &[], &[]) });
+        // Vertical: skip regardless of connections.
+        assert!(!t.should_render(PANE_EW, PANE_N, 0));
+        assert!(!t.should_render(PANE_EW, PANE_N, 1));
+        // East face: EW is connected east, and the neighbour connected west.
+        assert!(!t.should_render(PANE_EW, PANE_EW, 5));
+        // PANE_N is not connected west, so EW's east face toward it draws.
+        assert!(t.should_render(PANE_EW, PANE_N, 5));
+        // A non-pane neighbour never skips.
+        assert!(t.should_render(PANE_EW, GLASS, 5));
+        // Air is not a neighbour to skip against.
+        assert!(t.should_render(PANE_EW, AIR, 5));
+    }
+    /// Smooth lighting reaches model quads: a full top face darkens the two
+    /// corners against a suffocating neighbour, as a cube face would. Its
+    /// west corners are `(shade3 + shade0 + corner + center) * 0.25` with the
+    /// stone's 0.2 in one or two samples; the east corners see only air.
+    #[test]
+    fn model_quads_get_smooth_lighting() {
+        use rewo_data::assets::Quad;
+        let top = |y: f32, x1: f32| Quad {
+            verts: [[0.0, y, 0.0], [x1, y, 0.0], [x1, y, 1.0], [0.0, y, 1.0]],
+            uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            layer: 9,
+            raw_layer: 9,
+            cull: 0,
+            dir: 0,
+            tint: TintSource::None,
+            shade: true,
+            translucent: false,
+        };
+        let mut r = render();
+        r.push(RenderKind::Model(0));
+        let model = r.len() as u32 - 1;
+        let mut c = cull();
+        c.push(CullInfo { block: 99, ambient_occlusion: true, ..CullInfo::default() });
+        let models = vec![vec![top(1.0, 1.0)]];
+        // Stone one up and one west of the model: the top face's west corners
+        // sit against it.
+        let w = world(&[((4, 10, 4), model), ((3, 11, 4), STONE)]);
+        let m = mesh_column_with(&w, MeshInputs { cull: &c, ..MeshInputs::geometry(&r, &models, &[]) }, 0, 0)
+            .expect("meshed");
+        let corner = |x: f32| -> Vec<[u8; 3]> {
+            m.vertices
+                .iter()
+                .filter(|v| v.pos[1] == 11.0 && v.pos[0] == x && v.layer_index() == 9)
+                .map(|v| v.color_rgb())
+                .collect()
+        };
+        // West corners: WEST sample 0.2, the rest air (1.0):
+        // (1.0 + 0.2 + 1.0 + 1.0) * 0.25 = 0.8 -> gray 204 -> up() 1.0 -> 204.
+        assert_eq!(corner(4.0), vec![[204; 3]; 2], "west corners");
+        assert_eq!(corner(5.0), vec![[255; 3]; 2], "east corners");
+        // Flat when smooth lighting is off: the whole quad is gray(up()) = 255.
+        let flat = mesh_column_with(
+            &w,
+            MeshInputs { cull: &c, smooth_lighting: false, ..MeshInputs::geometry(&r, &models, &[]) },
+            0,
+            0,
+        )
+        .expect("meshed");
+        assert!(flat.vertices.iter().filter(|v| v.layer_index() == 9).all(|v| v.color_rgb() == [255; 3]));
+    }
+
+    /// The greedy path and the frozen reference agree under a real cull
+    /// table too: same opaque unit faces, byte-identical translucent stream.
+    #[test]
+    fn greedy_matches_the_reference_with_culling() {
+        let w = world(&[
+            ((4, 10, 4), STONE),
+            ((5, 10, 4), GLASS),
+            ((6, 10, 4), GLASS),
+            ((4, 11, 4), STAINED),
+            ((5, 11, 4), STONE),
+            ((4, 9, 4), BOTTOM_SLAB),
+        ]);
+        let r = render();
+        let c = cull();
+        let inputs = MeshInputs { cull: &c, ..MeshInputs::geometry(&r, &[], &[]) };
+        let o = mesh_column_with(&w, inputs, 0, 0).expect("optimized");
+        let f = mesh_column_reference_with(&w, inputs, 0, 0).expect("reference");
+        let units = |m: &ColumnMesh| {
+            let mut v: Vec<UnitFace> = expand_unit_faces(&m.vertices, &m.indices)
+                .expect("decodes")
+                .into_iter()
+                .map(|e| e.f)
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(units(&o), units(&f));
+        assert_eq!(o.tvertices, f.tvertices);
+        assert_eq!(o.visible_cube_faces, f.visible_cube_faces);
     }
 }

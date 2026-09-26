@@ -354,6 +354,11 @@ impl VisualEffects {
     /// before any effect packet, so this is only ever the initial set — but the
     /// replace semantics are the safe default and never drop a
     /// legitimately-tracked effect on the ground.
+    /// The `(night_vision, darkness)` registry ids this tracker matches.
+    pub fn effect_ids(&self) -> (Option<i32>, Option<i32>) {
+        (self.night_vision_id, self.darkness_id)
+    }
+
     pub fn set_player_id(&mut self, id: i32) {
         self.player_id = Some(id);
     }

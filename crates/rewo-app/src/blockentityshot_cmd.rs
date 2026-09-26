@@ -1071,7 +1071,7 @@ fn check_block_event_dispatch(
         varint(0, &mut b);
         b
     };
-    let mut send = |w: &mut rewo_world::World, p, b0, b1| {
+    let send = |w: &mut rewo_world::World, p, b0, b1| {
         rewo_net::route_block_event(ids.cb_play_block_event, &ev(p, b0, b1), ids, types, 0, w)
     };
 
@@ -1641,11 +1641,9 @@ fn check_conduit_active(
     c.record(
         "q3.sixteen_activates_and_a_complete_frame_hunts",
         !s15.active() && s16.active() && !s41.hunting() && s42.hunting() && s42.active(),
-        format!(
-            "15 frame blocks -> inactive, 16 -> active, 41 -> active but not \
+        "15 frame blocks -> inactive, 16 -> active, 41 -> active but not \
              hunting, 42 -> hunting. Both thresholds read the SAME count, which \
-             is why the eye costs nothing once the scan exists"
-        ),
+             is why the eye costs nothing once the scan exists".to_string(),
     );
 
     // --- the clock --------------------------------------------------------

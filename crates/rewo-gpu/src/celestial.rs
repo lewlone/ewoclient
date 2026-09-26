@@ -139,8 +139,11 @@ fn joml_sin_f(ang: f32) -> f32 {
 #[inline]
 fn joml_cos_from_sin(sin: f32, angle: f32) -> f32 {
     // Float literals matching the decompiled `ldc` constants exactly.
+    #[allow(clippy::approx_constant)] // JOML's literal
     const HALF_PI: f32 = 1.5707964;
+    #[allow(clippy::approx_constant)] // JOML's literal
     const TWO_PI: f32 = 6.2831855;
+    #[allow(clippy::approx_constant)] // JOML's literal
     const PI: f32 = 3.1415927;
     let cos = joml_sqrt_f(1.0 - sin * sin);
     let a = angle + HALF_PI;
