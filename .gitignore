@@ -9,7 +9,10 @@ Cargo.lock.bak
 *~
 
 # Claude Code local session state
-/.claude/
+/.claude/*
+# Path-scoped Claude Code rules are project knowledge (see CLAUDE.md); keep
+# worktrees/ and settings.local.json ignored.
+!/.claude/rules/
 
 # OS
 Thumbs.db

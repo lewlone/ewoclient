@@ -39,7 +39,7 @@ existing MODS list — explicitly *not* a hacked-client ClickGUI grid.
 > `build.ps1 -Pvp`**, with their Java classes under `dev.lewlone.ewohud.assist.*`
 > filtered out of the legit jar entirely so their names never enter the runtime.
 > Three were deleted outright (`auto_crit`, `mace_combo`, `wind_charge_mlg`).
-> **CLAUDE.md's "Post-ban refactor" section is authoritative**; this paragraph is
+> **The "Post-ban refactor" section (now `.claude/rules/ewo-modules.md`, full text in `docs/history/ewoclient-v2-phases.md`) is authoritative**; this paragraph is
 > kept because a rule that was broken silently is worth being able to see.
 
 ---
