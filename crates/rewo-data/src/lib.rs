@@ -9,6 +9,7 @@
 //! Native-instance setup is an M1-followon.
 
 pub mod test_support;
+pub mod ao_facts_table;
 pub mod asset_index;
 pub mod assets;
 pub mod attributes;

@@ -91,17 +91,43 @@ pub struct CullInfo {
     pub bars: bool,
     /// A `RenderKind::Cube` whose faces sample a translucent material.
     pub translucent: bool,
-    /// `isCollisionShapeFullBlock` — the ambient-occlusion occluder
-    /// (`BlockBehaviour.getShadeBrightness` = 0.2 for these, else 1.0).
+    /// `isCollisionShapeFullBlock` — the shape term of the ambient-occlusion
+    /// rules below, and what the mesher's smooth lighting treats as an
+    /// occluding neighbour. `BlockBehaviour.getShadeBrightness` defaults to
+    /// 0.2 for these and 1.0 otherwise, but see [`Self::shade_dark`] for the
+    /// class overrides.
     pub ao_occluder: bool,
-    /// `BlockState.isViewBlocking`. Interim: vanilla's default predicate
-    /// with `blocksMotion` assumed, i.e. `ao_occluder`; no per-block overrides.
+    /// `BlockState.isViewBlocking(level, pos)` — does this state block the
+    /// view through it (vanilla's smooth lighting skips the face shading of
+    /// a neighbour behind one).
+    ///
+    /// The default predicate is the one `BlockBehaviour.Properties` builds
+    /// `isSuffocating` with — `blocksMotion() && isCollisionShapeFullBlock`
+    /// — and the `isViewBlocking` field initializer captures that same
+    /// lambda, so a later `.isSuffocating(...)` override does NOT change it
+    /// (every real `.isSuffocating` site in `Blocks.java` is paired with an
+    /// identical `.isViewBlocking`). Per-block and per-state overrides live
+    /// in `crate::ao_facts_table::VIEW_BLOCKING` / `VIEW_BLOCKING_STATE`.
     pub view_blocking: bool,
-    /// `getShadeBrightness == 0.2`. Interim: the default, `ao_occluder`.
+    /// `BlockBehaviour.getShadeBrightness(level, pos) == 0.2F` (the other
+    /// value vanilla returns is 1.0F). Default
+    /// `isCollisionShapeFullBlock ? 0.2F : 1.0F` — i.e. [`Self::ao_occluder`]
+    /// — with class overrides (barrier/light/structure_void/glass family →
+    /// 1.0F, mud/soul_sand → 0.2F, snow layer → `layers == 8`) in
+    /// `crate::ao_facts_table::SHADE` / `SHADE_STATE`.
     pub shade_dark: bool,
-    /// `BlockState.emissiveRendering()`. Interim: always false.
+    /// `BlockState.emissiveRendering()` — vanilla shades this state's model
+    /// quads as if fully lit (magma; an ACTIVE sculk sensor).
+    /// `Blocks.java` has exactly two call sites; everyone else keeps the
+    /// `BlockBehaviour.Properties` default `var0 -> false`.
     pub emissive_rendering: bool,
-    /// The (first) model's `useAmbientOcclusion()`. Interim: always true.
+    /// `BlockStateModelPart.useAmbientOcclusion()` of the FIRST model part
+    /// the state resolves to — `ModelBlockRenderer.tesselateBlock` gates on
+    /// `this.parts.getFirst().useAmbientOcclusion()`, not on a per-part or
+    /// per-face value. That is the block model's `"ambientocclusion"` key,
+    /// default true and inherited through `parent`. A state with no model
+    /// part (a fluid, an invisible block) has nothing to shade and keeps
+    /// vanilla's `ModelBlockRenderer.ambientOcclusion` default `true`.
     pub ambient_occlusion: bool,
 }
 
@@ -256,6 +282,131 @@ pub const FALLING_WATERLOGGED: &[&str] = &[
     "minecraft:waxed_weathered_copper_grate",
     "minecraft:waxed_oxidized_copper_grate",
 ];
+
+/// Evaluate one `(property, operator, value)` rule from `crate::ao_facts_table`
+/// against a state's `blocks.json` property map.
+///
+/// `==` is a string comparison (the form `blocks.json` stores properties in);
+/// `>=` is numeric (snow's `LAYERS >= 8`). Those are the only two operators
+/// `tools/gen_ao_facts.py` emits, so anything else is a table bug and panics.
+/// A property the state does not declare fails the comparison, matching a
+/// `getValue` on a property the state cannot hold.
+fn fact_holds(
+    props: Option<&serde_json::Map<String, serde_json::Value>>,
+    property: &str,
+    op: &str,
+    value: &str,
+) -> bool {
+    let Some(v) = props.and_then(|p| p.get(property)).and_then(|v| v.as_str()) else {
+        return false;
+    };
+    match op {
+        "==" => v == value,
+        ">=" => match (v.parse::<f64>(), value.parse::<f64>()) {
+            (Ok(have), Ok(want)) => have >= want,
+            _ => false,
+        },
+        other => unreachable!("ao_facts_table: unknown operator {other:?}"),
+    }
+}
+
+/// `BlockStateBase.blocksMotion()` — `block != COBWEB && block !=
+/// BAMBOO_SAPLING && isSolid()`. Only consulted for a state whose collision
+/// shape is a full block, where `isSolid()`'s shape heuristic is already
+/// satisfied and [`is_solid`] reduces to the three `Properties` flags.
+fn blocks_motion(block: &str) -> bool {
+    !crate::ao_facts_table::BLOCKS_MOTION_EXCLUDED.contains(&block) && is_solid(block)
+}
+
+/// `BlockStateBase.isSolid()` / `calculateSolid()` for a state whose collision
+/// shape is a full block.
+///
+/// `calculateSolid()` is `forceSolidOn` → true, `forceSolidOff` → false, a
+/// `dynamicShape` cache miss → false, else `bounds.getSize() >= 0.729…`
+/// (`getSize` is the **mean** extent, so a full block passes trivially). For
+/// the full-shape states this is used for, only the three `Properties` flags
+/// decide — which is exactly what `crate::ao_facts_table` lists.
+fn is_solid(block: &str) -> bool {
+    if crate::ao_facts_table::FORCE_SOLID_ON.contains(&block) {
+        return true;
+    }
+    if crate::ao_facts_table::FORCE_SOLID_OFF.contains(&block) {
+        return false;
+    }
+    // `dynamicShape()` skips the shape cache, and a null cache reads false.
+    !crate::ao_facts_table::DYNAMIC_SHAPE.contains(&block)
+}
+
+/// `BlockState.isViewBlocking(level, pos)` — [`CullInfo::view_blocking`].
+///
+/// `block` is the full registry name, `ao_occluder` the state's
+/// `isCollisionShapeFullBlock`. The default predicate is the one
+/// `BlockBehaviour.Properties` starts `isSuffocating` with —
+/// `blocksMotion() && isCollisionShapeFullBlock` — because the
+/// `isViewBlocking` field initializer captures that same lambda object: a
+/// later `.isSuffocating(...)` override does not reach it.
+fn is_view_blocking(
+    block: &str,
+    props: Option<&serde_json::Map<String, serde_json::Value>>,
+    ao_occluder: bool,
+) -> bool {
+    for (b, kind) in crate::ao_facts_table::VIEW_BLOCKING {
+        if *b == block {
+            // 1 `Blocks::always`, 2 `Blocks::never`, 3 the shulker boxes'
+            // `NOT_CLOSED_SHULKER` block-entity lid predicate, approximated
+            // as "closed" (true) — see the generated header.
+            return *kind != 2;
+        }
+    }
+    for (b, property, op, value) in crate::ao_facts_table::VIEW_BLOCKING_STATE {
+        if *b == block {
+            return fact_holds(props, property, op, value);
+        }
+    }
+    ao_occluder && blocks_motion(block)
+}
+
+/// `BlockBehaviour.getShadeBrightness(level, pos) == 0.2F` —
+/// [`CullInfo::shade_dark`].
+fn shade_dark(
+    block: &str,
+    props: Option<&serde_json::Map<String, serde_json::Value>>,
+    ao_occluder: bool,
+) -> bool {
+    for (b, dark) in crate::ao_facts_table::SHADE {
+        if *b == block {
+            return *dark == 1;
+        }
+    }
+    for (b, property, op, value) in crate::ao_facts_table::SHADE_STATE {
+        if *b == block {
+            return fact_holds(props, property, op, value);
+        }
+    }
+    // The default is `isCollisionShapeFullBlock ? 0.2F : 1.0F`.
+    ao_occluder
+}
+
+/// `BlockState.emissiveRendering()` — [`CullInfo::emissive_rendering`].
+///
+/// `Blocks.java` sets it twice: magma's `var0 -> true`, and the sculk
+/// sensors' phase predicate (which `ofLegacyCopy` also hands to
+/// `calibrated_sculk_sensor`). Everyone else keeps `Properties`' default
+/// `var0 -> false`.
+fn emissive_rendering(
+    block: &str,
+    props: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> bool {
+    if crate::ao_facts_table::EMISSIVE_ALWAYS.contains(&block) {
+        return true;
+    }
+    for (b, property, op, value) in crate::ao_facts_table::EMISSIVE_STATE {
+        if *b == block {
+            return fact_holds(props, property, op, value);
+        }
+    }
+    false
+}
 
 /// Which biome color a face's `tintindex` layer draws — the metadata the M14
 /// dynamic-tint mesh path reads (a faithful transcription of the decompiled
@@ -1421,9 +1572,17 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 bars,
                 translucent: false,
                 ao_occluder: false,
-                // Interim: vanilla's model default, until the bake reads it.
+                // The four smooth-lighting facts need the state's collision
+                // shape and models, so the second pass overwrites them. A
+                // fluid `continue`s before that pass and keeps these values,
+                // which are right for it: not view-blocking, shades like a
+                // non-occluder, never emissive, and `ambient_occlusion` is
+                // vanilla's `ModelBlockRenderer` default `true` (no model
+                // part, nothing to shade).
+                view_blocking: false,
+                shade_dark: false,
+                emissive_rendering: false,
                 ambient_occlusion: true,
-                ..CullInfo::default()
             };
             let mut phys = crate::block_physics::BlockPhysics::resolve(block_name, props, water_block);
             if short == "water" || short == "lava" {
@@ -1561,9 +1720,18 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
                 Vec::new()
             };
             cull[id as usize].ao_occluder = collide[id as usize] == [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
-            // Interim: `BlockBehaviour`'s defaults, no per-block overrides.
-            cull[id as usize].view_blocking = cull[id as usize].ao_occluder;
-            cull[id as usize].shade_dark = cull[id as usize].ao_occluder;
+            // The three `BlockBehaviour` facts the mesher's vanilla smooth
+            // lighting asks per state, plus the model's ambient occlusion
+            // (the FIRST model part's `useAmbientOcclusion()`).
+            let ao_occluder = cull[id as usize].ao_occluder;
+            cull[id as usize].view_blocking =
+                is_view_blocking(block_name.as_str(), props, ao_occluder);
+            cull[id as usize].shade_dark = shade_dark(block_name.as_str(), props, ao_occluder);
+            cull[id as usize].emissive_rendering =
+                emissive_rendering(block_name.as_str(), props);
+            cull[id as usize].ambient_occlusion = bs
+                .as_ref()
+                .is_none_or(|bs| baker.first_model_ambient_occlusion(bs, props));
             if !collide[id as usize].is_empty() && !solid[id as usize] {
                 stats.shaped_collision_states += 1;
             }
@@ -3278,6 +3446,28 @@ impl<'a> Baker<'a> {
         }
     }
 
+    /// `BlockStateModelPart.useAmbientOcclusion()` of the FIRST model part a
+    /// state resolves to.
+    ///
+    /// `ModelBlockRenderer.tesselateBlock` gates on
+    /// `this.parts.getFirst().useAmbientOcclusion()`, so one part decides for
+    /// the whole state — here, the first of [`Self::state_refs`]'s refs in
+    /// blockstate file order (the same "first" the cube fast-path reads). The
+    /// value is the model's `"ambientocclusion"` key, default true and
+    /// inherited through `parent`, exactly as `ResolvedModel` flattens it.
+    /// No resolvable model → `true`, vanilla's `ModelBlockRenderer` default.
+    fn first_model_ambient_occlusion(
+        &mut self,
+        bs: &BlockState,
+        props: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> bool {
+        let Some(first) = self.state_refs(bs, props).into_iter().next() else {
+            return true;
+        };
+        self.resolve_model(&first.model)
+            .is_none_or(|m| m.ambient_occlusion)
+    }
+
     /// Collision boxes for one state, in block-local `0..1`, taken from the
     /// referenced models' elements and rotated by each ref's blockstate
     /// rotation (stairs/fences pick a rotated model per facing, so the shape
@@ -3367,7 +3557,6 @@ impl<'a> Baker<'a> {
         let Some(resolved) = self.resolve_model(&r.model) else {
             return;
         };
-        let shade_default = resolved.ambient_occlusion; // proxy; real shade is per-element
         for el in &resolved.elements {
             self.element_quads(
                 el,
@@ -3376,7 +3565,6 @@ impl<'a> Baker<'a> {
                 r.x,
                 r.y,
                 tint,
-                shade_default,
                 out,
             );
         }
@@ -3391,7 +3579,6 @@ impl<'a> Baker<'a> {
         rot_x: i32,
         rot_y: i32,
         tint: TintInfo,
-        _shade_default: bool,
         out: &mut Vec<Quad>,
     ) {
         let (Some(from), Some(to)) = (box_coords(el, "from"), box_coords(el, "to")) else {
@@ -4637,6 +4824,260 @@ mod tests {
         let adv = font_advances(&atlas, size, cell);
         assert_eq!(adv[65], 3, "rightmost col 1 → advance 1+2");
         assert_eq!(adv[32], 4, "blank space cell advances 4");
+    }
+
+    // -- The four smooth-lighting facts ------------------------------------
+    //
+    // `BlockState.isViewBlocking`, `getShadeBrightness == 0.2F`,
+    // `emissiveRendering`, and the first model part's `useAmbientOcclusion`
+    // — what `rewo-mesh`'s vanilla smooth-lighting port asks per state. They
+    // are only meaningful against the real bake, so these tests skip when the
+    // local 26.2 client jar / datagen report is absent.
+
+    /// The real bake plus the raw `blocks.json`, built once and shared.
+    fn real() -> Option<&'static (BakedAssets, serde_json::Value)> {
+        static REAL: std::sync::OnceLock<Option<(BakedAssets, serde_json::Value)>> =
+            std::sync::OnceLock::new();
+        REAL.get_or_init(|| {
+            let paths = crate::DataPaths::for_version("26.2")?;
+            let blocks = paths.blocks_json();
+            if !blocks.is_file() {
+                return None;
+            }
+            // `<config>/EwoClient/rewo/26.2` → `<config>/EwoClient/shared/…`.
+            let jar = paths
+                .root
+                .parent()?
+                .parent()?
+                .join("shared/versions/26.2/26.2.jar");
+            if !jar.is_file() {
+                return None;
+            }
+            let raw = crate::read_json_file(&blocks).ok()?;
+            Some((bake(&jar, &blocks).expect("bake"), raw))
+        })
+        .as_ref()
+    }
+
+    /// Every state id of `block` whose `blocks.json` property map contains
+    /// `props` (the report lists all of a state's properties, so a caller
+    /// names only the ones it cares about). Panics on an empty match, so a
+    /// test can never pass vacuously on a property it made up.
+    fn states_where(raw: &serde_json::Value, block: &str, props: &[(&str, &str)]) -> Vec<usize> {
+        let states = raw
+            .get(block)
+            .and_then(|b| b.get("states"))
+            .and_then(|s| s.as_array())
+            .unwrap_or_else(|| panic!("{block} has no states in blocks.json"));
+        let ids: Vec<usize> = states
+            .iter()
+            .filter(|s| {
+                props.iter().all(|(k, v)| {
+                    s.get("properties")
+                        .and_then(|p| p.get(*k))
+                        .and_then(|x| x.as_str())
+                        .is_some_and(|x| x == *v)
+                })
+            })
+            .map(|s| s.get("id").and_then(|i| i.as_u64()).expect("state id") as usize)
+            .collect();
+        assert!(!ids.is_empty(), "{block} has no state matching {props:?}");
+        ids
+    }
+
+    /// The four defaults, on one state per test case where they agree:
+    /// `isViewBlocking`'s `blocksMotion() && isCollisionShapeFullBlock`
+    /// predicate (true for a full cube that is none of cobweb /
+    /// bamboo_sapling / forceSolidOff / dynamicShape), `getShadeBrightness`'s
+    /// `isCollisionShapeFullBlock ? 0.2F : 1.0F` default, `Properties`'
+    /// `emissiveRendering = var0 -> false`, and `cube_all` → `cube` →
+    /// `block/block`, none of which sets `"ambientocclusion"`.
+    #[test]
+    fn stone_takes_every_default() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for id in states_where(raw, "minecraft:stone", &[]) {
+            let c = &baked.cull[id];
+            assert!(c.ao_occluder, "stone collides as a full block ({id})");
+            assert!(c.view_blocking, "stone blocks the view ({id})");
+            assert!(c.shade_dark, "stone shades 0.2F ({id})");
+            assert!(!c.emissive_rendering, "stone ({id})");
+            assert!(c.ambient_occlusion, "stone model AO ({id})");
+        }
+    }
+
+    /// Glass collides as a full block, yet `TransparentBlock`'s
+    /// `getShadeBrightness` is 1.0F and GLASS's `.isViewBlocking(Blocks::never)`
+    /// says it never blocks the view — so both facts have to come from the
+    /// class/registration override, not from `isCollisionShapeFullBlock`
+    /// (`ao_occluder` is asserted true to show the override is doing the
+    /// work). `TintedGlassBlock` extends `TransparentBlock` for the shade
+    /// side and declares `Blocks::never` itself (its `ofLegacyCopy(GLASS)`
+    /// would NOT have carried `isViewBlocking` over); the stained family
+    /// inherits both through `StainedGlassBlock extends TransparentBlock` and
+    /// the shared glass properties.
+    #[test]
+    fn glass_family_is_bright_and_never_view_blocking() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for block in [
+            "minecraft:glass",
+            "minecraft:red_stained_glass",
+            "minecraft:tinted_glass",
+        ] {
+            for id in states_where(raw, block, &[]) {
+                let c = &baked.cull[id];
+                assert!(c.ao_occluder, "{block} collides as a full block ({id})");
+                assert!(!c.view_blocking, "{block} ({id})");
+                assert!(!c.shade_dark, "{block} shades 1.0F ({id})");
+            }
+        }
+    }
+
+    /// `leavesProperties` sets both `isSuffocating(Blocks::never)` and
+    /// `isViewBlocking(Blocks::never)` — leaves do not block the view even
+    /// where their shape would say otherwise. `LeavesBlock extends Block`
+    /// (not `TransparentBlock`), so `getShadeBrightness` keeps the shape
+    /// default: `shade_dark == ao_occluder` here.
+    #[test]
+    fn oak_leaves_never_block_the_view() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for id in states_where(raw, "minecraft:oak_leaves", &[]) {
+            let c = &baked.cull[id];
+            assert!(!c.view_blocking, "oak_leaves ({id})");
+            assert_eq!(c.shade_dark, c.ao_occluder, "oak_leaves uses the default ({id})");
+        }
+    }
+
+    /// `MudBlock` and `SoulSandBlock` return 0.2F from `getShadeBrightness`
+    /// although their collision shape is 14/16 tall, not a full block — and
+    /// both registrations call `.isViewBlocking(Blocks::always)`, so they do
+    /// block the view despite the shape as well.
+    #[test]
+    fn mud_and_soul_sand_shade_dark_without_a_full_block() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for block in ["minecraft:mud", "minecraft:soul_sand"] {
+            for id in states_where(raw, block, &[]) {
+                let c = &baked.cull[id];
+                assert!(!c.ao_occluder, "{block} is 14/16 tall ({id})");
+                assert!(c.shade_dark, "{block} shades 0.2F anyway ({id})");
+                assert!(c.view_blocking, "{block} blocks the view anyway ({id})");
+            }
+        }
+    }
+
+    /// `SnowLayerBlock.getShadeBrightness` is `LAYERS == 8 ? 0.2F : 1.0F`,
+    /// and SNOW registers `isViewBlocking((statex, …) ->
+    /// statex.getValue(LAYERS) >= 8)`. Both are property rules, so one block
+    /// splits per state — `snow` is also `forceSolidOff()`, which is why the
+    /// default predicate would never have fired for it.
+    #[test]
+    fn snow_shades_and_blocks_by_layer_count() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for id in states_where(raw, "minecraft:snow", &[("layers", "8")]) {
+            let c = &baked.cull[id];
+            assert!(c.shade_dark, "snow layers=8 shades 0.2F ({id})");
+            assert!(c.view_blocking, "snow layers=8 blocks the view ({id})");
+        }
+        for layers in ["1", "7"] {
+            for id in states_where(raw, "minecraft:snow", &[("layers", layers)]) {
+                let c = &baked.cull[id];
+                assert!(!c.shade_dark, "snow layers={layers} shades 1.0F ({id})");
+                assert!(!c.view_blocking, "snow layers={layers} ({id})");
+            }
+        }
+    }
+
+    /// `Blocks.java`'s `.emissiveRendering(var0 -> true)` — magma alone.
+    #[test]
+    fn magma_block_renders_emissively() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for id in states_where(raw, "minecraft:magma_block", &[]) {
+            assert!(baked.cull[id].emissive_rendering, "magma_block ({id})");
+        }
+    }
+
+    /// The other `emissiveRendering` call site: the sculk sensors' phase
+    /// predicate `SculkSensorBlock.getPhase(state) == ACTIVE`, which
+    /// `ofLegacyCopy(SCULK_SENSOR)` hands to `calibrated_sculk_sensor`
+    /// unchanged (`ofLegacyCopy` DOES carry `emissiveRendering`, unlike
+    /// `isViewBlocking`).
+    #[test]
+    fn sculk_sensors_renders_emissively_only_while_active() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for block in ["minecraft:sculk_sensor", "minecraft:calibrated_sculk_sensor"] {
+            for id in states_where(raw, block, &[("sculk_sensor_phase", "active")]) {
+                assert!(baked.cull[id].emissive_rendering, "{block} active ({id})");
+            }
+            for phase in ["inactive", "cooldown"] {
+                for id in states_where(raw, block, &[("sculk_sensor_phase", phase)]) {
+                    assert!(
+                        !baked.cull[id].emissive_rendering,
+                        "{block} {phase} ({id})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `useAmbientOcclusion()` is the model's `"ambientocclusion"` key as
+    /// `ResolvedModel` flattens it through `parent`, and the FIRST model part
+    /// decides. `block/template_torch.json` sets it false (torch's own model
+    /// inherits that), `cube_all`'s chain never sets it (default true).
+    #[test]
+    fn ambient_occlusion_comes_from_the_first_model() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for id in states_where(raw, "minecraft:torch", &[]) {
+            assert!(
+                !baked.cull[id].ambient_occlusion,
+                "template_torch sets ambientocclusion:false ({id})"
+            );
+        }
+        for id in states_where(raw, "minecraft:stone", &[]) {
+            assert!(baked.cull[id].ambient_occlusion, "cube_all defaults true ({id})");
+        }
+    }
+
+    /// `pistonProperties` gives piston and sticky_piston the same
+    /// `NOT_EXTENDED_PISTON` predicate (`!getValue(EXTENDED)`) — the one fact
+    /// here that flips between two states of the same block, which is why it
+    /// cannot be a per-block table entry.
+    #[test]
+    fn piston_blocks_the_view_only_while_retracted() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for block in ["minecraft:piston", "minecraft:sticky_piston"] {
+            for id in states_where(raw, block, &[("extended", "false")]) {
+                assert!(baked.cull[id].view_blocking, "{block} retracted ({id})");
+            }
+            for id in states_where(raw, block, &[("extended", "true")]) {
+                assert!(!baked.cull[id].view_blocking, "{block} extended ({id})");
+            }
+        }
     }
 }
 
