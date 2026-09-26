@@ -834,6 +834,16 @@ pub struct PlaySession {
     /// `None` (the headless protocol harnesses) → attribute packets are
     /// recognised but store nothing, because nothing can filter them.
     pub entity_types: Option<std::sync::Arc<rewo_data::entity_types::EntityTypes>>,
+    /// `EntityPickTable::resolve` over `entity_types`, cached across ticks —
+    /// the per-type registered dimensions [`SessionPhysics`] builds its entity
+    /// collider boxes from. A cache rather than an app-supplied field because
+    /// the resolution is a pure function of `entity_types`, which the app
+    /// already supplies. `None` (a harness with no registry, or a registry
+    /// the generated table does not cover) → no entity colliders.
+    entity_shapes: Option<std::sync::Arc<rewo_data::entity_pick::EntityPickTable>>,
+    /// Whether [`Self::entity_shapes`] has been attempted, so a version skew
+    /// warns once instead of once per tick.
+    entity_shapes_tried: bool,
     /// The `minecraft:attribute` registry plus the per-entity suppliers (M52).
     /// `None` → as above.
     pub attribute_registry: Option<std::sync::Arc<rewo_data::attributes::AttributeRegistry>>,
@@ -1931,6 +1941,8 @@ impl<'a> Connection<'a> {
             conduit_frame_states: Vec::new(),
             entity_classes: None,
             entity_types: None,
+            entity_shapes: None,
+            entity_shapes_tried: false,
             attribute_registry: None,
             swing_data: None,
             recipe_display_ids: None,
@@ -2568,10 +2580,27 @@ impl PlaySession {
             }
             let mut owes_packet = step.abilities_changed;
             let abilities = self.abilities;
-            let world = physics::WorldPhysics {
-                world: &self.world,
-                collide: &collide,
-                blocks: &block_physics,
+            // The entity colliders, one shape per entity from the same tables
+            // the crosshair pick uses. The resolution is cached, so all this
+            // reads is a borrow.
+            self.resolve_entity_shapes();
+            let shapes = self.entity_shapes.as_deref();
+            let world = SessionPhysics {
+                blocks: physics::WorldPhysics {
+                    world: &self.world,
+                    collide: &collide,
+                    blocks: &block_physics,
+                },
+                entities: &self.world.entities,
+                mounts: &self.mounts,
+                exclude_root: self
+                    .player_id
+                    .map(|me| self.mounts.root_vehicle(me).unwrap_or(me)),
+                player_y: self.player.y,
+                shapes,
+                classes: self.entity_classes.as_deref(),
+                types: self.entity_types.as_deref(),
+                attributes: self.attribute_registry.as_deref(),
             };
             // The elytra take-off line (`LocalPlayer.aiStep:850`), which runs
             // before `super.aiStep()` reaches `travel`, so a take-off lands in
@@ -5820,6 +5849,206 @@ pub fn situational_music_from(
         return Some(rewo_world::music::musics::end_boss());
     }
     background.select(is_creative, is_underwater).cloned()
+}
+
+// ── The entity colliders (`EntityGetter.getEntityCollisions`) ────────────
+
+/// `Entity.canBeCollidedWith` — which kinds get in the player's way. The
+/// decompile has exactly three overrides: `AbstractBoat` (always `true`),
+/// `Shulker` (`isAlive()`) and `HappyGhast` (conditional); everything else
+/// inherits `Entity`'s `false`, **minecarts included** (they override
+/// `canCollideWith`, which filters a minecart's own pushes instead).
+///
+/// Resolved from the registry **name** — the wire gives us type ids and no
+/// class hierarchy — the same name-list rule `EntityTypes::pushable` keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CollideKind {
+    /// `AbstractBoat.canBeCollidedWith` — every `*_boat`, `*_chest_boat`,
+    /// `*_raft` and `*_chest_raft`.
+    Always,
+    /// `Shulker.canBeCollidedWith` — `isAlive()`.
+    WhileAlive,
+    /// `HappyGhast.canBeCollidedWith` — see [`happy_ghast_collides`].
+    HappyGhast,
+    /// `Entity.canBeCollidedWith` — `false`.
+    Never,
+}
+
+/// [`CollideKind`] for a registry name (`"minecraft:oak_chest_boat"`).
+pub fn collide_kind(name: &str) -> CollideKind {
+    let short = name.strip_prefix("minecraft:").unwrap_or(name);
+    if short.ends_with("_boat") || short.ends_with("_raft") {
+        CollideKind::Always
+    } else if short == "shulker" {
+        CollideKind::WhileAlive
+    } else if short == "happy_ghast" {
+        CollideKind::HappyGhast
+    } else {
+        CollideKind::Never
+    }
+}
+
+/// `HappyGhast.canBeCollidedWith`, as far as a client can evaluate it: not a
+/// baby, alive, and — when the local player is standing on it
+/// (`position().y >= bb.maxY`) — unconditionally. The other arm is
+/// `isVehicle() && other instanceof HappyGhast ? true : isOnStillTimeout()`,
+/// and `other` is never a happy ghast here, so it ends at `isOnStillTimeout()`
+/// (`staysStill() || serverStillTimeout > 0`) — neither half of which reaches
+/// a client. So a *hovering* ghast is not a collider here. The gap is
+/// one-sided: it can miss a collider vanilla has, never invent one.
+fn happy_ghast_collides(baby: bool, alive: bool, player_y: f64, bb_max_y: f64) -> bool {
+    !baby && alive && player_y >= bb_max_y
+}
+
+/// The live [`physics::PhysicsWorld`] for [`PlaySession::tick`]: the world's
+/// block shapes, plus the entity shapes `Entity.collide` collects ahead of
+/// them (and of the world border) in `collectCollidersIgnoringWorldBorder`.
+///
+/// A plain struct of borrowed facts, split out of the tick for the same
+/// reason [`situational_music_from`] is: a `PlaySession` owns a socket and
+/// cannot be built in a test, so the rules live where `play::tests` can drive
+/// them.
+pub struct SessionPhysics<'a> {
+    /// Blocks (and the border, where the caller passes one) as they were
+    /// before entity colliders existed.
+    pub blocks: physics::WorldPhysics<'a>,
+    /// `Level.getEntities`'s population — every spawned entity.
+    pub entities: &'a rewo_world::entities::EntityTable,
+    /// `set_passengers`' riding graph, for `Entity.isPassengerOfSameVehicle`.
+    pub mounts: &'a crate::motion::Mounts,
+    /// The local player's `getRootVehicle()`: an entity sharing it is out.
+    pub exclude_root: Option<i32>,
+    /// The local player's feet y — `position().y` in [`happy_ghast_collides`].
+    pub player_y: f64,
+    /// Per-type registered dimensions, as the crosshair pick resolves them.
+    pub shapes: Option<&'a rewo_data::entity_pick::EntityPickTable>,
+    /// Which types descend from `LivingEntity` — whose box `getAgeScale()`
+    /// and the `SCALE` attribute can move.
+    pub classes: Option<&'a rewo_data::entity_types::EntityClasses>,
+    /// The registry names [`collide_kind`] is keyed by.
+    pub types: Option<&'a rewo_data::entity_types::EntityTypes>,
+    /// The `minecraft:attribute` registry, for the `SCALE` factor.
+    pub attributes: Option<&'a rewo_data::attributes::AttributeRegistry>,
+}
+
+impl physics::PhysicsWorld for SessionPhysics<'_> {
+    fn collision(&self, x: i32, y: i32, z: i32) -> &[[f32; 6]] {
+        self.blocks.collision(x, y, z)
+    }
+    fn block(&self, x: i32, y: i32, z: i32) -> rewo_data::block_physics::BlockPhysics {
+        self.blocks.block(x, y, z)
+    }
+    fn has_chunk(&self, x: i32, z: i32) -> bool {
+        self.blocks.has_chunk(x, z)
+    }
+    fn min_y(&self) -> i32 {
+        self.blocks.min_y()
+    }
+
+    /// `EntityGetter.getEntityCollisions(testArea)`: every entity that
+    /// `canBeCollidedWith` and is not on the player's own vehicle, one box
+    /// each, if that box overlaps the search area.
+    ///
+    /// `search` is the caller's `aabb.expandTowards(movement)` already
+    /// inflated by `1.0E-7`, which is what `getEntities` selects over — so a
+    /// merely touching box counts, exactly as in vanilla.
+    ///
+    /// Two vanilla filters are not reproduced: `NO_SPECTATORS`, because Rewo
+    /// does not track remote players' game modes, and `getEntities`'s order,
+    /// which the per-axis clipping of `collideWithShapes` is insensitive to.
+    fn entity_colliders(&self, search: [f64; 6]) -> Vec<[f64; 6]> {
+        let (Some(shapes), Some(types)) = (self.shapes, self.types) else {
+            // No registry or no shape table: nothing can be classified or
+            // sized, so no colliders — what the headless harnesses want, and
+            // the safe reading of a version skew.
+            return Vec::new();
+        };
+        let search = rewo_world::entity_pick::Aabb::new(
+            [search[0], search[1], search[2]],
+            [search[3], search[4], search[5]],
+        );
+        let mut out = Vec::new();
+        for (id, e) in self.entities.iter() {
+            let name = types.name(e.type_id).unwrap_or("");
+            let kind = collide_kind(name);
+            if kind == CollideKind::Never {
+                continue;
+            }
+            // `Entity.canCollideWith`'s `!isPassengerOfSameVehicle(e)`: the
+            // two share a *root* vehicle, so the boat the player rides and any
+            // co-passenger on it are both out.
+            if let Some(root) = self.exclude_root {
+                if self.mounts.root_vehicle(id).unwrap_or(id) == root {
+                    continue;
+                }
+            }
+            let Some(shape) = shapes.get(e.type_id) else { continue };
+            let living = self.classes.is_some_and(|c| c.is_living(e.type_id));
+            let scale = match (living, self.attributes) {
+                (true, Some(reg)) => rewo_world::attributes::resolve(
+                    self.entities.attributes(id), Some(name), "scale", reg)
+                    .map_or(1.0, |(v, _)| v as f32),
+                _ => 1.0,
+            };
+            // `Entity.getBoundingBox()` at the tick's own position —
+            // `render_pos(1.0)`, not the render lerp: this is the box the
+            // move collides against.
+            let bb = rewo_world::entity_pick::bounding_box(
+                e.render_pos(1.0),
+                &rewo_world::entity_pick::DimensionInputs {
+                    width: shape.width,
+                    height: shape.height,
+                    living,
+                    avatar: e.type_id == types.player_id,
+                    pose: self.entities.pose(id),
+                    baby: self.entities.is_baby(id),
+                    scale,
+                },
+            );
+            // `LivingEntity.isAlive()` = `!isRemoved() && getHealth() > 0`;
+            // a removed entity is not in this table at all.
+            let alive = !self.entities.death_state(id).is_dead_or_dying();
+            let collides = match kind {
+                CollideKind::Always => true,
+                CollideKind::WhileAlive => alive,
+                CollideKind::HappyGhast => happy_ghast_collides(
+                    self.entities.is_baby(id),
+                    alive,
+                    self.player_y,
+                    bb.max[1],
+                ),
+                CollideKind::Never => false,
+            };
+            if collides && bb.intersects(&search) {
+                out.push([bb.min[0], bb.min[1], bb.min[2], bb.max[0], bb.max[1], bb.max[2]]);
+            }
+        }
+        out
+    }
+}
+
+impl PlaySession {
+    /// Fill [`Self::entity_shapes`] from [`Self::entity_types`] once per
+    /// session: [`rewo_data::entity_pick::EntityPickTable::resolve`] covers
+    /// every registered type or fails whole, and it is a table build no tick
+    /// should repeat. Leaving it `None` — a harness without a registry, or a
+    /// registry the generated table does not cover (logged once) — reads as
+    /// "no entity colliders", which is the seam's own default.
+    fn resolve_entity_shapes(&mut self) {
+        if self.entity_shapes_tried {
+            return;
+        }
+        self.entity_shapes_tried = true;
+        if let Some(types) = self.entity_types.as_deref() {
+            self.entity_shapes = match rewo_data::entity_pick::EntityPickTable::resolve(types) {
+                Ok(t) => Some(std::sync::Arc::new(t)),
+                Err(e) => {
+                    log::warn!("entity colliders disabled: {e}");
+                    None
+                }
+            };
+        }
+    }
 }
 
 mod dispatch;

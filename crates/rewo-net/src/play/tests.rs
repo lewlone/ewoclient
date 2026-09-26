@@ -2024,3 +2024,150 @@ mod fall_flying_tests {
         assert!(!chest_is_glider(&head, &glider_items), "menu 5 is the head");
     }
 }
+
+mod entity_collider_tests {
+    use super::*;
+    use rewo_data::entity_pick::EntityPickTable;
+    use rewo_data::entity_types::{EntityClasses, EntityTypes};
+    use rewo_world::entities::EntityState;
+    use rewo_world::physics::PhysicsWorld as _;
+
+    /// The 158-type registry `EntityPickTable::resolve` demands, built from
+    /// the generated table's own names at ids 0..158 in its order — the
+    /// resolution is keyed by name, so the ids need only be a bijection.
+    fn registry() -> EntityTypes {
+        let pairs: Vec<(i32, &str)> = rewo_data::entity_pick_table::ENTITY_PICK
+            .iter()
+            .enumerate()
+            .map(|(i, (name, ..))| (i as i32, *name))
+            .collect();
+        EntityTypes::from_pairs(&pairs).expect("the generated table names a player")
+    }
+
+    /// The live [`PhysicsWorld`] over `world` and the tables the tick passes;
+    /// `exclude_root` is the local player's `getRootVehicle()`, `player_y` its
+    /// feet.
+    fn live_physics<'a>(
+        world: &'a World,
+        types: &'a EntityTypes,
+        classes: &'a EntityClasses,
+        shapes: &'a EntityPickTable,
+        mounts: &'a crate::motion::Mounts,
+        exclude_root: Option<i32>,
+        player_y: f64,
+    ) -> SessionPhysics<'a> {
+        SessionPhysics {
+            blocks: physics::WorldPhysics { world, collide: &[], blocks: &[] },
+            entities: &world.entities,
+            mounts,
+            exclude_root,
+            player_y,
+            shapes: Some(shapes),
+            classes: Some(classes),
+            types: Some(types),
+            attributes: None,
+        }
+    }
+
+    /// A search area that covers both fixtures below comfortably.
+    const SEARCH: [f64; 6] = [6.0, 69.0, 6.0, 14.0, 72.0, 10.0];
+
+    /// `oak_boat`'s box (1.375 wide × 0.5625 tall) standing on y=70 at x/z 8.
+    const BOAT_BOX: [f64; 6] = [7.3125, 70.0, 7.3125, 8.6875, 70.5625, 8.6875];
+
+    /// Only the three `canBeCollidedWith` classes collide — a boat always, a
+    /// shulker while alive, a happy ghast when stood on — and everything else
+    /// inherits `Entity`'s false. Minecarts are named because their
+    /// `canCollideWith` override so often reads as the other rule.
+    #[test]
+    fn the_rule_names_the_three_overriding_classes() {
+        let cases = [
+            ("minecraft:oak_boat", CollideKind::Always),
+            ("minecraft:oak_chest_boat", CollideKind::Always),
+            ("minecraft:bamboo_raft", CollideKind::Always),
+            ("minecraft:pale_oak_chest_raft", CollideKind::Always),
+            ("minecraft:shulker", CollideKind::WhileAlive),
+            ("minecraft:happy_ghast", CollideKind::HappyGhast),
+            ("minecraft:chest_minecart", CollideKind::Never),
+            ("minecraft:pig", CollideKind::Never),
+            ("minecraft:player", CollideKind::Never),
+            ("minecraft:zombie", CollideKind::Never),
+        ];
+        for (name, want) in cases {
+            assert_eq!(collide_kind(name), want, "{name}");
+        }
+    }
+
+    /// A boat in the entity table yields its box — the registered
+    /// 1.375 × 0.5625, not the capsule default — and a pig yields nothing.
+    #[test]
+    fn a_boat_is_a_collider_and_a_pig_is_not() {
+        let types = registry();
+        let shapes = EntityPickTable::resolve(&types).expect("registry matches the table");
+        let pig = types.id_of("minecraft:pig").unwrap();
+        let classes = EntityClasses::from_raw_ids(&[pig], &[]);
+        let mounts = crate::motion::Mounts::new();
+        let mut world = World::new(DimensionShape::OVERWORLD);
+        world
+            .entities
+            .add(7, EntityState::new(0, types.id_of("minecraft:oak_boat").unwrap(), 8.0, 70.0, 8.0, 0.0, 0.0));
+        world
+            .entities
+            .add(9, EntityState::new(1, pig, 12.0, 70.0, 8.0, 0.0, 0.0));
+        let p = live_physics(&world, &types, &classes, &shapes, &mounts, None, 0.0);
+
+        assert_eq!(p.entity_colliders(SEARCH), vec![BOAT_BOX]);
+    }
+
+    /// The vehicle the player rides is not a collider
+    /// (`Entity.canCollideWith`'s `!isPassengerOfSameVehicle`, which compares
+    /// root vehicles) — but the other boat still is.
+    #[test]
+    fn the_vehicle_the_player_rides_is_not_a_collider() {
+        let types = registry();
+        let shapes = EntityPickTable::resolve(&types).expect("registry matches the table");
+        let classes = EntityClasses::from_raw_ids(&[], &[]);
+        let boat = types.id_of("minecraft:oak_boat").unwrap();
+        let mut mounts = crate::motion::Mounts::new();
+        mounts.apply(&crate::motion::Passengers {
+            vehicle: 7,
+            passengers: vec![1],
+        });
+        let mut world = World::new(DimensionShape::OVERWORLD);
+        world.entities.add(7, EntityState::new(0, boat, 8.0, 70.0, 8.0, 0.0, 0.0));
+        world.entities.add(8, EntityState::new(1, boat, 12.0, 70.0, 8.0, 0.0, 0.0));
+        // What the tick computes for the local player: root of id 1 is 7.
+        let exclude_root = Some(mounts.root_vehicle(1).unwrap_or(1));
+        assert_eq!(exclude_root, Some(7), "fixture precondition");
+        let p = live_physics(&world, &types, &classes, &shapes, &mounts, exclude_root, 0.0);
+
+        assert_eq!(
+            p.entity_colliders(SEARCH),
+            vec![[11.3125, 70.0, 7.3125, 12.6875, 70.5625, 8.6875]],
+            "the ridden boat is out, the other one is in"
+        );
+    }
+
+    /// `Shulker.canBeCollidedWith` is `isAlive()`: a shulker on zero health
+    /// stops being a collider, and a happy ghast only is one while the player
+    /// is standing on it (the `isOnStillTimeout` arm never reaches a client).
+    #[test]
+    fn a_shulker_is_a_collider_only_while_alive() {
+        let types = registry();
+        let shapes = EntityPickTable::resolve(&types).expect("registry matches the table");
+        let shulker = types.id_of("minecraft:shulker").unwrap();
+        let classes = EntityClasses::from_raw_ids(&[shulker], &[]);
+        let mounts = crate::motion::Mounts::new();
+        let mut world = World::new(DimensionShape::OVERWORLD);
+        world.entities.add(4, EntityState::new(0, shulker, 8.0, 70.0, 8.0, 0.0, 0.0));
+        world.entities.add(5, EntityState::new(1, shulker, 12.0, 70.0, 8.0, 0.0, 0.0));
+        world.entities.set_health(5, 0.0);
+        let p = live_physics(&world, &types, &classes, &shapes, &mounts, None, 0.0);
+
+        assert_eq!(
+            p.entity_colliders(SEARCH),
+            vec![[7.5, 70.0, 7.5, 8.5, 71.0, 8.5]],
+            "the living shulker (1.0 × 1.0) is in, the dead one is out"
+        );
+    }
+}
