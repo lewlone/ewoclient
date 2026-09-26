@@ -110,9 +110,11 @@ git rev-list --count origin/main..main   # expect 0 — everything is PUSHED
 * Every milestone: headless gate or unit tests → mutation battery whose
   no-op control must SURVIVE (and which rebuilds — including AFTER the final
   restore!) → `python tools/render_check.py` after any render-path change →
-  update §15 + §0.0 (+ allocation-table claims) → CLAUDE.md, then regenerate
+  update §15 + §0.0 (+ allocation-table claims) → a `.claude/rules/*.md` edit
+  only if a durable rule changed. **`CLAUDE.md` is an index now; never append
+  milestone paragraphs to it.** If you did edit `CLAUDE.md`, regenerate
   AGENTS.md via `python tools/regen_agents_mirror.py` (preserves the header;
-  diff must be EXACTLY your CLAUDE.md paragraphs).
+  diff must be EXACTLY your CLAUDE.md edit).
 * Branch off `main`, commit per logical step explaining the FINDING, merge
   `--no-ff`. End messages with `Co-Authored-By: ox-alpha <noreply@opencode.ai>`.
 * Never `cargo fmt`. Never hand-edit generated `*_table.rs` files.
