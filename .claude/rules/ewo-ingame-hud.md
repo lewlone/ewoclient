@@ -55,11 +55,20 @@ plus Phase F's dashboard). The modules and legit/pvp split have their own rule
   run `javac` by hand. It deploys the jar past the stale `file://` library cache
   (see `ewo-loader-integration.md`). If a change "doesn't take effect", compare
   sha1s first.
-- The mod loads `target/debug/ewo_jni.dll` first.
-- **`ewo-*` crate tests are not in any verification loop**, and the gates only
-  run the `rewo-*` crates. Run `cargo test -p ewo-jni --lib` yourself. Its
-  layout test once overflowed a 256-byte stack buffer and killed the process
-  with `0xe06d7363`, unnoticed for months.
+- `EwoHudMod` finds `ewo_jni.dll` in this order: `-Dewo.jni.path` /
+  `-Dewo.hud.nativePath` (the launcher sets it when a dll ships beside its exe),
+  beside the mod jar (where `build.ps1` deploys it), the game dir, then
+  `Desktop/EwoClientV3/target/{release,debug}`. The log line
+  `[ewo-hud] using ewo_jni.dll from …` says which one won.
+- `ewo-*` crate tests run in CI's `cargo test --workspace`, but no gate
+  exercises the HUD in a live game. Run `cargo test -p ewo-jni --lib` when you
+  touch it. Its layout test once overflowed a 256-byte stack buffer and
+  killed the process with `0xe06d7363`, unnoticed for months.
+- **Opt-in profiler** (`ewo-jni/src/perf.rs` + `EwoPerf.java`): create
+  `%TEMP%/ewo-perf.on` before launch to record per-section frame times;
+  `ewo-perf.ab` also A/B-cycles the HUD composite (the HUD blinks about once a
+  second) to measure its true cost. Without the sentinel it costs one boolean
+  check per frame. Kept on purpose; it is not leftover leak-hunt code.
 - In-game crashes in `nvoglv64.dll` under load come from **NVIDIA Threaded
   Optimization** fighting the second GL context. Ask the user to disable it in
   NVCP.
