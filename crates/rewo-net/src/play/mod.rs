@@ -926,6 +926,28 @@ pub struct PlaySession {
     /// [`crate::local_player_data`]. Beside the table for M73's reason: the
     /// table has no row for you.
     local_player_data: crate::local_player_data::LocalPlayerData,
+    /// The local player's `Entity.FLAG_FALL_FLYING`, as `LocalPlayer`
+    /// maintains it: the server's shared flags are the authority (mirrored in
+    /// [`Self::capture_local_metadata`]), `startFallFlying()`'s optimistic set
+    /// is the one local write, and `stopFallFlying()` clears it. It becomes
+    /// [`TickInput::fall_flying`] for the physics tick.
+    ///
+    /// A plain bool beside `local_player_data` rather than in it because that
+    /// struct is the *server's* copy of the local player's entity data, and
+    /// this bit is written locally before the server can have seen anything —
+    /// the same split vanilla has between `SynchedEntityData` and
+    /// `startFallFlying`'s `setSharedFlag`.
+    local_fall_flying: bool,
+    /// `LocalPlayer.wasJumping` — the previous tick's jump key. `aiStep`
+    /// samples it at `:773`, *before* `input.tick()` refreshes the key state,
+    /// so what the elytra take-off line's `!wasJumping` reads is the last
+    /// tick's (the same edge `JumpRiding::tick` keeps its own copy of).
+    was_jump: bool,
+    /// Item ids whose prototype carries `minecraft:glider` — the elytra, and
+    /// anything else `canGlideUsing` would accept. Resolved once from the item
+    /// table in `into_play`: the inventory stores ids and the prototype
+    /// component table is keyed by name.
+    glider_items: Vec<i32>,
     /// `UnderwaterAmbientSoundHandler`, and the previous tick's
     /// submersion that `LocalPlayer.updateIsUnderwater()` compares
     /// against (M142b). The handler itself is stateless; vanilla's
@@ -1593,6 +1615,8 @@ struct LocalPlayerRespawn<'a> {
     last_on_ground: &'a mut bool,
     last_horiz: &'a mut bool,
     last_input_flags: &'a mut u8,
+    // The elytra flag, which is the local player's own shared-flag bit 7.
+    local_fall_flying: &'a mut bool,
 }
 
 impl LocalPlayerRespawn<'_> {
@@ -1651,6 +1675,14 @@ impl LocalPlayerRespawn<'_> {
         // immediately either way.
         if !keep_entity_data {
             *self.health = 20.0;
+            // `DATA_SHARED_FLAGS_ID` is one of the values `assignValues`
+            // carries across on the keep path — bit 2, same as
+            // `DATA_HEALTH_ID` — so the no-keep path is a fresh entity with
+            // `FLAG_FALL_FLYING` low. Clearing it here matters more than it
+            // looks: a glide that outlives its player would otherwise never
+            // end, because the server has no reason to re-state a flag that is
+            // already at its default.
+            *self.local_fall_flying = false;
         }
         *self.food = 20;
         *self.dead = false;
@@ -1798,6 +1830,10 @@ impl<'a> Connection<'a> {
         let cat_variants = std::mem::take(&mut self.cfg.cat_variants);
         let wolf_variants = std::mem::take(&mut self.cfg.wolf_variants);
         let frog_variants = std::mem::take(&mut self.cfg.frog_variants);
+        // The glider items (`minecraft:glider` on the prototype) as ids, so
+        // the elytra take-off line can ask the inventory's chest slot without
+        // a name round-trip. `minecraft:elytra` is one of them.
+        let glider_items = glider_item_ids(&self.data.items);
         // Biome registry parsed during configuration; the `biomeZoomSeed` +
         // dimension holder arrive with the play-login packet (`apply_login_shape`).
         // Access the field directly (not a `&self` method) — `self.stream` was
@@ -1918,6 +1954,9 @@ impl<'a> Connection<'a> {
             riding_jumps_sent: 0,
             local_attributes: rewo_world::attributes::EntityAttributes::default(),
             local_player_data: crate::local_player_data::LocalPlayerData::default(),
+            local_fall_flying: false,
+            was_jump: false,
+            glider_items,
             ambient_underwater: Default::default(),
             ambient_bubble: Default::default(),
             ambient_biome: Default::default(),
@@ -2445,6 +2484,12 @@ impl PlaySession {
         // release sends `START_RIDING_JUMP`; vanilla's `onPlayerJump` on the
         // vehicle is the client's own cosmetic pending scale and is not
         // modelled.
+        // `LocalPlayer.aiStep`'s `boolean wasJumping = this.input.keyPresses.jump();`
+        // (`:773`), which it samples *before* `this.input.tick()` refreshes the
+        // key state — so what it holds is the PREVIOUS tick's key. The elytra
+        // take-off line's `!wasJumping` is that same edge.
+        let was_jump = self.was_jump;
+        self.was_jump = input.jump;
         let jumpable = self.jumpable_vehicle();
         if let Some(data) = self.jump_riding.tick(input.jump, jumpable) {
             self.send_riding_jump(data)?;
@@ -2528,15 +2573,60 @@ impl PlaySession {
                 collide: &collide,
                 blocks: &block_physics,
             };
+            // The elytra take-off line (`LocalPlayer.aiStep:850`), which runs
+            // before `super.aiStep()` reaches `travel`, so a take-off lands in
+            // this tick's movement. `onClimbable()` is asked *before* the move
+            // by that line and by `travelFallFlying`'s stop arm alike, so one
+            // probe serves both.
+            let climbable = physics::is_on_climbable(&self.player, &world, spectator);
+            let wire = match (self.ids.sb_play_player_command, self.player_id) {
+                (Some(id), Some(me)) => Some((id, me)),
+                _ => None,
+            };
+            let takeoff = fall_flying_takeoff(&FallFlyingTakeoff {
+                jump: input.jump,
+                was_jumping: was_jump,
+                just_toggled_creative_flight: step.abilities_changed,
+                on_climbable: climbable,
+                state: &self.player,
+                abilities: &self.abilities,
+                attrs: &move_attrs,
+                fall_flying: self.local_fall_flying,
+                inventory: &self.inventory,
+                glider_items: &self.glider_items,
+                wire,
+            });
+            if takeoff.is_some() {
+                // `Player.startFallFlying()` — `setSharedFlag(7, true)` the
+                // moment the condition holds, before the server can have
+                // answered. The packet goes out below, after the physics,
+                // because `world` borrows `&self.world` across this block and
+                // `send` needs `&mut self`; the wire order is unchanged
+                // (nothing is sent in between).
+                self.local_fall_flying = true;
+            }
+            // The physics reads the flag as `TickInput::fall_flying`.
+            let mut phys = *input;
+            phys.fall_flying = self.local_fall_flying;
             physics::tick_env(
                 &mut self.player,
-                input,
+                &phys,
                 &abilities,
                 spectator,
                 Some(self.border.collision()),
                 &move_attrs,
                 &world,
             );
+            if phys.fall_flying && climbable {
+                // `travelFallFlying`'s climbable arm is `travelInAir(input);
+                // stopFallFlying();` — the tick above ran that arm (physics
+                // keeps its own copy of it for direct callers), so this is the
+                // `stopFallFlying()`, `setSharedFlag(7, false)`.
+                self.local_fall_flying = false;
+            }
+            if let Some(p) = takeoff {
+                self.send(p)?;
+            }
             owes_packet |= self
                 .flight
                 .after_travel(&mut self.abilities, &self.player, spectator);
@@ -3220,23 +3310,20 @@ impl PlaySession {
     /// Letting each build its own is how they come to disagree (M89, four
     /// times now).
     ///
-    /// **`fall_flying` is the one field Rewo cannot answer yet**, and it is
-    /// named here rather than defaulted quietly. The local player's
-    /// `DATA_SHARED_FLAGS_ID` does arrive — the server sends you your own
-    /// metadata — but `route_set_entity_data` writes into `EntityTable`, which
-    /// holds no row for you (M73's asymmetry, hit again). So it answers
-    /// `false`, and the cost is precise: `ElytraOnPlayerSoundInstance`'s guard
-    /// is `time <= 20 || isFallFlying()`, so an elytra sound would play for
-    /// exactly one second and stop. That is not a silence you would blame on
-    /// this function, which is why it is written down. It is also the elytra's
-    /// *trigger* (`onSyncedDataUpdated`'s rising edge), so one decode closes
-    /// both ends and it belongs with the trigger milestone.
+    /// **`fall_flying`** is the flag as `LocalPlayer` keeps it, not as the
+    /// server last stated it: `route_set_entity_data` writes into `EntityTable`,
+    /// which holds no row for the local player (M73's asymmetry), so the
+    /// metadata half lives in `local_player_data` and the local half — the
+    /// optimistic `startFallFlying()` and the `stopFallFlying()` clears — lives
+    /// beside it as `local_fall_flying`. The elytra sound's guard is
+    /// `time <= 20 || isFallFlying()`, so answering the *flag* rather than
+    /// "the server said so" is what keeps the sound up for a whole glide.
     pub fn local_player_view(&self) -> Option<crate::sound_engine::LocalPlayerView> {
         Some(crate::sound_engine::LocalPlayerView {
             id: self.player_id?,
             position: (self.player.x, self.player.y, self.player.z),
             velocity: (self.player.vx, self.player.vy, self.player.vz),
-            fall_flying: self.local_player_data.is_fall_flying(),
+            fall_flying: self.local_fall_flying,
             // `LocalPlayer.isUnderWater()`, which for the LOCAL player is
             // the eye test **alone**: `LocalPlayer` overrides the method to
             // return `wasUnderwater` (`LocalPlayer.java:1172-1175`), and
@@ -3275,6 +3362,15 @@ impl PlaySession {
             self.swing_data.as_ref().map(|d| d.components),
             &mut self.local_player_data,
         );
+        if out.flags_updated {
+            // `onSyncedDataUpdated(DATA_SHARED_FLAGS_ID)` — the server is the
+            // authority on `FLAG_FALL_FLYING`, so whatever it states replaces
+            // the local bit (including an optimistic take-off it has not
+            // answered yet). A body without index 0 leaves the bit standing,
+            // which is why this is gated on `flags_updated` rather than run on
+            // every packet.
+            self.local_fall_flying = self.local_player_data.is_fall_flying();
+        }
         if out.start_elytra_sound {
             if let Some(player) = self.player_id {
                 self.push_sound_event(crate::sounds::SoundEvent::Tickable(
@@ -4129,6 +4225,7 @@ impl PlaySession {
             last_on_ground: &mut self.last_on_ground,
             last_horiz: &mut self.last_horiz,
             last_input_flags: &mut self.last_input_flags,
+            local_fall_flying: &mut self.local_fall_flying,
         }
         .apply(info.should_keep(RespawnInfo::KEEP_ENTITY_DATA));
 
@@ -5549,6 +5646,127 @@ fn unpack_section_pos(packed: u64) -> (i32, i32, i32) {
 /// low nibble, not x.
 fn unpack_section_offset(pos: i32) -> (i32, i32, i32) {
     ((pos >> 8) & 15, pos & 15, (pos >> 4) & 15)
+}
+
+/// Item ids whose prototype carries `minecraft:glider` — the elytra, and
+/// anything else `LivingEntity.canGlideUsing` accepts on its first clause
+/// (`itemStack.has(DataComponents.GLIDER)`).
+///
+/// The prototype is the only place Rewo can see that component
+/// (`item_components_table`): a patch that adds or removes `minecraft:glider`
+/// at runtime is not consulted. `canGlideUsing`'s other two clauses —
+/// `equippable.slot() == slot` and `!nextDamageWillBreak()` — are not
+/// modelled either; see [`chest_is_glider`] for the slot half.
+pub fn glider_item_ids(items: &rewo_data::items::Items) -> Vec<i32> {
+    items
+        .names()
+        .into_iter()
+        .filter(|name| {
+            rewo_data::item_components_table::prototype_has_component(name, "minecraft:glider")
+                == Some(true)
+        })
+        .filter_map(|name| items.id(name))
+        .collect()
+}
+
+/// The elytra take-off line's item test: a glider in the **chest** slot.
+///
+/// `LivingEntity.canGlide` loops over every `EquipmentSlot.VALUES` asking
+/// `canGlideUsing(getItemBySlot(slot), slot)`, and since that demands
+/// `slot == equippable.slot()` it can only ever be satisfied by the slot the
+/// item is equippable in. Every vanilla glider is equippable in the chest, so
+/// the loop collapses to this one lookup — `EquipmentSlot.CHEST`'s menu slot,
+/// `ARMOR_MENU_START + 1`. A datapack glider equippable elsewhere is the one
+/// case this reads wrong, and it is named here rather than faked with a slot
+/// table Rewo does not have.
+pub fn chest_is_glider(
+    inventory: &rewo_world::inventory::Inventory,
+    glider_items: &[i32],
+) -> bool {
+    inventory
+        .menu_slot(rewo_world::inventory::ARMOR_MENU_START + 1)
+        .is_some_and(|s| glider_items.contains(&s.item_id))
+}
+
+/// `ServerboundPlayerCommandPacket.Action.START_FALL_FLYING` — the seventh
+/// constant of the enum (`ServerboundPlayerCommandPacket.java:55-63`), sent
+/// as the ordinal exactly like [`crate::jump_riding::START_RIDING_JUMP`].
+pub const START_FALL_FLYING: i32 = 6;
+
+/// Everything `LocalPlayer.aiStep`'s elytra take-off line reads, gathered so
+/// the decision is one pure call. `PlaySession::tick` is the adapter and has
+/// no tests (M71's lesson), so the line lives here where it can be witnessed.
+pub struct FallFlyingTakeoff<'a> {
+    /// `this.input.keyPresses.jump()` — the **current** tick's key, read after
+    /// `this.input.tick()`.
+    pub jump: bool,
+    /// `wasJumping`: the previous tick's key, sampled at `aiStep:773` before
+    /// `input.tick()`. With `jump` this is the rising edge.
+    pub was_jumping: bool,
+    /// `justToggledCreativeFlight` — the flight toggle turned this tick, which
+    /// takes the same key press and must not also launch an elytra. This is
+    /// [`FlightStep::abilities_changed`](rewo_world::abilities::FlightStep).
+    pub just_toggled_creative_flight: bool,
+    /// `this.onClimbable()` at the pre-move position.
+    pub on_climbable: bool,
+    /// The local player, for `tryToStartFallFlying`'s condition.
+    pub state: &'a PlayerState,
+    /// `Player.canGlide`'s `!this.abilities.flying`.
+    pub abilities: &'a rewo_world::abilities::Abilities,
+    /// `LivingEntity.canGlide`'s levitation test.
+    pub attrs: &'a physics::MoveAttributes,
+    /// `isFallFlying()` as the line's `tryToStartFallFlying` reads it.
+    pub fall_flying: bool,
+    /// The player's `InventoryMenu`, for [`chest_is_glider`].
+    pub inventory: &'a rewo_world::inventory::Inventory,
+    /// [`glider_item_ids`]' output.
+    pub glider_items: &'a [i32],
+    /// `(ServerboundPlayerCommandPacket id, local entity id)`. `None` is
+    /// [`crate::jump_riding`]'s missing-id case: nothing is sent at all.
+    pub wire: Option<(i32, i32)>,
+}
+
+/// `LocalPlayer.aiStep`'s elytra take-off line, end to end:
+///
+/// ```java
+/// if (this.input.keyPresses.jump() && !justToggledCreativeFlight && !wasJumping
+///     && !this.onClimbable() && this.tryToStartFallFlying()) {
+///    this.connection.send(new ServerboundPlayerCommandPacket(
+///        this, ServerboundPlayerCommandPacket.Action.START_FALL_FLYING));
+/// }
+/// ```
+///
+/// `tryToStartFallFlying` is
+/// [`physics::can_start_fall_flying`](rewo_world::physics::can_start_fall_flying)
+/// (which also carries `Player.canGlide`'s and `LivingEntity.canGlide`'s
+/// clauses), with [`chest_is_glider`] standing in for its item scan. The
+/// two-argument packet constructor's `data` is `0`.
+///
+/// Returns the packet to send, or `None` when any conjunct fails. It does
+/// **not** set the flag — `startFallFlying()` is `setSharedFlag(7, true)`, a
+/// separate statement in vanilla and a separate write for the caller, which
+/// must make it before it can borrow the socket.
+pub fn fall_flying_takeoff(i: &FallFlyingTakeoff<'_>) -> Option<PacketWriter> {
+    if !(i.jump && !i.just_toggled_creative_flight && !i.was_jumping && !i.on_climbable) {
+        return None;
+    }
+    if !physics::can_start_fall_flying(
+        i.state,
+        i.abilities,
+        i.attrs,
+        i.fall_flying,
+        chest_is_glider(i.inventory, i.glider_items),
+    ) {
+        return None;
+    }
+    let (id, me) = i.wire?;
+    let mut p = PacketWriter::packet(id);
+    p.raw(&crate::jump_riding::player_command_body(
+        me,
+        START_FALL_FLYING,
+        0,
+    ));
+    Some(p)
 }
 
 /// `ContainerInput.PICKUP`'s wire id. The enum's codec is
