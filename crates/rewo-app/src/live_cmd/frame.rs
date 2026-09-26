@@ -1,7 +1,63 @@
 use super::*;
 
+/// What one frame's later phases read from its world pass.
+struct FrameView {
+    dt: f32,
+    /// Entity interpolation within the tick (`tick_accum / TICK_DT`).
+    alpha: f32,
+    eye: Vec3,
+    extent: vk::Extent2D,
+    aspect: f32,
+}
+
 impl LiveApp {
+    /// One frame of the windowed client, as a sequence of phases.
+    ///
+    /// The session and the window state are taken out of `self` for the
+    /// phases that need them, so each phase can be a `&mut self` method with
+    /// the two passed alongside; they are put back before this returns. No
+    /// phase after the take reaches `self.session` / `self.state` (while
+    /// this was one function the borrow checker enforced that; it is now a
+    /// property of the phase bodies).
     pub(super) fn frame(&mut self, event_loop: &ActiveEventLoop) {
+        let dt = self.frame_clock();
+        if !self.pump_screens(event_loop) {
+            return;
+        }
+        let Some(mut session) = self.session.take() else {
+            return;
+        };
+        let mut state = self.state.take();
+        self.frame_session(event_loop, dt, &mut session, state.as_mut());
+        self.session = Some(session);
+        self.state = state;
+    }
+
+    fn frame_session(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        dt: f32,
+        session: &mut PlaySession,
+        state: Option<&mut LiveState>,
+    ) {
+        if !self.tick_session(dt, session) {
+            return;
+        }
+        let Some(state) = state else {
+            return;
+        };
+        if !self.upload_meshes(event_loop, session, state) {
+            return;
+        }
+        let view = self.world_pass(dt, session, state);
+        self.gui_pass(&view, session, state);
+        self.hud_pass(&view, session, state);
+        self.submit(event_loop, &view, session, state);
+    }
+
+    /// Frame timing: this frame's `dt` (capped at 100 ms), fed to the
+    /// overlay's sample rings.
+    fn frame_clock(&mut self) -> f32 {
         let now = Instant::now();
         let dt = self
             .last_frame
@@ -13,7 +69,14 @@ impl LiveApp {
             self.cpu.push(dt * 1000.0);
             self.ring.push(dt * 1000.0);
         }
+        dt
+    }
 
+    /// Everything that runs before the session is borrowed: screens the
+    /// server or a button opened or closed, the disconnect, resizes and the
+    /// screen pumps. Returns `false` when the frame ends here (exit, or no
+    /// session — the screen-only frame).
+    fn pump_screens(&mut self, event_loop: &ActiveEventLoop) -> bool {
         // M74: `container_close` — the server closing whatever screen is
         // open. Drained before the session borrow below, because acting on it
         // calls `set_screen_open`, which needs all of `self`.
@@ -155,7 +218,7 @@ impl LiveApp {
         }
         if self.exit_requested {
             event_loop.exit();
-            return;
+            return false;
         }
 
         // **M85: the frame with no session.**
@@ -174,13 +237,15 @@ impl LiveApp {
         // anyway.
         if self.session.is_none() {
             self.render_screen_only(event_loop);
-            return;
+            return false;
         }
+        true
+    }
 
+    /// Packets and the fixed 20 Hz tick. Returns `false` when the session
+    /// failed or disconnected (serviced at the top of the next frame).
+    fn tick_session(&mut self, dt: f32, session: &mut PlaySession) -> bool {
         // Fixed 20 Hz tick on an accumulator.
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
         // Vanilla applies inbound packets every frame, independent of the
         // 20 Hz tick; the budget keeps a backlog from hitching one frame.
         if let Err(e) = session.pump(rewo_net::play::PumpBudget::FRAME) {
@@ -188,7 +253,7 @@ impl LiveApp {
             session.disconnect = Some(e);
             session.disconnect_cause =
                 Some(rewo_world::disconnect_screen::DisconnectCause::ClientError);
-            return;
+            return false;
         }
         self.tick_accum += dt;
         let input = self.keys.input();
@@ -209,7 +274,7 @@ impl LiveApp {
                 session.disconnect = Some(e);
                 session.disconnect_cause =
                     Some(rewo_world::disconnect_screen::DisconnectCause::ClientError);
-                return;
+                return false;
             }
             // Advance the block-light flicker exactly once per successful tick.
             self.flicker.tick();
@@ -283,7 +348,7 @@ impl LiveApp {
             // the disconnect screen. Returning here rather than acting is what
             // keeps that decision in one place — and this frame has already
             // borrowed the session it is about to drop.
-            return;
+            return false;
         }
         if ran_tick && session.spawned && !self.logged_spawn {
             self.logged_spawn = true;
@@ -324,10 +389,17 @@ impl LiveApp {
                 let _ = session.select_hotbar(0);
             }
         }
+        true
+    }
 
-        let Some(state) = self.state.as_mut() else {
-            return;
-        };
+    /// Finished meshes to the GPU, dirty columns to the pool. Returns
+    /// `false` when meshing failed (the loop exits).
+    fn upload_meshes(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        session: &mut PlaySession,
+        state: &mut LiveState,
+    ) -> bool {
         // Upload finished meshes + feed the worker pool. (Uploads are
         // async slot-ring submissions — the CPU never waits on the copy;
         // same-queue FIFO ordering keeps this frame's draws safe.)
@@ -368,10 +440,15 @@ impl LiveApp {
             Err(e) => {
                 log::error!("live: remesh failed: {e}");
                 event_loop.exit();
-                return;
+                return false;
             }
         }
+        true
+    }
 
+    /// The world pass: skins, the lightmap, entities, block entities, the
+    /// sound listener, selection, leashes and the sky.
+    fn world_pass(&mut self, dt: f32, session: &mut PlaySession, state: &mut LiveState) -> FrameView {
         // Player skins: request any newly-announced ones, upload any that
         // finished fetching (real skins on online-mode servers).
         for (uuid, info) in session.take_pending_skins() {
@@ -698,6 +775,19 @@ impl LiveApp {
         state
             .world_renderer
             .set_end_flash(end_flash_render(session, lightmap_partial));
+        FrameView {
+            dt,
+            alpha,
+            eye,
+            extent,
+            aspect,
+        }
+    }
+
+    /// GUI items and the open screen, the first-person hand, weather,
+    /// border, particles and crumbling.
+    fn gui_pass(&mut self, view: &FrameView, session: &mut PlaySession, state: &mut LiveState) {
+        let (dt, alpha) = (view.dt, view.alpha);
         // M34/M35: the item icons, before the weather so the borrow of
         // `baked` is over by the time `apply_weather` takes its own. One pass
         // serves both the hotbar and the open screen — only the rectangles
@@ -940,6 +1030,12 @@ impl LiveApp {
                 player_eye(session),
             );
         }
+    }
+
+    /// The HUD: survival bars, chat, sidebar, tab list, screens' chrome and
+    /// text.
+    fn hud_pass(&mut self, view: &FrameView, session: &mut PlaySession, state: &mut LiveState) {
+        let (alpha, extent) = (view.alpha, view.extent);
         let contextual = contextual_info(session);
         let survival = rewo_gpu::survival_hud::layout_for_screen(
             &resolve_survival_inputs(
@@ -1698,6 +1794,18 @@ impl LiveApp {
         {
             log::error!("live: texture animation: {e}");
         }
+    }
+
+    /// Modules, the locator bar, the view-projection, capture and the GPU
+    /// submit.
+    fn submit(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        view: &FrameView,
+        session: &mut PlaySession,
+        state: &mut LiveState,
+    ) {
+        let (alpha, eye, extent, aspect) = (view.alpha, view.eye, view.extent, view.aspect);
         // M52: resolve the module state once per frame. Every legit module
         // defaults off, so an unconfigured client produces exactly the
         // constants this path used before -- which is what keeps the golden
