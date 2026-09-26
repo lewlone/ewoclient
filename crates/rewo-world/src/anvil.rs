@@ -213,12 +213,12 @@ mod tests {
         // THE trap. Java's `String.length()` is code units, so an emoji is 2.
         // 25 emoji are 50 units and legal; 26 are 52 and are not — while
         // `chars().count()` would call them 25 and 26 and accept both.
-        let ok: String = std::iter::repeat('\u{1F600}').take(25).collect();
+        let ok: String = std::iter::repeat_n('\u{1F600}', 25).collect();
         assert_eq!(ok.chars().count(), 25);
         assert_eq!(ok.encode_utf16().count(), 50);
         assert!(validate_name(&ok).is_some());
 
-        let too_long: String = std::iter::repeat('\u{1F600}').take(26).collect();
+        let too_long: String = std::iter::repeat_n('\u{1F600}', 26).collect();
         assert_eq!(too_long.chars().count(), 26, "a char count would allow this");
         assert!(validate_name(&too_long).is_none());
 

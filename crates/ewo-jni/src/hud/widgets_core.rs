@@ -771,12 +771,12 @@ pub(super) struct TargetSkinCache {
 }
 
 thread_local! {
-    static TARGET_SKIN: RefCell<TargetSkinCache> = RefCell::new(TargetSkinCache {
+    static TARGET_SKIN: RefCell<TargetSkinCache> = const { RefCell::new(TargetSkinCache {
         name: String::new(),
         image: None,
         mtime: None,
         checked_at: f32::NEG_INFINITY,
-    });
+    }) };
 }
 
 /// How often to re-read the target marker + PNG. The crosshair can cross a

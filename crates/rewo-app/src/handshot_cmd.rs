@@ -755,9 +755,7 @@ fn check_placement(c: &mut Checker) {
         "a3.the_arm_is_posed_and_placed_rather_than_left_at_the_origin",
         tilted
             && arm_verts.iter().all(|v| v.pos[2] < 0.0),
-        format!(
-            "every vertex sits in front of the eye (negative z) and off-axis.              `renderHand` resets the part's pose and sets a fixed `zRot` of              ±0.1 rad, so the first-person arm is the rest pose plus one nudge —              not whatever the body animation left it at"
-        ),
+        "every vertex sits in front of the eye (negative z) and off-axis.              `renderHand` resets the part's pose and sets a fixed `zRot` of              ±0.1 rad, so the first-person arm is the rest pose plus one nudge —              not whatever the body animation left it at".to_string(),
     );
 
     // The draw-time mirror negates exactly three components.
@@ -830,7 +828,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
         let vp = projection().to_cols_array_2d();
         let item = cube_item(block_transform(), block_transform());
 
-        let mut shot = |gpu: &mut Gpu,
+        let shot = |gpu: &mut Gpu,
                         off: &mut Offscreen,
                         wr: &mut WorldRenderer,
                         v: &[rewo_gpu::gui_item::GuiItemVertex]|
@@ -845,7 +843,7 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
         let rest = shot(&mut gpu, &mut off, &mut wr, &rest_verts)?;
         if let Some(d) = &args.out_dir {
             std::fs::create_dir_all(d).map_err(|e| format!("out-dir: {e}"))?;
-            let _ = off.save_png(&mut gpu, &d.join("handshot.png"));
+            let _ = off.save_png(&gpu, &d.join("handshot.png"));
         }
 
         c.record(

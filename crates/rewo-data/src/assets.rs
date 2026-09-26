@@ -2009,7 +2009,7 @@ fn bake_particle_sprites(jar: Jar) -> Option<ParticleSprites> {
 /// ratios are accepted — a non-divisor would need filtering, and silently
 /// blurring a particle sprite is worse than not drawing it.
 fn upscale_to_tex_size(rgba: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
-    if w == 0 || h == 0 || TEX_SIZE % w != 0 || TEX_SIZE % h != 0 {
+    if w == 0 || h == 0 || !TEX_SIZE.is_multiple_of(w) || !TEX_SIZE.is_multiple_of(h) {
         return None;
     }
     if rgba.len() < (w * h * 4) as usize {
@@ -4666,428 +4666,13 @@ fn tint_rgb(rgba: &mut [u8], color: [u8; 3]) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // -- M164: the waterlogging rule ---------------------------------------
-    //
-    // The rule, not the table: the exact per-state COUNTS against the real
-    // `blocks.json` are `blockentityshot`'s `check_carried_fluid_table`, which
-    // is the gate that already bakes.
-
-    #[test]
-    fn an_ordinary_block_carries_water_only_when_waterlogged() {
-        assert_eq!(carried_water("minecraft:oak_slab", false), None);
-        assert_eq!(carried_water("minecraft:oak_slab", true), Some(false));
-        assert_eq!(carried_water("minecraft:stone", false), None);
-        // Not a waterloggable block at all — the caller only ever passes `true`
-        // for a state whose report entry says so, so this is the shape of the
-        // rule rather than a claim about stone.
-        assert_eq!(carried_water("minecraft:stone", true), Some(false));
-    }
-
-    /// `WaterloggedTransparentBlock.getFluidState` is the ONE override of the 46
-    /// that passes `true` to `getSource`, and `Blocks.java:5245-5250` gives it
-    /// to the whole copper-grate collection. Reading "a waterlogged block's
-    /// fluid is a source, therefore never falling" — which is what the plain
-    /// `SlabBlock` / `StairBlock` line says — is wrong for exactly these eight.
-    #[test]
-    fn only_the_copper_grates_carry_falling_water() {
-        for b in FALLING_WATERLOGGED {
-            assert_eq!(carried_water(b, true), Some(true), "{b}");
-            assert_eq!(carried_water(b, false), None, "{b}");
-            assert!(b.contains("copper_grate"), "{b} is not a copper grate");
-        }
-        assert_eq!(FALLING_WATERLOGGED.len(), 8);
-        assert_eq!(carried_water("minecraft:oak_stairs", true), Some(false));
-    }
-
-    /// The five that have no property to key off. `KelpBlock`, `KelpPlantBlock`,
-    /// `SeagrassBlock`, `TallSeagrassBlock` and `BubbleColumnBlock` return
-    /// `Fluids.WATER.getSource(false)` outright, so the `waterlogged` argument
-    /// must not gate them — that is the half a property-keyed rule loses, and it
-    /// is 32 block states.
-    #[test]
-    fn the_unconditional_five_carry_water_with_no_property() {
-        for b in UNCONDITIONAL_WATER {
-            assert_eq!(carried_water(b, false), Some(false), "{b}");
-            assert_eq!(carried_water(b, true), Some(false), "{b}");
-        }
-        assert_eq!(UNCONDITIONAL_WATER.len(), 5);
-        // Disjoint from the falling set, and neither list repeats itself.
-        for b in UNCONDITIONAL_WATER {
-            assert!(!FALLING_WATERLOGGED.contains(b), "{b} is in both lists");
-        }
-        let mut all: Vec<&str> = UNCONDITIONAL_WATER
-            .iter()
-            .chain(FALLING_WATERLOGGED)
-            .copied()
-            .collect();
-        let n = all.len();
-        all.sort_unstable();
-        all.dedup();
-        assert_eq!(all.len(), n, "a block name is listed twice");
-    }
-
-    #[test]
-    fn snap_face_picks_axis() {
-        assert_eq!(snap_face([0.0, 1.0, 0.0]), 0); // up
-        assert_eq!(snap_face([0.0, -0.9, 0.1]), 1); // down
-        assert_eq!(snap_face([0.0, 0.0, -1.0]), 2); // north
-        assert_eq!(snap_face([1.0, 0.0, 0.0]), 5); // east
-    }
-
-    // M14: tint family comes from BlockColors (block id + tintindex), NOT the
-    // texture filename. These pin the decompiled `BlockColors.createDefault`.
-    #[test]
-    fn block_color_layers_follow_blockcolors_not_filename() {
-        use TintSource::*;
-        assert_eq!(block_color_layers("grass_block"), &[Grass]);
-        assert_eq!(block_color_layers("short_grass"), &[Grass]);
-        assert_eq!(block_color_layers("fern"), &[Grass]);
-        assert_eq!(block_color_layers("sugar_cane"), &[Grass]);
-        assert_eq!(
-            block_color_layers("oak_leaves"),
-            &[Foliage],
-            "oak leaves use the foliage colormap"
-        );
-        assert_eq!(block_color_layers("leaf_litter"), &[DryFoliage]);
-        // pink_petals/wildflowers: layer 0 blank, layer 1 grass.
-        assert_eq!(block_color_layers("pink_petals"), &[None, Grass]);
-        // stone / dirt / any untinted block → no tint.
-        assert_eq!(block_color_layers("stone"), &[] as &[TintSource]);
-        assert_eq!(block_color_layers("dirt"), &[] as &[TintSource]);
-    }
-
-    #[test]
-    fn spruce_and_birch_leaves_are_constant_not_foliage() {
-        // The load-bearing "preserve constant spruce/birch" requirement: these
-        // must be a fixed color, not the foliage colormap.
-        assert_eq!(block_color_layers("spruce_leaves"), &[SPRUCE_LEAF]);
-        assert_eq!(block_color_layers("birch_leaves"), &[BIRCH_LEAF]);
-        // FoliageColor.FOLIAGE_EVERGREEN = -10380959, FOLIAGE_BIRCH = -8345771.
-        assert_eq!(SPRUCE_LEAF, TintSource::Constant(rgb_of(-10380959)));
-        assert_eq!(BIRCH_LEAF, TintSource::Constant(rgb_of(-8345771)));
-        assert_ne!(block_color_layers("spruce_leaves"), &[TintSource::Foliage]);
-    }
-
-    #[test]
-    fn resolve_tint_source_by_tintindex_and_half() {
-        use TintSource::*;
-        let petals = block_color_layers("pink_petals"); // [None, Grass]
-        // tintindex 0 → blank, tintindex 1 → grass.
-        assert_eq!(resolve_tint_source(petals, Some(0), false), None);
-        assert_eq!(resolve_tint_source(petals, Some(1), false), Grass);
-        // No tintindex on the face → never tinted.
-        assert_eq!(resolve_tint_source(&[Grass], Option::None, false), None);
-        // Out-of-range tintindex → None.
-        assert_eq!(resolve_tint_source(&[Grass], Some(5), false), None);
-        // Tall-grass UPPER half turns Grass into GrassBelow (samples pos.below()).
-        assert_eq!(resolve_tint_source(&[Grass], Some(0), true), GrassBelow);
-        // But a non-grass source is unaffected by the half.
-        assert_eq!(resolve_tint_source(&[Foliage], Some(0), true), Foliage);
-    }
-
-    #[test]
-    fn y_rotation_cycles_north_to_east() {
-        // north normal (0,0,-1) rotated y=90 → east/west axis.
-        let mut n = [0.0, 0.0, -1.0];
-        rotate_normal_xy(&mut n, 0, 90);
-        assert_eq!(snap_face(n), 4); // -X (west) — a 90° turn off north
-    }
-
-    #[test]
-    fn slab_default_uv_covers_face() {
-        // Full 16-wide top face → uv spans 0..1.
-        let uv = default_uv([0.0, 0.0, 0.0], [16.0, 8.0, 16.0], 0);
-        assert_eq!(uv, [0.0, 0.0, 16.0, 16.0]);
-    }
-
-    #[test]
-    fn fluid_light_matches_vanilla() {
-        // A full bake needs the client jar + blocks.json, so test the exact
-        // fluid light assignment in isolation. Water: no emission, and
-        // LiquidBlock.propagatesSkylightDown = false → getLightDampening = 1.
-        // Lava: block_light::EMISSION pins it to 15, same dampening.
-        assert_eq!(fluid_light(false), (0, 1), "water = (emission 0, dampening 1)");
-        assert_eq!(fluid_light(true), (15, 1), "lava = (emission 15, dampening 1)");
-    }
-
-    #[test]
-    fn font_advance_measures_rightmost_lit_column() {
-        // 16×16 grid of 2-px cells; light up column 1 of glyph 'A' (65).
-        let (size, cell) = (32u32, 2u32);
-        let mut atlas = vec![0u8; (size * size * 4) as usize];
-        let (cx, cy) = ((65 % 16) * cell, (65 / 16) * cell);
-        atlas[((cy * size + cx + 1) * 4 + 3) as usize] = 255;
-        let adv = font_advances(&atlas, size, cell);
-        assert_eq!(adv[65], 3, "rightmost col 1 → advance 1+2");
-        assert_eq!(adv[32], 4, "blank space cell advances 4");
-    }
-
-    // -- The four smooth-lighting facts ------------------------------------
-    //
-    // `BlockState.isViewBlocking`, `getShadeBrightness == 0.2F`,
-    // `emissiveRendering`, and the first model part's `useAmbientOcclusion`
-    // — what `rewo-mesh`'s vanilla smooth-lighting port asks per state. They
-    // are only meaningful against the real bake, so these tests skip when the
-    // local 26.2 client jar / datagen report is absent.
-
-    /// The real bake plus the raw `blocks.json`, built once and shared.
-    fn real() -> Option<&'static (BakedAssets, serde_json::Value)> {
-        static REAL: std::sync::OnceLock<Option<(BakedAssets, serde_json::Value)>> =
-            std::sync::OnceLock::new();
-        REAL.get_or_init(|| {
-            let paths = crate::DataPaths::for_version("26.2")?;
-            let blocks = paths.blocks_json();
-            if !blocks.is_file() {
-                return None;
-            }
-            // `<config>/EwoClient/rewo/26.2` → `<config>/EwoClient/shared/…`.
-            let jar = paths
-                .root
-                .parent()?
-                .parent()?
-                .join("shared/versions/26.2/26.2.jar");
-            if !jar.is_file() {
-                return None;
-            }
-            let raw = crate::read_json_file(&blocks).ok()?;
-            Some((bake(&jar, &blocks).expect("bake"), raw))
-        })
-        .as_ref()
-    }
-
-    /// Every state id of `block` whose `blocks.json` property map contains
-    /// `props` (the report lists all of a state's properties, so a caller
-    /// names only the ones it cares about). Panics on an empty match, so a
-    /// test can never pass vacuously on a property it made up.
-    fn states_where(raw: &serde_json::Value, block: &str, props: &[(&str, &str)]) -> Vec<usize> {
-        let states = raw
-            .get(block)
-            .and_then(|b| b.get("states"))
-            .and_then(|s| s.as_array())
-            .unwrap_or_else(|| panic!("{block} has no states in blocks.json"));
-        let ids: Vec<usize> = states
-            .iter()
-            .filter(|s| {
-                props.iter().all(|(k, v)| {
-                    s.get("properties")
-                        .and_then(|p| p.get(*k))
-                        .and_then(|x| x.as_str())
-                        .is_some_and(|x| x == *v)
-                })
-            })
-            .map(|s| s.get("id").and_then(|i| i.as_u64()).expect("state id") as usize)
-            .collect();
-        assert!(!ids.is_empty(), "{block} has no state matching {props:?}");
-        ids
-    }
-
-    /// The four defaults, on one state per test case where they agree:
-    /// `isViewBlocking`'s `blocksMotion() && isCollisionShapeFullBlock`
-    /// predicate (true for a full cube that is none of cobweb /
-    /// bamboo_sapling / forceSolidOff / dynamicShape), `getShadeBrightness`'s
-    /// `isCollisionShapeFullBlock ? 0.2F : 1.0F` default, `Properties`'
-    /// `emissiveRendering = var0 -> false`, and `cube_all` → `cube` →
-    /// `block/block`, none of which sets `"ambientocclusion"`.
-    #[test]
-    fn stone_takes_every_default() {
-        let Some((baked, raw)) = real() else {
-            crate::skip_test!("no local 26.2 jar/datagen report");
-            return;
-        };
-        for id in states_where(raw, "minecraft:stone", &[]) {
-            let c = &baked.cull[id];
-            assert!(c.ao_occluder, "stone collides as a full block ({id})");
-            assert!(c.view_blocking, "stone blocks the view ({id})");
-            assert!(c.shade_dark, "stone shades 0.2F ({id})");
-            assert!(!c.emissive_rendering, "stone ({id})");
-            assert!(c.ambient_occlusion, "stone model AO ({id})");
-        }
-    }
-
-    /// Glass collides as a full block, yet `TransparentBlock`'s
-    /// `getShadeBrightness` is 1.0F and GLASS's `.isViewBlocking(Blocks::never)`
-    /// says it never blocks the view — so both facts have to come from the
-    /// class/registration override, not from `isCollisionShapeFullBlock`
-    /// (`ao_occluder` is asserted true to show the override is doing the
-    /// work). `TintedGlassBlock` extends `TransparentBlock` for the shade
-    /// side and declares `Blocks::never` itself (its `ofLegacyCopy(GLASS)`
-    /// would NOT have carried `isViewBlocking` over); the stained family
-    /// inherits both through `StainedGlassBlock extends TransparentBlock` and
-    /// the shared glass properties.
-    #[test]
-    fn glass_family_is_bright_and_never_view_blocking() {
-        let Some((baked, raw)) = real() else {
-            crate::skip_test!("no local 26.2 jar/datagen report");
-            return;
-        };
-        for block in [
-            "minecraft:glass",
-            "minecraft:red_stained_glass",
-            "minecraft:tinted_glass",
-        ] {
-            for id in states_where(raw, block, &[]) {
-                let c = &baked.cull[id];
-                assert!(c.ao_occluder, "{block} collides as a full block ({id})");
-                assert!(!c.view_blocking, "{block} ({id})");
-                assert!(!c.shade_dark, "{block} shades 1.0F ({id})");
-            }
-        }
-    }
-
-    /// `leavesProperties` sets both `isSuffocating(Blocks::never)` and
-    /// `isViewBlocking(Blocks::never)` — leaves do not block the view even
-    /// where their shape would say otherwise. `LeavesBlock extends Block`
-    /// (not `TransparentBlock`), so `getShadeBrightness` keeps the shape
-    /// default: `shade_dark == ao_occluder` here.
-    #[test]
-    fn oak_leaves_never_block_the_view() {
-        let Some((baked, raw)) = real() else {
-            crate::skip_test!("no local 26.2 jar/datagen report");
-            return;
-        };
-        for id in states_where(raw, "minecraft:oak_leaves", &[]) {
-            let c = &baked.cull[id];
-            assert!(!c.view_blocking, "oak_leaves ({id})");
-            assert_eq!(c.shade_dark, c.ao_occluder, "oak_leaves uses the default ({id})");
-        }
-    }
-
-    /// `MudBlock` and `SoulSandBlock` return 0.2F from `getShadeBrightness`
-    /// although their collision shape is 14/16 tall, not a full block — and
-    /// both registrations call `.isViewBlocking(Blocks::always)`, so they do
-    /// block the view despite the shape as well.
-    #[test]
-    fn mud_and_soul_sand_shade_dark_without_a_full_block() {
-        let Some((baked, raw)) = real() else {
-            crate::skip_test!("no local 26.2 jar/datagen report");
-            return;
-        };
-        for block in ["minecraft:mud", "minecraft:soul_sand"] {
-            for id in states_where(raw, block, &[]) {
-                let c = &baked.cull[id];
-                assert!(!c.ao_occluder, "{block} is 14/16 tall ({id})");
-                assert!(c.shade_dark, "{block} shades 0.2F anyway ({id})");
-                assert!(c.view_blocking, "{block} blocks the view anyway ({id})");
-            }
-        }
-    }
-
-    /// `SnowLayerBlock.getShadeBrightness` is `LAYERS == 8 ? 0.2F : 1.0F`,
-    /// and SNOW registers `isViewBlocking((statex, …) ->
-    /// statex.getValue(LAYERS) >= 8)`. Both are property rules, so one block
-    /// splits per state — `snow` is also `forceSolidOff()`, which is why the
-    /// default predicate would never have fired for it.
-    #[test]
-    fn snow_shades_and_blocks_by_layer_count() {
-        let Some((baked, raw)) = real() else {
-            crate::skip_test!("no local 26.2 jar/datagen report");
-            return;
-        };
-        for id in states_where(raw, "minecraft:snow", &[("layers", "8")]) {
-            let c = &baked.cull[id];
-            assert!(c.shade_dark, "snow layers=8 shades 0.2F ({id})");
-            assert!(c.view_blocking, "snow layers=8 blocks the view ({id})");
-        }
-        for layers in ["1", "7"] {
-            for id in states_where(raw, "minecraft:snow", &[("layers", layers)]) {
-                let c = &baked.cull[id];
-                assert!(!c.shade_dark, "snow layers={layers} shades 1.0F ({id})");
-                assert!(!c.view_blocking, "snow layers={layers} ({id})");
-            }
-        }
-    }
-
-    /// `Blocks.java`'s `.emissiveRendering(var0 -> true)` — magma alone.
-    #[test]
-    fn magma_block_renders_emissively() {
-        let Some((baked, raw)) = real() else {
-            crate::skip_test!("no local 26.2 jar/datagen report");
-            return;
-        };
-        for id in states_where(raw, "minecraft:magma_block", &[]) {
-            assert!(baked.cull[id].emissive_rendering, "magma_block ({id})");
-        }
-    }
-
-    /// The other `emissiveRendering` call site: the sculk sensors' phase
-    /// predicate `SculkSensorBlock.getPhase(state) == ACTIVE`, which
-    /// `ofLegacyCopy(SCULK_SENSOR)` hands to `calibrated_sculk_sensor`
-    /// unchanged (`ofLegacyCopy` DOES carry `emissiveRendering`, unlike
-    /// `isViewBlocking`).
-    #[test]
-    fn sculk_sensors_renders_emissively_only_while_active() {
-        let Some((baked, raw)) = real() else {
-            crate::skip_test!("no local 26.2 jar/datagen report");
-            return;
-        };
-        for block in ["minecraft:sculk_sensor", "minecraft:calibrated_sculk_sensor"] {
-            for id in states_where(raw, block, &[("sculk_sensor_phase", "active")]) {
-                assert!(baked.cull[id].emissive_rendering, "{block} active ({id})");
-            }
-            for phase in ["inactive", "cooldown"] {
-                for id in states_where(raw, block, &[("sculk_sensor_phase", phase)]) {
-                    assert!(
-                        !baked.cull[id].emissive_rendering,
-                        "{block} {phase} ({id})"
-                    );
-                }
-            }
-        }
-    }
-
-    /// `useAmbientOcclusion()` is the model's `"ambientocclusion"` key as
-    /// `ResolvedModel` flattens it through `parent`, and the FIRST model part
-    /// decides. `block/template_torch.json` sets it false (torch's own model
-    /// inherits that), `cube_all`'s chain never sets it (default true).
-    #[test]
-    fn ambient_occlusion_comes_from_the_first_model() {
-        let Some((baked, raw)) = real() else {
-            crate::skip_test!("no local 26.2 jar/datagen report");
-            return;
-        };
-        for id in states_where(raw, "minecraft:torch", &[]) {
-            assert!(
-                !baked.cull[id].ambient_occlusion,
-                "template_torch sets ambientocclusion:false ({id})"
-            );
-        }
-        for id in states_where(raw, "minecraft:stone", &[]) {
-            assert!(baked.cull[id].ambient_occlusion, "cube_all defaults true ({id})");
-        }
-    }
-
-    /// `pistonProperties` gives piston and sticky_piston the same
-    /// `NOT_EXTENDED_PISTON` predicate (`!getValue(EXTENDED)`) — the one fact
-    /// here that flips between two states of the same block, which is why it
-    /// cannot be a per-block table entry.
-    #[test]
-    fn piston_blocks_the_view_only_while_retracted() {
-        let Some((baked, raw)) = real() else {
-            crate::skip_test!("no local 26.2 jar/datagen report");
-            return;
-        };
-        for block in ["minecraft:piston", "minecraft:sticky_piston"] {
-            for id in states_where(raw, block, &[("extended", "false")]) {
-                assert!(baked.cull[id].view_blocking, "{block} retracted ({id})");
-            }
-            for id in states_where(raw, block, &[("extended", "true")]) {
-                assert!(!baked.cull[id].view_blocking, "{block} extended ({id})");
-            }
-        }
-    }
-}
-
 /// Rotate a block-local `0..1` box by a blockstate rotation (multiples of 90°
 /// about X then Y, vanilla's `x`/`y` model fields). Axis-aligned boxes stay
 /// axis-aligned at right angles, so this is a corner swap, not a real rotation.
 fn rotate_box(b: [f32; 6], x_deg: i32, y_deg: i32) -> [f32; 6] {
     let mut lo = [b[0], b[1], b[2]];
     let mut hi = [b[3], b[4], b[5]];
-    let steps = |d: i32| ((d % 360) + 360) % 360 / 90;
+    let steps = |d: i32| d.rem_euclid(360) / 90;
     for _ in 0..steps(x_deg) {
         // x rotation: y -> z, z -> -y (about the block centre)
         let (l, h) = (lo, hi);
@@ -5459,4 +5044,419 @@ fn face_coverage(boxes: &[[f32; 6]]) -> u8 {
         }
     }
     mask
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- M164: the waterlogging rule ---------------------------------------
+    //
+    // The rule, not the table: the exact per-state COUNTS against the real
+    // `blocks.json` are `blockentityshot`'s `check_carried_fluid_table`, which
+    // is the gate that already bakes.
+
+    #[test]
+    fn an_ordinary_block_carries_water_only_when_waterlogged() {
+        assert_eq!(carried_water("minecraft:oak_slab", false), None);
+        assert_eq!(carried_water("minecraft:oak_slab", true), Some(false));
+        assert_eq!(carried_water("minecraft:stone", false), None);
+        // Not a waterloggable block at all — the caller only ever passes `true`
+        // for a state whose report entry says so, so this is the shape of the
+        // rule rather than a claim about stone.
+        assert_eq!(carried_water("minecraft:stone", true), Some(false));
+    }
+
+    /// `WaterloggedTransparentBlock.getFluidState` is the ONE override of the 46
+    /// that passes `true` to `getSource`, and `Blocks.java:5245-5250` gives it
+    /// to the whole copper-grate collection. Reading "a waterlogged block's
+    /// fluid is a source, therefore never falling" — which is what the plain
+    /// `SlabBlock` / `StairBlock` line says — is wrong for exactly these eight.
+    #[test]
+    fn only_the_copper_grates_carry_falling_water() {
+        for b in FALLING_WATERLOGGED {
+            assert_eq!(carried_water(b, true), Some(true), "{b}");
+            assert_eq!(carried_water(b, false), None, "{b}");
+            assert!(b.contains("copper_grate"), "{b} is not a copper grate");
+        }
+        assert_eq!(FALLING_WATERLOGGED.len(), 8);
+        assert_eq!(carried_water("minecraft:oak_stairs", true), Some(false));
+    }
+
+    /// The five that have no property to key off. `KelpBlock`, `KelpPlantBlock`,
+    /// `SeagrassBlock`, `TallSeagrassBlock` and `BubbleColumnBlock` return
+    /// `Fluids.WATER.getSource(false)` outright, so the `waterlogged` argument
+    /// must not gate them — that is the half a property-keyed rule loses, and it
+    /// is 32 block states.
+    #[test]
+    fn the_unconditional_five_carry_water_with_no_property() {
+        for b in UNCONDITIONAL_WATER {
+            assert_eq!(carried_water(b, false), Some(false), "{b}");
+            assert_eq!(carried_water(b, true), Some(false), "{b}");
+        }
+        assert_eq!(UNCONDITIONAL_WATER.len(), 5);
+        // Disjoint from the falling set, and neither list repeats itself.
+        for b in UNCONDITIONAL_WATER {
+            assert!(!FALLING_WATERLOGGED.contains(b), "{b} is in both lists");
+        }
+        let mut all: Vec<&str> = UNCONDITIONAL_WATER
+            .iter()
+            .chain(FALLING_WATERLOGGED)
+            .copied()
+            .collect();
+        let n = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), n, "a block name is listed twice");
+    }
+
+    #[test]
+    fn snap_face_picks_axis() {
+        assert_eq!(snap_face([0.0, 1.0, 0.0]), 0); // up
+        assert_eq!(snap_face([0.0, -0.9, 0.1]), 1); // down
+        assert_eq!(snap_face([0.0, 0.0, -1.0]), 2); // north
+        assert_eq!(snap_face([1.0, 0.0, 0.0]), 5); // east
+    }
+
+    // M14: tint family comes from BlockColors (block id + tintindex), NOT the
+    // texture filename. These pin the decompiled `BlockColors.createDefault`.
+    #[test]
+    fn block_color_layers_follow_blockcolors_not_filename() {
+        use TintSource::*;
+        assert_eq!(block_color_layers("grass_block"), &[Grass]);
+        assert_eq!(block_color_layers("short_grass"), &[Grass]);
+        assert_eq!(block_color_layers("fern"), &[Grass]);
+        assert_eq!(block_color_layers("sugar_cane"), &[Grass]);
+        assert_eq!(
+            block_color_layers("oak_leaves"),
+            &[Foliage],
+            "oak leaves use the foliage colormap"
+        );
+        assert_eq!(block_color_layers("leaf_litter"), &[DryFoliage]);
+        // pink_petals/wildflowers: layer 0 blank, layer 1 grass.
+        assert_eq!(block_color_layers("pink_petals"), &[None, Grass]);
+        // stone / dirt / any untinted block → no tint.
+        assert_eq!(block_color_layers("stone"), &[] as &[TintSource]);
+        assert_eq!(block_color_layers("dirt"), &[] as &[TintSource]);
+    }
+
+    #[test]
+    fn spruce_and_birch_leaves_are_constant_not_foliage() {
+        // The load-bearing "preserve constant spruce/birch" requirement: these
+        // must be a fixed color, not the foliage colormap.
+        assert_eq!(block_color_layers("spruce_leaves"), &[SPRUCE_LEAF]);
+        assert_eq!(block_color_layers("birch_leaves"), &[BIRCH_LEAF]);
+        // FoliageColor.FOLIAGE_EVERGREEN = -10380959, FOLIAGE_BIRCH = -8345771.
+        assert_eq!(SPRUCE_LEAF, TintSource::Constant(rgb_of(-10380959)));
+        assert_eq!(BIRCH_LEAF, TintSource::Constant(rgb_of(-8345771)));
+        assert_ne!(block_color_layers("spruce_leaves"), &[TintSource::Foliage]);
+    }
+
+    #[test]
+    fn resolve_tint_source_by_tintindex_and_half() {
+        use TintSource::*;
+        let petals = block_color_layers("pink_petals"); // [None, Grass]
+        // tintindex 0 → blank, tintindex 1 → grass.
+        assert_eq!(resolve_tint_source(petals, Some(0), false), None);
+        assert_eq!(resolve_tint_source(petals, Some(1), false), Grass);
+        // No tintindex on the face → never tinted.
+        assert_eq!(resolve_tint_source(&[Grass], Option::None, false), None);
+        // Out-of-range tintindex → None.
+        assert_eq!(resolve_tint_source(&[Grass], Some(5), false), None);
+        // Tall-grass UPPER half turns Grass into GrassBelow (samples pos.below()).
+        assert_eq!(resolve_tint_source(&[Grass], Some(0), true), GrassBelow);
+        // But a non-grass source is unaffected by the half.
+        assert_eq!(resolve_tint_source(&[Foliage], Some(0), true), Foliage);
+    }
+
+    #[test]
+    fn y_rotation_cycles_north_to_east() {
+        // north normal (0,0,-1) rotated y=90 → east/west axis.
+        let mut n = [0.0, 0.0, -1.0];
+        rotate_normal_xy(&mut n, 0, 90);
+        assert_eq!(snap_face(n), 4); // -X (west) — a 90° turn off north
+    }
+
+    #[test]
+    fn slab_default_uv_covers_face() {
+        // Full 16-wide top face → uv spans 0..1.
+        let uv = default_uv([0.0, 0.0, 0.0], [16.0, 8.0, 16.0], 0);
+        assert_eq!(uv, [0.0, 0.0, 16.0, 16.0]);
+    }
+
+    #[test]
+    fn fluid_light_matches_vanilla() {
+        // A full bake needs the client jar + blocks.json, so test the exact
+        // fluid light assignment in isolation. Water: no emission, and
+        // LiquidBlock.propagatesSkylightDown = false → getLightDampening = 1.
+        // Lava: block_light::EMISSION pins it to 15, same dampening.
+        assert_eq!(fluid_light(false), (0, 1), "water = (emission 0, dampening 1)");
+        assert_eq!(fluid_light(true), (15, 1), "lava = (emission 15, dampening 1)");
+    }
+
+    #[test]
+    fn font_advance_measures_rightmost_lit_column() {
+        // 16×16 grid of 2-px cells; light up column 1 of glyph 'A' (65).
+        let (size, cell) = (32u32, 2u32);
+        let mut atlas = vec![0u8; (size * size * 4) as usize];
+        let (cx, cy) = (cell, (65 / 16) * cell);
+        atlas[((cy * size + cx + 1) * 4 + 3) as usize] = 255;
+        let adv = font_advances(&atlas, size, cell);
+        assert_eq!(adv[65], 3, "rightmost col 1 → advance 1+2");
+        assert_eq!(adv[32], 4, "blank space cell advances 4");
+    }
+
+    // -- The four smooth-lighting facts ------------------------------------
+    //
+    // `BlockState.isViewBlocking`, `getShadeBrightness == 0.2F`,
+    // `emissiveRendering`, and the first model part's `useAmbientOcclusion`
+    // — what `rewo-mesh`'s vanilla smooth-lighting port asks per state. They
+    // are only meaningful against the real bake, so these tests skip when the
+    // local 26.2 client jar / datagen report is absent.
+
+    /// The real bake plus the raw `blocks.json`, built once and shared.
+    fn real() -> Option<&'static (BakedAssets, serde_json::Value)> {
+        static REAL: std::sync::OnceLock<Option<(BakedAssets, serde_json::Value)>> =
+            std::sync::OnceLock::new();
+        REAL.get_or_init(|| {
+            let paths = crate::DataPaths::for_version("26.2")?;
+            let blocks = paths.blocks_json();
+            if !blocks.is_file() {
+                return None;
+            }
+            // `<config>/EwoClient/rewo/26.2` → `<config>/EwoClient/shared/…`.
+            let jar = paths
+                .root
+                .parent()?
+                .parent()?
+                .join("shared/versions/26.2/26.2.jar");
+            if !jar.is_file() {
+                return None;
+            }
+            let raw = crate::read_json_file(&blocks).ok()?;
+            Some((bake(&jar, &blocks).expect("bake"), raw))
+        })
+        .as_ref()
+    }
+
+    /// Every state id of `block` whose `blocks.json` property map contains
+    /// `props` (the report lists all of a state's properties, so a caller
+    /// names only the ones it cares about). Panics on an empty match, so a
+    /// test can never pass vacuously on a property it made up.
+    fn states_where(raw: &serde_json::Value, block: &str, props: &[(&str, &str)]) -> Vec<usize> {
+        let states = raw
+            .get(block)
+            .and_then(|b| b.get("states"))
+            .and_then(|s| s.as_array())
+            .unwrap_or_else(|| panic!("{block} has no states in blocks.json"));
+        let ids: Vec<usize> = states
+            .iter()
+            .filter(|s| {
+                props.iter().all(|(k, v)| {
+                    s.get("properties")
+                        .and_then(|p| p.get(*k))
+                        .and_then(|x| x.as_str())
+                        .is_some_and(|x| x == *v)
+                })
+            })
+            .map(|s| s.get("id").and_then(|i| i.as_u64()).expect("state id") as usize)
+            .collect();
+        assert!(!ids.is_empty(), "{block} has no state matching {props:?}");
+        ids
+    }
+
+    /// The four defaults, on one state per test case where they agree:
+    /// `isViewBlocking`'s `blocksMotion() && isCollisionShapeFullBlock`
+    /// predicate (true for a full cube that is none of cobweb /
+    /// bamboo_sapling / forceSolidOff / dynamicShape), `getShadeBrightness`'s
+    /// `isCollisionShapeFullBlock ? 0.2F : 1.0F` default, `Properties`'
+    /// `emissiveRendering = var0 -> false`, and `cube_all` → `cube` →
+    /// `block/block`, none of which sets `"ambientocclusion"`.
+    #[test]
+    fn stone_takes_every_default() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for id in states_where(raw, "minecraft:stone", &[]) {
+            let c = &baked.cull[id];
+            assert!(c.ao_occluder, "stone collides as a full block ({id})");
+            assert!(c.view_blocking, "stone blocks the view ({id})");
+            assert!(c.shade_dark, "stone shades 0.2F ({id})");
+            assert!(!c.emissive_rendering, "stone ({id})");
+            assert!(c.ambient_occlusion, "stone model AO ({id})");
+        }
+    }
+
+    /// Glass collides as a full block, yet `TransparentBlock`'s
+    /// `getShadeBrightness` is 1.0F and GLASS's `.isViewBlocking(Blocks::never)`
+    /// says it never blocks the view — so both facts have to come from the
+    /// class/registration override, not from `isCollisionShapeFullBlock`
+    /// (`ao_occluder` is asserted true to show the override is doing the
+    /// work). `TintedGlassBlock` extends `TransparentBlock` for the shade
+    /// side and declares `Blocks::never` itself (its `ofLegacyCopy(GLASS)`
+    /// would NOT have carried `isViewBlocking` over); the stained family
+    /// inherits both through `StainedGlassBlock extends TransparentBlock` and
+    /// the shared glass properties.
+    #[test]
+    fn glass_family_is_bright_and_never_view_blocking() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for block in [
+            "minecraft:glass",
+            "minecraft:red_stained_glass",
+            "minecraft:tinted_glass",
+        ] {
+            for id in states_where(raw, block, &[]) {
+                let c = &baked.cull[id];
+                assert!(c.ao_occluder, "{block} collides as a full block ({id})");
+                assert!(!c.view_blocking, "{block} ({id})");
+                assert!(!c.shade_dark, "{block} shades 1.0F ({id})");
+            }
+        }
+    }
+
+    /// `leavesProperties` sets both `isSuffocating(Blocks::never)` and
+    /// `isViewBlocking(Blocks::never)` — leaves do not block the view even
+    /// where their shape would say otherwise. `LeavesBlock extends Block`
+    /// (not `TransparentBlock`), so `getShadeBrightness` keeps the shape
+    /// default: `shade_dark == ao_occluder` here.
+    #[test]
+    fn oak_leaves_never_block_the_view() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for id in states_where(raw, "minecraft:oak_leaves", &[]) {
+            let c = &baked.cull[id];
+            assert!(!c.view_blocking, "oak_leaves ({id})");
+            assert_eq!(c.shade_dark, c.ao_occluder, "oak_leaves uses the default ({id})");
+        }
+    }
+
+    /// `MudBlock` and `SoulSandBlock` return 0.2F from `getShadeBrightness`
+    /// although their collision shape is 14/16 tall, not a full block — and
+    /// both registrations call `.isViewBlocking(Blocks::always)`, so they do
+    /// block the view despite the shape as well.
+    #[test]
+    fn mud_and_soul_sand_shade_dark_without_a_full_block() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for block in ["minecraft:mud", "minecraft:soul_sand"] {
+            for id in states_where(raw, block, &[]) {
+                let c = &baked.cull[id];
+                assert!(!c.ao_occluder, "{block} is 14/16 tall ({id})");
+                assert!(c.shade_dark, "{block} shades 0.2F anyway ({id})");
+                assert!(c.view_blocking, "{block} blocks the view anyway ({id})");
+            }
+        }
+    }
+
+    /// `SnowLayerBlock.getShadeBrightness` is `LAYERS == 8 ? 0.2F : 1.0F`,
+    /// and SNOW registers `isViewBlocking((statex, …) ->
+    /// statex.getValue(LAYERS) >= 8)`. Both are property rules, so one block
+    /// splits per state — `snow` is also `forceSolidOff()`, which is why the
+    /// default predicate would never have fired for it.
+    #[test]
+    fn snow_shades_and_blocks_by_layer_count() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for id in states_where(raw, "minecraft:snow", &[("layers", "8")]) {
+            let c = &baked.cull[id];
+            assert!(c.shade_dark, "snow layers=8 shades 0.2F ({id})");
+            assert!(c.view_blocking, "snow layers=8 blocks the view ({id})");
+        }
+        for layers in ["1", "7"] {
+            for id in states_where(raw, "minecraft:snow", &[("layers", layers)]) {
+                let c = &baked.cull[id];
+                assert!(!c.shade_dark, "snow layers={layers} shades 1.0F ({id})");
+                assert!(!c.view_blocking, "snow layers={layers} ({id})");
+            }
+        }
+    }
+
+    /// `Blocks.java`'s `.emissiveRendering(var0 -> true)` — magma alone.
+    #[test]
+    fn magma_block_renders_emissively() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for id in states_where(raw, "minecraft:magma_block", &[]) {
+            assert!(baked.cull[id].emissive_rendering, "magma_block ({id})");
+        }
+    }
+
+    /// The other `emissiveRendering` call site: the sculk sensors' phase
+    /// predicate `SculkSensorBlock.getPhase(state) == ACTIVE`, which
+    /// `ofLegacyCopy(SCULK_SENSOR)` hands to `calibrated_sculk_sensor`
+    /// unchanged (`ofLegacyCopy` DOES carry `emissiveRendering`, unlike
+    /// `isViewBlocking`).
+    #[test]
+    fn sculk_sensors_renders_emissively_only_while_active() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for block in ["minecraft:sculk_sensor", "minecraft:calibrated_sculk_sensor"] {
+            for id in states_where(raw, block, &[("sculk_sensor_phase", "active")]) {
+                assert!(baked.cull[id].emissive_rendering, "{block} active ({id})");
+            }
+            for phase in ["inactive", "cooldown"] {
+                for id in states_where(raw, block, &[("sculk_sensor_phase", phase)]) {
+                    assert!(
+                        !baked.cull[id].emissive_rendering,
+                        "{block} {phase} ({id})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `useAmbientOcclusion()` is the model's `"ambientocclusion"` key as
+    /// `ResolvedModel` flattens it through `parent`, and the FIRST model part
+    /// decides. `block/template_torch.json` sets it false (torch's own model
+    /// inherits that), `cube_all`'s chain never sets it (default true).
+    #[test]
+    fn ambient_occlusion_comes_from_the_first_model() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for id in states_where(raw, "minecraft:torch", &[]) {
+            assert!(
+                !baked.cull[id].ambient_occlusion,
+                "template_torch sets ambientocclusion:false ({id})"
+            );
+        }
+        for id in states_where(raw, "minecraft:stone", &[]) {
+            assert!(baked.cull[id].ambient_occlusion, "cube_all defaults true ({id})");
+        }
+    }
+
+    /// `pistonProperties` gives piston and sticky_piston the same
+    /// `NOT_EXTENDED_PISTON` predicate (`!getValue(EXTENDED)`) — the one fact
+    /// here that flips between two states of the same block, which is why it
+    /// cannot be a per-block table entry.
+    #[test]
+    fn piston_blocks_the_view_only_while_retracted() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        for block in ["minecraft:piston", "minecraft:sticky_piston"] {
+            for id in states_where(raw, block, &[("extended", "false")]) {
+                assert!(baked.cull[id].view_blocking, "{block} retracted ({id})");
+            }
+            for id in states_where(raw, block, &[("extended", "true")]) {
+                assert!(!baked.cull[id].view_blocking, "{block} extended ({id})");
+            }
+        }
+    }
 }

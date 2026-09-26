@@ -1911,7 +1911,7 @@ pub(super) fn collect_entities<'a>(
                 session.world.entities.variant(id).unwrap_or(0),
             )
         });
-        let kind = fish.map_or(kind, |f| fish_kind(f));
+        let kind = fish.map_or(kind, fish_kind);
         // M24b: a dropped stack. `ItemEntity.DATA_ITEM` arrives as metadata
         // index 8 with the ITEM_STACK serializer; an entity with one renders
         // as the item and nothing else, so the model kind is never consulted.

@@ -123,7 +123,7 @@ fn run_check(
     let mut fails: Vec<String> = Vec::new();
 
     // A closure that renders `verts` and reads the frame back.
-    let mut frame = |gpu: &mut Gpu,
+    let frame = |gpu: &mut Gpu,
                      off: &mut Offscreen,
                      verts: &[rewo_gpu::leash::LeashVertex],
                      dist: f32|

@@ -1154,7 +1154,7 @@ impl EntityPass {
 
         // Facelabel verification mode: replace every mob texture with per-
         // face solid colors so a render proves texture-face correspondence.
-        let debug_tex = std::env::var("REWO_MOB_DEBUG_TEX").map_or(false, |v| v == "1");
+        let debug_tex = std::env::var("REWO_MOB_DEBUG_TEX").is_ok_and(|v| v == "1");
 
         // Build each registry mob whose textures are all present.
         let mut models: Vec<Option<MobModel>> = (0..EntityModelKind::COUNT).map(|_| None).collect();
@@ -1196,8 +1196,8 @@ impl EntityPass {
             };
             if debug_tex {
                 for q in &m.quads {
-                    if !paint_debug_rect(&mut atlas, origins[q.tex], q, &mut painted) {
-                        if ambiguous_tex.insert(def.textures[q.tex]) {
+                    if !paint_debug_rect(&mut atlas, origins[q.tex], q, &mut painted)
+                        && ambiguous_tex.insert(def.textures[q.tex]) {
                             log::info!(
                                 "mob debug-tex: {} ({:?} {:?} quad) repaints a texel with a new label",
                                 def.textures[q.tex],
@@ -1205,7 +1205,6 @@ impl EntityPass {
                                 q.facing
                             );
                         }
-                    }
                 }
             }
             // Vanilla emissive layers: the same geometry, filtered to the
@@ -1509,7 +1508,7 @@ impl EntityPass {
         };
         let mut result = Ok(());
         for name in names {
-            let Some(model) = items.any(*name) else {
+            let Some(model) = items.any(name) else {
                 continue;
             };
             for q in &model.quads {

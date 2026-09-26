@@ -526,7 +526,7 @@ mod tests {
         let n = 200_000usize;
         let mut buf = vec![9u8, 1];
         buf.extend_from_slice(&(n as i32).to_be_bytes());
-        buf.extend(std::iter::repeat(0u8).take(n));
+        buf.extend(std::iter::repeat_n(0u8, n));
         assert!(Nbt::read_network(&mut PacketReader::new(&buf)).is_err());
         // The same list reads under a larger explicit quota.
         let big = Nbt::read_network_with_quota(&mut PacketReader::new(&buf), 64 << 20).unwrap();

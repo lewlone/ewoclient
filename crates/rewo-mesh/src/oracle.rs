@@ -58,7 +58,7 @@ pub(crate) struct ExpandedFace {
 /// Split a vertex/index stream into quads, checking the `[0,1,2,0,2,3]` pattern
 /// every emitter in this file uses.
 pub(crate) fn split_quads(v: &[MeshVertex], idx: &[u32]) -> Result<Vec<[MeshVertex; 4]>, String> {
-    if v.len() % 4 != 0 {
+    if !v.len().is_multiple_of(4) {
         return Err(format!(
             "geometry is not whole quads: {} vertices is not a multiple of 4",
             v.len()

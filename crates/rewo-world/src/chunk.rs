@@ -484,7 +484,7 @@ pub fn read_level_chunk_bits2(
     // every field was read and dropped, which is why a chest had never been
     // anything but empty space (see `crate::block_entities`).
     let be_count = r.count("block entities", 1)?;
-    let mut block_entities = Vec::with_capacity(be_count.min(256) as usize);
+    let mut block_entities = Vec::with_capacity(be_count.min(256));
     for _ in 0..be_count {
         let packed_xz = r.u8()?;
         let y = r.i16()?;
@@ -606,7 +606,7 @@ mod tests {
 
     /// Biome cell index `(y<<2 | z)<<2 | x` for section-local quart coords.
     fn bidx(qx: usize, qy: usize, qz: usize) -> usize {
-        ((qy << 2 | qz) << 2 | qx) as usize
+        (qy << 2 | qz) << 2 | qx
     }
 
     /// A biome container buffer holding `cells` (64 entries) as a direct palette

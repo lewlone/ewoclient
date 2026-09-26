@@ -146,41 +146,6 @@ fn classify(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn error_without_matching_state_does_not_cancel() {
-        assert_eq!(
-            classify(None, None, Some("access_denied".into()), "s1"),
-            Callback::Ignore("missing state")
-        );
-        assert_eq!(
-            classify(None, Some("evil"), Some("access_denied".into()), "s1"),
-            Callback::Ignore("state mismatch")
-        );
-        assert_eq!(
-            classify(None, Some("s1"), Some("access_denied".into()), "s1"),
-            Callback::Cancelled("access_denied".into())
-        );
-    }
-
-    #[test]
-    fn code_requires_matching_state() {
-        assert_eq!(
-            classify(Some("c".into()), Some("evil"), None, "s1"),
-            Callback::Ignore("state mismatch")
-        );
-        assert_eq!(classify(Some("c".into()), Some("s1"), None, "s1"), Callback::Code("c".into()));
-        assert_eq!(classify(None, Some("s1"), None, "s1"), Callback::Ignore("neither code nor error"));
-        assert_eq!(
-            parse_callback("/?code=a%2Bb&state=s1"),
-            (Some("a+b".into()), Some("s1".into()), None)
-        );
-    }
-}
-
 fn parse_callback(url: &str) -> (Option<String>, Option<String>, Option<String>) {
     // Format: `/callback?code=...&state=...` or `/callback?error=...&error_description=...`.
     let query = url.split_once('?').map(|(_, q)| q).unwrap_or("");
@@ -239,3 +204,38 @@ const FAIL_PAGE: &str = r#"<!doctype html>
   <p>you can close this tab — try again from EwoClient.</p>
 </div>
 </body></html>"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_without_matching_state_does_not_cancel() {
+        assert_eq!(
+            classify(None, None, Some("access_denied".into()), "s1"),
+            Callback::Ignore("missing state")
+        );
+        assert_eq!(
+            classify(None, Some("evil"), Some("access_denied".into()), "s1"),
+            Callback::Ignore("state mismatch")
+        );
+        assert_eq!(
+            classify(None, Some("s1"), Some("access_denied".into()), "s1"),
+            Callback::Cancelled("access_denied".into())
+        );
+    }
+
+    #[test]
+    fn code_requires_matching_state() {
+        assert_eq!(
+            classify(Some("c".into()), Some("evil"), None, "s1"),
+            Callback::Ignore("state mismatch")
+        );
+        assert_eq!(classify(Some("c".into()), Some("s1"), None, "s1"), Callback::Code("c".into()));
+        assert_eq!(classify(None, Some("s1"), None, "s1"), Callback::Ignore("neither code nor error"));
+        assert_eq!(
+            parse_callback("/?code=a%2Bb&state=s1"),
+            (Some("a+b".into()), Some("s1".into()), None)
+        );
+    }
+}

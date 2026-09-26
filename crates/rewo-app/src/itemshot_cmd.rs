@@ -927,7 +927,7 @@ fn check_render(
     let bow = render([Some("minecraft:white_bed"), None], &mut gpu, &mut wr, &mut off)?;
     if let Some(dir_out) = &args.out_dir {
         std::fs::create_dir_all(dir_out).map_err(|e| format!("out-dir: {e}"))?;
-        let _ = off.save_png(&mut gpu, &dir_out.join("itemshot-empty.png"));
+        let _ = off.save_png(&gpu, &dir_out.join("itemshot-empty.png"));
     }
 
     let changed = |a: &[u8], b: &[u8]| -> Vec<(u32, u32)> {

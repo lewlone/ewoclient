@@ -320,8 +320,8 @@ fn check_rotation(c: &mut Checker) {
     let only_y = ind_zyx(0.0, cc, 0.0);
     let cape_only_y = {
         // flap and lean both feed `a`; setting them so a == 0 isolates Ry.
-        let m = cape_rotation(-6.0, 0.0, 0.0);
-        m
+        
+        cape_rotation(-6.0, 0.0, 0.0)
     };
     let dev2 = (0..3)
         .flat_map(|r| (0..3).map(move |k| (r, k)))
@@ -1630,7 +1630,7 @@ fn check_pixels(
         // here, but `set_entities` takes it either way.
         let cam_right = [1.0f32, 0.0, 0.0];
         let cam_up = [0.0f32, 1.0, 0.0];
-        let mut shot = |gpu: &mut Gpu,
+        let shot = |gpu: &mut Gpu,
                         off: &mut Offscreen,
                         wr: &mut WorldRenderer,
                         draws: &[EntityDraw<'_>]|

@@ -1595,7 +1595,7 @@ fn overlays(
         // hairline. Taken from the data, not spelled, so a retagged pack moves
         // the fixture with the table.
         let one: &'static [&'static str] = &rewo_data::loom_pattern_table::NO_ITEM_REQUIRED[..1];
-        let pattern = one[0];
+        let _pattern = one[0];
         let mut loom_frame = |display: bool,
                               gpu: &mut Gpu,
                               off: &mut Offscreen,
@@ -1645,7 +1645,7 @@ fn overlays(
         // The control first: without the grid, nothing here is the backing —
         // so the rect being probed really is the one the loom paints, and o21
         // is not reading some part of the sheet that was grey anyway.
-        let control = !none.iter().any(|p| *p == grey);
+        let control = !none.contains(&grey);
         // The subject: the pattern sits OVER the fill. With the two pushes
         // swapped every pixel here would be exactly the backing.
         let lighter = on

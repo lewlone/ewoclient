@@ -441,7 +441,7 @@ fn check_pixels(
         View(&'a crate::live_cmd::SignEditView),
     }
 
-    let mut shot = |gpu: &mut Gpu,
+    let shot = |gpu: &mut Gpu,
                     off: &mut Offscreen,
                     wr: &mut WorldRenderer,
                     frame: Frame,

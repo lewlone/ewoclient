@@ -531,7 +531,7 @@ mod tests {
         m.quads
             .iter()
             .flat_map(|q| {
-                let pv = abs_pivot_y(m, q.part as usize);
+                let pv = abs_pivot_y(m, q.part);
                 q.pos.iter().map(move |p| p[1] + pv)
             })
             .fold((f32::MAX, f32::MIN), |(a, b), y| (a.min(y), b.max(y)))

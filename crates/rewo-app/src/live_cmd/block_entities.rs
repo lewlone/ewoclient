@@ -89,7 +89,7 @@ pub(super) fn collect_block_entities(
                 rewo_data::be_transform::banner_flag_part(phase, flag_pivot),
                 flag_pivot,
             );
-            let mut layer = |model: String, tint: [f32; 3]| OwnedBlockEntityDraw {
+            let layer = |model: String, tint: [f32; 3]| OwnedBlockEntityDraw {
                 pos: [pos.x as f32, pos.y as f32, pos.z as f32],
                 model,
                 transform: be_transform,

@@ -4805,6 +4805,29 @@ pub fn perspective_reverse_z(fov_y_rad: f32, aspect: f32, near: f32) -> [[f32; 4
     ]
 }
 
+/// Clear the depth attachment over one rectangle, mid-render-pass.
+///
+/// The preview shares the frame's depth buffer with the world, so without this
+/// the model would be depth-tested against whatever terrain happens to be
+/// behind the panel and would appear cut in half by a hillside. Reversed-Z, so
+/// the cleared value is **0.0** — the far plane — which is what the world pass
+/// clears to as well.
+fn clear_depth_rect(gpu: &Gpu, cb: vk::CommandBuffer, rect: vk::Rect2D) {
+    let attachment = vk::ClearAttachment::default()
+        .aspect_mask(vk::ImageAspectFlags::DEPTH)
+        .clear_value(vk::ClearValue {
+            depth_stencil: vk::ClearDepthStencilValue {
+                depth: 0.0,
+                stencil: 0,
+            },
+        });
+    let area = vk::ClearRect::default()
+        .rect(rect)
+        .base_array_layer(0)
+        .layer_count(1);
+    unsafe { gpu.device.cmd_clear_attachments(cb, &[attachment], &[area]) };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4959,27 +4982,4 @@ mod tests {
         assert_eq!(s.night_vision_factor, 1.0);
         assert_eq!(s.block_factor, 1.5);
     }
-}
-
-/// Clear the depth attachment over one rectangle, mid-render-pass.
-///
-/// The preview shares the frame's depth buffer with the world, so without this
-/// the model would be depth-tested against whatever terrain happens to be
-/// behind the panel and would appear cut in half by a hillside. Reversed-Z, so
-/// the cleared value is **0.0** — the far plane — which is what the world pass
-/// clears to as well.
-fn clear_depth_rect(gpu: &Gpu, cb: vk::CommandBuffer, rect: vk::Rect2D) {
-    let attachment = vk::ClearAttachment::default()
-        .aspect_mask(vk::ImageAspectFlags::DEPTH)
-        .clear_value(vk::ClearValue {
-            depth_stencil: vk::ClearDepthStencilValue {
-                depth: 0.0,
-                stencil: 0,
-            },
-        });
-    let area = vk::ClearRect::default()
-        .rect(rect)
-        .base_array_layer(0)
-        .layer_count(1);
-    unsafe { gpu.device.cmd_clear_attachments(cb, &[attachment], &[area]) };
 }

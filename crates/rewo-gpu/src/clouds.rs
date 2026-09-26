@@ -798,7 +798,7 @@ mod tests {
     #[test]
     fn an_isolated_cell_has_all_four_neighbours_empty() {
         let t = one_cell();
-        let d = t.cells[1 * 4 + 1];
+        let d = t.cells[4 + 1];
         assert!(north_empty(d) && east_empty(d) && south_empty(d) && west_empty(d));
         // And the colour survives the pack, shifted up four bits.
         assert_eq!((d >> 4) as u32, 0xFFFF_FFFF);

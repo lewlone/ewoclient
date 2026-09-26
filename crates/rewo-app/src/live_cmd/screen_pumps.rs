@@ -82,7 +82,7 @@ impl LiveApp {
         if let Some(screen) = self.screen.screens.current() {
             chrome = screen_chrome(screen, Some(mouse_gui));
             if let Some(advance) = state.world_renderer.font_advance() {
-                text = screen_text_lines(screen, &advance, px);
+                text = screen_text_lines(screen, advance, px);
             }
         }
         state.world_renderer.set_screen(chrome);
@@ -267,7 +267,7 @@ impl LiveApp {
         // Seed the field with the face's current lines — vanilla edits read
         // `SignText.getMessage(i, true)` (the plain literal), and setMessage
         // preserves colour + glow, so those are captured once at open.
-        let (face, _) = be.sign_text(session.lang.as_deref());
+        let (_face, _) = be.sign_text(session.lang.as_deref());
         use rewo_world::sign_edit_screen::SignKind;
         let kind = if sign.hanging {
             SignKind::Hanging

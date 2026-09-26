@@ -536,7 +536,7 @@ pub fn default_instances() -> Vec<Instance> {
 
 /// Mods of the instance at index `selected`. Returns an empty slice if
 /// the index is out of range.
-pub fn instance_mods<'a>(instances: &'a [Instance], selected: usize) -> &'a [ModInfo] {
+pub fn instance_mods(instances: &[Instance], selected: usize) -> &[ModInfo] {
     instances.get(selected).map(|i| i.mods.as_slice()).unwrap_or(&[])
 }
 

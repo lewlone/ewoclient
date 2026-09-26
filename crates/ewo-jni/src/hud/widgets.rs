@@ -912,7 +912,7 @@ pub(super) fn draw_hit_range(
     let fade = if active { data.pvp_hit_fade() } else { 0.45 };
     let zone_color = if active && data.pvp_hit_color() != 0 {
         let c = data.pvp_hit_color();
-        ((c >> 16) as u8 & 0xFF, (c >> 8) as u8 & 0xFF, c as u8 & 0xFF)
+        (((c >> 16) as u8), ((c >> 8) as u8), (c as u8))
     } else {
         ROSE
     };

@@ -483,7 +483,7 @@ impl DimensionCheck {
         // -- the full property matrix, against the independent expectation ---
         expect
             .grade("live", holder as usize, def)
-            .map_err(|e| at(e))?;
+            .map_err(&at)?;
 
         // -- the world must equal the active definition ----------------------
         let w = &session.world;

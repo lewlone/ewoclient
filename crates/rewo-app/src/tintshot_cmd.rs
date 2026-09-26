@@ -853,18 +853,18 @@ fn check_tall_grass_below(failures: &mut Vec<String>, paths: &DataPaths, baked: 
         (Some(u), Some(l)) => {
             let ut = tints(u);
             let lt = tints(l);
-            if !ut.iter().any(|t| *t == TintSource::GrassBelow) {
+            if !ut.contains(&TintSource::GrassBelow) {
                 failures.push(format!(
                     "tall_grass upper (state {u}) tints {ut:?} lack GrassBelow"
                 ));
             }
-            if !lt.iter().any(|t| *t == TintSource::Grass) {
+            if !lt.contains(&TintSource::Grass) {
                 failures.push(format!(
                     "tall_grass lower (state {l}) tints {lt:?} lack Grass"
                 ));
             }
-            if ut.iter().any(|t| *t == TintSource::GrassBelow)
-                && lt.iter().any(|t| *t == TintSource::Grass)
+            if ut.contains(&TintSource::GrassBelow)
+                && lt.contains(&TintSource::Grass)
             {
                 println!("[tintshot] tall_grass: upper=GrassBelow, lower=Grass");
             }
@@ -1336,12 +1336,12 @@ fn render_sky(
 /// Tinted vertices of the block at (x,y,z): within the unit cube + a non-white
 /// color (the biome path multiplies the tint into the vertex color, vanilla
 /// `ARGB.multiply`; `reconstructed_color()` is those bytes over 255).
-fn tinted_verts<'a>(
-    mesh: &'a rewo_mesh::ColumnMesh,
+fn tinted_verts(
+    mesh: &rewo_mesh::ColumnMesh,
     x: i32,
     y: i32,
     z: i32,
-) -> Vec<&'a MeshVertex> {
+) -> Vec<&MeshVertex> {
     let inside = |v: &MeshVertex| {
         v.pos[0] >= x as f32 - 0.01
             && v.pos[0] <= x as f32 + 1.01

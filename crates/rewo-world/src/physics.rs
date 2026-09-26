@@ -2347,7 +2347,7 @@ mod tests {
     #[test]
     fn flight_still_collides_but_no_clip_does_not() {
         // Floor at y < 0, ceiling at y >= 3.
-        let world = |_x: i32, y: i32, _z: i32| cube(y < 0 || y >= 3);
+        let world = |_x: i32, y: i32, _z: i32| cube(!(0..3).contains(&y));
         let mut p = PlayerState::at(0.5, 1.0, 0.5);
         let a = flying();
         let down = TickInput {

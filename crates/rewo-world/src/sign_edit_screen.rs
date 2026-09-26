@@ -70,7 +70,7 @@ pub const TITLE_Y: i32 = 40;
 /// (`cursorBlinkStartTime = Util.getMillis()`), 300 on / 300 off, starting
 /// visible. NOT tick- or frame-driven (TextCursorUtils.java:19-21).
 pub fn cursor_visible(ms_since_open: u64) -> bool {
-    (ms_since_open / 300) % 2 == 0
+    (ms_since_open / 300).is_multiple_of(2)
 }
 
 /// Which of the three sign shapes is being edited. The screen class dispatch

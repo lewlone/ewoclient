@@ -657,7 +657,7 @@ mod backend {
         let bits = 32u16;
         let block_align = CHANNELS * bits / 8;
         WAVEFORMATEX {
-            wFormatTag: WAVE_FORMAT_IEEE_FLOAT as u16,
+            wFormatTag: WAVE_FORMAT_IEEE_FLOAT,
             nChannels: CHANNELS,
             nSamplesPerSec: SAMPLE_RATE,
             nAvgBytesPerSec: SAMPLE_RATE * block_align as u32,

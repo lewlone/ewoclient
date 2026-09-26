@@ -620,7 +620,6 @@ impl Editor {
                     // release — same grab model as the PVP-tab sliders.
                     self.layout.glass_strength = glass_value_at(glass, x);
                     self.glass_drag = true;
-                    return;
                 }
             }
             OverlayView::Pvp => self.pvp_press(x, y),

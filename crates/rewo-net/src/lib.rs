@@ -3080,7 +3080,7 @@ pub(crate) fn apply_set_equipment(
                     // practice and is still written as a suppression rather
                     // than a default, because "unreachable" is not "impossible".
                     SwingResolution::Exact(swing) => {
-                        match item_stack::resolve_use(&s, &data.use_profiles) {
+                        match item_stack::resolve_use(s, &data.use_profiles) {
                             Some(use_profile) => HandItem::Held(HeldItem {
                                 item_id: s.item_id,
                                 swing,
@@ -3601,7 +3601,7 @@ mod level_event_sound_tests {
     fn body(kind: i32, x: i64, y: i64, z: i64, data: i32, global: bool) -> Vec<u8> {
         let packed = ((x & 0x3FF_FFFF) << 38) | ((z & 0x3FF_FFFF) << 12) | (y & 0xFFF);
         let mut b = kind.to_be_bytes().to_vec();
-        b.extend_from_slice(&(packed as i64).to_be_bytes());
+        b.extend_from_slice(&packed.to_be_bytes());
         b.extend_from_slice(&data.to_be_bytes());
         b.push(u8::from(global));
         b

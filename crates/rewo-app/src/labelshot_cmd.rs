@@ -1238,7 +1238,7 @@ fn check_pick(c: &mut Checker, paths: &DataPaths, jar: &std::path::Path) -> Resu
     let after = p.pick(&far, None);
     c.record(
         "g3.the_reach_comes_from_the_attribute_not_a_constant",
-        !before.is_some() && stored && after == Some(1),
+        before.is_none() && stored && after == Some(1),
         format!(
             "at 4 blocks: default -> {before:?}, after update_attributes raised \
              entity_interaction_range to 5.0 -> {after:?} (stored={stored}; want \
@@ -1640,7 +1640,7 @@ fn check_wiring(
     font.as_ref()
         .ok_or("no baked font — a label needs the font atlas's white texel")?;
     wr.init_entities(&mut gpu, font, crate::live_cmd::entity_textures(baked))?;
-    let (right, up) = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    let (_right, _up) = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
 
     // Build an `EntityDraw` the way `collect_entities` does — through
     // `resolve_labels`, the seam it shares with this gate, rather than by

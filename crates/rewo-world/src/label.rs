@@ -683,7 +683,7 @@ mod tests {
                     is_local_player: bits & (1 << 7) != 0,
                     hud_hidden: bits & (1 << 8) != 0,
                     viewer_spectator: bits & (1 << 9) != 0,
-                    team: (team_kind > 0).then(|| TeamView {
+                    team: (team_kind > 0).then_some(TeamView {
                         name: "red",
                         visibility: match team_kind {
                             1 => NameTagVisibility::Always,

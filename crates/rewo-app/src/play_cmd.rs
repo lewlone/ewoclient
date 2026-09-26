@@ -1490,7 +1490,7 @@ fn swing_acceptance(session: &PlaySession, data: &GameData) -> Result<(), String
 ///    while the server checked it as a walker.
 fn fly_acceptance(session: &PlaySession, fly: &FlyCheck) -> Result<(), String> {
     let mut fail = Vec::new();
-    let mut ok = |name: &str, pass: bool, detail: String, fail: &mut Vec<String>| {
+    let ok = |name: &str, pass: bool, detail: String, fail: &mut Vec<String>| {
         println!(
             "[fly-check] {}  {name}: {detail}",
             if pass { " ok " } else { "FAIL" }
@@ -1967,8 +1967,8 @@ fn drive(
     if secs >= 24.0 && !args.still {
         let t = secs - 24.0;
         input.forward = 1.0;
-        input.sprint = (t as u32 / 3) % 2 == 0;
-        input.jump = (t * 20.0) as u32 % 40 == 0;
+        input.sprint = (t as u32 / 3).is_multiple_of(2);
+        input.jump = ((t * 20.0) as u32).is_multiple_of(40);
         session.player.yaw += 1.3; // slow left curve
     }
     Ok(input)
@@ -2249,7 +2249,7 @@ fn light_parity_check(
                         max_delta = max_delta.max(d.abs());
                         if worst
                             .as_ref()
-                            .map_or(true, |(lv, _)| want_s.max(got_s) > *lv)
+                            .is_none_or(|(lv, _)| want_s.max(got_s) > *lv)
                         {
                             let n = data
                                 .blocks

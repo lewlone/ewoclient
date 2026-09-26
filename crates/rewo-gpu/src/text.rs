@@ -845,7 +845,7 @@ mod tests {
         adv[b'a' as usize] = 6;
         adv[b'b' as usize] = 6;
         adv[b'i' as usize] = 4;
-        let a = atlas(&[b'a', b'b', b'i']);
+        let a = atlas(b"abi");
         let buckets = glyph_width_buckets(&font(&a, &adv));
         assert_eq!(buckets[6], vec![b'a', b'b']);
         assert_eq!(buckets[4], vec![b'i']);
@@ -862,7 +862,7 @@ mod tests {
         adv[b'a' as usize] = 6;
         adv[b'z' as usize] = 6;
         // `z` has an advance but no ink.
-        let a = atlas(&[b'a']);
+        let a = atlas(b"a");
         let buckets = glyph_width_buckets(&font(&a, &adv));
         assert_eq!(buckets[6], vec![b'a']);
     }
@@ -876,7 +876,7 @@ mod tests {
         let mut adv = [0u8; 256];
         adv[b' ' as usize] = 4;
         adv[b'i' as usize] = 4;
-        let a = atlas(&[b'i']);
+        let a = atlas(b"i");
         let buckets = glyph_width_buckets(&font(&a, &adv));
         assert_eq!(buckets[4], vec![b'i']);
     }

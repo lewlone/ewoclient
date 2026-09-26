@@ -216,7 +216,7 @@ impl BlockPhysics {
             stuck,
             fluid: PhysFluid::None,
             // Only a `LiquidBlock` has `level`; anything else is not a fluid.
-            fluid_falling: prop("level").and_then(|l| l.parse().ok()).map_or(false, fluid_is_falling),
+            fluid_falling: prop("level").and_then(|l| l.parse().ok()).is_some_and(fluid_is_falling),
         }
     }
 }

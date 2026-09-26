@@ -3616,13 +3616,13 @@ impl PlaySession {
             self.player.z,
             &self.water_states,
         );
-        Some(situational_music_from(
+        situational_music_from(
             in_the_end,
             self.boss_bars.should_play_music(),
             &bg,
             is_creative,
             is_underwater,
-        )?)
+        )
     }
 
     /// Push this tick's situation at the engine, which owns the state machine.

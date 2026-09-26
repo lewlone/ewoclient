@@ -409,7 +409,7 @@ fn draw_error_shimmer(
 /// fill, 1.4s silk easing, diameter 4px → 320px, opacity 0.9 → 0.0,
 /// border 2px → 1px.
 fn draw_complete_ring(canvas: &Canvas, fill_rect: &Rect, age: f32) {
-    if age < 0.0 || age > RING_DURATION {
+    if !(0.0..=RING_DURATION).contains(&age) {
         return;
     }
     let t = age / RING_DURATION;

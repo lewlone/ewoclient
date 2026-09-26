@@ -698,6 +698,134 @@ fn opt_color(v: Option<&Value>, key: &str) -> Result<Option<i32>, String> {
     }
 }
 
+/// `audio/ambient_sounds` out of a dimension-type JSON file.
+///
+/// Hand-written against `AmbientSounds.CODEC` rather than shared with the
+/// network parser, because this module is the gate's *independent* oracle.
+/// Two differences from the NBT side are deliberate and are what make the
+/// agreement meaningful: the JSON reader is **strict** (a malformed record is
+/// an error, not a silent `None`), and it re-derives the `compactListCodec`
+/// rule from the file rather than inheriting the other reader's opinion of it.
+fn json_ambient_sounds(v: Option<&Value>) -> Result<Option<AmbientSounds>, String> {
+    let Some(v) = v else { return Ok(None) };
+    let obj = v
+        .as_object()
+        .ok_or_else(|| format!("{K_AMBIENT_SOUNDS} is not an object"))?;
+    // The `{argument, modifier}` form. `ofNotInterpolated`'s one-arg overload
+    // supplies an EMPTY modifier library, so OVERRIDE is the only legal
+    // modifier and this form never appears — but every field of `AmbientSounds`
+    // is optional, so a modifier compound would decode as a *valid empty
+    // record* rather than failing. Rejecting it explicitly is the difference
+    // between "inherit the base" and "this biome declares silence".
+    if obj.contains_key("modifier") || obj.contains_key("argument") {
+        return Err(format!("{K_AMBIENT_SOUNDS} is a modifier form, not a value"));
+    }
+    let sound = |x: &Value| -> Result<String, String> {
+        x.as_str()
+            .map(str::to_string)
+            .ok_or_else(|| "a sound must be a bare identifier string".to_string())
+    };
+    let loop_sound = match obj.get("loop") {
+        Some(x) => Some(sound(x)?),
+        None => None,
+    };
+    let mood = match obj.get("mood") {
+        None => None,
+        Some(m) => {
+            let m = m.as_object().ok_or("mood is not an object")?;
+            let get_i = |k: &str| -> Result<i32, String> {
+                m.get(k)
+                    .and_then(Value::as_i64)
+                    .map(|v| v as i32)
+                    .ok_or_else(|| format!("mood.{k} missing"))
+            };
+            Some(AmbientMood {
+                sound: sound(m.get("sound").ok_or("mood.sound missing")?)?,
+                tick_delay: get_i("tick_delay")?,
+                block_search_extent: get_i("block_search_extent")?,
+                // Vanilla's JSON key is `offset`; the record field is
+                // `soundPositionOffset`.
+                sound_position_offset: m
+                    .get("offset")
+                    .and_then(Value::as_f64)
+                    .ok_or("mood.offset missing")?,
+            })
+        }
+    };
+    let one_addition = |a: &Value| -> Result<AmbientAddition, String> {
+        let a = a.as_object().ok_or("an addition is not an object")?;
+        Ok(AmbientAddition {
+            sound: sound(a.get("sound").ok_or("addition.sound missing")?)?,
+            tick_chance: a
+                .get("tick_chance")
+                .and_then(Value::as_f64)
+                .ok_or("addition.tick_chance missing")?,
+        })
+    };
+    // `ExtraCodecs.compactListCodec`: one element writes as the BARE element.
+    let additions = match obj.get("additions") {
+        None => Vec::new(),
+        Some(Value::Array(xs)) => xs.iter().map(one_addition).collect::<Result<_, _>>()?,
+        Some(one) => vec![one_addition(one)?],
+    };
+    Ok(Some(AmbientSounds {
+        loop_sound,
+        mood,
+        additions,
+    }))
+}
+
+/// `audio/background_music` out of a dimension-type JSON file (M147).
+///
+/// **By hand, and deliberately not through `biome_parse`.** This oracle exists
+/// to grade the wire parser from an independent direction; reusing its code
+/// would make the comparison an identity. The two read different formats
+/// anyway — this is `serde_json`, that is NBT.
+///
+/// The field that decides most of it is `replace_current_music`, which is
+/// **optional and defaults to false** (`Music.CODEC`'s
+/// `optionalFieldOf("replace_current_music", false)`): the End's entry sets it
+/// and the Overworld's two do not.
+fn json_background_music(
+    v: Option<&serde_json::Value>,
+) -> Result<Option<rewo_world::music::BackgroundMusic>, String> {
+    use rewo_world::music::{BackgroundMusic, Music};
+    let Some(v) = v else { return Ok(None) };
+    let obj = v
+        .as_object()
+        .ok_or_else(|| "audio/background_music is not an object".to_string())?;
+    let one = |key: &str| -> Result<Option<Music>, String> {
+        let Some(m) = obj.get(key) else { return Ok(None) };
+        let m = m
+            .as_object()
+            .ok_or_else(|| format!("background_music.{key} is not an object"))?;
+        let sound = m
+            .get("sound")
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| format!("background_music.{key} has no sound"))?;
+        let num = |k: &str| -> Result<i32, String> {
+            m.get(k)
+                .and_then(|n| n.as_i64())
+                .map(|n| n as i32)
+                .ok_or_else(|| format!("background_music.{key} has no {k}"))
+        };
+        Ok(Some(Music {
+            sound: sound.to_string(),
+            min_delay: num("min_delay")?,
+            max_delay: num("max_delay")?,
+            replace_current_music: m
+                .get("replace_current_music")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false),
+        }))
+    };
+    Ok(Some(BackgroundMusic {
+        default_music: one("default")?,
+        creative_music: one("creative")?,
+        underwater_music: one("underwater")?,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -877,132 +1005,4 @@ mod tests {
         assert!(opt_color(Some(&Value::String("#zz00ff".into())), "k").is_err());
         assert!(opt_color(Some(&serde_json::json!({"modifier": "x"})), "k").is_err());
     }
-}
-
-/// `audio/ambient_sounds` out of a dimension-type JSON file.
-///
-/// Hand-written against `AmbientSounds.CODEC` rather than shared with the
-/// network parser, because this module is the gate's *independent* oracle.
-/// Two differences from the NBT side are deliberate and are what make the
-/// agreement meaningful: the JSON reader is **strict** (a malformed record is
-/// an error, not a silent `None`), and it re-derives the `compactListCodec`
-/// rule from the file rather than inheriting the other reader's opinion of it.
-fn json_ambient_sounds(v: Option<&Value>) -> Result<Option<AmbientSounds>, String> {
-    let Some(v) = v else { return Ok(None) };
-    let obj = v
-        .as_object()
-        .ok_or_else(|| format!("{K_AMBIENT_SOUNDS} is not an object"))?;
-    // The `{argument, modifier}` form. `ofNotInterpolated`'s one-arg overload
-    // supplies an EMPTY modifier library, so OVERRIDE is the only legal
-    // modifier and this form never appears — but every field of `AmbientSounds`
-    // is optional, so a modifier compound would decode as a *valid empty
-    // record* rather than failing. Rejecting it explicitly is the difference
-    // between "inherit the base" and "this biome declares silence".
-    if obj.contains_key("modifier") || obj.contains_key("argument") {
-        return Err(format!("{K_AMBIENT_SOUNDS} is a modifier form, not a value"));
-    }
-    let sound = |x: &Value| -> Result<String, String> {
-        x.as_str()
-            .map(str::to_string)
-            .ok_or_else(|| "a sound must be a bare identifier string".to_string())
-    };
-    let loop_sound = match obj.get("loop") {
-        Some(x) => Some(sound(x)?),
-        None => None,
-    };
-    let mood = match obj.get("mood") {
-        None => None,
-        Some(m) => {
-            let m = m.as_object().ok_or("mood is not an object")?;
-            let get_i = |k: &str| -> Result<i32, String> {
-                m.get(k)
-                    .and_then(Value::as_i64)
-                    .map(|v| v as i32)
-                    .ok_or_else(|| format!("mood.{k} missing"))
-            };
-            Some(AmbientMood {
-                sound: sound(m.get("sound").ok_or("mood.sound missing")?)?,
-                tick_delay: get_i("tick_delay")?,
-                block_search_extent: get_i("block_search_extent")?,
-                // Vanilla's JSON key is `offset`; the record field is
-                // `soundPositionOffset`.
-                sound_position_offset: m
-                    .get("offset")
-                    .and_then(Value::as_f64)
-                    .ok_or("mood.offset missing")?,
-            })
-        }
-    };
-    let one_addition = |a: &Value| -> Result<AmbientAddition, String> {
-        let a = a.as_object().ok_or("an addition is not an object")?;
-        Ok(AmbientAddition {
-            sound: sound(a.get("sound").ok_or("addition.sound missing")?)?,
-            tick_chance: a
-                .get("tick_chance")
-                .and_then(Value::as_f64)
-                .ok_or("addition.tick_chance missing")?,
-        })
-    };
-    // `ExtraCodecs.compactListCodec`: one element writes as the BARE element.
-    let additions = match obj.get("additions") {
-        None => Vec::new(),
-        Some(Value::Array(xs)) => xs.iter().map(one_addition).collect::<Result<_, _>>()?,
-        Some(one) => vec![one_addition(one)?],
-    };
-    Ok(Some(AmbientSounds {
-        loop_sound,
-        mood,
-        additions,
-    }))
-}
-
-/// `audio/background_music` out of a dimension-type JSON file (M147).
-///
-/// **By hand, and deliberately not through `biome_parse`.** This oracle exists
-/// to grade the wire parser from an independent direction; reusing its code
-/// would make the comparison an identity. The two read different formats
-/// anyway — this is `serde_json`, that is NBT.
-///
-/// The field that decides most of it is `replace_current_music`, which is
-/// **optional and defaults to false** (`Music.CODEC`'s
-/// `optionalFieldOf("replace_current_music", false)`): the End's entry sets it
-/// and the Overworld's two do not.
-fn json_background_music(
-    v: Option<&serde_json::Value>,
-) -> Result<Option<rewo_world::music::BackgroundMusic>, String> {
-    use rewo_world::music::{BackgroundMusic, Music};
-    let Some(v) = v else { return Ok(None) };
-    let obj = v
-        .as_object()
-        .ok_or_else(|| "audio/background_music is not an object".to_string())?;
-    let one = |key: &str| -> Result<Option<Music>, String> {
-        let Some(m) = obj.get(key) else { return Ok(None) };
-        let m = m
-            .as_object()
-            .ok_or_else(|| format!("background_music.{key} is not an object"))?;
-        let sound = m
-            .get("sound")
-            .and_then(|s| s.as_str())
-            .ok_or_else(|| format!("background_music.{key} has no sound"))?;
-        let num = |k: &str| -> Result<i32, String> {
-            m.get(k)
-                .and_then(|n| n.as_i64())
-                .map(|n| n as i32)
-                .ok_or_else(|| format!("background_music.{key} has no {k}"))
-        };
-        Ok(Some(Music {
-            sound: sound.to_string(),
-            min_delay: num("min_delay")?,
-            max_delay: num("max_delay")?,
-            replace_current_music: m
-                .get("replace_current_music")
-                .and_then(|b| b.as_bool())
-                .unwrap_or(false),
-        }))
-    };
-    Ok(Some(BackgroundMusic {
-        default_music: one("default")?,
-        creative_music: one("creative")?,
-        underwater_music: one("underwater")?,
-    }))
 }

@@ -1659,7 +1659,7 @@ mod tests {
     #[test]
     fn the_nine_slice_tiles_its_middle() {
         // A 12-wide source: columns 0..5 left, 5..7 the 2-px tile, 7..12 right.
-        let mut rgba = vec![0u8; 12 * 1 * 4];
+        let mut rgba = vec![0u8; 12 * 4];
         for x in 0..12usize {
             rgba[x * 4] = x as u8;
         }

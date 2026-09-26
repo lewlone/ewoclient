@@ -202,7 +202,7 @@ impl ParsedRef {
             let key_start = reader.cursor();
             let key = reader.read_string()?;
             let legal = self.property_values(reg, &key);
-            if legal.is_none() || self.set.iter().any(|k| *k == key) {
+            if legal.is_none() || self.set.contains(&key) {
                 // Unknown property AND duplicate both rewind — the second is
                 // its own error in vanilla and matters here only because a
                 // repeated key would otherwise be silently accepted.
@@ -221,7 +221,7 @@ impl ParsedRef {
             self.suggestions = Suggest::PropertyValue(key.clone());
             let value_start = reader.cursor();
             let value = reader.read_string()?;
-            if !legal.unwrap().iter().any(|v| *v == value) {
+            if !legal.unwrap().contains(&value) {
                 reader.set_cursor(value_start);
                 return Err(ReaderError::UnknownArgumentType);
             }
@@ -265,7 +265,7 @@ impl ParsedRef {
         let start = reader.cursor();
         let raw = read_identifier(reader);
         let id = with_default_namespace(&raw);
-        if !reg.items.is_some_and(|i| i.id(&id).is_some()) {
+        if reg.items.is_none_or(|i| i.id(&id).is_none()) {
             reader.set_cursor(start);
             return Err(ReaderError::UnknownArgumentType);
         }

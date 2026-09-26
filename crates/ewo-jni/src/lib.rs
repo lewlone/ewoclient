@@ -1608,7 +1608,7 @@ impl Hud {
                 "first composite ({w}x{h}) — two-clock HUD compositing over Minecraft"
             ));
         }
-        if self.composites % 600 == 0 {
+        if self.composites.is_multiple_of(600) {
             // In `Match` mode paints == composites; a capped rate shows paints
             // lagging well behind — the proof the two-clock cap is working.
             log(&format!(

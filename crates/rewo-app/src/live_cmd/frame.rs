@@ -1542,7 +1542,7 @@ impl LiveApp {
                 session,
                 &self.items,
                 &self.tool_highlight,
-                &advance,
+                advance,
                 px,
                 (extent.width as f32, extent.height as f32),
             ));
@@ -1553,13 +1553,13 @@ impl LiveApp {
                 &session.hud.experience,
                 has_experience(session),
                 self.baked.as_ref().map(|b| &b.lang),
-                &advance,
+                advance,
                 px,
                 (extent.width as f32, extent.height as f32),
             ));
             text.extend(title_lines(
                 &session.hud.titles,
-                &advance,
+                advance,
                 px,
                 (extent.width as f32, extent.height as f32),
                 // `deltaTracker.getGameTimeDeltaPartialTick(false)` — this
@@ -1573,7 +1573,7 @@ impl LiveApp {
         }
         // The stack counts are text like any other line, drawn after the icons
         // because the text pass runs last.
-        text.extend(self.screen_labels.drain(..));
+        text.append(&mut self.screen_labels);
         // M82: the death screen — its chrome into the screen pass, its four
         // text runs onto the end of this frame's lines. Last, so the title,
         // the cause and the button labels sit over the HUD, which is where
@@ -1600,10 +1600,10 @@ impl LiveApp {
                     view,
                     screen,
                     Some(mouse_gui),
-                    advance.as_ref().map(|a| &**a),
+                    advance,
                 );
                 if let Some(advance) = advance {
-                    text.extend(crate::stats_view::lines(view, screen, &advance, px));
+                    text.extend(crate::stats_view::lines(view, screen, advance, px));
                 }
             } else if self.advancements.is_some()
                 && self.screen.screens.current().is_some_and(|s| {
@@ -1638,7 +1638,7 @@ impl LiveApp {
                             gh,
                             gw,
                             px,
-                            &advance,
+                            advance,
                         ));
                     }
                     chrome.scissored.append(&mut adv.scissored);
@@ -1659,7 +1659,7 @@ impl LiveApp {
                         text.extend(death_screen_lines(
                             view,
                             screen,
-                            &advance,
+                            advance,
                             px,
                             (extent.width as f32, extent.height as f32),
                         ));
@@ -1686,8 +1686,8 @@ impl LiveApp {
                     // eyeball pass found an unlabeled button (bookshot's
                     // witnesses probed chrome and page text, not the label —
                     // p9 counts changed pixels and the chrome alone passes it).
-                    text.extend(screen_text_lines(screen, &advance, px));
-                    text.extend(book_text_lines(book, gw, &advance, px, &self.lang));
+                    text.extend(screen_text_lines(screen, advance, px));
+                    text.extend(book_text_lines(book, gw, advance, px, &self.lang));
                 }
             } else if let (Some(view), Some(screen)) =
                 (self.sign_edit.as_ref(), self.screen.screens.current())
@@ -1706,13 +1706,13 @@ impl LiveApp {
                     .sprites
                     .push(sign_board_sprite(view.state.kind, view.wood, gw));
                 if let Some(advance) = state.world_renderer.font_advance() {
-                    let (mut sign_text, fills) = sign_edit_draws(view, gw, &advance, px);
+                    let (mut sign_text, fills) = sign_edit_draws(view, gw, advance, px);
                     chrome.sprites.extend(fills);
                     text.append(&mut sign_text);
                     // The Done button's label rides the generic widget-text
                     // builder (M172's lesson: an unlabeled button passed a
                     // probe that only watched chrome).
-                    text.extend(screen_text_lines(screen, &advance, px));
+                    text.extend(screen_text_lines(screen, advance, px));
                 }
             } else if let (Some(_page), Some(screen)) =
                 (self.options_view, self.screen.screens.current())
@@ -1729,7 +1729,7 @@ impl LiveApp {
                     self.options_drag,
                 ));
                 if let Some(advance) = state.world_renderer.font_advance() {
-                    text.extend(screen_text_lines(screen, &advance, px));
+                    text.extend(screen_text_lines(screen, advance, px));
                 }
             } else if !matches!(self.view, ScreenView::None) {
                 // M85's three screens. All of their text is on their widgets,
@@ -1739,7 +1739,7 @@ impl LiveApp {
                 if let Some(screen) = self.screen.screens.current() {
                     chrome = screen_chrome(screen, Some(mouse_gui));
                     if let Some(advance) = state.world_renderer.font_advance() {
-                        text.extend(screen_text_lines(screen, &advance, px));
+                        text.extend(screen_text_lines(screen, advance, px));
                     }
                 }
             }

@@ -427,7 +427,7 @@ fn check_pixels(
     // warm greys, the gradient dark, the text black.
     let clear = [0.0, 1.0, 0.0, 1.0];
 
-    let mut shot = |gpu: &mut Gpu,
+    let shot = |gpu: &mut Gpu,
                     off: &mut Offscreen,
                     wr: &mut WorldRenderer,
                     book: Option<(&BookViewScreen, Option<(i32, i32)>)>,
@@ -447,7 +447,7 @@ fn check_pixels(
                 GUI_W,
                 &advance,
                 SCALE as f32,
-                &baked_lang,
+                baked_lang,
             ));
         }
         wr.set_screen(chrome);

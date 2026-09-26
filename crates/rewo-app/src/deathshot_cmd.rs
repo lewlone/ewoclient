@@ -879,7 +879,7 @@ fn check_pixels(
     const CLEAR_LINEAR: [f32; 3] = [0.0, 1.0, 0.0];
     let clear = [CLEAR_LINEAR[0], CLEAR_LINEAR[1], CLEAR_LINEAR[2], 1.0];
 
-    let mut shot = |gpu: &mut Gpu,
+    let shot = |gpu: &mut Gpu,
                     off: &mut Offscreen,
                     wr: &mut WorldRenderer,
                     chrome: rewo_gpu::screen::ScreenDraw,

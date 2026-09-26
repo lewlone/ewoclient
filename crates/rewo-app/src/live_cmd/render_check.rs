@@ -1598,80 +1598,6 @@ pub(crate) fn witness_seam_faults(names: &[&str], expected: usize) -> Vec<String
     faults
 }
 
-#[cfg(test)]
-mod witness_seam_tests {
-    use super::witness_seam_faults;
-
-    fn names(ids: &[usize]) -> Vec<String> {
-        ids.iter().map(|i| format!("r{i} something")).collect()
-    }
-    fn faults(ids: &[usize], expected: usize) -> Vec<String> {
-        let owned = names(ids);
-        let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
-        witness_seam_faults(&refs, expected)
-    }
-
-    /// The healthy case, so every assertion below is a difference rather than a
-    /// constant.
-    #[test]
-    fn a_contiguous_unique_set_of_the_declared_size_is_clean() {
-        assert!(faults(&[1, 2, 3, 4], 4).is_empty());
-    }
-
-    /// **The M127-M134 failure, and the one fifteen specs were about to
-    /// reproduce.** Two rows carrying `r48` merge cleanly and the count still
-    /// matches, so the duplicate is the ONLY signal.
-    #[test]
-    fn two_milestones_minting_the_same_id_is_a_fault() {
-        let f = faults(&[1, 2, 3, 3], 4);
-        assert!(
-            f.iter().any(|s| s.contains("duplicate")),
-            "a duplicate id is reported: {f:?}"
-        );
-    }
-
-    /// …and it is reported EVEN THOUGH the other two checks are silent, which
-    /// is what makes the duplicate check load-bearing rather than redundant.
-    ///
-    /// **This assertion was wrong before the code was.** Its first version
-    /// claimed two faults — "the duplicate AND the gap at r4" — and there is no
-    /// gap: the count check sees four ids against a declared four, and the
-    /// contiguity check runs on the DEDUPLICATED set, which is `[1, 2, 3]` and
-    /// perfectly contiguous. That is precisely the point. A merge that mints
-    /// `r48` twice leaves a namespace whose size and shape both look right, so
-    /// the duplicate is the only signal there is.
-    #[test]
-    fn a_duplicate_is_the_only_signal_when_the_count_and_shape_still_look_right() {
-        let f = faults(&[1, 2, 3, 3], 4);
-        assert_eq!(f.len(), 1, "exactly one fault: {f:?}");
-        assert!(f[0].contains("duplicate"), "{f:?}");
-    }
-
-    /// A row lost to a conflict resolution: unique, contiguous, wrong count.
-    #[test]
-    fn a_row_silently_dropped_moves_the_count() {
-        let f = faults(&[1, 2, 3], 4);
-        assert!(f.iter().any(|s| s.contains("witness count 3 != declared 4")), "{f:?}");
-    }
-
-    /// A deleted row whose id was never reclaimed — the fault that stops the
-    /// NEXT milestone choosing a number that looks free.
-    #[test]
-    fn an_unreclaimed_id_leaves_a_gap() {
-        let f = faults(&[1, 2, 4], 3);
-        assert!(f.iter().any(|s| s.contains("first gap at r3")), "{f:?}");
-    }
-
-    /// A non-`rNN` row is not a witness id and must not be counted as one —
-    /// otherwise the count check fires on rows the namespace does not own.
-    #[test]
-    fn a_row_without_an_id_is_not_counted() {
-        let owned = vec!["r1 a".to_string(), "not-a-witness".to_string()];
-        let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
-        assert!(witness_seam_faults(&refs, 1).is_empty());
-    }
-}
-
 /// Whether the wavy cape is switched on for this run (M61).
 pub(crate) fn wavy_cape_requested(flag: bool) -> bool {
     flag || matches!(
@@ -2318,7 +2244,7 @@ impl LiveApp {
                         let packed = ((x & 0x3FF_FFFF) << 38)
                             | ((z & 0x3FF_FFFF) << 12)
                             | (y & 0xFFF);
-                        (x, y, z, packed as i64)
+                        (x, y, z, packed)
                     };
                     let level_event = |kind: i32, packed: i64, global: bool| {
                         let mut b = kind.to_be_bytes().to_vec();
@@ -2461,7 +2387,7 @@ impl LiveApp {
                     let plain = session.chat_type_id("minecraft:chat");
                     let whisper =
                         session.chat_type_id("minecraft:msg_command_incoming");
-                    let mut body = |content: &str, name: &str, id: i32| {
+                    let body = |content: &str, name: &str, id: i32| {
                         let mut b: Vec<u8> = vec![8];
                         b.extend_from_slice(&(content.len() as u16).to_be_bytes());
                         b.extend_from_slice(content.as_bytes());
@@ -2855,5 +2781,79 @@ impl LiveApp {
             }
         }
     }
+    }
+}
+
+#[cfg(test)]
+mod witness_seam_tests {
+    use super::witness_seam_faults;
+
+    fn names(ids: &[usize]) -> Vec<String> {
+        ids.iter().map(|i| format!("r{i} something")).collect()
+    }
+    fn faults(ids: &[usize], expected: usize) -> Vec<String> {
+        let owned = names(ids);
+        let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+        witness_seam_faults(&refs, expected)
+    }
+
+    /// The healthy case, so every assertion below is a difference rather than a
+    /// constant.
+    #[test]
+    fn a_contiguous_unique_set_of_the_declared_size_is_clean() {
+        assert!(faults(&[1, 2, 3, 4], 4).is_empty());
+    }
+
+    /// **The M127-M134 failure, and the one fifteen specs were about to
+    /// reproduce.** Two rows carrying `r48` merge cleanly and the count still
+    /// matches, so the duplicate is the ONLY signal.
+    #[test]
+    fn two_milestones_minting_the_same_id_is_a_fault() {
+        let f = faults(&[1, 2, 3, 3], 4);
+        assert!(
+            f.iter().any(|s| s.contains("duplicate")),
+            "a duplicate id is reported: {f:?}"
+        );
+    }
+
+    /// …and it is reported EVEN THOUGH the other two checks are silent, which
+    /// is what makes the duplicate check load-bearing rather than redundant.
+    ///
+    /// **This assertion was wrong before the code was.** Its first version
+    /// claimed two faults — "the duplicate AND the gap at r4" — and there is no
+    /// gap: the count check sees four ids against a declared four, and the
+    /// contiguity check runs on the DEDUPLICATED set, which is `[1, 2, 3]` and
+    /// perfectly contiguous. That is precisely the point. A merge that mints
+    /// `r48` twice leaves a namespace whose size and shape both look right, so
+    /// the duplicate is the only signal there is.
+    #[test]
+    fn a_duplicate_is_the_only_signal_when_the_count_and_shape_still_look_right() {
+        let f = faults(&[1, 2, 3, 3], 4);
+        assert_eq!(f.len(), 1, "exactly one fault: {f:?}");
+        assert!(f[0].contains("duplicate"), "{f:?}");
+    }
+
+    /// A row lost to a conflict resolution: unique, contiguous, wrong count.
+    #[test]
+    fn a_row_silently_dropped_moves_the_count() {
+        let f = faults(&[1, 2, 3], 4);
+        assert!(f.iter().any(|s| s.contains("witness count 3 != declared 4")), "{f:?}");
+    }
+
+    /// A deleted row whose id was never reclaimed — the fault that stops the
+    /// NEXT milestone choosing a number that looks free.
+    #[test]
+    fn an_unreclaimed_id_leaves_a_gap() {
+        let f = faults(&[1, 2, 4], 3);
+        assert!(f.iter().any(|s| s.contains("first gap at r3")), "{f:?}");
+    }
+
+    /// A non-`rNN` row is not a witness id and must not be counted as one —
+    /// otherwise the count check fires on rows the namespace does not own.
+    #[test]
+    fn a_row_without_an_id_is_not_counted() {
+        let owned = ["r1 a".to_string(), "not-a-witness".to_string()];
+        let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+        assert!(witness_seam_faults(&refs, 1).is_empty());
     }
 }

@@ -56,7 +56,7 @@ use rewo_gpu::Gpu;
 use rewo_net::scoreboard::{
     parse_set_display_objective, parse_set_objective, parse_set_score, DisplaySlot, Scoreboard,
 };
-use rewo_net::sidebar::{self, Sidebar, SidebarLayout};
+use rewo_net::sidebar::{self, Sidebar};
 
 /// Total named properties this gate asserts. Locked so a skipped property
 /// fails the run even when nothing mismatched.
@@ -560,7 +560,7 @@ fn check_pixels(
     .ok_or("sidebarshot: the production resolver found no sidebar")?;
     let layout = sidebar::layout(&sidebar, GUI_W, GUI_H);
 
-    let mut shot = |gpu: &mut Gpu,
+    let shot = |gpu: &mut Gpu,
                     off: &mut Offscreen,
                     wr: &mut WorldRenderer,
                     fills: Vec<rewo_gpu::hud::HudFill>,
@@ -921,7 +921,7 @@ fn check_pixels(
         let text = crate::live_cmd::sidebar_text(&sidebar, &layout, px, Some(advance));
         wr.set_hud_fills(fills);
         wr.set_text(text);
-        off.render(&mut gpu, Some((&mut wr, vp)), &overlay_draw, clear)?;
+        off.render(&gpu, Some((&mut wr, vp)), &overlay_draw, clear)?;
         off.save_png(&gpu, &dir.join("sidebar.png"))?;
         println!("[sidebarshot] wrote {}", dir.join("sidebar.png").display());
     }

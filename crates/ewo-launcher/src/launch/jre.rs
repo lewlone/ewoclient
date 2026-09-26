@@ -77,7 +77,7 @@ fn scan() -> Vec<DetectedJre> {
     for path in candidates {
         // De-dupe by canonical path so symlinks don't double-list.
         let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-        if seen.iter().any(|p| *p == canonical) {
+        if seen.contains(&canonical) {
             continue;
         }
         seen.push(canonical);

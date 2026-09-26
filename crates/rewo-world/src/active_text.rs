@@ -263,7 +263,7 @@ pub fn find_area_under_cursor(prepared: &Prepared, x: f32, y: f32) -> Option<&Ac
     if !(x >= l && x < r && y >= t && y < b) {
         return None;
     }
-    prepared.areas.iter().filter(|a| a.contains(x, y)).next_back()
+    prepared.areas.iter().rfind(|a| a.contains(x, y))
 }
 
 /// `ActiveTextCollector.ClickableStyleFinder` — accumulates the last style

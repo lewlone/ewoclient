@@ -208,7 +208,7 @@ impl OpenMenu {
     pub fn enchant_lapis(&self) -> i32 {
         self.menu
             .menu_slot(ENCHANT_LAPIS_SLOT)
-            .map_or(0, |s| s.count as i32)
+            .map_or(0, |s| s.count)
     }
 
     // -- CrafterMenu (M93h) ------------------------------------------------

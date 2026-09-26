@@ -1842,7 +1842,7 @@ fn a_collections_recipes_are_graded_one_by_one_for_the_overlay() {
     a.group = Some(9);
     b.group = Some(9);
     let got = render(rb96::BookType::Crafting, false, &[a, b], &mut held(&[(10, 1)]), 0);
-    assert_eq!(got.slots[0].0, true, "the CELL is craftable — any of them");
+    assert!(got.slots[0].0, "the CELL is craftable — any of them");
     let per = &got.slot_collections[0];
     assert_eq!(
         per.iter().map(|x| (x.recipe, x.craftable)).collect::<Vec<_>>(),
@@ -2913,7 +2913,8 @@ fn dimension_transitions_leave_no_stale_term() {
     //     tracks are (0.24, [0.48, 0.48, 1.0]). A leaked multiply would not
     //     be zero or default — it would be a plausible-looking third
     //     colour, which is exactly why it needs its own assertion.
-    for (i, base) in [(1usize, 0xFF7A_7AFFu32 as i32)] {
+    {
+        let (i, base) = (1usize, 0xFF7A_7AFFu32 as i32);
         let leaked: [f32; 3] = std::array::from_fn(|c| rgb24(base)[c] * [0.48, 0.48, 1.0][c]);
         assert_ne!(
             states[i].sky_light_color, leaked,

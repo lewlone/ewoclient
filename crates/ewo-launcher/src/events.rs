@@ -756,7 +756,7 @@ impl App {
         {
             window.set_cursor(CursorIcon::Pointer);
         } else {
-            update_cursor_icon(&window, &self.cursor, size, scale);
+            update_cursor_icon(window, &self.cursor, size, scale);
         }
     }
 
@@ -1481,7 +1481,7 @@ impl App {
         //    watching the launcher animations in another monitor.
         //    Foreground covers the actually-leak-causing case.)
         let minimized = window.is_minimized().unwrap_or(false);
-        let foreground = window::is_foreground(&window);
+        let foreground = window::is_foreground(window);
         if self.occluded || minimized || !foreground {
             return;
         }
@@ -1690,7 +1690,7 @@ impl App {
                         self.launching.set_real_progress(Some(frac));
                         let pct = frac * 100.0;
                         let bucket = (pct as u32) / 10 * 10;
-                        if bucket > 0 && bucket % 10 == 0 {
+                        if bucket > 0 && bucket.is_multiple_of(10) {
                             let line = format!(
                                 "[ewo] downloading runtime: {:>3}% ({} / {} MB)",
                                 bucket,
@@ -2207,7 +2207,7 @@ impl App {
         };
         let account_op = match self.auth.op() {
             AuthOp::Idle => AccountOpView::Idle,
-            AuthOp::Working(stage) => AccountOpView::Working { stage: *stage },
+            AuthOp::Working(stage) => AccountOpView::Working { stage },
             AuthOp::Failed(_) => AccountOpView::Failed {
                 message: err_msg.as_deref().unwrap_or("auth failed"),
             },

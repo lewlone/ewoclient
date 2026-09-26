@@ -425,7 +425,7 @@ fn check_wire(c: &mut Checker, env: &Env, control: i32, zombie: i32) {
 // ---------------------------------------------------------------------------
 
 fn check_value(c: &mut Checker, env: &Env, zombie: i32) {
-    let mut send = |mods: Vec<Mod>, base: f64| -> Option<f64> {
+    let send = |mods: Vec<Mod>, base: f64| -> Option<f64> {
         let mut t = table_with(zombie);
         env.send(&mut t, &body(1, &[(23, base, mods)]));
         env.value(&t, "minecraft:zombie", "max_health")

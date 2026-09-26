@@ -792,7 +792,7 @@ pub(super) fn tooltip_layout(
     // With the cache present the text goes through the Velvet pass, which is
     // what makes italic lore actually slant. The bitmap path stays as the
     // fallback for a build with no fonts on disk.
-    if let Some(cache) = glyphs.as_deref_mut() {
+    if let Some(cache) = glyphs {
         let mut runs: Vec<rewo_gpu::velvet_text::OwnedRun> = Vec::new();
         let mut ly = ty;
         for (i, spans) in lines.iter().enumerate() {

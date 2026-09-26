@@ -764,7 +764,7 @@ mod tests {
         // an older build (missing newer fields) still loads cleanly.
         let parsed: ClientProfile = toml::from_str("warmth = 0.4\n").expect("partial parse");
         assert_eq!(parsed.warmth, 0.4);
-        assert_eq!(parsed.vsync, true);
+        assert!(parsed.vsync);
         assert_eq!(parsed.theme, 0);
     }
 }

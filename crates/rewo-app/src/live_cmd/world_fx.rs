@@ -465,7 +465,7 @@ pub(super) fn apply_weather(
     // Frame time in ticks, for the rain-fog ease. `None` means "converge
     // immediately" — the headless path draws a single frame after settling,
     // where an eased multiplier would still be near zero.
-    delta_ticks: Option<f32>,
+    _delta_ticks: Option<f32>,
 ) {
     let eye = eye_f64(session);
     let game_time = session.game_time();

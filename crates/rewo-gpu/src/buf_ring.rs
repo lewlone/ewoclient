@@ -45,7 +45,7 @@ const MIN_CAPACITY: u64 = 4096;
 /// been released by the GPU? Pure, for the invariant test.
 #[cfg(test)]
 pub(crate) const fn ring_slot_is_retired(ring: usize, fif: usize) -> bool {
-    ring >= fif + 1
+    ring > fif
 }
 
 struct Slot {

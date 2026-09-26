@@ -317,7 +317,7 @@ fn substitute_jvm_args(args: &[Value], tokens: &TokenMap) -> Vec<String> {
                 // Conditional entry: { rules: [...], value: "..." | [...] }
                 let rules_value = obj.get("rules");
                 let passes = rules_value
-                    .map(|v| eval_arg_rules(v))
+                    .map(eval_arg_rules)
                     .unwrap_or(true);
                 if !passes {
                     continue;

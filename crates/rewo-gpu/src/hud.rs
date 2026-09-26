@@ -1807,7 +1807,7 @@ mod selected_item_name_tests {
     fn the_fade_is_the_last_ten_ticks_only() {
         assert_eq!(tool_highlight_alpha(40), 255);
         assert_eq!(tool_highlight_alpha(11), 255);
-        assert_eq!(tool_highlight_alpha(10), 256_i32.min(255));
+        assert_eq!(tool_highlight_alpha(10), 255);
         assert_eq!(tool_highlight_alpha(9), 230);
         assert_eq!(tool_highlight_alpha(5), 128);
         assert_eq!(tool_highlight_alpha(1), 25);

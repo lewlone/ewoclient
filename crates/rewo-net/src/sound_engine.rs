@@ -1440,7 +1440,7 @@ impl SoundEngine {
                 requeue.push((
                 l.id,
                 l.instance.clone(),
-                l.ramp.clone(),
+                l.ramp,
                 tick_count + l.instance.delay,
             ));
             }
@@ -1453,7 +1453,7 @@ impl SoundEngine {
             let mut due = Vec::new();
             self.queued.retain(|(id, inst, ramp, at)| {
                 if tick_count >= *at {
-                    due.push((*id, inst.clone(), ramp.clone()));
+                    due.push((*id, inst.clone(), *ramp));
                     false
                 } else {
                     true
@@ -2895,7 +2895,7 @@ mod tests {
             idx.handle_registration(
                 e,
                 &SoundEventRegistration {
-                    sounds: vec![Sound::file(&format!("{}1", e.replace(['.', ':'], "/")))],
+                    sounds: vec![Sound::file(format!("{}1", e.replace(['.', ':'], "/")))],
                     replace: false,
                     subtitle: None,
                 },
@@ -3703,7 +3703,7 @@ mod tests {
     fn level_event_body(kind: i32, x: i64, y: i64, z: i64, data: i32, global: bool) -> Vec<u8> {
         let packed = ((x & 0x3FF_FFFF) << 38) | ((z & 0x3FF_FFFF) << 12) | (y & 0xFFF);
         let mut b = kind.to_be_bytes().to_vec();
-        b.extend_from_slice(&(packed as i64).to_be_bytes());
+        b.extend_from_slice(&packed.to_be_bytes());
         b.extend_from_slice(&data.to_be_bytes());
         b.push(u8::from(global));
         b
@@ -3891,7 +3891,7 @@ mod tests {
                 ChannelCall::SetSelfPosition(x, y, z) => Some((*x, *y, *z)),
                 _ => None,
             })
-            .last()
+            .next_back()
             .expect("the flash played");
 
         // `direction_from_rotation(0, 0)` is (0, 0, 1) — the -Z... in vanilla's
@@ -4961,9 +4961,7 @@ mod tests {
         // Tick 2: the queue drains and the replacement plays.
         eng.tick(false, &idx, &world, &mut dev);
         assert!(
-            eng.live_identifiers()
-                .iter()
-                .any(|n| *n == "minecraft:entity.bee.loop_aggressive"),
+            eng.live_identifiers().contains(&"minecraft:entity.bee.loop_aggressive"),
             "the aggressive loop must have started, live: {:?}",
             eng.live_identifiers()
         );
@@ -4999,9 +4997,7 @@ mod tests {
         );
         eng.tick(false, &idx, &calm, &mut dev); // the queue drains
         assert!(
-            eng.live_identifiers()
-                .iter()
-                .any(|n| *n == "minecraft:entity.bee.loop"),
+            eng.live_identifiers().contains(&"minecraft:entity.bee.loop"),
             "…and the flying loop comes back, live: {:?}",
             eng.live_identifiers()
         );

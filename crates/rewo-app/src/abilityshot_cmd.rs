@@ -863,7 +863,7 @@ fn check_flight_physics(c: &mut Checker) {
     let (solid, ghost) = (descend(false), descend(true));
     c.record(
         "w5.flight_still_collides",
-        solid >= -1e-9 && solid < 0.5,
+        (-1e-9..0.5).contains(&solid),
         format!("flying down lands at y={solid:.5} (want 0)"),
     );
 

@@ -812,7 +812,7 @@ fn check_pixels(c: &mut Checker, args: &BordershotArgs) -> Result<(), String> {
         )?;
 
         let inner = (|| -> Result<(), String> {
-            let mut shot = |gpu: &mut Gpu,
+            let shot = |gpu: &mut Gpu,
                             off: &mut Offscreen,
                             wr: &mut WorldRenderer,
                             d: Option<&rewo_gpu::border::BorderDraw>|

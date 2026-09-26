@@ -122,7 +122,7 @@ pub fn grouped(value: i32) -> String {
         out.push('-');
     }
     for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (n - i) % 3 == 0 {
+        if i > 0 && (n - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(ch);
@@ -172,7 +172,7 @@ fn java_double_of_twentieths(ticks: i32) -> String {
     let frac = hundredths % 100;
     let body = if frac == 0 {
         format!("{whole}.0")
-    } else if frac % 10 == 0 {
+    } else if frac.is_multiple_of(10) {
         format!("{whole}.{}", frac / 10)
     } else {
         format!("{whole}.{frac:02}")

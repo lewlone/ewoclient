@@ -354,7 +354,7 @@ impl BlockLightFlicker {
         let b = self.rng.next_float();
         let c = self.rng.next_float();
         let d = self.rng.next_float();
-        self.flicker = self.flicker + (a - b) * c * d * 0.1;
+        self.flicker += (a - b) * c * d * 0.1;
         self.flicker *= 0.9;
     }
 

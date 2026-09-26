@@ -145,7 +145,7 @@ fn check_pixels(
     let vp = glam::Mat4::IDENTITY.to_cols_array_2d();
     let clear = [0.0, 1.0, 0.0, 1.0];
 
-    let mut shot = |gpu: &mut Gpu,
+    let shot = |gpu: &mut Gpu,
                     off: &mut Offscreen,
                     wr: &mut WorldRenderer,
                     opts: Option<&Options>,

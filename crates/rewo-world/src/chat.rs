@@ -1447,7 +1447,7 @@ mod tests {
             })),
             ..ChatStyle::WHITE
         };
-        let lines = wrap_components(&vec![link.span("abc def")], 18, &w6s);
+        let lines = wrap_components(&[link.span("abc def")], 18, &w6s);
         assert_eq!(lines.len(), 2);
         // The continuation is `[indent, text]`.
         assert_eq!(lines[1][0].text, " ");
