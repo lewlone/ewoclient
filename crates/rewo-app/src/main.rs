@@ -13,6 +13,7 @@ mod audio_backend;
 #[cfg(feature = "gates")]
 mod bordershot_cmd;
 mod capture;
+mod os_clipboard;
 mod cem_pack;
 #[cfg(feature = "gates")]
 mod captureshot_cmd;

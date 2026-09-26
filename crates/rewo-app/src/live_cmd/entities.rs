@@ -77,6 +77,14 @@ pub(crate) struct SkinLoader {
     pub(super) res_rx: std::sync::mpsc::Receiver<(u128, TexKind, bool, Vec<u8>)>,
     pub(super) requested: std::collections::HashSet<(u128, TexKind)>,
     pub(super) registry: SkinRegistry,
+    /// The local player's UUID, set by the frame. Its textures are also kept
+    /// as pixels, because the inventory's player preview has an atlas of its
+    /// own and must upload them itself.
+    pub(super) own: Option<u128>,
+    /// The local player's skin/cape pixels, handed out by [`Self::take_own_preview`]
+    /// whenever one arrives.
+    own_preview: PreviewTextures,
+    own_changed: bool,
 }
 
 impl SkinLoader {
@@ -107,6 +115,9 @@ impl SkinLoader {
             res_rx,
             requested: std::collections::HashSet::new(),
             registry: SkinRegistry::new(),
+            own: None,
+            own_preview: PreviewTextures::default(),
+            own_changed: false,
         }
     }
 
@@ -126,6 +137,13 @@ impl SkinLoader {
     /// Upload any fetched textures into the atlas + record their slots.
     pub(super) fn poll_uploads(&mut self, gpu: &mut Gpu, wr: &mut WorldRenderer) {
         while let Ok((uuid, kind, slim, rgba)) = self.res_rx.try_recv() {
+            if Some(uuid) == self.own {
+                match kind {
+                    TexKind::Skin => self.own_preview.skin = Some((rgba.clone(), slim)),
+                    TexKind::Cape => self.own_preview.cape = Some(rgba.clone()),
+                }
+                self.own_changed = true;
+            }
             match kind {
                 TexKind::Skin => {
                     // M155 — crop the tab-list face while the full sheet is in
@@ -166,6 +184,21 @@ impl SkinLoader {
                 }
             }
         }
+    }
+
+    /// The local player's textures for the inventory preview, once per change
+    /// (a skin and a cape arrive separately). Handed out un-uploaded: the
+    /// preview uploads them into its own atlas the next time it draws.
+    pub(super) fn take_own_preview(&mut self) -> Option<PreviewTextures> {
+        if !std::mem::take(&mut self.own_changed) {
+            return None;
+        }
+        Some(PreviewTextures {
+            skin: self.own_preview.skin.clone(),
+            cape: self.own_preview.cape.clone(),
+            skin_uv: None,
+            cape_origin: None,
+        })
     }
 }
 

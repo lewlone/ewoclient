@@ -148,6 +148,15 @@ impl ApplicationHandler for LiveApp {
                 if matches!(event.physical_key, PhysicalKey::Code(KeyCode::AltLeft)) {
                     self.alt = p;
                 }
+                // Ctrl+V pastes the SYSTEM clipboard, as vanilla's edit boxes do
+                // (`KeyboardHandler.getClipboard`): refresh the buffer every
+                // edit box pastes from before any of them sees the key.
+                if p && self.ctrl && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyV)) {
+                    if let Some(text) = crate::os_clipboard::read() {
+                        self.clipboard_synced = text.clone();
+                        self.clipboard = text;
+                    }
+                }
                 // M151 — the tab-list hold's RELEASE, ahead of both screen
                 // gates below, because `KeyboardHandler.keyPress` is
                 // asymmetric about exactly this:
@@ -190,6 +199,69 @@ impl ApplicationHandler for LiveApp {
                     }
                     // Shift is tracked either way: it holds the wheel to one
                     // line and is read by `mouse_scrolled`.
+                    if !matches!(
+                        event.physical_key,
+                        PhysicalKey::Code(KeyCode::ShiftLeft)
+                            | PhysicalKey::Code(KeyCode::ShiftRight)
+                    ) {
+                        return;
+                    }
+                }
+                // M174 — the sign editor owns the keyboard entirely while it
+                // is open (`Screens` is ONE slot; there is no inventory behind
+                // it to route to). Its own bindings run first, then the field,
+                // then Esc → `onClose()`; a key nothing wanted is swallowed,
+                // which is the anvil's arrangement and vanilla's.
+                if self.sign_edit.is_some() {
+                    if p {
+                        let advance = self.advance();
+                        if let (Some(key), Some(advance)) =
+                            (glfw_key(event.physical_key), advance.as_ref())
+                        {
+                            let mods = (i32::from(self.shift))
+                                | (i32::from(self.ctrl) << 1)
+                                | (i32::from(self.alt) << 2);
+                            let width_fn =
+                                |t: &str| rewo_gpu::text::width(t, advance);
+                            let mut clip = std::mem::take(&mut self.clipboard);
+                            let outcome = self.sign_edit.as_mut().map(|v| {
+                                v.state.key_pressed(
+                                    rewo_world::edit_box::Input::new(key, mods),
+                                    &width_fn,
+                                    &mut clip,
+                                )
+                            });
+                            self.clipboard = clip;
+                            match outcome {
+                                Some(rewo_world::sign_edit_screen::SignKey::Handled) => {
+                                    self.echo_sign_edit();
+                                    return;
+                                }
+                                Some(rewo_world::sign_edit_screen::SignKey::Close) => {
+                                    self.close_sign_edit();
+                                    return;
+                                }
+                                _ => {}
+                            }
+                        }
+                        // `charTyped` — the screen returns true EITHER WAY, so
+                        // every typed character is consumed whether or not it
+                        // was an allowed chat character (the insert itself is
+                        // gated inside the model).
+                        if let Some(text) = event.text.as_ref() {
+                            if let Some(advance) = self.advance() {
+                                let width_fn =
+                                    |t: &str| rewo_gpu::text::width(t, &advance);
+                                for ch in text.chars() {
+                                    if let Some(v) = self.sign_edit.as_mut() {
+                                        v.state.char_typed(ch, &width_fn);
+                                    }
+                                }
+                                self.echo_sign_edit();
+                            }
+                        }
+                    }
+                    // Shift is tracked either way (Ctrl/Alt above).
                     if !matches!(
                         event.physical_key,
                         PhysicalKey::Code(KeyCode::ShiftLeft)
@@ -466,70 +538,7 @@ impl ApplicationHandler for LiveApp {
                     // screen closes on Esc and the death and disconnect
                     // screens do not.
                     PhysicalKey::Code(KeyCode::Escape) if p => {
-                // M174 — the sign editor owns the keyboard entirely while it
-                // is open (`Screens` is ONE slot; there is no inventory behind
-                // it to route to). Its own bindings run first, then the field,
-                // then Esc → `onClose()`; a key nothing wanted is swallowed,
-                // which is the anvil's arrangement and vanilla's.
-                if self.sign_edit.is_some() {
-                    if p {
-                        let advance = self.advance();
-                        if let (Some(key), Some(advance)) =
-                            (glfw_key(event.physical_key), advance.as_ref())
-                        {
-                            let mods = (i32::from(self.shift))
-                                | (i32::from(self.ctrl) << 1)
-                                | (i32::from(self.alt) << 2);
-                            let width_fn =
-                                |t: &str| rewo_gpu::text::width(t, advance);
-                            let mut clip = std::mem::take(&mut self.clipboard);
-                            let outcome = self.sign_edit.as_mut().map(|v| {
-                                v.state.key_pressed(
-                                    rewo_world::edit_box::Input::new(key, mods),
-                                    &width_fn,
-                                    &mut clip,
-                                )
-                            });
-                            self.clipboard = clip;
-                            match outcome {
-                                Some(rewo_world::sign_edit_screen::SignKey::Handled) => {
-                                    self.echo_sign_edit();
-                                    return;
-                                }
-                                Some(rewo_world::sign_edit_screen::SignKey::Close) => {
-                                    self.close_sign_edit();
-                                    return;
-                                }
-                                _ => {}
-                            }
-                        }
-                        // `charTyped` — the screen returns true EITHER WAY, so
-                        // every typed character is consumed whether or not it
-                        // was an allowed chat character (the insert itself is
-                        // gated inside the model).
-                        if let Some(text) = event.text.as_ref() {
-                            if let Some(advance) = self.advance() {
-                                let width_fn =
-                                    |t: &str| rewo_gpu::text::width(t, &advance);
-                                for ch in text.chars() {
-                                    if let Some(v) = self.sign_edit.as_mut() {
-                                        v.state.char_typed(ch, &width_fn);
-                                    }
-                                }
-                                self.echo_sign_edit();
-                            }
-                        }
-                    }
-                    // Shift is tracked either way (Ctrl/Alt above).
-                    if !matches!(
-                        event.physical_key,
-                        PhysicalKey::Code(KeyCode::ShiftLeft)
-                            | PhysicalKey::Code(KeyCode::ShiftRight)
-                    ) {
-                        return;
-                    }
-                }
-                if self.screen.inventory_open() {
+                        if self.screen.inventory_open() {
                             self.set_screen_open(false);
                         } else if self.session.is_some() {
                             self.open_pause_screen();

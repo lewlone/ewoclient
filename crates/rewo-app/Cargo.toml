@@ -61,6 +61,9 @@ raw-window-handle = { workspace = true }
 clap = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
+# The system clipboard for the edit boxes (vanilla's `KeyboardHandler.getClipboard`).
+# Text only; Wayland through the data-control protocol, X11 and Windows natively.
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 tracy-client = { workspace = true }
 
 [lints]

@@ -77,6 +77,13 @@ impl LiveApp {
     /// screen pumps. Returns `false` when the frame ends here (exit, or no
     /// session — the screen-only frame).
     fn pump_screens(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        // An in-game copy or cut changed the edit boxes' clipboard: hand it
+        // to the system clipboard (`KeyboardHandler.setClipboard`). The pull
+        // side is on Ctrl+V, in the key handler.
+        if self.clipboard != self.clipboard_synced {
+            crate::os_clipboard::write(&self.clipboard);
+            self.clipboard_synced = self.clipboard.clone();
+        }
         // M74: `container_close` — the server closing whatever screen is
         // open. Drained before the session borrow below, because acting on it
         // calls `set_screen_open`, which needs all of `self`.
@@ -454,8 +461,14 @@ impl LiveApp {
         for (uuid, info) in session.take_pending_skins() {
             self.skins.request(uuid, &info);
         }
+        self.skins.own = session.own_uuid;
         self.skins
             .poll_uploads(&mut state.gpu, &mut state.world_renderer);
+        // The inventory preview draws the local player from its own atlas, so
+        // it takes the pixels rather than the world pass's upload.
+        if let Some(own) = self.skins.take_own_preview() {
+            self.preview_skin = Some(own);
+        }
 
         // Entities: frame-interpolated snapshot + camera-billboarded tags.
         let alpha = (self.tick_accum / TICK_DT).clamp(0.0, 1.0);

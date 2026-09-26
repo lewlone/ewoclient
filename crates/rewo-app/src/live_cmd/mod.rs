@@ -550,11 +550,12 @@ struct LiveApp {
     alt: bool,
     /// An in-process clipboard (M93t).
     ///
-    /// **Not the OS clipboard.** Rewo pulls in no clipboard crate and `winit`
-    /// exposes none, so copy/cut/paste are exact against each other and
-    /// isolated from the desktop. Swapping in a real one is a change at this
-    /// one field.
+    /// The edit boxes' clipboard buffer, synced with the system clipboard
+    /// (`crate::os_clipboard`): pulled in on Ctrl+V, pushed out when an
+    /// in-game copy or cut changes it (compared against `clipboard_synced`).
     clipboard: String,
+    /// The last text exchanged with the system clipboard.
+    clipboard_synced: String,
     /// `ChatScreen` (M110), when it is open.
     ///
     /// `Option` rather than a flag on the screen framework because it owns an
@@ -898,6 +899,7 @@ fn run_windowed(
         ctrl: false,
         alt: false,
         clipboard: String::new(),
+        clipboard_synced: String::new(),
         chat_screen: None,
         chat_draft: None,
         chat_injected: false,
