@@ -275,10 +275,10 @@ impl LaunchingState {
             self.error_fraction = snapshot.clamp(0.0, 1.0);
             self.stage.set(match code {
                 Some(c) => match c {
-                    127 => "couldn't spawn the JVM.",
-                    _ => "the JVM exited with an error.",
+                    127 => "couldn't start the game.",
+                    _ => "the game exited with an error.",
                 },
-                None => "the JVM ended unexpectedly.",
+                None => "the game ended unexpectedly.",
             });
         }
     }

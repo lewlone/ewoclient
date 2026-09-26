@@ -37,7 +37,7 @@ $ewo  = Join-Path $env:APPDATA "EwoClient"
 $jdk  = Join-Path $ewo "jdks\temurin-25\bin"
 
 if (-not (Test-Path (Join-Path $jdk "javac.exe"))) {
-    throw "JDK 25 not found at $jdk - see PHASE_E_PLAN.md E2 (install a JDK 25)."
+    throw "JDK 25 not found at $jdk - see docs/history/PHASE_E_PLAN.md E2 (install a JDK 25)."
 }
 
 if ($Pvp) {
@@ -148,3 +148,17 @@ $deploy = Join-Path $ewo "shared\libraries\dev\lewlone\ewo-hud\0.1.0\ewo-hud-0.1
 New-Item -ItemType Directory -Force (Split-Path $deploy) | Out-Null
 Copy-Item -Force $jar $deploy
 Write-Host "deployed: $deploy"
+
+# The native half goes beside it: EwoHudMod looks for ewo_jni.dll next to its
+# jar before any cargo output, so the jar and dll deployed together are the
+# pair that runs, not whatever some checkout's target/ last built. (The
+# launcher's -Dewo.hud.nativePath, set when a dll ships beside its exe, still
+# wins over this.)
+$dll = Join-Path $repoRoot "target\debug\ewo_jni.dll"
+$dllDeploy = Join-Path (Split-Path $deploy) "ewo_jni.dll"
+try {
+    Copy-Item -Force $dll $dllDeploy
+} catch {
+    throw "could not replace $dllDeploy (is Minecraft still running? it holds the dll open): $_"
+}
+Write-Host "deployed: $dllDeploy"
