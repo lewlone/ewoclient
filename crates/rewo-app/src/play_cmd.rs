@@ -1043,7 +1043,7 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
         baked.as_ref(),
         &data,
         clock_start,
-    );
+    )?;
 
     if args.waypoint_check {
         // Fail-closed on OBSERVATION: a command the server ignored leaves the
@@ -1990,7 +1990,7 @@ fn report(
     baked: Option<&assets::BakedAssets>,
     data: &GameData,
     clock_start: Option<i64>,
-) {
+) -> Result<(), String> {
     let (px, py, pz) = (session.player.x, session.player.y, session.player.z);
     let ground = session
         .world
@@ -2108,12 +2108,17 @@ fn report(
             }
         }
     }
-    if args.light_check {
+    // The light verdict is held until the rest of the summary has printed, then
+    // returned: a requested `--light-check` that mismatches, or that could not
+    // run at all ("skipped"), is a failure and must exit non-zero.
+    let light_verdict = if args.light_check {
         match baked {
             Some(b) => light_parity_check(session, b, data),
-            None => println!("[rewo-light] LIGHT-CHECK: no asset bake — skipped"),
+            None => Err("--light-check: no asset bake, so the check could not run".into()),
         }
-    }
+    } else {
+        Ok(())
+    };
     // The server-observed placement/dig proof is printed by `build_acceptance`
     // (the ACCEPT lines), which also owns the exit code. It reads the same world
     // state the server echoed back — `use_item_on` always draws a `block_update`
@@ -2131,6 +2136,7 @@ fn report(
         "[rewo-m3] loaded columns: {}",
         session.world.loaded_columns()
     );
+    light_verdict
 }
 
 fn client_jar_path(version: &str) -> Option<std::path::PathBuf> {
@@ -2159,7 +2165,7 @@ fn light_parity_check(
     session: &mut rewo_net::play::PlaySession,
     baked: &assets::BakedAssets,
     data: &GameData,
-) {
+) -> Result<(), String> {
     use rewo_world::light::{LightEngine, LightTables};
 
     let tables = LightTables {
@@ -2187,8 +2193,12 @@ fn light_parity_check(
         }
     }
     if targets.is_empty() {
-        println!("[rewo-light] LIGHT-CHECK: no fully-surrounded column loaded — skipped");
-        return;
+        println!("[rewo-light] LIGHT-CHECK: no fully-surrounded column loaded — not run");
+        return Err(
+            "--light-check: no fully-surrounded column was loaded, so the check could not run \
+             (a skipped check is a failure when it was requested)"
+                .into(),
+        );
     }
 
     // Snapshot the server's values before we overwrite anything.
@@ -2296,6 +2306,14 @@ fn light_parity_check(
     for e in &examples {
         println!("[rewo-light]   {e}");
     }
+    if bad_block > 0 || bad_sky > 0 {
+        return Err(format!(
+            "--light-check: recomputed light differs from the server's in {} of {cells} cells \
+             (block {bad_block}, sky {bad_sky})",
+            bad_block + bad_sky
+        ));
+    }
+    Ok(())
 }
 
 /// The server-observed state at the cell where the scripted place fired.
