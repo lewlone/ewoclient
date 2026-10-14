@@ -864,7 +864,8 @@ fn draw_panel(
         let layer_count = if let Some(p) = tab_anim {
             let eased = tokens::silk().eval(p.clamp(0.0, 1.0));
             let alpha = eased;
-            let dy = (1.0 - eased) * 12.0;
+            // Whole device pixels: the layer holds text (non-negotiable #2).
+            let dy = crate::offscreen::snap_dy(canvas, (1.0 - eased) * 12.0);
             let s = canvas.save_layer_alpha_f(panel, alpha);
             canvas.translate((0.0, dy));
             Some(s)

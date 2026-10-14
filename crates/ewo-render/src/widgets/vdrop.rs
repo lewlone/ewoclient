@@ -367,12 +367,14 @@ pub fn draw_vdrop_menu(
     // Rows fade with the layer and translate by whole pixels; at rest both
     // layers coincide exactly. The rows' own staggered reveal runs on top.
     let scale = 0.98 + 0.02 * anim;
-    let ty = (if flip_up {
-        4.0 * (1.0 - anim)
-    } else {
-        -4.0 * (1.0 - anim)
-    })
-    .round();
+    let ty = crate::offscreen::snap_dy(
+        canvas,
+        if flip_up {
+            4.0 * (1.0 - anim)
+        } else {
+            -4.0 * (1.0 - anim)
+        },
+    );
 
     let cx = (bounds.left + bounds.right) * 0.5;
     let cy = if flip_up { bounds.bottom } else { bounds.top };

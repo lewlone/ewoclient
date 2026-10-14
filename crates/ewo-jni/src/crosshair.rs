@@ -331,6 +331,7 @@ pub fn load() -> CrosshairConfig {
 /// race shouldn't crash the running game).
 pub fn save(cfg: &CrosshairConfig) {
     let Some(path) = crosshair_toml_path() else {
+        crate::hud::log_save_skipped("crosshair.toml");
         return;
     };
     if let Some(parent) = path.parent() {

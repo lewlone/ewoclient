@@ -985,6 +985,7 @@ impl HudLayout {
     /// Write the layout to `hud.toml`.
     fn save(&self) {
         let Some(path) = hud_toml_path() else {
+            log_save_skipped("hud.toml");
             return;
         };
         if let Some(parent) = path.parent() {
@@ -1018,6 +1019,30 @@ impl HudLayout {
 fn hud_toml_path() -> Option<PathBuf> {
     let profile = read_active_profile().unwrap_or_else(|| "Default".to_string());
     ewo_core::pvp::profile_file(&profile, "hud.toml")
+}
+
+/// Why a save of the per-profile file `file` is dropped when its path did not
+/// resolve: there is no config directory, or the active profile name in
+/// `profiles.toml` is not a safe folder name (`ewo_core::pvp::profile_file_in`
+/// refuses it). Pure so the wording is testable.
+fn save_skipped_message(file: &str, profile: &str, have_config_dir: bool) -> String {
+    if have_config_dir {
+        format!(
+            "{file}: not saved, the active profile {profile:?} in profiles.toml is not a safe \
+             folder name"
+        )
+    } else {
+        format!("{file}: not saved, there is no config directory (%APPDATA% is unset)")
+    }
+}
+
+/// Say that a save of the per-profile file `file` was dropped because its path
+/// resolved to `None`, instead of silently losing the user's edit. `crate::log`
+/// collapses identical repeats, so a save per drag frame logs once per window.
+pub(crate) fn log_save_skipped(file: &str) {
+    let profile = read_active_profile().unwrap_or_else(|| "Default".to_string());
+    let have_config_dir = ewo_core::pvp::config_base().is_some();
+    crate::log(&save_skipped_message(file, &profile, have_config_dir));
 }
 
 /// The pre-Phase-F single `hud.toml` location. Read as a fallback so an
@@ -1334,3 +1359,24 @@ use overlay_crosshair::*;
 mod editor_tests;
 #[cfg(test)]
 mod schema_pin;
+
+#[cfg(test)]
+mod save_skip_tests {
+    use super::save_skipped_message;
+
+    #[test]
+    fn a_dropped_save_names_the_file_and_the_reason() {
+        let unsafe_name = save_skipped_message("hud.toml", "../..", true);
+        assert!(unsafe_name.contains("hud.toml"), "{unsafe_name}");
+        assert!(unsafe_name.contains("\"../..\""), "{unsafe_name}");
+        assert!(
+            unsafe_name.contains("not a safe folder name"),
+            "{unsafe_name}"
+        );
+
+        let no_dir = save_skipped_message("modules.toml", "Default", false);
+        assert!(no_dir.contains("modules.toml"), "{no_dir}");
+        assert!(no_dir.contains("no config directory"), "{no_dir}");
+        assert!(!no_dir.contains("safe folder"), "{no_dir}");
+    }
+}

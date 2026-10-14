@@ -70,7 +70,8 @@ pub fn draw_main_menu(
     // non-negotiables).
     let eased = tokens::silk().eval(enter_anim.clamp(0.0, 1.0));
     let layer = if eased < 0.999 {
-        let dy = (1.0 - eased) * 14.0;
+        // Whole device pixels: the layer holds text (non-negotiable #2).
+        let dy = crate::offscreen::snap_dy(canvas, (1.0 - eased) * 14.0);
         let s = canvas.save_layer_alpha_f(Rect::from_xywh(0.0, 0.0, w, h), eased);
         canvas.translate((0.0, dy));
         Some(s)

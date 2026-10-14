@@ -635,12 +635,22 @@ pub fn pvp_toml_path_for(profile: &str) -> Option<PathBuf> {
 }
 
 /// The `active = "Name"` line of `<base>/EwoClient/profiles.toml`. Defaults to
-/// `"Default"` — matches the launcher's `profile.rs` fallback.
+/// `"Default"`, matching the launcher's `profile.rs` fallback.
 fn active_profile_in(base: &Path) -> String {
     let path = base.join("EwoClient").join("profiles.toml");
     let Ok(text) = std::fs::read_to_string(&path) else {
         return "Default".to_string();
     };
+    active_profile_from_toml(&text)
+}
+
+/// [`active_profile_in`] on the text of `profiles.toml`: the value of the
+/// first line that, trimmed, starts with `active` and then `=`, trimmed and
+/// stripped of every leading and trailing quote; `"Default"` if none. The
+/// value is not validated (join it with [`profile_file_in`]). The Java mod
+/// mirrors this as `EwoProfileName.activeFromToml`, and the ewo-jni test
+/// `java_profile_rule_matches_rust` pins the two together.
+pub fn active_profile_from_toml(text: &str) -> String {
     for line in text.lines() {
         let t = line.trim();
         if let Some(rest) = t.strip_prefix("active") {

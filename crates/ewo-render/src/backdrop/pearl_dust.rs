@@ -80,11 +80,16 @@ pub struct PearlDust {
 
 impl PearlDust {
     pub fn new(width: f32, height: f32, settings: &Settings) -> Self {
+        Self::new_with(width, height, settings, ewo_core::motion::is_reduced())
+    }
+
+    /// [`Self::new`] with the reduced-motion flag explicit (tests).
+    fn new_with(width: f32, height: f32, settings: &Settings, reduced: bool) -> Self {
         let mut rng = rand::rng();
         let air_count = ((AIR_BASE as f32) * settings.density).round() as usize;
         let settled_count = ((SETTLED_BASE as f32) * settings.density).round() as usize;
         let airborne = (0..air_count)
-            .map(|_| make_air(&mut rng, width, height))
+            .map(|_| make_air(&mut rng, width, height, reduced))
             .collect();
         let settled = (0..settled_count)
             .map(|_| make_settled(&mut rng, width, height))
@@ -100,13 +105,17 @@ impl PearlDust {
     }
 
     pub fn resize(&mut self, width: f32, height: f32, settings: &Settings) {
+        self.resize_with(width, height, settings, ewo_core::motion::is_reduced());
+    }
+
+    fn resize_with(&mut self, width: f32, height: f32, settings: &Settings, reduced: bool) {
         // Cheap path: regenerate. Particles are short-lived (max ~1000 frames)
         // so the visual blip is brief.
         let mut rng = rand::rng();
         let air_count = ((AIR_BASE as f32) * settings.density).round() as usize;
         let settled_count = ((SETTLED_BASE as f32) * settings.density).round() as usize;
         self.airborne = (0..air_count)
-            .map(|_| make_air(&mut rng, width, height))
+            .map(|_| make_air(&mut rng, width, height, reduced))
             .collect();
         self.settled = (0..settled_count)
             .map(|_| make_settled(&mut rng, width, height))
@@ -129,10 +138,23 @@ impl PearlDust {
     /// fixed-step model (per-frame integer life ticks), so we approximate with
     /// `dt * 60` to keep behavior stable across refresh rates.
     pub fn update(&mut self, dt: f32) {
+        self.update_with(dt, ewo_core::motion::is_reduced());
+    }
+
+    fn update_with(&mut self, dt: f32, reduced: bool) {
         let step = (dt * 60.0).clamp(0.0, 4.0); // cap big skips during stalls
         let h = self.height;
         let w = self.width;
         let mut rng = rand::rng();
+
+        if reduced {
+            // Frozen, not hidden (non-negotiable #5): with `dt = 0` a mote
+            // that is still waiting below the card would never drift in (the
+            // flag can flip on while some are). Put each into view instead.
+            for m in self.airborne.iter_mut().filter(|m| m.y >= h) {
+                m.y = rng.random::<f32>() * h;
+            }
+        }
 
         for m in self.airborne.iter_mut() {
             m.x += (m.vx + (m.life * 0.01).sin() * 0.12) * step;
@@ -141,8 +163,10 @@ impl PearlDust {
             m.shine_phase += m.shine_freq * step;
 
             if m.y < -10.0 || m.life > m.max_life {
-                *m = make_air(&mut rng, w, h);
-                m.y = h + 5.0;
+                *m = make_air(&mut rng, w, h, reduced);
+                if !reduced {
+                    m.y = h + 5.0;
+                }
             }
         }
 
@@ -280,10 +304,17 @@ fn build_halo_sprite(canvas: &Canvas) -> Option<Image> {
     Some(surface.image_snapshot())
 }
 
-fn make_air<R: Rng + ?Sized>(rng: &mut R, w: f32, h: f32) -> Airborne {
+/// A fresh airborne mote. Normally it spawns just below the bottom edge and
+/// drifts in. With `reduced` motion nothing moves, so it is placed where a
+/// steady-state snapshot would have it: anywhere in the viewport.
+fn make_air<R: Rng + ?Sized>(rng: &mut R, w: f32, h: f32, reduced: bool) -> Airborne {
     Airborne {
         x: rng.random::<f32>() * w,
-        y: h + rng.random::<f32>() * 80.0,
+        y: if reduced {
+            rng.random::<f32>() * h
+        } else {
+            h + rng.random::<f32>() * 80.0
+        },
         vy: -(0.08 + rng.random::<f32>() * 0.18),
         vx: (rng.random::<f32>() - 0.5) * 0.04,
         r: 0.3 + rng.random::<f32>() * 1.4,
@@ -301,5 +332,49 @@ fn make_settled<R: Rng + ?Sized>(rng: &mut R, w: f32, h: f32) -> Settled {
         r: 0.5 + rng.random::<f32>() * 1.2,
         twinkle: rng.random::<f32>() * 2.0 * PI,
         jitter: rng.random::<f32>() - 0.5,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reduced motion freezes the dust, it does not hide it: every airborne
+    /// mote must already sit inside the viewport (non-negotiable #5).
+    #[test]
+    fn reduced_motion_airborne_motes_are_in_view() {
+        let (w, h) = (960.0, 640.0);
+        let settings = Settings::default();
+        let in_view = |d: &PearlDust| {
+            let ys = d.airborne_ys();
+            assert!(!ys.is_empty());
+            for y in ys {
+                assert!((0.0..h).contains(&y), "mote at y={y} is outside 0..{h}");
+            }
+        };
+
+        let mut d = PearlDust::new_with(w, h, &settings, true);
+        in_view(&d);
+        // Frozen: a zero step keeps them where they are, still in view.
+        d.update_with(0.0, true);
+        in_view(&d);
+        // Resize regenerates them in view too.
+        d.resize_with(1280.0, 720.0, &settings, true);
+        for y in d.airborne_ys() {
+            assert!((0.0..720.0).contains(&y));
+        }
+        // Motes that were spawned below the card before the flag flipped on
+        // are pulled into view by the first reduced update.
+        let mut d = PearlDust::new_with(w, h, &settings, false);
+        assert!(d.airborne_ys().iter().all(|y| *y >= h));
+        d.update_with(0.0, true);
+        in_view(&d);
+    }
+
+    /// Without reduced motion motes still spawn below the card and drift in.
+    #[test]
+    fn normal_motion_motes_spawn_below_the_card() {
+        let d = PearlDust::new_with(960.0, 640.0, &Settings::default(), false);
+        assert!(d.airborne_ys().iter().all(|y| (640.0..720.0).contains(y)));
     }
 }

@@ -58,6 +58,19 @@ public final class EwoHudMod implements ClientModInitializer {
         }
         try {
             System.load(dll.toAbsolutePath().toString());
+            // The dll is now mapped into the process, so it can hold the JVM's
+            // teardown hostage whether or not we trust its HUD ABI: keep the
+            // exit watchdog armable from here on, even when the bridge is
+            // refused below. (Its kill call tolerates a stale dll that lacks
+            // the export; see armExitWatchdog.)
+            killPathLoaded = true;
+            // Fallback arm point: fires when the JVM begins orderly shutdown.
+            // The primary arm is the shutdown mixin (26.1: Minecraft.destroy()
+            // RETURN; 26.2: Minecraft.exitWorldAndClose() RETURN), which runs
+            // earlier — but a hang on an exit path that skips it still gets
+            // caught here.
+            Runtime.getRuntime().addShutdownHook(
+                    new Thread(EwoHudMod::armExitWatchdog, "ewo-exit-watchdog-arm"));
             // The jar and the dll are separate artefacts: refuse a dll that
             // speaks a different ABI before any other native call (a stale dll
             // used to be found out one frame at a time, by the frame hook's
@@ -68,22 +81,15 @@ public final class EwoHudMod implements ClientModInitializer {
                         + Integer.toHexString(abi) + " but this jar expects "
                         + Integer.toHexString(EwoHudNative.ABI_VERSION)
                         + " — the dll and the mod jar are from different builds. "
-                        + "HUD disabled for this session (rebuild with ingame-mod/build.ps1).");
+                        + "HUD disabled for this session (rebuild with ingame-mod/build.ps1). "
+                        + "The exit watchdog stays armed.");
                 return;
             }
             // Allocate the JVM->Rust HUD block + the Rust->JVM module block.
             EwoHudNative.nativeInit(EwoHudData.allocate());
             EwoHudNative.nativeInitModules(EwoModuleData.allocate());
-            killPathLoaded = true;
             nativeReady = true;
             System.err.println("[ewo-hud] native bridge loaded: " + dll);
-            // Fallback arm point: fires when the JVM begins orderly shutdown.
-            // The primary arm is the shutdown mixin (26.1: Minecraft.destroy()
-            // RETURN; 26.2: Minecraft.exitWorldAndClose() RETURN), which runs
-            // earlier — but a hang on an exit path that skips it still gets
-            // caught here.
-            Runtime.getRuntime().addShutdownHook(
-                    new Thread(EwoHudMod::armExitWatchdog, "ewo-exit-watchdog-arm"));
         } catch (Throwable t) {
             System.err.println("[ewo-hud] failed to load native bridge: " + t);
             t.printStackTrace();
@@ -123,7 +129,7 @@ public final class EwoHudMod implements ClientModInitializer {
      */
     public static void armExitWatchdog() {
         if (!killPathLoaded) {
-            return; // no native kill path available — nothing to arm
+            return; // the dll never loaded — nothing to arm
         }
         if (!watchdogArmed.compareAndSet(false, true)) {
             return; // already armed by an earlier point
@@ -136,7 +142,15 @@ public final class EwoHudMod implements ClientModInitializer {
             }
             System.err.println("[ewo-hud] exit watchdog: JVM teardown stuck after "
                     + WATCHDOG_GRACE_MS + "ms — terminating hard");
-            EwoHudNative.nativeForceExit();
+            try {
+                EwoHudNative.nativeForceExit();
+            } catch (Throwable t) {
+                // A stale dll (refused ABI) may not have the kill export. The
+                // JVM's own hard exit is the best thing left to try.
+                System.err.println("[ewo-hud] exit watchdog: native kill unavailable (" + t
+                        + ") — halting the JVM");
+                Runtime.getRuntime().halt(1);
+            }
         }, "ewo-exit-watchdog");
         killer.setDaemon(true);
         killer.start();

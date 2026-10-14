@@ -88,6 +88,8 @@ mod java_mirror;
 pub mod media;
 pub mod modules;
 mod perf;
+#[cfg(test)]
+mod profile_pin_tests;
 pub mod pvp;
 #[cfg(test)]
 mod root_tests;

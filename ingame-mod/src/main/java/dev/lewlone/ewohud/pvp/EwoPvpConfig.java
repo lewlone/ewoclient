@@ -6,6 +6,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
 
+import dev.lewlone.ewohud.EwoProfileName;
+
 /**
  * Per-profile PvP-Utils configuration — lives at
  * {@code %APPDATA%/EwoClient/profiles/<active>/pvp.toml}, paralleling
@@ -368,26 +370,22 @@ public final class EwoPvpConfig {
     private static Path configPath() {
         String appdata = System.getenv("APPDATA");
         if (appdata == null || appdata.isEmpty()) return null;
-        String profile = readActiveProfile();
-        return Paths.get(appdata, "EwoClient", "profiles", profile, "pvp.toml");
+        // Null for an unsafe name (a hand-edited `active = "../.."`), like
+        // Rust's `profile_file_in`: nothing is read or written.
+        return EwoProfileName.profileFile(appdata, readActiveProfile(), "pvp.toml");
     }
 
     /** The active client profile name — from {@code profiles.toml}'s
      *  {@code active = "Name"} line, defaulting to {@code "Default"}. */
     private static String readActiveProfile() {
         String appdata = System.getenv("APPDATA");
-        if (appdata == null || appdata.isEmpty()) return "Default";
+        if (appdata == null || appdata.isEmpty()) return EwoProfileName.DEFAULT_PROFILE;
         Path p = Paths.get(appdata, "EwoClient", "profiles.toml");
-        if (!Files.isRegularFile(p)) return "Default";
+        if (!Files.isRegularFile(p)) return EwoProfileName.DEFAULT_PROFILE;
         try {
-            for (String line : Files.readAllLines(p)) {
-                String t = line.trim();
-                if (t.startsWith("active") && t.contains("=")) {
-                    return unquote(t.substring(t.indexOf('=') + 1).trim());
-                }
-            }
+            return EwoProfileName.activeFromToml(Files.readAllLines(p));
         } catch (IOException ignored) {
         }
-        return "Default";
+        return EwoProfileName.DEFAULT_PROFILE;
     }
 }

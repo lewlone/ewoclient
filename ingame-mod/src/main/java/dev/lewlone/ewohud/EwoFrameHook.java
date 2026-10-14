@@ -29,8 +29,12 @@ public final class EwoFrameHook {
     /**
      * Once per frame, from the version-specific frame mixins. Never throws:
      * this runs inside Minecraft's render loop, and an escaping
-     * {@code UnsatisfiedLinkError} (a stale {@code ewo_jni.dll} — there is no
-     * ABI handshake) or NPE would crash the game. After
+     * {@code UnsatisfiedLinkError} or NPE would crash the game. The
+     * {@link EwoHudNative#ABI_VERSION} handshake in
+     * {@link EwoHudMod#onInitializeClient} already refuses a dll from another
+     * build before {@link EwoHudMod#nativeReady} is set; this guard is for
+     * faults that handshake cannot see (a bug in a matching dll, a missing
+     * export). After
      * {@link #MAX_CONSECUTIVE_FAILURES} bad frames in a row the native bridge
      * is disabled for the rest of the session and that is logged once.
      */

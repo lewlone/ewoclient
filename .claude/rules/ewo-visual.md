@@ -129,9 +129,13 @@ Backdrop layer order in code is wine → folds → caustics → bokeh → dust �
   instance, launcher link), the dropdown and the pressed button are each two
   layers: the chrome (shadows, refract, tint, rims, menu body) keeps the
   prototype's scale-in so the silhouette still settles, and the text layer only
-  fades and translates by **whole pixels**. At rest the layers coincide.
+  fades and translates by **whole device pixels**: every text-bearing fade
+  takes its `dy` through `offscreen::snap_dy(canvas, dy)`, which rounds in
+  physical pixels under the HiDPI scale (a logical `.round()` is fractional at
+  125 %). At rest the layers coincide.
   `crates/ewo-render/tests/text_not_scaled.rs` measures the text bounding box
-  of entrance and press frames against the settled frame.
+  of entrance and press frames against the settled frame, and checks the
+  main-menu entrance is a whole-pixel shift at several scales.
 - **Reduced motion (non-negotiable #6)** lives in `ewo-core/src/motion.rs`.
   The launcher reads `SPI_GETCLIENTAREAANIMATION` at startup, re-reads it at
   most once a second and on every focus gain (Windows only; Linux keeps

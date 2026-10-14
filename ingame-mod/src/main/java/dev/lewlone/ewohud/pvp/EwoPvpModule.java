@@ -7,6 +7,8 @@ import java.nio.file.Paths;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 
+import dev.lewlone.ewohud.EwoProfileName;
+
 /**
  * PvP Utils — the top-level driver that owns the active config and routes
  * tick/sound events between the trackers.
@@ -106,17 +108,36 @@ public final class EwoPvpModule {
         }
     }
 
+    /** The unsafe active-profile name already reported, so a bad
+     *  {@code profiles.toml} is logged once, not on every poll. */
+    private static String reportedUnsafeProfile;
+
+    /** {@code pvp.toml} of the active profile, or null when there is no
+     *  {@code %APPDATA%} or the profile name is not a safe path component
+     *  (the rule Rust applies in {@code profile_file_in}). */
     private static Path pvpTomlPath() {
         String appdata = System.getenv("APPDATA");
         if (appdata == null || appdata.isEmpty()) return null;
-        return Paths.get(appdata, "EwoClient", "profiles", activeProfile(), "pvp.toml");
+        String profile = activeProfile();
+        Path path = EwoProfileName.profileFile(appdata, profile, "pvp.toml");
+        if (path == null && !profile.equals(reportedUnsafeProfile)) {
+            reportedUnsafeProfile = profile;
+            System.err.println("[ewo-hud] pvp: active profile name " + quote(profile)
+                    + " in profiles.toml is not a safe folder name; PvP Utils keeps its"
+                    + " current settings and writes nothing");
+        }
+        return path;
+    }
+
+    private static String quote(String s) {
+        return '"' + s.replaceAll("\\p{Cntrl}", "?") + '"';
     }
 
     private static String activeProfile() {
         // Same default as EwoPvpConfig; profiles.toml is read straight here
         // to avoid a circular reference to that class's private helper.
         String appdata = System.getenv("APPDATA");
-        if (appdata == null) return "Default";
+        if (appdata == null) return EwoProfileName.DEFAULT_PROFILE;
         Path p = Paths.get(appdata, "EwoClient", "profiles.toml");
         BasicFileAttributes attrs;
         try {
@@ -130,19 +151,9 @@ public final class EwoPvpModule {
         if (attrs.lastModifiedTime().equals(profilesMtime) && attrs.size() == profilesSize) {
             return cachedProfile; // unchanged since the last read
         }
-        String active = "Default";
+        String active;
         try {
-            for (String line : Files.readAllLines(p)) {
-                String t = line.trim();
-                if (t.startsWith("active") && t.contains("=")) {
-                    String v = t.substring(t.indexOf('=') + 1).trim();
-                    if (v.length() >= 2 && v.startsWith("\"") && v.endsWith("\"")) {
-                        v = v.substring(1, v.length() - 1);
-                    }
-                    active = v;
-                    break;
-                }
-            }
+            active = EwoProfileName.activeFromToml(Files.readAllLines(p));
         } catch (IOException ignored) {
             // Unreadable right now (mid-rewrite): keep the previous answer and
             // retry on the next poll rather than caching a guess.

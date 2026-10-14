@@ -919,7 +919,8 @@ fn draw_list_row(
     let saved_count = if let Some(p) = anim {
         let eased = tokens::silk().eval(p.clamp(0.0, 1.0));
         let alpha = eased;
-        let dy = (1.0 - eased) * -14.0;
+        // Whole device pixels: the row holds text (non-negotiable #2).
+        let dy = crate::offscreen::snap_dy(canvas, (1.0 - eased) * -14.0);
         let row_layer_bounds = Rect::from_xywh(0.0, y - 16.0, LIST_WIDTH, h + 32.0);
         let s = canvas.save_layer_alpha_f(row_layer_bounds, alpha);
         canvas.translate((0.0, dy));
@@ -1162,7 +1163,8 @@ fn draw_detail(
         let layer_count = if let Some(p) = select_anim {
             let eased = tokens::silk().eval(p.clamp(0.0, 1.0));
             let alpha = eased;
-            let dy = (1.0 - eased) * 12.0;
+            // Whole device pixels: the layer holds text (non-negotiable #2).
+            let dy = crate::offscreen::snap_dy(canvas, (1.0 - eased) * 12.0);
             let s = canvas.save_layer_alpha_f(panel, alpha);
             canvas.translate((0.0, dy));
             Some(s)
@@ -1698,7 +1700,8 @@ fn draw_mod_section(
             let eased = tokens::silk().eval(t.clamp(0.0, 1.0));
             // 0.4 → 1.0 opacity, 4 → 0 translateY.
             let alpha = 0.4 + 0.6 * eased;
-            let dy = (1.0 - eased) * 4.0;
+            // Whole device pixels: the row holds text (non-negotiable #2).
+            let dy = crate::offscreen::snap_dy(canvas, (1.0 - eased) * 4.0);
             let s = canvas.save_layer_alpha_f(row_rect, alpha);
             canvas.translate((0.0, dy));
             Some(s)
