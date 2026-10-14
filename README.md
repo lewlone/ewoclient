@@ -44,7 +44,7 @@ Requires Rust 1.89+ (`rust-version` in `Cargo.toml`; CI checks it). First build 
 ## Stack
 
 - **Rust** (single-threaded, no async runtime)
-- **Skia** (`skia-safe` 0.78) — all 2D rendering; D3D12 + DirectComposition on Windows, GL on Linux
+- **Skia** (`skia-safe` 0.153) — all 2D rendering; D3D12 + DirectComposition on Windows, GL on Linux
 - **winit** 0.30 — windowing, custom frame
 - **glutin** 0.32 — GL context (Linux)
 - **ureq** + **tiny_http** + **opener** — Microsoft auth chain (loopback OAuth flow)

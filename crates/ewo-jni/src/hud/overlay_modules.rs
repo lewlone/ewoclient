@@ -513,15 +513,11 @@ pub(super) fn draw_module_slider(
         let fill = Rect::from_xywh(track_left, cy - track_h * 0.5, knob_x - track_left, track_h);
         let mut fp = Paint::default();
         fp.set_anti_alias(true);
-        if let Some(shader) = gradient_shader::linear(
+        if let Some(shader) = gradients::linear(
             (Point::new(track_left, cy), Point::new(track_right, cy)),
-            gradient_shader::GradientShaderColors::ColorsInSpace(
-                &[rgba(ROSE, alpha), rgba(LAV, alpha)],
-                None,
-            ),
+            &[rgba(ROSE, alpha), rgba(LAV, alpha)],
             None,
             TileMode::Clamp,
-            None,
             None,
         ) {
             fp.set_shader(shader);

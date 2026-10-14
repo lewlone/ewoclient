@@ -13,6 +13,7 @@
 //! .inst-detail         { padding: 28px 44px; }
 //! ```
 
+use crate::gradients;
 use crate::tokens;
 use ewo_core::Settings;
 use serde::{Deserialize, Serialize};
@@ -1758,20 +1759,16 @@ fn draw_mod_row(
         canvas.draw_circle((toggle_cx, cy), pearl_r, &halo);
 
         // Pearl gradient body
-        if let Some(shader) = skia_safe::gradient_shader::radial(
+        if let Some(shader) = gradients::radial(
             skia_safe::Point::new(toggle_cx - pearl_r * 0.3, cy - pearl_r * 0.3),
             pearl_r * 1.6,
-            skia_safe::gradient_shader::GradientShaderColors::ColorsInSpace(
-                &[
-                    tokens::text_pearl_hot_a(1.0),
-                    tokens::accent_rose_a(1.0),
-                    tokens::accent_lav_a(1.0),
-                ],
-                None,
-            ),
+            &[
+                tokens::text_pearl_hot_a(1.0),
+                tokens::accent_rose_a(1.0),
+                tokens::accent_lav_a(1.0),
+            ],
             Some(&[0.0_f32, 0.70, 1.0][..]),
             skia_safe::TileMode::Clamp,
-            None,
             None,
         ) {
             let mut pearl = Paint::default();

@@ -7,6 +7,7 @@ pub mod app_window;
 pub mod backdrop;
 pub mod frame;
 pub mod gl_backend;
+pub mod gradients;
 pub mod offscreen;
 pub mod screens;
 pub mod text;

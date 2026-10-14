@@ -231,18 +231,14 @@ pub(super) fn draw_key(
         // 135° rose→lavender gradient fill.
         let mut fill = Paint::default();
         fill.set_anti_alias(true);
-        if let Some(shader) = gradient_shader::linear(
+        if let Some(shader) = gradients::linear(
             (
                 Point::new(rect.left, rect.top),
                 Point::new(rect.right, rect.bottom),
             ),
-            gradient_shader::GradientShaderColors::ColorsInSpace(
-                &[rgba(ROSE, 0.55), rgba(LAV, 0.45)],
-                None,
-            ),
+            &[rgba(ROSE, 0.55), rgba(LAV, 0.45)],
             None,
             TileMode::Clamp,
-            None,
             None,
         ) {
             fill.set_shader(shader);
@@ -420,15 +416,11 @@ pub(super) fn draw_armor(
             let mut fill_paint = Paint::default();
             fill_paint.set_anti_alias(true);
             // 180° rose→lavender down the bar (CSS `.hud-armor-bar`).
-            if let Some(shader) = gradient_shader::linear(
+            if let Some(shader) = gradients::linear(
                 (Point::new(sx, fill_top), Point::new(sx, sy + SLOT_H)),
-                gradient_shader::GradientShaderColors::ColorsInSpace(
-                    &[rgba(ROSE, 1.0), rgba(LAV, 1.0)],
-                    None,
-                ),
+                &[rgba(ROSE, 1.0), rgba(LAV, 1.0)],
                 None,
                 TileMode::Clamp,
-                None,
                 None,
             ) {
                 fill_paint.set_shader(shader);
@@ -524,26 +516,22 @@ pub(super) fn draw_potions(
         let b = (color & 0xFF) as f32 / 255.0;
         let mut icon_paint = Paint::default();
         icon_paint.set_anti_alias(true);
-        if let Some(shader) = gradient_shader::linear(
+        if let Some(shader) = gradients::linear(
             (
                 Point::new(icon.left, icon.top),
                 Point::new(icon.left, icon.bottom),
             ),
-            gradient_shader::GradientShaderColors::ColorsInSpace(
-                &[
-                    Color4f::new(
-                        (r * 1.3).min(1.0),
-                        (g * 1.3).min(1.0),
-                        (b * 1.3).min(1.0),
-                        1.0,
-                    ),
-                    Color4f::new(r * 0.62, g * 0.62, b * 0.62, 1.0),
-                ],
-                None,
-            ),
+            &[
+                Color4f::new(
+                    (r * 1.3).min(1.0),
+                    (g * 1.3).min(1.0),
+                    (b * 1.3).min(1.0),
+                    1.0,
+                ),
+                Color4f::new(r * 0.62, g * 0.62, b * 0.62, 1.0),
+            ],
             None,
             TileMode::Clamp,
-            None,
             None,
         ) {
             icon_paint.set_shader(shader);
@@ -634,18 +622,14 @@ pub(super) fn draw_target(
 
     let mut avatar_paint = Paint::default();
     avatar_paint.set_anti_alias(true);
-    if let Some(shader) = gradient_shader::linear(
+    if let Some(shader) = gradients::linear(
         (
             Point::new(avatar.left, avatar.top),
             Point::new(avatar.right, avatar.bottom),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[rgba(ROSE, 1.0), rgba(LAV, 1.0)],
-            None,
-        ),
+        &[rgba(ROSE, 1.0), rgba(LAV, 1.0)],
         None,
         TileMode::Clamp,
-        None,
         None,
     ) {
         avatar_paint.set_shader(shader);
@@ -741,15 +725,11 @@ pub(super) fn draw_target(
             // 90° rose→ember across the bar per the redesign — keeps the "right
             // end = danger" visual cue regardless of fill level.
             const EMBER: (u8, u8, u8) = (0xC9, 0x6A, 0x7A);
-            if let Some(shader) = gradient_shader::linear(
+            if let Some(shader) = gradients::linear(
                 (Point::new(bar.left, bar_y), Point::new(bar.right, bar_y)),
-                gradient_shader::GradientShaderColors::ColorsInSpace(
-                    &[rgba(ROSE, 1.0), rgba(EMBER, 1.0)],
-                    None,
-                ),
+                &[rgba(ROSE, 1.0), rgba(EMBER, 1.0)],
                 None,
                 TileMode::Clamp,
-                None,
                 None,
             ) {
                 fill_paint.set_shader(shader);
@@ -1802,11 +1782,12 @@ pub(super) fn draw_hit_indicator(
         py - dir_y * base_back - perp_y * base_half,
     );
 
-    let mut path = skia_safe::Path::new();
+    let mut path = skia_safe::PathBuilder::new();
     path.move_to(tip);
     path.line_to(base_l);
     path.line_to(base_r);
     path.close();
+    let path = path.detach();
 
     let ember = (0xC9, 0x6A, 0x7A);
 

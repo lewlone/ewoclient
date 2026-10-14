@@ -16,7 +16,9 @@ use std::path::PathBuf;
 
 use skia_safe::font_arguments::variation_position::Coordinate;
 use skia_safe::font_arguments::VariationPosition;
-use skia_safe::{Canvas, Font, FontArguments, FontMgr, FontStyle, FourByteTag, Paint, Typeface};
+use skia_safe::{
+    Canvas, Data, Font, FontArguments, FontMgr, FontStyle, FourByteTag, Paint, Typeface,
+};
 
 pub struct FontStore {
     pub fraunces: Typeface,
@@ -561,7 +563,7 @@ fn try_load_family(family_prefix: &str, want_italic: bool) -> (Typeface, bool) {
                 continue;
             }
             match std::fs::read(&path) {
-                Ok(bytes) => match mgr.new_from_data(&bytes, None) {
+                Ok(bytes) => match mgr.new_from_data(Data::new_copy(&bytes), None) {
                     Some(tf) => {
                         log::info!("loaded font: {}", name);
                         return (tf, true);

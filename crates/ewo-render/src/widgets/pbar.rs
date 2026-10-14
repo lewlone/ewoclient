@@ -17,11 +17,12 @@
 //! `.pbar-bloom`, `.pbar-state-complete`, `.pbar-state-error.pbar-err-rose`,
 //! `.pbar-state-error.pbar-err-recede`, `.pbar-err-shimmer` in `StyleSheet1`.
 
+use crate::gradients;
 use crate::tokens;
 use ewo_core::Settings;
 use skia_safe::{
-    gradient_shader, BlendMode, BlurStyle, Canvas, Color4f, MaskFilter, Paint, PaintStyle, Point,
-    RRect, Rect, TileMode,
+    BlendMode, BlurStyle, Canvas, Color4f, MaskFilter, Paint, PaintStyle, Point, RRect, Rect,
+    TileMode,
 };
 
 const TRACK_HEIGHT: f32 = 2.0;
@@ -192,15 +193,14 @@ fn draw_track(canvas: &Canvas, rect: &Rect, rrect: &RRect, state: PbarState) {
             tokens::accent_rose_a(0.08),
         ],
     };
-    if let Some(shader) = gradient_shader::linear(
+    if let Some(shader) = gradients::linear(
         (
             Point::new(rect.left, rect.top),
             Point::new(rect.right, rect.top),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(stops, None),
+        stops,
         Some(&[0.0_f32, 0.5, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     ) {
         let mut p = Paint::default();
@@ -247,15 +247,14 @@ fn draw_fill(canvas: &Canvas, rect: &Rect, rrect: &RRect, state: PbarState) {
         PbarState::Complete => &[0.0, 0.40, 0.80, 1.0],
         PbarState::ErrorRose => &[0.0, 0.50, 1.0],
     };
-    if let Some(shader) = gradient_shader::linear(
+    if let Some(shader) = gradients::linear(
         (
             Point::new(rect.left, rect.top),
             Point::new(rect.right, rect.top),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(stops, None),
+        stops,
         Some(positions),
         TileMode::Clamp,
-        None,
         None,
     ) {
         let mut p = Paint::default();
@@ -293,24 +292,20 @@ fn draw_flow(
 
     let saved = canvas.save();
     canvas.clip_rrect(*rrect, None, Some(true));
-    if let Some(shader) = gradient_shader::linear(
+    if let Some(shader) = gradients::linear(
         (
             Point::new(pos_left, rect.top),
             Point::new(pos_right, rect.top),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                tokens::text_pearl_highlight_a(0.0),
-                tokens::text_pearl_highlight_a(0.35 * opacity),
-                Color4f::new(1.0, 1.0, 1.0, 0.55 * opacity),
-                tokens::text_pearl_highlight_a(0.35 * opacity),
-                tokens::text_pearl_highlight_a(0.0),
-            ],
-            None,
-        ),
+        &[
+            tokens::text_pearl_highlight_a(0.0),
+            tokens::text_pearl_highlight_a(0.35 * opacity),
+            Color4f::new(1.0, 1.0, 1.0, 0.55 * opacity),
+            tokens::text_pearl_highlight_a(0.35 * opacity),
+            tokens::text_pearl_highlight_a(0.0),
+        ],
         Some(&[0.0_f32, 0.30, 0.50, 0.70, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     ) {
         let mut p = Paint::default();
@@ -350,16 +345,12 @@ fn draw_bloom(canvas: &Canvas, rect: &Rect, state: PbarState) {
             tokens::accent_rose_a(0.4 * bloom_alpha),
         )
     };
-    if let Some(shader) = gradient_shader::radial(
+    if let Some(shader) = gradients::radial(
         Point::new(cx, cy),
         radius,
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[c0, c1, Color4f::new(c1.r, c1.g, c1.b, 0.0)],
-            None,
-        ),
+        &[c0, c1, Color4f::new(c1.r, c1.g, c1.b, 0.0)],
         Some(&[0.0_f32, 0.40, 0.80][..]),
         TileMode::Clamp,
-        None,
         None,
     ) {
         let mut p = Paint::default();
@@ -420,24 +411,20 @@ fn draw_error_shimmer(
 
     let saved = canvas.save();
     canvas.clip_rrect(*track_rrect, None, Some(true));
-    if let Some(shader) = gradient_shader::linear(
+    if let Some(shader) = gradients::linear(
         (
             Point::new(shim_left, track_rect.top),
             Point::new(shim_right, track_rect.top),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                tokens::accent_ember_a(0.0),
-                tokens::accent_ember_a(0.5 * opacity),
-                tokens::text_pearl_a(0.6 * opacity),
-                tokens::accent_ember_a(0.5 * opacity),
-                tokens::accent_ember_a(0.0),
-            ],
-            None,
-        ),
+        &[
+            tokens::accent_ember_a(0.0),
+            tokens::accent_ember_a(0.5 * opacity),
+            tokens::text_pearl_a(0.6 * opacity),
+            tokens::accent_ember_a(0.5 * opacity),
+            tokens::accent_ember_a(0.0),
+        ],
         Some(&[0.0_f32, 0.48, 0.50, 0.52, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     ) {
         let mut p = Paint::default();

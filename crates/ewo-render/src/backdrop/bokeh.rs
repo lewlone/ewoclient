@@ -24,11 +24,11 @@
 
 use std::cell::RefCell;
 
+use crate::gradients;
 use crate::tokens;
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::{
-    gradient_shader, image_filters, BlendMode, Canvas, Color4f, ImageFilter, Paint, Point, Rect,
-    TileMode,
+    image_filters, BlendMode, Canvas, Color4f, ImageFilter, Paint, Point, Rect, TileMode,
 };
 
 const PERIOD_SEC: f32 = 60.0;
@@ -76,7 +76,7 @@ pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32, motion_speed: f32) {
     // 50vmin sized orb, positioned top: 30%, left: -25% relative to the
     // backdrop rect (which is our card interior, w × h). Skip when w/h
     // hit zero — happens on the first frame before a resize event lands,
-    // and Skia's gradient_shader rejects zero-radius circles with None.
+    // and Skia's gradient shaders reject zero-radius circles with None.
     let vmin = w.min(h);
     if vmin <= 0.0 {
         return;
@@ -99,13 +99,12 @@ pub fn draw(canvas: &Canvas, w: f32, h: f32, time: f32, motion_speed: f32) {
     let mid_c = tokens::accent_berry_a(0.2); // accent_berry, used at 0.2 alpha
     let outer_c = Color4f::new(0.0, 0.0, 0.0, 0.0);
 
-    let Some(shader) = gradient_shader::radial(
+    let Some(shader) = gradients::radial(
         Point::new(cx, cy),
         radius,
-        gradient_shader::GradientShaderColors::ColorsInSpace(&[inner_c, mid_c, outer_c], None),
+        &[inner_c, mid_c, outer_c],
         Some(&[0.0_f32, 0.55, 0.78][..]),
         TileMode::Clamp,
-        None,
         None,
     ) else {
         return;
