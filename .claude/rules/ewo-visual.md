@@ -50,6 +50,24 @@ Inline hues: `#FFF6F0` warm-white, `#FFF0F4` pearl highlight, `#C4AFB5`
 mid-pearl, `#6B555C` deep mauve, `#D4889A` error text, `#A35A6C` / `#8A6E7E`
 error gradient stops. The Rust palette must match the CSS `:root` byte for byte.
 
+**`Theme` is the single colour source; new colours must be tokens.** The
+prototype's inline hues are named `Theme` fields (`text_pearl_hot`,
+`accent_rose_dusk`, `bg_card_top`, …). `ewo-render` reads them only through
+`crates/ewo-render/src/tokens.rs` (`tokens::accent_rose()`, `_a(alpha)`), never
+a colour literal or per-file const in a draw function. `draw_frame` /
+`Backdrop::draw` publish the frame's theme per thread with
+`tokens::set_active(theme, settings)`; code that never calls it (examples, the
+HUD's reuse of widgets, tests) paints stock Velvet. **`accent_hue_shift`**
+rotates the berry/rose/lavender/champagne accents (OkLCH, chroma-reducing gamut
+map, exact identity at 0°) and nothing else: neutrals, backgrounds and the
+ember error family keep their hue; the slow-layer and glow caches key on the
+shift. **`motion_speed`** reaches every ambient loop through
+`ewo_core::motion::scaled_time` / `scaled_dt` (frozen under reduced motion);
+don't divide a period by the speed by hand. `tests/default_theme_golden.rs`
+pins full `draw_frame` renders of every screen, modal, the dev overlay and the
+hover/error states against `tests/golden/default_theme.txt` (regenerate with
+`EWO_UPDATE_GOLDEN=1`, only for an intentional rendering change, and say why).
+
 Fonts are bundled variable TTFs in `assets/fonts/`, resolved next to the exe
 first (portable `dist/`), then the workspace path. No system fonts.
 Fraunces (display; `SOFT` 0–100, `WONK` 0/1, `opsz`, `wght`), Newsreader (body,
@@ -84,6 +102,14 @@ Backdrop layer order in code is wine → folds → caustics → bokeh → dust �
   full-screen blurs) render to an offscreen cache at `CACHE_REFRESH_HZ` (20 Hz)
   and are blitted each frame. Pearl dust, petals and the vignette draw live.
   Invalidate the cache on resize.
+- **Offscreen caches are physical-size.** The launcher paints in logical
+  pixels under a `scale_factor` CTM; the backdrop slow-layer cache and the
+  inner-glow cache come from `offscreen.rs`: a surface at the device-pixel
+  size, drawn into with the same scale, blitted with the transform reset so one
+  cache pixel is one screen pixel. Cache keys include the physical size (and
+  the glow's the hue shift), so changing monitor scale rebuilds them. A new
+  cache must do the same; `tests/hidpi_cache.rs` renders at several scale
+  factors and fails a logical-size cache.
 - Pearl-dust halos are a baked 64 px sprite stamped with per-mote alpha. The
   inner berry glow is baked once per window size (`GLOW_CACHE`).
 - CSS blur radius → Skia sigma: `σ = radius / 2`. Spread = inflate/deflate the

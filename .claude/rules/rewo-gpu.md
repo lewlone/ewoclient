@@ -29,7 +29,14 @@ Reasoning per rule: `docs/rewo/milestones-*.md`. Measurements: `REWO_PLAN.md` §
   re-derive it.
 - `MeshVertex` is a packed 28 bytes. Greedy meshing merges only uniform cube
   faces and **never +Y**. Look for hardcoded `len * N` beside `VERTEX_STRIDE`
-  whenever a vertex grows (M21, M109).
+  whenever a vertex grows (M21, M109). Every pass's hand-written stride has a
+  `const _: () = assert!(size_of::<Vertex>() == VERTEX_STRIDE)` beside it, so a
+  struct that grows fails the build; add the same to a new pass. `rewo-mesh`
+  and `rewo-gpu` cannot see each other, so `live_cmd/view.rs`
+  (`mesh_vertex_size_is_the_world_vertex_stride`) pins the pair.
+- **`Renderer::render` checks the depth extent against the swapchain** and
+  returns `NeedsRecreate` on a mismatch. Never discard a `recreate` /
+  `ensure_depth` error with `let _ =`: log it, and exit when a recreate fails.
 - **Terrain lighting is vanilla's** (`rewo-mesh/src/smooth_light.rs`, a port of
   `BlockModelLighter`): the mesher writes the finished 8-bit vertex colour and
   smooth light coordinates, and `world.vert` samples the lightmap per vertex.
@@ -69,6 +76,36 @@ the top destroys memory in-flight command buffers reference (40,532 VUIDs in
 M86). A pass rebuilt by an `init_*` throws away state installed on it before
 the rebuild (M44), so install after. Destroy every pipeline you create: a leak
 shows as `VUID-vkDestroyDevice-device-05137` with every witness green.
+
+- **Glyph atlas (Velvet text)**: persistent image, updated by dirty-rect
+  region copy (`upload_region_r8`, the no-wait submit the skin atlas uses). Only
+  a grow builds a new image (`create_texture_r8_async`, deferred destruction of
+  the old one). Never rebuild the atlas through a fence-waiting upload:
+  `sync_atlas` runs on the gameplay path.
+- **Terrain arena** (mega-buffer): `place_column` frees its regions on any
+  staging error; a failed `flush_uploads` unregisters the batch's columns and
+  reports them via `take_lost_columns` (`pump_meshing` re-dirties them); a
+  "mega-buffer full" column is kept in a retry queue and re-uploaded
+  nearest-first once removals free space; over `MAX_COLUMNS`, `sync_meta` keeps
+  the columns nearest the camera.
+- **Per-player texture slots are LRU** (`LruSlots` in `entities.rs`): skin,
+  cape and tab-face pools evict the least recently drawn, never a slot drawn
+  this frame; when all are in use the claim is refused and the player keeps the
+  default texture. Uploads take the owner's UUID, and evictions come back via
+  `take_evicted_textures` so the app forgets the stale address. Never index a
+  pool with `next % N`.
+- **`WorldRenderer`'s per-frame inputs are two structs**: `GuiFrame` (GUI pass
+  inputs) and `SceneFrame` (camera, lightmap, sky/fog tints, fog band, sky mode,
+  celestial state, End flash, end-portal time, selected block). Its own fields
+  are GPU resources and passes: a new `set_*` input goes into one of them.
+- Swapchain: creation cleans up the swapchain and views on a partial failure;
+  the format pick prefers B8G8R8A8_SRGB, then any sRGB format in the
+  sRGB-nonlinear space, and warns otherwise (every pass writes linear colour and
+  relies on the attachment's encode). Timestamps are written only when the
+  graphics family reports `timestampValidBits`, and deltas are masked to them.
+- `rewo-mesh`'s pool runs each job under `catch_unwind` and reports
+  `panicked: true`, so `in_flight` clears and the column is treated as empty
+  until re-meshed (rayon would otherwise abort the process).
 
 Debug knobs this crate reads (`REWO_FOG`, `REWO_MOB_DEBUG_TEX`,
 `REWO_CEM_NOANIM`, `REWO_NO_SYNC_VALIDATION`) go through `src/knobs.rs` and
