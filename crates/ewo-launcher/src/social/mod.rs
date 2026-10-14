@@ -1,33 +1,49 @@
-//! Social / chickenedin integration — Phase H.
+//! Social / Frogsy integration — Phase H.
 //!
-//! Owns the launcher's calls to the chickenedin bot API. H1 does one
-//! thing: ask the bot whether each signed-in account's MC UUID is linked
-//! to a Discord account (`GET /api/links/by-uuid`). The bot returns
-//! `{"linked": bool}`; we cache the result per-UUID and the Settings →
-//! Account tab surfaces it so the user knows whether they've run the
-//! in-game `/link` flow for that account.
-//!
-//! Future H-steps add: per-user social token (H2), presence heartbeat
-//! (H3), friend graph (H4–H5), Roblox-style join (H6). They will all
-//! live in submodules under this one.
+//! Owns the launcher's calls to the Frogsy bot API (the network was called
+//! "chickenedin" before its 2026 rename): launcher-link code redemption
+//! (H2), presence heartbeat (H3), the friend graph (H4–H5) and the live
+//! network status the main-menu widget shows (H6).
 //!
 //! Threading model mirrors [`crate::auth::service`]: one worker thread
-//! per probe, results flow back over `mpsc`, the UI polls each frame.
+//! per request, results flow back over `mpsc`, the UI polls each frame.
 //! No tokio/smol per the CLAUDE.md non-negotiables.
 //!
-//! Offline-first: nothing in this module runs until the launcher has at
-//! least one signed-in MS account to probe. A signed-out launcher stays
-//! fully offline. A probe failure is non-fatal — the UI renders it as
-//! "unknown" rather than nagging.
+//! **Off unless configured.** There is no compiled-in host: the old default
+//! (`chickenedin.com`) stopped resolving, and whoever registers a dead
+//! default domain receives every linked user's bearer token, UUID and
+//! presence, and controls the server addresses the launcher offers to
+//! join. The base URL comes only from `EWO_BOT_API_BASE`, must be
+//! `https://`, and anything else disables social with a warning
+//! ([`config_from`]).
+//!
+//! **Only once linked.** Even when configured, every call except the
+//! launcher-link redemption requires the active account's `social_token`
+//! ([`call_allowed`]). Signed out, or signed in but unlinked, the launcher
+//! makes no social calls at all. Redemption is the one exception because
+//! it is how a token is obtained, and it runs only when the user submits
+//! a code in the launcher-link modal.
+//!
+//! The H1 link probe (`GET /api/links/by-uuid` for every signed-in
+//! account) is gone. It only chose the wording of the Settings line, and
+//! it sent each signed-in account's UUID to the bot before the user had
+//! opted in to anything. Linking doesn't need it: the bot mints a
+//! `/launcher-link` code only for a Discord-linked account, and
+//! redemption returns the `discord_id`, so holding a `social_token` is
+//! itself the proof of a link. The Settings line now derives from the
+//! token alone.
 
-use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
-/// Default bot API base. Override via env var `EWO_BOT_API_BASE` for
-/// dev (e.g. point at a local bot during local iteration).
-pub const DEFAULT_BOT_API_BASE: &str = "https://chickenedin.com/bot";
+/// Env var naming the bot API base (e.g. `https://example.net/bot`).
+/// Unset or empty = social disabled.
+pub const BOT_API_BASE_ENV: &str = "EWO_BOT_API_BASE";
+
+/// Env var naming the lobby (`host[:port]`) the main-menu network widget
+/// joins on click. Unset = the widget shows status but isn't joinable.
+pub const LOBBY_ADDR_ENV: &str = "EWO_LOBBY_ADDR";
 
 /// HTTP timeout for social-API calls. The endpoints are tiny JSON
 /// (`{"linked": false}` etc.) — anything past 6s is a real failure,
@@ -48,41 +64,119 @@ const FRIENDS_REFRESH_INTERVAL_S: f32 = 30.0;
 /// this often (seconds). Only ticked while the user is on the main menu.
 const SERVER_STATUS_REFRESH_INTERVAL_S: f32 = 15.0;
 
-/// The lobby the main-menu server widget joins on click. Host:port; the
-/// client defaults the port to 25565 when omitted.
-pub const CHICKENEDIN_LOBBY_ADDR: &str = "play.chickenedin.com";
+/// Where the social API lives, once the user has configured one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SocialConfig {
+    /// Validated `https://` base, no trailing slash.
+    pub base: String,
+    /// Lobby (`host[:port]`, the client defaults the port to 25565) the
+    /// network widget joins on click, if configured. There is no default:
+    /// the old `play.chickenedin.com` no longer resolves.
+    pub lobby_addr: Option<String>,
+}
 
-fn bot_api_base() -> String {
-    std::env::var("EWO_BOT_API_BASE")
-        .unwrap_or_else(|_| DEFAULT_BOT_API_BASE.to_string())
-        .trim_end_matches('/')
-        .to_string()
+/// Validate a bot API base URL. Only `https://<host>[/path]` passes: the
+/// launcher sends bearer tokens to this host and joins server addresses
+/// it returns, so plaintext `http://` (or any other scheme) is refused.
+/// Returns the normalised base (lower-case scheme, no trailing slash).
+pub fn validate_base(raw: &str) -> Result<String, String> {
+    let s = raw.trim();
+    if s.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("contains whitespace".into());
+    }
+    const SCHEME: &str = "https://";
+    if !s
+        .get(..SCHEME.len())
+        .is_some_and(|p| p.eq_ignore_ascii_case(SCHEME))
+    {
+        return Err("must start with https://".into());
+    }
+    let rest = &s[SCHEME.len()..];
+    if rest.contains(['?', '#']) {
+        return Err("must not carry a query or fragment".into());
+    }
+    let authority = rest.split('/').next().unwrap_or("");
+    if authority.contains('@') {
+        return Err("must not carry credentials".into());
+    }
+    if authority.is_empty() || authority.starts_with(':') {
+        return Err("has no host".into());
+    }
+    Ok(format!("{SCHEME}{}", rest.trim_end_matches('/')))
+}
+
+/// Build the social config from the raw env values. `None` means social
+/// is disabled: the base is unset, empty, or invalid (an invalid value
+/// logs a warning).
+pub fn config_from(base_raw: Option<&str>, lobby_raw: Option<&str>) -> Option<SocialConfig> {
+    let raw = base_raw.map(str::trim).filter(|s| !s.is_empty())?;
+    let base = match validate_base(raw) {
+        Ok(b) => b,
+        Err(why) => {
+            log::warn!("social: ignoring {BOT_API_BASE_ENV} ({why}); social features disabled");
+            return None;
+        }
+    };
+    let lobby_addr = lobby_raw
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.chars().any(|c| c.is_whitespace() || c.is_control()))
+        .map(str::to_string);
+    Some(SocialConfig { base, lobby_addr })
+}
+
+fn config_from_env() -> Option<SocialConfig> {
+    let base = std::env::var(BOT_API_BASE_ENV).ok();
+    let lobby = std::env::var(LOBBY_ADDR_ENV).ok();
+    let cfg = config_from(base.as_deref(), lobby.as_deref());
+    match &cfg {
+        Some(c) => log::info!("social: enabled, bot API at {}", c.base),
+        None => log::info!("social: not configured, no social calls will be made"),
+    }
+    cfg
+}
+
+/// The kinds of request this module issues, for [`call_allowed`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SocialCall {
+    /// `POST /api/launcher/link`: redeem a code the user typed.
+    LinkRedeem,
+    /// `GET /api/server-status` (public, but still only once linked).
+    ServerStatus,
+    /// `POST /api/presence/heartbeat`.
+    Heartbeat,
+    /// `GET /api/friends`.
+    Friends,
+    /// `POST /api/friends/request|respond`, `DELETE /api/friends/{id}`.
+    FriendAction,
+}
+
+/// The single gate every social request passes. Nothing goes out unless a
+/// base URL is configured; beyond that, only the user-initiated link
+/// redemption runs without the active account's `social_token`.
+pub fn call_allowed(configured: bool, social_token: Option<&str>, call: SocialCall) -> bool {
+    if !configured {
+        return false;
+    }
+    match call {
+        SocialCall::LinkRedeem => true,
+        SocialCall::ServerStatus
+        | SocialCall::Heartbeat
+        | SocialCall::Friends
+        | SocialCall::FriendAction => social_token.is_some_and(|t| !t.is_empty()),
+    }
+}
+
+/// `DELETE /api/friends/{discord_id}`. The id comes from the bot's JSON,
+/// so it is percent-encoded rather than trusted to be digits.
+fn remove_friend_url(base: &str, discord_id: &str) -> String {
+    format!("{}/api/friends/{}", base, urlencoding::encode(discord_id))
 }
 
 fn ureq_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout(HTTP_TIMEOUT)
-        .user_agent("EwoClient/0.1 (+https://github.com/valtterisaarinen/ewoclient)")
+        .user_agent("EwoClient/0.1 (+https://github.com/lewlone/ewoclient)")
         .build()
-}
-
-/// Whether a particular MC UUID is linked to a Discord account on
-/// chickenedin. State machine: `Unknown` (initial) → `Probing` (in
-/// flight) → terminal state (`Linked` / `NotLinked` / `Failed`).
-#[derive(Clone, Debug)]
-pub enum LinkStatus {
-    /// Not probed yet.
-    Unknown,
-    /// Probe in flight.
-    Probing,
-    /// Bot confirmed this UUID has a `links` row.
-    Linked,
-    /// Bot confirmed this UUID has no `links` row.
-    NotLinked,
-    /// Probe failed — network down, bot down, JSON malformed, etc.
-    /// The string is a short developer-facing reason for the log; the
-    /// UI renders this like "unknown" without surfacing the detail.
-    Failed(String),
 }
 
 /// Phase H2: state of the in-flight launcher-link code redemption.
@@ -153,7 +247,7 @@ pub struct FriendPresence {
     pub screen: Option<String>,
 }
 
-/// Phase H6 — a snapshot of the chickenedin network's live status, polled
+/// Phase H6 — a snapshot of the Frogsy network's live status, polled
 /// from the public `/api/server-status`. Drives the main-menu server widget.
 #[derive(Clone, Debug, Default)]
 pub struct ServerStatus {
@@ -183,12 +277,14 @@ pub enum FriendActionStatus {
 
 /// All social state the launcher holds. Owned by `App`.
 pub struct SocialState {
-    bot_api_base: String,
-    /// MC UUID → link status. UUIDs are stored undashed, matching the
-    /// shape `auth::MinecraftAccount.uuid` uses.
-    statuses: HashMap<String, LinkStatus>,
+    /// `None` = social disabled: every request method is a no-op.
+    config: Option<SocialConfig>,
     /// In-flight launcher-link redemption (H2). One at a time.
     link_redeem: LinkRedeemStatus,
+    /// The account (undashed MC UUID) the in-flight redemption is for, so
+    /// a token that arrives after an account switch lands on the account
+    /// the user linked, not whichever is active at harvest time.
+    link_redeem_uuid: Option<String>,
     /// Phase H3 heartbeat state.
     heartbeat: HeartbeatTracker,
     /// Phase H5 friends-list cache + polling state.
@@ -227,7 +323,6 @@ struct HeartbeatTracker {
 
 #[derive(Debug)]
 enum SocialEvent {
-    LinkProbeResult { uuid: String, status: LinkStatus },
     LinkRedeemResult(LinkRedeemStatus),
     HeartbeatDone,
     FriendsRefreshed(Result<FriendsList, String>),
@@ -236,12 +331,17 @@ enum SocialEvent {
 }
 
 impl SocialState {
+    /// Read the config from the environment (see [`config_from`]).
     pub fn new() -> Self {
+        Self::with_config(config_from_env())
+    }
+
+    pub fn with_config(config: Option<SocialConfig>) -> Self {
         let (tx, rx) = mpsc::channel();
         Self {
-            bot_api_base: bot_api_base(),
-            statuses: HashMap::new(),
+            config,
             link_redeem: LinkRedeemStatus::Idle,
+            link_redeem_uuid: None,
             heartbeat: HeartbeatTracker::default(),
             friends: FriendsListState::Unknown,
             friends_last_fetch: None,
@@ -264,51 +364,29 @@ impl SocialState {
         d
     }
 
-    /// Current link status for `uuid`. `Unknown` for any UUID we
-    /// haven't probed yet (and never will, until [`ensure_probed`] is
-    /// called for it).
-    pub fn link_status(&self, uuid: &str) -> LinkStatus {
-        self.statuses
-            .get(uuid)
-            .cloned()
-            .unwrap_or(LinkStatus::Unknown)
+    /// Whether a social API is configured at all. `false` = the launcher
+    /// makes no social calls and the UI hides or neutralises social
+    /// surfaces.
+    pub fn enabled(&self) -> bool {
+        self.config.is_some()
     }
 
-    /// Idempotent: probe `uuid` if its status is still `Unknown`.
-    /// Already-Probing/Linked/NotLinked accounts are a no-op. A
-    /// previously-`Failed` probe is also a no-op for H1 — we don't
-    /// auto-retry to avoid hammering a flapping bot. A manual retry
-    /// affordance can be added later if needed.
-    pub fn ensure_probed(&mut self, uuid: &str) {
-        match self.statuses.get(uuid) {
-            None | Some(LinkStatus::Unknown) => {}
-            _ => return,
-        }
-        self.statuses
-            .insert(uuid.to_string(), LinkStatus::Probing);
+    /// The configured lobby address the network widget joins, if any.
+    pub fn lobby_addr(&self) -> Option<&str> {
+        self.config.as_ref()?.lobby_addr.as_deref()
+    }
 
-        let tx = self.tx.clone();
-        let base = self.bot_api_base.clone();
-        let uuid_s = uuid.to_string();
-        let _ = thread::Builder::new()
-            .name("ewo-social-link-probe".into())
-            .spawn(move || {
-                let status = probe_one(&base, &uuid_s);
-                let _ = tx.send(SocialEvent::LinkProbeResult {
-                    uuid: uuid_s,
-                    status,
-                });
-            });
+    /// The base URL, if `call` may run with this token (see
+    /// [`call_allowed`]). Every request method goes through this.
+    fn base_for(&self, social_token: Option<&str>, call: SocialCall) -> Option<String> {
+        let cfg = self.config.as_ref()?;
+        call_allowed(true, social_token, call).then(|| cfg.base.clone())
     }
 
     /// Drain pending worker events. Call once per frame.
     pub fn poll(&mut self) {
         while let Ok(event) = self.rx.try_recv() {
             match event {
-                SocialEvent::LinkProbeResult { uuid, status } => {
-                    log::info!("social: link probe {} -> {:?}", uuid, status);
-                    self.statuses.insert(uuid, status);
-                }
                 SocialEvent::LinkRedeemResult(status) => {
                     log::info!("social: link redeem -> {:?}", status);
                     self.link_redeem = status;
@@ -357,17 +435,35 @@ impl SocialState {
         &self.link_redeem
     }
 
-    /// Fire a POST to `/api/launcher/link` with the user's typed code.
-    /// No-op if a redemption is already in flight. Result lands in
-    /// `link_redeem()` via the next `poll()` after the worker finishes.
-    pub fn submit_link_code(&mut self, code: String) {
+    /// The account (undashed MC UUID) the current redemption is for.
+    pub fn link_redeem_uuid(&self) -> Option<&str> {
+        self.link_redeem_uuid.as_deref()
+    }
+
+    /// Fire a POST to `/api/launcher/link` with the user's typed code, on
+    /// behalf of the account `for_uuid` (`None` when signed out, which
+    /// fails locally: a token with no account to store it on would burn
+    /// the one-shot code). No-op if a redemption is already in flight.
+    /// Result lands in `link_redeem()` via the next `poll()` after the
+    /// worker finishes.
+    pub fn submit_link_code(&mut self, code: String, for_uuid: Option<&str>) {
         if matches!(self.link_redeem, LinkRedeemStatus::Submitting) {
             return;
         }
+        let Some(base) = self.base_for(None, SocialCall::LinkRedeem) else {
+            self.link_redeem =
+                LinkRedeemStatus::Failed("social features aren't configured".into());
+            return;
+        };
+        let Some(uuid) = for_uuid else {
+            self.link_redeem =
+                LinkRedeemStatus::Failed("sign in with Microsoft first".into());
+            return;
+        };
         self.link_redeem = LinkRedeemStatus::Submitting;
+        self.link_redeem_uuid = Some(uuid.to_string());
 
         let tx = self.tx.clone();
-        let base = self.bot_api_base.clone();
         let _ = thread::Builder::new()
             .name("ewo-social-link-redeem".into())
             .spawn(move || {
@@ -379,6 +475,9 @@ impl SocialState {
     /// Reset the redemption state to `Idle`. Call after consuming a
     /// `Success` (persisting the token) or dismissing a `Failed` from
     /// the UI.
+    /// Keeps `link_redeem_uuid`: a redemption cancelled mid-flight still
+    /// consumed the code server-side, and its late `Success` is harvested
+    /// onto that account.
     pub fn clear_link_redeem(&mut self) {
         self.link_redeem = LinkRedeemStatus::Idle;
     }
@@ -397,9 +496,12 @@ impl SocialState {
         social_token: &str,
         location: HeartbeatLocation<'_>,
     ) {
-        if social_token.is_empty() || mc_uuid.is_empty() {
+        if mc_uuid.is_empty() {
             return;
         }
+        let Some(base) = self.base_for(Some(social_token), SocialCall::Heartbeat) else {
+            return;
+        };
         if self.heartbeat.in_flight {
             return;
         }
@@ -413,7 +515,6 @@ impl SocialState {
         self.heartbeat.last_sent = Some(time);
 
         // Snapshot all the borrowed data the worker needs.
-        let base = self.bot_api_base.clone();
         let token = social_token.to_string();
         let mc_uuid_s = mc_uuid.to_string();
         let (loc, screen, server_addr) = match location {
@@ -477,11 +578,17 @@ impl SocialState {
         self.server_status.as_ref()
     }
 
-    /// Poll `/api/server-status` (public, no token) if at least
+    /// Poll `/api/server-status` if at least
     /// `SERVER_STATUS_REFRESH_INTERVAL_S` has elapsed since the last poll
-    /// start. The caller gates this to the main-menu screen so we don't
-    /// hammer the endpoint from screens that never show the widget.
-    pub fn maybe_refresh_server_status(&mut self, time: f32) {
+    /// start. The endpoint is public, but the launcher only calls it once
+    /// the active account is linked (`social_token`), per the
+    /// offline-first rule. The caller gates this to the main-menu screen
+    /// so we don't hammer the endpoint from screens that never show the
+    /// widget.
+    pub fn maybe_refresh_server_status(&mut self, time: f32, social_token: Option<&str>) {
+        let Some(base) = self.base_for(social_token, SocialCall::ServerStatus) else {
+            return;
+        };
         if self.server_status_in_flight {
             return;
         }
@@ -494,7 +601,6 @@ impl SocialState {
         self.server_status_last_fetch = Some(time);
 
         let tx = self.tx.clone();
-        let base = self.bot_api_base.clone();
         let _ = thread::Builder::new()
             .name("ewo-social-server-status".into())
             .spawn(move || {
@@ -515,7 +621,10 @@ impl SocialState {
     /// has passed since the last fetch start. No-op if `social_token`
     /// is empty (offline-first invariant) or a fetch is already running.
     pub fn maybe_refresh_friends(&mut self, time: f32, social_token: &str) {
-        if social_token.is_empty() || self.friends_in_flight {
+        let Some(base) = self.base_for(Some(social_token), SocialCall::Friends) else {
+            return;
+        };
+        if self.friends_in_flight {
             return;
         }
         if let Some(last) = self.friends_last_fetch {
@@ -537,7 +646,6 @@ impl SocialState {
         }
 
         let tx = self.tx.clone();
-        let base = self.bot_api_base.clone();
         let token = social_token.to_string();
         let _ = thread::Builder::new()
             .name("ewo-social-friends-refresh".into())
@@ -581,9 +689,9 @@ impl SocialState {
         social_token: &str,
         payload: FriendActionPayload,
     ) {
-        if social_token.is_empty() {
+        let Some(base) = self.base_for(Some(social_token), SocialCall::FriendAction) else {
             return;
-        }
+        };
         // Block overlapping mutations — sender of the inflight POST
         // gets the response next tick anyway.
         if matches!(self.friend_action, FriendActionStatus::Submitting) {
@@ -594,7 +702,6 @@ impl SocialState {
         // 30s tick doesn't kick its own GET while ours is in flight.
         self.friends_in_flight = true;
         let tx = self.tx.clone();
-        let base = self.bot_api_base.clone();
         let token = social_token.to_string();
         let _ = thread::Builder::new()
             .name("ewo-social-friend-action".into())
@@ -623,48 +730,6 @@ enum FriendActionPayload {
 impl Default for SocialState {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// MS-auth gives us undashed UUIDs (`d4f7c0...`). The bot's `links`
-/// table stores them dashed (`d4f7c0-...-...`). Insert dashes so the
-/// HTTP query matches what the DB sees.
-fn uuid_with_dashes(s: &str) -> String {
-    let cleaned: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-    if cleaned.len() != 32 {
-        // Already dashed, or malformed — pass through unchanged.
-        return s.to_string();
-    }
-    format!(
-        "{}-{}-{}-{}-{}",
-        &cleaned[0..8],
-        &cleaned[8..12],
-        &cleaned[12..16],
-        &cleaned[16..20],
-        &cleaned[20..32],
-    )
-}
-
-fn probe_one(base: &str, uuid: &str) -> LinkStatus {
-    let dashed = uuid_with_dashes(uuid);
-    let url = format!(
-        "{}/api/links/by-uuid?minecraft_uuid={}",
-        base,
-        urlencoding::encode(&dashed),
-    );
-
-    let agent = ureq_agent();
-    match agent.get(&url).call() {
-        Ok(resp) => match resp.into_json::<serde_json::Value>() {
-            Ok(json) => match json.get("linked").and_then(|v| v.as_bool()) {
-                Some(true) => LinkStatus::Linked,
-                Some(false) => LinkStatus::NotLinked,
-                None => LinkStatus::Failed("response missing `linked` field".into()),
-            },
-            Err(e) => LinkStatus::Failed(format!("json parse: {}", e)),
-        },
-        Err(ureq::Error::Status(code, _)) => LinkStatus::Failed(format!("http {}", code)),
-        Err(ureq::Error::Transport(e)) => LinkStatus::Failed(format!("transport: {}", e)),
     }
 }
 
@@ -917,7 +982,7 @@ fn run_friend_action(
             }
         }
         FriendActionPayload::Remove(discord_id) => {
-            let url = format!("{}/api/friends/{}", base, discord_id);
+            let url = remove_friend_url(base, &discord_id);
             match agent
                 .delete(&url)
                 .set("Authorization", &bearer)
@@ -981,5 +1046,155 @@ fn redeem_one(base: &str, code: &str) -> LinkRedeemStatus {
         Err(ureq::Error::Transport(e)) => {
             LinkRedeemStatus::Failed(format!("could not reach the bot: {}", e))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn configured() -> Option<SocialConfig> {
+        // `.invalid` never resolves (RFC 2606), so even a gate bug could
+        // not reach a real host from a test.
+        config_from(Some("https://bot.example.invalid/bot/"), None)
+    }
+
+    /// Every request method, called with whatever token it would get.
+    /// Each one sets an in-flight flag (or `Submitting`) before it spawns
+    /// its worker, so "flag still clear" means "no request issued".
+    fn drive_every_call(s: &mut SocialState, token: &str) {
+        s.maybe_send_heartbeat(
+            100.0,
+            "0123456789abcdef0123456789abcdef",
+            token,
+            HeartbeatLocation::InLauncher { screen: "main_menu" },
+        );
+        s.maybe_refresh_friends(100.0, token);
+        s.refresh_friends_now(token);
+        s.maybe_refresh_server_status(100.0, Some(token).filter(|t| !t.is_empty()));
+        s.submit_friend_request_by_name(token, "someone".into());
+        s.respond_friend_request(token, "42".into(), true);
+        s.remove_friend(token, "42".into());
+    }
+
+    fn nothing_in_flight(s: &SocialState) -> bool {
+        !s.heartbeat.in_flight
+            && !s.friends_in_flight
+            && !s.server_status_in_flight
+            && matches!(s.friend_action, FriendActionStatus::Idle)
+            && matches!(s.friends, FriendsListState::Unknown)
+    }
+
+    #[test]
+    fn unset_or_empty_base_disables_social() {
+        assert_eq!(config_from(None, None), None);
+        assert_eq!(config_from(Some(""), Some("lobby.example")), None);
+        assert_eq!(config_from(Some("   "), None), None);
+    }
+
+    #[test]
+    fn base_must_be_https() {
+        assert_eq!(
+            validate_base("https://bot.example.net/bot/").as_deref(),
+            Ok("https://bot.example.net/bot")
+        );
+        assert_eq!(
+            validate_base("  HTTPS://bot.example.net:8443  ").as_deref(),
+            Ok("https://bot.example.net:8443")
+        );
+        for bad in [
+            "http://bot.example.net/bot",
+            "ftp://bot.example.net",
+            "bot.example.net/bot",
+            "https://",
+            "https:///bot",
+            "https://:443/bot",
+            "https://user:pw@bot.example.net",
+            "https://bot.example.net/bot?x=1",
+            "https://bot.example.net/b ot",
+        ] {
+            assert!(validate_base(bad).is_err(), "{bad} should be rejected");
+            assert_eq!(config_from(Some(bad), None), None, "{bad} must disable social");
+        }
+    }
+
+    #[test]
+    fn lobby_is_optional_and_never_defaulted() {
+        let c = config_from(Some("https://bot.example.net"), None).unwrap();
+        assert_eq!(c.lobby_addr, None);
+        let c = config_from(Some("https://bot.example.net"), Some(" play.example.net:25565 "))
+            .unwrap();
+        assert_eq!(c.lobby_addr.as_deref(), Some("play.example.net:25565"));
+        let c = config_from(Some("https://bot.example.net"), Some("bad host")).unwrap();
+        assert_eq!(c.lobby_addr, None);
+    }
+
+    #[test]
+    fn call_gate_requires_config_then_token() {
+        use SocialCall::*;
+        let all = [LinkRedeem, ServerStatus, Heartbeat, Friends, FriendAction];
+        for call in all {
+            assert!(!call_allowed(false, Some("tok"), call), "{call:?} with no config");
+            assert!(!call_allowed(false, None, call), "{call:?} with no config");
+        }
+        // Configured but unlinked: only the user-initiated redemption.
+        for call in all {
+            assert_eq!(call_allowed(true, None, call), call == LinkRedeem, "{call:?}");
+            assert_eq!(call_allowed(true, Some(""), call), call == LinkRedeem, "{call:?}");
+        }
+        for call in all {
+            assert!(call_allowed(true, Some("tok"), call), "{call:?} once linked");
+        }
+    }
+
+    #[test]
+    fn disabled_social_issues_no_request() {
+        let mut s = SocialState::with_config(None);
+        assert!(!s.enabled());
+        assert_eq!(s.lobby_addr(), None);
+        assert_eq!(s.base_for(Some("tok"), SocialCall::Friends), None);
+        drive_every_call(&mut s, "tok");
+        assert!(nothing_in_flight(&s));
+        s.submit_link_code("123456".into(), Some("0123456789abcdef0123456789abcdef"));
+        assert!(matches!(s.link_redeem(), LinkRedeemStatus::Failed(_)));
+        assert_eq!(s.link_redeem_uuid(), None);
+    }
+
+    #[test]
+    fn configured_but_unlinked_issues_no_request() {
+        let mut s = SocialState::with_config(configured());
+        assert!(s.enabled());
+        drive_every_call(&mut s, "");
+        assert!(nothing_in_flight(&s));
+    }
+
+    #[test]
+    fn link_redeem_needs_an_account() {
+        let mut s = SocialState::with_config(configured());
+        s.submit_link_code("123456".into(), None);
+        assert!(matches!(s.link_redeem(), LinkRedeemStatus::Failed(_)));
+        assert_eq!(s.link_redeem_uuid(), None);
+    }
+
+    #[test]
+    fn linked_account_gets_the_base() {
+        let s = SocialState::with_config(configured());
+        assert_eq!(
+            s.base_for(Some("tok"), SocialCall::ServerStatus).as_deref(),
+            Some("https://bot.example.invalid/bot")
+        );
+    }
+
+    #[test]
+    fn discord_id_is_percent_encoded_in_the_path() {
+        let base = "https://bot.example.net/bot";
+        assert_eq!(
+            remove_friend_url(base, "123456789012345678"),
+            "https://bot.example.net/bot/api/friends/123456789012345678"
+        );
+        assert_eq!(
+            remove_friend_url(base, "../../admin?x=1#y"),
+            "https://bot.example.net/bot/api/friends/..%2F..%2Fadmin%3Fx%3D1%23y"
+        );
     }
 }

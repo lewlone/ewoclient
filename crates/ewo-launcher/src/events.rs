@@ -116,7 +116,8 @@ impl App {
             {
                 let code = self.launcher_link_modal.code.clone();
                 log::info!("launcher-link modal: Enter → submitting");
-                self.social.submit_link_code(code);
+                let uuid = self.auth.active().map(|a| a.uuid.clone());
+                self.social.submit_link_code(code, uuid.as_deref());
             } else if let Some(t) = text.as_ref() {
                 for ch in t.chars() {
                     if ch.is_ascii_digit() {
@@ -600,9 +601,11 @@ impl App {
                 let over_heading = rect_contains(&heading, card_pos);
                 self.heading_hover.update(over_heading, time);
             }
-            // H6 — network widget hover (lower-left card).
+            // H6 — network widget hover (lower-left card). The widget
+            // only exists once social is configured and linked.
             let server_rect = screens::server_widget_bounds(card_w, card_h);
-            self.server_widget_hover = rect_contains(&server_rect, card_pos);
+            self.server_widget_hover =
+                self.server_widget_visible() && rect_contains(&server_rect, card_pos);
         } else {
             for s in self.menu_items.iter_mut() {
                 *s = VbtnState::default();
@@ -858,7 +861,8 @@ impl App {
             } else if submit_clicked && self.launcher_link_modal.is_ready() {
                 let code = self.launcher_link_modal.code.clone();
                 log::info!("launcher-link modal: Submit clicked");
-                self.social.submit_link_code(code);
+                let uuid = self.auth.active().map(|a| a.uuid.clone());
+                self.social.submit_link_code(code, uuid.as_deref());
             } else if pressed
                 && screens::launcher_link_modal::shroud_consumes(
                     card_pos, card_w, card_h,
@@ -1005,22 +1009,20 @@ impl App {
                     }
                 }
             }
-            // H6 — click the network widget to join the chickenedin
-            // lobby (only when the network reports online).
-            if !handled {
+            // H6 — click the network widget to join the Frogsy lobby
+            // (only when the widget is shown, the network reports
+            // online, and a lobby address is configured).
+            if !handled && self.server_widget_visible() {
                 let server_rect = screens::server_widget_bounds(card_w, card_h);
                 if rect_contains(&server_rect, card_pos) {
                     let online = matches!(
                         self.social.server_status(),
                         Some(s) if s.online
                     );
-                    if online {
+                    let lobby = self.social.lobby_addr().map(str::to_string);
+                    if let (true, Some(lobby)) = (online, lobby) {
                         log::info!("h6: network widget clicked → joining lobby");
-                        self.start_launch(
-                            self.instance_prefs.selected,
-                            Some(social::CHICKENEDIN_LOBBY_ADDR.to_string()),
-                            time,
-                        );
+                        self.start_launch(self.instance_prefs.selected, Some(lobby), time);
                     }
                     handled = true;
                 }
@@ -1083,7 +1085,10 @@ impl App {
                     .and_then(|a| self.auth.social_token(&a.uuid))
                     .map(str::to_string);
 
-                if active_token.is_none() {
+                if !self.social.enabled() {
+                    // Social not configured: the screen shows a
+                    // neutral notice with nothing to click.
+                } else if active_token.is_none() {
                     // NotLinked: clicking the centered button opens
                     // the launcher-link modal (same path as the
                     // rose line in Settings → Account).
@@ -1525,23 +1530,11 @@ impl App {
         self.launcher_link_modal.tick(dt);
         self.friends_prefs.tick(dt);
         self.auth.poll();
-        // Social: drain probe results, then make sure every
-        // signed-in account has a probe in flight or done.
-        // `ensure_probed` is idempotent — already-probed UUIDs
-        // are a no-op.
+        // Social: drain worker results. Every request below is gated
+        // inside `SocialState` on a configured base URL plus the
+        // active account's social_token (see `social::call_allowed`),
+        // so signed-out and unlinked launchers make no social calls.
         self.social.poll();
-        // Only accounts that are actually signed in (a live token)
-        // are probed — none when signed out or offline.
-        let signed_in: Vec<String> = self
-            .auth
-            .accounts()
-            .iter()
-            .filter(|a| !a.minecraft_token.is_empty())
-            .map(|a| a.uuid.clone())
-            .collect();
-        for uuid in &signed_in {
-            self.social.ensure_probed(uuid);
-        }
         // FRIENDS overlay tab — when the friends list changes,
         // rewrite the per-profile `ewo-friends.txt` snapshot the
         // in-game cdylib reads. One tab-separated line per accepted
@@ -1603,14 +1596,16 @@ impl App {
             self.social.maybe_refresh_friends(time, &token);
         }
         // Phase H2: harvest a successful launcher-link redemption
-        // immediately — persist the token next to the active MC
-        // account, clear the redemption state, close the modal.
+        // immediately — persist the token next to the MC account the
+        // code was submitted for, clear the redemption state, close
+        // the modal.
         let pending_token: Option<(String, String)> = if let
             social::LinkRedeemStatus::Success { token, .. } =
             self.social.link_redeem()
         {
-            let token = token.clone();
-            self.auth.active().map(|a| (a.uuid.clone(), token))
+            self.social
+                .link_redeem_uuid()
+                .map(|uuid| (uuid.to_string(), token.clone()))
         } else {
             None
         };
@@ -1619,12 +1614,12 @@ impl App {
             self.social.clear_link_redeem();
             self.launcher_link_modal.close();
         }
-        // H6 — poll the public network status only while it's on
-        // screen (the main-menu widget). 15s cadence inside the call.
-        // Offline-first: a launcher with no signed-in account makes
-        // no social / server-status calls at all.
-        if self.screen == Screen::MainMenu && !signed_in.is_empty() {
-            self.social.maybe_refresh_server_status(time);
+        // H6 — poll the network status only while it's on screen (the
+        // main-menu widget) and only once the active account is linked.
+        // 15s cadence inside the call.
+        if self.screen == Screen::MainMenu {
+            let token = self.active_social_token();
+            self.social.maybe_refresh_server_status(time, token.as_deref());
         }
         self.versions.poll();
         self.downloads.poll();
@@ -2144,7 +2139,9 @@ impl App {
             } else {
                 (vec![], vec![], vec![], None)
             };
-        let friends_view: FriendsViewState<'_> = if !active_has_token {
+        let friends_view: FriendsViewState<'_> = if !self.social.enabled() {
+            FriendsViewState::Disabled
+        } else if !active_has_token {
             FriendsViewState::NotLinked
         } else if let Some(msg) = friends_err_msg.as_deref() {
             FriendsViewState::Failed(msg)
@@ -2264,6 +2261,8 @@ impl App {
                 tps: &s.tps,
             }),
             hovered: self.server_widget_hover,
+            hidden: !self.server_widget_visible(),
+            joinable: self.social.lobby_addr().is_some(),
         };
         // DPI handling: the GL surface is sized in physical pixels
         // (winit reports + we forward to `GlBackend::resize` raw).

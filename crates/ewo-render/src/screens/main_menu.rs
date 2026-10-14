@@ -93,7 +93,7 @@ pub fn draw_main_menu(
 // H6 — live network status widget (lower-left). Click joins the lobby.
 // ────────────────────────────────────────────────────────────────────────
 
-/// Render-side snapshot of the chickenedin network status. `main.rs` maps
+/// Render-side snapshot of the Frogsy network status. `main.rs` maps
 /// `social::ServerStatus` into this so `ewo-render` stays ignorant of the
 /// social / HTTP types (same pattern as `FriendRowView`).
 #[derive(Clone, Copy, Default)]
@@ -102,6 +102,13 @@ pub struct ServerWidgetView<'a> {
     pub data: Option<ServerWidgetData<'a>>,
     /// Cursor is over the widget (drives the hover brightening + JOIN hint).
     pub hovered: bool,
+    /// Don't draw the widget at all: social isn't configured, or the
+    /// active account isn't linked, so no status poll runs and a
+    /// "connecting…" card would never resolve.
+    pub hidden: bool,
+    /// A lobby address is configured, so a click on an online network
+    /// joins it (drives the JOIN hint).
+    pub joinable: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -131,6 +138,9 @@ fn draw_server_widget(
     const ACCENT_CHAMP: Color = Color::from_argb(0xFF, 0xE8, 0xD4, 0xA8);
     const ACCENT_EMBER: Color = Color::from_argb(0xFF, 0xC9, 0x6A, 0x7A);
 
+    if view.hidden {
+        return;
+    }
     let bounds = server_widget_bounds(card_w, card_h);
     let rrect = skia_safe::RRect::new_rect_xy(bounds, 12.0, 12.0);
     let online = matches!(view.data, Some(d) if d.online);
@@ -164,7 +174,7 @@ fn draw_server_widget(
     dot.set_alpha_f(if view.data.is_some() { 1.0 } else { 0.4 });
     canvas.draw_circle((dot_cx, dot_cy), 3.5, &dot);
 
-    // "CHICKENEDIN" eyebrow.
+    // "FROGSY" eyebrow.
     let eyebrow_font = fonts.jetbrains_mono(9.0);
     let mut eyebrow_paint = Paint::default();
     eyebrow_paint.set_anti_alias(true);
@@ -173,7 +183,7 @@ fn draw_server_widget(
     let eyebrow_baseline = dot_cy + (-em.ascent + em.descent) / 2.0;
     draw_tracked(
         canvas,
-        "CHICKENEDIN",
+        "FROGSY",
         left + 14.0,
         eyebrow_baseline,
         &eyebrow_font,
@@ -181,8 +191,8 @@ fn draw_server_widget(
         0.18,
     );
 
-    // JOIN hint on the right when online.
-    if online {
+    // JOIN hint on the right when online and a lobby is configured.
+    if online && view.joinable {
         let join_font = fonts.jetbrains_mono(9.0);
         let mut join_paint = Paint::default();
         join_paint.set_anti_alias(true);

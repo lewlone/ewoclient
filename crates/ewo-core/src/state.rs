@@ -5,7 +5,7 @@ pub enum Screen {
     #[default]
     MainMenu,
     Instances,
-    /// Phase H5 — chickenedin friend graph: see who's online, send/accept
+    /// Phase H5 — Frogsy friend graph: see who's online, send/accept
     /// requests, remove friends. Visible only when the active account
     /// has a launcher-linked social_token; otherwise the tab still
     /// renders but the screen shows a "link your launcher" affordance.

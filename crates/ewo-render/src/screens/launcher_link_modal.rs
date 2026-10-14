@@ -209,7 +209,7 @@ pub fn draw_modal(
     let (_, sm) = sub_font.metrics();
     let sub_y = title_y + tm.descent + 14.0 + (-sm.ascent);
     canvas.draw_str(
-        "run /launcher-link on chickenedin to get a 6-digit code.",
+        "run /launcher-link on Frogsy to get a 6-digit code.",
         (content_left, sub_y),
         &sub_font,
         &sub_paint,

@@ -250,9 +250,9 @@ struct App {
     /// Microsoft auth service — owns the worker thread + auth state.
     /// Polled each frame via `auth.poll()` to drain the event channel.
     auth: AuthService,
-    /// ChickenedIn social state (Phase H). H1 caches per-account
-    /// "is this MC UUID linked to Discord?" probes. Polled each frame
-    /// the same way `auth` is.
+    /// Frogsy social state (Phase H): link redemption, presence, friends,
+    /// network status. Off unless `EWO_BOT_API_BASE` is configured.
+    /// Polled each frame the same way `auth` is.
     social: social::SocialState,
     /// Cached client-profile registry — names + the active name. Refreshed
     /// at startup and after any profile-management action (rare), so the
@@ -415,9 +415,7 @@ impl App {
             // AuthService loads the persisted account store and kicks a
             // silent refresh for the active account itself (see `new`).
             auth: AuthService::new(),
-            // SocialState starts with no probes; we trigger them each
-            // frame for every signed-in account that hasn't been
-            // probed yet (in `drive_social_probes`).
+            // SocialState reads `EWO_BOT_API_BASE`; unset = disabled.
             social: social::SocialState::new(),
             profiles: profile::list(),
             active_profile: profile::active_name(),
@@ -471,27 +469,35 @@ impl App {
         }
     }
 
-    /// Map the active account's chickenedin link probe state into the
-    /// renderer-side `LinkStatusView`. Returns `Hidden` when there's no
-    /// active account or the probe hasn't been triggered yet. When the
-    /// account is MC-linked but the launcher itself hasn't been linked
-    /// (Phase H2 social_token missing), returns the clickable variant.
+    /// Map the active account's Frogsy link state into the renderer-side
+    /// `LinkStatusView`. `Hidden` when social isn't configured or there's
+    /// no active account; otherwise the stored `social_token` alone
+    /// decides (no network probe, see `social`'s module docs): linked, or
+    /// the clickable line that opens the launcher-link modal.
     fn link_status_view(&self) -> LinkStatusView {
+        if !self.social.enabled() {
+            return LinkStatusView::Hidden;
+        }
         let Some(active) = self.auth.active() else {
             return LinkStatusView::Hidden;
         };
-        match self.social.link_status(&active.uuid) {
-            social::LinkStatus::Unknown | social::LinkStatus::Probing => LinkStatusView::Probing,
-            social::LinkStatus::Linked => {
-                if self.auth.social_token(&active.uuid).is_some() {
-                    LinkStatusView::Linked
-                } else {
-                    LinkStatusView::LinkedNeedsLauncherLink
-                }
-            }
-            social::LinkStatus::NotLinked => LinkStatusView::NotLinked,
-            social::LinkStatus::Failed(_) => LinkStatusView::Failed,
+        if self.auth.social_token(&active.uuid).is_some() {
+            LinkStatusView::Linked
+        } else {
+            LinkStatusView::LinkedNeedsLauncherLink
         }
+    }
+
+    /// The active account's `social_token`, if it has one.
+    fn active_social_token(&self) -> Option<String> {
+        let active = self.auth.active()?;
+        self.auth.social_token(&active.uuid).map(str::to_string)
+    }
+
+    /// The main-menu network widget exists only while its status poll can
+    /// run: social configured and the active account linked.
+    fn server_widget_visible(&self) -> bool {
+        self.social.enabled() && self.active_social_token().is_some()
     }
 
     /// Bounds of the active screen's Launch button (card-local). Returns
