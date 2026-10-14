@@ -563,6 +563,13 @@ impl Hud {
     /// `DirectContext` against it. Called on the render thread with
     /// Minecraft's context current — once at startup, and again if Minecraft
     /// replaces its context (`editor` then carries the live editor across).
+    ///
+    /// Everything after `wglCreateContext` runs under `catch_unwind`, and the
+    /// scope that makes our context current holds an [`OursCurrent`] guard, so
+    /// a panic in GL loading, Skia init or a shader build still hands Minecraft
+    /// its context back. On any failure our context is deleted: the caller
+    /// parks the thread in `HudState::Failed` and never retries, so nothing
+    /// else would ever free it.
     fn create(editor: Option<hud::Editor>) -> Option<Hud> {
         let hdc = unsafe { wglGetCurrentDC() };
         let mc_ctx = unsafe { wglGetCurrentContext() };
@@ -576,6 +583,53 @@ impl Hud {
             log("wglCreateContext failed");
             return None;
         }
+        let built = panic::catch_unwind(AssertUnwindSafe(|| {
+            Self::build(hdc, mc_ctx, our_ctx, editor)
+        }));
+        match built {
+            Ok(Some(hud)) => Some(hud),
+            Ok(None) => {
+                // `build` logged why; Minecraft's context is current again.
+                unsafe { wglDeleteContext(our_ctx) };
+                None
+            }
+            Err(_) => {
+                // The guard inside `build` already ran during unwinding.
+                log("Hud::create panicked (caught) — HUD disabled for this thread");
+                unsafe { wglDeleteContext(our_ctx) };
+                None
+            }
+        }
+    }
+
+    /// The body of [`Hud::create`], with `our_ctx` already created. Returns
+    /// with Minecraft's context current on every path.
+    fn build(
+        hdc: *mut c_void,
+        mc_ctx: *mut c_void,
+        our_ctx: *mut c_void,
+        editor: Option<hud::Editor>,
+    ) -> Option<Hud> {
+        // CPU-side setup first, so nothing that can fail without GL runs while
+        // our context is current. Fonts resolve the workspace `assets/fonts/`
+        // dir via the compile-time path baked into `ewo-render`.
+        let font_store = FontStore::new();
+        log(&format!(
+            "fonts loaded: fraunces={} jetbrains_mono={}",
+            font_store.has_fraunces, font_store.has_jetbrains_mono
+        ));
+        let perf = Perf::new();
+        // A `%TEMP%/ewo-no-mc-composite` sentinel forces the legacy composite
+        // path — a no-rebuild kill switch if the new path misbehaves on a given
+        // driver.
+        let tmp = std::env::temp_dir();
+        let force_legacy = tmp.join("ewo-no-mc-composite").exists();
+        let diag_solid = tmp.join("ewo-comp-solid").exists();
+        let diag_finish = tmp.join("ewo-comp-finish").exists();
+        if force_legacy {
+            log("MC-context composite disabled by ewo-no-mc-composite sentinel — legacy path");
+        }
+
         // Share the GL object namespace so the HUD texture Skia creates in our
         // context can be sampled from Minecraft's context for the composite quad.
         // Must precede any object creation in our context (Skia, below). Shares
@@ -584,70 +638,54 @@ impl Hud {
         if !shared {
             log("wglShareLists failed — composite falls back to per-frame context switch");
         }
-        if unsafe { wglMakeCurrent(hdc, our_ctx) } == 0 {
-            log("wglMakeCurrent(dedicated context) failed");
-            unsafe { wglDeleteContext(our_ctx) };
-            return None;
-        }
 
-        GL_LOADED.call_once(|| {
-            gl::load_with(gl_get_proc);
-            log("GL function pointers loaded via wglGetProcAddress");
-        });
-
-        let gr = Interface::new_load_with(|name| {
-            if name.starts_with("egl") {
-                return ptr::null();
+        let (gr, comp_program, comp_tex_loc, comp_solid_loc, fences) = {
+            if unsafe { wglMakeCurrent(hdc, our_ctx) } == 0 {
+                log("wglMakeCurrent(dedicated context) failed");
+                // A failed switch may leave no context current at all.
+                unsafe { wglMakeCurrent(hdc, mc_ctx) };
+                return None;
             }
-            gl_get_proc(name)
-        })
-        .and_then(|interface| direct_contexts::make_gl(interface, None));
+            // Hands the thread's context back to Minecraft when this block
+            // ends: success, failure or panic. Declared before `gr` so that on
+            // unwinding Skia's context drops while ours is still current.
+            let _back_to_minecraft = OursCurrent { hdc, mc_ctx };
 
-        // Build the composite shader program while our context is current — it's
-        // a *shared* object, so Minecraft's context can use it every frame.
-        let (comp_program, comp_tex_loc, comp_solid_loc) =
-            unsafe { build_composite_program() }.unwrap_or((0, -1, -1));
-        let mut gr = gr;
-        if let Some(gr) = gr.as_mut() {
+            GL_LOADED.call_once(|| {
+                gl::load_with(gl_get_proc);
+                log("GL function pointers loaded via wglGetProcAddress");
+            });
+
+            let gr = Interface::new_load_with(|name| {
+                if name.starts_with("egl") {
+                    return ptr::null();
+                }
+                gl_get_proc(name)
+            })
+            .and_then(|interface| direct_contexts::make_gl(interface, None));
+            let Some(mut gr) = gr else {
+                log("Skia DirectContext creation failed");
+                return None;
+            };
+
+            // Build the composite shader program while our context is current —
+            // it's a *shared* object, so Minecraft's context can use it every
+            // frame.
+            let (comp_program, comp_tex_loc, comp_solid_loc) =
+                unsafe { build_composite_program() }.unwrap_or((0, -1, -1));
             // Raw GL above ran behind Skia's back — drop its cached state.
             gr.reset(None);
-        }
-        let fences = shared
-            && gl::FenceSync::is_loaded()
-            && gl::WaitSync::is_loaded()
-            && gl::DeleteSync::is_loaded();
-
-        // Hand the thread's context back to Minecraft, success or not.
-        unsafe { wglMakeCurrent(hdc, mc_ctx) };
-
-        let Some(gr) = gr else {
-            unsafe { wglDeleteContext(our_ctx) };
-            log("Skia DirectContext creation failed");
-            return None;
+            let fences = shared
+                && gl::FenceSync::is_loaded()
+                && gl::WaitSync::is_loaded()
+                && gl::DeleteSync::is_loaded();
+            (gr, comp_program, comp_tex_loc, comp_solid_loc, fences)
         };
 
         // The fast (MC-context) composite needs both the shared namespace and a
         // working shader. Either missing → fall back to the legacy switch path.
-        // A `%TEMP%/ewo-no-mc-composite` sentinel forces the legacy path too —
-        // a no-rebuild kill switch if the new path misbehaves on a given driver.
-        let tmp = std::env::temp_dir();
-        let force_legacy = tmp.join("ewo-no-mc-composite").exists();
-        let diag_solid = tmp.join("ewo-comp-solid").exists();
-        let diag_finish = tmp.join("ewo-comp-finish").exists();
-        if force_legacy {
-            log("MC-context composite disabled by ewo-no-mc-composite sentinel — legacy path");
-        }
         let shared = shared && comp_program != 0 && !force_legacy;
 
-        // CPU-side font loading — no GL context needed. Resolves the workspace
-        // `assets/fonts/` dir via the compile-time path baked into `ewo-render`.
-        let font_store = FontStore::new();
-        log(&format!(
-            "fonts loaded: fraunces={} jetbrains_mono={}",
-            font_store.has_fraunces, font_store.has_jetbrains_mono
-        ));
-
-        let perf = Perf::new();
         log(&format!(
             "Skia DirectContext created on a dedicated GL context, isolated from Minecraft \
              (composite: {}, perf: {})",
