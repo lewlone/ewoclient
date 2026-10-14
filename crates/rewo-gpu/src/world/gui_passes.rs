@@ -5,7 +5,8 @@
 
 use ash::vk;
 
-use super::{clear_depth_rect, unorm_of, WorldRenderer};
+use super::depth::clear_depth_rect;
+use super::{unorm_of, WorldRenderer};
 use crate::entities::FontData;
 use crate::hud::{HudPass, HudSpritesData};
 use crate::text::{TextLine, TextPass};

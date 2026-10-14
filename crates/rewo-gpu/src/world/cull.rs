@@ -13,7 +13,8 @@ use bytemuck::{Pod, Zeroable};
 use gpu_allocator::vulkan::Allocation;
 
 use super::arena::{column_dist2, Arena, MAX_COLUMNS};
-use super::{create_device_buffer, create_host_buffer, WorldRenderer};
+use super::resources::{create_device_buffer, create_host_buffer};
+use super::WorldRenderer;
 use crate::Gpu;
 
 #[repr(C)]

@@ -1,4 +1,4 @@
-//! M5 GPU-driven world renderer.
+//! The GPU-driven world renderer.
 //!
 //! All chunk geometry lives in two device-local **mega-buffers** (vertices +
 //! indices), each column a free-list-suballocated region. A per-column
@@ -15,28 +15,47 @@
 //! rendering begins (compute can't run inside a render pass); `draw()` binds
 //! the mega-buffers and issues the indirect draw INSIDE the pass.
 //!
-//! Column uploads (rare — only on chunk load / block edit) go through a
-//! one-shot staging copy with its own fence, so the per-FRAME path never
-//! stalls (removing M4's per-frame `wait_idle`). The dedicated async
-//! transfer queue + staging ring is the M5 follow-on.
+//! Column uploads (rare — only on chunk load / block edit) are staged into a
+//! batch recorded on an upload-ring slot and submitted without a CPU fence
+//! wait, so the per-FRAME path never stalls.
+//!
+//! [`WorldRenderer`] is the façade: it owns the GPU resources and the passes,
+//! and the subsystems live in the child modules, each an `impl WorldRenderer`
+//! block plus the sub-struct it owns:
+//!
+//! | module | owns |
+//! |---|---|
+//! | `resources` | `new` / `destroy`, the buffer helpers |
+//! | `arena` | mega-buffers, free-lists, column registry, upload ring, retry queue |
+//! | `cull` | compute cull, column metadata rings, draw-count readback |
+//! | `terrain` | opaque / water pipelines, descriptor sets, world push block |
+//! | `textures` | block texture array and its animated layers |
+//! | `lightmap` | `WorldLightmapState`, the `LightmapExtra` UBO ring |
+//! | `sky` | gradient sky, celestial / End sky, tints, fog band |
+//! | `gamma` | the UNORM gamma-space scope (`in_gamma_space`) |
+//! | `frame` | `draw` and the world half of the frame's draw order |
+//! | `lines` | selection outline, leash ribbons |
+//! | `scene_passes` | end portal, clouds, border, weather, particles, crumbling |
+//! | `entity_passes` | entity + preview passes, per-player texture uploads |
+//! | `gui_passes` | hand, HUD, container, screen chrome, text; `GuiFrame` |
+//! | `depth` | `DepthTarget`, reversed-Z projection |
 
 use ash::vk;
-use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme};
-use gpu_allocator::MemoryLocation;
 
 use crate::entities::EntityPass;
 use crate::hud::HudPass;
 use crate::text::TextPass;
-use crate::Gpu;
 
 mod arena;
 mod cull;
+mod depth;
 mod entity_passes;
 mod frame;
 mod gamma;
 mod gui_passes;
 mod lightmap;
 mod lines;
+mod resources;
 mod scene_passes;
 mod sky;
 mod terrain;
@@ -45,6 +64,7 @@ mod textures;
 use arena::Arena;
 pub use arena::{MAX_COLUMNS, MAX_INDICES, MAX_VERTS, VERTEX_STRIDE};
 use cull::Culler;
+pub use depth::{perspective_reverse_z, DepthTarget};
 pub use entity_passes::PlayerTexture;
 pub use gamma::{unorm_of, GammaScope};
 use gui_passes::GuiFrame;
@@ -52,7 +72,7 @@ pub use gui_passes::OwnedTextLine;
 use lightmap::LightmapRing;
 pub use lightmap::{WorldLightmapState, BLOCK_LIGHT_FACTOR};
 use lines::{LeashRibbon, SelectOutline};
-use sky::{parse_fog_env, SkyGradient};
+use sky::SkyGradient;
 pub use sky::{SkyMode, SKY_HORIZON};
 use terrain::TerrainPass;
 pub(crate) use textures::upload_texture_array;
@@ -60,6 +80,7 @@ pub use textures::LayerAnimation;
 use textures::TextureArray;
 
 pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
+
 pub struct WorldRenderer {
     // -- graphics --
     /// The terrain pipelines (opaque + water) and their descriptor sets.
@@ -198,447 +219,9 @@ struct SceneFrame {
 }
 
 impl WorldRenderer {
-    pub fn new(
-        gpu: &mut Gpu,
-        color_format: vk::Format,
-        tex_size: u32,
-        layers: &[Vec<u8>],
-    ) -> Result<Self, String> {
-        let textures = TextureArray::create(gpu, tex_size, layers)?;
-        let device = gpu.device.clone();
-
-        let terrain_descriptors = terrain::create_terrain_descriptors(&device)?;
-
-        let mut lm = LightmapRing::create(gpu)?;
-
-        let terrain =
-            TerrainPass::create(&device, color_format, terrain_descriptors, &textures, &lm)?;
-        // Seed every slot with the default state so a first frame that
-        // never reaches `draw` still binds initialized memory.
-        lm.seed_defaults();
-
-        let sky_gradient = SkyGradient::create(&device, color_format)?;
-
-        // ---- selection outline (lines) + leash ribbon (M170) ----
-        let (select_outline, leash_ribbon) = lines::create_line_overlays(gpu, color_format)?;
-
-        // ---- compute cull descriptor + pipeline ----
-        let cull_pipeline = cull::create_cull_pipeline(&device)?;
-
-        // ---- mega-buffers + metadata + indirect + count ----
-        let mega = arena::create_mega_buffers(gpu)?;
-        let cull_bufs = cull::create_cull_buffers(gpu)?;
-
-        // Cull descriptor set (meta, indirect cmds, count).
-        let cull_descriptors = cull::create_cull_descriptors(&device, &cull_pipeline, &cull_bufs)?;
-
-        // ---- async upload ring ----
-        let upload_ring = arena::create_upload_ring(gpu)?;
-        let (count_readback, count_readback_alloc) = create_host_buffer(
-            gpu,
-            16,
-            vk::BufferUsageFlags::TRANSFER_DST,
-            "count-readback",
-        )?;
-
-        Ok(Self {
-            velvet_text: None,
-            gui: GuiFrame::default(),
-            scene: SceneFrame {
-                camera_eye: [0.0; 3],
-                lightmap: WorldLightmapState::default(),
-                sky_tint: [1.0; 3],
-                fog_tint: [1.0; 3],
-                sky_base: SKY_HORIZON,
-                fog_base: SKY_HORIZON,
-                fog: parse_fog_env(),
-                sky_mode: SkyMode::default(),
-                celestial_state: crate::celestial::CelestialState::default(),
-                end_flash: None,
-                end_portal_time: 0.0,
-                selection: None,
-            },
-            terrain,
-            sky_gradient,
-            select_outline,
-            leash_ribbon,
-            lm,
-            textures,
-            arena: Arena::new(mega, upload_ring),
-            evicted_textures: Vec::new(),
-            culler: Culler::new(
-                cull_pipeline,
-                cull_bufs,
-                cull_descriptors,
-                (count_readback, count_readback_alloc),
-            ),
-            color_format,
-            gamma: None,
-            entities: None,
-            celestial: None,
-            end_sky: None,
-            end_portal: None,
-            clouds: None,
-            border: None,
-            weather: None,
-            gui_items: None,
-            gui_item_generation: 0,
-            hand_generation: 0,
-            container: None,
-            screen: None,
-            preview: None,
-            hand: None,
-            particles: None,
-            crumbling: None,
-            hud: None,
-            locator: None,
-            text: None,
-            drawn_last_frame: 0,
-            culled_last_frame: 0,
-        })
-    }
-
     /// Set the frame's eye position — drives translucent back-to-front
     /// column sorting. Callers that never render water can skip it.
     pub fn set_camera(&mut self, eye: [f32; 3]) {
         self.scene.camera_eye = eye;
     }
-    pub fn destroy(&mut self, gpu: &mut Gpu) {
-        gpu.wait_idle();
-        if let Some(mut pass) = self.celestial.take() {
-            pass.destroy(gpu);
-        }
-        if let Some(mut pass) = self.end_sky.take() {
-            pass.destroy(gpu);
-        }
-        if let Some(mut pass) = self.clouds.take() {
-            pass.destroy(gpu);
-        }
-        if let Some(mut pass) = self.border.take() {
-            pass.destroy(gpu);
-        }
-        if let Some(mut pass) = self.hand.take() {
-            pass.destroy(gpu);
-        }
-        if let Some(mut pass) = self.preview.take() {
-            pass.destroy(gpu);
-        }
-        if let Some(mut pass) = self.locator.take() {
-            pass.destroy(gpu);
-        }
-        if let Some(mut pass) = self.container.take() {
-            pass.destroy(gpu);
-        }
-        if let Some(mut pass) = self.screen.take() {
-            pass.destroy(gpu);
-        }
-        if let Some(mut pass) = self.gui_items.take() {
-            pass.destroy(gpu);
-        }
-        if let Some(mut pass) = self.particles.take() {
-            pass.destroy(gpu);
-        }
-        if let Some(mut pass) = self.crumbling.take() {
-            pass.destroy(gpu);
-        }
-        if let Some(mut pass) = self.weather.take() {
-            pass.destroy(gpu);
-        }
-        if let Some(mut pass) = self.end_portal.take() {
-            pass.destroy(gpu);
-        }
-        if let Some(mut pass) = self.entities.take() {
-            pass.destroy(gpu);
-        }
-        if let Some(mut hud) = self.hud.take() {
-            hud.destroy(gpu);
-        }
-        if let Some(mut vt) = self.velvet_text.take() {
-            vt.destroy(gpu);
-        }
-        if let Some(mut text) = self.text.take() {
-            text.destroy(gpu);
-        }
-        self.select_outline.destroy_ring(gpu);
-        self.leash_ribbon.destroy_ring(gpu);
-        unsafe {
-            let device = &gpu.device;
-            for s in &mut self.arena.upload_slots {
-                device.destroy_fence(s.fence, None);
-                device.destroy_buffer(s.staging, None);
-            }
-            device.destroy_command_pool(self.arena.upload_pool, None);
-            self.culler.destroy_objects(device);
-            self.terrain.destroy_pipelines(device);
-            self.sky_gradient.destroy(device);
-            self.select_outline.destroy_objects(device);
-            self.leash_ribbon.destroy_objects(device);
-            for b in self.lm.bufs {
-                device.destroy_buffer(b, None);
-            }
-            self.terrain.destroy_layouts(device);
-            self.textures.destroy_objects(device);
-            for b in [self.arena.vbuf, self.arena.ibuf, self.culler.readback] {
-                device.destroy_buffer(b, None);
-            }
-        }
-        let mut slot_allocs: Vec<Option<Allocation>> = self
-            .arena
-            .upload_slots
-            .iter_mut()
-            .map(|s| s.staging_alloc.take())
-            .collect();
-        for a in self.lm.allocs.iter_mut() {
-            slot_allocs.push(a.take());
-        }
-        for a in [
-            self.textures.image_alloc.take(),
-            self.arena.vbuf_alloc.take(),
-            self.arena.ibuf_alloc.take(),
-            self.culler.readback_alloc.take(),
-        ]
-        .into_iter()
-        .chain(slot_allocs)
-        .chain(self.culler.meta_allocs.iter_mut().map(|a| a.take()))
-        .chain(self.culler.indirect_allocs.iter_mut().map(|a| a.take()))
-        .chain(self.culler.count_allocs.iter_mut().map(|a| a.take()))
-        .flatten()
-        {
-            let _ = gpu.allocator.free(a);
-        }
-    }
-}
-
-// -- helpers -----------------------------------------------------------------
-
-fn create_device_buffer(
-    gpu: &mut Gpu,
-    size: u64,
-    usage: vk::BufferUsageFlags,
-    name: &str,
-) -> Result<(vk::Buffer, Allocation), String> {
-    unsafe {
-        let buffer = gpu
-            .device
-            .create_buffer(
-                &vk::BufferCreateInfo::default()
-                    .size(size)
-                    .usage(usage)
-                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
-                None,
-            )
-            .map_err(|e| format!("{name}: {e}"))?;
-        let req = gpu.device.get_buffer_memory_requirements(buffer);
-        let alloc = gpu
-            .allocator
-            .allocate(&AllocationCreateDesc {
-                name,
-                requirements: req,
-                location: MemoryLocation::GpuOnly,
-                linear: true,
-                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-            })
-            .map_err(|e| format!("{name} alloc: {e}"))?;
-        gpu.device
-            .bind_buffer_memory(buffer, alloc.memory(), alloc.offset())
-            .map_err(|e| format!("{name} bind: {e}"))?;
-        Ok((buffer, alloc))
-    }
-}
-
-fn create_host_buffer(
-    gpu: &mut Gpu,
-    size: u64,
-    usage: vk::BufferUsageFlags,
-    name: &str,
-) -> Result<(vk::Buffer, Allocation), String> {
-    unsafe {
-        let buffer = gpu
-            .device
-            .create_buffer(
-                &vk::BufferCreateInfo::default()
-                    .size(size)
-                    .usage(usage)
-                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
-                None,
-            )
-            .map_err(|e| format!("{name}: {e}"))?;
-        let req = gpu.device.get_buffer_memory_requirements(buffer);
-        let alloc = gpu
-            .allocator
-            .allocate(&AllocationCreateDesc {
-                name,
-                requirements: req,
-                location: MemoryLocation::CpuToGpu,
-                linear: true,
-                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-            })
-            .map_err(|e| format!("{name} alloc: {e}"))?;
-        gpu.device
-            .bind_buffer_memory(buffer, alloc.memory(), alloc.offset())
-            .map_err(|e| format!("{name} bind: {e}"))?;
-        Ok((buffer, alloc))
-    }
-}
-
-// -- texture upload (unchanged from M2/M4) -----------------------------------
-
-// -- depth target (unchanged) ------------------------------------------------
-
-pub struct DepthTarget {
-    pub image: vk::Image,
-    alloc: Option<Allocation>,
-    pub view: vk::ImageView,
-    pub extent: vk::Extent2D,
-}
-
-impl DepthTarget {
-    pub fn new(gpu: &mut Gpu, extent: vk::Extent2D) -> Result<Self, String> {
-        unsafe {
-            let device = gpu.device.clone();
-            let image = device
-                .create_image(
-                    &vk::ImageCreateInfo::default()
-                        .image_type(vk::ImageType::TYPE_2D)
-                        .format(DEPTH_FORMAT)
-                        .extent(vk::Extent3D {
-                            width: extent.width.max(1),
-                            height: extent.height.max(1),
-                            depth: 1,
-                        })
-                        .mip_levels(1)
-                        .array_layers(1)
-                        .samples(vk::SampleCountFlags::TYPE_1)
-                        .tiling(vk::ImageTiling::OPTIMAL)
-                        .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
-                        .initial_layout(vk::ImageLayout::UNDEFINED),
-                    None,
-                )
-                .map_err(|e| format!("depth image: {e}"))?;
-            let req = device.get_image_memory_requirements(image);
-            let alloc = gpu
-                .allocator
-                .allocate(&AllocationCreateDesc {
-                    name: "depth-target",
-                    requirements: req,
-                    location: MemoryLocation::GpuOnly,
-                    linear: false,
-                    allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-                })
-                .map_err(|e| format!("depth alloc: {e}"))?;
-            device
-                .bind_image_memory(image, alloc.memory(), alloc.offset())
-                .map_err(|e| format!("depth bind: {e}"))?;
-            let view = device
-                .create_image_view(
-                    &vk::ImageViewCreateInfo::default()
-                        .image(image)
-                        .view_type(vk::ImageViewType::TYPE_2D)
-                        .format(DEPTH_FORMAT)
-                        .subresource_range(
-                            vk::ImageSubresourceRange::default()
-                                .aspect_mask(vk::ImageAspectFlags::DEPTH)
-                                .base_mip_level(0)
-                                .level_count(1)
-                                .base_array_layer(0)
-                                .layer_count(1),
-                        ),
-                    None,
-                )
-                .map_err(|e| format!("depth view: {e}"))?;
-            Ok(Self {
-                image,
-                alloc: Some(alloc),
-                view,
-                extent,
-            })
-        }
-    }
-
-    pub fn barrier_for_use(&self, gpu: &Gpu, cb: vk::CommandBuffer) {
-        unsafe {
-            // One depth image serves every frame in flight, so the previous
-            // frame's depth writes must finish before this frame's clear
-            // (a WAW the old TOP_OF_PIPE/no-access source left unordered).
-            let barrier = vk::ImageMemoryBarrier2::default()
-                .src_stage_mask(
-                    vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
-                        | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
-                )
-                .src_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE)
-                .dst_stage_mask(
-                    vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
-                        | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
-                )
-                .dst_access_mask(
-                    vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
-                        | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
-                )
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(self.image)
-                .subresource_range(
-                    vk::ImageSubresourceRange::default()
-                        .aspect_mask(vk::ImageAspectFlags::DEPTH)
-                        .base_mip_level(0)
-                        .level_count(1)
-                        .base_array_layer(0)
-                        .layer_count(1),
-                );
-            gpu.device.cmd_pipeline_barrier2(
-                cb,
-                &vk::DependencyInfo::default()
-                    .image_memory_barriers(std::slice::from_ref(&barrier)),
-            );
-        }
-    }
-
-    pub fn destroy(&mut self, gpu: &mut Gpu) {
-        unsafe {
-            gpu.device.destroy_image_view(self.view, None);
-            gpu.device.destroy_image(self.image, None);
-        }
-        if let Some(a) = self.alloc.take() {
-            let _ = gpu.allocator.free(a);
-        }
-    }
-}
-
-// -- frustum -----------------------------------------------------------------
-
-/// Infinite reversed-Z perspective (RH, Y-up). Maps z=-near→1, z=-∞→0; pair
-/// with a 0.0 depth clear + `GREATER`. Column-major.
-pub fn perspective_reverse_z(fov_y_rad: f32, aspect: f32, near: f32) -> [[f32; 4]; 4] {
-    let f = 1.0 / (fov_y_rad * 0.5).tan();
-    [
-        [f / aspect, 0.0, 0.0, 0.0],
-        [0.0, f, 0.0, 0.0],
-        [0.0, 0.0, 0.0, -1.0],
-        [0.0, 0.0, near, 0.0],
-    ]
-}
-
-/// Clear the depth attachment over one rectangle, mid-render-pass.
-///
-/// The preview shares the frame's depth buffer with the world, so without this
-/// the model would be depth-tested against whatever terrain happens to be
-/// behind the panel and would appear cut in half by a hillside. Reversed-Z, so
-/// the cleared value is **0.0** — the far plane — which is what the world pass
-/// clears to as well.
-fn clear_depth_rect(gpu: &Gpu, cb: vk::CommandBuffer, rect: vk::Rect2D) {
-    let attachment = vk::ClearAttachment::default()
-        .aspect_mask(vk::ImageAspectFlags::DEPTH)
-        .clear_value(vk::ClearValue {
-            depth_stencil: vk::ClearDepthStencilValue {
-                depth: 0.0,
-                stencil: 0,
-            },
-        });
-    let area = vk::ClearRect::default()
-        .rect(rect)
-        .base_array_layer(0)
-        .layer_count(1);
-    unsafe { gpu.device.cmd_clear_attachments(cb, &[attachment], &[area]) };
 }

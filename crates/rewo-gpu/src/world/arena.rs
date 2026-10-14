@@ -19,7 +19,8 @@ use ash::vk;
 use gpu_allocator::vulkan::Allocation;
 
 use super::cull::ColumnMeta;
-use super::{create_device_buffer, create_host_buffer, WorldRenderer};
+use super::resources::{create_device_buffer, create_host_buffer};
+use super::WorldRenderer;
 use crate::Gpu;
 
 // -- Arena capacity facts (public so tooling can report utilization without
