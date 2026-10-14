@@ -20,7 +20,7 @@
 //! stalls (removing M4's per-frame `wait_idle`). The dedicated async
 //! transfer queue + staging ring is the M5 follow-on.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use ash::vk;
 use bytemuck::{Pod, Zeroable};
@@ -474,6 +474,102 @@ impl FreeList {
     }
 }
 
+/// Element counts of a column's four arena regions: opaque vertices, opaque
+/// indices, translucent vertices, translucent indices.
+type RegionCounts = [u64; 4];
+
+/// Allocate a column's four regions from the shared vertex / index
+/// free-lists, all or nothing: a partial success is rolled back before
+/// returning `None`, so a full arena never leaks the regions that did fit.
+fn alloc_regions(vfree: &mut FreeList, ifree: &mut FreeList, n: RegionCounts) -> Option<[u64; 4]> {
+    let v = vfree.alloc(n[0])?;
+    let Some(i) = ifree.alloc(n[1]) else {
+        vfree.free_region(v, n[0]);
+        return None;
+    };
+    let Some(tv) = vfree.alloc(n[2]) else {
+        vfree.free_region(v, n[0]);
+        ifree.free_region(i, n[1]);
+        return None;
+    };
+    let Some(ti) = ifree.alloc(n[3]) else {
+        vfree.free_region(v, n[0]);
+        ifree.free_region(i, n[1]);
+        vfree.free_region(tv, n[2]);
+        return None;
+    };
+    Some([v, i, tv, ti])
+}
+
+/// Return regions from [`alloc_regions`] that no command ever referenced.
+fn free_regions(vfree: &mut FreeList, ifree: &mut FreeList, off: [u64; 4], n: RegionCounts) {
+    vfree.free_region(off[0], n[0]);
+    ifree.free_region(off[1], n[1]);
+    vfree.free_region(off[2], n[2]);
+    ifree.free_region(off[3], n[3]);
+}
+
+/// Squared XZ distance from `eye` to a column's centre.
+fn column_dist2((cx, cz): (i32, i32), eye: [f32; 3]) -> f64 {
+    let dx = (cx as f64 * 16.0 + 8.0) - eye[0] as f64;
+    let dz = (cz as f64 * 16.0 + 8.0) - eye[2] as f64;
+    dx * dx + dz * dz
+}
+
+/// Order column keys nearest to `eye` first, ties by coordinate.
+fn sort_nearest_first(keys: &mut [(i32, i32)], eye: [f32; 3]) {
+    keys.sort_by(|a, b| {
+        column_dist2(*a, eye)
+            .total_cmp(&column_dist2(*b, eye))
+            .then(a.cmp(b))
+    });
+}
+
+/// The column metadata the cull shader sees, at most `max` of them. Under the
+/// cap the order is whatever `columns` yields (unchanged behaviour). Over it,
+/// the kept set is **the nearest `max` columns to `eye`** (XZ distance to the
+/// column centre, ties by coordinate), so which columns vanish is a property
+/// of where the camera is, not of `HashMap` iteration order.
+fn select_metas(
+    columns: impl Iterator<Item = ((i32, i32), ColumnMeta)>,
+    eye: [f32; 3],
+    max: usize,
+) -> Vec<ColumnMeta> {
+    let mut all: Vec<((i32, i32), ColumnMeta)> = columns.collect();
+    if all.len() > max {
+        all.sort_by(|a, b| {
+            column_dist2(a.0, eye)
+                .total_cmp(&column_dist2(b.0, eye))
+                .then(a.0.cmp(&b.0))
+        });
+        all.truncate(max);
+    }
+    all.into_iter().map(|(_, m)| m).collect()
+}
+
+/// Which per-player atlas pool an eviction came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlayerTexture {
+    Skin,
+    Cape,
+    Face,
+}
+
+/// The owner key the inventory preview's single player uploads under.
+const PREVIEW_OWNER: u128 = 0;
+
+/// A column whose geometry did not fit the mega-buffers, held (owned) until
+/// arena space frees, then re-uploaded by
+/// [`WorldRenderer::retry_deferred_columns`].
+struct DeferredColumn {
+    vertex_bytes: Vec<u8>,
+    indices: Vec<u32>,
+    tvertex_bytes: Vec<u8>,
+    tindices: Vec<u32>,
+    y_min: f32,
+    y_max: f32,
+}
+
 pub struct WorldRenderer {
     // -- graphics --
     tex_set_layout: vk::DescriptorSetLayout,
@@ -488,8 +584,6 @@ pub struct WorldRenderer {
     select_layout: vk::PipelineLayout,
     select_pipeline: vk::Pipeline,
     select_ring: crate::buf_ring::BufRing,
-    /// The targeted block (world coords), or `None` — set each frame.
-    selection: Option<[i32; 3]>,
     /// Leash ribbons (M170): a TRIANGLE_LIST of position+colour verts, world
     /// space, depth-tested against terrain and entities. Rebuilt each frame.
     leash_layout: vk::PipelineLayout,
@@ -534,6 +628,22 @@ pub struct WorldRenderer {
     /// in-flight frame was drawing.
     pending_free: Vec<(u64, [(u64, u64); 2], [(u64, u64); 2])>,
     meta_warned: bool,
+    /// Columns that did not fit the arena, re-uploaded when space frees
+    /// (rather than silently never drawn). Keyed by coordinate, so a newer
+    /// mesh of the same column replaces the waiting one.
+    deferred: BTreeMap<(i32, i32), DeferredColumn>,
+    /// Arena ranges were released since the last retry of `deferred`.
+    space_freed: bool,
+    /// Columns registered whose copies are in the open, unsubmitted upload
+    /// batch. If that batch fails to submit, their arena data was never
+    /// written, so they are unregistered and reported via `lost_columns`.
+    batch_columns: Vec<(i32, i32)>,
+    /// Columns unregistered by a failed upload submit; the caller re-meshes
+    /// them ([`WorldRenderer::take_lost_columns`]).
+    lost_columns: Vec<(i32, i32)>,
+    /// Players whose skin / cape / face slot an upload took since the last
+    /// [`WorldRenderer::take_evicted_textures`].
+    evicted_textures: Vec<(u128, PlayerTexture)>,
     // -- compute cull --
     cull_set_layout: vk::DescriptorSetLayout,
     cull_layout: vk::PipelineLayout,
@@ -569,12 +679,6 @@ pub struct WorldRenderer {
     /// Sun/moon/star pass (M12), drawn between the gradient sky and terrain.
     /// `None` when celestial textures were unavailable (degrade to bare sky).
     celestial: Option<crate::celestial::CelestialPass>,
-    /// Current clear-weather celestial state (set by `set_celestial`).
-    celestial_state: crate::celestial::CelestialState,
-    /// `(intensity, xAngle, yAngle)` for the End flash, or `None` where the
-    /// level has no `EndFlashState` at all — which is every dimension whose
-    /// skybox is not END.
-    end_flash: Option<(f32, f32, f32)>,
     /// The End skybox pass (M16). `None` until `init_end_sky` supplies
     /// `textures/environment/end_sky.png` — a missing asset degrades to no sky
     /// contribution at all, never to an invented flat colour.
@@ -609,6 +713,10 @@ pub struct WorldRenderer {
     /// This frame's GUI inputs — what the `set_*` calls stored for the
     /// GUI passes to draw at `render` (the passes themselves stay above).
     gui: GuiFrame,
+    /// This frame's scene inputs — camera, lightmap, sky and fog, celestial
+    /// and End state, the selection — what the `set_*` calls stored for the
+    /// world passes to draw at `render`.
+    scene: SceneFrame,
     /// A **second** entity pass, for the inventory screen's player preview
     /// (M36).
     ///
@@ -629,11 +737,6 @@ pub struct WorldRenderer {
     /// The block-break crack overlay (M81). `None` until `init_crumbling`
     /// supplies the ten stage textures.
     crumbling: Option<crate::crumbling::CrumblingPass>,
-    /// This frame's portal geometry, and the game time its shader scrolls on.
-    end_portal_time: f32,
-    /// Which sky `draw` renders (`DimensionType.Skybox`). Default
-    /// [`SkyMode::Overworld`] — the pre-M16 behaviour.
-    sky_mode: SkyMode,
     hud: Option<HudPass>,
     locator: Option<crate::locator_bar::LocatorBarPass>,
     text: Option<TextPass>,
@@ -641,6 +744,24 @@ pub struct WorldRenderer {
     /// that need per-run styling the bitmap pass cannot express (tooltips
     /// first; chat and F3 next).
     velvet_text: Option<crate::velvet_text::VelvetTextPass>,
+    // -- animated texture layers (water/lava; `anim_tick`) --
+    tex_size: u32,
+    mip_levels: u32,
+    animations: Vec<LayerAnimation>,
+    /// Every animation frame's full mip chain, concatenated level by level —
+    /// built once in `set_animations` so a frame change is a memcpy.
+    anim_mips: Vec<Vec<Vec<u8>>>,
+    anim_last: Vec<Option<usize>>,
+
+    pub drawn_last_frame: usize,
+    pub culled_last_frame: usize,
+}
+
+/// One frame's scene inputs, separate from the renderer's GPU resources:
+/// what the world passes (sky, terrain, entities, celestial, End, selection)
+/// read when the frame is recorded. Each field is written by a
+/// `WorldRenderer::set_*` call. The counterpart of [`GuiFrame`].
+struct SceneFrame {
     /// Eye position for translucent sort + fog origin (`set_camera`).
     camera_eye: [f32; 3],
     /// The resolved lightmap uniforms (sky/block factors, sky colour, gamma,
@@ -657,17 +778,19 @@ pub struct WorldRenderer {
     fog_base: [f32; 3],
     /// Distance-fog band [start, end] (env `REWO_FOG=start,end`).
     fog: [f32; 2],
-    // -- animated texture layers (water/lava; `anim_tick`) --
-    tex_size: u32,
-    mip_levels: u32,
-    animations: Vec<LayerAnimation>,
-    /// Every animation frame's full mip chain, concatenated level by level —
-    /// built once in `set_animations` so a frame change is a memcpy.
-    anim_mips: Vec<Vec<Vec<u8>>>,
-    anim_last: Vec<Option<usize>>,
-
-    pub drawn_last_frame: usize,
-    pub culled_last_frame: usize,
+    /// Which sky `draw` renders (`DimensionType.Skybox`). Default
+    /// [`SkyMode::Overworld`] — the pre-M16 behaviour.
+    sky_mode: SkyMode,
+    /// Current clear-weather celestial state (set by `set_celestial`).
+    celestial_state: crate::celestial::CelestialState,
+    /// `(intensity, xAngle, yAngle)` for the End flash, or `None` where the
+    /// level has no `EndFlashState` at all — which is every dimension whose
+    /// skybox is not END.
+    end_flash: Option<(f32, f32, f32)>,
+    /// The game time the end portal shader scrolls on (`set_end_portals`).
+    end_portal_time: f32,
+    /// The targeted block (world coords), or `None` — set each frame.
+    selection: Option<[i32; 3]>,
 }
 
 /// One frame's GUI inputs, separate from the renderer's GPU resources.
@@ -1175,6 +1298,20 @@ impl WorldRenderer {
             Ok(Self {
                 velvet_text: None,
                 gui: GuiFrame::default(),
+                scene: SceneFrame {
+                    camera_eye: [0.0; 3],
+                    lightmap: WorldLightmapState::default(),
+                    sky_tint: [1.0; 3],
+                    fog_tint: [1.0; 3],
+                    sky_base: SKY_HORIZON,
+                    fog_base: SKY_HORIZON,
+                    fog: parse_fog_env(),
+                    sky_mode: SkyMode::default(),
+                    celestial_state: crate::celestial::CelestialState::default(),
+                    end_flash: None,
+                    end_portal_time: 0.0,
+                    selection: None,
+                },
                 tex_set_layout,
                 graphics_layout,
                 pipeline,
@@ -1189,7 +1326,6 @@ impl WorldRenderer {
                 leash_ring,
                 leash_warned: false,
                 leash_verts: Vec::new(),
-                selection: None,
                 tex_pool,
                 tex_sets,
                 lm_bufs,
@@ -1215,6 +1351,11 @@ impl WorldRenderer {
                 column_count: 0,
                 pending_free: Vec::new(),
                 meta_warned: false,
+                deferred: BTreeMap::new(),
+                space_freed: false,
+                batch_columns: Vec::new(),
+                lost_columns: Vec::new(),
+                evicted_textures: Vec::new(),
                 cull_set_layout,
                 cull_layout,
                 cull_pipeline,
@@ -1235,11 +1376,8 @@ impl WorldRenderer {
                 gamma: None,
                 entities: None,
                 celestial: None,
-                celestial_state: crate::celestial::CelestialState::default(),
-                end_flash: None,
                 end_sky: None,
                 end_portal: None,
-                end_portal_time: 0.0,
                 clouds: None,
                 border: None,
                 weather: None,
@@ -1252,17 +1390,9 @@ impl WorldRenderer {
                 hand: None,
                 particles: None,
                 crumbling: None,
-                sky_mode: SkyMode::default(),
                 hud: None,
                 locator: None,
                 text: None,
-                camera_eye: [0.0; 3],
-                lightmap: WorldLightmapState::default(),
-                sky_tint: [1.0; 3],
-                fog_tint: [1.0; 3],
-                sky_base: SKY_HORIZON,
-                fog_base: SKY_HORIZON,
-                fog: parse_fog_env(),
                 tex_size,
                 mip_levels,
                 animations: Vec::new(),
@@ -1403,7 +1533,7 @@ impl WorldRenderer {
     /// Set the frame's eye position — drives translucent back-to-front
     /// column sorting. Callers that never render water can skip it.
     pub fn set_camera(&mut self, eye: [f32; 3]) {
-        self.camera_eye = eye;
+        self.scene.camera_eye = eye;
     }
 
     /// Set the time-of-day lightmap state: `sky_factor` scales the sky half
@@ -1412,8 +1542,8 @@ impl WorldRenderer {
     /// a torch is as bright at midnight as at noon, which is the whole point
     /// of keeping the two channels separate through to the shader.
     pub fn set_lightmap(&mut self, sky_factor: f32, sky_color: [f32; 3]) {
-        self.lightmap.sky_factor = sky_factor;
-        self.lightmap.sky_color = sky_color;
+        self.scene.lightmap.sky_factor = sky_factor;
+        self.scene.lightmap.sky_color = sky_color;
     }
 
     /// Set the full resolved lightmap state (sky/block factors, sky colour,
@@ -1421,7 +1551,7 @@ impl WorldRenderer {
     /// mirror of vanilla's `LightmapInfo`. `set_lightmap` is the day/night-only
     /// convenience that touches just the sky factor + colour.
     pub fn set_lightmap_state(&mut self, state: WorldLightmapState) {
-        self.lightmap = state;
+        self.scene.lightmap = state;
     }
 
     /// Multiply the sky gradient and the distance-fog colour by the time of
@@ -1429,8 +1559,8 @@ impl WorldRenderer {
     /// black at night). Without this the ground would darken at dusk while the
     /// sky stayed noon-blue.
     pub fn set_sky_tint(&mut self, sky: [f32; 3], fog: [f32; 3]) {
-        self.sky_tint = sky;
-        self.fog_tint = fog;
+        self.scene.sky_tint = sky;
+        self.scene.fog_tint = fog;
     }
 
     /// Set the camera biome sky/fog base color (LINEAR), M14. The horizon and
@@ -1439,8 +1569,8 @@ impl WorldRenderer {
     /// requires a remesh (it is a per-frame uniform). Passing `SKY_HORIZON`
     /// restores the pre-M14 fixed sky.
     pub fn set_sky_fog_base(&mut self, sky_linear: [f32; 3], fog_linear: [f32; 3]) {
-        self.sky_base = sky_linear;
-        self.fog_base = fog_linear;
+        self.scene.sky_base = sky_linear;
+        self.scene.fog_base = fog_linear;
     }
 
     // Re-initialising a pass (rare: asset reload, reconnect) destroys the old
@@ -1551,13 +1681,13 @@ impl WorldRenderer {
     /// Update the clear-weather celestial state for this frame (angles in
     /// radians, sunrise colour linear rgb + straight alpha).
     pub fn set_celestial(&mut self, state: crate::celestial::CelestialState) {
-        self.celestial_state = state;
+        self.scene.celestial_state = state;
     }
 
     /// `SkyRenderState.endFlash{Intensity,XAngle,YAngle}` — `None` when the
     /// level has no flash state, which is every non-END skybox.
     pub fn set_end_flash(&mut self, flash: Option<(f32, f32, f32)>) {
-        self.end_flash = flash;
+        self.scene.end_flash = flash;
     }
 
     /// The attached celestial pass, if any (`rewo skyshot` reports its
@@ -2162,7 +2292,7 @@ impl WorldRenderer {
         draws: &[crate::end_portal::PortalDraw],
         game_time: i64,
     ) -> Result<(), String> {
-        self.end_portal_time = crate::end_portal::game_time_fraction(game_time);
+        self.scene.end_portal_time = crate::end_portal::game_time_fraction(game_time);
         match self.end_portal.as_mut() {
             Some(p) => p.set_draws(gpu, draws),
             None => Ok(()),
@@ -2195,11 +2325,11 @@ impl WorldRenderer {
     /// `PlaySession::active_dimension_type`, so a dimension change or respawn
     /// takes effect on the next frame with no other bookkeeping.
     pub fn set_sky_mode(&mut self, mode: SkyMode) {
-        self.sky_mode = mode;
+        self.scene.sky_mode = mode;
     }
 
     pub fn sky_mode(&self) -> SkyMode {
-        self.sky_mode
+        self.scene.sky_mode
     }
 
     /// Attach the entity pass (mob models / capsules + nametags).
@@ -2461,18 +2591,17 @@ impl WorldRenderer {
         self.entities.as_ref()
     }
 
-    /// Upload a player's 64×64 skin into the entity atlas and return the UV
-    /// offset for its `EntityDraw::skin_uv`. `None` if the entity pass isn't
-    /// initialized (view/demo/bench paths).
-    /// The same, into the **preview** pass (M36).
+    /// [`Self::upload_player_skin`], into the **preview** pass (M36).
     ///
     /// A separate call because the two passes hold separate atlases, so a UV
     /// from one means nothing in the other — uploading once and reusing the
     /// offset would put a slice of some mob's texture on the player.
     pub fn upload_preview_skin(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<[f32; 2]> {
         let pass = self.preview.as_mut()?;
-        match pass.upload_skin(gpu, rgba) {
-            Ok(uv) => Some(uv),
+        // The preview draws one player, the local one: a fixed owner, so a
+        // re-upload reuses its slot and nothing is ever evicted.
+        match pass.upload_skin(gpu, PREVIEW_OWNER, rgba) {
+            Ok((uv, _)) => Some(uv),
             Err(e) => {
                 log::warn!("preview: skin upload failed: {e}");
                 None
@@ -2493,10 +2622,23 @@ impl WorldRenderer {
         self.entities.as_mut()?.upload_trim(gpu, key, rgba, w, h)
     }
 
-    pub fn upload_player_skin(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<[f32; 2]> {
+    /// Upload player `owner`'s 64x64 skin into the entity atlas and return the
+    /// UV offset for its `EntityDraw::skin_uv`. `None` if the entity pass
+    /// isn't initialized, or every skin slot is drawn this frame. A player
+    /// whose slot this took is queued for [`Self::take_evicted_textures`].
+    pub fn upload_player_skin(
+        &mut self,
+        gpu: &mut Gpu,
+        owner: u128,
+        rgba: &[u8],
+    ) -> Option<[f32; 2]> {
         let pass = self.entities.as_mut()?;
-        match pass.upload_skin(gpu, rgba) {
-            Ok(uv) => Some(uv),
+        match pass.upload_skin(gpu, owner, rgba) {
+            Ok((uv, evicted)) => {
+                self.evicted_textures
+                    .extend(evicted.map(|o| (o, PlayerTexture::Skin)));
+                Some(uv)
+            }
             Err(e) => {
                 log::warn!("entities: skin upload failed: {e}");
                 None
@@ -2507,9 +2649,13 @@ impl WorldRenderer {
     /// Claim a tab-list face slot and upload one player's 16x8 face strip
     /// (M155). `None` when there is no HUD pass, matching the four uploads
     /// around it.
-    pub fn upload_tab_face(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<u8> {
-        match self.hud.as_mut()?.upload_face(gpu, rgba) {
-            Ok(slot) => Some(slot),
+    pub fn upload_tab_face(&mut self, gpu: &mut Gpu, owner: u128, rgba: &[u8]) -> Option<u8> {
+        match self.hud.as_mut()?.upload_face(gpu, owner, rgba) {
+            Ok((slot, evicted)) => {
+                self.evicted_textures
+                    .extend(evicted.map(|o| (o, PlayerTexture::Face)));
+                Some(slot)
+            }
             Err(e) => {
                 log::warn!("hud: tab face upload failed: {e}");
                 None
@@ -2520,10 +2666,19 @@ impl WorldRenderer {
     /// Claim a cape slot and upload one player's cape sheet (M60). Returns
     /// the slot's atlas origin in texels — see `EntityPass::upload_cape` for
     /// why this is an origin and not a UV delta.
-    pub fn upload_player_cape(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<(u32, u32)> {
+    pub fn upload_player_cape(
+        &mut self,
+        gpu: &mut Gpu,
+        owner: u128,
+        rgba: &[u8],
+    ) -> Option<(u32, u32)> {
         let pass = self.entities.as_mut()?;
-        match pass.upload_cape(gpu, rgba) {
-            Ok(o) => Some(o),
+        match pass.upload_cape(gpu, owner, rgba) {
+            Ok((o, evicted)) => {
+                self.evicted_textures
+                    .extend(evicted.map(|o| (o, PlayerTexture::Cape)));
+                Some(o)
+            }
             Err(e) => {
                 log::warn!("entities: cape upload failed: {e}");
                 None
@@ -2541,8 +2696,8 @@ impl WorldRenderer {
     /// wrong place rather than merely a shifted one.
     pub fn upload_preview_cape(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Option<(u32, u32)> {
         let pass = self.preview.as_mut()?;
-        match pass.upload_cape(gpu, rgba) {
-            Ok(o) => Some(o),
+        match pass.upload_cape(gpu, PREVIEW_OWNER, rgba) {
+            Ok((o, _)) => Some(o),
             Err(e) => {
                 log::warn!("preview: cape upload failed: {e}");
                 None
@@ -2693,7 +2848,7 @@ impl WorldRenderer {
                 cam_right,
                 cam_up,
                 time,
-                self.camera_eye,
+                self.scene.camera_eye,
             );
         }
     }
@@ -2862,25 +3017,111 @@ impl WorldRenderer {
                 &vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&vis)),
             );
         }
-        self.submit_slot(gpu, slot)
+        let submitted = self.submit_slot(gpu, slot);
+        let staged = std::mem::take(&mut self.batch_columns);
+        if submitted.is_err() {
+            // The batch never reached the queue, so every column registered
+            // with copies in it points at arena data that was never written.
+            // Unregister them (no submitted frame has drawn them: metadata is
+            // synced only after this flush) and hand them back for re-mesh.
+            for key in staged {
+                if self.columns.contains_key(&key) {
+                    self.unregister_column(gpu, key);
+                    self.lost_columns.push(key);
+                }
+            }
+        }
+        submitted
+    }
+
+    /// Players whose skin, cape or tab face lost its atlas slot to another
+    /// player's upload since the last call (least recently drawn first to go;
+    /// a slot drawn in the current frame is never taken). Each one's stored
+    /// address now points at someone else's texture: drop it, and upload that
+    /// player's texture again when it is next needed.
+    pub fn take_evicted_textures(&mut self) -> Vec<(u128, PlayerTexture)> {
+        std::mem::take(&mut self.evicted_textures)
+    }
+
+    /// Columns whose upload batch failed to submit since the last call. They
+    /// are no longer drawn; the caller should mark them dirty to re-mesh.
+    pub fn take_lost_columns(&mut self) -> Vec<(i32, i32)> {
+        std::mem::take(&mut self.lost_columns)
+    }
+
+    /// Columns waiting for arena space (see [`Self::retry_deferred_columns`]).
+    pub fn deferred_column_count(&self) -> usize {
+        self.deferred.len()
+    }
+
+    /// Re-upload columns that did not fit the mega-buffers, nearest to the
+    /// camera first, once arena space has been released since the last try.
+    /// Call once per frame; cheap when nothing waits. Returns how many landed.
+    pub fn retry_deferred_columns(&mut self, gpu: &mut Gpu) -> Result<usize, String> {
+        self.reclaim_ranges(gpu);
+        if self.deferred.is_empty() || !self.space_freed {
+            return Ok(0);
+        }
+        self.space_freed = false;
+        let mut keys: Vec<(i32, i32)> = self.deferred.keys().copied().collect();
+        sort_nearest_first(&mut keys, self.scene.camera_eye);
+        let mut landed = 0;
+        for key in keys {
+            let Some(d) = self.deferred.remove(&key) else {
+                continue;
+            };
+            let placed = self.place_column(
+                gpu,
+                key.0,
+                key.1,
+                &d.vertex_bytes,
+                &d.indices,
+                &d.tvertex_bytes,
+                &d.tindices,
+                d.y_min,
+                d.y_max,
+            );
+            match placed {
+                Ok(true) => landed += 1,
+                // Still no room for this one; a smaller one may fit.
+                Ok(false) => {
+                    self.deferred.insert(key, d);
+                }
+                Err(e) => {
+                    self.deferred.insert(key, d);
+                    return Err(e);
+                }
+            }
+        }
+        if landed > 0 {
+            log::info!(
+                "world: {landed} deferred column(s) uploaded, {} still waiting",
+                self.deferred.len()
+            );
+        }
+        Ok(landed)
     }
 
     /// Release arena ranges whose last possible reader has retired.
     fn reclaim_ranges(&mut self, gpu: &Gpu) {
         let done = gpu.frames_retired();
         let (vfree, ifree) = (&mut self.vfree, &mut self.ifree);
+        let mut freed = false;
         self.pending_free.retain(|(tag, vr, ir)| {
             if *tag > done {
                 return true;
             }
             for &(o, n) in vr {
                 vfree.free_region(o, n);
+                freed |= n > 0;
             }
             for &(o, n) in ir {
                 ifree.free_region(o, n);
+                freed |= n > 0;
             }
             false
         });
+        self.space_freed |= freed;
     }
 
     /// Suballocate + upload a column's geometry into the mega-buffers via
@@ -2903,38 +3144,71 @@ impl WorldRenderer {
         self.remove_column(gpu, cx, cz);
         self.reclaim_ranges(gpu);
         gpu.collect_garbage();
+        let placed = self.place_column(
+            gpu,
+            cx,
+            cz,
+            vertex_bytes,
+            indices,
+            tvertex_bytes,
+            tindices,
+            y_min,
+            y_max,
+        )?;
+        if !placed {
+            // Keep it rather than drop it: it is re-uploaded by
+            // `retry_deferred_columns` once removals free arena space.
+            if self.deferred.is_empty() {
+                log::warn!(
+                    "world: mega-buffer full — deferring column ({cx},{cz}) until space frees"
+                );
+            }
+            self.deferred.insert(
+                (cx, cz),
+                DeferredColumn {
+                    vertex_bytes: vertex_bytes.to_vec(),
+                    indices: indices.to_vec(),
+                    tvertex_bytes: tvertex_bytes.to_vec(),
+                    tindices: tindices.to_vec(),
+                    y_min,
+                    y_max,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// Allocate arena space for a column (assumed not registered), stage its
+    /// copies into the open upload batch, and register it. `Ok(false)` is "the
+    /// arena is full" with nothing changed; an `Err` rolls back the
+    /// allocation, so neither path leaks arena space.
+    #[allow(clippy::too_many_arguments)]
+    fn place_column(
+        &mut self,
+        gpu: &mut Gpu,
+        cx: i32,
+        cz: i32,
+        vertex_bytes: &[u8],
+        indices: &[u32],
+        tvertex_bytes: &[u8],
+        tindices: &[u32],
+        y_min: f32,
+        y_max: f32,
+    ) -> Result<bool, String> {
         let vtx_count = (vertex_bytes.len() as u64) / VERTEX_STRIDE;
         let idx_count = indices.len() as u64;
         let tvtx_count = (tvertex_bytes.len() as u64) / VERTEX_STRIDE;
         let tidx_count = tindices.len() as u64;
         if idx_count == 0 && tidx_count == 0 {
-            return Ok(());
+            return Ok(true);
         }
         // Four regions from the two shared free-lists (zero-length allocs
-        // are free). Roll back everything on any failure.
-        let allocs = (|| {
-            let v = self.vfree.alloc(vtx_count)?;
-            let Some(i) = self.ifree.alloc(idx_count) else {
-                self.vfree.free_region(v, vtx_count);
-                return None;
-            };
-            let Some(tv) = self.vfree.alloc(tvtx_count) else {
-                self.vfree.free_region(v, vtx_count);
-                self.ifree.free_region(i, idx_count);
-                return None;
-            };
-            let Some(ti) = self.ifree.alloc(tidx_count) else {
-                self.vfree.free_region(v, vtx_count);
-                self.ifree.free_region(i, idx_count);
-                self.vfree.free_region(tv, tvtx_count);
-                return None;
-            };
-            Some((v, i, tv, ti))
-        })();
-        let Some((vtx_off, idx_off, tvtx_off, tidx_off)) = allocs else {
-            log::warn!("world: mega-buffer full — dropping column ({cx},{cz})");
-            return Ok(());
+        // are free), all or nothing.
+        let counts = [vtx_count, idx_count, tvtx_count, tidx_count];
+        let Some(offs) = alloc_regions(&mut self.vfree, &mut self.ifree, counts) else {
+            return Ok(false);
         };
+        let [vtx_off, idx_off, tvtx_off, tidx_off] = offs;
 
         // Stage all four spans contiguously, copy each non-empty one.
         let index_bytes: &[u8] = bytemuck::cast_slice(indices);
@@ -2945,32 +3219,12 @@ impl WorldRenderer {
             (tvertex_bytes, self.vbuf, tvtx_off * VERTEX_STRIDE),
             (tindex_bytes, self.ibuf, tidx_off * 4),
         ];
-        let total: usize = spans.iter().map(|(b, _, _)| b.len()).sum();
-        let (slot, base, cb) = self.stage(gpu, total as u64)?;
-        unsafe {
-            let alloc = self.upload_slots[slot].staging_alloc.as_mut().unwrap();
-            let slice = alloc.mapped_slice_mut().ok_or("staging not mapped")?;
-            let mut off = base as usize;
-            for (bytes, _, _) in &spans {
-                slice[off..off + bytes.len()].copy_from_slice(bytes);
-                off += bytes.len();
-            }
-            let staging = self.upload_slots[slot].staging;
-            let mut src = base;
-            for (bytes, dst_buf, dst_off) in &spans {
-                if !bytes.is_empty() {
-                    gpu.device.cmd_copy_buffer(
-                        cb,
-                        staging,
-                        *dst_buf,
-                        &[vk::BufferCopy::default()
-                            .src_offset(src)
-                            .dst_offset(*dst_off)
-                            .size(bytes.len() as u64)],
-                    );
-                }
-                src += bytes.len() as u64;
-            }
+        if let Err(e) = self.record_copies(gpu, &spans) {
+            // No copy for these regions was recorded, so nothing can read
+            // them: return them now rather than leak them.
+            free_regions(&mut self.vfree, &mut self.ifree, offs, counts);
+            self.space_freed = true;
+            return Err(e);
         }
 
         let meta = ColumnMeta {
@@ -2995,12 +3249,63 @@ impl WorldRenderer {
                 meta,
             },
         );
+        self.batch_columns.push((cx, cz));
         self.meta_dirty = true;
+        Ok(true)
+    }
+
+    /// Stage `spans` (bytes, destination buffer, destination byte offset)
+    /// contiguously into the open upload batch and record one copy per
+    /// non-empty span.
+    fn record_copies(
+        &mut self,
+        gpu: &mut Gpu,
+        spans: &[(&[u8], vk::Buffer, u64); 4],
+    ) -> Result<(), String> {
+        let total: usize = spans.iter().map(|(b, _, _)| b.len()).sum();
+        let (slot, base, cb) = self.stage(gpu, total as u64)?;
+        unsafe {
+            let alloc = self.upload_slots[slot]
+                .staging_alloc
+                .as_mut()
+                .ok_or("staging not allocated")?;
+            let slice = alloc.mapped_slice_mut().ok_or("staging not mapped")?;
+            let mut off = base as usize;
+            for (bytes, _, _) in spans {
+                slice[off..off + bytes.len()].copy_from_slice(bytes);
+                off += bytes.len();
+            }
+            let staging = self.upload_slots[slot].staging;
+            let mut src = base;
+            for (bytes, dst_buf, dst_off) in spans {
+                if !bytes.is_empty() {
+                    gpu.device.cmd_copy_buffer(
+                        cb,
+                        staging,
+                        *dst_buf,
+                        &[vk::BufferCopy::default()
+                            .src_offset(src)
+                            .dst_offset(*dst_off)
+                            .size(bytes.len() as u64)],
+                    );
+                }
+                src += bytes.len() as u64;
+            }
+        }
         Ok(())
     }
 
     pub fn remove_column(&mut self, gpu: &mut Gpu, cx: i32, cz: i32) {
-        if let Some(slot) = self.columns.remove(&(cx, cz)) {
+        // A column waiting for arena space is superseded too: the caller is
+        // either forgetting it or about to upload a newer mesh.
+        self.deferred.remove(&(cx, cz));
+        self.unregister_column(gpu, (cx, cz));
+    }
+
+    /// Drop a registered column, parking its arena ranges until every frame
+    /// that could still draw them has retired.
+    fn unregister_column(&mut self, gpu: &Gpu, key: (i32, i32)) {
+        if let Some(slot) = self.columns.remove(&key) {
             // Frames already submitted (and the one being built) may still
             // draw these ranges; park them until those frames retire.
             let tag = gpu.frame_serial() + 1;
@@ -3017,15 +3322,18 @@ impl WorldRenderer {
     /// map-write it into the host-visible SSBO.
     fn sync_meta(&mut self, slot: usize) {
         if self.meta_dirty {
-            self.metas = self.columns.values().map(|s| s.meta).collect();
-            if self.metas.len() > MAX_COLUMNS && !self.meta_warned {
+            if self.columns.len() > MAX_COLUMNS && !self.meta_warned {
                 self.meta_warned = true;
                 log::warn!(
-                    "world: {} columns exceed MAX_COLUMNS {MAX_COLUMNS} — the rest are not drawn",
-                    self.metas.len()
+                    "world: {} columns exceed MAX_COLUMNS {MAX_COLUMNS} — the farthest are not drawn",
+                    self.columns.len()
                 );
             }
-            self.metas.truncate(MAX_COLUMNS);
+            self.metas = select_metas(
+                self.columns.iter().map(|(k, s)| (*k, s.meta)),
+                self.scene.camera_eye,
+                MAX_COLUMNS,
+            );
             self.column_count = self.metas.len() as u32;
             self.meta_version += 1;
             self.meta_dirty = false;
@@ -3129,30 +3437,30 @@ impl WorldRenderer {
 
     /// Override the distance-fog band (defaults from `REWO_FOG`).
     pub fn set_fog(&mut self, start: f32, end: f32) {
-        self.fog = [start, end.max(start + 1.0)];
+        self.scene.fog = [start, end.max(start + 1.0)];
     }
 
     /// Set the targeted block for the selection outline (`None` = hidden).
     pub fn set_selection(&mut self, block: Option<[i32; 3]>) {
-        self.selection = block;
+        self.scene.selection = block;
     }
 
     /// Push the world/fog constants (view_proj + camera + fog band).
     fn push_world(&self, device: &ash::Device, cb: vk::CommandBuffer, view_proj: [[f32; 4]; 4]) {
-        let (light, sky_col) = self.lightmap.push_words();
+        let (light, sky_col) = self.scene.lightmap.push_words();
         let push = WorldPush {
             view_proj,
             cam_fog: [
-                self.camera_eye[0],
-                self.camera_eye[1],
-                self.camera_eye[2],
-                self.fog[0],
+                self.scene.camera_eye[0],
+                self.scene.camera_eye[1],
+                self.scene.camera_eye[2],
+                self.scene.fog[0],
             ],
             fog_col: [
-                self.fog_base[0] * self.fog_tint[0],
-                self.fog_base[1] * self.fog_tint[1],
-                self.fog_base[2] * self.fog_tint[2],
-                self.fog[1],
+                self.scene.fog_base[0] * self.scene.fog_tint[0],
+                self.scene.fog_base[1] * self.scene.fog_tint[1],
+                self.scene.fog_base[2] * self.scene.fog_tint[2],
+                self.scene.fog[1],
             ],
             light,
             sky_col,
@@ -3186,7 +3494,7 @@ impl WorldRenderer {
         // bind. Done here (not in `set_lightmap_state`) so exactly one slot is
         // consumed per frame regardless of how often the state was set.
         self.lm_cursor = (self.lm_cursor + 1) % LIGHTMAP_UBO_RING;
-        write_lightmap_extra(&mut self.lm_allocs[self.lm_cursor], &self.lightmap);
+        write_lightmap_extra(&mut self.lm_allocs[self.lm_cursor], &self.scene.lightmap);
 
         // `LevelRenderer.addSkyPass`: NONE adds no pass at all, END draws only
         // the textured cube, otherwise the gradient disc + celestials.
@@ -3194,9 +3502,9 @@ impl WorldRenderer {
         // translation so the sky sits at infinity. Terrain then overwrites it
         // via reversed-Z where it exists.
         let sky_vp = (glam::Mat4::from_cols_array_2d(&view_proj)
-            * glam::Mat4::from_translation(glam::Vec3::from_array(self.camera_eye)))
+            * glam::Mat4::from_translation(glam::Vec3::from_array(self.scene.camera_eye)))
         .to_cols_array_2d();
-        match self.sky_mode {
+        match self.scene.sky_mode {
             SkyMode::None => {}
             SkyMode::End => {
                 if let Some(end) = &self.end_sky {
@@ -3208,7 +3516,7 @@ impl WorldRenderer {
                 // `> 0`, which is what keeps the flash's ~1e-16 tail from
                 // costing a draw. The sun, moon and stars are NOT in this arm:
                 // the End has none.
-                if let (Some(celestial), Some(flash)) = (&self.celestial, self.end_flash) {
+                if let (Some(celestial), Some(flash)) = (&self.celestial, self.scene.end_flash) {
                     if flash.0 > 1.0e-5 {
                         celestial
                             .draw_end_flash(gpu, cb, sky_vp, extent, flash.0, flash.1, flash.2);
@@ -3220,7 +3528,7 @@ impl WorldRenderer {
                 // Sun/moon/stars/sunrise (M12), between the gradient sky and
                 // terrain.
                 if let Some(celestial) = &self.celestial {
-                    celestial.draw(gpu, cb, sky_vp, extent, &self.celestial_state);
+                    celestial.draw(gpu, cb, sky_vp, extent, &self.scene.celestial_state);
                 }
             }
         }
@@ -3270,7 +3578,7 @@ impl WorldRenderer {
         // the solids, and drawing it after them lets terrain in front occlude
         // it exactly as vanilla's depth-tested pipeline does.
         if let Some(pass) = &self.end_portal {
-            pass.draw(gpu, cb, view_proj, self.end_portal_time, extent);
+            pass.draw(gpu, cb, view_proj, self.scene.end_portal_time, extent);
         }
         // Clouds (M33) sit between the solids and the translucent pass: they
         // are translucent themselves and must blend over terrain, but they are
@@ -3283,12 +3591,12 @@ impl WorldRenderer {
         // non-depth-writing passes — after everything solid and translucent so
         // terrain occludes them, before weather so rain layers over smoke.
         if let Some(pass) = &self.particles {
-            let (light, sky_col) = self.lightmap.push_words();
+            let (light, sky_col) = self.scene.lightmap.push_words();
             pass.draw(
                 gpu,
                 cb,
                 view_proj,
-                (light, sky_col, self.lightmap.extra_words()),
+                (light, sky_col, self.scene.lightmap.extra_words()),
                 extent,
             );
         }
@@ -3296,12 +3604,12 @@ impl WorldRenderer {
         // and depth-tested but not depth-writing — vanilla's
         // `WEATHER_NO_DEPTH_WRITE` branch.
         if let Some(pass) = &self.weather {
-            let (light, sky_col) = self.lightmap.push_words();
+            let (light, sky_col) = self.scene.lightmap.push_words();
             pass.draw(
                 gpu,
                 cb,
                 view_proj,
-                (light, sky_col, self.lightmap.extra_words()),
+                (light, sky_col, self.scene.lightmap.extra_words()),
                 extent,
             );
         }
@@ -3526,7 +3834,9 @@ impl WorldRenderer {
         view_proj: [[f32; 4]; 4],
         extent: vk::Extent2D,
     ) {
-        let Some(b) = self.selection else { return };
+        let Some(b) = self.scene.selection else {
+            return;
+        };
         let (x0, y0, z0) = (
             b[0] as f32 - 0.002,
             b[1] as f32 - 0.002,
@@ -3618,18 +3928,18 @@ impl WorldRenderer {
         let push = SkyPush {
             inv_view_proj: inv,
             horizon: [
-                self.sky_base[0] * self.sky_tint[0],
-                self.sky_base[1] * self.sky_tint[1],
-                self.sky_base[2] * self.sky_tint[2],
+                self.scene.sky_base[0] * self.scene.sky_tint[0],
+                self.scene.sky_base[1] * self.scene.sky_tint[1],
+                self.scene.sky_base[2] * self.scene.sky_tint[2],
                 1.0,
             ],
             // Vanilla's `SKY_COLOR` (`MULTIPLY_RGB`) tints the whole sky disc.
             // Tinting only the horizon left a blue zenith at midnight. The zenith
             // keeps the fixed gradient ratio off the (biome) base color.
             zenith: [
-                self.sky_base[0] * ZENITH_RATIO[0] * self.sky_tint[0],
-                self.sky_base[1] * ZENITH_RATIO[1] * self.sky_tint[1],
-                self.sky_base[2] * ZENITH_RATIO[2] * self.sky_tint[2],
+                self.scene.sky_base[0] * ZENITH_RATIO[0] * self.scene.sky_tint[0],
+                self.scene.sky_base[1] * ZENITH_RATIO[1] * self.scene.sky_tint[1],
+                self.scene.sky_base[2] * ZENITH_RATIO[2] * self.scene.sky_tint[2],
                 1.0,
             ],
         };
@@ -3680,7 +3990,7 @@ impl WorldRenderer {
                 p[0] * pv[0] + p[1] * pv[1] + p[2] * pv[2] + p[3] >= 0.0
             })
         };
-        let eye = self.camera_eye;
+        let eye = self.scene.camera_eye;
         let mut cols: Vec<(f32, u32, u32, i32)> = self
             .columns
             .values()
@@ -4139,10 +4449,10 @@ fn build_leash_pipeline(
                 .module(frag)
                 .name(entry),
         ];
-        // pos vec3 @0, color vec3 @12; stride 24.
+        // pos vec3 @0, color vec3 @12: one `LeashVertex`.
         let bindings = [vk::VertexInputBindingDescription::default()
             .binding(0)
-            .stride(24)
+            .stride(std::mem::size_of::<crate::leash::LeashVertex>() as u32)
             .input_rate(vk::VertexInputRate::VERTEX)];
         let attrs = [
             vk::VertexInputAttributeDescription::default()
@@ -4243,7 +4553,7 @@ fn build_line_pipeline(
         ];
         let bindings = [vk::VertexInputBindingDescription::default()
             .binding(0)
-            .stride(12)
+            .stride(std::mem::size_of::<[f32; 3]>() as u32)
             .input_rate(vk::VertexInputRate::VERTEX)];
         let attrs = [vk::VertexInputAttributeDescription::default()
             .location(0)
@@ -4884,6 +5194,68 @@ fn clear_depth_rect(gpu: &Gpu, cb: vk::CommandBuffer, rect: vk::Rect2D) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failure on any of the four regions returns every region that did
+    /// fit: the free-lists after a refused column are exactly what they were
+    /// before it.
+    #[test]
+    fn alloc_regions_is_all_or_nothing() {
+        for fail_at in 0..4 {
+            let mut vfree = FreeList::new(100);
+            let mut ifree = FreeList::new(100);
+            let mut n: RegionCounts = [10, 20, 30, 40];
+            n[fail_at] = 101; // only this region cannot fit
+            assert_eq!(alloc_regions(&mut vfree, &mut ifree, n), None);
+            assert_eq!(vfree.free, vec![(0, 100)], "fail at {fail_at}");
+            assert_eq!(ifree.free, vec![(0, 100)], "fail at {fail_at}");
+        }
+        let mut vfree = FreeList::new(100);
+        let mut ifree = FreeList::new(100);
+        let n = [10, 20, 30, 40];
+        let offs = alloc_regions(&mut vfree, &mut ifree, n).expect("fits");
+        assert_eq!(offs, [0, 0, 10, 20]);
+        free_regions(&mut vfree, &mut ifree, offs, n);
+        assert_eq!((vfree.free, ifree.free), (vec![(0, 100)], vec![(0, 100)]));
+    }
+
+    fn meta_at(cx: i32, cz: i32) -> ((i32, i32), ColumnMeta) {
+        let m = ColumnMeta {
+            aabb_min: [cx as f32 * 16.0, 0.0, cz as f32 * 16.0, 0.0],
+            ..Default::default()
+        };
+        ((cx, cz), m)
+    }
+
+    /// Over the cap, the kept columns are the nearest to the eye whatever
+    /// order the map yields them in; under it, nothing is dropped or moved.
+    #[test]
+    fn select_metas_truncates_nearest_first_and_deterministically() {
+        let keys: Vec<(i32, i32)> = (-4..=4)
+            .flat_map(|x| (-4..=4).map(move |z| (x, z)))
+            .collect();
+        let eye = [8.0, 70.0, 8.0]; // centre of column (0, 0)
+        let kept = |order: &[(i32, i32)]| -> Vec<[f32; 4]> {
+            select_metas(order.iter().map(|&(x, z)| meta_at(x, z)), eye, 5)
+                .iter()
+                .map(|m| m.aabb_min)
+                .collect()
+        };
+        let forward = kept(&keys);
+        let mut reversed = keys.clone();
+        reversed.reverse();
+        assert_eq!(forward, kept(&reversed), "input order must not matter");
+        let expect: Vec<[f32; 4]> = [(0, 0), (-1, 0), (0, -1), (0, 1), (1, 0)]
+            .iter()
+            .map(|&(x, z)| meta_at(x, z).1.aabb_min)
+            .collect();
+        assert_eq!(forward, expect, "the centre plus its four edge neighbours");
+
+        let few = [(3, 3), (-2, 1), (0, 0)];
+        let all = select_metas(few.iter().map(|&(x, z)| meta_at(x, z)), eye, 5);
+        let got: Vec<[f32; 4]> = all.iter().map(|m| m.aabb_min).collect();
+        let want: Vec<[f32; 4]> = few.iter().map(|&(x, z)| meta_at(x, z).1.aabb_min).collect();
+        assert_eq!(got, want, "under the cap the order is untouched");
+    }
 
     // These pin the CPU-side push layout only. The lightmap shader math is NOT
     // re-implemented here (that would be a proxy oracle) — it is a line-for-line

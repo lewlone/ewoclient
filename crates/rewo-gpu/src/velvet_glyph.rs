@@ -279,7 +279,10 @@ pub struct GlyphCache {
     pixels: Vec<u8>,
     edge: u32,
     shelf: Shelf,
-    dirty: bool,
+    /// The texels written since `clear_dirty`, as `[x0, y0, x1, y1)`: the
+    /// union of every blit, or the whole atlas after a grow. Drives the
+    /// region re-upload.
+    dirty: Option<[u32; 4]>,
 }
 
 impl GlyphCache {
@@ -292,7 +295,7 @@ impl GlyphCache {
             pixels: vec![0; (ATLAS_START * ATLAS_START) as usize],
             edge: ATLAS_START,
             shelf: Shelf::new(ATLAS_START, ATLAS_START),
-            dirty: false,
+            dirty: None,
         }
     }
 
@@ -323,11 +326,31 @@ impl GlyphCache {
 
     /// Has the atlas changed since `clear_dirty`? Drives re-upload.
     pub fn dirty(&self) -> bool {
+        self.dirty.is_some()
+    }
+
+    /// The changed texels since `clear_dirty` as `(x, y, w, h)`, or `None`.
+    /// Everything outside it is byte-identical to what was last uploaded at
+    /// this edge, so a region copy of exactly this rect reproduces a full
+    /// re-upload.
+    pub fn dirty_rect(&self) -> Option<(u32, u32, u32, u32)> {
         self.dirty
+            .map(|[x0, y0, x1, y1]| (x0, y0, x1 - x0, y1 - y0))
     }
 
     pub fn clear_dirty(&mut self) {
-        self.dirty = false;
+        self.dirty = None;
+    }
+
+    fn mark_dirty(&mut self, x0: u32, y0: u32, x1: u32, y1: u32) {
+        let (x1, y1) = (x1.min(self.edge), y1.min(self.edge));
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        self.dirty = Some(match self.dirty {
+            None => [x0, y0, x1, y1],
+            Some([a, b, c, d]) => [a.min(x0), b.min(y0), c.max(x1), d.max(y1)],
+        });
     }
 
     /// Map a character to a glyph id in this family.
@@ -508,7 +531,8 @@ impl GlyphCache {
         self.pixels = vec![0; (next * next) as usize];
         self.shelf = Shelf::new(next, next);
         self.glyphs.clear();
-        self.dirty = true;
+        self.dirty = None;
+        self.mark_dirty(0, 0, next, next);
         self.shelf.alloc(w, h)
     }
 
@@ -521,7 +545,7 @@ impl GlyphCache {
                 self.pixels[dst..dst + n].copy_from_slice(&data[src..src + n]);
             }
         }
-        self.dirty = true;
+        self.mark_dirty(x, y, x + w, y + h);
     }
 
     /// Total advance of a string with CSS-style `letter-spacing` in em.
@@ -950,6 +974,56 @@ mod tests {
             assert!(m.cap_height < 18.0, "{fam:?} cap height {}", m.cap_height);
             assert!(m.ascent > 0.0 && m.units_per_em > 0.0);
         }
+    }
+
+    /// The dirty rect is what `VelvetTextPass::sync_atlas` copies, so a
+    /// mirror updated with only those rects must equal the atlas after every
+    /// sync, across blits and a grow (which is a whole-atlas rect at the new
+    /// edge). No fonts needed: this drives `blit` / `alloc_or_grow` directly.
+    #[test]
+    fn dirty_rect_region_copies_reproduce_the_atlas() {
+        let mut c = GlyphCache::new();
+        assert_eq!(c.dirty_rect(), None);
+        let mut mirror = c.atlas().to_vec();
+        let mut mirror_edge = c.atlas_edge();
+        let sync = |c: &mut GlyphCache, mirror: &mut Vec<u8>, mirror_edge: &mut u32| {
+            if c.atlas_edge() != *mirror_edge {
+                assert_eq!(
+                    c.dirty_rect(),
+                    Some((0, 0, c.atlas_edge(), c.atlas_edge())),
+                    "a grow must dirty the whole atlas"
+                );
+                *mirror_edge = c.atlas_edge();
+                *mirror = vec![0xAA; (*mirror_edge * *mirror_edge) as usize];
+            }
+            if let Some((x, y, w, h)) = c.dirty_rect() {
+                let e = *mirror_edge as usize;
+                for row in y as usize..(y + h) as usize {
+                    let r = row * e + x as usize..row * e + (x + w) as usize;
+                    mirror[r.clone()].copy_from_slice(&c.atlas()[r]);
+                }
+            }
+            c.clear_dirty();
+            assert!(mirror.as_slice() == c.atlas(), "mirror diverged");
+        };
+
+        c.blit(10, 20, 3, 4, &[7; 12]);
+        assert_eq!(c.dirty_rect(), Some((10, 20, 3, 4)));
+        c.blit(5, 30, 2, 2, &[9; 4]);
+        assert_eq!(c.dirty_rect(), Some((5, 20, 8, 12)), "union of both blits");
+        sync(&mut c, &mut mirror, &mut mirror_edge);
+        assert_eq!(c.dirty_rect(), None);
+
+        let at = c.alloc_or_grow(40, 6).unwrap();
+        c.blit(at.0, at.1, 39, 5, &[3; 39 * 5]);
+        assert_eq!(c.dirty_rect(), Some((at.0, at.1, 39, 5)));
+        sync(&mut c, &mut mirror, &mut mirror_edge);
+
+        // Wider than the atlas: forces a grow (1024 -> 2048) and a repack.
+        let at = c.alloc_or_grow(1500, 3).unwrap();
+        assert_eq!(c.atlas_edge(), 2048);
+        c.blit(at.0, at.1, 1499, 2, &[5; 1499 * 2]);
+        sync(&mut c, &mut mirror, &mut mirror_edge);
     }
 
     #[test]

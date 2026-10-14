@@ -33,6 +33,10 @@ use crate::world::DEPTH_FORMAT;
 use crate::Gpu;
 
 const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
+
+// The pipeline's vertex stride and every byte count handed to the ring use
+// this constant, so the struct written into the ring must be exactly it.
+const _: () = assert!(std::mem::size_of::<Vertex>() as u64 == VERTEX_STRIDE);
 /// Headroom for the worst frame this pass can build: 46 durability bars (two
 /// quads each), the panel and its two highlights, the tooltip's two nine-slices,
 /// and a full bundle grid's twelve cells plus its progress bar (M58).

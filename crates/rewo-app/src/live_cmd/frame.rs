@@ -573,6 +573,17 @@ impl LiveApp {
         self.skins.own = session.own_uuid;
         self.skins
             .poll_uploads(&mut state.gpu, &mut state.world_renderer);
+        self.skins.drop_evicted(&mut state.world_renderer);
+        {
+            // A player is needed again once loaded in the world (skin, cape)
+            // or shown in the open tab list (face).
+            let loaded: std::collections::HashSet<u128> =
+                session.world.entities.iter().map(|(_, e)| e.uuid).collect();
+            let tab_open = self.keys.tab_list && !self.hud_hidden;
+            let listed = &session.tab_players.listed;
+            self.skins
+                .refetch_evicted(|u| loaded.contains(&u) || (tab_open && listed.contains(&u)));
+        }
         // The inventory preview draws the local player from its own atlas, so
         // it takes the pixels rather than the world pass's upload.
         if let Some(own) = self.skins.take_own_preview() {
@@ -2042,8 +2053,13 @@ impl LiveApp {
             match renderer.render(gpu, Some((world_renderer, vp)), &draw, CLEAR_SKY) {
                 Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {}
                 Ok(RenderOutcome::NeedsRecreate) => {
-                    let _ = renderer.recreate(gpu, size.width, size.height);
-                    let _ = renderer.ensure_depth(gpu);
+                    if let Err(e) = renderer
+                        .recreate(gpu, size.width, size.height)
+                        .and_then(|()| renderer.ensure_depth(gpu))
+                    {
+                        log::error!("live: swapchain/depth recreate failed: {e}");
+                        event_loop.exit();
+                    }
                 }
                 Err(e) => {
                     log::error!("live: render failed: {e}");

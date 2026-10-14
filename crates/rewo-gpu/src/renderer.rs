@@ -215,6 +215,25 @@ impl Renderer {
         if self.swapchain.extent.width == 0 || self.swapchain.extent.height == 0 {
             return Ok(RenderOutcome::Skipped);
         }
+        // The world pass renders over the swapchain's extent with this depth
+        // attachment; a stale one (an `ensure_depth` that failed or was never
+        // called after a resize) would not match the render area. Ask the
+        // caller to recreate, which re-runs `ensure_depth`.
+        if world.is_some() {
+            if let Some(d) = &self.depth {
+                let s = self.swapchain.extent;
+                if d.extent.width != s.width || d.extent.height != s.height {
+                    log::warn!(
+                        "render: depth {}x{} != swapchain {}x{}; recreating",
+                        d.extent.width,
+                        d.extent.height,
+                        s.width,
+                        s.height
+                    );
+                    return Ok(RenderOutcome::NeedsRecreate);
+                }
+            }
+        }
         let frame = &self.frames[self.cursor];
         let device = &gpu.device;
         unsafe {
@@ -226,7 +245,7 @@ impl Renderer {
             }
 
             // This slot's queries are from `fif` frames ago, complete now.
-            if self.frames_submitted >= self.fif as u64 {
+            if gpu.timestamps_supported() && self.frames_submitted >= self.fif as u64 {
                 let mut ts = [0u64; 2];
                 if device
                     .get_query_pool_results(
@@ -237,8 +256,7 @@ impl Renderer {
                     )
                     .is_ok()
                 {
-                    let ns = (ts[1].wrapping_sub(ts[0])) as f64 * gpu.timestamp_period_ns;
-                    self.last_gpu_ms = Some((ns / 1.0e6) as f32);
+                    self.last_gpu_ms = gpu.timestamp_delta_ms(ts[0], ts[1]);
                 }
             }
 
@@ -267,14 +285,19 @@ impl Renderer {
                 )
                 .map_err(|e| format!("begin cb: {e}"))?;
 
+            // A queue family with `timestampValidBits == 0` may not write
+            // timestamps at all; the GPU-time overlay then stays empty.
+            let timestamps = gpu.timestamps_supported();
             let q0 = (self.cursor * 2) as u32;
-            device.cmd_reset_query_pool(frame.cb, self.query_pool, q0, 2);
-            device.cmd_write_timestamp2(
-                frame.cb,
-                vk::PipelineStageFlags2::ALL_COMMANDS,
-                self.query_pool,
-                q0,
-            );
+            if timestamps {
+                device.cmd_reset_query_pool(frame.cb, self.query_pool, q0, 2);
+                device.cmd_write_timestamp2(
+                    frame.cb,
+                    vk::PipelineStageFlags2::ALL_COMMANDS,
+                    self.query_pool,
+                    q0,
+                );
+            }
 
             let image = self.swapchain.images[image_index as usize];
             image_barrier(
@@ -400,12 +423,14 @@ impl Renderer {
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageLayout::PRESENT_SRC_KHR,
             );
-            device.cmd_write_timestamp2(
-                frame.cb,
-                vk::PipelineStageFlags2::ALL_COMMANDS,
-                self.query_pool,
-                q0 + 1,
-            );
+            if timestamps {
+                device.cmd_write_timestamp2(
+                    frame.cb,
+                    vk::PipelineStageFlags2::ALL_COMMANDS,
+                    self.query_pool,
+                    q0 + 1,
+                );
+            }
             device
                 .end_command_buffer(frame.cb)
                 .map_err(|e| format!("end cb: {e}"))?;

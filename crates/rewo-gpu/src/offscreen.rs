@@ -232,13 +232,16 @@ impl Offscreen {
                 )
                 .map_err(|e| format!("begin cb: {e}"))?;
 
-            device.cmd_reset_query_pool(self.cb, self.query_pool, 0, 2);
-            device.cmd_write_timestamp2(
-                self.cb,
-                vk::PipelineStageFlags2::ALL_COMMANDS,
-                self.query_pool,
-                0,
-            );
+            let timestamps = gpu.timestamps_supported();
+            if timestamps {
+                device.cmd_reset_query_pool(self.cb, self.query_pool, 0, 2);
+                device.cmd_write_timestamp2(
+                    self.cb,
+                    vk::PipelineStageFlags2::ALL_COMMANDS,
+                    self.query_pool,
+                    0,
+                );
+            }
 
             // Contents are recreated every frame — transition from UNDEFINED.
             image_barrier(
@@ -344,12 +347,14 @@ impl Offscreen {
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
             );
-            device.cmd_write_timestamp2(
-                self.cb,
-                vk::PipelineStageFlags2::ALL_COMMANDS,
-                self.query_pool,
-                1,
-            );
+            if timestamps {
+                device.cmd_write_timestamp2(
+                    self.cb,
+                    vk::PipelineStageFlags2::ALL_COMMANDS,
+                    self.query_pool,
+                    1,
+                );
+            }
             device
                 .end_command_buffer(self.cb)
                 .map_err(|e| format!("end cb: {e}"))?;
@@ -373,12 +378,17 @@ impl Offscreen {
                 .map_err(|e| format!("reset fence: {e}"))?;
 
             let mut ts = [0u64; 2];
-            if device
-                .get_query_pool_results(self.query_pool, 0, &mut ts, vk::QueryResultFlags::TYPE_64)
-                .is_ok()
+            if timestamps
+                && device
+                    .get_query_pool_results(
+                        self.query_pool,
+                        0,
+                        &mut ts,
+                        vk::QueryResultFlags::TYPE_64,
+                    )
+                    .is_ok()
             {
-                let ns = (ts[1].wrapping_sub(ts[0])) as f64 * gpu.timestamp_period_ns;
-                self.last_gpu_ms = Some((ns / 1.0e6) as f32);
+                self.last_gpu_ms = gpu.timestamp_delta_ms(ts[0], ts[1]);
             }
         }
         Ok(())

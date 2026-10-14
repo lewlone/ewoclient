@@ -1650,7 +1650,7 @@ fn check_pixels(
             .flat_map(|_| [255u8, 0, 255, 255])
             .collect();
         let origin = wr
-            .upload_player_cape(gpu, &sheet)
+            .upload_player_cape(gpu, 1, &sheet)
             .ok_or("cape upload failed")?;
 
         // Behind the player: at yaw 0 a model faces +Z, and the cape hangs at
@@ -1898,7 +1898,7 @@ fn check_pixels(
             // pools' cursors apart — see there.
             let green: Vec<u8> = (0..CAPE_TEXELS).flat_map(|_| [0u8, 255, 0, 255]).collect();
             let world_second = wr
-                .upload_player_cape(gpu, &green)
+                .upload_player_cape(gpu, 2, &green)
                 .ok_or("second world cape upload failed")?;
             let (rx, ry, rw, rh) = rewo_gpu::container::preview_rect(W as f32, H as f32);
             let window = (rx as u32, ry as u32, rw as u32, rh as u32);

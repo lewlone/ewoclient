@@ -321,6 +321,13 @@ pub(super) fn pump_meshing(
     for (cx, cz) in session.take_removed() {
         world_renderer.remove_column(gpu, cx, cz);
     }
+    // Columns that did not fit the arena go back in once space frees; columns
+    // whose upload batch failed to submit are re-meshed.
+    world_renderer.retry_deferred_columns(gpu)?;
+    let lost = world_renderer.take_lost_columns();
+    if !lost.is_empty() {
+        session.requeue_dirty(lost);
+    }
 
     // Drain finished jobs — uploads are metered, removals are free.
     let mut uploaded = 0;
@@ -501,6 +508,18 @@ pub(super) fn wants_audio(args: &LiveArgs) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `pump_meshing` hands `rewo-mesh`'s vertices to `rewo-gpu` as bytes, and
+    /// the terrain arena counts vertices as `bytes / world::VERTEX_STRIDE`
+    /// with a pipeline stride of the same constant. The two crates cannot see
+    /// each other, so the size contract is pinned here, where both meet.
+    #[test]
+    fn mesh_vertex_size_is_the_world_vertex_stride() {
+        assert_eq!(
+            std::mem::size_of::<rewo_mesh::MeshVertex>() as u64,
+            rewo_gpu::world::VERTEX_STRIDE
+        );
+    }
 
     #[test]
     fn nearest_first_orders_finite_positions() {

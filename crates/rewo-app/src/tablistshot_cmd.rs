@@ -1391,7 +1391,7 @@ fn check_pixels(
     let hw = hearts_scene();
     let hv = hw.resolve(true, GUI_W, Some(advance));
     let hl = tab_list::layout(&hv.input, &hv.entries);
-    let face_slot = wr.upload_tab_face(&mut gpu, &face_strip());
+    let face_slot = wr.upload_tab_face(&mut gpu, 1, &face_strip());
 
     // The same three lists the frame loop concatenates, in the same order.
     let mut states = std::collections::HashMap::new();

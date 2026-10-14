@@ -16,6 +16,10 @@ use crate::world::DEPTH_FORMAT;
 use crate::Gpu;
 
 const VERTEX_STRIDE: u64 = 32; // vec2 pos + vec2 uv + vec4 color
+
+// The pipeline's vertex stride and every byte count handed to the ring use
+// this constant, so the struct written into the ring must be exactly it.
+const _: () = assert!(std::mem::size_of::<Vertex>() as u64 == VERTEX_STRIDE);
 /// M168 raised this 4096 -> 16384. The survival gauges add up to ~120
 /// quads on their own, and the overflow guard below is SILENT — a
 /// truncated frame simply loses its last blits — so the budget is sized
@@ -311,12 +315,11 @@ pub struct HudPass {
     effect_background_ambient: Rect,
     jump_bar: [Rect; 3],
     effect_icons: Vec<Rect>,
-    /// Next face slot to hand out (M155). Round-robin with no eviction
-    /// bookkeeping, exactly like the four dynamic pools in `entities.rs`: a
-    /// wrapped slot is silently reused, which shows as a stale face rather
-    /// than a crash and is what vanilla's own texture cache does under
-    /// pressure.
-    face_next: u32,
+    /// The tab-list face pool (M155), keyed by player UUID and LRU over the
+    /// frames whose tab list drew each slot (see
+    /// [`crate::entities::LruSlots`]). An eviction is returned to the caller,
+    /// which must drop the evicted player's slot.
+    face_lru: crate::entities::LruSlots<u128>,
 }
 
 impl HudPass {
@@ -647,7 +650,7 @@ impl HudPass {
                 heart_half,
                 heart_container,
                 heart_extra,
-                face_next: 0,
+                face_lru: crate::entities::LruSlots::new(FACE_SLOTS),
                 food_full,
                 food_half,
                 food_empty,
@@ -682,7 +685,14 @@ impl HudPass {
     /// **The hat's u is 40, not 32.** 32 is the hat cube's side face; 40 is its
     /// front, the one that lines up with the head's front at u=8. A crop from
     /// 32 produces a plausible-looking face wearing the side of its own hat.
-    pub fn upload_face(&mut self, gpu: &mut Gpu, rgba: &[u8]) -> Result<u8, String> {
+    ///
+    /// Returns the slot and the owner it was taken from, if any.
+    pub fn upload_face(
+        &mut self,
+        gpu: &mut Gpu,
+        owner: u128,
+        rgba: &[u8],
+    ) -> Result<(u8, Option<u128>), String> {
         if rgba.len() != (FACE_SLOT_W * FACE_SLOT_H * 4) as usize {
             return Err(format!(
                 "hud: a face strip must be {}x{} RGBA, got {} bytes",
@@ -691,12 +701,14 @@ impl HudPass {
                 rgba.len()
             ));
         }
-        let slot = self.face_next % FACE_SLOTS;
-        self.face_next = self.face_next.wrapping_add(1);
+        let (slot, evicted) = self
+            .face_lru
+            .claim(owner)
+            .ok_or("every face slot is drawn this frame")?;
         let x = (slot % FACE_COLS) * FACE_SLOT_W;
         let y = FACE_ATLAS_Y + (slot / FACE_COLS) * FACE_SLOT_H;
         crate::entities::upload_region(gpu, self.image, rgba, x, y, FACE_SLOT_W, FACE_SLOT_H)?;
-        Ok(slot as u8)
+        Ok((slot as u8, evicted))
     }
 
     /// `survival` is [`crate::survival_hud::layout`]'s output — the hearts,
@@ -723,6 +735,15 @@ impl HudPass {
         // fills were built against a caller's own copy and landed off-screen.
         let scale = gui_scale(w, h);
         let (sw, sh) = (w / scale, h / scale);
+
+        // The faces this frame's tab list draws stay resident until the next
+        // frame's uploads (see `upload_face`).
+        self.face_lru.begin_frame();
+        for b in icons {
+            if let HudIcon::Face { slot, .. } = b.icon {
+                self.face_lru.touch(u32::from(slot));
+            }
+        }
 
         let mut v: Vec<Vertex> = Vec::with_capacity(256);
         // A quad whose *pixel* size comes from the caller rather than the

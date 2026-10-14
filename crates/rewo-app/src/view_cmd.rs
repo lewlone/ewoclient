@@ -509,8 +509,13 @@ impl ViewApp {
             Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {}
             Ok(RenderOutcome::NeedsRecreate) => {
                 let size = window.inner_size();
-                let _ = renderer.recreate(gpu, size.width, size.height);
-                let _ = renderer.ensure_depth(gpu);
+                if let Err(e) = renderer
+                    .recreate(gpu, size.width, size.height)
+                    .and_then(|()| renderer.ensure_depth(gpu))
+                {
+                    log::error!("view: swapchain/depth recreate failed: {e}");
+                    event_loop.exit();
+                }
             }
             Err(e) => {
                 log::error!("view: render failed: {e}");

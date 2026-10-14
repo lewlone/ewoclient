@@ -115,8 +115,13 @@ impl LiveApp {
             match renderer.render(gpu, Some((world_renderer, vp)), &draw, CLEAR_SKY) {
                 Ok(RenderOutcome::Rendered) | Ok(RenderOutcome::Skipped) => {}
                 Ok(RenderOutcome::NeedsRecreate) => {
-                    let _ = renderer.recreate(gpu, size.width, size.height);
-                    let _ = renderer.ensure_depth(gpu);
+                    if let Err(e) = renderer
+                        .recreate(gpu, size.width, size.height)
+                        .and_then(|()| renderer.ensure_depth(gpu))
+                    {
+                        log::error!("live: swapchain/depth recreate failed: {e}");
+                        event_loop.exit();
+                    }
                 }
                 Err(e) => {
                     log::error!("live: render failed: {e}");

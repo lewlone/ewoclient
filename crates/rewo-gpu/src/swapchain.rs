@@ -74,15 +74,15 @@ impl Swapchain {
                 .get_physical_device_surface_present_modes(gpu.physical, gpu.surface)
                 .map_err(|e| format!("present modes: {e}"))?;
 
-            let format = formats
-                .iter()
-                .find(|f| {
-                    f.format == vk::Format::B8G8R8A8_SRGB
-                        && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
-                })
-                .or_else(|| formats.first())
-                .copied()
-                .ok_or("no surface formats")?;
+            let format = pick_surface_format(&formats).ok_or("no surface formats")?;
+            if !is_srgb_format(format.format) {
+                log::warn!(
+                    "vk: surface offers no sRGB format; using {:?} {:?}, so colours will \
+                     be stored without sRGB encoding (too dark)",
+                    format.format,
+                    format.color_space
+                );
+            }
 
             let present_mode = [
                 preferred,
@@ -145,38 +145,51 @@ impl Swapchain {
             let handle = fns
                 .create_swapchain(&ci, None)
                 .map_err(|e| format!("create swapchain: {e}"))?;
-            let images = fns
-                .get_swapchain_images(handle)
-                .map_err(|e| format!("swapchain images: {e}"))?;
-            let views = images
-                .iter()
-                .map(|&img| {
-                    let vi = vk::ImageViewCreateInfo::default()
-                        .image(img)
-                        .view_type(vk::ImageViewType::TYPE_2D)
-                        .format(format.format)
-                        .subresource_range(crate::color_range());
-                    gpu.device
-                        .create_image_view(&vi, None)
-                        .map_err(|e| format!("image view: {e}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let views_unorm = match (mutable, unorm) {
-                (true, Some(f)) => images
-                    .iter()
-                    .map(|&img| {
-                        let vi = vk::ImageViewCreateInfo::default()
-                            .image(img)
-                            .view_type(vk::ImageViewType::TYPE_2D)
-                            .format(f)
-                            .subresource_range(crate::color_range());
-                        gpu.device
-                            .create_image_view(&vi, None)
-                            .map_err(|e| format!("unorm image view: {e}"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-                _ => Vec::new(),
+            // From here on a failure must release what was created, or the
+            // new swapchain (and the surface it holds) leaks.
+            let mut views: Vec<vk::ImageView> = Vec::new();
+            let mut views_unorm: Vec<vk::ImageView> = Vec::new();
+            let release = |views: &[vk::ImageView], views_unorm: &[vk::ImageView]| {
+                for &v in views.iter().chain(views_unorm) {
+                    gpu.device.destroy_image_view(v, None);
+                }
+                fns.destroy_swapchain(handle, None);
             };
+            let images = match fns.get_swapchain_images(handle) {
+                Ok(i) => i,
+                Err(e) => {
+                    release(&views, &views_unorm);
+                    return Err(format!("swapchain images: {e}"));
+                }
+            };
+            let view_of = |img: vk::Image, f: vk::Format| {
+                let vi = vk::ImageViewCreateInfo::default()
+                    .image(img)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(f)
+                    .subresource_range(crate::color_range());
+                gpu.device.create_image_view(&vi, None)
+            };
+            for &img in &images {
+                match view_of(img, format.format) {
+                    Ok(v) => views.push(v),
+                    Err(e) => {
+                        release(&views, &views_unorm);
+                        return Err(format!("image view: {e}"));
+                    }
+                }
+            }
+            if let (true, Some(f)) = (mutable, unorm) {
+                for &img in &images {
+                    match view_of(img, f) {
+                        Ok(v) => views_unorm.push(v),
+                        Err(e) => {
+                            release(&views, &views_unorm);
+                            return Err(format!("unorm image view: {e}"));
+                        }
+                    }
+                }
+            }
 
             log::info!(
                 "vk: swapchain {}x{} {:?} {:?} ({} images)",
@@ -212,5 +225,65 @@ impl Swapchain {
                 self.handle = vk::SwapchainKHR::null();
             }
         }
+    }
+}
+
+/// The `*_SRGB` formats a swapchain is likely to offer: the ones whose
+/// attachment stores encode linear shader output, which every pass assumes.
+fn is_srgb_format(f: vk::Format) -> bool {
+    matches!(
+        f,
+        vk::Format::B8G8R8A8_SRGB | vk::Format::R8G8B8A8_SRGB | vk::Format::A8B8G8R8_SRGB_PACK32
+    )
+}
+
+/// The surface format to render to: `B8G8R8A8_SRGB` / sRGB-nonlinear when
+/// offered, else any sRGB-encoded format in that colour space, else the first
+/// format (which the caller warns about: shaders write linear colour, so a
+/// UNORM target renders too dark).
+fn pick_surface_format(formats: &[vk::SurfaceFormatKHR]) -> Option<vk::SurfaceFormatKHR> {
+    let nonlinear = |f: &&vk::SurfaceFormatKHR| f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR;
+    formats
+        .iter()
+        .filter(nonlinear)
+        .find(|f| f.format == vk::Format::B8G8R8A8_SRGB)
+        .or_else(|| {
+            formats
+                .iter()
+                .filter(nonlinear)
+                .find(|f| is_srgb_format(f.format))
+        })
+        .or_else(|| formats.first())
+        .copied()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sf(format: vk::Format) -> vk::SurfaceFormatKHR {
+        vk::SurfaceFormatKHR {
+            format,
+            color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
+        }
+    }
+
+    #[test]
+    fn surface_format_prefers_bgra_srgb_then_any_srgb_then_first() {
+        let bgra = sf(vk::Format::B8G8R8A8_SRGB);
+        let rgba = sf(vk::Format::R8G8B8A8_SRGB);
+        let unorm = sf(vk::Format::B8G8R8A8_UNORM);
+        assert_eq!(pick_surface_format(&[unorm, rgba, bgra]), Some(bgra));
+        // The old fallback took `formats.first()`, the UNORM one, here.
+        assert_eq!(pick_surface_format(&[unorm, rgba]), Some(rgba));
+        assert_eq!(pick_surface_format(&[unorm]), Some(unorm));
+        assert_eq!(pick_surface_format(&[]), None);
+        // An sRGB format in another colour space is not preferred over one in
+        // sRGB-nonlinear.
+        let hdr = vk::SurfaceFormatKHR {
+            format: vk::Format::B8G8R8A8_SRGB,
+            color_space: vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT,
+        };
+        assert_eq!(pick_surface_format(&[hdr, rgba]), Some(rgba));
     }
 }
