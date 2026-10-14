@@ -21,8 +21,12 @@
 //! a spawn grace period (a game that is still starting has no window yet).
 //!
 //! "Its window was seen" is an **observation** (the launcher polls
-//! `EnumWindows` for the tracked PID while the game runs), never inferred
-//! from the game's log text; a log marker is only a hint with a longer grace.
+//! `EnumWindows` for the tracked PID about once a second while the game runs,
+//! from the event loop's `about_to_wait`, so it works while the launcher is
+//! minimised and not drawing; `App::poll_game_window`), never inferred from
+//! the game's log text; a log marker is only a hint with a longer grace. A
+//! Native (Rewo) game prints no markers, so for it the observed window is the
+//! only early signal and `STARTUP_GRACE_SECS` the fallback.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

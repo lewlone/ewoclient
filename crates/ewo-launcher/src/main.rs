@@ -155,15 +155,20 @@ struct App {
     /// `launch::reaper`) can be reaped before the next launch. Set on
     /// `Started`, cleared on exit.
     active_launch: Option<launch::reaper::Tracked>,
-    /// Wall-time the running game was spawned, whether a visible window was
-    /// ever **observed** for it (`launch::reaper::state`, polled while it
-    /// runs), whether its log merely claimed one is coming (a hint), and when
-    /// it was last polled. Together they tell a zombie from a game that is
-    /// still starting up (see `launch::reaper::is_zombie`).
+    /// Frame-clock time the running game was spawned, whether a visible
+    /// window was ever **observed** for it (`launch::reaper::state`, polled
+    /// by `App::poll_game_window` from `about_to_wait` about once a second
+    /// while the game runs, so it keeps running while the launcher is
+    /// minimised or in the background and no frame is drawn), whether its
+    /// log merely claimed one is coming (a hint), and when it was last
+    /// polled (`Instant`, because the frame clock stops with the frames).
+    /// Together they tell a zombie from a game that is still starting up
+    /// (see `launch::reaper::is_zombie`). Rewo (Native) prints no log
+    /// markers, so for it the observed window is the only signal.
     active_launch_started_at: f32,
     active_launch_window_seen: bool,
     active_launch_marker_seen: bool,
-    active_launch_polled_at: f32,
+    active_launch_polled_at: Option<Instant>,
     /// Folder id of the instance whose game is running (for its log dump).
     active_launch_instance_id: Option<String>,
     /// A launch whose blocking preparation (manifest/loader fetch, library
@@ -343,6 +348,10 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Not tied to a redraw: `on_redraw` returns early while the launcher
+        // is minimised or in the background, which is exactly when the game
+        // is being played.
+        self.poll_game_window();
         self.pace_frames(event_loop);
     }
 }

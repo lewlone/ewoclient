@@ -172,7 +172,10 @@ Subsystems:
   window (a zombie after shutdown never has one; a live game always does).
   **A game is never reaped in its first `SPAWN_GRACE_SECS` (30 s).** "Its
   window was seen" is an observation (`App::poll_game_window` asks
-  `reaper::state` about once a second while the game runs); the log markers
+  `reaper::state` about once a second while the game runs, from
+  `about_to_wait`, **not** from `on_redraw`, which returns early exactly when
+  the launcher is minimised or in the background; a Native Rewo game prints
+  no markers, so its observed window is the only early signal); the log markers
   ("lwjgl version", …) are only a hint (`active_launch_marker_seen`) that
   needs `MARKER_GRACE_SECS` (90 s) more before it can condemn a windowless
   game, and with neither signal it takes `STARTUP_GRACE_SECS` (300 s). A

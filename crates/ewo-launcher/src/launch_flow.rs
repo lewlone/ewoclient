@@ -693,6 +693,35 @@ impl App {
         false
     }
 
+    /// Observe the tracked game for a visible window (about once a second,
+    /// from `about_to_wait`, whether or not any frame is being drawn): the
+    /// real "its window was seen" signal for the zombie decision, which the
+    /// log markers only hint at. Covers a Native (Rewo) game too: it prints
+    /// no markers, but its window belongs to the tracked PID like a JVM's.
+    pub(crate) fn poll_game_window(&mut self) {
+        let now = Instant::now();
+        let tracked = self.active_launch;
+        if !launch_slot::window_poll_due(
+            tracked.is_some(),
+            self.active_launch_window_seen,
+            self.active_launch_polled_at,
+            now,
+        ) {
+            return;
+        }
+        self.active_launch_polled_at = Some(now);
+        if let Some(t) = tracked {
+            if matches!(
+                launch::reaper::state(&t),
+                launch::reaper::GameState::Running {
+                    visible_window: true
+                }
+            ) {
+                self.active_launch_window_seen = true;
+            }
+        }
+    }
+
     /// Shared launch entry point for the Launch button and the H6 server-join
     /// paths (main-menu server widget + friend "Join"). `server` is the
     /// `host:port` to auto-connect to, or `None` for a plain launch.
