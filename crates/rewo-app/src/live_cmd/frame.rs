@@ -171,9 +171,7 @@ impl LiveApp {
         let lectern_menu = self
             .session
             .as_ref()
-            .and_then(|s| s.menus.open())
-            .filter(|m| m.layout.name == "lectern")
-            .map(|m| (m.container_id, m.open_serial, m.data(0) as i32));
+            .and_then(|s| super::screens::lectern_menu_state(&s.menus));
         match lectern_menu {
             Some((container_id, serial, page)) => {
                 let identity = (container_id, serial);

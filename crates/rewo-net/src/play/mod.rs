@@ -4852,6 +4852,13 @@ impl PlaySession {
         let Some(container) = self.menus.close_local() else {
             return Ok(());
         };
+        self.send_container_close(container)
+    }
+
+    /// The serverbound `container_close` for `container`, for a caller that
+    /// already did the local half (`Menus::close_local`) through a seam a test
+    /// can reach (the lectern reader's `close_lectern_reader`).
+    pub fn send_container_close(&mut self, container: i32) -> Result<(), String> {
         let Some(id) = self.ids.sb_play_container_close else {
             return Err("container_close unavailable".into());
         };

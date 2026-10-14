@@ -1202,6 +1202,40 @@ pub(super) fn click_screen(
 /// `LiveApp::lectern_shown` / `lectern_superseded` hold.
 pub(super) type LecternId = (i32, u64);
 
+/// The open lectern menu as the frame sync reads it: `(container_id,
+/// open_serial, page)`, the page being container-data 0. `None` when no
+/// lectern menu is open. This is "a server container is open" (the sync's
+/// watermark), so it reads `Menus::open`, not the shown menu.
+pub(super) fn lectern_menu_state(menus: &rewo_world::menu::Menus) -> Option<(i32, u64, i32)> {
+    menus
+        .open()
+        .filter(|m| m.layout.name == "lectern")
+        .map(|m| (m.container_id, m.open_serial, m.data(0) as i32))
+}
+
+/// The state half of closing the lectern reader (`LecternScreen.onClose` ->
+/// `LocalPlayer.closeContainer()`), the part `LiveApp::close_book` runs:
+/// takes the reader marker, resets the `container_shown` watermark, and
+/// closes the menu locally (`Menus::close_local`, which is also the first
+/// half of `PlaySession::container_close`). Returns the container id the
+/// serverbound `container_close` is owed for, if any.
+///
+/// The marker clears BEFORE the menu closes and regardless of whether there
+/// is a session; with no marker (a plain reader or a held book) it does
+/// nothing, since those have no menu to close. If this stopped clearing the
+/// menu the frame sync would reopen the reader on the next frame.
+pub(super) fn close_lectern_reader(
+    lectern_shown: &mut Option<LecternId>,
+    container_shown: &mut Option<i32>,
+    menus: Option<&mut rewo_world::menu::Menus>,
+) -> Option<i32> {
+    if lectern_shown.take().is_none() {
+        return None;
+    }
+    *container_shown = None;
+    menus.and_then(|m| m.close_local())
+}
+
 /// Whether the frame sync should open the lectern reader for the menu that is
 /// open right now: only when no reader is up for it and it was not superseded
 /// by a held book's reader (M184).
@@ -1220,10 +1254,7 @@ pub(super) fn lectern_should_open(
 /// The identity of the open lectern menu, if one is open.
 #[cfg(test)]
 pub(super) fn open_lectern_identity(menus: &rewo_world::menu::Menus) -> Option<LecternId> {
-    menus
-        .open()
-        .filter(|m| m.layout.name == "lectern")
-        .map(|m| (m.container_id, m.open_serial))
+    lectern_menu_state(menus).map(|(id, serial, _)| (id, serial))
 }
 
 #[cfg(test)]
@@ -1234,21 +1265,68 @@ mod close_tests {
     const LECTERN: i32 = 17;
     const CHEST: i32 = 2;
 
-    /// The lectern reader after the user pressed Done: `close_book` takes
-    /// `lectern_shown`, and `PlaySession::container_close` runs
-    /// `Menus::close_local`.
+    /// The frame sync's whole decision for one frame, as `frame.rs` makes it:
+    /// the open lectern's identity, offered for opening when no reader is up
+    /// for it and it was not superseded.
+    fn frame_opens_reader(
+        menus: &Menus,
+        shown: Option<LecternId>,
+        superseded: Option<LecternId>,
+    ) -> bool {
+        lectern_menu_state(menus)
+            .is_some_and(|(id, serial, _)| lectern_should_open((id, serial), shown, superseded))
+    }
+
+    /// The lectern reader after the user pressed Done: the real close path
+    /// (`LiveApp::close_book`'s state half, `close_lectern_reader`, over the
+    /// same `Menus::close_local` that `PlaySession::container_close` runs)
+    /// must leave nothing for the next frame's sync to reopen. Fails if the
+    /// close stops clearing the menu or the marker.
     #[test]
     fn the_lectern_does_not_reopen_after_a_user_close() {
         let mut menus = Menus::new();
         menus.apply_open_screen(7, LECTERN, "Lectern".into());
+        // Frame 1: the reader opens and the app records it (the marker and
+        // the container watermark `frame.rs` sets).
+        assert!(frame_opens_reader(&menus, None, None));
         let id = open_lectern_identity(&menus).expect("lectern open");
-        // First frame: the reader opens.
-        assert!(lectern_should_open(id, None, None));
-        // Done: the marker is taken, the menu is closed locally (and a
-        // `container_close` is owed to the server).
-        assert_eq!(menus.close_local(), Some(7));
-        // Next frame: no menu, so nothing is offered for opening.
-        assert_eq!(open_lectern_identity(&menus), None);
+        let (mut shown, mut container_shown) = (Some(id), Some(7));
+
+        // Done.
+        let owed = close_lectern_reader(&mut shown, &mut container_shown, Some(&mut menus));
+        assert_eq!(owed, Some(7), "a container_close is owed to the server");
+        assert!(shown.is_none(), "the reader marker is taken");
+        assert!(container_shown.is_none(), "the watermark is reset");
+        assert!(menus.open().is_none(), "the menu is closed locally");
+
+        // Frame 2: the sync has nothing to offer, with the marker gone (as
+        // here) and with a stale marker alike.
+        assert!(!frame_opens_reader(&menus, shown, None));
+        assert!(!frame_opens_reader(&menus, None, None));
+        // A second Done is inert: nothing is sent twice.
+        assert_eq!(
+            close_lectern_reader(&mut shown, &mut container_shown, Some(&mut menus)),
+            None
+        );
+    }
+
+    /// Without a reader marker (a plain book, or a held book that superseded
+    /// the lectern) closing the book must NOT close the lectern's menu: it
+    /// lives on, as in vanilla.
+    #[test]
+    fn closing_a_superseding_book_leaves_the_lectern_menu_open() {
+        let mut menus = Menus::new();
+        menus.apply_open_screen(7, LECTERN, "Lectern".into());
+        let id = open_lectern_identity(&menus).unwrap();
+        let mut container_shown = Some(7);
+        let mut shown = None;
+        assert_eq!(
+            close_lectern_reader(&mut shown, &mut container_shown, Some(&mut menus)),
+            None
+        );
+        assert!(menus.open().is_some());
+        assert_eq!(container_shown, Some(7));
+        assert!(!frame_opens_reader(&menus, None, Some(id)), "superseded");
     }
 
     /// A held book's reader supersedes the lectern while its menu lives; that

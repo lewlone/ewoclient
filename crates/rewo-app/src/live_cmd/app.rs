@@ -1634,18 +1634,19 @@ impl LiveApp {
     /// leaving it would reopen the reader on the next frame. The
     /// `container_shown` watermark is reset with it.
     pub(super) fn close_book(&mut self) {
-        let was_lectern = self.lectern_shown.take().is_some();
+        let owed = super::screens::close_lectern_reader(
+            &mut self.lectern_shown,
+            &mut self.screen.container_shown,
+            self.session.as_mut().map(|s| &mut s.menus),
+        );
         self.lectern_pages = None;
         self.book = None;
         self.screen.screens.close();
         self.grab_for_screen(false);
-        if was_lectern {
-            if let Some(session) = self.session.as_mut() {
-                if let Err(e) = session.container_close() {
-                    log::warn!("live: lectern close: {e}");
-                }
+        if let (Some(container), Some(session)) = (owed, self.session.as_mut()) {
+            if let Err(e) = session.send_container_close(container) {
+                log::warn!("live: lectern close: {e}");
             }
-            self.screen.container_shown = None;
         }
     }
 
