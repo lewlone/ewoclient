@@ -91,7 +91,7 @@ impl ChatSigner {
         };
 
         let mut session_id = [0u8; 16];
-        rand::Rng::fill(&mut rand::thread_rng(), &mut session_id[..]);
+        rand::RngExt::fill(&mut rand::rng(), &mut session_id[..]);
 
         Ok(Self {
             signing_key: SigningKey::<Sha256>::new(private),
@@ -116,7 +116,7 @@ impl ChatSigner {
     /// server's new listener expects starts over.
     pub fn restart_session(&mut self) {
         let mut session_id = [0u8; 16];
-        rand::Rng::fill(&mut rand::thread_rng(), &mut session_id[..]);
+        rand::RngExt::fill(&mut rand::rng(), &mut session_id[..]);
         self.session_id = u128::from_be_bytes(session_id);
         self.index = 0;
     }

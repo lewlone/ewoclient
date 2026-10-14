@@ -47,7 +47,7 @@ toml = "0.8"
 bytemuck = { version = "1", features = ["derive"] }
 
 # Particle PRNG (step 4+)
-rand = "0.8"
+rand = "0.10"
 
 # Software framebuffer for step 1 (replaced by Skia GL surface in step 2)
 softbuffer = "0.4"

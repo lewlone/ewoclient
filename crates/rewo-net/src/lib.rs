@@ -596,7 +596,7 @@ impl<'a> Connection<'a> {
             (sid, key, tok, sa)
         };
         let mut secret = [0u8; 16];
-        rand::Rng::fill(&mut rand::thread_rng(), &mut secret[..]);
+        rand::RngExt::fill(&mut rand::rng(), &mut secret[..]);
         if should_auth {
             let auth = auth.ok_or(
                 "server is online-mode but no account was provided \

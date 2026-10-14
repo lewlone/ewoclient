@@ -188,7 +188,10 @@ pub fn rsa_encrypt(pubkey_der: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
     use rsa::pkcs8::DecodePublicKey;
     let key = rsa::RsaPublicKey::from_public_key_der(pubkey_der)
         .map_err(|e| format!("server public key: {e}"))?;
-    key.encrypt(&mut rand::thread_rng(), rsa::Pkcs1v15Encrypt, data)
+    // rsa 0.9 takes a rand_core 0.6 CSPRNG, which rand 0.10's ThreadRng no
+    // longer implements; its own re-exported OsRng (OS entropy) is the
+    // cryptographically secure source with the matching trait.
+    key.encrypt(&mut rsa::rand_core::OsRng, rsa::Pkcs1v15Encrypt, data)
         .map_err(|e| format!("rsa encrypt: {e}"))
 }
 

@@ -16,7 +16,7 @@
 use ewo_core::OkLch;
 
 use crate::tokens;
-use rand::Rng;
+use rand::{Rng, RngExt};
 use skia_safe::{gradient_shader, BlendMode, Canvas, Color4f, Paint, Path, Point, TileMode};
 use std::f32::consts::PI;
 
@@ -50,7 +50,7 @@ pub struct Petals {
 
 impl Petals {
     pub fn new(width: f32, height: f32, density: f32) -> Self {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let count = ((BASE_PETALS as f32) * density).round() as usize;
         let petals = (0..count)
             .map(|_| make_petal(&mut rng, width, height, false))
@@ -67,7 +67,7 @@ impl Petals {
     }
 
     pub fn resize(&mut self, width: f32, height: f32, density: f32) {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let count = ((BASE_PETALS as f32) * density).round() as usize;
         self.petals = (0..count)
             .map(|_| make_petal(&mut rng, width, height, false))
@@ -85,7 +85,7 @@ impl Petals {
         let step = (dt * 60.0).clamp(0.0, 4.0);
         self.cycle_time += dt;
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         // Burst spawn during celebrate.
         if self.celebrating
@@ -192,30 +192,30 @@ impl Petals {
 fn make_petal<R: Rng + ?Sized>(rng: &mut R, w: f32, h: f32, burst: bool) -> Petal {
     Petal {
         x: if burst {
-            -40.0 + rng.gen::<f32>() * w * 0.4
+            -40.0 + rng.random::<f32>() * w * 0.4
         } else {
-            rng.gen::<f32>() * w
+            rng.random::<f32>() * w
         },
         y: if burst {
-            -40.0 - rng.gen::<f32>() * 200.0
+            -40.0 - rng.random::<f32>() * 200.0
         } else {
-            -30.0 - rng.gen::<f32>() * h
+            -30.0 - rng.random::<f32>() * h
         },
         vx: if burst {
-            0.4 + rng.gen::<f32>() * 0.6
+            0.4 + rng.random::<f32>() * 0.6
         } else {
-            (rng.gen::<f32>() - 0.5) * 0.15
+            (rng.random::<f32>() - 0.5) * 0.15
         },
         vy: if burst {
-            0.35 + rng.gen::<f32>() * 0.4
+            0.35 + rng.random::<f32>() * 0.4
         } else {
-            0.18 + rng.gen::<f32>() * 0.3
+            0.18 + rng.random::<f32>() * 0.3
         },
-        rot: rng.gen::<f32>() * 2.0 * PI,
-        vrot: (rng.gen::<f32>() - 0.5) * 0.02,
-        size: 6.0 + rng.gen::<f32>() * 10.0,
-        hue: 340.0 + rng.gen::<f32>() * 30.0,
-        alpha: 0.35 + rng.gen::<f32>() * 0.45,
-        flutter: rng.gen::<f32>() * 2.0 * PI,
+        rot: rng.random::<f32>() * 2.0 * PI,
+        vrot: (rng.random::<f32>() - 0.5) * 0.02,
+        size: 6.0 + rng.random::<f32>() * 10.0,
+        hue: 340.0 + rng.random::<f32>() * 30.0,
+        alpha: 0.35 + rng.random::<f32>() * 0.45,
+        flutter: rng.random::<f32>() * 2.0 * PI,
     }
 }
