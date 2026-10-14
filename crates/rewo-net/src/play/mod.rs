@@ -2419,6 +2419,14 @@ impl PlaySession {
         }
     }
 
+    /// Whether the session still tracks `uuid`'s skin (see
+    /// [`crate::skins::SkinTable::contains`]): the app prunes its per-player
+    /// texture state against this, so it forgets exactly the players the
+    /// session forgot and no one the session would not re-announce.
+    pub fn tracks_player_skin(&self, uuid: u128) -> bool {
+        self.player_skins.contains(uuid)
+    }
+
     /// Drain newly-announced player skins (UUID → skin) for the app to
     /// fetch + upload. Each skin is queued once (per value change).
     pub fn take_pending_skins(&mut self) -> Vec<(u128, crate::skins::SkinInfo)> {

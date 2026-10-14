@@ -74,6 +74,17 @@ impl SkinTable {
         true
     }
 
+    /// Whether the session still tracks `uuid`'s skin: it was announced and
+    /// neither the player's removal nor a level reset has dropped it since.
+    /// The one answer to "is this player still present" for whoever holds
+    /// per-player texture state (a consumer that pruned on its own guess,
+    /// such as "has a latency entry", would forget a player this table still
+    /// remembers, and [`Self::note`] would then never announce their
+    /// unchanged skin again).
+    pub fn contains(&self, uuid: u128) -> bool {
+        self.map.contains_key(&uuid)
+    }
+
     /// A player left the list: free their slot.
     pub fn remove(&mut self, uuid: u128) {
         if self.map.remove(&uuid).is_some() && self.map.len() < MAX_TRACKED_SKINS {
@@ -265,6 +276,20 @@ mod tests {
         let mut t = SkinTable::default();
         assert!(!t.note(1, &skin(1), MAX_TRACKED_SKINS));
         assert!(t.is_empty());
+    }
+
+    #[test]
+    fn membership_follows_note_remove_and_clear() {
+        let mut t = SkinTable::default();
+        assert!(!t.contains(7));
+        t.note(7, &skin(7), 0);
+        assert!(t.contains(7));
+        assert!(!t.contains(8));
+        t.remove(7);
+        assert!(!t.contains(7));
+        t.note(7, &skin(7), 0);
+        t.clear();
+        assert!(!t.contains(7));
     }
 
     #[test]

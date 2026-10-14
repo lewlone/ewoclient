@@ -584,15 +584,13 @@ impl LiveApp {
                 });
             // Players who left: forget their texture state (bounded by
             // whoever the session still tracks, not by how many ever joined).
-            // "Tracked" = anyone with a player-info entry (the listed set
-            // alone would miss unlisted ones) or a loaded entity.
+            // "Tracked" is the session's own skin table: it is what decides
+            // whether an unchanged skin is announced again, so pruning on any
+            // other guess (listed, a gamemode or latency entry, a loaded
+            // entity) would drop an NPC-style player the table still holds
+            // and leave them on the default skin for good.
             if self.skins.prune_due() {
-                self.skins.retain_players(|u| {
-                    loaded.contains(&u)
-                        || listed.contains(&u)
-                        || session.gamemodes.contains_key(&u)
-                        || session.latency.contains_key(&u)
-                });
+                self.skins.retain_players(|u| session.tracks_player_skin(u));
             }
         }
         // The inventory preview draws the local player from its own atlas, so

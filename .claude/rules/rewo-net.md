@@ -171,6 +171,11 @@ Styled spans (`ChatSpan`) live in `rewo-world`.
 - **Skin table** (`skins::SkinTable`): `MAX_TRACKED_SKINS` bounds the players
   present at once, not a lifetime count. An entry leaves on `player_info_remove`
   and on `clear_level` (reconfiguration); the cap logs once when it refuses.
+  The table is also the **single source of truth for "the session still tracks
+  this player"** (`PlaySession::tracks_player_skin`): rewo-app prunes its
+  per-player texture state against it, never against its own guess (listed /
+  gamemode / latency / loaded), because `note()` won't re-announce an unchanged
+  skin, so a player pruned while the table holds them keeps the default skin.
 - **Bounded logs**: `PlaySession::chat_log` keeps the newest
   `MAX_CHAT_HISTORY` (100) lines through `chat_wire::push_chat_log`.
 - **Non-finite teleports** are dropped field-group by field-group
