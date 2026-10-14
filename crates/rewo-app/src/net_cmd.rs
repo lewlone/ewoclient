@@ -145,6 +145,15 @@ fn soak(
     if !reached_play {
         return Err("never reached the Play phase".into());
     }
+    // ...and only if every packet decoded. `decode_failures` counts the
+    // malformed or unhandled bodies the session dropped (and kept going), so
+    // grading "reached Play" alone passed a soak that threw away packets.
+    if session.decode_failures > 0 {
+        return Err(format!(
+            "{} packet(s) failed to decode during the soak (see the log for the first)",
+            session.decode_failures
+        ));
+    }
     Ok(())
 }
 
@@ -164,6 +173,14 @@ fn replay(data: &GameData, file: &std::path::Path, expect: Option<u64>) -> Resul
                 "digest mismatch: replay {digest:#018x} != expected {expected:#018x}"
             ));
         }
+    } else {
+        // Without a digest to compare against, a replay only shows the file
+        // decodes; it says nothing about equivalence with the live session.
+        // Say so rather than letting an exit code 0 read as a verdict.
+        println!(
+            "[rewo-m1] UNCHECKED: no --expect-digest given, so this replay asserts only that \
+             the recording decodes, not that it matches the live session"
+        );
     }
     Ok(())
 }
