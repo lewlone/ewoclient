@@ -85,6 +85,9 @@ impl Default for DisplayTransform {
 
 /// A resolved held item, or the reason it could not be resolved.
 #[derive(Clone, Debug, PartialEq)]
+// Built once per item at bake time and held in a table; boxing `Resolved` would
+// only add an indirection to every read.
+#[allow(clippy::large_enum_variant)]
 pub enum ItemModel {
     Resolved {
         geometry: ItemGeometry,
@@ -252,15 +255,13 @@ fn resolve_chain(
     let mut gui: Option<DisplayTransform> = None;
     let mut first_right: Option<DisplayTransform> = None;
     let mut first_left: Option<DisplayTransform> = None;
-    let mut is_generated = false;
     let mut cur = strip_ns(start).to_string();
 
     for _ in 0..MAX_PARENT_DEPTH {
         if cur.starts_with("builtin/") {
             // `builtin/generated` is the extrusion; any other builtin (there
             // is only `builtin/entity`) is a bespoke renderer.
-            is_generated = cur == "builtin/generated";
-            if !is_generated {
+            if cur != "builtin/generated" {
                 return None;
             }
             // A generated model with no third-person transform anywhere in its
@@ -315,12 +316,10 @@ fn resolve_chain(
                 first_left = read_transform(d, "firstperson_lefthand");
             }
         }
-        match json.get("parent").and_then(|p| p.as_str()) {
-            Some(p) => cur = strip_ns(p).to_string(),
-            // No parent and no builtin: a bespoke model (shield, chest
-            // template). Not an extruded sprite.
-            None => return None,
-        }
+        // No parent and no builtin: a bespoke model (shield, chest
+        // template). Not an extruded sprite.
+        let p = json.get("parent").and_then(|p| p.as_str())?;
+        cur = strip_ns(p).to_string();
     }
     None
 }
