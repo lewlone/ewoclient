@@ -339,7 +339,8 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   the recipe-book button (**M187**), the HUD's air-bubble pop (**M188**) and
 >   the loom's scrollbar (**M189**).
 > - **Still open from the box:** `sub-map`'s render (M190 took the decode and
->   the map store; the held map, item frames and decoration sprites are open), `render-misc [INTERP]` and `[FLOW]`, the live
+>   the map store; the held map, item frames and decoration sprites are open;
+>   **the held map is planned step by step in `docs/rewo/M192-held-map-plan.md`**), `render-misc [INTERP]` and `[FLOW]`, the live
 >   r-witnesses for M179's tab clicks and M184/M185's frame-loop halves, and
 >   the listening pass (the user's).
 > - Open items the 2026-10 audit added are in `docs/AUDIT-2026-10.md`'s status
