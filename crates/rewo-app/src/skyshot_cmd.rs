@@ -158,13 +158,20 @@ pub fn run(args: SkyshotArgs) -> Result<(), String> {
     run_check(&mut gpu, &baked, &args)
 }
 
-/// How many frames this gate reads back and grades. The gate accumulates
-/// property failures rather than counting witnesses, so a section that stopped
-/// running (an emptied loop, an early skip) would still print OK; pinning the
-/// frame count makes that loud. Update it, and say why, when a case is added or
-/// removed on purpose.
+/// How many frames this gate reads back. The gate accumulates property failures
+/// rather than naming witnesses, so a section that stopped running would still
+/// print OK; pinning the frame count makes a dropped frame loud. A frame count
+/// alone proves only that frames were read back, so [`EXPECTED_PROBES`] pins the
+/// comparisons that graded them. Update both, and say why, when a case is added
+/// or removed on purpose.
 const EXPECTED_FRAMES: usize = 38;
 static FRAMES_GRADED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many failure conditions this gate evaluates (every `PROBES.bad(..)`
+/// call), measured by running it. A section that renders but stops comparing, a
+/// loop that runs fewer times, or a deleted `if` moves this and fails the gate.
+const EXPECTED_PROBES: usize = 83;
+static PROBES: crate::probes::ProbeCounter = crate::probes::ProbeCounter::new();
 
 /// `Offscreen::read_rgba` that also counts the frame toward [`EXPECTED_FRAMES`].
 trait ReadCounted {
@@ -177,8 +184,8 @@ impl ReadCounted for Offscreen {
     }
 }
 
-/// Fail closed when the number of graded frames is not the pinned one.
-fn check_frame_count() -> Result<(), String> {
+/// Fail closed when the frame or probe count is not the pinned one.
+fn check_pins() -> Result<(), String> {
     let got = FRAMES_GRADED.load(std::sync::atomic::Ordering::Relaxed);
     println!("[skyshot] frames graded: {got} / {EXPECTED_FRAMES}");
     if got != EXPECTED_FRAMES {
@@ -187,7 +194,7 @@ fn check_frame_count() -> Result<(), String> {
              added without updating the pin (fail-closed)"
         ));
     }
-    Ok(())
+    PROBES.check("skyshot", EXPECTED_PROBES)
 }
 
 fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> Result<(), String> {
@@ -213,7 +220,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
         let midnight = off.read_counted(gpu)?;
         dump(args, &mut off, gpu, "zenith-midnight");
         let mz = center_avg(&midnight, w, h, 8);
-        if luma_f(mz) > 10.0 {
+        if PROBES.bad(luma_f(mz) > 10.0) {
             failures.push(format!(
                 "Part A: midnight zenith not black — avg rgb {mz:?} (luma {:.1})",
                 luma_f(mz)
@@ -226,7 +233,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
         dump(args, &mut off, gpu, "zenith-noon");
         let nz = center_avg(&noon, w, h, 8);
         // A guard against "always black passes": noon must be blue and bright.
-        if nz[2] < 30.0 || nz[2] <= nz[0] {
+        if PROBES.bad(nz[2] < 30.0 || nz[2] <= nz[0]) {
             failures.push(format!(
                 "Part A guard: noon zenith not blue/bright — avg rgb {nz:?}"
             ));
@@ -272,7 +279,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
                     "[skyshot] tint {name} ch{c}: base {:.1} tinted {:.1} -> ratio {ratio:.3} (want {:.2})",
                     base[c], tinted[c], tint[c]
                 );
-                if (ratio - tint[c]).abs() > 0.06 {
+                if PROBES.bad((ratio - tint[c]).abs() > 0.06) {
                     failures.push(format!(
                         "tint {name} channel {c}: ratio {ratio:.3} != requested {:.2} (SKY_COLOR dropped?)",
                         tint[c]
@@ -357,13 +364,13 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
                 best.1,
                 second
             );
-            if best.0 as u8 != p {
+            if PROBES.bad(best.0 as u8 != p) {
                 failures.push(format!(
                     "phase {p}: centre {:?} identified as texture {} (want {p})",
                     centre.map(|v| v.round() as i32),
                     best.0
                 ));
-            } else if best.1 > 600.0 || second < best.1 + 1500.0 {
+            } else if PROBES.bad(best.1 > 600.0 || second < best.1 + 1500.0) {
                 failures.push(format!(
                     "phase {p}: match not decisive (d2={:.0}, runner-up d2={:.0})",
                     best.1, second
@@ -393,12 +400,12 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
                 rgb[1].round() as i32,
                 rgb[2].round() as i32,
             );
-            if luma_f(rgb) > 2.0 {
+            if PROBES.bad(luma_f(rgb) > 2.0) {
                 failures.push(format!(
                     "sun discard: centre rgb {rgb:?} not black — a zero-alpha, nonzero-RGB sun must not tint the attachment"
                 ));
             }
-            if (a - 255.0).abs() > 2.0 {
+            if PROBES.bad((a - 255.0).abs() > 2.0) {
                 failures.push(format!(
                     "sun discard: centre alpha {a:.1} — a zero-alpha sun must not touch the attachment (want 255)"
                 ));
@@ -416,7 +423,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
             let img = off.read_counted(gpu)?;
             let a = center_alpha(&img, w, h, 24);
             println!("[skyshot] alpha-write: phase-0 centre alpha {a:.1} (want ~128)");
-            if (a - 128.0).abs() > 4.0 {
+            if PROBES.bad((a - 128.0).abs() > 4.0) {
                 failures.push(format!(
                     "phase-0 alpha write: centre alpha {a:.1} != ~128 (RGB-only write mask?)"
                 ));
@@ -462,7 +469,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
                 // Correct match: d² ≈ a few (NEAREST + sRGB roundtrip). Any wrong
                 // permutation swaps in a marker ≥ ~50 000 away, so 900 is tight
                 // yet unambiguous.
-                if d2 > 900.0 {
+                if PROBES.bad(d2 > 900.0) {
                     failures.push(format!(
                         "uv-orientation {label}: sampled {:?} != predicted {:?} (d2={d2:.0}) — scrambled/flipped moon UV winding",
                         got.map(|v| v.round() as i32),
@@ -505,20 +512,23 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
             "[skyshot] M12 projected model-centre (shared): ({:.3},{:.3}) — senior ({:.3},{:.3})",
             center[0], center[1], SENIOR_CENTER[0], SENIOR_CENTER[1]
         );
-        if (center[0] - center_moon[0]).abs() > 1e-6 || (center[1] - center_moon[1]).abs() > 1e-6 {
+        if PROBES.bad(
+            (center[0] - center_moon[0]).abs() > 1e-6 || (center[1] - center_moon[1]).abs() > 1e-6,
+        ) {
             failures.push(format!(
                 "M12: sun/moon projected centres differ ({center:?} vs {center_moon:?}) — should be scale-independent"
             ));
         }
-        if (center[0] - SENIOR_CENTER[0]).abs() > SENIOR_EPS
-            || (center[1] - SENIOR_CENTER[1]).abs() > SENIOR_EPS
-        {
+        if PROBES.bad(
+            (center[0] - SENIOR_CENTER[0]).abs() > SENIOR_EPS
+                || (center[1] - SENIOR_CENTER[1]).abs() > SENIOR_EPS,
+        ) {
             failures.push(format!(
                 "M12: projected centre ({:.3},{:.3}) != senior ({:.3},{:.3})",
                 center[0], center[1], SENIOR_CENTER[0], SENIOR_CENTER[1]
             ));
         }
-        if center[0] <= w as f64 / 2.0 {
+        if PROBES.bad(center[0] <= w as f64 / 2.0) {
             failures.push(format!(
                 "M12: +15° centre x {:.3} must be right of frame centre {}",
                 center[0],
@@ -674,22 +684,22 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
                 println!(
                     "[skyshot] M12 sunrise: −X actual bbox ({min_x:.1},{min_y:.1})..({max_x:.1},{max_y:.1}) centroid_x {centroid_x:.2} [{count} px]"
                 );
-                if count < M12_SUNRISE_MIN_PX {
+                if PROBES.bad(count < M12_SUNRISE_MIN_PX) {
                     failures.push(format!(
                         "M12 sunrise: −X warm above-horizon count {count} < {M12_SUNRISE_MIN_PX} (fan too faint / absent)"
                     ));
                 }
-                if (min_y - a_min_y).abs() > M12_SUNRISE_TOL {
+                if PROBES.bad((min_y - a_min_y).abs() > M12_SUNRISE_TOL) {
                     failures.push(format!(
                         "M12 sunrise: −X top {min_y:.1} vs analytic ring line {a_min_y:.3} exceeds {M12_SUNRISE_TOL:.1} px (dropped scale(z=alpha)?)"
                     ));
                 }
-                if (max_y - a_max_y).abs() > M12_SUNRISE_TOL {
+                if PROBES.bad((max_y - a_max_y).abs() > M12_SUNRISE_TOL) {
                     failures.push(format!(
                         "M12 sunrise: −X bottom {max_y:.1} vs analytic centre {a_max_y:.3} exceeds {M12_SUNRISE_TOL:.1} px"
                     ));
                 }
-                if (centroid_x - a_centre[0]).abs() > M12_SUNRISE_TOL {
+                if PROBES.bad((centroid_x - a_centre[0]).abs() > M12_SUNRISE_TOL) {
                     failures.push(format!(
                         "M12 sunrise: −X centroid_x {centroid_x:.2} vs analytic centre x {:.3} exceeds {M12_SUNRISE_TOL:.1} px (wrong X/Z order / sign?)",
                         a_centre[0]
@@ -704,7 +714,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
         // +X may see the fan's faint below-horizon underside, but NEVER a
         // comparable above-horizon fan — that would mean the fan is (also) on
         // the opposite horizon.
-        if pos_above > 20 && pos_above.saturating_mul(5) > neg_count {
+        if PROBES.bad(pos_above > 20 && pos_above.saturating_mul(5) > neg_count) {
             failures.push(format!(
                 "M12 sunrise: +X guard shows {pos_above} warm above-horizon px vs −X {neg_count} — fan on the opposite horizon too?"
             ));
@@ -735,13 +745,13 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
             "[skyshot] stars: {q} accepted of {} candidates ({idx} indices)",
             rewo_gpu::celestial::STAR_COUNT,
         );
-        if q != 780 {
+        if PROBES.bad(q != 780) {
             failures.push(format!(
                 "star count {q} should be exactly 780 accepted (of {} candidates)",
                 rewo_gpu::celestial::STAR_COUNT
             ));
         }
-        if idx != 4680 {
+        if PROBES.bad(idx != 4680) {
             failures.push(format!("star index count {idx} should be exactly 4680"));
         }
     } else {
@@ -764,7 +774,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
         // not hue). Would fail if the sun quad didn't render.
         let thresh = noon_zenith_luma + 50.0;
         let bright = count_pixels(&img, w, h, center_rect(w, h, 48), |p| luma(p) > thresh);
-        if bright < 40 {
+        if PROBES.bad(bright < 40) {
             failures.push(format!(
                 "sun: only {bright} centre pixels brighter than {thresh:.0} at noon (bare sky {noon_zenith_luma:.0})"
             ));
@@ -780,7 +790,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
         let img = off.read_counted(gpu)?;
         dump(args, &mut off, gpu, "moon-midnight");
         let bright = count_pixels(&img, w, h, center_rect(w, h, 48), |p| luma(p) > 60.0);
-        if bright < 40 {
+        if PROBES.bad(bright < 40) {
             failures.push(format!(
                 "moon: only {bright} bright centre pixels at midnight"
             ));
@@ -814,7 +824,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
                 added += 1;
             }
         }
-        if added < 30 {
+        if PROBES.bad(added < 30) {
             failures.push(format!(
                 "stars: only {added} pixels brightened when stars enabled"
             ));
@@ -886,7 +896,7 @@ fn run_sky_mode_cases(
         ow_centre.map(|v| v.round() as i32),
         luma_f(ow_centre)
     );
-    if luma_f(ow_centre) < 30.0 {
+    if PROBES.bad(luma_f(ow_centre) < 30.0) {
         failures.push(format!(
             "mode OVERWORLD: zenith centre {ow_centre:?} carries no sky contribution"
         ));
@@ -909,13 +919,13 @@ fn run_sky_mode_cases(
         "[skyshot] mode NONE: {dirty} of {} pixels differ from the clear value {clear_px:?}",
         none.len() / 4
     );
-    if dirty != 0 {
+    if PROBES.bad(dirty != 0) {
         failures.push(format!(
             "mode NONE: {dirty} pixels wrote sky — addSkyPass must add no pass at all"
         ));
     }
     // ...and the mode really was the only difference: OVERWORLD did write.
-    if max_channel_delta(&ow, &none) < 20 {
+    if PROBES.bad(max_channel_delta(&ow, &none) < 20) {
         failures.push(
             "mode NONE vs OVERWORLD are indistinguishable — the mode is not driving the pass"
                 .into(),
@@ -925,10 +935,11 @@ fn run_sky_mode_cases(
     let horiz = horizon_view(w, h, 0.0);
     off.render(gpu, Some((&mut wr, horiz)), draw, CLEAR)?;
     let none_h = off.read_counted(gpu)?;
-    if none_h
-        .chunks(4)
-        .any(|px| px[0] != clear_px[0] || px[1] != clear_px[1] || px[2] != clear_px[2])
-    {
+    if PROBES.bad(
+        none_h
+            .chunks(4)
+            .any(|px| px[0] != clear_px[0] || px[1] != clear_px[1] || px[2] != clear_px[2]),
+    ) {
         failures.push("mode NONE: the horizon heading wrote sky pixels".into());
     }
 
@@ -945,7 +956,7 @@ fn run_sky_mode_cases(
             h: 16,
         },
     )?;
-    if !wr.end_sky_ready() {
+    if PROBES.bad(!wr.end_sky_ready()) {
         failures.push("END: init_end_sky did not attach a pass".into());
     }
     wr.set_sky_mode(SkyMode::End);
@@ -990,14 +1001,14 @@ fn run_sky_mode_cases(
             "[skyshot] END synthetic {tag}: expected {expect_syn:?}, {bad} of {} pixels off (worst Δ {worst})",
             img.len() / 4
         );
-        if bad != 0 {
+        if PROBES.bad(bad != 0) {
             failures.push(format!(
                 "END synthetic {tag}: {bad} pixels != {expect_syn:?} (worst Δ {worst}) — the cube is not closed, or the colour/UV/blend is wrong"
             ));
         }
     }
     // Guard: the constant must actually darken. The raw texel would be SYN.
-    if expect_syn == SYN {
+    if PROBES.bad(expect_syn == SYN) {
         failures.push("END: the -14145496 constant is not being applied".into());
     }
 
@@ -1084,7 +1095,7 @@ fn run_sky_mode_cases(
                 frame.len() / 4,
                 seen.len()
             );
-            if off_palette != 0 {
+            if PROBES.bad(off_palette != 0) {
                 failures.push(format!(
                     "END production: {off_palette} pixels are not a scaled end_sky.png texel (worst Δ {worst})"
                 ));
@@ -1092,7 +1103,7 @@ fn run_sky_mode_cases(
             // >1 distinct value proves the texture is sampled and tiled rather
             // than collapsed to a flat fill (the failure mode a flat-colour
             // stand-in would look identical to).
-            if seen.len() < 2 {
+            if PROBES.bad(seen.len() < 2) {
                 failures.push(format!(
                     "END production: only {} distinct value(s) rendered — end_sky.png is not being sampled/tiled",
                     seen.len()
@@ -1114,11 +1125,11 @@ fn run_sky_mode_cases(
             println!(
                 "[skyshot] END production: luma ceilings raw {raw_ceiling:.1} scaled {scaled_ceiling:.1} rendered {rendered_ceiling:.1}"
             );
-            if raw_ceiling - scaled_ceiling < 10.0 {
+            if PROBES.bad(raw_ceiling - scaled_ceiling < 10.0) {
                 failures.push(format!(
                     "END production: raw ceiling {raw_ceiling:.1} and scaled ceiling {scaled_ceiling:.1} are too close to grade the darkening"
                 ));
-            } else if rendered_ceiling > scaled_ceiling + 2.0 {
+            } else if PROBES.bad(rendered_ceiling > scaled_ceiling + 2.0) {
                 failures.push(format!(
                     "END production: brightest rendered pixel {rendered_ceiling:.1} exceeds the scaled ceiling {scaled_ceiling:.1} (raw {raw_ceiling:.1}) — the -14145496 constant was dropped"
                 ));
@@ -1135,7 +1146,7 @@ fn run_sky_mode_cases(
             wr2.set_end_flash(Some((0.0, -90.0, 0.0)));
             off.render(gpu, Some((&mut wr2, up)), draw, CLEAR)?;
             let zero = off.read_counted(gpu)?;
-            if max_channel_delta(&frame, &zero) != 0 {
+            if PROBES.bad(max_channel_delta(&frame, &zero) != 0) {
                 failures.push(
                     "END flash: intensity 0 changed the frame — the 1e-5 gate is not holding"
                         .into(),
@@ -1147,7 +1158,7 @@ fn run_sky_mode_cases(
             wr2.set_end_flash(Some((9.0e-6, -90.0, 0.0)));
             off.render(gpu, Some((&mut wr2, up)), draw, CLEAR)?;
             let under = off.read_counted(gpu)?;
-            if max_channel_delta(&frame, &under) != 0 {
+            if PROBES.bad(max_channel_delta(&frame, &under) != 0) {
                 failures.push(
                     "END flash: 9e-6 drew — the threshold is a literal 1e-5, not zero".into(),
                 );
@@ -1173,10 +1184,10 @@ fn run_sky_mode_cases(
             println!(
                 "[skyshot] END flash: brightest px none {base_l:.1} -> i=0.35 {dim_l:.1} -> i=1.0 {full_l:.1}"
             );
-            if dim_l <= base_l {
+            if PROBES.bad(dim_l <= base_l) {
                 failures.push("END flash: a flash at 0.35 did not brighten the sky at all".into());
             }
-            if full_l <= dim_l {
+            if PROBES.bad(full_l <= dim_l) {
                 failures.push(
                     "END flash: intensity 1.0 is no brighter than 0.35 — the (i,i,i,i) tint is not reaching the quad".into(),
                 );
@@ -1188,7 +1199,7 @@ fn run_sky_mode_cases(
             wr2.set_end_flash(None);
             off.render(gpu, Some((&mut wr2, up)), draw, CLEAR)?;
             let cleared = off.read_counted(gpu)?;
-            if max_channel_delta(&frame, &cleared) != 0 {
+            if PROBES.bad(max_channel_delta(&frame, &cleared) != 0) {
                 failures.push("END flash: `None` still drew a flash".into());
             }
 
@@ -1212,7 +1223,7 @@ fn max_channel_delta(a: &[u8], b: &[u8]) -> i32 {
 fn finish(gpu: &mut Gpu, mut off: Offscreen, failures: &[&str]) -> Result<(), String> {
     off.destroy(gpu);
     if failures.is_empty() {
-        check_frame_count()?;
+        check_pins()?;
         println!(
             "[skyshot] CHECK OK — sky zenith tint + sun/moon/stars/sunrise + skybox modes verified"
         );
@@ -1791,7 +1802,7 @@ fn m12_check_body(
     let analytic = [minx, miny, maxx, maxy];
     let a_center = [(minx + maxx) * 0.5, (miny + maxy) * 0.5];
     for (k, label) in ["min_x", "min_y", "max_x", "max_y"].iter().enumerate() {
-        if (analytic[k] - senior_bbox[k]).abs() > SENIOR_EPS {
+        if PROBES.bad((analytic[k] - senior_bbox[k]).abs() > SENIOR_EPS) {
             fails.push(format!(
                 "M12 {name}: analytic {label} {:.3} != senior {:.3}",
                 analytic[k], senior_bbox[k]
@@ -1837,7 +1848,7 @@ fn m12_check_body(
     );
 
     for (k, label) in ["min_x", "min_y", "max_x", "max_y"].iter().enumerate() {
-        if (measured[k] - analytic[k]).abs() > M12_RASTER_TOL {
+        if PROBES.bad((measured[k] - analytic[k]).abs() > M12_RASTER_TOL) {
             fails.push(format!(
                 "M12 {name}: raster {label} {:.1} vs analytic {:.3} exceeds {:.1} px",
                 measured[k], analytic[k], M12_RASTER_TOL
@@ -1845,7 +1856,7 @@ fn m12_check_body(
         }
     }
     for (c, label) in ["x", "y"].iter().enumerate() {
-        if (m_center[c] - a_center[c]).abs() > M12_RASTER_TOL {
+        if PROBES.bad((m_center[c] - a_center[c]).abs() > M12_RASTER_TOL) {
             fails.push(format!(
                 "M12 {name}: raster centre {label} {:.1} vs analytic {:.3} exceeds {:.1} px",
                 m_center[c], a_center[c], M12_RASTER_TOL

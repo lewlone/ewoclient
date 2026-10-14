@@ -7,10 +7,13 @@
 //! own unit tests pin). The CPU gather (`collect_leashes`) is live-only and is
 //! graded by `live --render-check`'s r60.
 //!
-//! Five witnesses, each with a control that must find nothing or the opposite:
-//! an empty frame draws no rope; a level rope draws a thin brown line; a slack
-//! rope sags below a taut one; the alternating segments carry two brown shades;
-//! and the light fades along a rope lit at one end.
+//! Six witnesses, each with a control that must find nothing or the opposite:
+//! an empty frame draws no rope; a level rope draws brown pixels (g1a) that form
+//! a thin horizontal line (g1b); a slack rope sags below a taut one; the
+//! alternating segments carry two brown shades; and the light fades along a rope
+//! lit at one end. **Fail-closed** on [`EXPECTED_WITNESSES`]: every witness
+//! records unconditionally (a fail is a recorded fail, never a skipped branch),
+//! and a count that is not exactly the pinned one fails.
 
 use std::path::PathBuf;
 
@@ -24,6 +27,9 @@ use rewo_gpu::world::WorldRenderer;
 use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
+
+/// `g0`, `g1a`, `g1b`, `g2`, `g3`, `g4`.
+const EXPECTED_WITNESSES: usize = 6;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -108,6 +114,25 @@ fn rope_pixels(rgba: &[u8]) -> Vec<(u32, u32, u8)> {
     v
 }
 
+struct Checker {
+    witnessed: usize,
+    failures: Vec<String>,
+}
+
+impl Checker {
+    fn record(&mut self, name: &str, pass: bool, detail: impl std::fmt::Display) {
+        println!(
+            "[leashshot] {}  {name}: {detail}",
+            if pass { " ok " } else { "FAIL" }
+        );
+        if pass {
+            self.witnessed += 1;
+        } else {
+            self.failures.push(name.to_string());
+        }
+    }
+}
+
 fn run_check(
     gpu: &mut Gpu,
     baked: &assets::BakedAssets,
@@ -122,7 +147,10 @@ fn run_check(
     // Daylight lightmap state: the witnesses reason about BLOCK levels, which
     // sample() resolves against the same curve the world pass uses.
     let lm = rewo_world::lightmap::LightmapState::default();
-    let mut fails: Vec<String> = Vec::new();
+    let mut c = Checker {
+        witnessed: 0,
+        failures: Vec::new(),
+    };
 
     // A closure that renders `verts` and reads the frame back.
     let frame = |gpu: &mut Gpu,
@@ -153,11 +181,11 @@ fn run_check(
     let empty = frame(gpu, &mut off, &[], 5.0)?;
     dump(&mut off, gpu, "empty");
     let n_empty = rope_pixels(&empty).len();
-    if n_empty > 20 {
-        fails.push(format!(
-            "g0 empty frame has {n_empty} rope pixels (want ~0)"
-        ));
-    }
+    c.record(
+        "g0",
+        n_empty <= 20,
+        format!("empty frame has {n_empty} rope pixels (want ~0)"),
+    );
 
     // -- g1: a level rope draws a thin brown line -------------------------
     let level = build_ribbon(
@@ -171,22 +199,24 @@ fn run_check(
     let f1 = frame(gpu, &mut off, &level, 5.0)?;
     dump(&mut off, gpu, "level");
     let p1 = rope_pixels(&f1);
-    if p1.len() < 200 {
-        fails.push(format!(
-            "g1 level rope only {} rope pixels (want a line)",
+    c.record(
+        "g1a",
+        p1.len() >= 200,
+        format!(
+            "level rope has {} rope pixels (want a line, >= 200)",
             p1.len()
-        ));
-    } else {
-        let xs: Vec<u32> = p1.iter().map(|&(x, _, _)| x).collect();
-        let ys: Vec<u32> = p1.iter().map(|&(_, y, _)| y).collect();
-        let (xspan, yspan) = (span(&xs), span(&ys));
-        // A horizontal rope: much wider than it is tall.
-        if xspan < yspan * 3 {
-            fails.push(format!(
-                "g1 rope not a horizontal line — x span {xspan}, y span {yspan}"
-            ));
-        }
-    }
+        ),
+    );
+    // A horizontal rope: much wider than it is tall. With no pixels both spans
+    // are 0 and the witness fails (0 < 0 is false).
+    let xs: Vec<u32> = p1.iter().map(|&(x, _, _)| x).collect();
+    let ys: Vec<u32> = p1.iter().map(|&(_, y, _)| y).collect();
+    let (xspan, yspan) = (span(&xs), span(&ys));
+    c.record(
+        "g1b",
+        xspan >= 1 && xspan >= yspan * 3,
+        format!("x span {xspan}, y span {yspan} (want x >= 3 * y)"),
+    );
 
     // -- g2: a slack rope sags below a taut one ---------------------------
     // A rope to a point below: slack curves under the straight interpolation.
@@ -210,32 +240,26 @@ fn run_check(
             .map(|&(_, y, _)| y)
             .max()
     };
-    match (mid_low(&rope_pixels(&fs)), mid_low(&rope_pixels(&ft))) {
-        (Some(sl), Some(tl)) => {
-            if sl <= tl + 2 {
-                fails.push(format!(
-                    "g2 slack rope did not sag — slack low y {sl}, taut low y {tl}"
-                ));
-            }
-        }
-        other => fails.push(format!("g2 could not find both ropes at centre: {other:?}")),
-    }
+    let (sl, tl) = (mid_low(&rope_pixels(&fs)), mid_low(&rope_pixels(&ft)));
+    c.record(
+        "g2",
+        matches!((sl, tl), (Some(sl), Some(tl)) if sl > tl + 2),
+        format!("slack low y {sl:?}, taut low y {tl:?} (slack must sag > 2 px lower)"),
+    );
 
     // -- g3: alternating segments carry two brown shades ------------------
     // On the level rope, the reds cluster into a bright and a dimmed value
     // (the 0.7 colorModifier). Assert the spread of distinct reds spans it.
     let reds: Vec<u8> = p1.iter().map(|&(_, _, r)| r).collect();
-    if let (Some(&lo), Some(&hi)) = (reds.iter().min(), reds.iter().max()) {
-        // Bright/dim ratio is 1/0.7 ~= 1.43; even after sRGB curvature the two
-        // shades differ by well over a threshold. Guard against a flat rope.
-        if hi < lo + 8 {
-            fails.push(format!(
-                "g3 no alternating dim — reds span only [{lo}, {hi}]"
-            ));
-        }
-    } else {
-        fails.push("g3 no rope reds to inspect".into());
-    }
+    // Bright/dim ratio is 1/0.7 ~= 1.43; even after sRGB curvature the two
+    // shades differ by well over a threshold. Guard against a flat rope. No
+    // reds at all is a failure, not a skip.
+    let red_range = reds.iter().min().zip(reds.iter().max());
+    c.record(
+        "g3",
+        matches!(red_range, Some((&lo, &hi)) if hi >= lo.saturating_add(8)),
+        format!("reds span {red_range:?} (want a spread of >= 8)"),
+    );
 
     // -- g4: light fades along a rope lit at one end ----------------------
     let faded = build_ribbon(
@@ -269,29 +293,33 @@ fn run_check(
         }
     };
     let (la, ra) = (avg(&left), avg(&right));
-    if (la - ra).abs() < 10.0 {
-        fails.push(format!(
-            "g4 light did not fade — left avg red {la:.1}, right avg red {ra:.1}"
-        ));
-    }
+    c.record(
+        "g4",
+        (la - ra).abs() >= 10.0,
+        format!("left avg red {la:.1}, right avg red {ra:.1} (want a gap >= 10)"),
+    );
 
     off.destroy(gpu);
 
-    let total = 5;
-    let passed = total - fails.len();
-    for f in &fails {
-        println!("[leashshot] FAIL  {f}");
+    println!(
+        "[leashshot] witnesses observed: {} / {EXPECTED_WITNESSES}",
+        c.witnessed
+    );
+    if !c.failures.is_empty() {
+        return Err(format!(
+            "leashshot: {} witnesses failed: {}",
+            c.failures.len(),
+            c.failures.join(", ")
+        ));
     }
-    println!("[leashshot] witnesses observed: {passed} / {total}");
-    if fails.is_empty() {
-        println!("[leashshot] PASS — {total} witnesses");
-        Ok(())
-    } else {
-        Err(format!(
-            "leashshot: {} of {total} witnesses failed",
-            fails.len()
-        ))
+    if c.witnessed != EXPECTED_WITNESSES {
+        return Err(format!(
+            "leashshot: witness count {} != expected {EXPECTED_WITNESSES} — a named property              was skipped (fail-closed)",
+            c.witnessed
+        ));
     }
+    println!("[leashshot] PASS — {} witnesses", c.witnessed);
+    Ok(())
 }
 
 fn overlay_offscreen(ring: &OverlayRing) -> OverlayDraw<'_> {

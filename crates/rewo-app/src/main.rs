@@ -87,6 +87,8 @@ mod play_cmd;
 #[cfg(feature = "gates")]
 mod portalshot_cmd;
 #[cfg(feature = "gates")]
+mod probes;
+#[cfg(feature = "gates")]
 mod rideshot_cmd;
 #[cfg(feature = "gates")]
 mod serverlinkshot_cmd;
