@@ -76,6 +76,9 @@ fn load_cache() -> Option<GlyphCache> {
     Some(c)
 }
 
+/// The exact number of witnesses a passing `--check` runs.
+const EXPECTED_WITNESSES: usize = 41;
+
 pub fn run(args: HudshotArgs) -> Result<(), String> {
     if !args.check {
         return Err("hudshot: only --check is implemented".into());
@@ -354,12 +357,11 @@ pub fn run(args: HudshotArgs) -> Result<(), String> {
     if g.fail > 0 {
         return Err(format!("hudshot: {} witnesses failed", g.fail));
     }
-    // Fail closed on a suspiciously small witness count -- the same guard the
-    // other gates carry, so a refactor that silently drops witnesses is loud
-    // rather than a quieter green.
-    if g.pass < 40 {
+    // Fail closed on the exact witness count -- the same guard the other gates
+    // carry. A floor (`>= 40`) left room for one witness to vanish unnoticed.
+    if g.pass != EXPECTED_WITNESSES {
         return Err(format!(
-            "hudshot: only {} witnesses ran, expected >= 40",
+            "hudshot: {} witnesses ran, expected exactly {EXPECTED_WITNESSES}",
             g.pass
         ));
     }

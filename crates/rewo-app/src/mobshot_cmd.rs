@@ -150,7 +150,23 @@ pub fn run(args: MobshotArgs) -> Result<(), String> {
     let jar = client_jar(&args.version).ok_or("client jar not found")?;
     let paths = DataPaths::for_version(&args.version).ok_or("no config dir")?;
     let baked = assets::bake(&jar, &paths.blocks_json())?;
-    let mut gpu = Gpu::new(None, cfg!(debug_assertions) && !args.no_validation)?;
+    // Validation is requested in every build (debug AND release): gating on
+    // `cfg!(debug_assertions)` let a release run pass unvalidated. The sole
+    // opt-out is `--no-validation`, which a gate run never passes.
+    let want_validation = !args.no_validation;
+    let mut gpu = Gpu::new(None, want_validation)?;
+    println!(
+        "[mobshot] Vulkan validation: {}",
+        if gpu.validation_active { "ON" } else { "off" }
+    );
+    let is_gate = args.check
+        || args.emissive_check
+        || args.etf_check
+        || args.tint_check
+        || args.variant_check;
+    if is_gate && want_validation && !gpu.validation_active {
+        return Err("mobshot: Vulkan validation requested but not active".into());
+    }
 
     let result = if args.check {
         run_check(&mut gpu, &baked, &args)
@@ -233,6 +249,18 @@ fn neutral_draw(kind: EntityModelKind) -> EntityDraw<'static> {
 // --check: the facelabel gate
 // ---------------------------------------------------------------------------
 
+/// `--check` renders every available mob (minus the ambiguous ones) from three
+/// views, so the pinned view count is `3 * (available - ambiguous)`. Without a
+/// pin the gate could print "OK — 0 mob-views", and `kinds.retain(!ambiguous)`
+/// could silently drop any number of mobs from grading. Both numbers move when a
+/// mob is added or its texture starts/stops reusing rects across face labels;
+/// update them (and say why) in that commit.
+const EXPECTED_MOB_VIEWS: usize = 246;
+/// How many kinds the texture-reuse filter excludes from the facelabel check
+/// (player, player_slim, guardian, elder_guardian, bee, pufferfish, sniffer,
+/// breeze_wind): each one is a mob this gate does NOT grade.
+const EXPECTED_AMBIGUOUS_KINDS: usize = 8;
+
 fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> Result<(), String> {
     let (w, h) = (512u32, 512u32);
     let mut off = Offscreen::new(gpu, w, h)?;
@@ -247,6 +275,13 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
             "[mobshot] SKIP {:?}: texture reuses rects across face labels — facelabel check N/A",
             k
         );
+    }
+    if ambiguous.len() != EXPECTED_AMBIGUOUS_KINDS {
+        return Err(format!(
+            "mobshot: {} ambiguous kinds excluded from grading, expected \
+             {EXPECTED_AMBIGUOUS_KINDS} (fail-closed: the exclusion list moved)",
+            ambiguous.len()
+        ));
     }
     kinds.retain(|k| !ambiguous.contains(k));
     if let Some(dir) = &args.out_dir {
@@ -361,6 +396,12 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
     wr.destroy(gpu);
     off.destroy(gpu);
     if failures.is_empty() {
+        if checked != EXPECTED_MOB_VIEWS {
+            return Err(format!(
+                "mobshot: graded {checked} mob-views, expected {EXPECTED_MOB_VIEWS} \
+                 (fail-closed: a mob was dropped or added without updating the pin)"
+            ));
+        }
         println!("[mobshot] CHECK OK — {checked} mob-views match their geometric face labels");
         Ok(())
     } else {

@@ -48,6 +48,11 @@ pub struct ContainershotArgs {
     pub out_dir: Option<std::path::PathBuf>,
 }
 
+/// The exact number of witnesses a passing `--check` records. Pinned with `!=`
+/// (like the other gates): a floor of `> 0` let a refactor drop most of them
+/// silently. Update it, and say why, when a witness is added or removed.
+const EXPECTED_WITNESSES: usize = 109;
+
 struct Checker {
     witnessed: usize,
     failures: Vec<String>,
@@ -596,8 +601,12 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
             c.failures.join(", ")
         ));
     }
-    if args.check && c.witnessed == 0 {
-        return Err("containershot: no witnesses ran".into());
+    if args.check && c.witnessed != EXPECTED_WITNESSES {
+        return Err(format!(
+            "containershot: witness count {} != expected {EXPECTED_WITNESSES} — a named \
+             property was skipped or added without updating the pin (fail-closed)",
+            c.witnessed
+        ));
     }
     println!("[containershot] PASS — {} witnesses", c.witnessed);
     Ok(())

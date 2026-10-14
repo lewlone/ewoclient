@@ -115,6 +115,38 @@ pub fn run(args: LightmapshotArgs) -> Result<(), String> {
     run_check(&mut gpu, &args)
 }
 
+/// How many frames this gate reads back and grades. The gate accumulates
+/// property failures rather than counting witnesses, so a section that stopped
+/// running (an emptied loop, an early skip) would still print OK; pinning the
+/// frame count makes that loud. Update it, and say why, when a case is added or
+/// removed on purpose.
+const EXPECTED_FRAMES: usize = 31;
+static FRAMES_GRADED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `Offscreen::read_rgba` that also counts the frame toward [`EXPECTED_FRAMES`].
+trait ReadCounted {
+    fn read_counted(&mut self, gpu: &Gpu) -> Result<Vec<u8>, String>;
+}
+impl ReadCounted for Offscreen {
+    fn read_counted(&mut self, gpu: &Gpu) -> Result<Vec<u8>, String> {
+        FRAMES_GRADED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.read_rgba(gpu)
+    }
+}
+
+/// Fail closed when the number of graded frames is not the pinned one.
+fn check_frame_count() -> Result<(), String> {
+    let got = FRAMES_GRADED.load(std::sync::atomic::Ordering::Relaxed);
+    println!("[lightmapshot] frames graded: {got} / {EXPECTED_FRAMES}");
+    if got != EXPECTED_FRAMES {
+        return Err(format!(
+            "lightmapshot: graded {got} frames, expected {EXPECTED_FRAMES} — a case was skipped or \
+             added without updating the pin (fail-closed)"
+        ));
+    }
+    Ok(())
+}
+
 fn run_check(gpu: &mut Gpu, args: &LightmapshotArgs) -> Result<(), String> {
     if let Some(dir) = &args.out_dir {
         std::fs::create_dir_all(dir).map_err(|e| format!("out-dir: {e}"))?;
@@ -165,6 +197,7 @@ fn run_check(gpu: &mut Gpu, args: &LightmapshotArgs) -> Result<(), String> {
     result?;
 
     if failures.is_empty() {
+        check_frame_count()?;
         if args.check {
             println!("[lightmapshot] CHECK OK — terrain + water + packed color + dimension ambient + entity lightmap matrix verified");
         } else {
@@ -977,7 +1010,7 @@ fn run_entity_case(
     wr.set_entities(&[capsule], right, up.to_array(), 0.0);
 
     off.render(gpu, Some((&mut *wr, view_proj)), draw, CLEAR)?;
-    let img = off.read_rgba(gpu)?;
+    let img = off.read_counted(gpu)?;
     if let Some(dir) = &args.out_dir {
         let _ = off.save_png(gpu, &dir.join(format!("{name}.png")));
     }
@@ -1142,7 +1175,7 @@ fn render_quad_colored(
     gpu.wait_idle();
 
     off.render(gpu, Some((&mut *wr, view_proj)), draw, CLEAR)?;
-    let img = off.read_rgba(gpu)?;
+    let img = off.read_counted(gpu)?;
     if let Some(dir) = &args.out_dir {
         let _ = off.save_png(gpu, &dir.join(format!("{name}.png")));
     }

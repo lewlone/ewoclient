@@ -126,7 +126,7 @@ pub fn run(args: HurtshotArgs) -> Result<(), String> {
     if args.no_gpu {
         println!("[hurtshot] --no-gpu: the flash witnesses are SKIPPED (count fails closed)");
     } else {
-        check_flash(&mut c)?;
+        check_flash(&mut c, args.check)?;
     }
 
     println!(
@@ -1244,8 +1244,15 @@ fn check_tilt(c: &mut Checker, ids: &Ids, classes: &EntityClasses, zombie: i32, 
     );
 }
 
-fn check_flash(c: &mut Checker) -> Result<(), String> {
+fn check_flash(c: &mut Checker, check: bool) -> Result<(), String> {
     let mut gpu = Gpu::new(None, true)?;
+    println!(
+        "[hurtshot] Vulkan validation: {}",
+        if gpu.validation_active { "ON" } else { "off" }
+    );
+    if check && !gpu.validation_active {
+        return Err("hurtshot: Vulkan validation requested but not active".into());
+    }
     let mut off = Offscreen::new(&mut gpu, W, H)?;
     let ring = OverlayRing::default();
     // The overlay strip parked off-screen: the entity pass is what is under

@@ -36,11 +36,46 @@ pub struct MeshshotArgs {
     check: bool,
 }
 
+/// The oracle's anti-vacuity fingerprint: counts of what the adversarial
+/// fixture exercised. The oracle asserts its properties unconditionally but has
+/// no witness count, so a fixture that quietly shrank (or an empty column)
+/// would still print OK. These are the measured values, in order:
+/// reference unit faces, reference quads, optimized quads, visible cube faces,
+/// greedy candidate faces, unit-fallback faces, greedy quads, up faces,
+/// non-uniform-AO faces, cutout faces, section-crossing rects, deterministic
+/// runs. Update them, and say why, when the fixture or the mesher changes on
+/// purpose.
+const EXPECTED_FINGERPRINT: [u64; 12] = [854, 854, 297, 854, 600, 254, 43, 211, 44, 62, 4, 4];
+
+fn fingerprint(r: &GreedyOracleReport) -> [u64; 12] {
+    [
+        r.reference_unit_faces as u64,
+        r.reference_quads as u64,
+        r.optimized_quads as u64,
+        r.visible_cube_faces as u64,
+        r.greedy_candidate_faces as u64,
+        r.unit_fallback_faces as u64,
+        r.greedy_quads as u64,
+        r.up_faces as u64,
+        r.nonuniform_ao_faces as u64,
+        r.cutout_faces as u64,
+        r.section_crossing_rects as u64,
+        r.deterministic_runs as u64,
+    ]
+}
+
 pub fn run(args: MeshshotArgs) -> Result<(), String> {
     // Always propagate: the oracle is the gate whether or not `--check` was
     // passed, so a property failure fails the command either way.
     let report = check_greedy_oracle()?;
     print_report(&args, &report);
+    let got = fingerprint(&report);
+    if got != EXPECTED_FINGERPRINT {
+        return Err(format!(
+            "meshshot: the oracle exercised {got:?}, expected {EXPECTED_FINGERPRINT:?} \
+             (fail-closed: the fixture or the mesher changed without updating the pin)"
+        ));
+    }
 
     println!(
         "MESHSHOT: OK — the greedy mesher's rectangles expand to exactly the reference \
