@@ -935,6 +935,7 @@ dependencies = [
  "flate2",
  "log",
  "opener",
+ "png",
  "rand",
  "serde",
  "serde_json",

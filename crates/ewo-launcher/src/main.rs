@@ -1002,6 +1002,17 @@ impl ApplicationHandler for App {
             attrs.with_no_redirection_bitmap(true)
         };
 
+        // Runtime taskbar/alt-tab icon for the borderless window (the
+        // embedded .ico serves Explorer only). None → OS default icon;
+        // a missing asset never blocks startup.
+        let attrs = match window::icon::load_app_icon() {
+            Some(icon) => attrs.with_window_icon(Some(icon)),
+            None => {
+                log::warn!("app icon not found — taskbar shows the default icon");
+                attrs
+            }
+        };
+
         let win = Arc::new(
             event_loop
                 .create_window(attrs)
