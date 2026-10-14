@@ -354,7 +354,7 @@ pub fn satisfied_offers(
     let Some((a_id, a_count)) = a else {
         return vec![false; offers.len()];
     };
-    let (b_id, b_count) = b.map_or((0, 0), |(i, c)| (i, c));
+    let (b_id, b_count) = b.unwrap_or((0, 0));
     offers
         .iter()
         .map(|o| {
@@ -642,7 +642,7 @@ mod tests {
         // base digit sits around +9..+16 and a 9-px line from +7 strikes it —
         // rather than sitting in the space between the two numbers.
         assert_eq!(STRIKETHROUGH_DX, 7);
-        assert!(STRIKETHROUGH_DX + STRIKETHROUGH_W <= DISCOUNT_SECOND_X + 2);
+        const { assert!(STRIKETHROUGH_DX + STRIKETHROUGH_W <= DISCOUNT_SECOND_X + 2) };
         assert_eq!((STRIKETHROUGH_W, STRIKETHROUGH_H), (9, 2));
     }
 

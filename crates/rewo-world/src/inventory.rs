@@ -1386,9 +1386,7 @@ impl Inventory {
                     // The menu decides WHICH accepted-input set applies; an
                     // id this client cannot resolve never reaches here,
                     // because `props` already returned None for it.
-                    let Some(which) = furnace_index(self.layout.protocol_id) else {
-                        return None;
-                    };
+                    let which = furnace_index(self.layout.protocol_id)?;
                     if p.smeltable[which] {
                         (ingredient..ingredient + 1, false)
                     } else if p.is_fuel {

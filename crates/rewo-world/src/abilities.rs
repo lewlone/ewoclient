@@ -345,10 +345,10 @@ mod tests {
         // doubling — 0.02 → 0.026, not 0.04.
         assert_eq!(a.air_move_speed(false, false), crate::physics::AIR_SPEED);
         assert_eq!(a.air_move_speed(true, false), crate::physics::AIR_SPEED_SPRINT);
-        assert!(
+        const { assert!(
             crate::physics::AIR_SPEED_SPRINT < crate::physics::AIR_SPEED * 2.0,
             "the walking air constants are not a doubling"
-        );
+        ) };
     }
 
     #[test]

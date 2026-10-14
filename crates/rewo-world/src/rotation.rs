@@ -157,9 +157,7 @@ pub fn clamp_f32(value: f32, min: f32, max: f32) -> f32 {
         min
     } else {
         // `Math.min` propagates NaN, which is the branch this exists for.
-        if value.is_nan() {
-            value
-        } else if value < max {
+        if value.is_nan() || value < max {
             value
         } else {
             max

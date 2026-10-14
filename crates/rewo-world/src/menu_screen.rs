@@ -22,7 +22,7 @@
 //! `AbstractContainerScreen`'s constructor sets `titleLabelX = 8`,
 //! `titleLabelY = 6`, `inventoryLabelX = 8` and `inventoryLabelY = imageHeight
 //! - 94`. Six screens override the title's x, and they do it in **two
-//! different ways**:
+//!   different ways**:
 //!
 //! * `dispenser`, `crafter_3x3`, `brewing_stand` and **the three furnaces**
 //!   compute `(imageWidth - font.width(title)) / 2` — a *centring*, which

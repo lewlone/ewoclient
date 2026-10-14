@@ -1023,7 +1023,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn bar_split_follows_the_three_way_rule() {
         // width 100: raw = floor(p * 100).
         assert_eq!(bar_widget(1.0, 100).bar_split(100), (50, true, true, true), "complete");

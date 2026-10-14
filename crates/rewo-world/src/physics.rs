@@ -2872,7 +2872,7 @@ mod tests {
     fn the_smaller_horizontal_axis_is_resolved_last() {
         let block: Vec<Aabb> = vec![[1.0, 0.0, 1.0, 2.0, 1.0, 2.0]];
         let bx: Aabb = [0.35, 0.0, 0.2, 0.95, 1.8, 0.8];
-        let r = collide_with_shapes([0.1, 0.0, 0.5], &bx, &[block.clone()], None);
+        let r = collide_with_shapes([0.1, 0.0, 0.5], &bx, std::slice::from_ref(&block), None);
         assert!((r[0] - 0.05).abs() < 1e-12 && (r[2] - 0.5).abs() < 1e-12, "{r:?}");
         // The mirrored case resolves X first.
         let r = collide_with_shapes([0.5, 0.0, 0.1], &[0.2, 0.0, 0.35, 0.8, 1.8, 0.95], &[block], None);

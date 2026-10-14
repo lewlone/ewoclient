@@ -643,7 +643,11 @@ impl EditBox {
         if pos > last_pos {
             self.display_pos += pos - last_pos;
         } else if pos <= self.display_pos {
-            self.display_pos -= self.display_pos - pos;
+            // Java's `displayPos -= displayPos - pos`, kept as written.
+            #[allow(clippy::misrefactored_assign_op)]
+            {
+                self.display_pos -= self.display_pos - pos;
+            }
         }
         self.display_pos = self.display_pos.min(self.value.len());
     }
