@@ -26,9 +26,9 @@ pub(super) fn container_panel(
     if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
         return None;
     }
-    let screen = rewo_world::menu_screen::screen_of(layout.protocol_id)?;
+    let screen = rewo_ui::menu_screen::screen_of(layout.protocol_id)?;
     let sheet = sheet_index(screen.texture)?;
-    let blits = rewo_world::menu_screen::background_quads(screen)
+    let blits = rewo_ui::menu_screen::background_quads(screen)
         .into_iter()
         .map(|q| rewo_gpu::container::PanelBlit {
             dx: q.dx as f32,
@@ -61,7 +61,7 @@ pub(super) fn container_panel(
 }
 
 /// A `menu_screen::ProgressBlit` in the render's own units.
-pub(super) fn to_blit(b: rewo_world::menu_screen::ProgressBlit) -> rewo_gpu::container::PanelBlit {
+pub(super) fn to_blit(b: rewo_ui::menu_screen::ProgressBlit) -> rewo_gpu::container::PanelBlit {
     rewo_gpu::container::PanelBlit {
         dx: b.dx as f32,
         dy: b.dy as f32,
@@ -80,9 +80,9 @@ pub(super) fn to_blit(b: rewo_world::menu_screen::ProgressBlit) -> rewo_gpu::con
 
 /// The scroller thumb's blit — 12x15 at `leftPos + 119`, whose y the caller
 /// computes from `scrollOffs` (M93s).
-pub(super) fn cut_scroller_blit(y: i32) -> rewo_world::menu_screen::ProgressBlit {
-    use rewo_world::menu_screen as ms;
-    rewo_world::menu_screen::ProgressBlit {
+pub(super) fn cut_scroller_blit(y: i32) -> rewo_ui::menu_screen::ProgressBlit {
+    use rewo_ui::menu_screen as ms;
+    rewo_ui::menu_screen::ProgressBlit {
         dx: ms::CUT_SCROLLER_X,
         dy: y,
         w: ms::CUT_SCROLLER_W,
@@ -100,7 +100,7 @@ pub(super) fn cut_scroller_blit(y: i32) -> rewo_world::menu_screen::ProgressBlit
 /// written; the shader linearises it, the same discipline every Rewo UI pass
 /// follows.
 pub(super) fn to_fill(
-    b: rewo_world::menu_screen::ProgressBlit,
+    b: rewo_ui::menu_screen::ProgressBlit,
     rgb: u32,
 ) -> (usize, rewo_gpu::container::PanelBlit) {
     let c = |shift: u32| ((rgb >> shift) & 0xFF) as f32 / 255.0;
@@ -125,12 +125,12 @@ pub(crate) fn enchant_rows_of(
     open: Option<&rewo_world::menu::OpenMenu>,
     player: EnchantPlayer<'_>,
     mouse_gui: Option<(f64, f64)>,
-) -> Option<[rewo_world::menu_screen::EnchantRow; 3]> {
+) -> Option<[rewo_ui::menu_screen::EnchantRow; 3]> {
     if layout.protocol_id != 13 {
         return None;
     }
     let m = open?;
-    Some(rewo_world::menu_screen::enchant_rows(
+    Some(rewo_ui::menu_screen::enchant_rows(
         m.enchant_costs(),
         m.enchant_lapis(),
         player.xp_level,
@@ -168,10 +168,10 @@ pub(super) fn enchant_press(
         open.layout.image_w as f32,
         open.layout.image_h as f32,
     );
-    let Some(row) = rewo_world::menu_screen::enchant_click_row(gx, gy) else {
+    let Some(row) = rewo_ui::menu_screen::enchant_click_row(gx, gy) else {
         return false;
     };
-    let allowed = rewo_world::menu_screen::enchant_click_allowed(
+    let allowed = rewo_ui::menu_screen::enchant_click_allowed(
         row,
         open.enchant_costs(),
         open.enchant_lapis(),
@@ -215,7 +215,7 @@ pub(super) fn beacon_press(
     w: f32,
     h: f32,
 ) -> bool {
-    use rewo_world::menu_screen::BeaconPress;
+    use rewo_ui::menu_screen::BeaconPress;
     let Some(open) = session.menus.open() else {
         return false;
     };
@@ -230,13 +230,13 @@ pub(super) fn beacon_press(
         open.layout.image_h as f32,
     );
     let choice = beacon_live(screen, open, effect_ids);
-    let Some(button) = rewo_world::menu_screen::beacon_buttons()
+    let Some(button) = rewo_ui::menu_screen::beacon_buttons()
         .into_iter()
-        .find(|b| rewo_world::menu_screen::beacon_button_hovered(*b, gx, gy))
+        .find(|b| rewo_ui::menu_screen::beacon_button_hovered(*b, gx, gy))
     else {
         return false;
     };
-    match rewo_world::menu_screen::beacon_press(button, choice) {
+    match rewo_ui::menu_screen::beacon_press(button, choice) {
         // An inactive or already-selected button is NOT a consumed click:
         // `AbstractWidget.mouseClicked` only returns true when it fires, so a
         // press on a dark button falls through to the slot logic exactly as a
@@ -249,9 +249,8 @@ pub(super) fn beacon_press(
             true
         }
         BeaconPress::Confirm => {
-            let id = |e: Option<rewo_world::menu_screen::BeaconEffect>| {
-                e.and_then(|e| effect_ids.id_of(e))
-            };
+            let id =
+                |e: Option<rewo_ui::menu_screen::BeaconEffect>| e.and_then(|e| effect_ids.id_of(e));
             match session.set_beacon(id(choice.primary), id(choice.secondary)) {
                 Ok(()) => screen.close_beacon = true,
                 Err(e) => log::warn!("set_beacon: {e}"),
@@ -318,7 +317,7 @@ pub(super) fn anvil_key(
     items: &rewo_data::items::Items,
     // M101 — for `follow_cursor`, whose width function needs the font.
     baked: Option<&assets::BakedAssets>,
-    input: rewo_world::edit_box::Input,
+    input: rewo_ui::edit_box::Input,
     clipboard: &mut String,
 ) -> bool {
     let Some(open) = session.menus.open() else {
@@ -338,7 +337,7 @@ pub(super) fn anvil_key(
     let handled = {
         let local = anvil_local(screen, open, items);
         let handled = local.field.key_pressed(input, clipboard);
-        rewo_world::anvil::key_consumed(handled, local.field.can_consume_input())
+        rewo_ui::anvil::key_consumed(handled, local.field.can_consume_input())
     };
     if let Some(a) = screen.anvil.as_mut() {
         follow_cursor(&mut a.field, baked, ANVIL_FIELD.2);
@@ -394,7 +393,7 @@ pub(super) fn anvil_flush(
     };
     let hover = slot0.map(|(_, n)| display_name_of(n));
     let input = slot0.zip(hover.as_deref()).map(|((s, _), hover_name)| {
-        rewo_world::anvil::AnvilInput {
+        rewo_ui::anvil::AnvilInput {
             // A stack whose patch carried anything is the closest Rewo gets to
             // `has(CUSTOM_NAME)` without decoding the component's text; the
             // approximation is one-directional, since a patched-but-unnamed
@@ -451,7 +450,7 @@ pub(super) fn book_press(
     w: f32,
     h: f32,
 ) -> bool {
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     // `!minecraft.player.isSpectator()` — a spectator cannot click the book at
     // all, and the guard is on the whole method rather than on any one widget.
     if session.own_game_mode().is_some_and(|g| g.is_spectator()) {
@@ -470,7 +469,7 @@ pub(super) fn book_press(
     // slots underneath all reach the overlay and nothing else.
     if let Some(open) = screen.book_overlay.as_ref() {
         match open.click_at(bx, by, right) {
-            rewo_world::recipe_overlay::Click::Select(i) => {
+            rewo_ui::recipe_overlay::Click::Select(i) => {
                 let picked = open.buttons.get(i).map(|b| (b.recipe, b.craftable));
                 // **The overlay STAYS OPEN.** The selecting branch does not
                 // call `setVisible(false)` — only the else does — so picking a
@@ -480,11 +479,11 @@ pub(super) fn book_press(
                     place_from_book(session, screen, id, craftable, shift, narrow);
                 }
             }
-            rewo_world::recipe_overlay::Click::Close => screen.book_overlay = None,
+            rewo_ui::recipe_overlay::Click::Close => screen.book_overlay = None,
         }
         return true;
     }
-    let query = rewo_world::recipe_search::normalize(&screen.book_search.value());
+    let query = rewo_ui::recipe_search::normalize(&screen.book_search.value());
     let Some(view) = live_recipe_book(session, items, screen.book, Some((bx, by)), &query, display)
         .and_then(|b| b.view)
     else {
@@ -586,7 +585,7 @@ pub(super) fn place_from_book(
     use_max_items: bool,
     narrow: bool,
 ) -> bool {
-    let effects = rewo_world::recipe_book_screen::place_effects(
+    let effects = rewo_ui::recipe_book_screen::place_effects(
         &mut screen.place_guard,
         recipe,
         craftable,
@@ -626,7 +625,7 @@ pub(super) fn merchant_press(
     w: f32,
     h: f32,
 ) -> bool {
-    use rewo_world::merchant_screen as ms;
+    use rewo_ui::merchant_screen as ms;
     let Some(open) = session.menus.open() else {
         return false;
     };
@@ -727,18 +726,18 @@ pub(super) fn merchant_future_xp(
     props: &dyn Fn(i32) -> i32,
 ) -> i32 {
     let slot = |i: usize| m.menu.menu_slot(i).map(|s| (s.item_id, s.count));
-    let matches: Vec<rewo_world::merchant_screen::OfferMatch> = offers
+    let matches: Vec<rewo_ui::merchant_screen::OfferMatch> = offers
         .offers
         .iter()
-        .map(|o| rewo_world::merchant_screen::OfferMatch {
+        .map(|o| rewo_ui::merchant_screen::OfferMatch {
             cost_a_item: o.cost_a.item_id,
             need_a: o.modified_cost_a(props(o.cost_a.item_id)),
             cost_b: o.cost_b.as_ref().map(|c| (c.item_id, c.count)),
             constrained: o.cost_a.constrained || o.cost_b.as_ref().is_some_and(|c| c.constrained),
         })
         .collect();
-    let satisfied = rewo_world::merchant_screen::satisfied_offers(&matches, slot(0), slot(1));
-    rewo_world::merchant_screen::recipe_for(selected, &satisfied).map_or(0, |i| offers.offers[i].xp)
+    let satisfied = rewo_ui::merchant_screen::satisfied_offers(&matches, slot(0), slot(1));
+    rewo_ui::merchant_screen::recipe_for(selected, &satisfied).map_or(0, |i| offers.offers[i].xp)
 }
 
 /// The merchant screen's scroll, which no packet carries (M93u).
@@ -787,7 +786,7 @@ pub(crate) fn merchant_view(
         selected: local.selected,
         scroll_off: local
             .scroll_off
-            .min(rewo_world::merchant_screen::max_scroll_off(offers.offers.len()).max(0)),
+            .min(rewo_ui::merchant_screen::max_scroll_off(offers.offers.len()).max(0)),
     }
 }
 
@@ -800,8 +799,8 @@ pub struct AnvilLocal {
     pub(super) container_id: i32,
     /// Slot 0 as last seen, so `slotChanged` fires exactly when vanilla's does.
     pub(super) slot0: Option<(i32, u64)>,
-    pub field: rewo_world::edit_box::EditBox,
-    pub name: rewo_world::anvil::AnvilName,
+    pub field: rewo_ui::edit_box::EditBox,
+    pub name: rewo_ui::anvil::AnvilName,
 }
 
 /// `AnvilScreen.subInit` + `slotChanged` — seed the field, and re-seed it
@@ -948,7 +947,7 @@ pub(super) fn cut_press(
     w: f32,
     h: f32,
 ) -> bool {
-    use rewo_world::menu_screen as ms;
+    use rewo_ui::menu_screen as ms;
     let Some(open) = session.menus.open() else {
         return false;
     };
@@ -998,10 +997,10 @@ pub(crate) fn cut_view(
     let name = m.menu.menu_slot(0).and_then(|s| items.name(s.item_id));
     let recipes = name.map_or_else(Vec::new, rewo_data::stonecutter_table::select_by_input);
     let local = cut_local(screen, m);
-    let display = rewo_world::menu_screen::cut_display_recipes(name.is_some(), recipes.len());
+    let display = rewo_ui::menu_screen::cut_display_recipes(name.is_some(), recipes.len());
     CutView {
         start_index: if display {
-            rewo_world::menu_screen::cut_start_index(local.scroll_offs, recipes.len())
+            rewo_ui::menu_screen::cut_start_index(local.scroll_offs, recipes.len())
         } else {
             0
         },
@@ -1036,7 +1035,7 @@ pub(super) fn cut_local(screen: &mut ScreenState, m: &rewo_world::menu::OpenMenu
 pub struct BeaconLocal {
     pub(super) container_id: i32,
     pub(super) data_writes: u64,
-    pub(super) choice: rewo_world::menu_screen::BeaconChoice,
+    pub(super) choice: rewo_ui::menu_screen::BeaconChoice,
 }
 
 /// `BeaconScreen`'s live choice — seeded from the menu, then owned by the
@@ -1045,7 +1044,7 @@ pub(super) fn beacon_live(
     screen: &mut ScreenState,
     m: &rewo_world::menu::OpenMenu,
     effect_ids: &BeaconEffectIds,
-) -> rewo_world::menu_screen::BeaconChoice {
+) -> rewo_ui::menu_screen::BeaconChoice {
     let stale = match screen.beacon {
         Some(b) => b.container_id != m.container_id || b.data_writes != m.data_writes,
         None => true,
@@ -1071,8 +1070,8 @@ pub(super) fn beacon_live(
 pub(super) fn beacon_choice(
     m: &rewo_world::menu::OpenMenu,
     effect_ids: &BeaconEffectIds,
-) -> rewo_world::menu_screen::BeaconChoice {
-    rewo_world::menu_screen::BeaconChoice {
+) -> rewo_ui::menu_screen::BeaconChoice {
+    rewo_ui::menu_screen::BeaconChoice {
         levels: m.beacon_levels(),
         primary: m.beacon_primary().and_then(|id| effect_ids.of(id)),
         secondary: m.beacon_secondary().and_then(|id| effect_ids.of(id)),
@@ -1090,26 +1089,26 @@ pub(crate) struct BeaconEffectIds(pub(super) [Option<i32>; 6]);
 
 impl BeaconEffectIds {
     pub(crate) fn resolve(m: &rewo_data::mob_effects::MobEffects) -> Self {
-        use rewo_world::menu_screen::BeaconEffect;
+        use rewo_ui::menu_screen::BeaconEffect;
         Self(std::array::from_fn(|i| {
             m.id_of(BeaconEffect::ALL[i].name())
         }))
     }
 
     /// The registry id of one of the six, for `set_beacon` (M93m).
-    pub(super) fn id_of(&self, e: rewo_world::menu_screen::BeaconEffect) -> Option<i32> {
-        let i = rewo_world::menu_screen::BeaconEffect::ALL
+    pub(super) fn id_of(&self, e: rewo_ui::menu_screen::BeaconEffect) -> Option<i32> {
+        let i = rewo_ui::menu_screen::BeaconEffect::ALL
             .iter()
             .position(|x| *x == e)?;
         self.0[i]
     }
 
     /// Which of the six a registry id is, or `None` for any other effect.
-    pub(super) fn of(&self, id: i32) -> Option<rewo_world::menu_screen::BeaconEffect> {
+    pub(super) fn of(&self, id: i32) -> Option<rewo_ui::menu_screen::BeaconEffect> {
         self.0
             .iter()
             .position(|e| *e == Some(id))
-            .map(|i| rewo_world::menu_screen::BeaconEffect::ALL[i])
+            .map(|i| rewo_ui::menu_screen::BeaconEffect::ALL[i])
     }
 }
 
@@ -1126,10 +1125,10 @@ impl BeaconEffectIds {
 /// also a witness grading a function the app did not call.
 pub(super) fn enchant_row_sprites(
     i: usize,
-    row: rewo_world::menu_screen::EnchantRow,
+    row: rewo_ui::menu_screen::EnchantRow,
 ) -> (usize, Option<usize>) {
     use rewo_data::assets as a;
-    use rewo_world::menu_screen::EnchantRow;
+    use rewo_ui::menu_screen::EnchantRow;
     let background = match row {
         // `cost == 0` blits the disabled background and RETURNS; an
         // unaffordable offer blits the SAME one and then its numeral.
@@ -1166,7 +1165,7 @@ pub(super) fn menu_overlays(
         // The furnace family (M91): flame then arrow.
         id if a::progress_index(id).is_some() => {
             let base = a::progress_index(id).expect("guarded above");
-            let (flame, arrow) = rewo_world::menu_screen::furnace_progress(
+            let (flame, arrow) = rewo_ui::menu_screen::furnace_progress(
                 m.furnace_is_lit(),
                 m.furnace_lit_progress(),
                 m.furnace_burn_progress(),
@@ -1179,31 +1178,31 @@ pub(super) fn menu_overlays(
         }
         // loom (M93q): for each visible cell, the button chrome then the
         // banner preview — a grey fill under an untinted pattern.
-        rewo_world::menu_screen::LOOM_MENU_PROTOCOL_ID => {
+        rewo_ui::menu_screen::LOOM_MENU_PROTOCOL_ID => {
             let Some(l) = player.loom.filter(|l| l.display) else {
                 return out;
             };
-            for row in 0..rewo_world::menu_screen::LOOM_ROWS {
-                for col in 0..rewo_world::menu_screen::LOOM_COLS {
-                    let index = (row + l.start_row) * rewo_world::menu_screen::LOOM_COLS + col;
+            for row in 0..rewo_ui::menu_screen::LOOM_ROWS {
+                for col in 0..rewo_ui::menu_screen::LOOM_COLS {
+                    let index = (row + l.start_row) * rewo_ui::menu_screen::LOOM_COLS + col;
                     // `break label82` — the grid stops at the end of the list
                     // rather than drawing empty cells.
                     let Some(pattern) = usize::try_from(index).ok().and_then(|i| l.patterns.get(i))
                     else {
                         break;
                     };
-                    let (cx, cy) = rewo_world::menu_screen::loom_cell_origin(row, col);
-                    let cell = rewo_world::menu_screen::ProgressBlit {
+                    let (cx, cy) = rewo_ui::menu_screen::loom_cell_origin(row, col);
+                    let cell = rewo_ui::menu_screen::ProgressBlit {
                         dx: cx,
                         dy: cy,
-                        w: rewo_world::menu_screen::LOOM_CELL,
-                        h: rewo_world::menu_screen::LOOM_CELL,
+                        w: rewo_ui::menu_screen::LOOM_CELL,
+                        h: rewo_ui::menu_screen::LOOM_CELL,
                         sx: 0,
                         sy: 0,
                         src: None,
                     };
                     let hovered = mouse_gui.is_some_and(|(x, y)| {
-                        rewo_world::menu_screen::loom_cell_at(x, y, l.start_row) == Some(index)
+                        rewo_ui::menu_screen::loom_cell_at(x, y, l.start_row) == Some(index)
                     });
                     out.push((
                         a::LOOM_PATTERN_CHROME
@@ -1219,13 +1218,13 @@ pub(super) fn menu_overlays(
                     // The grey backing FIRST, then the pattern over it. The
                     // order is the whole reason fills share the sprites' list.
                     out.push(to_fill(
-                        rewo_world::menu_screen::loom_preview_backing(cx, cy),
-                        rewo_world::menu_screen::LOOM_PREVIEW_BACKING,
+                        rewo_ui::menu_screen::loom_preview_backing(cx, cy),
+                        rewo_ui::menu_screen::LOOM_PREVIEW_BACKING,
                     ));
                     if let Some(sprite) = a::banner_pattern_overlay(pattern) {
                         out.push((
                             sprite,
-                            to_blit(rewo_world::menu_screen::loom_pattern_preview(cx, cy)),
+                            to_blit(rewo_ui::menu_screen::loom_pattern_preview(cx, cy)),
                         ));
                     }
                 }
@@ -1233,14 +1232,14 @@ pub(super) fn menu_overlays(
         }
         // merchant (M93u): the scroller, then per visible offer a trade arrow.
         // The three ITEMS per row are icons and go through the GUI-item pass.
-        rewo_world::merchant_screen::MERCHANT_MENU_PROTOCOL_ID => {
-            use rewo_world::merchant_screen as ms;
+        rewo_ui::merchant_screen::MERCHANT_MENU_PROTOCOL_ID => {
+            use rewo_ui::merchant_screen as ms;
             let Some(v) = player.merchant else { return out };
             let n = v.offers.len();
             if let Some(y) = ms::scroller_y(v.scroll_off, n) {
                 out.push((
                     a::VILLAGER_SCROLLER + usize::from(!ms::can_scroll(n)),
-                    to_blit(rewo_world::menu_screen::ProgressBlit {
+                    to_blit(rewo_ui::menu_screen::ProgressBlit {
                         dx: ms::SCROLL_X,
                         dy: y,
                         w: ms::SCROLLER_W,
@@ -1274,7 +1273,7 @@ pub(super) fn menu_overlays(
                     }
                     out.push((
                         a::WIDGET_BUTTON + usize::from(hovered),
-                        to_blit(rewo_world::menu_screen::ProgressBlit {
+                        to_blit(rewo_ui::menu_screen::ProgressBlit {
                             dx: ms::TRADE_BUTTON_X + sl.dx,
                             dy: ms::button_y(row),
                             w: sl.w,
@@ -1306,7 +1305,7 @@ pub(super) fn menu_overlays(
                 // on top of the cost-A icon.
                 out.push((
                     a::VILLAGER_TRADE_ARROW + usize::from(offer.out_of_stock),
-                    to_blit(rewo_world::menu_screen::ProgressBlit {
+                    to_blit(rewo_ui::menu_screen::ProgressBlit {
                         dx: ms::COST_B_X + 20,
                         dy: y + 3,
                         w: 10,
@@ -1333,7 +1332,7 @@ pub(super) fn menu_overlays(
                 };
                 out.push((
                     a::VILLAGER_STRIKETHROUGH,
-                    to_blit(rewo_world::menu_screen::ProgressBlit {
+                    to_blit(rewo_ui::menu_screen::ProgressBlit {
                         dx: ms::COST_A_X + ms::STRIKETHROUGH_DX,
                         dy: ms::row_item_y(row) + ms::STRIKETHROUGH_DY,
                         w: ms::STRIKETHROUGH_W,
@@ -1351,7 +1350,7 @@ pub(super) fn menu_overlays(
             // `showProgressBar()` gates it: a wandering trader has no level.
             if v.show_progress {
                 if let Some((fill, future)) = ms::xp_bar(v.level, v.xp, v.future_xp) {
-                    let bar = |dx: i32, sx: i32, w: i32| rewo_world::menu_screen::ProgressBlit {
+                    let bar = |dx: i32, sx: i32, w: i32| rewo_ui::menu_screen::ProgressBlit {
                         dx,
                         dy: ms::XP_BAR_Y,
                         w,
@@ -1396,7 +1395,7 @@ pub(super) fn menu_overlays(
                 let _ = sel;
                 out.push((
                     a::VILLAGER_OUT_OF_STOCK,
-                    to_blit(rewo_world::menu_screen::ProgressBlit {
+                    to_blit(rewo_ui::menu_screen::ProgressBlit {
                         dx: 182,
                         dy: 35,
                         w: 28,
@@ -1419,7 +1418,7 @@ pub(super) fn menu_overlays(
             let has_input = m.menu.menu_slot(0).is_some();
             out.push((
                 a::ANVIL_TEXT_FIELD + usize::from(!has_input),
-                to_blit(rewo_world::menu_screen::ProgressBlit {
+                to_blit(rewo_ui::menu_screen::ProgressBlit {
                     dx: 59,
                     dy: 20,
                     w: 110,
@@ -1436,7 +1435,7 @@ pub(super) fn menu_overlays(
             if (has_input || m.menu.menu_slot(1).is_some()) && m.menu.menu_slot(2).is_none() {
                 out.push((
                     a::ANVIL_ERROR,
-                    to_blit(rewo_world::menu_screen::ProgressBlit {
+                    to_blit(rewo_ui::menu_screen::ProgressBlit {
                         dx: 99,
                         dy: 45,
                         w: 28,
@@ -1451,8 +1450,8 @@ pub(super) fn menu_overlays(
         // stonecutter (M93s): the scroller, then one button chrome per visible
         // cell. The result ICONS are not here — they are items, and go through
         // the GUI-item pass with the slots (see `screen_icons`).
-        rewo_world::menu_screen::STONECUTTER_MENU_PROTOCOL_ID => {
-            use rewo_world::menu_screen as ms;
+        rewo_ui::menu_screen::STONECUTTER_MENU_PROTOCOL_ID => {
+            use rewo_ui::menu_screen as ms;
             let Some(c) = player.cut.filter(|c| c.display) else {
                 // `displayRecipes` hides the grid AND the scrollbar: the
                 // scroller is drawn inside `extractBackground` unconditionally,
@@ -1490,7 +1489,7 @@ pub(super) fn menu_overlays(
                 let (sx, sy) = ms::cut_cell_sprite_origin(pos_index);
                 out.push((
                     a::CUT_RECIPE_CHROME + chrome,
-                    to_blit(rewo_world::menu_screen::ProgressBlit {
+                    to_blit(rewo_ui::menu_screen::ProgressBlit {
                         dx: sx,
                         dy: sy,
                         w: ms::CUT_CELL_W,
@@ -1508,7 +1507,7 @@ pub(super) fn menu_overlays(
         rewo_world::menu::CRAFTER_MENU_PROTOCOL_ID => {
             out.push((
                 a::CRAFTER_REDSTONE + usize::from(m.crafter_powered()),
-                to_blit(rewo_world::menu_screen::crafter_redstone()),
+                to_blit(rewo_ui::menu_screen::crafter_redstone()),
             ));
             for slot in 0..rewo_world::menu::CRAFTER_GRID_SLOTS {
                 if !m.crafter_slot_disabled(slot) {
@@ -1522,7 +1521,7 @@ pub(super) fn menu_overlays(
                 };
                 out.push((
                     a::CRAFTER_DISABLED_SLOT,
-                    to_blit(rewo_world::menu_screen::crafter_disabled_cover(
+                    to_blit(rewo_ui::menu_screen::crafter_disabled_cover(
                         sx as i32, sy as i32,
                     )),
                 ));
@@ -1531,7 +1530,7 @@ pub(super) fn menu_overlays(
         // brewing_stand (M92): fuel, arrow, bubbles — vanilla's own order.
         11 => {
             let (fuel, brew, bubbles) =
-                rewo_world::menu_screen::brewing_progress(m.brewing_fuel(), m.brewing_ticks());
+                rewo_ui::menu_screen::brewing_progress(m.brewing_fuel(), m.brewing_ticks());
             for (sprite, blit) in [
                 (a::BREW_FUEL, fuel),
                 (a::BREW_PROGRESS, brew),
@@ -1549,9 +1548,9 @@ pub(super) fn menu_overlays(
                 .expect("id 13 with an open menu");
             for (i, row) in rows.into_iter().enumerate() {
                 let (bg, numeral) = enchant_row_sprites(i, row);
-                out.push((bg, to_blit(rewo_world::menu_screen::enchant_row_rect(i))));
+                out.push((bg, to_blit(rewo_ui::menu_screen::enchant_row_rect(i))));
                 if let Some(n) = numeral {
-                    out.push((n, to_blit(rewo_world::menu_screen::enchant_level_rect(i))));
+                    out.push((n, to_blit(rewo_ui::menu_screen::enchant_level_rect(i))));
                 }
             }
         }
@@ -1560,19 +1559,19 @@ pub(super) fn menu_overlays(
             let choice = player
                 .beacon_override
                 .unwrap_or_else(|| beacon_choice(m, &player.beacon_effects));
-            for b in rewo_world::menu_screen::beacon_buttons() {
+            for b in rewo_ui::menu_screen::beacon_buttons() {
                 let hovered = mouse_gui
-                    .is_some_and(|(x, y)| rewo_world::menu_screen::beacon_button_hovered(b, x, y));
-                let state = rewo_world::menu_screen::beacon_button_state(b, choice, hovered);
-                if state == rewo_world::menu_screen::BeaconButtonState::Hidden {
+                    .is_some_and(|(x, y)| rewo_ui::menu_screen::beacon_button_hovered(b, x, y));
+                let state = rewo_ui::menu_screen::beacon_button_state(b, choice, hovered);
+                if state == rewo_ui::menu_screen::BeaconButtonState::Hidden {
                     continue;
                 }
                 out.push((
                     a::BEACON_BUTTON_CHROME + beacon_chrome_index(state),
-                    to_blit(rewo_world::menu_screen::beacon_button_rect(b)),
+                    to_blit(rewo_ui::menu_screen::beacon_button_rect(b)),
                 ));
                 if let Some(icon) = beacon_icon_sprite(b, choice) {
-                    out.push((icon, to_blit(rewo_world::menu_screen::beacon_icon_rect(b))));
+                    out.push((icon, to_blit(rewo_ui::menu_screen::beacon_icon_rect(b))));
                 }
             }
         }
@@ -1583,8 +1582,8 @@ pub(super) fn menu_overlays(
 
 /// A button state's offset into the four chrome sprites, which are listed in
 /// the order `extractContents` tests for them.
-pub(super) fn beacon_chrome_index(s: rewo_world::menu_screen::BeaconButtonState) -> usize {
-    use rewo_world::menu_screen::BeaconButtonState as S;
+pub(super) fn beacon_chrome_index(s: rewo_ui::menu_screen::BeaconButtonState) -> usize {
+    use rewo_ui::menu_screen::BeaconButtonState as S;
     match s {
         S::Disabled => 0,
         S::Selected => 1,
@@ -1600,11 +1599,11 @@ pub(super) fn beacon_chrome_index(s: rewo_world::menu_screen::BeaconButtonState)
 /// The upgrade button **borrows the primary's effect**, so its icon changes as
 /// you click elsewhere — it is the one button whose art is not a constant.
 pub(super) fn beacon_icon_sprite(
-    b: rewo_world::menu_screen::BeaconButton,
-    choice: rewo_world::menu_screen::BeaconChoice,
+    b: rewo_ui::menu_screen::BeaconButton,
+    choice: rewo_ui::menu_screen::BeaconChoice,
 ) -> Option<usize> {
     use rewo_data::assets as a;
-    use rewo_world::menu_screen::{beacon_upgrade_effect, BeaconButtonKind, BeaconEffect};
+    use rewo_ui::menu_screen::{beacon_upgrade_effect, BeaconButtonKind, BeaconEffect};
     let effect = match b.kind {
         BeaconButtonKind::Power { effect, .. } => effect,
         BeaconButtonKind::Upgrade => beacon_upgrade_effect(choice)?,

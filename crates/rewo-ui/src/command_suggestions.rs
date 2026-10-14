@@ -64,7 +64,7 @@
 //! changes the order of every mixed-case list.
 //!
 //! This is also the only place a namespace is considered, via the separate
-//! `"minecraft:" + lastWord` test; [`crate::suggestions::matches_sub_str`]
+//! `"minecraft:" + lastWord` test; [`rewo_world::suggestions::matches_sub_str`]
 //! deliberately does not split on `:`.
 //!
 //! # Where the command path lives
@@ -102,7 +102,7 @@
 //! **Narration.** Rewo has no narrator. This one is still true.
 
 use crate::edit_box::{EditBox, Input};
-use crate::suggestions::{suggest_matching, Suggestion, Suggestions, SuggestionsBuilder};
+use rewo_world::suggestions::{suggest_matching, Suggestion, Suggestions, SuggestionsBuilder};
 
 /// `CommandSuggestions.LINE_HEIGHT`.
 pub const LINE_HEIGHT: i32 = 12;
@@ -837,7 +837,7 @@ mod tests {
     }
 
     fn suggestions(texts: &[&str], start: usize, end: usize) -> Suggestions {
-        use crate::suggestions::StringRange;
+        use rewo_world::suggestions::StringRange;
         let range = StringRange::between(start, end);
         Suggestions {
             range,

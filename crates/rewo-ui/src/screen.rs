@@ -138,7 +138,7 @@ pub const LINE_HEIGHT: i32 = 9;
 /// One GUI sheet this framework can blit.
 ///
 /// A mirror of the sprite *names* `rewo_gpu::screen` packs, for the same
-/// crate-boundary reason [`ButtonSprite`] is one: the world crate decides
+/// crate-boundary reason [`ButtonSprite`] is one: the UI crate decides
 /// *which* sprite a widget shows and the gpu crate owns *where it lives*.
 /// The list grows when a screen needs a sheet, which is the honest signal that
 /// a screen has arrived.

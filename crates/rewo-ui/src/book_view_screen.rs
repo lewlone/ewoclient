@@ -14,7 +14,7 @@
 //! top + 16)`; the back/forward `PageButton`s are `23 x 13` at `(left + 43,
 //! top + 157)` and `(left + 116, top + 157)`.
 
-use crate::chat_style::ChatLine;
+use rewo_world::chat_style::ChatLine;
 
 pub const IMAGE_W: i32 = 192;
 pub const IMAGE_H: i32 = 192;
@@ -364,7 +364,7 @@ pub fn build_screen(gui_w: i32, gui_h: i32, done_label: &str) -> crate::screen::
 /// hit-test's shared currency. Positions are GUI px; `y` is the line TOP.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LaidSpan<'a> {
-    pub span: &'a crate::chat_style::ChatSpan,
+    pub span: &'a rewo_world::chat_style::ChatSpan,
     pub x: i32,
     pub y: i32,
     /// The span's advance (its own width, already added to the next span's
@@ -385,7 +385,7 @@ pub struct LaidSpan<'a> {
 pub fn layout_spans<'a>(
     book: &'a BookViewScreen,
     gui_w: i32,
-    measure: &dyn Fn(&crate::chat_style::ChatSpan) -> i32,
+    measure: &dyn Fn(&rewo_world::chat_style::ChatSpan) -> i32,
 ) -> Vec<LaidSpan<'a>> {
     let mut out = Vec::new();
     let (tx, ty) = BookViewScreen::text_origin(gui_w);
@@ -422,10 +422,10 @@ pub fn layout_spans<'a>(
 pub fn click_event_at(
     book: &BookViewScreen,
     gui_w: i32,
-    measure: &dyn Fn(&crate::chat_style::ChatSpan) -> i32,
+    measure: &dyn Fn(&rewo_world::chat_style::ChatSpan) -> i32,
     mx: i32,
     my: i32,
-) -> Option<crate::chat_events::ClickEvent> {
+) -> Option<rewo_world::chat_events::ClickEvent> {
     layout_spans(book, gui_w, measure)
         .into_iter()
         .find(|s| mx >= s.x && mx < s.x + s.w && my >= s.y && my < s.y + LINE_HEIGHT)
@@ -487,7 +487,7 @@ fn in_rect(x: i32, y: i32, r: Rect) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat_style::{ChatLine, ChatSpan};
+    use rewo_world::chat_style::{ChatLine, ChatSpan};
 
     fn line(text: &str) -> ChatLine {
         vec![ChatSpan {
@@ -512,7 +512,7 @@ mod tests {
 
     /// A span carrying a click event, plus its plain neighbour.
     fn clickable_page() -> BookViewScreen {
-        let mk = |text: &str, ev: Option<crate::chat_events::ClickEvent>| ChatSpan {
+        let mk = |text: &str, ev: Option<rewo_world::chat_events::ClickEvent>| ChatSpan {
             text: text.into(),
             color: [0.0, 0.0, 0.0],
             bold: false,
@@ -521,7 +521,7 @@ mod tests {
             strikethrough: false,
             obfuscated: false,
             events: ev.map(|c| {
-                std::sync::Arc::new(crate::chat_events::ChatEvents {
+                std::sync::Arc::new(rewo_world::chat_events::ChatEvents {
                     click: Some(c),
                     hover: None,
                     insertion: None,
@@ -530,11 +530,16 @@ mod tests {
         };
         let page = vec![vec![
             mk("plain ", None),
-            mk("goto3", Some(crate::chat_events::ClickEvent::ChangePage(3))),
+            mk(
+                "goto3",
+                Some(rewo_world::chat_events::ClickEvent::ChangePage(3)),
+            ),
             mk(" and ", None),
             mk(
                 "/time",
-                Some(crate::chat_events::ClickEvent::RunCommand("/time".into())),
+                Some(rewo_world::chat_events::ClickEvent::RunCommand(
+                    "/time".into(),
+                )),
             ),
         ]];
         BookViewScreen::new(vec![page])
@@ -571,12 +576,14 @@ mod tests {
         };
         assert_eq!(
             click_event_at(&b, 400, &measure, centre_of(1).0, centre_of(1).1),
-            Some(crate::chat_events::ClickEvent::ChangePage(3)),
+            Some(rewo_world::chat_events::ClickEvent::ChangePage(3)),
             "the ChangePage span"
         );
         assert_eq!(
             click_event_at(&b, 400, &measure, centre_of(3).0, centre_of(3).1),
-            Some(crate::chat_events::ClickEvent::RunCommand("/time".into())),
+            Some(rewo_world::chat_events::ClickEvent::RunCommand(
+                "/time".into()
+            )),
             "the RunCommand span"
         );
         // The plain spans carry nothing.

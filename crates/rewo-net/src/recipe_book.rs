@@ -718,8 +718,8 @@ impl RecipeDisplay {
     /// `calculateIngredientsPositions`' switches do: neither names them, and
     /// the `default:` arm adds nothing. Not an omission — those two have their
     /// own screens and never reach a recipe book.
-    pub fn overlay_shape(&self) -> rewo_world::recipe_overlay::Shape {
-        use rewo_world::recipe_overlay::Shape;
+    pub fn overlay_shape(&self) -> rewo_ui::recipe_overlay::Shape {
+        use rewo_ui::recipe_overlay::Shape;
         match self {
             RecipeDisplay::CraftingShaped {
                 width,

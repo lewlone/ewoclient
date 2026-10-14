@@ -410,7 +410,7 @@ impl WrappedLine {
 /// [`split_lines`], which transcribes the `String`
 /// overload. An empty input yields **no** lines here; the one-empty-line rule
 /// belongs to `wrapComponents`, not to the splitter — see
-/// `crate::chat::wrap_components`.
+/// `rewo_ui::chat::wrap_components`.
 pub fn split_lines_wrapped(
     input: &[ChatSpan],
     max_width: i32,

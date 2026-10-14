@@ -34,7 +34,7 @@ pub(crate) struct EnchantPlayer<'a> {
     /// this the render would keep painting the server's last word and a click
     /// would light nothing, which is M93i's "correct on the wire, invisible on
     /// screen" one screen over.
-    pub beacon_override: Option<rewo_world::menu_screen::BeaconChoice>,
+    pub beacon_override: Option<rewo_ui::menu_screen::BeaconChoice>,
     /// M103 — the ghost recipe's two washes, already measured. Resolved by the
     /// caller for the reason the beacon's choice and the anvil's fills are: the
     /// slot positions need the layout, and `apply_screen` holds no ScreenState.
@@ -52,8 +52,8 @@ pub(crate) struct EnchantPlayer<'a> {
 /// chest is unaffected by any of this.
 pub(super) fn book_type_of(
     layout: &rewo_world::menu_layout::MenuLayout,
-) -> Option<rewo_world::recipe_book_screen::BookType> {
-    use rewo_world::recipe_book_screen::BookType;
+) -> Option<rewo_ui::recipe_book_screen::BookType> {
+    use rewo_ui::recipe_book_screen::BookType;
     // Keyed on the registry NAME, not the protocol id: the id is the server's
     // and a version bump renumbers it, while these four names are what the
     // decompile's class names correspond to. (M94's gate learned the hard way
@@ -88,13 +88,13 @@ pub(super) fn max_stack_of(items: &rewo_data::items::Items, id: i32) -> i32 {
 /// Everything the recipe book's chrome needs for one frame (M94).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BookRender {
-    pub view: Option<rewo_world::recipe_book_screen::BookView>,
+    pub view: Option<rewo_ui::recipe_book_screen::BookView>,
     /// `(hasCraftable, hasMultipleRecipes)` for each collection on the page.
     pub slots: Vec<(bool, bool)>,
-    pub hover: rewo_world::recipe_book_screen::BookHover,
+    pub hover: rewo_ui::recipe_book_screen::BookHover,
     /// Which book this is, which decides its tab list and its filter art
     /// (M95). M94 assumed four tabs for every book; a crafting book has FIVE.
-    pub book: rewo_world::recipe_book_screen::BookType,
+    pub book: rewo_ui::recipe_book_screen::BookType,
     /// The item each visible slot shows this frame, already cycled — `None`
     /// for a collection whose result needs a context Rewo has not got.
     pub slot_items: Vec<Option<i32>>,
@@ -110,8 +110,8 @@ pub(crate) struct BookRender {
     /// The promotion to craftable-first happens when the overlay is opened,
     /// because that is when vanilla does it and because the overlay is a
     /// snapshot: re-promoting each frame would re-sort an open overlay under
-    /// the cursor. See `rewo_world::recipe_overlay::Open`.
-    pub slot_collections: Vec<Vec<rewo_world::recipe_overlay::Button>>,
+    /// the cursor. See `rewo_ui::recipe_overlay::Open`.
+    pub slot_collections: Vec<Vec<rewo_ui::recipe_overlay::Button>>,
 }
 
 /// The recipe book for the menu currently on screen (M94), or `None` when it
@@ -155,10 +155,10 @@ pub(crate) fn book_visible(session: &rewo_net::play::PlaySession) -> bool {
 /// displace a chest's panel by 77 px and suppress its hover on a narrow
 /// window.
 pub(crate) fn book_visible_for(
-    book: Option<rewo_world::recipe_book_screen::BookType>,
+    book: Option<rewo_ui::recipe_book_screen::BookType>,
     settings: &rewo_net::recipe_book::BookSettings,
 ) -> bool {
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     match book {
         Some(rb::BookType::Crafting) => settings.crafting.open,
         Some(rb::BookType::Furnace) => settings.furnace.open,
@@ -172,7 +172,7 @@ pub(crate) fn book_visible_for(
 pub(super) fn live_recipe_book(
     session: &rewo_net::play::PlaySession,
     items: &rewo_data::items::Items,
-    state: rewo_world::recipe_book_screen::BookState,
+    state: rewo_ui::recipe_book_screen::BookState,
     // M98 — the cursor in BOOK coordinates, or `None` when it is not being
     // tracked. Book space rather than screen: the conversion needs the window
     // size, and doing it once at the caller keeps the hover and the press
@@ -183,7 +183,7 @@ pub(super) fn live_recipe_book(
     query: &str,
     display: &std::collections::HashMap<String, String>,
 ) -> Option<BookRender> {
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     let layout = session
         .menus
         .open()
@@ -252,14 +252,14 @@ pub(super) fn live_recipe_book(
 /// the red goes with the panel's overlays and the white goes after the icons,
 /// which is why they cannot be one list.
 pub(crate) fn ghost_washes(
-    ghosts: &[rewo_world::ghost_slots::Ghost],
+    ghosts: &[rewo_ui::ghost_slots::Ghost],
     layout: &rewo_world::menu_layout::MenuLayout,
     player_inventory: bool,
 ) -> (
     Vec<(usize, rewo_gpu::container::PanelBlit)>,
     Vec<(usize, rewo_gpu::container::PanelBlit)>,
 ) {
-    use rewo_world::ghost_slots as gs;
+    use rewo_ui::ghost_slots as gs;
     let big = gs::big_result_slot(player_inventory);
     let argb = |v: u32| {
         [
@@ -310,9 +310,9 @@ pub(crate) fn ghost_washes(
 /// drawn over whatever replaced it.
 pub(crate) fn live_ghosts(
     session: &rewo_net::play::PlaySession,
-) -> Vec<rewo_world::ghost_slots::Ghost> {
+) -> Vec<rewo_ui::ghost_slots::Ghost> {
     use rewo_net::recipe_book::RecipeDisplay as D;
-    use rewo_world::ghost_slots as gs;
+    use rewo_ui::ghost_slots as gs;
     let Some((container, display)) = session.ghost_recipe.as_ref() else {
         return Vec::new();
     };
@@ -416,13 +416,13 @@ pub(crate) fn live_ghosts(
 pub(crate) fn crafting_contents(
     player: &rewo_world::inventory::Inventory,
     open: Option<&rewo_world::inventory::Inventory>,
-    book: rewo_world::recipe_book_screen::BookType,
+    book: rewo_ui::recipe_book_screen::BookType,
     // `getMaxStackSize` per item id. A closure rather than the whole registry,
     // so this stays a function of plain values and its tests do not need the
     // user's decompile on disk.
     max_stack: &dyn Fn(i32) -> i32,
 ) -> rewo_world::stacked_contents::StackedContents {
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     let mut held = rewo_world::stacked_contents::StackedContents::new();
     let mut account = |inv: &rewo_world::inventory::Inventory, slot: usize, gated: bool| {
         if let Some(st) = inv.menu_slot(slot) {
@@ -458,11 +458,11 @@ pub(crate) struct BookEntry<'a> {
     /// `None` when `craftingRequirements` was absent — never craftable.
     pub ingredients: Option<Vec<rewo_world::stacked_contents::Ingredient>>,
     /// The result items' names and ids, lowercased, for the search (M99).
-    pub search: rewo_world::recipe_search::SearchEntry,
+    pub search: rewo_ui::recipe_search::SearchEntry,
     /// How the which-of-these overlay lays this recipe's ingredients out, and
     /// what each of them resolves to (M104). Read together: the shape decides
     /// where ingredient `n` goes, the list decides what it shows.
-    pub shape: rewo_world::recipe_overlay::Shape,
+    pub shape: rewo_ui::recipe_overlay::Shape,
     pub grid_items: Vec<Vec<i32>>,
 }
 
@@ -477,8 +477,8 @@ pub(crate) fn search_entry_of(
     results: &[i32],
     items: &rewo_data::items::Items,
     display: &std::collections::HashMap<String, String>,
-) -> rewo_world::recipe_search::SearchEntry {
-    let mut out = rewo_world::recipe_search::SearchEntry::default();
+) -> rewo_ui::recipe_search::SearchEntry {
+    let mut out = rewo_ui::recipe_search::SearchEntry::default();
     for id in results {
         let Some(name) = items.name(*id) else {
             continue;
@@ -505,7 +505,7 @@ pub(crate) fn search_entry_of(
 /// its two ends (the solver's own tests, and the chrome witness), with the
 /// derivation between them untested — the M92/M93b shape.
 pub(crate) fn book_render_from(
-    book: rewo_world::recipe_book_screen::BookType,
+    book: rewo_ui::recipe_book_screen::BookType,
     filtering: bool,
     entries: &[BookEntry<'_>],
     held: &mut rewo_world::stacked_contents::StackedContents,
@@ -513,13 +513,13 @@ pub(crate) fn book_render_from(
     // M98 — the tab and page a click chose. Clamped here rather than trusted:
     // a tab index survives a book-type change (a furnace book has fewer tabs
     // than a crafting one) and a page survives the list shrinking under it.
-    state: rewo_world::recipe_book_screen::BookState,
+    state: rewo_ui::recipe_book_screen::BookState,
     // The cursor in book coordinates, for the arrows' and filter's hover art.
     book_mouse: Option<(i32, i32)>,
     // The search field's contents, already lowercased (M99).
     query: &str,
 ) -> BookRender {
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     let flat: Vec<(i32, Option<i32>, &str)> = entries
         .iter()
         .map(|e| (e.id, e.group, e.category))
@@ -540,14 +540,14 @@ pub(crate) fn book_render_from(
         .filter(|c| {
             // A collection's searchable text is the union of its recipes',
             // which is what `flatMap` over `getRecipes()` gives.
-            let mut e = rewo_world::recipe_search::SearchEntry::default();
+            let mut e = rewo_ui::recipe_search::SearchEntry::default();
             for id in &c.recipes {
                 if let Some(src) = entries.iter().find(|x| x.id == *id) {
                     e.names.extend(src.search.names.iter().cloned());
                     e.ids.extend(src.search.ids.iter().cloned());
                 }
             }
-            rewo_world::recipe_search::matches(&e, query)
+            rewo_ui::recipe_search::matches(&e, query)
         })
         .collect();
     let total_pages = rb::total_pages(mine.len());
@@ -595,15 +595,15 @@ pub(crate) fn book_render_from(
                 .map(|(&id, &can)| {
                     let (shape, grid) = find(&id)
                         .map(|e| (e.shape, e.grid_items.clone()))
-                        .unwrap_or((rewo_world::recipe_overlay::Shape::Other, Vec::new()));
-                    rewo_world::recipe_overlay::Button {
+                        .unwrap_or((rewo_ui::recipe_overlay::Shape::Other, Vec::new()));
+                    rewo_ui::recipe_overlay::Button {
                         recipe: id,
                         craftable: can,
                         // `if (!items.isEmpty())` — an ingredient that resolves
                         // to nothing contributes no position, and because
                         // neither placement arm derives its position from a
                         // running counter, dropping one does not shift the rest.
-                        slots: rewo_world::recipe_overlay::grid_positions(
+                        slots: rewo_ui::recipe_overlay::grid_positions(
                             book.furnace_family(),
                             shape,
                         )
@@ -692,12 +692,12 @@ pub(crate) fn book_render_from(
 /// `recipe_overlay::origin`'s tests for the proof, and note the constant is
 /// still written out rather than dropped.
 pub(crate) fn open_overlay(
-    collection: Vec<rewo_world::recipe_overlay::Button>,
+    collection: Vec<rewo_ui::recipe_overlay::Button>,
     index: usize,
-    view: rewo_world::recipe_book_screen::BookView,
-) -> rewo_world::recipe_overlay::Open {
-    use rewo_world::recipe_book_screen as rb;
-    use rewo_world::recipe_overlay as ro;
+    view: rewo_ui::recipe_book_screen::BookView,
+) -> rewo_ui::recipe_overlay::Open {
+    use rewo_ui::recipe_book_screen as rb;
+    use rewo_ui::recipe_overlay as ro;
     // Craftable first, and the flag rides along rather than being recomputed:
     // the overlay is a snapshot, so its ordering and its greying are fixed at
     // this moment together.
@@ -735,8 +735,8 @@ pub(crate) fn open_overlay(
 /// test — M93t wrote the comment and did only the first half, and nothing
 /// caught it for eight milestones. Here the claim is one call to something
 /// graded below.
-pub(super) fn anvil_field_new() -> rewo_world::edit_box::EditBox {
-    let mut field = rewo_world::edit_box::EditBox::new(rewo_world::anvil::MAX_NAME_LENGTH);
+pub(super) fn anvil_field_new() -> rewo_ui::edit_box::EditBox {
+    let mut field = rewo_ui::edit_box::EditBox::new(rewo_ui::anvil::MAX_NAME_LENGTH);
     field.set_can_lose_focus(false);
     field.set_focused(true);
     field
@@ -749,7 +749,7 @@ pub(super) fn anvil_field_new() -> rewo_world::edit_box::EditBox {
 /// it. Missing it leaves a field typed past its visible width showing the head
 /// of the string with no caret at all.
 pub(super) fn follow_cursor(
-    field: &mut rewo_world::edit_box::EditBox,
+    field: &mut rewo_ui::edit_box::EditBox,
     baked: Option<&assets::BakedAssets>,
     inner_width: i32,
 ) {
@@ -776,7 +776,7 @@ pub(super) fn follow_cursor(
 /// the second *is* the border. Nine blits would draw the same pixels; two is
 /// what the measurement licenses.
 pub(super) fn book_field_render(
-    field: &rewo_world::edit_box::EditBox,
+    field: &rewo_ui::edit_box::EditBox,
     advance: &[u8; 256],
     w: f32,
     h: f32,
@@ -786,7 +786,7 @@ pub(super) fn book_field_render(
     Vec<(usize, rewo_gpu::container::PanelBlit)>,
 ) {
     use rewo_data::assets as a;
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     let origin = rewo_gpu::container::recipe_book_origin(w, h);
     // `SPRITES.get(isActive(), isFocused())` — the one use of that record on
     // this screen that means what its argument names say.

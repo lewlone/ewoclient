@@ -23,7 +23,7 @@
 //! This module is **model + layout**: it resolves the objective, builds the
 //! rows and places every rect and text origin as integers. It does not draw,
 //! and it does not measure text — [`SidebarInput::width_of`] is supplied by
-//! the caller, exactly as `rewo_world::chat` takes its width provider, so a
+//! the caller, exactly as `rewo_ui::chat` takes its width provider, so a
 //! gate can feed exact widths and grade the geometry as numbers.
 //!
 //! ## Five things a plausible implementation gets wrong

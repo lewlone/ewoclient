@@ -22,8 +22,8 @@ use rewo_data::assets;
 use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::world::{SkyMode, WorldRenderer};
 use rewo_gpu::Gpu;
-use rewo_world::edit_box::Input;
-use rewo_world::sign_edit_screen as se;
+use rewo_ui::edit_box::Input;
+use rewo_ui::sign_edit_screen as se;
 
 /// Total named properties this gate asserts. Locked so a skipped property
 /// fails the run even when nothing mismatched.
@@ -239,7 +239,7 @@ fn check_model(c: &mut Checker, advance: &[u8; 256]) {
     s.cursor = 1;
     s.selection = 1;
     let r = s.key_pressed(
-        Input::new(rewo_world::edit_box::key::DELETE, 0),
+        Input::new(rewo_ui::edit_box::key::DELETE, 0),
         &wf,
         &mut String::new(),
     );

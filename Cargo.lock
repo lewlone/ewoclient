@@ -2668,6 +2668,7 @@ dependencies = [
  "rewo-mesh",
  "rewo-net",
  "rewo-proto",
+ "rewo-ui",
  "rewo-world",
  "serde_json",
  "tracy-client",
@@ -2744,6 +2745,7 @@ dependencies = [
  "rand",
  "rewo-data",
  "rewo-proto",
+ "rewo-ui",
  "rewo-world",
  "rsa",
  "serde_json",
@@ -2756,6 +2758,16 @@ name = "rewo-proto"
 version = "0.1.0"
 dependencies = [
  "flate2",
+]
+
+[[package]]
+name = "rewo-ui"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "rewo-data",
+ "rewo-proto",
+ "rewo-world",
 ]
 
 [[package]]

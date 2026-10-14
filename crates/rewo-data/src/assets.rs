@@ -2499,7 +2499,7 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     // 118 — the which-of-these overlay's panel (M104). A 32x32 NINE-SLICE with
     // border 4, and the only sprite in this list that is one: it is drawn at
     // `cols * 25 + 8` by `rows * 25 + 8`, which is never 32x32, so it always
-    // takes the general path. `rewo_world::nine_slice` cuts it up.
+    // takes the general path. `rewo_ui::nine_slice` cuts it up.
     "gui/sprites/recipe_book/overlay_recipe.png",
     // 119..=126 — its buttons, two families of four, CRAFTING then FURNACE.
     //

@@ -93,9 +93,9 @@
 use crate::layout::{center_in_rectangle, Element, Linear, Settings};
 use crate::screen::{Screen, ScreenKind, Widget, WidgetId, BUTTON_HEIGHT, LINE_HEIGHT};
 
-/// Moved to [`crate::string_splitter`] beside the `FormattedText` overload;
+/// Moved to [`rewo_world::string_splitter`] beside the `FormattedText` overload;
 /// re-exported so this screen's callers keep their path.
-pub use crate::string_splitter::split_lines;
+pub use rewo_world::string_splitter::split_lines;
 
 /// `gui.toMenu` — "Back to Server List".
 pub const BACK: WidgetId = 0;
@@ -167,7 +167,7 @@ impl DisconnectDetails {
     ///
     /// `candidate` is the caller's
     /// `serverLinks.findKnownType(BUG_REPORT).map(Entry::link)` — resolved by
-    /// the app, not here, because **`rewo-net` depends on `rewo-world`** and
+    /// the app, not here, because **`rewo-net` depends on `rewo-ui`** and
     /// the reverse edge would be a cycle. That is not a workaround: the app is
     /// also the layer that has to have *kept* the links past the session's
     /// death (see the module docs), so the lookup belongs where the durable
@@ -242,7 +242,7 @@ pub fn read_disconnect(
 /// module anywhere in the repo (M71/M97) — logic reachable only through it is
 /// untestable by construction.
 pub fn reason_text(tag: &rewo_proto::nbt::Nbt, lang: Option<&rewo_data::lang::Language>) -> String {
-    crate::chat_translate::chat_component_text(tag, lang)
+    rewo_world::chat_translate::chat_component_text(tag, lang)
 }
 
 /// `DisconnectedScreen.init` + `repositionElements`.

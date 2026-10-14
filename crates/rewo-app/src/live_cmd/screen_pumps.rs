@@ -13,7 +13,7 @@ impl LiveApp {
     /// 3. **`handleRespawn` closes it**, not the button press. Watched through
     ///    the session's respawn watermark.
     pub(super) fn pump_death_screen(&mut self) {
-        use rewo_world::screen::ScreenKind;
+        use rewo_ui::screen::ScreenKind;
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -175,7 +175,7 @@ impl LiveApp {
                     .screen
                     .screens
                     .current()
-                    .is_some_and(|s| s.kind == rewo_world::screen::ScreenKind::BookView)
+                    .is_some_and(|s| s.kind == rewo_ui::screen::ScreenKind::BookView)
             {
                 self.book = None;
             }
@@ -185,7 +185,7 @@ impl LiveApp {
             if self.book.is_some() {
                 let (gw, gh) = self.gui_size();
                 let stale = self.screen.screens.current().is_some_and(|s| {
-                    s.kind == rewo_world::screen::ScreenKind::BookView
+                    s.kind == rewo_ui::screen::ScreenKind::BookView
                         && (s.width != gw || s.height != gh)
                 });
                 if stale {
@@ -215,7 +215,7 @@ impl LiveApp {
                 resolve_book_pages(text, advance.as_ref(), Some(&lang))
             });
         if let Some(pages) = pages {
-            self.open_book_screen(rewo_world::book_view_screen::BookViewScreen::new(pages));
+            self.open_book_screen(rewo_ui::book_view_screen::BookViewScreen::new(pages));
         }
     }
 
@@ -241,7 +241,7 @@ impl LiveApp {
                     .screen
                     .screens
                     .current()
-                    .is_some_and(|s| s.kind == rewo_world::screen::ScreenKind::SignEdit)
+                    .is_some_and(|s| s.kind == rewo_ui::screen::ScreenKind::SignEdit)
             {
                 // Vanilla's `Minecraft.setScreen` calls `removed()` on the OLD
                 // screen, and the sign editor's `removed()` IS the commit — so
@@ -279,7 +279,7 @@ impl LiveApp {
         // `SignText.getMessage(i, true)` (the plain literal), and setMessage
         // preserves colour + glow, so those are captured once at open.
         let (_face, _) = be.sign_text(session.lang.as_deref());
-        use rewo_world::sign_edit_screen::SignKind;
+        use rewo_ui::sign_edit_screen::SignKind;
         let kind = if sign.hanging {
             SignKind::Hanging
         } else if sign.attachment == rewo_data::sign_states::SignAttachment::Wall {
@@ -296,7 +296,7 @@ impl LiveApp {
         let done = self.lang.get_or_default("gui.done", "Done").to_string();
         let (gw, gh) = self.gui_size();
         self.sign_edit = Some(SignEditView {
-            state: rewo_world::sign_edit_screen::SignEditState::new(initial, kind),
+            state: rewo_ui::sign_edit_screen::SignEditState::new(initial, kind),
             pos,
             is_front: front,
             dye,
@@ -304,7 +304,7 @@ impl LiveApp {
             wood: sign.wood_index,
             opened: std::time::Instant::now(),
         });
-        let mut screen = rewo_world::sign_edit_screen::build_screen(gw, gh, &done);
+        let mut screen = rewo_ui::sign_edit_screen::build_screen(gw, gh, &done);
         // The heading is `centeredText(font, title, width/2, 40, -1)` with
         // `title = Component.translatable("sign.edit")`; the label widget
         // needs its width, so the app builds it like the options titles do.
@@ -313,10 +313,10 @@ impl LiveApp {
             .get_or_default("sign.edit", "Edit sign message")
             .to_string();
         let tw = self.text_width(&title);
-        screen.widgets.push(rewo_world::screen::Widget::label(
-            rewo_world::sign_edit_screen::TITLE_LABEL,
+        screen.widgets.push(rewo_ui::screen::Widget::label(
+            rewo_ui::sign_edit_screen::TITLE_LABEL,
             (gw - tw) / 2,
-            rewo_world::sign_edit_screen::TITLE_Y,
+            rewo_ui::sign_edit_screen::TITLE_Y,
             tw,
             title,
         ));
@@ -326,7 +326,7 @@ impl LiveApp {
 
     /// Rebuild when the numbers or the window changed (M84).
     pub(super) fn pump_stats_screen(&mut self) {
-        use rewo_world::screen::ScreenKind;
+        use rewo_ui::screen::ScreenKind;
         if self.stats.is_none() {
             return;
         }

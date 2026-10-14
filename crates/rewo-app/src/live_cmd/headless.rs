@@ -672,7 +672,7 @@ pub(super) fn run_headless(
             // click it headlessly, with an empty search field.
             Default::default(),
             "",
-            &rewo_world::edit_box::EditBox::new(rewo_world::recipe_book_screen::SEARCH_MAX_LENGTH),
+            &rewo_ui::edit_box::EditBox::new(rewo_ui::recipe_book_screen::SEARCH_MAX_LENGTH),
             // Headless: a fixed clock, so a caret's blink cannot make the same
             // scene render two ways between runs.
             0,

@@ -573,9 +573,9 @@ struct LiveApp {
     /// `EditBox` and a history cursor, and because vanilla's own model is a
     /// screen instance rather than a mode — `ChatComponent.isChatFocused()` is
     /// `gui.screen() instanceof ChatScreen`.
-    chat_screen: Option<rewo_world::chat_screen::ChatScreen>,
+    chat_screen: Option<rewo_ui::chat_screen::ChatScreen>,
     /// `ChatComponent.latestDraft`, which outlives the screen that made it.
-    chat_draft: Option<rewo_world::chat_screen::Draft>,
+    chat_draft: Option<rewo_ui::chat_screen::Draft>,
     /// The slot the last left click landed on and when, for the double click
     /// that becomes `PICKUP_ALL` (M40).
     last_click: Option<usize>,
@@ -717,7 +717,7 @@ struct LiveApp {
     /// M172 — the open written-book reader, `None` when no book is up. The
     /// app-side view state the frame's render arm keys on (the M84 pattern);
     /// the framework `Screen` in `screens` carries only the Done button.
-    book: Option<rewo_world::book_view_screen::BookViewScreen>,
+    book: Option<rewo_ui::book_view_screen::BookViewScreen>,
     /// M184 — the lectern watermark: `(container_id, open_serial)` of the
     /// lectern menu whose reader is up. The pair is the menu IDENTITY —
     /// `open_serial` is stamped by `Menus::apply_open_screen`, so a server
@@ -744,11 +744,11 @@ struct LiveApp {
     /// view state the frame's render arm keys on (the M84 pattern) — the
     /// options were model-only end to end until now (the pause OPTIONS
     /// button logged "not implemented").
-    options_view: Option<rewo_world::options_screen::OptionsPage>,
+    options_view: Option<rewo_ui::options_screen::OptionsPage>,
     /// M173 — the slider being dragged, if any. App-side (the stonecutter
     /// pattern): armed by the press, driven from CursorMoved, cleared on
     /// release. UNLIKE the stonecutter's grab, a slider press CONSUMES.
-    options_drag: Option<rewo_world::screen::WidgetId>,
+    options_drag: Option<rewo_ui::screen::WidgetId>,
     /// M179 — the advancements screen's drag machine (`activeButton` +
     /// `isScrolling`, [`crate::advancements_view::AdvDrag`]). Not an Option:
     /// the machine is total, and the screen-open checks live at the call
@@ -1254,7 +1254,7 @@ fn face_index(n: [i32; 3]) -> u8 {
 
 /// winit → GLFW key code, for the keys the screen framework reads (M82).
 ///
-/// `KeyEvent.key()` is a **GLFW** code and `rewo_world::screen` compares
+/// `KeyEvent.key()` is a **GLFW** code and `rewo_ui::screen` compares
 /// against those integers directly, because GLFW is Minecraft's own key
 /// namespace — the same reasoning `ewo_core::keybind` records for the
 /// launcher's keybind registry. Only the keys `Screen.keyPressed` and
@@ -1262,7 +1262,7 @@ fn face_index(n: [i32; 3]) -> u8 {
 /// answers `None` and never reaches the screen.
 ///
 /// The four arrow codes are here even though
-/// [`rewo_world::screen::Screen::key_pressed`] leaves them inert, so that
+/// [`rewo_ui::screen::Screen::key_pressed`] leaves them inert, so that
 /// implementing arrow navigation later is a change in one crate rather than
 /// two.
 fn glfw_key(key: PhysicalKey) -> Option<i32> {
@@ -1416,8 +1416,8 @@ fn skull_parts(
 #[cfg(test)]
 mod m93m_beacon {
     use super::*;
+    use rewo_ui::menu_screen::BeaconEffect;
     use rewo_world::menu::Menus;
-    use rewo_world::menu_screen::BeaconEffect;
 
     /// A beacon menu with the given data slots.
     fn beacon(container_id: i32, data: &[(i16, i16)]) -> Menus {

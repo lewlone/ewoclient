@@ -4,24 +4,24 @@
 
 /// Six lines of chat and the geometry they land on. Shared by the
 /// witnesses below so each asserts one property against one fixture.
-fn chat_fixture(count: usize, added_time: i32) -> rewo_world::chat::ChatComponent {
+fn chat_fixture(count: usize, added_time: i32) -> rewo_ui::chat::ChatComponent {
     let w6 = |s: &str, st: rewo_world::chat_style::ChatStyle| {
         s.chars().count() as i32 * (6 + i32::from(st.bold))
     };
-    let ctx = rewo_world::chat::WrapContext {
-        options: rewo_world::chat::ChatOptions::default(),
+    let ctx = rewo_ui::chat::WrapContext {
+        options: rewo_ui::chat::ChatOptions::default(),
         focused: false,
         width_of: &w6,
         deleted_marker_text: "deleted",
     };
-    let mut c = rewo_world::chat::ChatComponent::new();
+    let mut c = rewo_ui::chat::ChatComponent::new();
     for i in 0..count {
         c.add_message(
-            rewo_world::chat::GuiMessage {
+            rewo_ui::chat::GuiMessage {
                 added_time,
                 content: vec![rewo_world::chat_style::ChatStyle::WHITE.span(format!("m{i}"))],
                 signature: None,
-                source: rewo_world::chat::MessageSource::SystemServer,
+                source: rewo_ui::chat::MessageSource::SystemServer,
                 tag: None,
             },
             &ctx,
@@ -38,7 +38,7 @@ fn chat_fixture(count: usize, added_time: i32) -> rewo_world::chat::ChatComponen
 /// `720 - 40 = 680`, minus 8, so the bottom line's top edge is 672.
 #[test]
 fn the_bottom_chat_row_sits_forty_pixels_off_the_bottom_less_the_baseline() {
-    let opts = rewo_world::chat::ChatOptions::default();
+    let opts = rewo_ui::chat::ChatOptions::default();
     let lines = super::chat_lines(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts, None, false).0;
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0].y, 672.0);
@@ -51,7 +51,7 @@ fn the_bottom_chat_row_sits_forty_pixels_off_the_bottom_less_the_baseline() {
 /// reversed stack, and the count alone cannot see a wrong pitch.
 #[test]
 fn chat_rows_stack_upward_one_entry_height_apart() {
-    let opts = rewo_world::chat::ChatOptions::default();
+    let opts = rewo_ui::chat::ChatOptions::default();
     let lines = super::chat_lines(&chat_fixture(3, 0), 0, 1.0, 720.0, &opts, None, false).0;
     assert_eq!(lines.len(), 3);
     // `visible_lines` emits top-first, so index 0 here is the oldest and
@@ -72,7 +72,7 @@ fn chat_rows_stack_upward_one_entry_height_apart() {
 /// `entryHeight - 1` would be 17.
 #[test]
 fn the_baseline_offset_is_not_the_row_height_less_one() {
-    let opts = rewo_world::chat::ChatOptions {
+    let opts = rewo_ui::chat::ChatOptions {
         line_spacing: 1.0,
         ..Default::default()
     };
@@ -90,7 +90,7 @@ fn the_baseline_offset_is_not_the_row_height_less_one() {
 /// edge lands at absolute 0 and the right at `maxWidth + 12`.
 #[test]
 fn the_backdrop_is_asymmetric_about_the_text() {
-    let opts = rewo_world::chat::ChatOptions::default();
+    let opts = rewo_ui::chat::ChatOptions::default();
     let b = super::hud_fills(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts, false);
     assert_eq!(b.len(), 1);
     // Four pixels left of the text, which sits at 4.
@@ -105,7 +105,7 @@ fn the_backdrop_is_asymmetric_about_the_text() {
 /// row's text, so the two derivations agree about where a row is.
 #[test]
 fn each_fill_covers_its_own_row_and_meets_the_next() {
-    let opts = rewo_world::chat::ChatOptions::default();
+    let opts = rewo_ui::chat::ChatOptions::default();
     let c = chat_fixture(3, 0);
     let b = super::hud_fills(&c, 0, 1.0, 720.0, &opts, false);
     let l = super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, false).0;
@@ -176,7 +176,7 @@ fn the_fixture_scale_is_the_scale_the_pass_computes() {
 /// why eight milestones of green tests never contradicted the bug.
 #[test]
 fn a_row_backdrop_lands_under_its_text_at_gui_scale_three() {
-    let opts = rewo_world::chat::ChatOptions {
+    let opts = rewo_ui::chat::ChatOptions {
         scale: 2.0,
         ..Default::default()
     };
@@ -205,7 +205,7 @@ fn a_row_backdrop_lands_under_its_text_at_gui_scale_three() {
 /// text of its own to agree with.
 #[test]
 fn every_chat_fill_is_on_the_screen_at_gui_scale_three() {
-    let opts = rewo_world::chat::ChatOptions::default();
+    let opts = rewo_ui::chat::ChatOptions::default();
     // Focused, and long enough that the backlog outruns the box — otherwise
     // the scrollbar is empty and this witnesses a path it never enters.
     let c = chat_fixture(30, 0);
@@ -249,7 +249,7 @@ fn every_chat_fill_is_on_the_screen_at_gui_scale_three() {
 /// 720-tall screen.
 #[test]
 fn the_input_backdrop_lands_under_its_text_at_gui_scale_three() {
-    use rewo_world::chat_screen::{ChatMethod, ChatScreen};
+    use rewo_ui::chat_screen::{ChatMethod, ChatScreen};
     let (gw, gh) = ((SCREEN_W / PX) as i32, (SCREEN_H / PX) as i32);
     let mut s = ChatScreen::open(ChatMethod::Message, None, 0);
     s.char_typed('h', &chat_env());
@@ -298,7 +298,7 @@ fn each_popup_row_lands_under_its_text_at_gui_scale_three() {
 /// "Text Background: 0" the fill vanishes while the text stays visible.
 #[test]
 fn the_fill_and_the_text_use_different_opacity_multipliers() {
-    let mut opts = rewo_world::chat::ChatOptions::default();
+    let mut opts = rewo_ui::chat::ChatOptions::default();
     let c = chat_fixture(1, 0);
     // Default: background 0.5, text 1.0.
     assert_eq!(
@@ -325,7 +325,7 @@ fn the_fill_and_the_text_use_different_opacity_multipliers() {
 /// it rather than leaving a black bar behind.
 #[test]
 fn the_fade_reaches_the_backdrop() {
-    let opts = rewo_world::chat::ChatOptions::default();
+    let opts = rewo_ui::chat::ChatOptions::default();
     let c = chat_fixture(1, 0);
     // 190 ticks: half through the fade, squared -> 0.25, times bg 0.5.
     let b = super::hud_fills(&c, 190, 1.0, 720.0, &opts, false);
@@ -338,7 +338,7 @@ fn the_fade_reaches_the_backdrop() {
 /// scale 1 and differ the moment the division is not exact.
 #[test]
 fn the_backdrops_max_width_is_a_ceil_not_the_wraps_floor() {
-    let opts = rewo_world::chat::ChatOptions {
+    let opts = rewo_ui::chat::ChatOptions {
         scale: 0.75,
         ..Default::default()
     };
@@ -358,7 +358,7 @@ fn the_backdrops_max_width_is_a_ceil_not_the_wraps_floor() {
 /// i.e. 80 screen pixels, not 40.
 #[test]
 fn the_gui_scale_multiplies_the_whole_box() {
-    let opts = rewo_world::chat::ChatOptions::default();
+    let opts = rewo_ui::chat::ChatOptions::default();
     let lines = super::chat_lines(&chat_fixture(1, 0), 0, 2.0, 720.0, &opts, None, false).0;
     assert_eq!(lines[0].px, 2.0);
     assert_eq!(lines[0].x, 8.0);
@@ -371,7 +371,7 @@ fn the_gui_scale_multiplies_the_whole_box() {
 /// one is not dimmed at the default opacity of 1.
 #[test]
 fn the_fade_and_the_text_opacity_both_reach_the_line() {
-    let opts = rewo_world::chat::ChatOptions::default();
+    let opts = rewo_ui::chat::ChatOptions::default();
     let c = chat_fixture(1, 0);
     assert_eq!(
         super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, false).0[0].alpha,
@@ -385,7 +385,7 @@ fn the_fade_and_the_text_opacity_both_reach_the_line() {
         .0
         .is_empty());
 
-    let dim = rewo_world::chat::ChatOptions {
+    let dim = rewo_ui::chat::ChatOptions {
         opacity: 0.0,
         ..Default::default()
     };
@@ -400,7 +400,7 @@ fn the_fade_and_the_text_opacity_both_reach_the_line() {
 /// pushes the oldest off the top rather than growing the box.
 #[test]
 fn the_unfocused_box_holds_ten_rows() {
-    let opts = rewo_world::chat::ChatOptions::default();
+    let opts = rewo_ui::chat::ChatOptions::default();
     let lines = super::chat_lines(&chat_fixture(30, 0), 0, 1.0, 720.0, &opts, None, false).0;
     assert_eq!(lines.len(), 10);
     assert_eq!(lines.last().unwrap().text, "m29");
@@ -415,7 +415,7 @@ fn the_unfocused_box_holds_ten_rows() {
 /// fading messages out from under someone who is reading them.
 #[test]
 fn the_focused_box_is_taller_and_does_not_fade() {
-    let opts = rewo_world::chat::ChatOptions::default();
+    let opts = rewo_ui::chat::ChatOptions::default();
     let c = chat_fixture(30, 0);
     assert_eq!(
         super::chat_lines(&c, 0, 1.0, 720.0, &opts, None, false)
@@ -462,7 +462,7 @@ fn the_hover_and_the_render_agree_about_where_a_slot_is() {
     let scale = rewo_gpu::hud::gui_scale(w, h);
     let gui_w = w / scale;
     assert!(
-        gui_w >= rewo_world::recipe_book_screen::WIDTH_TOO_NARROW_BELOW as f32,
+        gui_w >= rewo_ui::recipe_book_screen::WIDTH_TOO_NARROW_BELOW as f32,
         "the fixture must be a WIDE window or the displacement is 0 and              this test cannot see anything ({gui_w} GUI px)"
     );
     // The cursor over the centre of the panel as the book-open render
@@ -512,7 +512,7 @@ fn the_hover_and_the_render_agree_about_where_a_slot_is() {
 /// panel 77 px and blank its hover on a narrow window.
 #[test]
 fn a_menu_with_no_book_is_never_displaced() {
-    use rewo_world::recipe_book_screen::BookType;
+    use rewo_ui::recipe_book_screen::BookType;
     let mut open = rewo_net::recipe_book::BookSettings::default();
     open.crafting.open = true;
     open.furnace.open = true;
@@ -539,7 +539,7 @@ fn a_menu_with_no_book_is_never_displaced() {
 /// that a single shared bool would collapse.
 #[test]
 fn each_book_type_reads_its_own_flag() {
-    use rewo_world::recipe_book_screen::BookType;
+    use rewo_ui::recipe_book_screen::BookType;
     let mut only_furnace = rewo_net::recipe_book::BookSettings::default();
     only_furnace.furnace.open = true;
     assert!(super::book_visible_for(
@@ -572,9 +572,9 @@ fn a_narrow_window_with_the_book_open_hovers_nothing() {
     let scale = rewo_gpu::hud::gui_scale(w, h);
     let gui_w = (w / scale) as i32;
     assert!(
-        rewo_world::recipe_book_screen::width_too_narrow(gui_w),
+        rewo_ui::recipe_book_screen::width_too_narrow(gui_w),
         "the fixture must be NARROW or this test cannot see the override              ({gui_w} GUI px against {})",
-        rewo_world::recipe_book_screen::WIDTH_TOO_NARROW_BELOW
+        rewo_ui::recipe_book_screen::WIDTH_TOO_NARROW_BELOW
     );
     // Dead centre of the panel — unambiguously over a slot with the book
     // shut, which is the control that makes the `None` mean the override
@@ -599,7 +599,7 @@ fn a_wide_window_with_the_book_open_still_hovers() {
     let layout = &rewo_world::menu_layout::PLAYER;
     let (w, h) = (1920.0f32, 1080.0f32);
     let scale = rewo_gpu::hud::gui_scale(w, h);
-    assert!(!rewo_world::recipe_book_screen::width_too_narrow(
+    assert!(!rewo_ui::recipe_book_screen::width_too_narrow(
         (w / scale) as i32
     ));
     let (ox, oy, _) = rewo_gpu::container::gui_origin_placed(
@@ -631,7 +631,7 @@ fn a_wide_window_with_the_book_open_still_hovers() {
 /// is the first fill whose colour is not black.
 #[test]
 fn the_scrollbar_reaches_the_frame_in_linear_colour() {
-    let opts = rewo_world::chat::ChatOptions::default();
+    let opts = rewo_ui::chat::ChatOptions::default();
     let c = chat_fixture(30, 0);
     let bars = super::chat_scrollbar(&c, 0, 1.0, 720.0, &opts);
     assert_eq!(bars.len(), 2, "a body and a highlight");
@@ -657,28 +657,24 @@ fn the_scrollbar_reaches_the_frame_in_linear_colour() {
 /// unchanged, so a short chat does not gain a stray rect.
 #[test]
 fn a_chat_that_fits_draws_no_scrollbar() {
-    let opts = rewo_world::chat::ChatOptions::default();
+    let opts = rewo_ui::chat::ChatOptions::default();
     assert!(super::chat_scrollbar(&chat_fixture(5, 0), 0, 1.0, 720.0, &opts).is_empty());
-    assert!(super::chat_scrollbar(
-        &rewo_world::chat::ChatComponent::new(),
-        0,
-        1.0,
-        720.0,
-        &opts
-    )
-    .is_empty());
+    assert!(
+        super::chat_scrollbar(&rewo_ui::chat::ChatComponent::new(), 0, 1.0, 720.0, &opts)
+            .is_empty()
+    );
 }
 
 /// A suggestion environment with no completion words, so typing into a
 /// chat screen in these tests never opens a popup that would swallow the
 /// next key. The popup has its own tests in `rewo_world`.
-fn chat_env() -> rewo_world::chat_screen::SuggestionEnv<'static> {
+fn chat_env() -> rewo_ui::chat_screen::SuggestionEnv<'static> {
     fn zero(_: &str) -> i32 {
         0
     }
     const NO_WORDS: &[String] = &[];
-    rewo_world::chat_screen::SuggestionEnv {
-        metrics: rewo_world::command_suggestions::InputMetrics {
+    rewo_ui::chat_screen::SuggestionEnv {
+        metrics: rewo_ui::command_suggestions::InputMetrics {
             x: 4,
             inner_width: 316,
             screen_height: 240,
@@ -690,15 +686,15 @@ fn chat_env() -> rewo_world::chat_screen::SuggestionEnv<'static> {
 }
 
 /// A popup over `n` entries, opened through the production path.
-fn popup(n: usize) -> (rewo_world::chat_screen::ChatScreen, Vec<String>) {
-    use rewo_world::chat_screen::{ChatMethod, ChatScreen};
+fn popup(n: usize) -> (rewo_ui::chat_screen::ChatScreen, Vec<String>) {
+    use rewo_ui::chat_screen::{ChatMethod, ChatScreen};
     let words: Vec<String> = (0..n).map(|i| format!("rewo{i:02}")).collect();
     let mut s = ChatScreen::open(ChatMethod::Message, None, 0);
     fn six(t: &str) -> i32 {
         t.encode_utf16().count() as i32 * 6
     }
-    let env = rewo_world::chat_screen::SuggestionEnv {
-        metrics: rewo_world::command_suggestions::InputMetrics {
+    let env = rewo_ui::chat_screen::SuggestionEnv {
+        metrics: rewo_ui::command_suggestions::InputMetrics {
             x: 4,
             inner_width: 316,
             screen_height: 240,
@@ -814,7 +810,7 @@ fn the_coloured_runs_butt_up_against_each_other_at_measured_widths() {
     // six-per-character, so a run laid out on the constant lands
     // somewhere else.
     use rewo_net::command_format::{Run, ARGUMENT_COLORS, GRAY};
-    use rewo_world::chat_screen::{ChatMethod, ChatScreen};
+    use rewo_ui::chat_screen::{ChatMethod, ChatScreen};
     let mut s = ChatScreen::open(ChatMethod::Command, None, 0);
     s.input.set_value("/give 5");
     let runs = vec![
@@ -843,7 +839,7 @@ fn the_coloured_runs_butt_up_against_each_other_at_measured_widths() {
 fn with_no_runs_the_field_is_one_flat_line() {
     // `formatChat` returns null before there is a parse, and an ordinary
     // chat message never gets one.
-    use rewo_world::chat_screen::{ChatMethod, ChatScreen};
+    use rewo_ui::chat_screen::{ChatMethod, ChatScreen};
     let mut s = ChatScreen::open(ChatMethod::Message, None, 0);
     s.input.set_value("hello there");
     let lines = super::chat_input_lines(&s, 1.0, 320, 240, 0, None, &|t: &str| {
@@ -934,7 +930,7 @@ fn each_usage_line_takes_its_own_colour_rather_than_the_boxs() {
 /// bar behind it is the screen's own rather than a chat row's.
 #[test]
 fn the_input_line_carries_its_text_and_a_caret() {
-    use rewo_world::chat_screen::{ChatMethod, ChatScreen};
+    use rewo_ui::chat_screen::{ChatMethod, ChatScreen};
     let mut s = ChatScreen::open(ChatMethod::Message, None, 0);
     s.char_typed('h', &chat_env());
     s.char_typed('i', &chat_env());
@@ -959,7 +955,7 @@ fn the_input_line_carries_its_text_and_a_caret() {
 /// An untouched restored draft renders grey; an edited one does not.
 #[test]
 fn a_restored_draft_renders_grey_until_it_is_edited() {
-    use rewo_world::chat_screen::{ChatMethod, ChatScreen, Draft};
+    use rewo_ui::chat_screen::{ChatMethod, ChatScreen, Draft};
     let draft = Draft::of("remembered");
     let mut s = ChatScreen::open(ChatMethod::Message, Some(&draft), 0);
     let grey = super::chat_input_lines(&s, 1.0, 320, 240, 0, None, &|t: &str| {
@@ -993,7 +989,7 @@ fn a_restored_draft_renders_grey_until_it_is_edited() {
 ///
 /// `ChatScreen.formatChat` returns
 /// `Style.EMPTY.withColor(GRAY).withItalic(true)`, and the draft field on
-/// `rewo_world::chat_screen` has said "drives the grey **italic**
+/// `rewo_ui::chat_screen` has said "drives the grey **italic**
 /// rendering" in its own doc since M110 while the renderer drew
 /// `TextStyle::PLAIN` — the fifth comment in this project to describe
 /// behaviour its code did not have.
@@ -1006,7 +1002,7 @@ fn a_restored_draft_renders_grey_until_it_is_edited() {
 /// at the caret.
 #[test]
 fn a_draft_is_italic_and_its_caret_is_not() {
-    use rewo_world::chat_screen::{ChatMethod, ChatScreen, Draft};
+    use rewo_ui::chat_screen::{ChatMethod, ChatScreen, Draft};
     let draft = Draft::of("remembered");
     // t=0 is inside `isCursorVisible`'s first 300 ms window, so the caret
     // is emitted; without it this test would silently assert over one line.
@@ -1098,7 +1094,7 @@ fn the_converters_are_the_srgb_transfer_function() {
 /// none of those screens builds. Hence a unit test rather than a gate.
 #[test]
 fn an_inactive_button_label_is_linear() {
-    use rewo_world::screen::{Screen, ScreenKind, Widget};
+    use rewo_ui::screen::{Screen, ScreenKind, Widget};
     let mut b = Widget::button(0, 10, 10, 200, 20, "Respawn");
     b.active = false;
     let screen = Screen::new(ScreenKind::Death, 320, 240).with_widgets(vec![b]);
@@ -1129,7 +1125,7 @@ fn an_inactive_button_label_is_linear() {
 /// without this the site is covered only by the `color_linear` rename.
 #[test]
 fn the_enchant_cost_numerals_are_linear() {
-    use rewo_world::menu_screen::{EnchantRow, ENCHANT_COST_ENABLED};
+    use rewo_ui::menu_screen::{EnchantRow, ENCHANT_COST_ENABLED};
     let rows = [
         EnchantRow::Available { cost: 3 },
         EnchantRow::Empty,
@@ -1155,9 +1151,9 @@ fn the_enchant_cost_numerals_are_linear() {
 /// An empty chat produces no lines at all — not one blank row.
 #[test]
 fn an_empty_chat_draws_nothing() {
-    let opts = rewo_world::chat::ChatOptions::default();
+    let opts = rewo_ui::chat::ChatOptions::default();
     assert!(super::chat_lines(
-        &rewo_world::chat::ChatComponent::new(),
+        &rewo_ui::chat::ChatComponent::new(),
         0,
         1.0,
         720.0,
@@ -1173,7 +1169,7 @@ fn an_empty_chat_draws_nothing() {
 /// slot — only the wash beneath it is.
 #[test]
 fn the_ghosts_two_washes_go_in_different_halves_and_only_one_widens() {
-    use rewo_world::ghost_slots as gs;
+    use rewo_ui::ghost_slots as gs;
     let layout = &rewo_world::menu_layout::PLAYER;
     let g = [gs::Ghost {
         slot: 0,
@@ -1203,7 +1199,7 @@ fn the_ghosts_two_washes_go_in_different_halves_and_only_one_widens() {
 /// The two washes are DIFFERENT colours — red under, white over.
 #[test]
 fn the_wash_under_is_red_and_the_veil_is_white() {
-    use rewo_world::ghost_slots as gs;
+    use rewo_ui::ghost_slots as gs;
     let g = [gs::Ghost {
         slot: 1,
         items: vec![1],
@@ -1228,7 +1224,7 @@ fn the_wash_under_is_red_and_the_veil_is_white() {
 /// reads a negative `u` as untextured.
 #[test]
 fn the_washes_are_untextured_fills() {
-    use rewo_world::ghost_slots as gs;
+    use rewo_ui::ghost_slots as gs;
     let g = [gs::Ghost {
         slot: 1,
         items: vec![1],
@@ -1243,7 +1239,7 @@ fn the_washes_are_untextured_fills() {
 /// at the origin.
 #[test]
 fn a_ghost_on_a_slot_that_does_not_exist_is_dropped() {
-    use rewo_world::ghost_slots as gs;
+    use rewo_ui::ghost_slots as gs;
     let g = [gs::Ghost {
         slot: 999,
         items: vec![1],
@@ -1256,7 +1252,7 @@ fn a_ghost_on_a_slot_that_does_not_exist_is_dropped() {
 /// Each ghost lands on its own slot's position, not all at one place.
 #[test]
 fn each_ghost_lands_on_its_own_slot() {
-    use rewo_world::ghost_slots as gs;
+    use rewo_ui::ghost_slots as gs;
     let g = [
         gs::Ghost {
             slot: 1,
@@ -1423,7 +1419,7 @@ fn the_furnace_half_ignores_isUsableForCrafting_and_the_crafting_half_does_not()
 // which is the whole arithmetic: grouping, tab membership, paging, the
 // display cycle, and `hasCraftable`.
 
-use rewo_world::recipe_book_screen as rb96;
+use rewo_ui::recipe_book_screen as rb96;
 use rewo_world::stacked_contents::{Ingredient, StackedContents};
 
 fn entry<'a>(
@@ -1445,7 +1441,7 @@ fn entry<'a>(
         // M104 — a shapeless recipe whose ingredients are the crafting
         // requirements, so a collection built from these has a grid the
         // which-of-these overlay can draw.
-        shape: rewo_world::recipe_overlay::Shape::Shapeless {
+        shape: rewo_ui::recipe_overlay::Shape::Shapeless {
             ingredients: ingredients.map_or(0, |v| v.len()),
         },
         grid_items: ingredients
@@ -1458,7 +1454,7 @@ fn entry<'a>(
 fn searchable<'a>(id: i32, category: &'a str, name: &str, item: &str) -> super::BookEntry<'a> {
     let (ns, path) = item.split_once(':').unwrap();
     super::BookEntry {
-        search: rewo_world::recipe_search::SearchEntry {
+        search: rewo_ui::recipe_search::SearchEntry {
             names: vec![name.to_lowercase()],
             ids: vec![(ns.to_string(), path.to_string())],
         },
@@ -1726,7 +1722,7 @@ fn a_page_index_that_outlived_its_list_resets_to_the_FRONT() {
 /// is what a click would take.
 #[test]
 fn the_hover_lights_what_a_click_would_take() {
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     // 45 collections, so there is a forward arrow to hover.
     let e: Vec<_> = (0..45).map(|i| entry(i, None, EQUIP, &[7], None)).collect();
     let at = |bx: i32, by: i32| {
@@ -1902,8 +1898,8 @@ fn book_view(furnace_family: bool, filtering: bool) -> rb96::BookView {
     }
 }
 
-fn button(recipe: i32, craftable: bool) -> rewo_world::recipe_overlay::Button {
-    rewo_world::recipe_overlay::Button {
+fn button(recipe: i32, craftable: bool) -> rewo_ui::recipe_overlay::Button {
+    rewo_ui::recipe_overlay::Button {
         recipe,
         craftable,
         slots: Vec::new(),
@@ -2029,17 +2025,17 @@ fn the_search_field_carries_the_books_own_maximum() {
     }
     assert_eq!(
         field.value().chars().count(),
-        rewo_world::recipe_book_screen::SEARCH_MAX_LENGTH
+        rewo_ui::recipe_book_screen::SEARCH_MAX_LENGTH
     );
-    assert_eq!(rewo_world::recipe_book_screen::SEARCH_MAX_LENGTH, 50);
-    assert_ne!(rewo_world::edit_box::EditBox::default().max_length(), 50);
+    assert_eq!(rewo_ui::recipe_book_screen::SEARCH_MAX_LENGTH, 50);
+    assert_ne!(rewo_ui::edit_box::EditBox::default().max_length(), 50);
 }
 
 // -- the search field's render (M100) -------------------------------------
 
-fn field_of(text: &str, focused: bool) -> rewo_world::edit_box::EditBox {
-    use rewo_world::recipe_book_screen as rb;
-    let mut f = rewo_world::edit_box::EditBox::new(rb::SEARCH_MAX_LENGTH);
+fn field_of(text: &str, focused: bool) -> rewo_ui::edit_box::EditBox {
+    use rewo_ui::recipe_book_screen as rb;
+    let mut f = rewo_ui::edit_box::EditBox::new(rb::SEARCH_MAX_LENGTH);
     f.set_focused(true);
     for ch in text.chars() {
         f.char_typed(ch);
@@ -2058,7 +2054,7 @@ fn advances() -> [u8; 256] {
 /// case, which is the book's, and not `getY()`.
 #[test]
 fn the_fields_text_geometry_is_the_BORDERED_one() {
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     assert_eq!(rb::SEARCH_TEXT_X, rb::SEARCH_X + 4);
     assert_eq!(rb::SEARCH_TEXT_Y, rb::SEARCH_Y + 3, "(14 - 8) / 2");
     assert_eq!(rb::SEARCH_INNER_W, 73, "81 - 8, taken off BOTH ends");
@@ -2070,7 +2066,7 @@ fn the_fields_text_geometry_is_the_BORDERED_one() {
 /// side — which is what leaves the border showing.
 #[test]
 fn the_fields_background_is_two_blits_and_the_inner_one_is_inset() {
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     let (_, fills) = super::book_field_render(&field_of("", false), &advances(), 1280.0, 720.0, 0);
     assert!(fills.len() >= 2);
     let (outer, inner) = (fills[0].1, fills[1].1);
@@ -2106,7 +2102,7 @@ fn focus_swaps_the_fields_background_sprite() {
 /// arrives — `displayed.isEmpty() && !isFocused()`.
 #[test]
 fn the_hint_goes_on_focus_not_on_the_first_character() {
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     let hint_of = |text: &str, focused: bool| {
         super::book_field_render(&field_of(text, focused), &advances(), 1280.0, 720.0, 0)
             .0
@@ -2136,7 +2132,7 @@ fn the_hint_goes_on_focus_not_on_the_first_character() {
 /// The typed text is drawn at the field's text origin, in white.
 #[test]
 fn the_typed_text_is_drawn_where_the_field_says() {
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     let (labels, _) =
         super::book_field_render(&field_of("iron", true), &advances(), 1280.0, 720.0, 0);
     let (bl, bt, scale) = rewo_gpu::container::recipe_book_origin(1280.0, 720.0);
@@ -2153,14 +2149,14 @@ fn the_typed_text_is_drawn_where_the_field_says() {
 fn page_lang() -> rewo_data::lang::Language {
     let mut m = std::collections::HashMap::new();
     m.insert(
-        rewo_world::recipe_book_screen::PAGE_LABEL_KEY.to_string(),
+        rewo_ui::recipe_book_screen::PAGE_LABEL_KEY.to_string(),
         "%s/%s".to_string(),
     );
     rewo_data::lang::Language::from_map(m)
 }
 
 fn book_of(page: usize, total: usize) -> super::BookRender {
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     super::BookRender {
         view: Some(rb::BookView {
             tabs: rb::CRAFTING_TABS.len(),
@@ -2242,7 +2238,7 @@ fn a_single_page_book_draws_no_counter() {
 /// exactly 3 book pixels.
 #[test]
 fn the_counter_is_placed_by_its_measured_width() {
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     let (bl, bt, scale) = rewo_gpu::container::recipe_book_origin(1280.0, 720.0);
     let short = counter(0, 3).expect("1/3");
     let long = counter(0, 10).expect("1/10");
@@ -2426,7 +2422,7 @@ fn an_empty_line_list_sets_no_tooltip_rather_than_an_empty_box() {
 /// and a template with no specifiers survives substitution unchanged.
 #[test]
 fn a_missing_translation_shows_the_key() {
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     let empty = rewo_data::lang::Language::from_map(Default::default());
     let (labels, _) = super::book_labels(
         &book_of(0, 3),
@@ -2444,8 +2440,8 @@ fn a_missing_translation_shows_the_key() {
 /// one 300 ms window and none in the next (M101).
 #[test]
 fn the_caret_blinks_in_the_rendered_output() {
-    use rewo_world::recipe_book_screen as rb;
-    let mut f = rewo_world::edit_box::EditBox::new(rb::SEARCH_MAX_LENGTH);
+    use rewo_ui::recipe_book_screen as rb;
+    let mut f = rewo_ui::edit_box::EditBox::new(rb::SEARCH_MAX_LENGTH);
     f.set_focused_at(true, 1_000);
     for ch in "iron".chars() {
         f.char_typed(ch);
@@ -2469,7 +2465,7 @@ fn the_anvils_field_is_pinned_focused() {
     assert!(f.is_focused(), "focused from the moment it is built");
     f.set_focused(false);
     assert!(f.is_focused(), "and it cannot lose it");
-    assert_eq!(f.max_length(), rewo_world::anvil::MAX_NAME_LENGTH);
+    assert_eq!(f.max_length(), rewo_ui::anvil::MAX_NAME_LENGTH);
 }
 
 /// A caret outside the visible run is NOT drawn — `cursorOnScreen`, the
@@ -2481,14 +2477,14 @@ fn the_anvils_field_is_pinned_focused() {
 /// before M101, and the state a programmatic cursor move still produces.
 #[test]
 fn a_caret_outside_the_visible_run_is_not_drawn() {
-    use rewo_world::recipe_book_screen as rb;
-    let mut f = rewo_world::edit_box::EditBox::new(rb::SEARCH_MAX_LENGTH);
+    use rewo_ui::recipe_book_screen as rb;
+    let mut f = rewo_ui::edit_box::EditBox::new(rb::SEARCH_MAX_LENGTH);
     f.set_focused_at(true, 0);
     // 26 glyphs at 6 px is 156, well past the 73 px inner width.
     for ch in "abcdefghijklmnopqrstuvwxyz".chars() {
         f.char_typed(ch);
     }
-    let caret = |field: &rewo_world::edit_box::EditBox| {
+    let caret = |field: &rewo_ui::edit_box::EditBox| {
         let (labels, fills) = super::book_field_render(field, &advances(), 1280.0, 720.0, 0);
         labels.iter().any(|l| l.text == "_")
             || fills.iter().skip(2).any(|(_, b)| b.w == 1.0 && b.h == 11.0)
@@ -2524,7 +2520,7 @@ fn only_a_focused_field_draws_a_caret() {
 /// sheet, with nothing failing anywhere.
 #[test]
 fn the_renderers_copy_of_the_books_geometry_matches_the_model() {
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     let (w, h, off, narrow, sheet) = rewo_gpu::container::book_constants_for_cross_check();
     assert_eq!(w, rb::IMAGE_W as f32);
     assert_eq!(h, rb::IMAGE_H as f32);
@@ -2720,7 +2716,7 @@ fn every_screens_sheet_index_resolves() {
     // sheet_index returning None would mean the cross-check in rewo-world
     // had been removed; this is the same claim from the consuming side.
     for id in (0..25).filter(|&i| i != 17) {
-        let s = rewo_world::menu_screen::screen_of(id).unwrap();
+        let s = rewo_ui::menu_screen::screen_of(id).unwrap();
         assert!(sheet_index(s.texture).is_some(), "{}", s.texture);
     }
 }

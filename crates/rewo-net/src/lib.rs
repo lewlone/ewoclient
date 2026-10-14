@@ -24,7 +24,8 @@ pub mod chat_sign;
 pub mod music;
 pub mod options;
 // M126a — `chat_style` and `chat_translate` moved DOWN to `rewo-world`, because
-// `rewo_world::chat` has to name `ChatSpan` and the dependency runs net -> world.
+// `chat` (then in rewo-world, now `rewo_ui::chat`) has to name `ChatSpan` and
+// the dependency runs net -> world.
 // Re-exported under their old paths so no call site moved with them.
 pub use rewo_world::{chat_style, chat_translate};
 pub mod chat_type_parse;

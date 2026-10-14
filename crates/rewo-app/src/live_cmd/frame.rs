@@ -191,7 +191,7 @@ impl LiveApp {
                     let (gw, gh) = self.gui_size();
                     let screen = self.book_view_screen_for(gw, gh, true);
                     self.screen.screens.open(screen);
-                    self.book = Some(rewo_world::book_view_screen::BookViewScreen::new(Vec::new()));
+                    self.book = Some(rewo_ui::book_view_screen::BookViewScreen::new(Vec::new()));
                     self.lectern_pages = None;
                     self.lectern_shown = Some(identity);
                     self.grab_for_screen(true);
@@ -212,7 +212,7 @@ impl LiveApp {
                         });
                     if self.lectern_pages.as_ref() != pages.as_ref() {
                         if let Some(p) = pages.clone() {
-                            self.book = Some(rewo_world::book_view_screen::BookViewScreen::new(p));
+                            self.book = Some(rewo_ui::book_view_screen::BookViewScreen::new(p));
                         }
                         self.lectern_pages = pages;
                     }
@@ -260,7 +260,7 @@ impl LiveApp {
             s.disconnect.clone().map(|reason| {
                 (
                     s.disconnect_cause
-                        .unwrap_or(rewo_world::disconnect_screen::DisconnectCause::EndOfStream),
+                        .unwrap_or(rewo_ui::disconnect_screen::DisconnectCause::EndOfStream),
                     reason,
                 )
             })
@@ -298,8 +298,7 @@ impl LiveApp {
         if self.options_view.is_some() {
             let (gw, gh) = self.gui_size();
             let stale = self.screen.screens.current().is_some_and(|s| {
-                s.kind == rewo_world::screen::ScreenKind::Options
-                    && (s.width != gw || s.height != gh)
+                s.kind == rewo_ui::screen::ScreenKind::Options && (s.width != gw || s.height != gh)
             });
             if stale {
                 self.rebuild_options_screen();
@@ -310,7 +309,7 @@ impl LiveApp {
                 .screen
                 .screens
                 .current()
-                .is_some_and(|s| s.kind == rewo_world::screen::ScreenKind::Options)
+                .is_some_and(|s| s.kind == rewo_ui::screen::ScreenKind::Options)
             {
                 self.options_view = None;
                 self.options_drag = None;
@@ -352,7 +351,7 @@ impl LiveApp {
             log::error!("live: packet handling failed: {e}");
             session.disconnect = Some(e);
             session.disconnect_cause =
-                Some(rewo_world::disconnect_screen::DisconnectCause::ClientError);
+                Some(rewo_ui::disconnect_screen::DisconnectCause::ClientError);
             return false;
         }
         self.tick_accum += dt;
@@ -373,7 +372,7 @@ impl LiveApp {
                 log::error!("live: tick failed: {e}");
                 session.disconnect = Some(e);
                 session.disconnect_cause =
-                    Some(rewo_world::disconnect_screen::DisconnectCause::ClientError);
+                    Some(rewo_ui::disconnect_screen::DisconnectCause::ClientError);
                 return false;
             }
             // Advance the block-light flicker exactly once per successful tick.
@@ -438,7 +437,7 @@ impl LiveApp {
             // arm at exactly 20.
             if self.death.is_some() {
                 if let Some(s) = self.screen.screens.current_mut() {
-                    rewo_world::death_screen::DeathScreen::tick(s);
+                    rewo_ui::death_screen::DeathScreen::tick(s);
                 }
             }
             ran_tick = true;
@@ -959,8 +958,7 @@ impl LiveApp {
                     .menus
                     .open()
                     .filter(|m| {
-                        m.layout.protocol_id
-                            == rewo_world::menu_screen::STONECUTTER_MENU_PROTOCOL_ID
+                        m.layout.protocol_id == rewo_ui::menu_screen::STONECUTTER_MENU_PROTOCOL_ID
                     })
                     .map(|m| cut_view(&mut self.screen, m, &items));
                 // M93t — likewise the anvil's field, seeded here so the render
@@ -969,7 +967,7 @@ impl LiveApp {
                 let book_state = self.screen.book;
                 // M99 — and its search text, lowercased once here.
                 let book_query =
-                    rewo_world::recipe_search::normalize(&self.screen.book_search.value());
+                    rewo_ui::recipe_search::normalize(&self.screen.book_search.value());
                 let anvil_field = session
                     .menus
                     .open()
@@ -981,8 +979,7 @@ impl LiveApp {
                     .menus
                     .open()
                     .filter(|m| {
-                        m.layout.protocol_id
-                            == rewo_world::merchant_screen::MERCHANT_MENU_PROTOCOL_ID
+                        m.layout.protocol_id == rewo_ui::merchant_screen::MERCHANT_MENU_PROTOCOL_ID
                     })
                     .zip(session.merchant.as_ref())
                     .map(|(m, offers)| {
@@ -1027,7 +1024,7 @@ impl LiveApp {
                 #[cfg(feature = "gates")]
                 if let Some(c) = self.check.as_mut() {
                     let (_, bt, sc) = rewo_gpu::container::recipe_book_origin(sw, sh);
-                    let row = bt + rewo_world::recipe_book_screen::PAGE_LABEL_Y as f32 * sc;
+                    let row = bt + rewo_ui::recipe_book_screen::PAGE_LABEL_Y as f32 * sc;
                     if labels.iter().any(|l| (l.y - row).abs() < 0.5) {
                         c.book_page_label_frames += 1;
                     }
@@ -1228,7 +1225,7 @@ impl LiveApp {
             c.leash_verts_max = c
                 .leash_verts_max
                 .max(state.world_renderer.leash_vert_count());
-            if self.options_view == Some(rewo_world::options_screen::OptionsPage::Sound) {
+            if self.options_view == Some(rewo_ui::options_screen::OptionsPage::Sound) {
                 if let Some(sc) = self.screen.screens.current() {
                     c.options_slider_sprites_max = c
                         .options_slider_sprites_max
@@ -1240,7 +1237,7 @@ impl LiveApp {
                     .screen
                     .screens
                     .current()
-                    .is_some_and(|s| s.kind == rewo_world::screen::ScreenKind::BookView)
+                    .is_some_and(|s| s.kind == rewo_ui::screen::ScreenKind::BookView)
                 {
                     c.book_frames += 1;
                     c.book_pages_seen = c.book_pages_seen.max(book.page_count());
@@ -1314,9 +1311,9 @@ impl LiveApp {
                 (extent.width as f32 / px) as i32,
                 (extent.height as f32 / px) as i32,
             );
-            let (ix, _iy, iw, _ih) = rewo_world::chat_screen::input_rect(gui_w, gui_h);
-            let env = rewo_world::chat_screen::SuggestionEnv {
-                metrics: rewo_world::command_suggestions::InputMetrics {
+            let (ix, _iy, iw, _ih) = rewo_ui::chat_screen::input_rect(gui_w, gui_h);
+            let env = rewo_ui::chat_screen::SuggestionEnv {
+                metrics: rewo_ui::command_suggestions::InputMetrics {
                     x: ix,
                     inner_width: iw,
                     screen_height: gui_h,
@@ -1366,7 +1363,7 @@ impl LiveApp {
             session.ticks as i32,
             px,
             extent.height as f32,
-            &rewo_world::chat::ChatOptions::default(),
+            &rewo_ui::chat::ChatOptions::default(),
             chat_focused,
         ));
         if chat_focused {
@@ -1383,7 +1380,7 @@ impl LiveApp {
                 session.ticks as i32,
                 px,
                 extent.height as f32,
-                &rewo_world::chat::ChatOptions::default(),
+                &rewo_ui::chat::ChatOptions::default(),
             );
             if !bar.is_empty() {
                 #[cfg(feature = "gates")]
@@ -1771,7 +1768,7 @@ impl LiveApp {
                     .screen
                     .screens
                     .current()
-                    .is_some_and(|s| s.kind == rewo_world::screen::ScreenKind::Advancements)
+                    .is_some_and(|s| s.kind == rewo_ui::screen::ScreenKind::Advancements)
             {
                 // M178: the advancements window. Generic chrome carries the
                 // transparent gradient + the Done button; our scissored
@@ -1780,14 +1777,14 @@ impl LiveApp {
                 // sprites join `chrome.sprites` ahead of the buttons.
                 let gw = (extent.width as f32 / px) as i32;
                 let gh = (extent.height as f32 / px) as i32;
-                let (win_x, win_y) = rewo_world::advancements_screen::window_origin(gw, gh);
+                let (win_x, win_y) = rewo_ui::advancements_screen::window_origin(gw, gh);
                 // tick() runs here, contents-relative: the model owns the
                 // hover clock and this is its only per-frame driver.
                 if let Some(v) = self.advancements.as_mut() {
                     v.ensure_centered();
                     v.tick(Some((
-                        mouse_gui.0 as i32 - win_x - rewo_world::advancements_screen::INSIDE_X,
-                        mouse_gui.1 as i32 - win_y - rewo_world::advancements_screen::INSIDE_Y,
+                        mouse_gui.0 as i32 - win_x - rewo_ui::advancements_screen::INSIDE_X,
+                        mouse_gui.1 as i32 - win_y - rewo_ui::advancements_screen::INSIDE_Y,
                     )));
                 }
                 if let Some(view) = self.advancements.as_ref() {
@@ -1833,7 +1830,7 @@ impl LiveApp {
                 chrome = screen_chrome(screen, Some(mouse_gui));
                 let gw = (extent.width as f32 / px) as i32;
                 let m = (mouse_gui.0 as i32, mouse_gui.1 as i32);
-                for d in rewo_world::book_view_screen::draws(book, gw, Some(m)) {
+                for d in rewo_ui::book_view_screen::draws(book, gw, Some(m)) {
                     chrome.sprites.push(book_sprite(d));
                 }
                 if let Some(advance) = state.world_renderer.font_advance() {

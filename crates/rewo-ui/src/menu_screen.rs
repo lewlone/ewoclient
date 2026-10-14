@@ -1,7 +1,7 @@
 //! What each menu type's screen looks like: its texture, its panel size, its
 //! label positions, and how its background is blitted.
 //!
-//! The companion to [`crate::menu_layout`], which says where the *slots* are.
+//! The companion to [`rewo_world::menu_layout`], which says where the *slots* are.
 //! Split because they come from different places in vanilla — the slot list is
 //! built in `*Menu`'s constructor (server-shared code) and the geometry in
 //! `*Screen`'s (client-only) — and because a menu's slots are protocol state
@@ -11,7 +11,7 @@
 //!
 //! `LecternScreen extends BookViewScreen`, not `AbstractContainerScreen`. It
 //! draws a book, has no slot grid, and never shows the player's inventory —
-//! which is exactly why [`crate::menu_layout`]'s lectern entry is one slot with
+//! which is exactly why [`rewo_world::menu_layout`]'s lectern entry is one slot with
 //! no `addStandardInventorySlots`. The two findings are the same fact seen from
 //! either side. So this is **24 container screens and one book viewer**, and
 //! `SCREENS[17]` is `None` rather than a container definition that would draw a
@@ -181,7 +181,7 @@ const fn titled(texture: &'static str, x: i32) -> Option<MenuScreen> {
 }
 
 /// Screen geometry per `minecraft:menu` registry id, parallel to
-/// [`crate::menu_layout::REGISTRY`].
+/// [`rewo_world::menu_layout::REGISTRY`].
 ///
 /// `None` means the menu has no `AbstractContainerScreen` — only `lectern`,
 /// which is a `BookViewScreen`.
@@ -1970,7 +1970,7 @@ mod tests {
 
     #[test]
     fn there_is_one_screen_slot_per_menu_type() {
-        assert_eq!(SCREENS.len(), crate::menu_layout::REGISTRY.len());
+        assert_eq!(SCREENS.len(), rewo_world::menu_layout::REGISTRY.len());
     }
 
     #[test]
@@ -1979,7 +1979,7 @@ mod tests {
             .iter()
             .enumerate()
             .filter(|(_, s)| s.is_none())
-            .map(|(i, _)| crate::menu_layout::REGISTRY[i].name)
+            .map(|(i, _)| rewo_world::menu_layout::REGISTRY[i].name)
             .collect();
         assert_eq!(missing, vec!["lectern"]);
     }
@@ -1997,7 +1997,7 @@ mod tests {
         // too.
         for (i, s) in SCREENS.iter().enumerate() {
             let Some(s) = s else { continue };
-            let l = &crate::menu_layout::REGISTRY[i];
+            let l = &rewo_world::menu_layout::REGISTRY[i];
             assert_eq!(s.image_w, l.image_w, "{} width", l.name);
             assert_eq!(s.image_h, l.image_h, "{} height", l.name);
         }
@@ -2141,7 +2141,7 @@ mod tests {
             .iter()
             .enumerate()
             .filter(|(_, s)| s.is_some_and(|s| s.inventory_label_x != 8))
-            .map(|(i, _)| crate::menu_layout::REGISTRY[i].name)
+            .map(|(i, _)| rewo_world::menu_layout::REGISTRY[i].name)
             .collect();
         assert_eq!(moved, vec!["merchant"]);
     }

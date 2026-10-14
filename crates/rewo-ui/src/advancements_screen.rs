@@ -98,7 +98,7 @@ impl Frame {
             Frame::Task | Frame::Goal => "green",
             Frame::Challenge => "dark_purple",
         };
-        crate::chat_style::NAMED_COLORS
+        rewo_world::chat_style::NAMED_COLORS
             .iter()
             .find(|(n, _)| *n == name)
             .map(|(_, rgb)| *rgb)

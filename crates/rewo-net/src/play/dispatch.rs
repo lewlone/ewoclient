@@ -735,8 +735,8 @@ impl PlaySession {
                 self.chat_events.push(crate::chat_wire::ChatEvent::Message {
                     text: spans,
                     signature: None,
-                    tag: Some(rewo_world::chat::MessageTag::SYSTEM),
-                    source: rewo_world::chat::MessageSource::Player,
+                    tag: Some(rewo_ui::chat::MessageTag::SYSTEM),
+                    source: rewo_ui::chat::MessageSource::Player,
                 });
             }
         } else if crate::route_waypoint(id, body, ids, &mut self.waypoints) {
@@ -1123,8 +1123,8 @@ impl PlaySession {
                     self.chat_events.push(crate::chat_wire::ChatEvent::Message {
                         text: spans,
                         signature: None,
-                        tag: Some(rewo_world::chat::MessageTag::SYSTEM_SINGLE_PLAYER),
-                        source: rewo_world::chat::MessageSource::SystemServer,
+                        tag: Some(rewo_ui::chat::MessageTag::SYSTEM_SINGLE_PLAYER),
+                        source: rewo_ui::chat::MessageSource::SystemServer,
                     });
                 }
             } else {
@@ -1183,7 +1183,7 @@ impl PlaySession {
                             text: spans,
                             signature: chat.signature,
                             tag,
-                            source: rewo_world::chat::MessageSource::Player,
+                            source: rewo_ui::chat::MessageSource::Player,
                         });
                     }
                 }
@@ -1256,9 +1256,9 @@ impl PlaySession {
             // flattened. Every vanilla kick is a `Component.translatable`, so
             // this was the most translatable-dense component Rewo received and
             // the one that rendered as a raw key most often. The decode lives
-            // in `rewo_world::disconnect_screen` so a test can reach it.
+            // in `rewo_ui::disconnect_screen` so a test can reach it.
             let (reason, cause) =
-                rewo_world::disconnect_screen::read_disconnect(body, self.lang.as_deref());
+                rewo_ui::disconnect_screen::read_disconnect(body, self.lang.as_deref());
             self.disconnect = Some(reason);
             self.disconnect_cause = Some(cause);
         }

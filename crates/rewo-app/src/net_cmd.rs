@@ -16,7 +16,7 @@ use std::time::Duration;
 use clap::Args as ClapArgs;
 use rewo_data::GameData;
 use rewo_net::{ids::Ids, record, Connection};
-use rewo_world::disconnect_screen::DisconnectCause;
+use rewo_ui::disconnect_screen::DisconnectCause;
 
 #[derive(ClapArgs)]
 pub struct NetArgs {

@@ -3,7 +3,7 @@
 //! `award_stats` (3) is `REWO_PACKET_COVERAGE.md` class **B** and the last but
 //! one screen in it. What this gate grades is three things at once: the
 //! packet's two-level dispatch, the statistics screen's layout, and the two
-//! framework pieces the second screen forced into `rewo_world::screen` — a
+//! framework pieces the second screen forced into `rewo_ui::screen` — a
 //! scrolling list and a tab bar.
 //!
 //! The path under test, end to end:
@@ -12,8 +12,8 @@
 //! a raw award_stats body (built here)
 //!   -> rewo_net::route_award_stats          (with a REAL `Ids::resolve`d table)
 //!   -> rewo_world::stats::StatsCounter      (setValue, never increment)
-//!   -> rewo_world::stats_screen::StatsModel (the rows, the sort, the layout)
-//!   -> rewo_world::screen::{Screen, ScrollList}
+//!   -> rewo_ui::stats_screen::StatsModel (the rows, the sort, the layout)
+//!   -> rewo_ui::screen::{Screen, ScrollList}
 //!   -> stats_view::{chrome, lines}          (the SAME builders `LiveApp::frame` calls)
 //!   -> WorldRenderer::{set_screen, set_text} -> ScreenPass / TextPass
 //!   -> Offscreen::read_rgba                 (real pixels)
@@ -56,9 +56,9 @@ use rewo_gpu::world::{SkyMode, WorldRenderer};
 use rewo_gpu::Gpu;
 use rewo_net::ids::Ids;
 use rewo_proto::writer::PacketWriter;
-use rewo_world::screen::{ScrollList, Sprite, WidgetSprites};
+use rewo_ui::screen::{ScrollList, Sprite, WidgetSprites};
+use rewo_ui::stats_screen::{self as ss, StatsLabels, StatsTab};
 use rewo_world::stats::{format_stat, StatKey, StatsCounter};
-use rewo_world::stats_screen::{self as ss, StatsLabels, StatsTab};
 
 use crate::stats_view::StatsView;
 

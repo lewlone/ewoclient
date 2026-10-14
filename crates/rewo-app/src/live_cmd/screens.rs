@@ -3,7 +3,7 @@ use super::*;
 /// The app's screen state: the framework's one slot (M82) plus the cursor.
 ///
 /// Before M82 this was the inventory's `open: bool`. The slot is
-/// `rewo_world::screen::Screens` — vanilla's `Gui.screen`, a single field, not
+/// `rewo_ui::screen::Screens` — vanilla's `Gui.screen`, a single field, not
 /// a stack — and the two accessors below are the seam every input path routes
 /// through:
 ///
@@ -15,12 +15,12 @@ use super::*;
 /// Conflating the two is the mistake this split exists to prevent: a death
 /// screen must free the cursor without making `slot_at` meaningful.
 pub struct ScreenState {
-    pub screens: rewo_world::screen::Screens,
+    pub screens: rewo_ui::screen::Screens,
     /// The recipe book's own selection (M98) — the tab, the page and whether
     /// the search field has focus. **Screen state, not menu state**: the
     /// server's `RecipeBookSettings` carries open and filtering and nothing
     /// else, so these three exist only here.
-    pub book: rewo_world::recipe_book_screen::BookState,
+    pub book: rewo_ui::recipe_book_screen::BookState,
     /// The book's search field (M99), beside `book` rather than inside it
     /// because an `EditBox` is not `Copy` and `BookState` is passed by value
     /// through the render path.
@@ -31,20 +31,20 @@ pub struct ScreenState {
     /// at 32 characters — and the difference is invisible until someone types
     /// past it. That is why `ScreenState`'s `Default` is written out below
     /// rather than derived.
-    pub book_search: rewo_world::edit_box::EditBox,
+    pub book_search: rewo_ui::edit_box::EditBox,
     /// The open which-of-these overlay (M104), beside `book` for the same
     /// reason `book_search` is: it holds a `Vec` and `BookState` is `Copy`.
     ///
     /// **A snapshot taken when the right-click opened it**, not a view — see
     /// `recipe_overlay::Open`. Its lifetime is exactly "until the next click",
     /// because every click while it is up either selects in it or shuts it.
-    pub book_overlay: Option<rewo_world::recipe_overlay::Open>,
+    pub book_overlay: Option<rewo_ui::recipe_overlay::Open>,
     /// `RecipeBookComponent.lastPlacedRecipe` (M107) — which recipe the last
     /// click sent, so a repeat of an UNCRAFTABLE one can be suppressed.
     ///
     /// Screen state rather than session state, like `book` and `book_search`:
     /// nothing on the wire carries it, and vanilla keeps it on the component.
-    pub place_guard: rewo_world::recipe_book_screen::PlaceGuard,
+    pub place_guard: rewo_ui::recipe_book_screen::PlaceGuard,
     /// Cursor position in screen pixels. Only tracked while a screen is
     /// open; the rest of the time the cursor is grabbed and its position is
     /// meaningless.
@@ -94,8 +94,8 @@ impl Default for ScreenState {
             // M99 — `initVisuals`' own `setMaxLength(50)`. Everything else is
             // its type's default; only this one field has a value the type
             // cannot know.
-            book_search: rewo_world::edit_box::EditBox::new(
-                rewo_world::recipe_book_screen::SEARCH_MAX_LENGTH,
+            book_search: rewo_ui::edit_box::EditBox::new(
+                rewo_ui::recipe_book_screen::SEARCH_MAX_LENGTH,
             ),
             screens: Default::default(),
             book: Default::default(),
@@ -121,7 +121,7 @@ impl ScreenState {
 
     /// The inventory specifically.
     pub fn inventory_open(&self) -> bool {
-        self.screens.is(rewo_world::screen::ScreenKind::Inventory)
+        self.screens.is(rewo_ui::screen::ScreenKind::Inventory)
     }
 
     /// The menu slot under the cursor, if any.
@@ -155,7 +155,7 @@ impl ScreenState {
 /// The death screen keeps its own field (`LiveApp::death`) because M82 gave it
 /// one and its lifecycle is driven by the wire rather than by a key; these
 /// three are opened and closed by presses, so one slot mirroring
-/// [`rewo_world::screen::Screens`]' one slot is the honest shape.
+/// [`rewo_ui::screen::Screens`]' one slot is the honest shape.
 ///
 /// What each variant carries is exactly what a **resize rebuild** needs —
 /// `Screen.resize` is `init()`, so the builder has to be re-runnable from
@@ -164,11 +164,11 @@ impl ScreenState {
 pub(crate) enum ScreenView {
     #[default]
     None,
-    Pause(rewo_world::pause_screen::PauseLabels, bool),
-    Links(rewo_world::server_links_screen::ServerLinksLabels),
+    Pause(rewo_ui::pause_screen::PauseLabels, bool),
+    Links(rewo_ui::server_links_screen::ServerLinksLabels),
     Disconnected(
-        rewo_world::disconnect_screen::DisconnectLabels,
-        rewo_world::disconnect_screen::DisconnectDetails,
+        rewo_ui::disconnect_screen::DisconnectLabels,
+        rewo_ui::disconnect_screen::DisconnectDetails,
     ),
 }
 
@@ -178,8 +178,8 @@ pub(crate) enum ScreenView {
 /// language map (an asset) and the model comes from the wire, and only the
 /// model changes while the screen is up.
 pub(crate) struct DeathView {
-    pub model: rewo_world::death_screen::DeathScreen,
-    pub labels: rewo_world::death_screen::DeathLabels,
+    pub model: rewo_ui::death_screen::DeathScreen,
+    pub labels: rewo_ui::death_screen::DeathLabels,
     /// The death message, parsed into styled spans once. A server's is
     /// routinely coloured, and `TRUSTED_STREAM_CODEC` means the style is the
     /// server's to set.
@@ -201,9 +201,9 @@ impl DeathView {
         respawn_epoch: u64,
         gui_w: i32,
         gui_h: i32,
-    ) -> (Self, rewo_world::screen::Screen) {
+    ) -> (Self, rewo_ui::screen::Screen) {
         use rewo_net::chat_style::{self, ChatStyle};
-        let model = rewo_world::death_screen::DeathScreen {
+        let model = rewo_ui::death_screen::DeathScreen {
             // The message is kept even when it flattens to nothing: vanilla's
             // `causeOfDeath` is `@Nullable` and a *present but empty* component
             // still takes the non-null branch and draws an empty line.
@@ -238,14 +238,9 @@ impl DeathView {
     /// **`init()` resets `delayTicker` to 0 and disables the buttons again**,
     /// so resizing the window while dead restarts the one-second guard. That
     /// falls out of rebuilding rather than being coded, because
-    /// [`rewo_world::death_screen::DeathScreen::build`] *is* `init()` and
+    /// [`rewo_ui::death_screen::DeathScreen::build`] *is* `init()` and
     /// `Screen::new` starts its clock at zero.
-    pub(crate) fn reposition(
-        &self,
-        screen: &mut rewo_world::screen::Screen,
-        gui_w: i32,
-        gui_h: i32,
-    ) {
+    pub(crate) fn reposition(&self, screen: &mut rewo_ui::screen::Screen, gui_w: i32, gui_h: i32) {
         *screen = self.model.build(&self.labels, gui_w, gui_h);
     }
 }
@@ -257,13 +252,13 @@ impl DeathView {
 /// builder the frame path does. Nothing here is death-screen-specific and
 /// nothing ever was — M85 only had to teach it the two widget kinds that are
 /// **not** buttons: a label draws through the text pass, and a
-/// [`rewo_world::screen::WidgetKind::Reserved`] draws nothing at all, on
+/// [`rewo_ui::screen::WidgetKind::Reserved`] draws nothing at all, on
 /// purpose (see `Widget::reserved`).
 pub(crate) fn screen_chrome(
-    screen: &rewo_world::screen::Screen,
+    screen: &rewo_ui::screen::Screen,
     mouse: Option<(f64, f64)>,
 ) -> rewo_gpu::screen::ScreenDraw {
-    use rewo_world::screen::{ButtonSprite as W, WidgetKind};
+    use rewo_ui::screen::{ButtonSprite as W, WidgetKind};
     let focused = screen.focused();
     rewo_gpu::screen::ScreenDraw {
         backdrop: screen.backdrop.map(|b| (b.top, b.bottom)),
@@ -304,11 +299,11 @@ pub(crate) fn screen_chrome(
 ///
 /// `px` is the GUI scale, the same convention `death_screen_lines` uses.
 pub(crate) fn screen_text_lines(
-    screen: &rewo_world::screen::Screen,
+    screen: &rewo_ui::screen::Screen,
     advance: &[u8; 256],
     px: f32,
 ) -> Vec<rewo_gpu::world::OwnedTextLine> {
-    use rewo_world::screen::WidgetKind;
+    use rewo_ui::screen::WidgetKind;
     let mut out = Vec::new();
     // `color` arrives as vanilla's byte `/255` (`screen::INACTIVE_LABEL` is
     // `0xA0A0A0`); the pass wants linear. One conversion, in the one closure
@@ -380,13 +375,13 @@ pub(crate) fn screen_text_lines(
 /// multiplied by it, which is the same convention `title_lines` uses.
 pub(crate) fn death_screen_lines(
     view: &DeathView,
-    screen: &rewo_world::screen::Screen,
+    screen: &rewo_ui::screen::Screen,
     advance: &[u8; 256],
     px: f32,
     (screen_w, _screen_h): (f32, f32),
 ) -> Vec<rewo_gpu::world::OwnedTextLine> {
     use rewo_net::chat_style::ChatSpan;
-    use rewo_world::death_screen as ds;
+    use rewo_ui::death_screen as ds;
     let gui_w = (screen_w / px) as i32;
     let mut out = Vec::new();
 
@@ -423,7 +418,7 @@ pub(crate) fn death_screen_lines(
     };
 
     // The title, at `TITLE_SCALE`. Its anchor truncates twice — see
-    // `rewo_world::death_screen`.
+    // `rewo_ui::death_screen`.
     let title_w = rewo_gpu::text::width(&view.labels.title, advance);
     run(
         &mut out,
@@ -520,7 +515,7 @@ pub(super) fn apply_screen(
     // M92 — the beacon's six effect ids, resolved once at startup.
     beacon_effects: BeaconEffectIds,
     // The beacon screen's own choice (M93m), or `None` to read the menu.
-    beacon_override: Option<rewo_world::menu_screen::BeaconChoice>,
+    beacon_override: Option<rewo_ui::menu_screen::BeaconChoice>,
     // The stonecutter's grid (M93s). Resolved by the caller for the beacon's
     // reason: it needs the screen-local scroll, and `apply_screen` holds no
     // `ScreenState` — which is also what keeps it drivable from a gate.
@@ -528,25 +523,25 @@ pub(super) fn apply_screen(
     // M93t — the anvil's name field, resolved by the caller for the reason the
     // beacon's choice and the stonecutter's grid are: it is screen-local state
     // and `apply_screen` holds no `ScreenState`.
-    anvil_field: Option<&rewo_world::edit_box::EditBox>,
+    anvil_field: Option<&rewo_ui::edit_box::EditBox>,
     // M93u — the merchant's trade list, resolved by the caller for the same
     // reason: it needs the screen-local scroll.
     merchant: Option<&MerchantView>,
     // M98 — the recipe book's own tab and page, for the same reason as the
     // three above: `apply_screen` holds no `ScreenState`, which is what keeps
     // it drivable from a gate.
-    book_state: rewo_world::recipe_book_screen::BookState,
+    book_state: rewo_ui::recipe_book_screen::BookState,
     // M99 — and its search field's contents, already lowercased.
     book_query: &str,
     // M100 — and the field itself, for its text, caret and selection.
-    book_field: &rewo_world::edit_box::EditBox,
+    book_field: &rewo_ui::edit_box::EditBox,
     // M101 — wall-clock milliseconds, for both fields' caret blink.
     now_ms: u64,
     // M104 — and the open which-of-these overlay, supplied for the same reason
     // the four above are: it is screen-local state that `apply_screen` cannot
     // reach, and supplying it is what lets a gate drive the render path the
     // live client takes rather than a copy of it (M45/M93q).
-    book_overlay: Option<&rewo_world::recipe_overlay::Open>,
+    book_overlay: Option<&rewo_ui::recipe_overlay::Open>,
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
@@ -565,7 +560,7 @@ pub(super) fn apply_screen(
     // M93q — the loom's grid, resolved here because it keys off the pattern
     // slot's item NAME and only this side holds the registry.
     let loom = session.menus.open().and_then(|m| {
-        if m.layout.protocol_id != rewo_world::menu_screen::LOOM_MENU_PROTOCOL_ID {
+        if m.layout.protocol_id != rewo_ui::menu_screen::LOOM_MENU_PROTOCOL_ID {
             return None;
         }
         // Slots: banner 0, dye 1, pattern 2.
@@ -576,7 +571,7 @@ pub(super) fn apply_screen(
             // The scrollbar's drag is not wired; see `LoomView::start_row`.
             start_row: 0,
             selected: m.loom_selected_pattern(),
-            display: rewo_world::menu_screen::loom_display_patterns(
+            display: rewo_ui::menu_screen::loom_display_patterns(
                 m.menu.menu_slot(0).is_some(),
                 m.menu.menu_slot(1).is_some(),
                 // `hasMaxPatterns` needs the banner's own layer count, which
@@ -793,8 +788,8 @@ pub(super) fn apply_screen(
                 let b = book.as_ref()?;
                 let view = b.view?;
                 let (bx, by) = book_mouse?;
-                let hit = rewo_world::recipe_book_screen::book_hit(bx, by, view, view.tabs)?;
-                let key = rewo_world::recipe_book_screen::widget_tooltip_key(
+                let hit = rewo_ui::recipe_book_screen::book_hit(bx, by, view, view.tabs)?;
+                let key = rewo_ui::recipe_book_screen::widget_tooltip_key(
                     hit,
                     book_type_of(layout)?,
                     view.filtering,
@@ -1143,7 +1138,7 @@ pub(super) fn click_screen(
         let layout = session.shown_menu().layout();
         let player_inventory = layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID;
         if book_type_of(layout).is_some_and(|b| {
-            rewo_world::recipe_book_screen::is_crafting_slot(b, player_inventory, slot)
+            rewo_ui::recipe_book_screen::is_crafting_slot(b, player_inventory, slot)
         }) {
             screen.place_guard.crafting_slot_clicked();
             session.ghost_recipe = None;

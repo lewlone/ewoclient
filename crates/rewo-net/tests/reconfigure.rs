@@ -208,7 +208,7 @@ fn a_bad_frame_disconnects_with_its_reason() {
     assert!(reason.contains("frame length"), "{reason}");
     assert_eq!(
         session.disconnect_cause,
-        Some(rewo_world::disconnect_screen::DisconnectCause::ClientError)
+        Some(rewo_ui::disconnect_screen::DisconnectCause::ClientError)
     );
 }
 
