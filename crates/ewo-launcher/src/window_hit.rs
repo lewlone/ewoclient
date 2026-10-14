@@ -3,7 +3,7 @@
 
 use ewo_render::{app_window, skia_safe};
 use winit::dpi::{PhysicalPosition, PhysicalSize};
-use winit::window::ResizeDirection;
+use winit::window::{CursorIcon, ResizeDirection, Window};
 
 pub(crate) const RESIZE_BORDER_LP: f64 = 8.0;
 pub(crate) const CAPTION_HEIGHT_LP: f64 = 32.0;
@@ -87,6 +87,32 @@ pub(crate) fn rect_contains(rect: &skia_safe::Rect, p: (f32, f32)) -> bool {
     p.0 >= rect.left && p.0 <= rect.right && p.1 >= rect.top && p.1 <= rect.bottom
 }
 
+/// The mouse cursor shown over a hit-test zone: a resize arrow on the
+/// border, the default arrow on the caption and on content.
+pub(crate) fn cursor_icon_for(zone: Option<Zone>) -> CursorIcon {
+    use CursorIcon::*;
+    match zone {
+        Some(Zone::Resize(ResizeDirection::North)) => NResize,
+        Some(Zone::Resize(ResizeDirection::South)) => SResize,
+        Some(Zone::Resize(ResizeDirection::East)) => EResize,
+        Some(Zone::Resize(ResizeDirection::West)) => WResize,
+        Some(Zone::Resize(ResizeDirection::NorthEast)) => NeResize,
+        Some(Zone::Resize(ResizeDirection::NorthWest)) => NwResize,
+        Some(Zone::Resize(ResizeDirection::SouthEast)) => SeResize,
+        Some(Zone::Resize(ResizeDirection::SouthWest)) => SwResize,
+        Some(Zone::Caption) | None => Default,
+    }
+}
+
+pub(crate) fn update_cursor_icon(
+    window: &Window,
+    pos: &PhysicalPosition<f64>,
+    size: PhysicalSize<u32>,
+    scale: f64,
+) {
+    window.set_cursor(cursor_icon_for(hit_test(*pos, size, scale)));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +167,25 @@ mod tests {
                 assert!(zone(cx, cy, s).is_none(), "button at ({cx},{cy}) s={s}");
             }
         }
+    }
+
+    #[test]
+    fn cursor_icon_follows_the_zone() {
+        use ResizeDirection::*;
+        for (dir, icon) in [
+            (North, CursorIcon::NResize),
+            (South, CursorIcon::SResize),
+            (East, CursorIcon::EResize),
+            (West, CursorIcon::WResize),
+            (NorthEast, CursorIcon::NeResize),
+            (NorthWest, CursorIcon::NwResize),
+            (SouthEast, CursorIcon::SeResize),
+            (SouthWest, CursorIcon::SwResize),
+        ] {
+            assert_eq!(cursor_icon_for(Some(Zone::Resize(dir))), icon);
+        }
+        assert_eq!(cursor_icon_for(Some(Zone::Caption)), CursorIcon::Default);
+        assert_eq!(cursor_icon_for(None), CursorIcon::Default);
     }
 
     #[test]

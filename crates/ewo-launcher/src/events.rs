@@ -3,6 +3,11 @@
 
 use super::*;
 
+#[cfg(test)]
+mod test_support;
+mod widgets;
+use widgets::*;
+
 impl App {
     /// A key press (`WindowEvent::KeyboardInput`, pressed).
     pub(crate) fn on_key_pressed(
