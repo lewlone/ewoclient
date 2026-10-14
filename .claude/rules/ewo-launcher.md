@@ -173,7 +173,10 @@ Subsystems:
   the exe's embedded icon only serves Explorer and shortcuts).
 - `profile.rs`: client profiles (global, not per-instance): `profiles.toml` +
   `profiles/<name>/{client.toml,hud.toml,modules.toml,…}`; `settings.toml` is
-  global-only. `profile::is_valid_name` rejects path-unsafe names.
+  global-only. `profile::is_valid_name` rejects path-unsafe names. The
+  Settings rows "Game directory" / "Downloads" are display-only (the real
+  data dir and its `shared/`); `settings.toml` no longer stores them, and an
+  old file's `game_dir` / `downloads` keys are ignored.
   `atomic_write` and `validate_name` live in `ewo_core::util` (shared with the
   cdylib, which writes `pvp.toml`; `ewo-launcher/src/util.rs` re-exports them).
 - `keybind.rs`: `KeyChord` = GLFW key code + modifier mask (Minecraft's own key
