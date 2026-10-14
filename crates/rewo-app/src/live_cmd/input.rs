@@ -502,6 +502,7 @@ impl LiveApp {
         // tree parses to no children and would otherwise report a local
         // completion for every keystroke while proving nothing — the witness
         // has to name the suggestions, not the code path.
+        #[cfg(feature = "gates")]
         if !completion.local.is_empty() {
             // M118 — a selector answered locally is a strictly narrower claim
             // than "a completion was", because it needs the entity argument's

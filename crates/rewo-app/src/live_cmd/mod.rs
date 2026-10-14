@@ -68,7 +68,9 @@ mod headless;
 use headless::*;
 mod hud;
 pub(crate) use hud::*;
+#[cfg(feature = "gates")]
 mod render_check;
+#[cfg(feature = "gates")]
 pub(crate) use render_check::*;
 mod icons;
 pub(crate) use icons::*;
@@ -592,6 +594,7 @@ struct LiveApp {
     run_seconds: Option<f32>,
     /// M86's live reachability + validation gate. `None` unless
     /// `--render-check`.
+    #[cfg(feature = "gates")]
     check: Option<RenderCheck>,
     fif: usize,
     state: Option<LiveState>,
@@ -669,30 +672,41 @@ struct LiveApp {
     /// `options.txt`; Rewo has no options file, so it resets each session.
     advanced_tooltips: bool,
     /// M92 — whether the second (brewing-stand) injection has happened.
+    #[cfg(feature = "gates")]
     brewing_injected: bool,
     /// M94 — whether `--render-check` has opened the recipe book yet.
+    #[cfg(feature = "gates")]
     book_injected: bool,
     /// M104 — whether it has injected the which-of-these overlay yet.
+    #[cfg(feature = "gates")]
     book_overlay_injected: bool,
     /// M94 — whether the crafting-table injection has happened.
+    #[cfg(feature = "gates")]
     book_menu_injected: bool,
     /// M88 — whether `--render-check` has injected its container open yet.
     /// Latched so the inject happens once rather than every frame past the
     /// threshold, which would re-open the menu and reset its state each frame.
+    #[cfg(feature = "gates")]
     container_injected: bool,
+    #[cfg(feature = "gates")]
     sign_editor_injected: bool,
     /// M132 — whether the scoreboard sidebar injection has happened.
+    #[cfg(feature = "gates")]
     sidebar_injected: bool,
     /// M151 — whether the tab-list player injection has happened.
+    #[cfg(feature = "gates")]
     tab_list_injected: bool,
     /// M162 — the two sound-carrying packet tails, injected once.
+    #[cfg(feature = "gates")]
     sound_tails_injected: bool,
     /// M166 — whether the PLAY-state `resource_pack_push` has been
     /// injected. Its own flag rather than riding another block's: the
     /// claim is that the play arm exists at all, and sharing a trigger
     /// would make it disappear with whatever it shared.
+    #[cfg(feature = "gates")]
     play_pack_injected: bool,
     /// Whether the two-of-one-kind mob injection has happened (r54).
+    #[cfg(feature = "gates")]
     crowd_injected: bool,
     /// M172 — the open written-book reader, `None` when no book is up. The
     /// app-side view state the frame's render arm keys on (the M84 pattern);
@@ -735,22 +749,31 @@ struct LiveApp {
     /// sites where they already exist.
     adv_drag: crate::advancements_view::AdvDrag,
     /// M169 — the injected horse + saddle + set_passengers that mounts the bot.
+    #[cfg(feature = "gates")]
     jump_injected: bool,
+    #[cfg(feature = "gates")]
     leash_injected: bool,
     /// M172 — the injected written book + open_book (r61). NOT M94's
     /// `book_injected`, which is the RECIPE book's force-open flag.
+    #[cfg(feature = "gates")]
     book_view_injected: bool,
     /// M173 — the staged walk through the options pages (r62).
+    #[cfg(feature = "gates")]
     options_staged: u8,
     /// Whether `--render-check` has force-opened the chat screen yet (M110).
+    #[cfg(feature = "gates")]
     chat_injected: bool,
     /// Whether it has typed a `/`-command yet (M116).
+    #[cfg(feature = "gates")]
     command_injected: bool,
     /// Whether it has typed a coordinate command yet (M120).
+    #[cfg(feature = "gates")]
     coords_injected: bool,
     /// M124 — whether the `scoreboard objectives setdisplay ` typing has run.
+    #[cfg(feature = "gates")]
     literal_table_injected: bool,
     /// M134 — whether the unknown-command typing has run.
+    #[cfg(feature = "gates")]
     bad_command_injected: bool,
     /// `CommandSuggestions.currentParse` (M117) — the parse the syntax
     /// highlighting reads, cached against the text it was made from.
@@ -764,6 +787,7 @@ struct LiveApp {
     /// Whether `--render-check` has force-opened the inventory yet (M89).
     /// Frames before this are the ones that prove `open_screen` opens the
     /// screen on its own.
+    #[cfg(feature = "gates")]
     screen_forced_open: bool,
     /// `Hud.lastToolHighlight` + `toolHighlightTimer` (M66) — the held-item
     /// name that fades in over the hotbar.
@@ -921,15 +945,25 @@ fn run_windowed(
         clipboard_synced: String::new(),
         chat_screen: None,
         chat_draft: None,
+        #[cfg(feature = "gates")]
         chat_injected: false,
+        #[cfg(feature = "gates")]
         command_injected: false,
+        #[cfg(feature = "gates")]
         coords_injected: false,
+        #[cfg(feature = "gates")]
         literal_table_injected: false,
+        #[cfg(feature = "gates")]
         bad_command_injected: false,
+        #[cfg(feature = "gates")]
         sidebar_injected: false,
+        #[cfg(feature = "gates")]
         tab_list_injected: false,
+        #[cfg(feature = "gates")]
         sound_tails_injected: false,
+        #[cfg(feature = "gates")]
         play_pack_injected: false,
+        #[cfg(feature = "gates")]
         crowd_injected: false,
         book: None,
         lectern_shown: None,
@@ -939,9 +973,13 @@ fn run_windowed(
         options_view: None,
         options_drag: None,
         adv_drag: crate::advancements_view::AdvDrag::default(),
+        #[cfg(feature = "gates")]
         jump_injected: false,
+        #[cfg(feature = "gates")]
         leash_injected: false,
+        #[cfg(feature = "gates")]
         book_view_injected: false,
+        #[cfg(feature = "gates")]
         options_staged: 0,
         username,
         chat_parse: None,
@@ -957,6 +995,7 @@ fn run_windowed(
             (None, true) => Some(RENDER_CHECK_SECONDS),
             (None, false) => None,
         },
+        #[cfg(feature = "gates")]
         check: args.render_check.then(|| RenderCheck {
             validation: want_validation,
             ..RenderCheck::default()
@@ -981,12 +1020,19 @@ fn run_windowed(
         f3_down: false,
         f3_used_as_modifier: false,
         advanced_tooltips: false,
+        #[cfg(feature = "gates")]
         container_injected: false,
+        #[cfg(feature = "gates")]
         sign_editor_injected: false,
+        #[cfg(feature = "gates")]
         book_injected: false,
+        #[cfg(feature = "gates")]
         book_overlay_injected: false,
+        #[cfg(feature = "gates")]
         book_menu_injected: false,
+        #[cfg(feature = "gates")]
         brewing_injected: false,
+        #[cfg(feature = "gates")]
         screen_forced_open: false,
         tool_highlight: rewo_gpu::hud::ToolHighlight::default(),
         locator_styles: Vec::new(),
@@ -1081,10 +1127,37 @@ fn run_windowed(
     }
     // M86's gate. Reported after teardown so `r17` also covers the destroys —
     // the windowed path had no `device_wait_idle` there until this milestone.
+    #[cfg(feature = "gates")]
     if let Some(c) = app.check.as_ref() {
         if !c.report() {
             return Err("render-check: one or more witnesses failed".into());
         }
+    }
+    Ok(())
+}
+
+/// How many seconds `--render-check` runs for when `--run-seconds` is absent.
+///
+/// Long enough for the server to send the inventory and for the weather /
+/// particle paths to have been reached many times over, short enough to be a
+/// gate rather than a soak.
+const RENDER_CHECK_SECONDS: f32 = 8.0;
+
+/// Whether the wavy cape is switched on for this run (M61).
+pub(crate) fn wavy_cape_requested(flag: bool) -> bool {
+    flag || matches!(
+        std::env::var("REWO_WAVY_CAPE").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
+/// Reject a `[0, 1]` option before any I/O so a bad `--gamma` /
+/// `--darkness-effect-scale` fails fast with a named error (M13).
+fn validate_unit(name: &str, v: f32) -> Result<(), String> {
+    if !v.is_finite() || !(0.0..=1.0).contains(&v) {
+        return Err(format!(
+            "--{name} must be a finite value in [0, 1], got {v}"
+        ));
     }
     Ok(())
 }
