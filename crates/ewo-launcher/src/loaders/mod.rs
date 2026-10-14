@@ -10,6 +10,7 @@
 //! Fetching lives in `fetch` — supports HTTP and `file://` so the
 //! in-development EwoLoader manifest can be consumed directly off disk.
 
+pub mod base;
 pub mod fetch;
 pub mod manifest;
 pub mod merge;

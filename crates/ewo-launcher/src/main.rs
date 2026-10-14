@@ -121,38 +121,6 @@ struct Args {
     mint_rewo_env: bool,
 }
 
-/// Base URL for the in-development EwoLoader manifests, one JSON per
-/// supported Minecraft version line (26.1.json, 26.2.json, …). The loader
-/// project lives in a sibling repo on the developer's machine and
-/// doesn't yet publish a public meta endpoint, so we point straight at
-/// the on-disk manifests via `file://`. Becomes a config knob (or a real
-/// HTTPS URL) once the loader publishes a meta endpoint. Override with the
-/// `EWO_LOADER_BASE` env var (a `file://` or `https://` base URL).
-const DEV_EWO_LOADER_BASE: &str =
-    "file:///C:/Users/valtteri/Desktop/EwoLoaderV1/manifest/0.1.0";
-
-fn ewo_loader_base() -> String {
-    std::env::var("EWO_LOADER_BASE")
-        .ok()
-        .map(|s| s.trim().trim_end_matches('/').to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEV_EWO_LOADER_BASE.to_string())
-}
-
-/// Resolve the EwoLoader manifest URL for a Minecraft version id. The
-/// manifests are keyed by version *line* (major.minor), so patch releases
-/// map onto their line's manifest: "26.2.1" → 26.2.json, "26.1" →
-/// 26.1.json. A line with no manifest on disk (e.g. 1.21.x) fetch-fails
-/// at launch and falls back to a vanilla launch — the existing non-fatal
-/// loader path — so this doesn't need its own allowlist.
-fn ewo_loader_manifest_url(version_id: &str) -> String {
-    let line = match version_id.match_indices('.').nth(1) {
-        Some((second_dot, _)) => &version_id[..second_dot],
-        None => version_id,
-    };
-    format!("{}/{}.json", ewo_loader_base(), line)
-}
-
 /// Action triggered by clicking a sidebar menu item on the main menu.
 #[derive(Copy, Clone, Debug)]
 enum MenuAction {
@@ -368,40 +336,11 @@ impl App {
                 p
             },
             // Try the persisted list first, fall back to the bundled
-            // defaults if missing or malformed. Ewo manifest URLs are
-            // re-derived from each instance's version on every load —
-            // instances created by older launcher builds carry the
-            // pre-version-keying hardcoded 26.1 URL in instances.toml,
-            // which merges 26.1 mods into a 26.2 game ("Incompatible
-            // mods found!" at boot). Self-heal instead of asking the
-            // user to recreate the instance.
-            instances: {
-                let mut instances = persistence::load_instances();
-                let mut healed = false;
-                for inst in instances.iter_mut() {
-                    if let ewo_render::screens::instances::InstanceLoader::Ewo { manifest_url } =
-                        &mut inst.loader
-                    {
-                        let version_id =
-                            inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
-                        let derived = ewo_loader_manifest_url(version_id);
-                        if *manifest_url != derived {
-                            log::info!(
-                                "instances: re-keying \"{}\" loader manifest {} → {}",
-                                inst.name,
-                                manifest_url,
-                                derived
-                            );
-                            *manifest_url = derived;
-                            healed = true;
-                        }
-                    }
-                }
-                if healed {
-                    persistence::save_instances(&instances);
-                }
-                instances
-            },
+            // defaults if missing or malformed. An Ewo instance's stored
+            // loader value is never used to fetch: the manifest URL is
+            // resolved from the version and this machine's loader base at
+            // launch (`loaders::base`), so there is nothing to re-key here.
+            instances: persistence::load_instances(),
             instance_prefs: InstancePrefs::default(),
             launching: LaunchingState::default(),
             modal: NewInstanceModalState::default(),
@@ -649,6 +588,17 @@ impl App {
     }
 
     fn fail_launch(&mut self, pending: &PendingPrepare, msg: &str, time: f32) {
+        // A missing/unreadable EwoLoader manifest is always a visible launch
+        // error, never the synthetic animation or a vanilla launch.
+        if launch::prepare::is_loader_error(msg) {
+            self.launching.push_real_line(
+                screens::RealSeverity::Warn,
+                format!("[ewo] the EwoLoader could not be loaded, so the game was not started ({})", msg),
+                time,
+            );
+            self.launching.set_real_exit(Some(127), time);
+            return;
+        }
         match pending.fail {
             PrepareFail::Synthetic => {
                 log::info!("launch: falling back to synthetic for \"{}\"", pending.inst_name);
@@ -965,7 +915,7 @@ impl App {
             return;
         };
         let version_id = inst.version.rsplit(" · ").next().unwrap_or(&inst.version);
-        let loader_spec = loader_spec_for(&inst.loader);
+        let loader_spec = loader_spec_for(&inst.loader, version_id);
         let Some(manifest) = self.versions.manifest() else {
             log::warn!("downloads: master manifest not loaded — can't retry {}", version_id);
             return;
@@ -2199,7 +2149,7 @@ fn commit_new_instance(
     // Other loaders will land here once the dropdown grows back.
     let loader = if form.loader.starts_with("Ewo") {
         ewo_render::screens::instances::InstanceLoader::Ewo {
-            manifest_url: ewo_loader_manifest_url(&form.version),
+            manifest_url: loaders::base::stored_marker(&form.version),
         }
     } else if form.loader.starts_with("Native") {
         // Rewo — spawns the native client at launch. Downloads still run
@@ -2211,7 +2161,7 @@ fn commit_new_instance(
     // Derived before `loader` is moved into `Instance::with_loader` below.
     // The job needs the manifest URL up front so it can fetch + merge
     // before counting bytes for the progress bar.
-    let loader_spec = loader_spec_for(&loader);
+    let loader_spec = loader_spec_for(&loader, &form.version);
     // Seed the instance's mods list from the bundled catalog so the
     // Instances UI shows real toggles immediately. Only Ewo instances get
     // mods — vanilla launches don't run any mods so the list stays empty.

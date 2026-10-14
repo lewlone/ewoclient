@@ -8,10 +8,14 @@
 # ewo_jni.dll to the game (-Dewo.hud.nativePath), so the launcher UI, Rewo
 # and the HUD native all run from wherever the folder is moved.
 #
-# NOT bundled: the EwoLoader manifests + fat jar (Ewo instances read them via
-# the EWO_LOADER_BASE env var, default = the dev checkout under the author's
-# Desktop) and the ewo-hud mod jar (listed in those manifests). Vanilla and
-# Native instances need neither.
+# Also bundled: the EwoLoader manifests as dist\EwoClient\loader\0.1.0\*.json
+# with every file:// jar they list (loader fat jar, ewo-hud, local mods) copied
+# to loader\0.1.0\libs\ and referenced as the relative "libs/<jar>" (see
+# tools\bundle-loader.ps1). The launcher finds that folder next to the exe, so
+# Ewo instances work wherever the bundle is moved. Packaging FAILS if a listed
+# jar is missing (build EwoLoaderV1 first: `./gradlew fatJar`, and the HUD jar
+# via ingame-mod\build.ps1). Pass -LoaderRepo to use a checkout other than the
+# sibling ..\EwoLoaderV1. EWO_LOADER_BASE still overrides at run time.
 #
 # Also (re)creates the Desktop "EwoClient" shortcut pointing at the bundle.
 #
@@ -19,9 +23,20 @@
 # (For quick dev iteration use `cargo run -p ewo-launcher` instead — that path
 # falls back to the in-repo assets, no packaging needed.)
 
+param(
+    [string]$LoaderRepo = (Join-Path $PSScriptRoot "..\EwoLoaderV1")
+)
+
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $dist = Join-Path $root "dist\EwoClient"
+
+# Stage the loader bundle first so a missing jar fails before the long build
+# and before the previous dist\ is wiped.
+$loaderStage = Join-Path ([IO.Path]::GetTempPath()) ("ewo-loader-bundle-" + $PID)
+if (Test-Path $loaderStage) { Remove-Item -Recurse -Force $loaderStage }
+Write-Host "[package] bundling loader manifests from $LoaderRepo ..." -ForegroundColor Cyan
+& (Join-Path $root "tools\bundle-loader.ps1") -OutDir $loaderStage -LoaderRepo $LoaderRepo
 
 Write-Host "[package] building release..." -ForegroundColor Cyan
 Push-Location $root
@@ -52,6 +67,11 @@ Copy-Item -Force (Join-Path $root "assets\fonts\*") (Join-Path $dist "assets\fon
 $icon = Join-Path $root "assets\icon.ico"
 if (Test-Path $icon) { Copy-Item -Force $icon (Join-Path $dist "assets\icon.ico") }
 
+$loaderDest = Join-Path $dist "loader\0.1.0"
+New-Item -ItemType Directory -Force $loaderDest | Out-Null
+Copy-Item -Recurse -Force (Join-Path $loaderStage "*") $loaderDest
+Remove-Item -Recurse -Force $loaderStage
+
 $bundleExe = Join-Path $dist "EwoClient.exe"
 $desktop = [Environment]::GetFolderPath('Desktop')
 $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $desktop 'EwoClient.lnk'))
@@ -62,5 +82,5 @@ $lnk.Description = "EwoClient launcher"
 $lnk.Save()
 
 Write-Host "[package] done." -ForegroundColor Green
-Write-Host "  bundle  : $dist  (movable; Ewo instances still need EWO_LOADER_BASE)"
+Write-Host "  bundle  : $dist  (movable; includes the EwoLoader manifests + jars)"
 Write-Host "  shortcut: $desktop\EwoClient.lnk -> the bundle"
