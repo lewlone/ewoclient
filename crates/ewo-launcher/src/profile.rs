@@ -24,7 +24,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ewo_core::Settings;
 use ewo_render::screens::SettingsConfig;
@@ -238,7 +238,7 @@ fn read_toml<T: serde::de::DeserializeOwned + Default>(path: &PathBuf, what: &st
     }
 }
 
-fn write_toml<T: Serialize>(path: &PathBuf, value: &T, what: &str) {
+fn write_toml<T: Serialize>(path: &Path, value: &T, what: &str) {
     match toml::to_string_pretty(value) {
         Ok(s) => {
             if let Err(e) = crate::util::atomic_write(path, s.as_bytes()) {
@@ -311,7 +311,7 @@ pub fn load() -> (SettingsConfig, Settings) {
 /// is split into `profiles/Default/client.toml` + a global-only
 /// `settings.toml`, and a fresh `profiles.toml` is written. On a truly
 /// fresh install this just lays down the default layout.
-fn migrate(index_p: &PathBuf, settings_p: &PathBuf) -> (SettingsConfig, Settings) {
+fn migrate(index_p: &Path, settings_p: &PathBuf) -> (SettingsConfig, Settings) {
     let had_old = settings_p.exists();
     let old: SettingsConfig = read_toml(settings_p, "settings.toml (pre-F)");
     let tokens = Settings::default();
@@ -646,9 +646,11 @@ mod tests {
 
     #[test]
     fn split_merge_round_trips_every_field() {
-        let mut config = SettingsConfig::default();
-        config.vsync = false;
-        config.max_fps = 240.0;
+        let mut config = SettingsConfig {
+            vsync: false,
+            max_fps: 240.0,
+            ..SettingsConfig::default()
+        };
         config.theme = 2;
         config.master = 0.33;
         config.music = 0.11;

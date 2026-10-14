@@ -2084,7 +2084,7 @@ fn drive_instance_widgets(
 #[allow(clippy::too_many_arguments)]
 fn handle_instances_press(
     prefs: &mut InstancePrefs,
-    instances: &mut Vec<Instance>,
+    instances: &mut [Instance],
     fonts: Option<&FontStore>,
     mouse: (f32, f32),
     card_w: f32,
@@ -2231,12 +2231,11 @@ fn handle_dev_overlay_press(
                     return true;
                 }
             }
-            DevSlot::SimError => {
-                if overlay.sim_error_btn.handle(mouse, rect, true) {
+            DevSlot::SimError
+                if overlay.sim_error_btn.handle(mouse, rect, true) => {
                     overlay.cycle_sim_error();
                     log::info!("dev: sim_error = {:?}", overlay.sim_error);
                 }
-            }
             // Sliders consumed by drive_dev_overlay.
             _ => {}
         }
@@ -2300,7 +2299,6 @@ fn drive_modal_widgets(
 /// a successfully-validated Create button. Create with empty name sets
 /// `modal.name_error = true` and keeps the modal open so the user sees
 /// the inline error.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn handle_modal_press(
     modal: &mut NewInstanceModalState,

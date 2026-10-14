@@ -36,8 +36,8 @@ pub struct FontStore {
     fraunces_cache: RefCell<HashMap<FrauncesAxisKey, Typeface>>,
     /// Same story for italic Newsreader (`opsz`/`wght`). The main-menu tagline
     /// + menu-item sublabels built one of these per frame via
-    /// `clone_with_arguments`, leaking foreign FreeType memory exactly like the
-    /// pre-cache Fraunces path did. A handful of distinct (size, weight) combos.
+    ///   `clone_with_arguments`, leaking foreign FreeType memory exactly like the
+    ///   pre-cache Fraunces path did. A handful of distinct (size, weight) combos.
     newsreader_italic_cache: RefCell<HashMap<NewsreaderAxisKey, Typeface>>,
 }
 

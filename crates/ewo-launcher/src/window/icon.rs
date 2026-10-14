@@ -96,7 +96,7 @@ fn rgba_from_png(png_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
         png::ColorType::Rgba => Ok((out, w, h)),
         png::ColorType::Rgb => {
             let mut rgba = Vec::with_capacity(out.len() / 3 * 4);
-            for px in out.chunks_exact(3) {
+            for px in out.as_chunks::<3>().0 {
                 rgba.extend_from_slice(px);
                 rgba.push(255);
             }
@@ -216,6 +216,6 @@ mod tests {
             rgba_from_png(png_bytes).unwrap_or_else(|e| panic!("decode failed: {e}"));
         assert_eq!((w, h), (256, 256));
         assert_eq!(data.len(), (w * h * 4) as usize);
-        assert!(data.chunks_exact(4).any(|px| px[3] == 255));
+        assert!(data.as_chunks::<4>().0.iter().any(|px| px[3] == 255));
     }
 }

@@ -174,7 +174,7 @@ pub struct InstancePrefs {
     pub mods_on: Vec<bool>,
     /// Vertical scroll offset for the detail panel (pixels). Mouse wheel
     /// + clamp to `[0, max_scroll]` (computed from rendered content
-    /// height vs panel inner height).
+    ///   height vs panel inner height).
     pub detail_scroll: f32,
     /// Vertical scroll offset for the Worlds list (pixels). Independent
     /// of the detail-panel scroll — wheel events route to whichever side
