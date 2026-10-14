@@ -144,13 +144,26 @@ fn read_login_dimension(
 
 /// Read all recorded packets back into memory.
 pub fn read_all(path: &std::path::Path) -> Result<Vec<RecordedPacket>, String> {
-    let mut file = std::fs::File::open(path).map_err(|e| format!("open recording: {e}"))?;
+    let file = std::fs::File::open(path).map_err(|e| format!("open recording: {e}"))?;
+    let size = file
+        .metadata()
+        .map_err(|e| format!("stat recording: {e}"))?
+        .len();
+    read_records(std::io::BufReader::new(file), size)
+}
+
+/// The record loop over `size` bytes of recording. Each body is allocated
+/// from its header's `i32` length, so the length is checked against the bytes
+/// actually left first: a corrupt or hostile header claiming 2 GiB must fail,
+/// not allocate 2 GiB and then fail.
+fn read_records(mut file: impl Read, size: u64) -> Result<Vec<RecordedPacket>, String> {
     let mut magic = [0u8; 8];
     file.read_exact(&mut magic)
         .map_err(|e| format!("read magic: {e}"))?;
     if &magic != MAGIC {
         return Err("not a rewo recording".into());
     }
+    let mut remaining = size.saturating_sub(MAGIC.len() as u64);
     let mut out = Vec::new();
     loop {
         let mut header = [0u8; 9];
@@ -159,16 +172,79 @@ pub fn read_all(path: &std::path::Path) -> Result<Vec<RecordedPacket>, String> {
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Err(e) => return Err(format!("read header: {e}")),
         }
+        remaining = remaining.saturating_sub(header.len() as u64);
         let state = state_from_byte(header[0]).ok_or("bad state byte in recording")?;
         let id = i32::from_be_bytes(header[1..5].try_into().unwrap());
         let len = i32::from_be_bytes(header[5..9].try_into().unwrap());
         if len < 0 {
             return Err("negative record length".into());
         }
+        if len as u64 > remaining {
+            return Err(format!(
+                "record length {len} runs past the end of the recording ({remaining} bytes left)"
+            ));
+        }
+        remaining -= len as u64;
         let mut body = vec![0u8; len as usize];
         file.read_exact(&mut body)
             .map_err(|e| format!("read body: {e}"))?;
         out.push(RecordedPacket { state, id, body });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn recording(records: &[(u8, i32, i32, &[u8])]) -> Vec<u8> {
+        let mut out = MAGIC.to_vec();
+        for (state, id, len, body) in records {
+            out.push(*state);
+            out.extend_from_slice(&id.to_be_bytes());
+            out.extend_from_slice(&len.to_be_bytes());
+            out.extend_from_slice(body);
+        }
+        out
+    }
+
+    fn read(bytes: &[u8]) -> Result<Vec<RecordedPacket>, String> {
+        read_records(bytes, bytes.len() as u64)
+    }
+
+    #[test]
+    fn records_round_trip() {
+        let bytes = recording(&[(4, 7, 3, b"abc"), (3, 1, 0, b"")]);
+        let got = read(&bytes).unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(
+            (got[0].state, got[0].id, got[0].body.as_slice()),
+            (State::Play, 7, &b"abc"[..])
+        );
+        assert_eq!((got[1].state, got[1].id), (State::Configuration, 1));
+    }
+
+    #[test]
+    fn a_length_past_the_end_of_the_file_is_refused_before_allocating() {
+        // i32::MAX claimed, three bytes present: refused on the length, not
+        // after a 2 GiB allocation.
+        let bytes = recording(&[(4, 7, i32::MAX, b"abc")]);
+        let err = read(&bytes).err().unwrap();
+        assert!(err.contains("past the end"), "{err}");
+        // One byte too many is refused too; the exact length is accepted.
+        let bytes = recording(&[(4, 7, 4, b"abc")]);
+        assert!(read(&bytes).is_err());
+        let bytes = recording(&[(4, 7, 3, b"abc")]);
+        assert!(read(&bytes).is_ok());
+    }
+
+    #[test]
+    fn the_file_reader_uses_the_real_file_size() {
+        let dir = std::env::temp_dir().join(format!("rewo-record-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad.rewo");
+        std::fs::write(&path, recording(&[(4, 7, 1 << 30, b"x")])).unwrap();
+        assert!(read_all(&path).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

@@ -432,10 +432,9 @@ impl PlaySession {
                 self.decode_failed("add_entity", "malformed body");
             }
         } else if id == ids.cb_play_remove_entities {
-            let mut r = PacketReader::new(body);
-            if let Ok(n) = r.count("remove entities", 1) {
-                for _ in 0..n {
-                    if let Ok(eid) = r.varint() {
+            match read_remove_entities(body) {
+                Ok(eids) => {
+                    for eid in eids {
                         self.world.entities.remove(eid);
                         // M68: a removed entity cannot still be riding or be
                         // ridden. Leaving the seat behind would strand the
@@ -444,8 +443,7 @@ impl PlaySession {
                         self.mounts.remove_entity(eid);
                     }
                 }
-            } else {
-                self.decode_failed("remove_entities", "malformed body");
+                Err(e) => self.decode_failed("remove_entities", e),
             }
         } else if id == ids.cb_play_move_entity_pos {
             let mut r = PacketReader::new(body);
@@ -1049,10 +1047,9 @@ impl PlaySession {
         } else if id == ids.cb_play_player_info_update {
             self.apply_player_info(body);
         } else if id == ids.cb_play_player_info_remove {
-            let mut r = PacketReader::new(body);
-            if let Ok(n) = r.count("player info removes", 16) {
-                for _ in 0..n {
-                    if let Ok(uuid) = r.uuid() {
+            match read_player_info_remove(body) {
+                Ok(uuids) => {
+                    for uuid in uuids {
                         self.world.entities.remove_name(uuid);
                         // A departed player's ping is not stale, it is gone --
                         // keeping it would let the tab list quote a number for
@@ -1070,8 +1067,7 @@ impl PlaySession {
                         self.tab_players.forget(uuid);
                     }
                 }
-            } else {
-                self.decode_failed("player_info_remove", "malformed body");
+                Err(e) => self.decode_failed("player_info_remove", e),
             }
         } else if Some(id) == ids.cb_play_set_health {
             let mut r = PacketReader::new(body);
@@ -1267,5 +1263,64 @@ impl PlaySession {
             self.disconnect_cause = Some(cause);
         }
         Ok(())
+    }
+}
+
+/// `ClientboundRemoveEntitiesPacket` (`readIntIdList`: a VarInt count, then
+/// VarInt ids), decoded whole before anything is applied, as vanilla's
+/// decode-then-handle does. A truncated list is an error for the caller to
+/// count, never a partial removal.
+pub(super) fn read_remove_entities(body: &[u8]) -> rewo_proto::Result<Vec<i32>> {
+    let mut r = PacketReader::new(body);
+    let n = r.count("remove entities", 1)?;
+    (0..n).map(|_| r.varint()).collect()
+}
+
+/// `ClientboundPlayerInfoRemovePacket` (`readList(UUIDUtil.STREAM_CODEC)`:
+/// a VarInt count, then 16-byte UUIDs), decoded whole like
+/// [`read_remove_entities`].
+pub(super) fn read_player_info_remove(body: &[u8]) -> rewo_proto::Result<Vec<u128>> {
+    let mut r = PacketReader::new(body);
+    let n = r.count("player info removes", 16)?;
+    (0..n).map(|_| r.uuid()).collect()
+}
+
+#[cfg(test)]
+mod remove_list_tests {
+    use super::*;
+
+    #[test]
+    fn remove_entities_reads_the_whole_list() {
+        let mut w = PacketWriter::default();
+        w.varint(3).varint(7).varint(300).varint(-1);
+        assert_eq!(read_remove_entities(&w.buf).unwrap(), vec![7, 300, -1]);
+    }
+
+    #[test]
+    fn a_truncated_remove_entities_is_an_error_not_a_partial_list() {
+        // Count 3, two ids: vanilla's decode throws before the handler runs.
+        let mut w = PacketWriter::default();
+        w.varint(3).varint(7).varint(300);
+        assert!(read_remove_entities(&w.buf).is_err());
+        // A VarInt cut mid-byte.
+        let mut w = PacketWriter::default();
+        w.varint(1);
+        w.buf.push(0x80);
+        assert!(read_remove_entities(&w.buf).is_err());
+    }
+
+    #[test]
+    fn player_info_remove_reads_the_whole_list() {
+        let mut w = PacketWriter::default();
+        w.varint(2).uuid(1).uuid(u128::MAX);
+        assert_eq!(read_player_info_remove(&w.buf).unwrap(), vec![1, u128::MAX]);
+    }
+
+    #[test]
+    fn a_truncated_player_info_remove_is_an_error_not_a_partial_list() {
+        let mut w = PacketWriter::default();
+        w.varint(2).uuid(1);
+        w.buf.extend_from_slice(&[0; 8]); // half of the second UUID
+        assert!(read_player_info_remove(&w.buf).is_err());
     }
 }

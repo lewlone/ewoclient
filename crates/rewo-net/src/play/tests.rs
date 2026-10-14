@@ -2327,3 +2327,64 @@ mod teleport_tests {
         assert!(got.pos.iter().chain(&got.vel).all(|c| c.is_finite()));
     }
 }
+
+mod write_packet_tests {
+    use super::{write_packet, FrameCodec};
+
+    /// A writer whose first `fail_after` bytes succeed, then every write
+    /// times out: a peer that stopped reading partway through a frame.
+    struct Stalling {
+        written: Vec<u8>,
+        fail_after: usize,
+        calls_after_failure: usize,
+    }
+
+    impl std::io::Write for Stalling {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let room = self.fail_after.saturating_sub(self.written.len());
+            if room == 0 {
+                self.calls_after_failure += 1;
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
+            let n = room.min(buf.len());
+            self.written.extend_from_slice(&buf[..n]);
+            Ok(n)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_failed_write_is_fatal_and_nothing_is_written_after_it() {
+        let codec = FrameCodec::default();
+        let mut w = Stalling {
+            written: Vec::new(),
+            fail_after: 3,
+            calls_after_failure: 0,
+        };
+        let mut failed = None;
+        // The first packet stalls partway: part of its frame is on the wire.
+        let err = write_packet(&codec, &mut w, &mut failed, &[0x10; 8]).unwrap_err();
+        assert!(err.starts_with("send:"), "{err}");
+        assert_eq!(w.written.len(), 3);
+        assert!(failed.is_some());
+        // A later packet must not follow the torn frame onto the wire.
+        let calls = w.calls_after_failure;
+        let err = write_packet(&codec, &mut w, &mut failed, &[0x11]).unwrap_err();
+        assert!(err.contains("earlier failed write"), "{err}");
+        assert_eq!(w.calls_after_failure, calls, "the writer was not touched");
+        assert_eq!(w.written.len(), 3);
+    }
+
+    #[test]
+    fn a_healthy_writer_gets_whole_frames() {
+        let codec = FrameCodec::default();
+        let mut out = Vec::new();
+        let mut failed = None;
+        write_packet(&codec, &mut out, &mut failed, &[0x10, 1, 2]).unwrap();
+        write_packet(&codec, &mut out, &mut failed, &[0x11]).unwrap();
+        assert_eq!(out, vec![3, 0x10, 1, 2, 1, 0x11]);
+        assert!(failed.is_none());
+    }
+}

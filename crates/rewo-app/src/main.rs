@@ -45,6 +45,7 @@ mod dimension_json;
 mod dimensioncheck_cmd;
 #[cfg(feature = "gates")]
 mod eventshot_cmd;
+mod game_dir;
 #[cfg(feature = "gates")]
 mod gaugeshot_cmd;
 #[cfg(feature = "gates")]
