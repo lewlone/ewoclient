@@ -73,6 +73,7 @@ pub mod sound_engine;
 pub mod sound_instance;
 pub mod sounds;
 pub mod spawn_info;
+pub mod srv;
 pub mod suggestion_wire;
 pub mod tab_list_text;
 pub mod tags;
@@ -412,14 +413,84 @@ pub struct Connection<'a> {
     /// configuration → play switch, so this is moved into the play session by
     /// [`Connection::into_play`] exactly as `tags` is.
     session: crate::session::SessionState,
+    /// The host and port the handshake names: the SRV target when a redirect
+    /// was followed, the typed address otherwise. See [`Self::endpoint`].
+    endpoint: (String, u16),
 }
 
 impl<'a> Connection<'a> {
     /// Connect, starting the [`HANDSHAKE_TIMEOUT`] clock that bounds
     /// everything up to play (see [`Self::set_handshake_timeout`]).
+    ///
+    /// The port is the caller's decision, so no SRV lookup happens; a player's
+    /// typed address goes through [`Self::connect_address`].
     pub fn connect(host: &str, port: u16, data: &'a GameData) -> Result<Self, String> {
         let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
         let stream = connect_tcp(host, port, deadline)?;
+        Self::from_stream(stream, (host.to_owned(), port), deadline, data)
+    }
+
+    /// Connect to an address as a player typed it: with **no port**, ask the
+    /// system's nameservers for the `_minecraft._tcp.<host>` SRV record first
+    /// and connect to what it names, falling back to the typed host on 25565
+    /// when there is no record, the lookup fails, or the target cannot be
+    /// reached. With a port, this is [`Self::connect`]. See [`srv`].
+    ///
+    /// The handshake must carry what was actually connected to
+    /// ([`Self::endpoint`]), as vanilla's `ConnectScreen` sends the resolved
+    /// address's host name and port.
+    pub fn connect_address(addr: &srv::ServerAddress, data: &'a GameData) -> Result<Self, String> {
+        Self::connect_address_with(addr, data, &srv::lookup_system)
+    }
+
+    /// [`Self::connect_address`] with the SRV lookup supplied (a test double,
+    /// or a resolver other than the system's).
+    pub fn connect_address_with(
+        addr: &srv::ServerAddress,
+        data: &'a GameData,
+        lookup: &dyn Fn(&str) -> Option<srv::SrvTarget>,
+    ) -> Result<Self, String> {
+        Self::connect_endpoints(&srv::plan(addr, lookup), data)
+    }
+
+    /// Try each endpoint in order and keep the first that connects; the error
+    /// is the last attempt's. One [`HANDSHAKE_TIMEOUT`] clock covers them all.
+    pub fn connect_endpoints(
+        endpoints: &[srv::Endpoint],
+        data: &'a GameData,
+    ) -> Result<Self, String> {
+        let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+        let mut last = String::from("no endpoints");
+        for ep in endpoints {
+            if ep.via_srv {
+                log::info!("net: SRV redirect to {}:{}", ep.host, ep.port);
+            }
+            match connect_tcp(&ep.host, ep.port, deadline) {
+                Ok(stream) => {
+                    return Self::from_stream(stream, (ep.host.clone(), ep.port), deadline, data);
+                }
+                Err(e) => {
+                    log::info!("net: {e}");
+                    last = e;
+                }
+            }
+        }
+        Err(last)
+    }
+
+    /// The host and port to put in the handshake and to show the player: the
+    /// SRV target (with its trailing dot, as vanilla sends it) when a redirect
+    /// was followed, otherwise exactly what was connected to.
+    pub fn endpoint(&self) -> (&str, u16) {
+        (&self.endpoint.0, self.endpoint.1)
+    }
+
+    fn from_stream(
+        stream: TcpStream,
+        endpoint: (String, u16),
+        deadline: Instant,
+        data: &'a GameData,
+    ) -> Result<Self, String> {
         stream
             .set_read_timeout(Some(READ_TIMEOUT))
             .map_err(|e| format!("set timeout: {e}"))?;
@@ -444,6 +515,7 @@ impl<'a> Connection<'a> {
             config_tasks: config_tasks::ConfigTaskLog::default(),
             cfg: config::ConfigData::new(data),
             session: crate::session::SessionState::default(),
+            endpoint,
         })
     }
 

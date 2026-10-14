@@ -177,10 +177,9 @@ impl App {
             }
             let mut args: Vec<String> = Vec::new();
             if let Some(addr) = self.active_server.clone() {
-                let (host, port) = match addr.rsplit_once(':') {
-                    Some((h, p)) => (h.to_string(), p.parse::<u16>().unwrap_or(25565)),
-                    None => (addr.clone(), 25565),
-                };
+                // No port typed stays `None`: the client then follows the
+                // `_minecraft._tcp` SRV record, as vanilla's resolver does.
+                let (host, port) = launch::split_server_address(&addr);
                 envs.push(("REWO_SERVER".into(), addr.clone()));
                 args = launch::native_client_args(&host, port, version_id);
                 log::info!("launch: rewo live → {}", addr);

@@ -102,10 +102,16 @@ const UPLOAD_BUDGET: usize = 6;
 
 #[derive(ClapArgs)]
 pub struct LiveArgs {
-    #[arg(long, default_value = "127.0.0.1")]
-    host: String,
-    #[arg(long, default_value_t = 25599)]
-    port: u16,
+    /// Server: `host` or `host:port`. **With no port anywhere**, the
+    /// `_minecraft._tcp.<host>` SRV record is looked up and followed, then the
+    /// default port 25565 is used (vanilla's `ServerNameResolver`). Omitting
+    /// both `--host` and `--port` means the local dev test server,
+    /// 127.0.0.1:25599.
+    #[arg(long)]
+    host: Option<String>,
+    /// Port. Given, it is used as is and no SRV lookup happens.
+    #[arg(long)]
+    port: Option<u16>,
     /// Player name. Defaults to the launcher's `REWO_USERNAME` env handoff
     /// (REWO_PLAN §9.1), then "RewoLive".
     #[arg(long)]
@@ -168,6 +174,32 @@ pub struct LiveArgs {
     /// then the current directory.
     #[arg(long = "game-dir")]
     game_dir: Option<PathBuf>,
+}
+
+/// The server `rewo live` was asked to join, from `--host` / `--port`.
+///
+/// * neither: the local dev test server, `127.0.0.1:25599`;
+/// * `--port` alone: that port on `127.0.0.1`;
+/// * `--host` (a bare `host`, or `host:port`): as typed. A `--port` beside it
+///   overrides a port written in the host. **No port anywhere leaves it
+///   `None`**, which is what makes the SRV lookup eligible.
+pub(crate) fn server_address(
+    host: Option<&str>,
+    port: Option<u16>,
+) -> Result<rewo_net::srv::ServerAddress, String> {
+    use rewo_net::srv::ServerAddress;
+    match (host, port) {
+        (None, None) => Ok(ServerAddress::explicit("127.0.0.1", 25599)),
+        (None, Some(p)) => Ok(ServerAddress::explicit("127.0.0.1", p)),
+        (Some(h), port) => {
+            let mut addr = ServerAddress::parse(h)
+                .ok_or_else(|| format!("--host {h:?} is not a server address"))?;
+            if port.is_some() {
+                addr.port = port;
+            }
+            Ok(addr)
+        }
+    }
 }
 
 pub fn run(args: LiveArgs) -> Result<(), String> {
@@ -233,10 +265,16 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         baked.foliage_colormap.clone(),
         baked.dry_foliage_colormap.clone(),
     );
-    let conn = Connection::connect(&args.host, args.port, &data)?;
+    let address = server_address(args.host.as_deref(), args.port)?;
+    let conn = Connection::connect_address(&address, &data)?;
+    // What the handshake names: the SRV target when one was followed.
+    let (host, port) = {
+        let (h, p) = conn.endpoint();
+        (h.to_owned(), p)
+    };
     let mut session = conn.into_play(
-        &args.host,
-        args.port,
+        &host,
+        port,
         &username,
         auth.as_ref(),
         collide,

@@ -136,6 +136,21 @@ Styled spans (`ChatSpan`) live in `rewo-world`.
   **A failed or timed-out write is fatal**: it may leave a torn frame, so
   `write_packet` records the first failure and refuses every later write, and
   `send` surfaces it as the `ClientError` disconnect.
+- **SRV redirects** (`srv.rs`, `Connection::connect_address`): an address typed
+  with **no port** (`ServerAddress::port` is `None`) asks the system's
+  nameservers for `_minecraft._tcp.<host>` over a hand-written sync UDP query
+  (1 s per nameserver, three at most, no TCP retry; no async runtime, no new
+  dependency) and tries the target, then the typed host on 25565. A written
+  port, even `:25565`, and an IP literal are never looked up (vanilla looks up
+  any 25565; Rewo narrows it to "the player typed no port"). The handshake
+  names `Connection::endpoint()`, the SRV target **with its trailing dot**, as
+  vanilla's does. `rewo live --host H` with no `--port` is eligible; neither
+  flag is the dev server `127.0.0.1:25599`; the launcher omits `--port` when
+  the player typed none. The answer is untrusted: id, question and owner (or
+  its CNAME chain) must match, targets are hostname characters only, port 0 and
+  the root target are skipped. Nameservers come from `/etc/resolv.conf` or
+  Windows' `GetNetworkParams` (a small hand-written FFI, the crate's only
+  `unsafe`). Tests use captured packets and a loopback fake nameserver.
 - **Recordings**: `record.rs` bounds each record's length by the bytes left in
   the file before allocating. `net soak` fails unless the session ended
   `Completed` (a server disconnect or client error mid-run is a failure).
