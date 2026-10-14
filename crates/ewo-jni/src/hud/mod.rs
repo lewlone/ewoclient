@@ -1338,4 +1338,6 @@ mod overlay_crosshair;
 use overlay_crosshair::*;
 
 #[cfg(test)]
+mod editor_tests;
+#[cfg(test)]
 mod schema_pin;

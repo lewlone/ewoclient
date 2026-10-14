@@ -229,6 +229,60 @@ impl Editor {
         self.layout.glass_strength
     }
 
+    /// Finish every drag that a left-button release (or the overlay going away)
+    /// ends, persisting what each one edits live. Idempotent: with nothing held
+    /// it touches no state and writes no file.
+    fn end_drags(&mut self) {
+        self.skin_drag = None;
+        if self.slider_drag.take().is_some() {
+            // A module-slider drag finished — persist the setting now.
+            self.modules.save();
+        }
+        if self.pvp_drag.take().is_some() {
+            // A PVP-tab slider drag finished — persist the config.
+            self.pvp.save();
+        }
+        if self.crosshair_ui.drag.take().is_some() {
+            // A crosshair-tab slider drag finished — clamp + persist.
+            self.crosshair.clamp();
+            crate::crosshair::save(&self.crosshair);
+        }
+        if std::mem::take(&mut self.glass_drag) {
+            // A glass-strength drag finished — persist to `hud.toml`.
+            self.layout.save();
+        }
+        if self.resizing.take().is_some() {
+            // A resize finished — persist the new scale.
+            self.layout.save();
+        }
+        if self.dragging.take().is_some() {
+            // A drag finished — drop the snap guides and persist.
+            self.snap_x = None;
+            self.snap_y = None;
+            self.layout.save();
+        }
+    }
+
+    /// The overlay screen went away (Esc, the overlay key, or Minecraft
+    /// replacing the screen), so no release event is coming for a button that
+    /// was held. Without this the drag state outlives the screen: the next
+    /// cursor move (quick-edit, or reopening the overlay) keeps dragging a
+    /// widget the player let go of, and the layout later saves it snapped to
+    /// the window edge.
+    ///
+    /// Commits what was in progress, as releasing the button would (and as
+    /// [`Editor::set_quick_edit`] does on leaving quick-edit): the player
+    /// closed the screen, they did not undo.
+    pub fn on_overlay_closed(&mut self) {
+        self.end_drags();
+        self.module_popover = None;
+        self.snap_x = None;
+        self.snap_y = None;
+        // The next paint re-reads this from the data block; until then the
+        // overlay is certainly not open.
+        self.overlay_open = false;
+    }
+
     /// Enter or leave quick-edit — the modifier-held state over a vanilla
     /// screen. Called from Java each frame.
     ///
@@ -398,7 +452,9 @@ impl Editor {
         // Right-click: settings popover on MODULES rows that have sliders.
         // Press only — releases of the right button do nothing.
         if button == 1 {
-            if !pressed {
+            // Not while quick-edit is standing in for a closed overlay: the
+            // MODULES rows under the cursor are not on screen.
+            if !pressed || self.quick_edit_active() {
                 return;
             }
             if self.view == OverlayView::Modules {
@@ -422,34 +478,15 @@ impl Editor {
 
         // Anything below this point handles the LEFT mouse button.
         if !pressed {
-            self.skin_drag = None;
-            if self.slider_drag.take().is_some() {
-                // A module-slider drag finished — persist the setting now.
-                self.modules.save();
-            }
-            if self.pvp_drag.take().is_some() {
-                // A PVP-tab slider drag finished — persist the config.
-                self.pvp.save();
-            }
-            if self.crosshair_ui.drag.take().is_some() {
-                // A crosshair-tab slider drag finished — clamp + persist.
-                self.crosshair.clamp();
-                crate::crosshair::save(&self.crosshair);
-            }
-            if std::mem::take(&mut self.glass_drag) {
-                // A glass-strength drag finished — persist to `hud.toml`.
-                self.layout.save();
-            }
-            if self.resizing.take().is_some() {
-                // A resize finished — persist the new scale.
-                self.layout.save();
-            }
-            if self.dragging.take().is_some() {
-                // A drag finished — drop the snap guides and persist.
-                self.snap_x = None;
-                self.snap_y = None;
-                self.layout.save();
-            }
+            self.end_drags();
+            return;
+        }
+
+        // Quick-edit intercepts the press before anything else: the overlay is
+        // closed, so `self.view`, `module_popover` and the tab strip describe
+        // a UI that is not on screen, and must not eat or redirect the click.
+        if self.quick_edit_active() {
+            self.editor_press(x, y);
             return;
         }
 
@@ -493,14 +530,6 @@ impl Editor {
                 self.module_popover = None;
                 return;
             }
-        }
-
-        // Quick-edit intercepts the press before any view dispatch: the
-        // overlay is closed, so `self.view` is whatever tab the user last had
-        // open and is meaningless here.
-        if self.quick_edit_active() {
-            self.editor_press(x, y);
-            return;
         }
 
         match self.view {

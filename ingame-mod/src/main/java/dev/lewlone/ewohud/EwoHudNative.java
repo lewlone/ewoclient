@@ -55,6 +55,14 @@ public final class EwoHudNative {
      */
     public static native void nativeQuickEdit(boolean on);
 
+    /**
+     * The overlay screen was closed. Minecraft delivers no mouse release to a
+     * screen that is going away, so Rust ends any drag still held (committing
+     * it, as a release would) instead of leaving it to the next cursor move.
+     * Called from {@link EwoOverlayScreen#removed()}.
+     */
+    public static native void nativeOverlayClosed();
+
     // ── Modules (Phase G) ─────────────────────────────────────────────────
 
     /**

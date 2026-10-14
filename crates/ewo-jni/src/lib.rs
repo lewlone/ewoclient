@@ -59,6 +59,7 @@
 //!   static native void nativeMouseMove / nativeMouseButton / nativeMouseScroll
 //!   static native void nativeKey                   // overlay input (E4)
 //!   static native void nativeQuickEdit(boolean on) // quick-edit mode toggle
+//!   static native void nativeOverlayClosed();      // overlay screen removed: end held drags
 //!   static native void nativeForceExit();          // teardown from JVM shutdown
 //!   static native void nativeInitModules(ByteBuffer buf);  // register EwoModuleData (Rust→JVM)
 //!   static native void nativeModuleToggle(int index);      // keybind round-trip through Rust
@@ -2085,6 +2086,18 @@ pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeQuickEdit(
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
         with_hud(|hud| hud.editor.set_quick_edit(on != 0));
     }));
+}
+
+/// The overlay screen was closed (Esc, the overlay key, or any screen
+/// replacement). Called from `EwoOverlayScreen.removed()`. Minecraft sends no
+/// mouse release to a screen that is going away, so Rust ends whatever drag the
+/// button was holding here — see `Editor::on_overlay_closed`.
+#[no_mangle]
+pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeOverlayClosed(
+    _env: *mut c_void,
+    _class: *mut c_void,
+) {
+    with_hud(|hud| hud.editor.on_overlay_closed());
 }
 
 /// Register the Rust→JVM module-state block (Phase G). Called once at mod init

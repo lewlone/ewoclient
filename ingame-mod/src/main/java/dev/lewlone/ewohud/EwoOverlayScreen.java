@@ -43,6 +43,26 @@ public final class EwoOverlayScreen extends Screen {
         // intentionally empty
     }
 
+    /**
+     * Runs on every way out of this screen: Esc, the overlay key, or Minecraft
+     * swapping the screen (disconnect, death, another mod). A button held down
+     * at that moment never gets its release, so tell Rust to end the drag.
+     * {@code Throwable} because a stale {@code ewo_jni.dll} has no such symbol
+     * ({@code UnsatisfiedLinkError}) and closing a screen must never throw.
+     */
+    @Override
+    public void removed() {
+        try {
+            super.removed();
+        } finally {
+            try {
+                EwoHudNative.nativeOverlayClosed();
+            } catch (Throwable ignored) {
+                // see above
+            }
+        }
+    }
+
     /** GUI units → window pixels (the Skia HUD's coordinate space). */
     private static int scale() {
         return Minecraft.getInstance().getWindow().getGuiScale();
