@@ -19,7 +19,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 authors = ["Valtteri Saarinen"]
-license = "Proprietary"
+license = "MIT"
 repository = ""
 rust-version = "1.89"  # verified: `cargo +1.89 check --workspace --all-targets --features rewo-app/gates`; deps (font-types) need 1.89
 
