@@ -16,6 +16,7 @@ use std::time::Duration;
 use clap::Args as ClapArgs;
 use rewo_data::GameData;
 use rewo_net::{ids::Ids, record, Connection};
+use rewo_world::disconnect_screen::DisconnectCause;
 
 #[derive(ClapArgs)]
 pub struct NetArgs {
@@ -113,7 +114,14 @@ fn soak(
     let recorded = session.finish_recording()?;
     let world = &session.world;
     let reached_play = session.spawned;
-    let disconnect = tick_error.or_else(|| session.disconnect.clone());
+    // Read before the session drops: the soak's own shutdown is that drop
+    // (the socket closes after the verdict), so it can never set this. Any
+    // disconnect here happened during the run.
+    let ended = SoakEnd::classify(
+        tick_error,
+        session.disconnect.clone(),
+        session.disconnect_cause,
+    );
 
     println!("[rewo-m1] soak against {host}:{port} for {seconds:.0}s");
     println!("[rewo-m1] reached play: {reached_play}");
@@ -128,9 +136,7 @@ fn soak(
         world.loaded_columns()
     );
     println!("[rewo-m1] world digest: {:#018x}", world.digest());
-    if let Some(reason) = &disconnect {
-        println!("[rewo-m1] disconnect: {reason}");
-    }
+    println!("[rewo-m1] ended: {ended}");
     if query.len() == 3 {
         let (x, y, z) = (query[0], query[1], query[2]);
         let state = world.block_state_at(x, y, z);
@@ -144,17 +150,80 @@ fn soak(
         );
     }
 
+    soak_verdict(reached_play, &ended, session.decode_failures)
+}
+
+/// How a soak's session ended.
+#[derive(Debug, PartialEq)]
+enum SoakEnd {
+    /// The full duration ran with the connection up; the soak then closes
+    /// it itself.
+    Completed,
+    /// The server ended the session during the run: a `disconnect` packet
+    /// (a kick), or the socket closing with no packet.
+    ServerDisconnected { reason: String, cause: String },
+    /// The client gave up during the run: a read error or timeout, a
+    /// malformed frame or bundle, a failed write, or a handler error.
+    ClientError(String),
+}
+
+impl SoakEnd {
+    fn classify(
+        tick_error: Option<String>,
+        disconnect: Option<String>,
+        cause: Option<DisconnectCause>,
+    ) -> Self {
+        if let Some(e) = tick_error {
+            return SoakEnd::ClientError(e);
+        }
+        let Some(reason) = disconnect else {
+            return SoakEnd::Completed;
+        };
+        match cause {
+            Some(DisconnectCause::ServerRequested) => SoakEnd::ServerDisconnected {
+                reason,
+                cause: "kicked by the server".into(),
+            },
+            Some(DisconnectCause::EndOfStream) => SoakEnd::ServerDisconnected {
+                reason,
+                cause: "the server closed the connection".into(),
+            },
+            // `ClientError`, or a disconnect recorded without a cause: the
+            // client's side of the connection failed.
+            Some(DisconnectCause::ClientError) | None => SoakEnd::ClientError(reason),
+        }
+    }
+}
+
+impl std::fmt::Display for SoakEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SoakEnd::Completed => write!(f, "completed the run, connection still up"),
+            SoakEnd::ServerDisconnected { reason, cause } => {
+                write!(f, "disconnected mid-run ({cause}): {reason}")
+            }
+            SoakEnd::ClientError(e) => write!(f, "connection failed mid-run: {e}"),
+        }
+    }
+}
+
+/// The soak's pass/fail rule.
+fn soak_verdict(reached_play: bool, ended: &SoakEnd, decode_failures: u64) -> Result<(), String> {
     // The soak is only meaningful if we actually got into the world.
     if !reached_play {
-        return Err("never reached the Play phase".into());
+        return Err(format!("never reached the Play phase ({ended})"));
+    }
+    // ...and stayed there for the whole run. A soak that was kicked after
+    // ten seconds of a sixty-second run did not soak; it used to pass.
+    if *ended != SoakEnd::Completed {
+        return Err(format!("the soak did not run its full duration: {ended}"));
     }
     // ...and only if every packet decoded. `decode_failures` counts the
     // malformed or unhandled bodies the session dropped (and kept going), so
     // grading "reached Play" alone passed a soak that threw away packets.
-    if session.decode_failures > 0 {
+    if decode_failures > 0 {
         return Err(format!(
-            "{} packet(s) failed to decode during the soak (see the log for the first)",
-            session.decode_failures
+            "{decode_failures} packet(s) failed to decode during the soak (see the log for the first)"
         ));
     }
     Ok(())
@@ -186,4 +255,68 @@ fn replay(data: &GameData, file: &std::path::Path, expect: Option<u64>) -> Resul
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_run_that_reached_its_deadline_is_completed_and_passes() {
+        let ended = SoakEnd::classify(None, None, None);
+        assert_eq!(ended, SoakEnd::Completed);
+        assert!(soak_verdict(true, &ended, 0).is_ok());
+    }
+
+    #[test]
+    fn a_kick_mid_run_fails_with_its_reason() {
+        let ended = SoakEnd::classify(
+            None,
+            Some("Kicked by an operator".into()),
+            Some(DisconnectCause::ServerRequested),
+        );
+        assert!(matches!(ended, SoakEnd::ServerDisconnected { .. }));
+        let err = soak_verdict(true, &ended, 0).unwrap_err();
+        assert!(err.contains("Kicked by an operator"), "{err}");
+        assert!(err.contains("kicked by the server"), "{err}");
+    }
+
+    #[test]
+    fn the_server_closing_the_socket_mid_run_fails() {
+        let ended = SoakEnd::classify(
+            None,
+            Some("connection closed".into()),
+            Some(DisconnectCause::EndOfStream),
+        );
+        let err = soak_verdict(true, &ended, 0).unwrap_err();
+        assert!(err.contains("the server closed the connection"), "{err}");
+    }
+
+    #[test]
+    fn a_read_error_or_timeout_mid_run_fails() {
+        let ended = SoakEnd::classify(
+            None,
+            Some("timed out".into()),
+            Some(DisconnectCause::ClientError),
+        );
+        assert_eq!(ended, SoakEnd::ClientError("timed out".into()));
+        let err = soak_verdict(true, &ended, 0).unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        // A disconnect recorded without a cause is not a clean end either.
+        let ended = SoakEnd::classify(None, Some("send: broken pipe".into()), None);
+        assert!(soak_verdict(true, &ended, 0).is_err());
+    }
+
+    #[test]
+    fn a_tick_error_fails_even_without_a_recorded_disconnect() {
+        let ended = SoakEnd::classify(Some("play keep_alive: eof".into()), None, None);
+        assert_eq!(ended, SoakEnd::ClientError("play keep_alive: eof".into()));
+        assert!(soak_verdict(true, &ended, 0).is_err());
+    }
+
+    #[test]
+    fn decode_failures_and_never_reaching_play_still_fail() {
+        assert!(soak_verdict(true, &SoakEnd::Completed, 1).is_err());
+        assert!(soak_verdict(false, &SoakEnd::Completed, 0).is_err());
+    }
 }
