@@ -389,11 +389,16 @@ impl LiveApp {
                 session.player.y,
                 session.player.z
             );
-            // Put a stack of dirt in slot 0 so right-click can place (the
-            // test server is creative — a no-op elsewhere).
-            if let Some(dirt) = self.dirt_item {
-                let _ = session.creative_set_hotbar(0, dirt, 64);
-                let _ = session.select_hotbar(0);
+            // Test-only: put a stack of dirt in slot 0 so right-click can
+            // place (the test server is creative). A creative-inventory
+            // packet is item synthesis, so it is never sent by a default
+            // build and, in a `gates` build, only when `REWO_GIVE_DIRT` is
+            // set. `knobs::var` answers "not set" without the feature.
+            if crate::knobs::var("REWO_GIVE_DIRT").is_ok() {
+                if let Some(dirt) = self.dirt_item {
+                    let _ = session.creative_set_hotbar(0, dirt, 64);
+                    let _ = session.select_hotbar(0);
+                }
             }
         }
         true

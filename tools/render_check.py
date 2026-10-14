@@ -215,6 +215,11 @@ def main():
 
         env = dict(os.environ)
         env["REWO_PRECMD"] = PRECMD
+        # The client no longer injects a dirt stack into slot 0 on spawn
+        # unless asked (it was item synthesis in the shipped build). No
+        # witness needs the stack, but the baseline was calibrated with slot 0
+        # holding dirt and selected, so keep that scene.
+        env["REWO_GIVE_DIRT"] = "1"
         # One source of truth for both halves of r55/r56: the same literals
         # that went into server.properties are handed to the client, so the
         # witness compares what came off the WIRE against what the server was
