@@ -357,6 +357,15 @@ pub struct SurvivalInputs {
     pub vehicle: Option<VehicleInput>,
     /// `player.getActiveEffects()`, unsorted.
     pub effects: Vec<EffectInput>,
+    /// How many real `mob_effect` sprites the atlas carries — the table
+    /// length the icon split needs. An id outside `0..effect_table_len`
+    /// (or negative) emits [`HudIcon::MissingTexture`] instead of
+    /// [`HudIcon::Effect`], matching `Hud.getMobEffectSprite`'s
+    /// `orElseGet(MissingTextureAtlasSprite::getLocation)` (26.2
+    /// `Hud.java`). `usize::MAX` — the default — means "never missing",
+    /// so a caller that doesn't thread the table length keeps the old
+    /// draw-nothing behavior rather than a screen of checkers.
+    pub effect_table_len: usize,
     /// `Hud.tickCount`.
     pub tick_count: i32,
     /// The jump bar, when it is the contextual bar this frame.
@@ -386,6 +395,7 @@ impl Default for SurvivalInputs {
             eye_in_water: false,
             vehicle: None,
             effects: Vec::new(),
+            effect_table_len: usize::MAX,
             tick_count: 0,
             jump: None,
         }
@@ -755,7 +765,16 @@ fn effects(inp: &SurvivalInputs, gui_w: i32, out: &mut Vec<HudBlit>) {
             y += 26;
         }
         out.push(blit(x, y, 24, 24, HudIcon::EffectBackground { ambient: e.ambient }));
-        let mut icon = blit(x + 3, y + 3, 18, 18, HudIcon::Effect(e.id));
+        // `getMobEffectSprite` (26.2 `Hud.java`): a keyless holder —
+        // Rewo's case is an id outside the sprite table — falls back to
+        // `MissingTextureAtlasSprite::getLocation`, the magenta/black
+        // checker, where an earlier cut drew nothing.
+        let icon_icon = if e.id < 0 || e.id as usize >= inp.effect_table_len {
+            HudIcon::MissingTexture
+        } else {
+            HudIcon::Effect(e.id)
+        };
+        let mut icon = blit(x + 3, y + 3, 18, 18, icon_icon);
         icon.alpha = effect_icon_alpha(e);
         out.push(icon);
     }
@@ -1111,6 +1130,56 @@ mod tests {
         assert!(icons(&v, |i| matches!(i, HudIcon::PlayerHeart { .. } | HudIcon::Armor(_) | HudIcon::Food(_) | HudIcon::Air(_))).is_empty());
         assert_eq!(icons(&v, |i| matches!(i, HudIcon::VehicleHeart(_))).len(), 20);
         assert_eq!(icons(&v, |i| matches!(i, HudIcon::Effect(_))).len(), 1);
+    }
+
+    /// The missing-texture split: an id inside `0..effect_table_len`
+    /// stays `Effect(id)`; one at/past the table — or negative — becomes
+    /// `MissingTexture`, which is `getMobEffectSprite`'s
+    /// `orElseGet(MissingTextureAtlasSprite::getLocation)` arm. The
+    /// `usize::MAX` default must keep everything in-table (a caller that
+    /// doesn't thread the length keeps the old behavior).
+    #[test]
+    fn effect_ids_past_the_table_go_missing_texture() {
+        let e = |id: i32| EffectInput {
+            id,
+            duration: 1000,
+            ambient: false,
+            show_icon: true,
+            beneficial: true,
+            color: 1,
+        };
+        let table_len = 3usize;
+        let run = |ids: Vec<i32>, len: usize| {
+            let v = layout(
+                &SurvivalInputs {
+                    effects: ids.into_iter().map(e).collect(),
+                    effect_table_len: len,
+                    ..Default::default()
+                },
+                GW,
+                GH,
+            );
+            icons(&v, |i| matches!(i, HudIcon::Effect(_) | HudIcon::MissingTexture))
+        };
+        // In-table ids keep their icon; the boundary is half-open.
+        let inside = run(vec![0, 2], table_len);
+        assert!(inside.iter().all(|b| matches!(b.icon, HudIcon::Effect(_))));
+        // At the length and past it: missing. Negative: missing too.
+        for id in [table_len as i32, table_len as i32 + 7, -1] {
+            let got = run(vec![id], table_len);
+            assert_eq!(
+                got.len(),
+                1,
+                "id {id} still emitted a blit"
+            );
+            assert!(
+                matches!(got[0].icon, HudIcon::MissingTexture),
+                "id {id} did not fall back to the checker"
+            );
+        }
+        // The MAX default never splits.
+        let v = run(vec![999_999], usize::MAX);
+        assert!(matches!(v[0].icon, HudIcon::Effect(999_999)));
     }
 
     /// Effects: beneficial on the top row, harmful AND neutral on the second,

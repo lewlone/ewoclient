@@ -178,6 +178,29 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
         "LecternScreen is a BookViewScreen — a fallthrough would paint another menu's sheet",
     );
 
+    // M184 — the lectern's reader, at the seam the harness can reach: the
+    // menu model resolves the BookView reader (no panel, m8) while the
+    // footer carries the two-button mayBuild shape, and the container-data
+    // page slot the reader follows is the menu's data(0). The full frame
+    // loop (open on open_screen, click routing, the container_close send)
+    // is `live_cmd`'s — PlaySession has no test seam — so the live half is
+    // r-witness territory, same deferral as the crafter's sends.
+    {
+        let mut menus = rewo_world::menu::Menus::new();
+        menus.apply_open_screen(7, 17, "Lectern".into());
+        let menu = menus.open().expect("lectern menu");
+        let book_screen = rewo_world::book_view_screen::build_lectern_screen(
+            320, 240, "Done", "Take Book",
+        );
+        c.record(
+            "m9.an_open_lectern_is_a_bookview_screen_not_a_container",
+            menu.layout.name == "lectern"
+                && crate::live_cmd::container_panel_for_test(menu.layout).is_none()
+                && book_screen.kind == rewo_world::screen::ScreenKind::BookView,
+            "open_screen(17) -> no panel (m8) AND the framework screen is the reader              with the mayBuild footer; the sync in live_cmd opens exactly this shape",
+        );
+    }
+
     // -- M89: the shown menu is the one every consumer uses -----------------
     //
     // M87 rendered the container while every click still operated on the

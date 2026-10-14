@@ -4164,6 +4164,37 @@ mod tests {
         }
     }
 
+    /// The `MobDef::textures` pin (the last item of the M162–M165
+    /// "known-deletable code" list): every declared key must exist in
+    /// rewo-data's baked mob-texture spec table. A key with no spec row
+    /// bakes no `MobTexture`, so `emit_model`'s slot lookup misses and
+    /// the mob silently renders with missing sheets — the bake only
+    /// *warns* ("{key} renders as a capsule") and `mobtexshot`'s oracle
+    /// reads this same declaration, so nothing else would catch a typo
+    /// or a renamed key. Asserting a non-empty table keeps the all-match
+    /// form honest; `baby_swap_skips` rows are allowed to be orphans
+    /// (they are keyed for M175's UV-offset swaps, not listed here).
+    #[test]
+    fn every_mob_texture_key_exists_in_the_baked_specs() {
+        let specs: std::collections::HashSet<&str> =
+            rewo_data::assets::mob_texture_specs().map(|(k, _, _, _)| k).collect();
+        assert!(!specs.is_empty());
+        for def in MOBS {
+            assert!(
+                !def.textures.is_empty(),
+                "{:?} declares no textures",
+                def.kind
+            );
+            for t in def.textures {
+                assert!(
+                    specs.contains(t),
+                    "{:?} declares texture key {t:?} with no baked spec row",
+                    def.kind
+                );
+            }
+        }
+    }
+
     #[test]
     fn entity_names_map_to_kinds() {
         assert_eq!(kind_for_entity_name("minecraft:cow"), EntityModelKind::Cow);

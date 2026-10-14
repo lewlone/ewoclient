@@ -294,6 +294,13 @@ pub struct Ids {
     /// refusing to connect over a packet you may not send is worse than
     /// declining the click.
     pub sb_play_container_button_click: Option<i32>,
+    /// `ServerboundContainerClosePacket` (M184) — the client's half of a
+    /// lectern close. Vanilla's `LecternScreen.onClose` is
+    /// `player.closeContainer()`, which SENDS this; the plain
+    /// `BookViewScreen`'s `closeContainerOnServer` is deliberately empty,
+    /// so the send rides the lectern's close alone. Optional like its
+    /// siblings.
+    pub sb_play_container_close: Option<i32>,
     /// `ServerboundRecipeBookChangeSettingsPacket` (M98) — the book's own
     /// open/filter state, echoed back so the server persists it.
     pub sb_play_recipe_book_change_settings: Option<i32>,
@@ -762,6 +769,7 @@ impl Ids {
             sb_play_player_command: opt!(p, P, S, "player_command"),
             sb_play_container_click: opt!(p, P, S, "container_click"),
             sb_play_container_button_click: opt!(p, P, S, "container_button_click"),
+            sb_play_container_close: opt!(p, P, S, "container_close"),
             sb_play_recipe_book_change_settings: opt!(p, P, S, "recipe_book_change_settings"),
             sb_play_place_recipe: opt!(p, P, S, "place_recipe"),
             sb_play_seen_advancements: opt!(p, P, S, "seen_advancements"),

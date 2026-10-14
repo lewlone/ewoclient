@@ -695,6 +695,22 @@ struct LiveApp {
     /// app-side view state the frame's render arm keys on (the M84 pattern);
     /// the framework `Screen` in `screens` carries only the Done button.
     book: Option<rewo_world::book_view_screen::BookViewScreen>,
+    /// M184 — the lectern watermark: `(container_id, open_serial)` of the
+    /// lectern menu whose reader is up. The pair is the menu IDENTITY —
+    /// `open_serial` is stamped by `Menus::apply_open_screen`, so a server
+    /// re-opening the same container id is a fresh menu and re-fires the
+    /// watermark the way a fresh `open_screen` must, while the page echo
+    /// (`container_set_data`) leaves it alone. `None` = no lectern.
+    /// `lectern_superseded` marks the vanilla case where the menu stays open
+    /// but another screen (`open_book` for a held book) replaced the
+    /// `LecternScreen` — `removed()` detached the listener, so the sync must
+    /// not resurrect the reader while that menu lives.
+    lectern_shown: Option<(i32, u64)>,
+    lectern_superseded: Option<(i32, u64)>,
+    /// The lectern's resolved pages, kept app-side so a per-frame page
+    /// echo doesn't rebuild the reader on every frame — the book swaps
+    /// only when the resolved pages actually change.
+    lectern_pages: Option<Vec<Vec<rewo_world::chat_style::ChatLine>>>,
     /// M174 — the sign editor's app-side state, `None` when closed. Same
     /// one-slot discipline as the book, with one difference: anything that
     /// REPLACES the editor's screen still COMMITS the edit, because
@@ -913,6 +929,9 @@ fn run_windowed(
         play_pack_injected: false,
         crowd_injected: false,
         book: None,
+        lectern_shown: None,
+        lectern_superseded: None,
+        lectern_pages: None,
         sign_edit: None,
         options_view: None,
         options_drag: None,

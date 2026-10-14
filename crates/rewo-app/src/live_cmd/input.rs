@@ -638,9 +638,20 @@ impl LiveApp {
                 // `KeyMapping.resetToggleKeys()`.
                 self.keys = Keys::default();
             }
-            // M172: the book's Done button is `onClose()`.
+            // M172: the book's Done button is `onClose()`. M184: the
+            // lectern's footer adds Take Book -> `sendButtonClick(3)`; the
+            // screen stays up (the server's slot echo empties the book).
             (ScreenKind::BookView, rewo_world::book_view_screen::DONE) => {
                 self.close_book();
+            }
+            (ScreenKind::BookView, rewo_world::book_view_screen::TAKE_BOOK) => {
+                if let Some(session) = self.session.as_mut() {
+                    if let Err(e) = session.container_button_click(
+                        rewo_world::book_view_screen::LECTERN_TAKE_BOOK,
+                    ) {
+                        log::warn!("live: lectern take_book: {e}");
+                    }
+                }
             }
             // M178: the advancements footer's Done is `onClose()` — which
             // lands in `removed()`'s CLOSED_SCREEN send, as every exit does.
@@ -854,9 +865,19 @@ impl LiveApp {
         };
         match event {
             // `ClickEvent.ChangePage(page)` is ONE-BASED — `forcePage(page - 1)`
-            // (`:235-237`). Local page turn only; no packet.
+            // (`:235-237`). M184: the LECTERN's `forcePage` is
+            // `sendButtonClick(100 + page)` with the already-decremented
+            // 0-based value - still no local turn; the server's data echo
+            // moves the page.
             rewo_world::chat_events::ClickEvent::ChangePage(page) => {
-                if let Some(book) = self.book.as_mut() {
+                if self.lectern_shown.is_some() {
+                    if let Some(session) = self.session.as_mut() {
+                        let button = rewo_world::book_view_screen::lectern_force_button(page - 1);
+                        if let Err(e) = session.container_button_click(button) {
+                            log::warn!("live: lectern force page: {e}");
+                        }
+                    }
+                } else if let Some(book) = self.book.as_mut() {
                     book.force_page(page - 1);
                 }
             }

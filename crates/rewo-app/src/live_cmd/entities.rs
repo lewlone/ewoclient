@@ -1770,12 +1770,78 @@ pub(crate) fn vanilla_variant(
     }
 }
 
+// -- the quad-leash (the happy-ghast holder branch of M170's gather) ---------
+//
+// `EntityRenderer.extractLeashStates`'s quad branch: when the HOLDER
+// supports it (`supportQuadLeashAsHolder` — only the happy ghast overrides
+// it true) AND the leashed entity does (`supportQuadLeash`), the rope is
+// FOUR ribbons, each from one of the leashed entity's four shoulder points
+// to one of the holder's four underside points, `slack = false` throughout.
+
+/// `Leashable.createQuadLeashOffsets` — the four points are
+/// `(±leftRight·w, height·h, ±frontBack·w + front·w)`, ordered
+/// back-left, front-left(-z), front-right, back-right(+z).
+pub(crate) fn quad_leash_offsets(
+    w: f64,
+    h: f64,
+    shape: [f64; 4],
+) -> [[f64; 3]; 4] {
+    let (front, front_back, left_right, height) = (shape[0], shape[1], shape[2], shape[3]);
+    let fo = front * w;
+    let fb = front_back * w;
+    let lr = left_right * w;
+    let hh = height * h;
+    [
+        [-lr, hh, fb + fo],
+        [-lr, hh, -fb + fo],
+        [lr, hh, -fb + fo],
+        [lr, hh, fb + fo],
+    ]
+}
+
+/// `supportQuadLeash()`'s per-class `getQuadLeashOffsets` shapes, as
+/// `(front, front_back, left_right, height)` multipliers — verbatim from
+/// the decompile. Class knowledge translated to names:
+/// * `AbstractHorse` TRUE with `(0.04, 0.52, 0.23, 0.87)` — horse, donkey,
+///   mule, skeleton/zombie horse, and the camel line, which inherits it.
+///   **Llama is the named exception**: it overrides `supportQuadLeash`
+///   back to FALSE (`Llama.java:418`), and trader_llama descends from it.
+/// * `AbstractBoat` TRUE with `(0.0, 0.64, 0.382, 0.88)` — the whole
+///   generated boat set, rafts included.
+/// * `Sniffer` TRUE with the DEFAULT shape `(0.0, 0.5, 0.5, 0.5)`.
+pub(crate) fn quad_leash_shape(name: &str) -> Option<[f64; 4]> {
+    const HORSE: [f64; 4] = [0.04, 0.52, 0.23, 0.87];
+    const BOAT: [f64; 4] = [0.0, 0.64, 0.382, 0.88];
+    const DEFAULT: [f64; 4] = [0.0, 0.5, 0.5, 0.5];
+    if rewo_data::entity_classes::ABSTRACT_BOAT.contains(&name) {
+        return Some(BOAT);
+    }
+    match name {
+        "minecraft:horse"
+        | "minecraft:donkey"
+        | "minecraft:mule"
+        | "minecraft:skeleton_horse"
+        | "minecraft:zombie_horse"
+        | "minecraft:camel"
+        | "minecraft:camel_husk" => Some(HORSE),
+        "minecraft:sniffer" => Some(DEFAULT),
+        _ => None,
+    }
+}
+
+/// `HappyGhast.getQuadLeashHolderOffsets` =
+/// `createQuadLeashOffsets(this, -0.03125, 0.4375, 0.46875, 0.03125)`.
+/// The ghast is the only `supportQuadLeashAsHolder` override in vanilla
+/// (`Entity`'s default is false).
+pub(crate) const GHAST_HOLDER_SHAPE: [f64; 4] = [-0.03125, 0.4375, 0.46875, 0.03125];
+
 /// The leash ribbons to draw this frame (M170), one per leashed entity that
 /// has a resolvable holder. Faithful to `EntityRenderer`'s single-leash branch:
 /// `start = entity.pos + leashOffset.yRot(-bodyYaw)`, `end =
 /// holder.getRopeHoldPosition`, `slack = true` (the `LeashState` default the
-/// branch never overrides), light sampled at each end's eye. The quad-leash
-/// (happy-ghast) branch is not modelled; nothing Rewo renders takes it.
+/// branch never overrides), light sampled at each end's eye. A happy-ghast
+/// holder with a quad-leashable leashed entity takes the M185 quad branch
+/// instead (four `slack = false` ribbons).
 ///
 /// Eye height is `height * 0.85` — the `EntityDimensions.of` default. Vanilla
 /// carries per-type overrides (a player's is 1.62, not 1.53); the leashables
@@ -1823,18 +1889,31 @@ pub(super) fn collect_leashes(
         let Some(holder) = session.world.entities.leash_holder(id) else {
             continue;
         };
+        // The quad branch needs the holder's own name, dims, pos and yaw —
+        // fetched once here, with the player-holder special case falling
+        // to the single-rope path (the player is never a quad holder).
+        let holder_entity = if Some(holder) == session.player_id {
+            None
+        } else {
+            session.world.entities.get(holder)
+        };
+        let holder_is_quad_ghast = holder_entity
+            .is_some_and(|h| etypes.name(h.type_id) == Some("minecraft:happy_ghast"));
+        let leashed_shape = etypes
+            .name(e.type_id)
+            .and_then(quad_leash_shape);
+        let quad = holder_is_quad_ghast && leashed_shape.is_some();
+
         let Some((end, end_eye)) = hold(holder) else {
             continue;
         };
         let pos = e.render_pos(alpha);
         let (w, ht) = etypes.dimensions(e.type_id);
         let eye = (ht * 0.85) as f64;
-        // leashOffset = (0, eyeHeight, bbWidth * 0.4), rotated by -bodyYaw.
-        let offset = yrot([0.0, eye, (w * 0.4) as f64], -e.yaw.to_radians());
-        let start = [pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2]];
         // Light at each eye (vanilla samples `getEyePosition`, not the rope
         // end), carried as PACKED components - the ribbon interpolates block
         // and sky separately and evaluates the lightmap curve per vertex.
+        // One pair serves all four quad ropes (vanilla samples once too).
         let start_packed = session.world.light_at(
             pos[0].floor() as i32,
             (pos[1] + eye).floor() as i32,
@@ -1845,6 +1924,41 @@ pub(super) fn collect_leashes(
             end_eye[1].floor() as i32,
             end_eye[2].floor() as i32,
         );
+
+        if let (Some(shape), Some(h)) = (leashed_shape.filter(|_| quad), holder_entity) {
+            // The quad branch: four `slack = false` ribbons from the
+            // leashed entity's four shoulder points to the ghast's four
+            // underside points, each rotated by its own body yaw.
+            let (hw, hht) = etypes.dimensions(h.type_id);
+            let holder_pos = h.render_pos(alpha);
+            let entity_yrot = -e.yaw.to_radians();
+            let roper_yrot = -h.yaw.to_radians();
+            let leashed_points = quad_leash_offsets(w as f64, ht as f64, shape);
+            let holder_points = quad_leash_offsets(hw as f64, hht as f64, GHAST_HOLDER_SHAPE);
+            for i in 0..4 {
+                let offset = yrot(leashed_points[i], entity_yrot);
+                let start = [pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2]];
+                let hoff = yrot(holder_points[i], roper_yrot);
+                let rope_end = [
+                    holder_pos[0] + hoff[0],
+                    holder_pos[1] + hoff[1],
+                    holder_pos[2] + hoff[2],
+                ];
+                verts.extend(rewo_gpu::leash::build_ribbon(
+                    start,
+                    rope_end,
+                    false,
+                    start_packed,
+                    end_packed,
+                    &|b, s| rewo_world::lightmap::sample(b, s, lightmap),
+                ));
+            }
+            continue;
+        }
+
+        // leashOffset = (0, eyeHeight, bbWidth * 0.4), rotated by -bodyYaw.
+        let offset = yrot([0.0, eye, (w * 0.4) as f64], -e.yaw.to_radians());
+        let start = [pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2]];
         verts.extend(rewo_gpu::leash::build_ribbon(
             start,
             end,

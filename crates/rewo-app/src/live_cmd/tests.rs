@@ -2439,6 +2439,64 @@ fn a_lectern_paints_no_panel_rather_than_someone_elses() {
     assert!(container_panel(layout(17), None, EnchantPlayer::default(), None).is_none());
 }
 
+// -- the quad-leash (M185) ------------------------------------------------
+
+/// `createQuadLeashOffsets`'s arithmetic on a 4×4 ghast-sized body with
+/// the DEFAULT shape: four points at ±0.5·w laterally, ±0.5·w
+/// front/back, 0.5·h up, ordered back-left, front-left, front-right,
+/// back-right. `frontOffset` shifts BOTH z members one way.
+#[test]
+fn quad_offsets_are_the_four_shoulder_points() {
+    let got = quad_leash_offsets(4.0, 4.0, [0.0, 0.5, 0.5, 0.5]);
+    assert_eq!(
+        got,
+        [
+            [-2.0, 2.0, 2.0],
+            [-2.0, 2.0, -2.0],
+            [2.0, 2.0, -2.0],
+            [2.0, 2.0, 2.0],
+        ]
+    );
+    // The ghast holder's shape: frontOffset -0.03125·4 = -0.125 shifts
+    // both z members back; height 0.03125·4 = 0.125.
+    let ghast = quad_leash_offsets(4.0, 4.0, GHAST_HOLDER_SHAPE);
+    assert_eq!(ghast[0], [-1.875, 0.125, 1.75 - 0.125]);
+    assert_eq!(ghast[1], [-1.875, 0.125, -1.75 - 0.125]);
+}
+
+/// The class set translated to names — and the two named exceptions
+/// that make it non-derivable: llama overrides back to FALSE (so it
+/// must be ABSENT despite descending from AbstractHorse), and the
+/// camel line inherits TRUE without overriding anything.
+#[test]
+fn quad_leash_shapes_match_the_class_sets() {
+    let horse = quad_leash_shape("minecraft:horse").unwrap();
+    assert_eq!(horse, [0.04, 0.52, 0.23, 0.87]);
+    for name in [
+        "minecraft:donkey",
+        "minecraft:mule",
+        "minecraft:skeleton_horse",
+        "minecraft:zombie_horse",
+        "minecraft:camel",
+        "minecraft:camel_husk",
+    ] {
+        assert_eq!(quad_leash_shape(name), Some(horse), "{name}");
+    }
+    // The llama exception: FALSE despite the AbstractHorse ancestry.
+    assert_eq!(quad_leash_shape("minecraft:llama"), None);
+    assert_eq!(quad_leash_shape("minecraft:trader_llama"), None);
+    // Boats: every generated name, one shape.
+    let boat = quad_leash_shape("minecraft:oak_boat").unwrap();
+    assert_eq!(boat, [0.0, 0.64, 0.382, 0.88]);
+    for name in rewo_data::entity_classes::ABSTRACT_BOAT {
+        assert_eq!(quad_leash_shape(name), Some(boat), "{name}");
+    }
+    // Sniffer: TRUE with the interface default.
+    assert_eq!(quad_leash_shape("minecraft:sniffer"), Some([0.0, 0.5, 0.5, 0.5]));
+    // The ghast itself is not quad-leashABLE — only a quad HOLDER.
+    assert_eq!(quad_leash_shape("minecraft:happy_ghast"), None);
+}
+
 #[test]
 fn every_other_menu_resolves_to_a_sheet_in_the_atlas() {
     for id in 0..25 {

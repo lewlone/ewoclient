@@ -411,7 +411,20 @@ impl ApplicationHandler for LiveApp {
                     // consumes them (it handles Esc / Enter / Space / Tab).
                     if p && self.book.is_some() {
                         if let Some(k @ (266 | 267)) = glfw_key(event.physical_key) {
-                            if let Some(b) = self.book.as_mut() {
+                            // M184: the lectern's page keys are sends too —
+                            // the same buttons the arrows send.
+                            if self.lectern_shown.is_some() {
+                                let button = if k == 266 {
+                                    rewo_world::book_view_screen::LECTERN_PAGE_BACK
+                                } else {
+                                    rewo_world::book_view_screen::LECTERN_PAGE_FORWARD
+                                };
+                                if let Some(session) = self.session.as_mut() {
+                                    if let Err(e) = session.container_button_click(button) {
+                                        log::warn!("live: lectern page key: {e}");
+                                    }
+                                }
+                            } else if let Some(b) = self.book.as_mut() {
                                 b.key(k);
                             }
                             return;
@@ -720,7 +733,30 @@ impl ApplicationHandler for LiveApp {
                         // event nor a framework press lands here.
                         // `BookViewScreen::click` only turns on a VISIBLE
                         // arrow.
-                        if let Some(book) = self.book.as_mut() {
+                        //
+                        // M184: the lectern's arrows are SENDS
+                        // (`sendButtonClick(1/2)`), not local turns — the
+                        // server's data echo moves the page.
+                        if self.lectern_shown.is_some() {
+                            let send = self
+                                .book
+                                .as_ref()
+                                .and_then(|b| b.arrow_at(mx as i32, my as i32, gw));
+                            if let Some(button) = send.map(|a| match a {
+                                rewo_world::book_view_screen::BookArrow::Back => {
+                                    rewo_world::book_view_screen::LECTERN_PAGE_BACK
+                                }
+                                rewo_world::book_view_screen::BookArrow::Forward => {
+                                    rewo_world::book_view_screen::LECTERN_PAGE_FORWARD
+                                }
+                            }) {
+                                if let Some(session) = self.session.as_mut() {
+                                    if let Err(e) = session.container_button_click(button) {
+                                        log::warn!("live: lectern page turn: {e}");
+                                    }
+                                }
+                            }
+                        } else if let Some(book) = self.book.as_mut() {
                             book.click(mx as i32, my as i32, gw);
                         }
                     }
@@ -1399,6 +1435,15 @@ impl LiveApp {
     pub(super) fn open_book_screen(&mut self, view: rewo_world::book_view_screen::BookViewScreen) {
         let (gw, gh) = self.gui_size();
         let done = self.lang.get_or_default("gui.done", "Done").to_string();
+        // M184: a held book's reader REPLACES the lectern screen —
+        // `Minecraft.setScreen` calls `removed()`, which detaches the
+        // lectern's listener. The MENU stays open (no close is sent), but
+        // the sync must not resurrect the reader over the held book while
+        // it does; the superseded marker names the exact menu identity.
+        if let Some(identity) = self.lectern_shown.take() {
+            self.lectern_superseded = Some(identity);
+            self.lectern_pages = None;
+        }
         self.book = Some(view);
         self.screen
             .screens
@@ -1409,10 +1454,26 @@ impl LiveApp {
     /// The per-screen close (M84's rule): drop the app-side view state WITH
     /// the framework screen, or the render arm keys on a book that no longer
     /// has a `Screen` behind it.
+    ///
+    /// M184: the LECTERN's close is `player.closeContainer()` — it SENDS
+    /// `container_close` (`LecternScreen.onClose`), where the plain reader's
+    /// `closeContainerOnServer` is deliberately empty (there is no menu to
+    /// close). Without the send the frame-sync's watermark would re-open
+    /// the menu the user just closed. The marker clears BEFORE the send so
+    /// the send's own no-op guard can't loop.
     pub(super) fn close_book(&mut self) {
+        let was_lectern = self.lectern_shown.take().is_some();
+        self.lectern_pages = None;
         self.book = None;
         self.screen.screens.close();
         self.grab_for_screen(false);
+        if was_lectern {
+            if let Some(session) = self.session.as_mut() {
+                if let Err(e) = session.container_close() {
+                    log::warn!("live: lectern close: {e}");
+                }
+            }
+        }
     }
 
     /// M174 — the editor's ONE commit path. Every exit (Done, Esc, the

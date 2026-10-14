@@ -24,6 +24,8 @@ mod win32;
 #[cfg(target_os = "linux")]
 mod wayland;
 
+pub mod icon;
+
 /// Apply platform-specific custom-frame setup to a freshly created window.
 /// Called once after `Window::create_window` returns.
 pub fn configure(window: &Window) {
