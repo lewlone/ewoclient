@@ -471,6 +471,14 @@ pub struct Menus {
     open: Option<OpenMenu>,
     /// Count of accepted `open_screen`s — see [`OpenMenu::open_serial`].
     opens: u64,
+    /// The player's own inventory screen is up over an open menu that has no
+    /// screen of its own (a lectern whose reader a held book replaced:
+    /// `setScreen` only calls the old screen's `removed()`, so vanilla keeps
+    /// the lectern as `containerMenu` too). Vanilla's inventory key always
+    /// opens `new InventoryScreen(player)` (`Minecraft.java:1887-1893`),
+    /// which shows `player.inventoryMenu`, so the shown menu is the
+    /// player's while this is set. Any open or close of a menu clears it.
+    inventory_over: bool,
 }
 
 impl Menus {
@@ -499,6 +507,7 @@ impl Menus {
             return false;
         };
         self.opens = self.opens.wrapping_add(1);
+        self.inventory_over = false;
         self.open = Some(OpenMenu {
             container_id,
             layout,
@@ -552,6 +561,7 @@ impl Menus {
     /// the current menu — matching vanilla rather than second-guessing it.
     pub fn apply_close(&mut self) {
         self.open = None;
+        self.inventory_over = false;
     }
 
     /// The USER-initiated close: `LocalPlayer.closeContainer()`
@@ -570,6 +580,7 @@ impl Menus {
     /// after a server close is therefore inert, so a user close that races
     /// the server's can never echo a second packet.
     pub fn close_local(&mut self) -> Option<i32> {
+        self.inventory_over = false;
         let id = self.open.take()?.container_id;
         (id != crate::inventory::PLAYER_CONTAINER_ID).then_some(id)
     }
@@ -579,15 +590,63 @@ impl Menus {
     /// open). Mirrors `shown_menu` in rewo-net so a closed container cannot
     /// leave its layout behind.
     pub fn shown_layout(&self) -> &'static MenuLayout {
+        if self.inventory_over {
+            return &crate::menu_layout::PLAYER;
+        }
         self.open
             .as_ref()
             .map_or(&crate::menu_layout::PLAYER, |m| m.layout)
+    }
+
+    /// The inventory key opened the player's own inventory while a menu is
+    /// open without a screen (see `inventory_over`). No-op when nothing is
+    /// open. Closing that screen is still a user close of the OPEN menu:
+    /// `InventoryScreen.onClose` -> `closeContainer()` sends
+    /// `containerMenu.containerId`, the lectern's, and resets it.
+    pub fn show_player_inventory(&mut self) {
+        self.inventory_over = self.open.is_some();
+    }
+
+    /// Whether the player's inventory is shown over an open menu.
+    pub fn player_inventory_shown(&self) -> bool {
+        self.inventory_over
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_inventory_key_shows_the_players_layout_over_a_screenless_menu() {
+        let mut m = Menus::new();
+        let lectern = (0..64).find(|&t| layout_of(t).is_some_and(|l| l.name == "lectern"));
+        let Some(lectern) = lectern else { return };
+        assert!(m.apply_open_screen(5, lectern, "Lectern".into()));
+        assert_eq!(m.shown_layout().name, "lectern");
+        m.show_player_inventory();
+        assert!(m.player_inventory_shown());
+        assert!(std::ptr::eq(m.shown_layout(), &crate::menu_layout::PLAYER));
+        // Closing that inventory is a user close of the open (lectern) menu.
+        assert_eq!(m.close_local(), Some(5));
+        assert!(!m.player_inventory_shown());
+        // With nothing open it is a no-op.
+        m.show_player_inventory();
+        assert!(!m.player_inventory_shown());
+    }
+
+    #[test]
+    fn a_new_menu_or_a_server_close_clears_the_inventory_override() {
+        let mut m = Menus::new();
+        let any = (0..64).find(|&t| layout_of(t).is_some()).unwrap();
+        assert!(m.apply_open_screen(1, any, "A".into()));
+        m.show_player_inventory();
+        assert!(m.apply_open_screen(2, any, "B".into()));
+        assert!(!m.player_inventory_shown());
+        m.show_player_inventory();
+        m.apply_close();
+        assert!(!m.player_inventory_shown());
+    }
 
     #[test]
     fn opening_a_known_menu_resolves_its_layout() {

@@ -629,6 +629,13 @@ impl ApplicationHandler for LiveApp {
                         if self.screen.inventory_open() {
                             self.close_container_screen();
                         } else {
+                            // A menu still open here has no screen of its own
+                            // (a lectern a held book's reader replaced):
+                            // vanilla's key opens the player's inventory over
+                            // it (`Minecraft.java:1887-1893`).
+                            if let Some(session) = self.session.as_mut() {
+                                session.menus.show_player_inventory();
+                            }
                             self.set_screen_open(true);
                         }
                     }

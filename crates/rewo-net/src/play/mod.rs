@@ -4643,6 +4643,9 @@ impl PlaySession {
     /// while every click operated on `inventory`, so clicking a chest's slot 5
     /// picked up the player's crafting grid.
     pub fn shown_menu(&self) -> &rewo_world::inventory::Inventory {
+        if self.menus.player_inventory_shown() {
+            return &self.inventory;
+        }
         self.menus
             .open()
             .map(|m| &m.menu)
@@ -4651,6 +4654,9 @@ impl PlaySession {
 
     /// [`Self::shown_menu`], mutably.
     pub fn shown_menu_mut(&mut self) -> &mut rewo_world::inventory::Inventory {
+        if self.menus.player_inventory_shown() {
+            return &mut self.inventory;
+        }
         match self.menus.open_mut() {
             Some(m) => &mut m.menu,
             None => &mut self.inventory,
@@ -4659,6 +4665,9 @@ impl PlaySession {
 
     /// The container id the shown menu is addressed by — 0 for the player's.
     pub fn shown_container_id(&self) -> i32 {
+        if self.menus.player_inventory_shown() {
+            return rewo_world::inventory::PLAYER_CONTAINER_ID;
+        }
         self.menus
             .open()
             .map_or(rewo_world::inventory::PLAYER_CONTAINER_ID, |m| {
