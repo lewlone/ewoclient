@@ -101,8 +101,6 @@ impl ClientProfile {
 #[serde(default)]
 struct GlobalConfig {
     window_mode: usize,
-    game_dir: String,
-    downloads: String,
     auto_backup: bool,
     log_level: usize,
     telemetry: bool,
@@ -112,8 +110,6 @@ impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
             window_mode: 1, // Borderless
-            game_dir: "~/Library/Application Support/EwoClient".to_string(),
-            downloads: "~/Downloads/ewo".to_string(),
             auto_backup: true,
             log_level: 2, // Info
             telemetry: false,
@@ -170,8 +166,6 @@ fn modules_path(profile: &str) -> Option<PathBuf> {
 fn split(config: &SettingsConfig, tokens: &Settings) -> (GlobalConfig, ClientProfile) {
     let global = GlobalConfig {
         window_mode: config.window_mode,
-        game_dir: config.game_dir.clone(),
-        downloads: config.downloads.clone(),
         auto_backup: config.auto_backup,
         log_level: config.log_level,
         telemetry: config.telemetry,
@@ -196,6 +190,26 @@ fn split(config: &SettingsConfig, tokens: &Settings) -> (GlobalConfig, ClientPro
     (global, profile)
 }
 
+/// The Settings tab's "Game directory" row: where the launcher really keeps
+/// its data. Nothing persists or reads an edited value, so it is shown, not
+/// stored (the old `game_dir` key in `settings.toml` defaulted to a macOS
+/// path and was never consulted; it is now ignored on load and dropped on the
+/// next save).
+fn shown_game_dir() -> String {
+    ewo_dir().map_or_else(
+        || SettingsConfig::default().game_dir,
+        |p| p.display().to_string(),
+    )
+}
+
+/// The "Downloads" row: the shared version/library/asset store.
+fn shown_downloads_dir() -> String {
+    ewo_dir().map_or_else(
+        || SettingsConfig::default().downloads,
+        |p| p.join("shared").display().to_string(),
+    )
+}
+
 /// Reconstruct a unified `SettingsConfig` from the on-disk pair.
 fn merge(global: &GlobalConfig, profile: &ClientProfile) -> SettingsConfig {
     SettingsConfig {
@@ -207,8 +221,8 @@ fn merge(global: &GlobalConfig, profile: &ClientProfile) -> SettingsConfig {
         music: profile.music,
         effects: profile.effects,
         ambient_hum: profile.ambient_hum,
-        game_dir: global.game_dir.clone(),
-        downloads: global.downloads.clone(),
+        game_dir: shown_game_dir(),
+        downloads: shown_downloads_dir(),
         auto_backup: global.auto_backup,
         log_level: global.log_level,
         telemetry: global.telemetry,
@@ -668,8 +682,6 @@ mod tests {
         config.effects = 0.22;
         config.ambient_hum = false;
         config.window_mode = 2;
-        config.game_dir = "/custom/game".to_string();
-        config.downloads = "/custom/dl".to_string();
         config.auto_backup = false;
         config.log_level = 4;
         config.telemetry = true;
@@ -694,8 +706,6 @@ mod tests {
         assert!(!merged.ambient_hum);
         // Global fields survive.
         assert_eq!(merged.window_mode, 2);
-        assert_eq!(merged.game_dir, "/custom/game");
-        assert_eq!(merged.downloads, "/custom/dl");
         assert!(!merged.auto_backup);
         assert_eq!(merged.log_level, 4);
         assert!(merged.telemetry);
@@ -706,6 +716,34 @@ mod tests {
         assert_eq!(t.density, 2.0);
         assert_eq!(t.warmth, 0.2);
         assert_eq!(t.accent_hue_shift, 30.0);
+    }
+
+    #[test]
+    fn old_settings_toml_with_the_dead_path_keys_still_loads_and_drops_them() {
+        let old = r#"
+window_mode = 2
+game_dir = "~/Library/Application Support/EwoClient"
+downloads = "~/Downloads/ewo"
+auto_backup = false
+"#;
+        let cfg: GlobalConfig = toml::from_str(old).expect("old file parses");
+        assert_eq!(cfg.window_mode, 2);
+        assert!(!cfg.auto_backup);
+        let rewritten = toml::to_string_pretty(&cfg).unwrap();
+        assert!(
+            !rewritten.contains("game_dir") && !rewritten.contains("downloads"),
+            "{rewritten}"
+        );
+    }
+
+    #[test]
+    fn the_settings_rows_show_the_real_data_dir_not_a_macos_path() {
+        let merged = merge(&GlobalConfig::default(), &ClientProfile::default());
+        if ewo_dir().is_some() {
+            assert!(!merged.game_dir.contains("Library"), "{}", merged.game_dir);
+            assert!(merged.game_dir.contains("EwoClient"));
+            assert!(merged.downloads.ends_with("shared"), "{}", merged.downloads);
+        }
     }
 
     #[test]

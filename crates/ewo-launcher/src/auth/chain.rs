@@ -54,10 +54,24 @@ pub fn build_auth_url(redirect_uri: &str, code_challenge: &str, state: &str) -> 
 /// The MS token's own `expires_in` isn't kept: the MS access token is
 /// spent immediately on Xbox Live, and only the Minecraft token's
 /// lifetime matters to a launch.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 struct MsTokenResponse {
     access_token: String,
     refresh_token: Option<String>,
+}
+
+/// Hand-written so no `{:?}` can ever put an MS access or refresh token in a
+/// log line or panic message.
+impl std::fmt::Debug for MsTokenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MsTokenResponse")
+            .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 /// Step 1a: exchange the auth code we caught at the loopback for an MS
@@ -97,12 +111,21 @@ fn refresh_ms_token(
     post_form_json(agent, &url, &body)
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 struct XblResponse {
     #[serde(rename = "Token")]
     token: String,
     #[serde(rename = "DisplayClaims")]
     display_claims: XblDisplayClaims,
+}
+
+impl std::fmt::Debug for XblResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("XblResponse")
+            .field("token", &"<redacted>")
+            .field("display_claims", &self.display_claims)
+            .finish()
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -129,10 +152,18 @@ fn xbl_authenticate(agent: &ureq::Agent, ms_access_token: &str) -> Result<XblRes
     post_json(agent, XBL_AUTH_URL, &payload)
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 struct XstsResponse {
     #[serde(rename = "Token")]
     token: String,
+}
+
+impl std::fmt::Debug for XstsResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("XstsResponse")
+            .field("token", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -192,11 +223,20 @@ fn xsts_authorize(agent: &ureq::Agent, xbl_token: &str) -> Result<XstsResponse, 
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 struct McLoginResponse {
     access_token: String,
     /// Seconds until `access_token` expires (86400 in practice).
     expires_in: Option<u64>,
+}
+
+impl std::fmt::Debug for McLoginResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McLoginResponse")
+            .field("access_token", &"<redacted>")
+            .field("expires_in", &self.expires_in)
+            .finish()
+    }
 }
 
 /// Step 4: exchange XSTS + UserHash for a Minecraft access token.
@@ -432,6 +472,23 @@ mod tests {
         assert_eq!(next_refresh_token(Some("new"), "old"), "new");
         // Interactive sign-in has no previous token.
         assert_eq!(next_refresh_token(Some("new"), ""), "new");
+    }
+
+    #[test]
+    fn debug_output_never_contains_a_token() {
+        let ms: MsTokenResponse =
+            serde_json::from_str(r#"{"access_token":"SECRET-A","refresh_token":"SECRET-R"}"#)
+                .unwrap();
+        let xbl: XblResponse = serde_json::from_str(
+            r#"{"Token":"SECRET-X","DisplayClaims":{"xui":[{"uhs":"hash"}]}}"#,
+        )
+        .unwrap();
+        let xsts: XstsResponse = serde_json::from_str(r#"{"Token":"SECRET-S"}"#).unwrap();
+        let mc: McLoginResponse =
+            serde_json::from_str(r#"{"access_token":"SECRET-M","expires_in":5}"#).unwrap();
+        let all = format!("{ms:?} {xbl:?} {xsts:?} {mc:?}");
+        assert!(!all.contains("SECRET"), "{all}");
+        assert!(all.contains("<redacted>") && all.contains("hash"), "{all}");
     }
 
     #[test]

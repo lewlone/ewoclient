@@ -16,10 +16,16 @@
 //! pidfile, so a record survives a launcher restart. Before anything is
 //! terminated the live process must still have that exact creation time
 //! (PID reuse — e.g. after a reboot — is thereby ruled out), must still be
-//! running, must be `java(w).exe`/`rewo.exe`, and must own no visible
-//! window (a live game always does; a zombie never does).
+//! running, must be `java(w).exe`/`rewo.exe`, must own no visible window
+//! (a live game always does; a zombie never does), and must be older than
+//! a spawn grace period (a game that is still starting has no window yet).
+//!
+//! "Its window was seen" is an **observation** (the launcher polls
+//! `EnumWindows` for the tracked PID while the game runs), never inferred
+//! from the game's log text; a log marker is only a hint with a longer grace.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 const PIDFILE: &str = "last-launch.pid";
 
@@ -32,15 +38,63 @@ pub struct Tracked {
     pub created: u64,
 }
 
-/// Seconds a freshly spawned game may run without a visible window before
-/// it's considered a zombie (JVM startup + loading screens take a while).
+/// Seconds after spawn during which a game is never reaped, whatever else
+/// is known: the JVM / loader needs this long before any window can exist.
+pub const SPAWN_GRACE_SECS: f32 = 30.0;
+
+/// A log marker ("lwjgl version", "narrator library", ...) says the client
+/// reached its render backend, i.e. a window is imminent. If, past this
+/// many seconds, no window was ever observed, the game is stuck or dead.
+pub const MARKER_GRACE_SECS: f32 = 90.0;
+
+/// Seconds a freshly spawned game may run without a visible window, and
+/// with no evidence at all that it progressed, before it's considered a
+/// zombie (JVM startup + loading screens take a while).
 pub const STARTUP_GRACE_SECS: f32 = 300.0;
 
-/// Whether a still-running tracked game should be treated as a zombie:
-/// no visible window, and either its window was already seen once (the
-/// game closed it) or it's been windowless far longer than startup takes.
-pub fn is_zombie(has_visible_window: bool, window_was_seen: bool, secs_since_start: f32) -> bool {
-    !has_visible_window && (window_was_seen || secs_since_start > STARTUP_GRACE_SECS)
+/// Whether a still-running tracked game should be treated as a zombie.
+///
+/// - `has_visible_window`: right now the PID owns a visible top-level
+///   window (the OS observation). Always means alive.
+/// - `window_seen`: a visible window was **observed** earlier, so it has
+///   since closed.
+/// - `marker_seen`: only the game's log claimed a window is about to show.
+///   A hint, not a fact.
+/// - `secs_since_start`: age since the spawn.
+///
+/// Nothing is a zombie inside [`SPAWN_GRACE_SECS`]. Past it, an observed
+/// then-closed window is conclusive; the log hint alone needs
+/// [`MARKER_GRACE_SECS`]; with neither, [`STARTUP_GRACE_SECS`].
+pub fn is_zombie(
+    has_visible_window: bool,
+    window_seen: bool,
+    marker_seen: bool,
+    secs_since_start: f32,
+) -> bool {
+    if has_visible_window || secs_since_start < SPAWN_GRACE_SECS {
+        return false;
+    }
+    if window_seen {
+        return true;
+    }
+    if marker_seen {
+        return secs_since_start > MARKER_GRACE_SECS;
+    }
+    secs_since_start > STARTUP_GRACE_SECS
+}
+
+/// Whether a recorded process from an *earlier launcher session* may be
+/// reaped. Its history is unknown (no observation, no log), so it is held
+/// to the marker grace: windowless and older than [`MARKER_GRACE_SECS`].
+/// `age_secs` is `None` when the age can't be read: never reap then.
+pub fn is_recorded_zombie(has_visible_window: bool, age_secs: Option<f32>) -> bool {
+    !has_visible_window && age_secs.is_some_and(|a| a > MARKER_GRACE_SECS)
+}
+
+/// Seconds between a FILETIME creation time and a FILETIME "now" (100 ns
+/// ticks). `None` if `now` is before `created` (clock change).
+pub fn age_secs_between(created: u64, now: u64) -> Option<f32> {
+    now.checked_sub(created).map(|t| t as f32 / 10_000_000.0)
 }
 
 /// Whether the live process still is the tracked one. `current` is the
@@ -88,66 +142,96 @@ fn format_records(records: &[Tracked]) -> String {
 /// hasn't been forgotten. Pre-creation-time pidfiles (a bare PID) yield
 /// nothing — such a PID can't be verified, so it is never reaped.
 pub fn recorded() -> Vec<Tracked> {
-    pidfile_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
+    pidfile_path().map(|p| read_records(&p)).unwrap_or_default()
+}
+
+fn read_records(path: &Path) -> Vec<Tracked> {
+    std::fs::read_to_string(path)
         .map(|t| parse_records(&t))
         .unwrap_or_default()
 }
 
-fn write_records(records: &[Tracked]) {
-    let Some(path) = pidfile_path() else { return };
+fn write_records(path: &Path, records: &[Tracked]) {
     let result = if records.is_empty() {
-        match std::fs::remove_file(&path) {
+        match std::fs::remove_file(path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
         }
     } else {
-        crate::util::atomic_write(&path, format_records(records).as_bytes())
+        crate::util::atomic_write(path, format_records(records).as_bytes())
     };
     if let Err(e) = result {
         log::debug!("launch: could not update pidfile {}: {e}", path.display());
     }
 }
 
+/// Serializes every read-modify-write of the pidfile: `record` runs on the UI
+/// thread and `forget` on the prepare worker, and without this one thread's
+/// write silently drops the other's record.
+static PIDFILE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Read-modify-write the pidfile at `path` under [`PIDFILE_LOCK`]. `edit`
+/// returns whether it changed anything (an unchanged list isn't rewritten).
+fn update_records(path: &Path, edit: impl FnOnce(&mut Vec<Tracked>) -> bool) {
+    // A panic elsewhere while holding the lock leaves the file consistent
+    // (writes are atomic), so a poisoned lock is safe to take over.
+    let _guard = PIDFILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = read_records(path);
+    if edit(&mut all) {
+        write_records(path, &all);
+    }
+}
+
 /// Persist a just-spawned game so it can be reaped later if it zombies,
 /// even across a launcher restart.
 pub fn record(tracked: Tracked) {
-    let mut all = recorded();
-    all.retain(|t| t.pid != tracked.pid);
-    all.push(tracked);
-    write_records(&all);
+    if let Some(path) = pidfile_path() {
+        record_at(&path, tracked);
+    }
+}
+
+fn record_at(path: &Path, tracked: Tracked) {
+    update_records(path, |all| {
+        all.retain(|t| t.pid != tracked.pid);
+        all.push(tracked);
+        true
+    });
 }
 
 /// Forget a record — called on a clean exit and after reaping.
 pub fn forget(tracked: &Tracked) {
-    let mut all = recorded();
-    let before = all.len();
-    all.retain(|t| t != tracked);
-    if all.len() != before {
-        write_records(&all);
+    if let Some(path) = pidfile_path() {
+        forget_at(&path, tracked);
     }
 }
 
+fn forget_at(path: &Path, tracked: &Tracked) {
+    update_records(path, |all| {
+        let before = all.len();
+        all.retain(|t| t != tracked);
+        all.len() != before
+    });
+}
+
 /// Reap every recorded game process that is a zombie (still running, no
-/// visible window). Live, windowed games are left alone; records of
-/// processes that are gone (or whose PID was reused) are dropped. Returns
-/// how many processes were terminated.
+/// visible window, older than the grace period). Live, windowed games and
+/// games still starting are left alone; records of processes that are gone
+/// (or whose PID was reused) are dropped. Returns how many processes were
+/// terminated.
 pub fn reap_recorded_zombies() -> usize {
     let mut reaped = 0;
     for t in recorded() {
         match state(&t) {
             GameState::Gone => forget(&t),
-            GameState::Running {
-                visible_window: false,
-            } => {
+            GameState::Running { visible_window } => {
+                if !is_recorded_zombie(visible_window, process_age_secs(&t)) {
+                    continue;
+                }
                 if reap(&t) {
                     reaped += 1;
                 }
                 forget(&t);
             }
-            GameState::Running {
-                visible_window: true,
-            } => {}
         }
     }
     reaped
@@ -223,6 +307,16 @@ mod imp {
         creation_time(&open(pid, false)?)
     }
 
+    /// The system clock as FILETIME ticks (the creation time's epoch).
+    pub fn now_filetime() -> Option<u64> {
+        /// Seconds from 1601-01-01 (FILETIME epoch) to 1970-01-01.
+        const UNIX_EPOCH_AS_FILETIME_SECS: u64 = 11_644_473_600;
+        let unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        Some((unix.as_secs() + UNIX_EPOCH_AS_FILETIME_SECS) * 10_000_000)
+    }
+
     pub fn state(t: &Tracked) -> GameState {
         let Some(h) = open(t.pid, false) else {
             return GameState::Gone;
@@ -295,6 +389,11 @@ mod imp {
 mod imp {
     use super::{GameState, Tracked};
 
+    /// Process age only gates a reap, and nothing is ever reaped here.
+    pub fn now_filetime() -> Option<u64> {
+        None
+    }
+
     pub fn process_creation_time(pid: u32) -> Option<u64> {
         // Field 22 of /proc/<pid>/stat: start time in clock ticks since boot.
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -318,6 +417,12 @@ mod imp {
 }
 
 pub use imp::process_creation_time;
+
+/// Age of a tracked process in seconds, from its recorded creation time.
+/// `None` where the platform can't say (nothing is reaped there anyway).
+pub fn process_age_secs(t: &Tracked) -> Option<f32> {
+    age_secs_between(t.created, imp::now_filetime()?)
+}
 
 /// Current state of a tracked game process.
 pub fn state(t: &Tracked) -> GameState {
@@ -367,13 +472,85 @@ mod tests {
     #[test]
     fn zombie_classification() {
         // A game with a visible window is never a zombie.
-        assert!(!is_zombie(true, true, 10_000.0));
+        assert!(!is_zombie(true, true, true, 10_000.0));
         // Still starting up (no window yet, never seen one): not a zombie.
-        assert!(!is_zombie(false, false, 30.0));
-        // Its window closed but the process lingers: zombie.
-        assert!(is_zombie(false, true, 30.0));
-        // Windowless far past any plausible startup: zombie.
-        assert!(is_zombie(false, false, STARTUP_GRACE_SECS + 1.0));
+        assert!(!is_zombie(false, false, false, 60.0));
+        // Windowless far past any plausible startup, no evidence: zombie.
+        assert!(is_zombie(false, false, false, STARTUP_GRACE_SECS + 1.0));
+        assert!(!is_zombie(false, false, false, STARTUP_GRACE_SECS - 1.0));
+        // Its window was observed, then closed, but the process lingers.
+        assert!(is_zombie(false, true, false, SPAWN_GRACE_SECS + 1.0));
+    }
+
+    #[test]
+    fn a_log_marker_alone_never_makes_a_starting_game_a_zombie() {
+        // The regression: a second Launch click after the log said "lwjgl
+        // version" but before the window exists. The marker is a hint with
+        // its own grace; inside it the game is left alone.
+        for secs in [0.0, 5.0, SPAWN_GRACE_SECS + 1.0, MARKER_GRACE_SECS - 1.0] {
+            assert!(!is_zombie(false, false, true, secs), "secs={secs}");
+        }
+        assert!(is_zombie(false, false, true, MARKER_GRACE_SECS + 1.0));
+    }
+
+    #[test]
+    fn nothing_is_reaped_inside_the_spawn_grace() {
+        for visible in [false, true] {
+            for seen in [false, true] {
+                for marker in [false, true] {
+                    for secs in [0.0, 1.0, SPAWN_GRACE_SECS - 0.1] {
+                        assert!(!is_zombie(visible, seen, marker, secs));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn recorded_processes_from_an_earlier_session_need_age_and_no_window() {
+        assert!(!is_recorded_zombie(true, Some(10_000.0)));
+        assert!(!is_recorded_zombie(false, Some(MARKER_GRACE_SECS - 1.0)));
+        assert!(!is_recorded_zombie(false, None), "unknown age: never reap");
+        assert!(is_recorded_zombie(false, Some(MARKER_GRACE_SECS + 1.0)));
+    }
+
+    #[test]
+    fn age_is_filetime_ticks_over_ten_million_and_survives_clock_skew() {
+        assert_eq!(age_secs_between(100, 100 + 30 * 10_000_000), Some(30.0));
+        assert_eq!(age_secs_between(200, 100), None);
+    }
+
+    #[test]
+    fn concurrent_record_and_forget_never_lose_a_record() {
+        let dir = std::env::temp_dir().join(format!("ewo-pidfile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(PIDFILE);
+        // Eight "launches" recorded from different threads while the odd
+        // ones are forgotten from others: the even ones must all survive.
+        let threads: Vec<_> = (0..8u32)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let t = Tracked {
+                        pid: 1000 + i,
+                        created: 5000 + i as u64,
+                    };
+                    for _ in 0..25 {
+                        record_at(&path, t);
+                        if i % 2 == 1 {
+                            forget_at(&path, &t);
+                        }
+                    }
+                })
+            })
+            .collect();
+        for th in threads {
+            th.join().unwrap();
+        }
+        let mut pids: Vec<u32> = read_records(&path).iter().map(|t| t.pid).collect();
+        pids.sort_unstable();
+        assert_eq!(pids, vec![1000, 1002, 1004, 1006]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

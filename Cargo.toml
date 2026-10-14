@@ -61,11 +61,10 @@ gl = "0.14"
 
 # v2 phase A — Microsoft auth chain. All sync (no tokio per CLAUDE.md
 # non-negotiables). `ureq` for HTTPS, `tiny_http` for the loopback redirect
-# listener, `opener` to launch the system browser, `base64`/`sha2` for
+# listener, `base64`/`sha2` for
 # PKCE, `urlencoding` for query-string assembly.
 ureq = { version = "2", features = ["json", "tls"] }
 tiny_http = "0.12"
-opener = "0.7"
 base64 = "0.22"
 sha2 = "0.10"
 sha1 = "0.10"
