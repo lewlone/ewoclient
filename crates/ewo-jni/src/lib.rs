@@ -74,8 +74,13 @@
 // the `rlib` target (see Cargo.toml). The JVM loads the cdylib and reaches the
 // crate exclusively through the `Java_…` exports below — nothing here is a
 // stable API for anyone else.
+//
+// `fixture` synthesises HUD data blocks for the harness and the tests; it is
+// compiled only for them (`--features fixture`, which the example requires),
+// so the shipped cdylib carries no test scene data.
 pub mod audio;
 pub mod crosshair;
+#[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
 pub mod hud;
 #[cfg(test)]

@@ -7,9 +7,9 @@
 //! a surface. This is the in-game counterpart to `ewo-render`'s `dropdown_shot`.
 //!
 //! ```text
-//! cargo run -p ewo-jni --example hudshot -- --all
-//! cargo run -p ewo-jni --example hudshot -- --view modules --out modules.png
-//! cargo run -p ewo-jni --example hudshot -- --view widgets --scene combat --bg shot.png
+//! cargo run -p ewo-jni --features fixture --example hudshot -- --all
+//! cargo run -p ewo-jni --features fixture --example hudshot -- --view modules --out modules.png
+//! cargo run -p ewo-jni --features fixture --example hudshot -- --view widgets --scene combat --bg shot.png
 //! ```
 //!
 //! `--bg <png>` composites over a real Minecraft screenshot; without it a
