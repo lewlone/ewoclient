@@ -1065,6 +1065,9 @@ impl PlaySession {
                         // `PlayerInfo` *and* removes it from `listedPlayers`
                         // (`ClientPacketListener.java:1995`).
                         self.tab_players.forget(uuid);
+                        // The skin table bounds live players, so the slot goes
+                        // with the player.
+                        self.player_skins.remove(uuid);
                     }
                 }
                 Err(e) => self.decode_failed("player_info_remove", e),

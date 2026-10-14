@@ -162,6 +162,9 @@ Styled spans (`ChatSpan`) live in `rewo-world`.
 - **Recordings**: `record.rs` bounds each record's length by the bytes left in
   the file before allocating. `net soak` fails unless the session ended
   `Completed` (a server disconnect or client error mid-run is a failure).
+- **Skin table** (`skins::SkinTable`): `MAX_TRACKED_SKINS` bounds the players
+  present at once, not a lifetime count. An entry leaves on `player_info_remove`
+  and on `clear_level` (reconfiguration); the cap logs once when it refuses.
 - **Bounded logs**: `PlaySession::chat_log` keeps the newest
   `MAX_CHAT_HISTORY` (100) lines through `chat_wire::push_chat_log`.
 - **Non-finite teleports** are dropped field-group by field-group
