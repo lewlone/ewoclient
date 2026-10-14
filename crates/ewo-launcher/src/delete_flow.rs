@@ -48,14 +48,13 @@ impl App {
     fn busy_instance_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = Vec::new();
         ids.extend(self.active_launch_instance_id.clone());
-        let by_idx = |idx: usize| self.instances.get(idx).map(|i| i.id.clone());
-        ids.extend(self.pending_prepare.as_ref().and_then(|p| by_idx(p.idx)));
+        ids.extend(self.pending_prepare.as_ref().map(|p| p.instance_id.clone()));
         ids.extend(
             self.pending_relaunch
                 .as_ref()
-                .and_then(|p| by_idx(p.instance_idx)),
+                .map(|p| p.instance_id.clone()),
         );
-        ids.extend(self.pending_auth.as_ref().and_then(|p| by_idx(p.idx)));
+        ids.extend(self.pending_auth.as_ref().map(|p| p.instance_id.clone()));
         ids
     }
 

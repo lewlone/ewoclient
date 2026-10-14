@@ -220,7 +220,12 @@ Subsystems:
   freedesktop home Trash (`files/` + `info/*.trashinfo`, same filesystem
   only, never copy+delete). A running or starting instance and the last
   remaining instance can't be deleted. Shared libraries/assets/versions are
-  never touched.
+  never touched. **In-flight launches hold the instance's folder `id`, never
+  its list index** (`PendingPrepare` / `PendingRelaunch` /
+  `PendingAuthLaunch`, resolved with `index_of_instance` at every step):
+  deleting, creating or reordering any other instance mid-launch shifts the
+  indices. A launch whose instance has left the list is cancelled with a
+  visible line (`INSTANCE_GONE_MSG`); `busy_instance_ids` reads those ids.
 - `window/icon.rs` hands the largest PNG frame of `assets/icon.ico` to
   winit's `with_window_icon` (the borderless window's taskbar/alt-tab icon;
   the exe's embedded icon only serves Explorer and shortcuts).
