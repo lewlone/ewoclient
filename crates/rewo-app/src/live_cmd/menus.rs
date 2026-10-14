@@ -288,13 +288,11 @@ pub(super) const BEACON_MENU_PROTOCOL_ID: i32 = 9;
 pub struct LoomView {
     /// `getSelectablePatterns()`.
     pub patterns: &'static [&'static str],
-    /// `LoomScreen.startRow` — the first visible row.
-    ///
-    /// **Always 0 today**: the scrollbar's drag is not wired, so a loom with
-    /// more than 16 patterns shows the first sixteen and no more. The field
-    /// exists because the index arithmetic needs it and would otherwise have
-    /// a 0 baked in where a variable belongs.
+    /// `LoomScreen.startRow` — the first visible row, from the screen's own
+    /// scroll ([`LoomLocal`], M189).
     pub start_row: i32,
+    /// `LoomScreen.scrollOffs`, for the thumb's position (M189).
+    pub scroll_offs: f32,
     /// `getSelectedBannerPatternIndex()`, from data slot 0. `-1` for none.
     pub selected: i32,
     /// `displayPatterns` — the grid is hidden entirely when false.
@@ -308,6 +306,8 @@ pub struct LoomView {
 pub(super) fn loom_view(
     m: &rewo_world::menu::OpenMenu,
     items: &rewo_data::items::Items,
+    // M189 — `(scrollOffs, startRow)`, the screen's own; see [`loom_local`].
+    scroll: (f32, i32),
 ) -> Option<LoomView> {
     if m.layout.protocol_id != rewo_ui::menu_screen::LOOM_MENU_PROTOCOL_ID {
         return None;
@@ -317,8 +317,8 @@ pub(super) fn loom_view(
     let patterns = rewo_data::loom_pattern_table::selectable_patterns(name(2));
     Some(LoomView {
         patterns,
-        // The scrollbar's drag is not wired; see `LoomView::start_row`.
-        start_row: 0,
+        start_row: scroll.1,
+        scroll_offs: scroll.0,
         selected: m.loom_selected_pattern(),
         display: rewo_ui::menu_screen::loom_display_patterns(
             m.menu.menu_slot(0).is_some(),
@@ -330,6 +330,56 @@ pub(super) fn loom_view(
             patterns.len(),
         ),
     })
+}
+
+/// The loom screen's own scroll (M189) — `LoomScreen.scrollOffs`,
+/// `startRow` and `scrolling`, screen state that no packet carries.
+#[derive(Debug, Clone, Copy)]
+pub struct LoomLocal {
+    pub(super) container_id: i32,
+    pub(super) scroll_offs: f32,
+    pub(super) start_row: i32,
+    /// Whether the thumb is held. Cleared on any release.
+    pub scrolling: bool,
+}
+
+/// The loom's scroll for menu `m`, seeded at the top for a new container and
+/// put through `containerChanged`'s reset (`startRow >= totalRowCount()` →
+/// top) against the current pattern count. Applying the reset every frame is
+/// the same as applying it on every container change: the list only changes
+/// with the pattern slot, and the rule only ever moves the scroll to the top.
+pub(super) fn loom_local(
+    screen: &mut ScreenState,
+    m: &rewo_world::menu::OpenMenu,
+    selectable: usize,
+) -> LoomLocal {
+    let stale = screen.loom.is_none_or(|l| l.container_id != m.container_id);
+    if stale {
+        screen.loom = Some(LoomLocal {
+            container_id: m.container_id,
+            scroll_offs: 0.0,
+            start_row: 0,
+            scrolling: false,
+        });
+    }
+    let l = screen.loom.as_mut().expect("just seeded");
+    let (offs, row) =
+        rewo_ui::menu_screen::loom_scroll_after_change(l.scroll_offs, l.start_row, selectable);
+    l.scroll_offs = offs;
+    l.start_row = row;
+    *l
+}
+
+/// [`loom_view`] through the screen's scroll — the one call the draw, the
+/// press, the drag and the wheel share.
+pub(super) fn loom_view_scrolled(
+    screen: &mut ScreenState,
+    m: &rewo_world::menu::OpenMenu,
+    items: &rewo_data::items::Items,
+) -> Option<LoomView> {
+    let n = loom_view(m, items, (0.0, 0))?.patterns.len();
+    let l = loom_local(screen, m, n);
+    loom_view(m, items, (l.scroll_offs, l.start_row))
 }
 
 /// `LoomScreen.mouseClicked`'s pattern grid (M186).
@@ -352,8 +402,8 @@ pub(super) fn loom_view(
 /// could not stamp a pattern at all. The range test is
 /// `LoomMenu.clickMenuButton`'s, run before the send exactly as vanilla runs
 /// it, so an out-of-range cell sends nothing and does not consume the press.
-/// The scrollbar is still undrawn and unwired (`LoomView::start_row`).
-/// Returns whether the press was consumed.
+/// The scrollbar's grab (M189) is tested after the grid and does not consume
+/// the press. Returns whether the press was consumed.
 pub(super) fn loom_press(
     session: &mut PlaySession,
     screen: &mut ScreenState,
@@ -365,7 +415,7 @@ pub(super) fn loom_press(
     let Some(open) = session.menus.shown_open() else {
         return false;
     };
-    let Some(view) = loom_view(open, items).filter(|v| v.display) else {
+    let Some(view) = loom_view_scrolled(screen, open, items).filter(|v| v.display) else {
         return false;
     };
     let (gx, gy) = rewo_gpu::container::screen_to_gui_for(
@@ -375,12 +425,18 @@ pub(super) fn loom_press(
         open.layout.image_w as f32,
         open.layout.image_h as f32,
     );
-    let Some(index) = ms::loom_cell_at(gx, gy, view.start_row) else {
+    // The cell loop first; a missed or rejected cell falls through to the
+    // scrollbar's grab, which does NOT consume the press (M189).
+    let index = ms::loom_cell_at(gx, gy, view.start_row)
+        .filter(|&i| ms::loom_button_accepted(i, view.patterns.len()));
+    let Some(index) = index else {
+        if ms::loom_scroller_grabbed(gx, gy) {
+            if let Some(l) = screen.loom.as_mut() {
+                l.scrolling = true;
+            }
+        }
         return false;
     };
-    if !ms::loom_button_accepted(index, view.patterns.len()) {
-        return false;
-    }
     screen
         .ui_sounds
         .play(rewo_ui::ui_sound::UiSound::LoomSelect);
@@ -1371,9 +1427,19 @@ pub(super) fn menu_overlays(
         // loom (M93q): for each visible cell, the button chrome then the
         // banner preview — a grey fill under an untinted pattern.
         rewo_ui::menu_screen::LOOM_MENU_PROTOCOL_ID => {
-            let Some(l) = player.loom.filter(|l| l.display) else {
+            let Some(l) = player.loom else {
                 return out;
             };
+            // M189 — the scroller first (`extractBackground` draws it before
+            // the grid), and always: a loom with no grid shows it disabled.
+            let active = rewo_ui::menu_screen::loom_can_scroll(l.display, l.patterns.len());
+            out.push((
+                a::LOOM_SCROLLER + usize::from(!active),
+                to_blit(rewo_ui::menu_screen::loom_scroller_blit(l.scroll_offs)),
+            ));
+            if !l.display {
+                return out;
+            }
             for row in 0..rewo_ui::menu_screen::LOOM_ROWS {
                 for col in 0..rewo_ui::menu_screen::LOOM_COLS {
                     let index = (row + l.start_row) * rewo_ui::menu_screen::LOOM_COLS + col;

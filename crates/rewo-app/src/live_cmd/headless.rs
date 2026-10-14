@@ -681,6 +681,8 @@ pub(super) fn run_headless(
             None,
             // …nor press the recipe-book button, so it never holds focus.
             false,
+            // …nor scroll a loom.
+            (0.0, 0),
         );
         headless_screen_labels = labels;
     } else {

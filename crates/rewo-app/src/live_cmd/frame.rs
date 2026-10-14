@@ -976,6 +976,12 @@ impl LiveApp {
                         m.layout.protocol_id == rewo_ui::menu_screen::STONECUTTER_MENU_PROTOCOL_ID
                     })
                     .map(|m| cut_view(&mut self.screen, m, &items));
+                // M189 — and the loom's scroll, for the same reason.
+                let loom_scroll = session
+                    .menus
+                    .shown_open()
+                    .and_then(|m| loom_view_scrolled(&mut self.screen, m, &items))
+                    .map_or((0.0, 0), |v| (v.scroll_offs, v.start_row));
                 // M93t — likewise the anvil's field, seeded here so the render
                 // and the key handler see one box.
                 // M98 — the book's own selection, from the screen state.
@@ -1031,6 +1037,7 @@ impl LiveApp {
                     self.started.elapsed().as_millis() as u64,
                     self.screen.book_overlay.as_ref(),
                     self.screen.book_button_focus == Some(session.shown_container_id()),
+                    loom_scroll,
                 );
                 // M105 — the page counter is a LABEL, so it is counted here
                 // rather than among the book's quads. Matched on the

@@ -96,6 +96,8 @@ pub struct ScreenState {
     /// book takes a click and whenever no inventory or container is shown —
     /// vanilla builds a new screen, with nothing focused, on every open.
     pub book_button_focus: Option<i32>,
+    /// The loom's screen-local scroll (M189), the stonecutter's shape.
+    pub loom: Option<LoomLocal>,
 }
 
 impl Default for ScreenState {
@@ -121,6 +123,7 @@ impl Default for ScreenState {
             container_shown: Default::default(),
             ui_sounds: Default::default(),
             book_button_focus: Default::default(),
+            loom: Default::default(),
         }
     }
 }
@@ -560,6 +563,8 @@ pub(super) fn apply_screen(
     // M187 — whether the recipe-book button holds focus (it stays lit after
     // a press), supplied for the same reason: screen-local state.
     book_button_focused: bool,
+    // M189 — the loom's `(scrollOffs, startRow)`, screen-local like the rest.
+    loom_scroll: (f32, i32),
 ) -> (
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
@@ -580,7 +585,7 @@ pub(super) fn apply_screen(
     let loom = session
         .menus
         .shown_open()
-        .and_then(|m| super::menus::loom_view(m, items));
+        .and_then(|m| super::menus::loom_view(m, items, loom_scroll));
     // M94 — the recipe book, if the server says it is open for this menu's
     // book type. It is built here rather than inside `container_panel` because
     // its presence has to reach `screen_to_gui_placed` below as well: an open

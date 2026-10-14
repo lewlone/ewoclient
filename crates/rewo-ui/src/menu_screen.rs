@@ -2611,6 +2611,167 @@ pub fn loom_can_scroll(display_patterns: bool, selectable: usize) -> bool {
     display_patterns && selectable > (LOOM_COLS * LOOM_ROWS) as usize
 }
 
+// ── The loom's scrollbar (M189) ──────────────────────────────────────────
+//
+// `LoomScreen`'s scroll, which M93q left undrawn and unwired: with no pattern
+// item the loom offers 32 patterns (eight rows) and only the first sixteen were
+// reachable. The arithmetic is the stonecutter's shape with the loom's own
+// numbers, and with one asymmetry of its own: `startRow` is stored and
+// recomputed from `scrollOffs` on every drag and wheel step.
+
+/// `LoomScreen.SCROLLER_WIDTH` / `SCROLLER_HEIGHT` / `SCROLLER_FULL_HEIGHT`.
+pub const LOOM_SCROLLER_W: i32 = 12;
+pub const LOOM_SCROLLER_H: i32 = 15;
+pub const LOOM_SCROLLER_TRACK: i32 = 56;
+/// `leftPos + 119`.
+pub const LOOM_SCROLLER_X: i32 = 119;
+
+/// `totalRowCount()` — `Mth.positiveCeilDiv(selectable, 4)`.
+pub fn loom_total_rows(selectable: usize) -> i32 {
+    (selectable as i32 + LOOM_COLS - 1) / LOOM_COLS
+}
+
+/// The rows below the visible four, `totalRowCount() - 4` (may be negative).
+pub fn loom_offscreen_rows(selectable: usize) -> i32 {
+    loom_total_rows(selectable) - LOOM_ROWS
+}
+
+/// `startRow` from `scrollOffs`: `max((int)(scrollOffs * offscreenRows + 0.5), 0)`.
+pub fn loom_start_row(scroll_offs: f32, offscreen_rows: i32) -> i32 {
+    ((scroll_offs * offscreen_rows as f32 + 0.5) as i32).max(0)
+}
+
+/// `mouseDragged` while the thumb is held: `scrollOffs = (y - yscr - 7.5) /
+/// (yscr2 - yscr - 15)` with `yscr = topPos + 13`, `yscr2 = yscr + 56`,
+/// clamped, then `startRow`. Only when `scrolling && displayPatterns &&
+/// offscreenRows > 0` — the caller's guard ([`loom_can_scroll`]).
+pub fn loom_scroll_from_drag(gui_y: f64, selectable: usize) -> (f32, i32) {
+    let yscr = LOOM_GRID_Y as f32;
+    let travel = (LOOM_SCROLLER_TRACK - LOOM_SCROLLER_H) as f32;
+    let offs = ((gui_y as f32 - yscr - 7.5) / travel).clamp(0.0, 1.0);
+    (offs, loom_start_row(offs, loom_offscreen_rows(selectable)))
+}
+
+/// `mouseScrolled`: `scrollOffs - scrollY / offscreenRows`, clamped, then
+/// `startRow`. One notch is one row.
+pub fn loom_scroll_from_wheel(scroll_offs: f32, scroll_y: f64, selectable: usize) -> (f32, i32) {
+    let rows = loom_offscreen_rows(selectable);
+    let offs = (scroll_offs - scroll_y as f32 / rows as f32).clamp(0.0, 1.0);
+    (offs, loom_start_row(offs, rows))
+}
+
+/// Where the thumb is drawn: `yo + 13 + (int)(41.0F * scrollOffs)`. As on the
+/// stonecutter, 41 lets the 15-tall thumb overshoot the 56 track by two
+/// pixels at full scroll; transcribed, not reconciled.
+pub fn loom_scroller_y(scroll_offs: f32) -> i32 {
+    LOOM_GRID_Y + (41.0 * scroll_offs) as i32
+}
+
+/// The thumb's blit; `active` picks `scroller` over `scroller_disabled`
+/// (`isScrollBarActive()`), which the caller turns into a sprite offset.
+pub fn loom_scroller_blit(scroll_offs: f32) -> ProgressBlit {
+    ProgressBlit {
+        dx: LOOM_SCROLLER_X,
+        dy: loom_scroller_y(scroll_offs),
+        w: LOOM_SCROLLER_W,
+        h: LOOM_SCROLLER_H,
+        sx: 0,
+        sy: 0,
+        src: None,
+    }
+}
+
+/// Whether a press grabs the scrollbar: `mouseClicked`'s box at
+/// `(leftPos + 119, topPos + 9)`, 12 x 56 — **four pixels above** where the
+/// thumb is drawn, vanilla's own offset. Only reached while `displayPatterns`.
+pub fn loom_scroller_grabbed(gui_x: f64, gui_y: f64) -> bool {
+    let (x, y) = (LOOM_SCROLLER_X as f64, 9.0);
+    gui_x >= x
+        && gui_x < x + LOOM_SCROLLER_W as f64
+        && gui_y >= y
+        && gui_y < y + LOOM_SCROLLER_TRACK as f64
+}
+
+/// `containerChanged`'s reset: `if (startRow >= totalRowCount()) { startRow
+/// = 0; scrollOffs = 0; }`. Returns the (offs, row) to keep.
+pub fn loom_scroll_after_change(scroll_offs: f32, start_row: i32, selectable: usize) -> (f32, i32) {
+    if start_row >= loom_total_rows(selectable) {
+        (0.0, 0)
+    } else {
+        (scroll_offs, start_row)
+    }
+}
+
+#[cfg(test)]
+mod m189_loom_scroll {
+    use super::*;
+
+    /// 32 patterns are eight rows, four off screen; 16 fill the window.
+    #[test]
+    fn the_no_item_set_has_four_offscreen_rows() {
+        assert_eq!(loom_total_rows(32), 8);
+        assert_eq!(loom_offscreen_rows(32), 4);
+        assert_eq!(loom_offscreen_rows(16), 0);
+        assert_eq!(loom_total_rows(17), 5, "positiveCeilDiv");
+        assert!(loom_can_scroll(true, 32) && !loom_can_scroll(true, 16));
+    }
+
+    /// The drag's endpoints: the thumb's centre at the track's top (13 + 7.5)
+    /// is 0, at its bottom (13 + 56 - 7.5) is 1, and the last row reachable
+    /// is `offscreen` — so pattern 31 (row 7) is on screen at full scroll.
+    #[test]
+    fn dragging_to_the_bottom_reaches_the_last_row() {
+        assert_eq!(loom_scroll_from_drag(13.0 + 7.5, 32), (0.0, 0));
+        let (offs, row) = loom_scroll_from_drag(13.0 + 56.0 - 7.5, 32);
+        assert_eq!(offs, 1.0);
+        assert_eq!(row, 4);
+        assert_eq!(loom_scroll_from_drag(500.0, 32), (1.0, 4), "clamped");
+        assert_eq!(loom_scroll_from_drag(-50.0, 32), (0.0, 0), "clamped");
+        // Pattern 31 sits in visible row 3 at start_row 4.
+        assert_eq!(
+            loom_cell_at(60.0 + 3.0 * 14.0, 13.0 + 3.0 * 14.0, 4),
+            Some(31)
+        );
+    }
+
+    /// One notch is one row: four notches down from the top reach the end,
+    /// and `+0.5` rounds `startRow` to the nearest row.
+    #[test]
+    fn the_wheel_moves_one_row_per_notch() {
+        let mut offs = 0.0;
+        let mut rows = Vec::new();
+        for _ in 0..5 {
+            let (o, r) = loom_scroll_from_wheel(offs, -1.0, 32);
+            offs = o;
+            rows.push(r);
+        }
+        assert_eq!(rows, vec![1, 2, 3, 4, 4]);
+        assert_eq!(loom_scroll_from_wheel(1.0, 1.0, 32), (0.75, 3));
+    }
+
+    #[test]
+    fn the_grab_box_starts_four_pixels_above_the_thumb() {
+        assert!(loom_scroller_grabbed(119.0, 9.0));
+        assert!(!loom_scroller_grabbed(119.0, 8.9));
+        assert!(loom_scroller_grabbed(130.9, 64.9));
+        assert!(!loom_scroller_grabbed(131.0, 20.0));
+        assert!(!loom_scroller_grabbed(119.0, 65.0));
+        assert_eq!(loom_scroller_y(0.0), 13);
+        assert_eq!(loom_scroller_y(1.0), 54);
+    }
+
+    #[test]
+    fn a_change_that_shrinks_the_list_below_the_row_resets_it() {
+        assert_eq!(loom_scroll_after_change(1.0, 4, 32), (1.0, 4));
+        assert_eq!(loom_scroll_after_change(1.0, 4, 16), (0.0, 0));
+        assert_eq!(
+            loom_scroll_after_change(0.5, 2, 12),
+            (0.5, 2),
+            "row 2 < 3 rows"
+        );
+    }
+}
+
 // ── The stonecutter's recipe grid (M93s) ──────────────────────────────────
 //
 // `StonecutterScreen`. Superficially the loom's grid, and it is not: the loom

@@ -2524,6 +2524,10 @@ pub const MENU_OVERLAY_SPRITES: &[&str] = &[
     // it is never inactive, so the disabled pair aliases these two).
     "gui/sprites/recipe_book/button.png",
     "gui/sprites/recipe_book/button_highlighted.png",
+    // 129..=130 — the loom's scroller (M189), **active first**, the
+    // stonecutter's convention: `LOOM_SCROLLER + usize::from(!active)`.
+    "gui/sprites/container/loom/scroller.png",
+    "gui/sprites/container/loom/scroller_disabled.png",
 ];
 
 /// The search field's background pair, **plain first** —
@@ -2545,6 +2549,10 @@ pub const BOOK_FILTER_FURNACE: usize = 112;
 /// The recipe-book button, **plain first** —
 /// `BOOK_BUTTON + usize::from(hovered_or_focused)` (M187).
 pub const BOOK_BUTTON: usize = 127;
+
+/// The loom's scroller, **active first** — `LOOM_SCROLLER + usize::from(!active)`
+/// (M189).
+pub const LOOM_SCROLLER: usize = 129;
 
 /// The which-of-these overlay's nine-sliced panel (M104).
 pub const BOOK_OVERLAY_PANEL: usize = 118;
@@ -5184,7 +5192,15 @@ mod tests {
             MENU_OVERLAY_SPRITES[BOOK_OVERLAY_BUTTON + 7],
             "gui/sprites/recipe_book/furnace_overlay_disabled_highlighted.png"
         );
-        assert_eq!(MENU_OVERLAY_SPRITES.len(), BOOK_BUTTON + 2);
+        assert_eq!(
+            MENU_OVERLAY_SPRITES[LOOM_SCROLLER],
+            "gui/sprites/container/loom/scroller.png"
+        );
+        assert_eq!(
+            MENU_OVERLAY_SPRITES[LOOM_SCROLLER + 1],
+            "gui/sprites/container/loom/scroller_disabled.png"
+        );
+        assert_eq!(MENU_OVERLAY_SPRITES.len(), LOOM_SCROLLER + 2);
     }
 
     // -- M164: the waterlogging rule ---------------------------------------

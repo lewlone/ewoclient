@@ -348,10 +348,10 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   commit `edb6f8e`.
 > - **Done 2026-10-15:** the UI-sound family (**M186**: button click, page
 >   turn, stonecutter and loom select; plus the loom's missing pattern click),
->   the recipe-book button (**M187**) and the HUD's air-bubble pop (**M188**).
+>   the recipe-book button (**M187**), the HUD's air-bubble pop (**M188**) and
+>   the loom's scrollbar (**M189**).
 > - **Still open from the box:** `sub-map` (`map_item_data` is class C in
->   `REWO_PACKET_COVERAGE.md`), `render-misc [INTERP]` and `[FLOW]`, the loom's
->   scrollbar, the live
+>   `REWO_PACKET_COVERAGE.md`), `render-misc [INTERP]` and `[FLOW]`, the live
 >   r-witnesses for M179's tab clicks and M184/M185's frame-loop halves, and
 >   the listening pass (the user's).
 > - Open items the 2026-10 audit added are in `docs/AUDIT-2026-10.md`'s status
@@ -2023,6 +2023,7 @@ this shape once.
 | Play-test fix, `1da1b41` (2026-09-26) — the windowed client builds the text and container passes | **r65, r66** | — | (live only) |
 | Link prompt (2026-10, `ConfirmLinkScreen` for a clicked chat `open_url`) | **r67** | — | `confirmlinkshot` m1-m6, p0-p7 (14) |
 | M187 — the recipe-book button (2026-10-15) | **r68** | `MENU_OVERLAY_SPRITES` 127..=128 (`recipe_book/button`, `button_highlighted`; `BOOK_BUTTON`) | `inventoryshot` gb1-gb3 |
+| M189 — the loom's scrollbar (2026-10-15) | — | `MENU_OVERLAY_SPRITES` 129..=130 (`container/loom/scroller`, `scroller_disabled`; `LOOM_SCROLLER`) | `rewo-ui` `m189_loom_scroll` |
 | *(next free)* | **r69** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
@@ -3848,6 +3849,25 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M189 — the loom's scrollbar (2026-10-15)
+
+M93q drew the loom's grid with `startRow` fixed at 0 and no scroller, and
+M186 made it pressable, so a loom with no pattern item offered its 32
+patterns but only the first 16 were reachable. `LoomScreen`'s scroll is now
+transcribed (`menu_screen::loom_*`, tested in `m189_loom_scroll`): the
+thumb at `(119, 13 + (int)(41 * scrollOffs))`, active or disabled
+(`MENU_OVERLAY_SPRITES` 129..=130), the drag `(y - 13 - 7.5) / 41` with
+`startRow = max((int)(offs * offscreen + 0.5), 0)`, one row per wheel
+notch, a grab box from `topPos + 9` (four pixels above the thumb, vanilla's
+own offset) that does not consume the press, the unconditional clear on
+release, and `containerChanged`'s reset to the top when the list shrinks
+below `startRow`. `LoomLocal` on `ScreenState` holds it; draw, press, drag
+and wheel all resolve the grid through `loom_view_scrolled`. Graded by
+`containershot` o29 (the jar's scroller texels at vanilla's literal y 13
+and 54, and the disabled sprite with the grid hidden). Open from the loom:
+`hasMaxPatterns` (a banner with six layers still shows the grid; it needs
+the banner's `banner_patterns` component).
 
 ### M188 — the HUD's air-bubble pop (2026-10-15)
 

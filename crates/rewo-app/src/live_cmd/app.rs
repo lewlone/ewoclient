@@ -1023,6 +1023,11 @@ impl ApplicationHandler for LiveApp {
                 if let Some(c) = self.screen.cut.as_mut() {
                     c.scrolling = false;
                 }
+                // M189 — `LoomScreen.mouseReleased`, the same unconditional
+                // clear.
+                if let Some(l) = self.screen.loom.as_mut() {
+                    l.scrolling = false;
+                }
                 if let Some(m) = self.screen.merchant.as_mut() {
                     m.dragging = false;
                 }
@@ -1101,6 +1106,7 @@ impl ApplicationHandler for LiveApp {
                 // Guarded on `isScrollBarActive` as well as `scrolling`, so a
                 // list that shrinks under a held thumb stops moving.
                 self.cut_drag();
+                self.loom_drag();
                 self.merchant_drag();
                 // M179 — the advancements drag. Every move feeds the machine
                 // (it tracks the previous sample whether or not it delivers,
@@ -1164,6 +1170,7 @@ impl ApplicationHandler for LiveApp {
                 // true whether or not the bar is active, so the screen
                 // swallows every notch; only an active bar moves.
                 self.cut_wheel(dy);
+                self.loom_wheel(dy);
                 self.merchant_wheel(dy);
                 // M179 — `AdvancementsScreen.mouseScrolled`: both axes scale
                 // by SCROLL_SPEED inside `wheel`, and the screen consumes the
@@ -1251,6 +1258,69 @@ impl LiveApp {
         }
         if let Some(c) = self.screen.cut.as_mut() {
             c.scroll_offs = ms::cut_scroll_offs_from_wheel(c.scroll_offs, dy, visible);
+        }
+    }
+
+    /// `LoomScreen.mouseScrolled` (M189): one notch is one row, only while
+    /// `displayPatterns && offscreenRows > 0`.
+    pub(super) fn loom_wheel(&mut self, dy: f64) {
+        let items = self.items.clone();
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let Some(open) = session.menus.shown_open() else {
+            return;
+        };
+        let Some(view) = loom_view_scrolled(&mut self.screen, open, &items) else {
+            return;
+        };
+        if !rewo_ui::menu_screen::loom_can_scroll(view.display, view.patterns.len()) {
+            return;
+        }
+        if let Some(l) = self.screen.loom.as_mut() {
+            let (offs, row) = rewo_ui::menu_screen::loom_scroll_from_wheel(
+                l.scroll_offs,
+                dy,
+                view.patterns.len(),
+            );
+            l.scroll_offs = offs;
+            l.start_row = row;
+        }
+    }
+
+    /// `LoomScreen.mouseDragged` while the thumb is held (M189), guarded on
+    /// `scrolling && displayPatterns && offscreenRows > 0` like vanilla.
+    pub(super) fn loom_drag(&mut self) {
+        if !self.screen.loom.is_some_and(|l| l.scrolling) {
+            return;
+        }
+        let Some(ext) = self.state.as_ref().map(|s| s.window.inner_size()) else {
+            return;
+        };
+        let items = self.items.clone();
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let Some(open) = session.menus.shown_open() else {
+            return;
+        };
+        let Some(view) = loom_view_scrolled(&mut self.screen, open, &items) else {
+            return;
+        };
+        if !rewo_ui::menu_screen::loom_can_scroll(view.display, view.patterns.len()) {
+            return;
+        }
+        let (_, gy) = rewo_gpu::container::screen_to_gui_for(
+            self.screen.mouse,
+            ext.width as f32,
+            ext.height as f32,
+            open.layout.image_w as f32,
+            open.layout.image_h as f32,
+        );
+        if let Some(l) = self.screen.loom.as_mut() {
+            let (offs, row) = rewo_ui::menu_screen::loom_scroll_from_drag(gy, view.patterns.len());
+            l.scroll_offs = offs;
+            l.start_row = row;
         }
     }
 
