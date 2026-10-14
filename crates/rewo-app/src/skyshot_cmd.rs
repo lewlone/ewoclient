@@ -158,6 +158,38 @@ pub fn run(args: SkyshotArgs) -> Result<(), String> {
     run_check(&mut gpu, &baked, &args)
 }
 
+/// How many frames this gate reads back and grades. The gate accumulates
+/// property failures rather than counting witnesses, so a section that stopped
+/// running (an emptied loop, an early skip) would still print OK; pinning the
+/// frame count makes that loud. Update it, and say why, when a case is added or
+/// removed on purpose.
+const EXPECTED_FRAMES: usize = 38;
+static FRAMES_GRADED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `Offscreen::read_rgba` that also counts the frame toward [`EXPECTED_FRAMES`].
+trait ReadCounted {
+    fn read_counted(&mut self, gpu: &Gpu) -> Result<Vec<u8>, String>;
+}
+impl ReadCounted for Offscreen {
+    fn read_counted(&mut self, gpu: &Gpu) -> Result<Vec<u8>, String> {
+        FRAMES_GRADED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.read_rgba(gpu)
+    }
+}
+
+/// Fail closed when the number of graded frames is not the pinned one.
+fn check_frame_count() -> Result<(), String> {
+    let got = FRAMES_GRADED.load(std::sync::atomic::Ordering::Relaxed);
+    println!("[skyshot] frames graded: {got} / {EXPECTED_FRAMES}");
+    if got != EXPECTED_FRAMES {
+        return Err(format!(
+            "skyshot: graded {got} frames, expected {EXPECTED_FRAMES} — a case was skipped or \
+             added without updating the pin (fail-closed)"
+        ));
+    }
+    Ok(())
+}
+
 fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> Result<(), String> {
     let (w, h) = (256u32, 256u32);
     let mut off = Offscreen::new(gpu, w, h)?;
@@ -178,7 +210,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
 
         apply_sky(&mut wr, MIDNIGHT);
         off.render(gpu, Some((&mut wr, vp)), &draw, CLEAR)?;
-        let midnight = off.read_rgba(gpu)?;
+        let midnight = off.read_counted(gpu)?;
         dump(args, &mut off, gpu, "zenith-midnight");
         let mz = center_avg(&midnight, w, h, 8);
         if luma_f(mz) > 10.0 {
@@ -190,7 +222,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
 
         apply_sky(&mut wr, NOON);
         off.render(gpu, Some((&mut wr, vp)), &draw, CLEAR)?;
-        let noon = off.read_rgba(gpu)?;
+        let noon = off.read_counted(gpu)?;
         dump(args, &mut off, gpu, "zenith-noon");
         let nz = center_avg(&noon, w, h, 8);
         // A guard against "always black passes": noon must be blue and bright.
@@ -294,7 +326,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
             st.moon_phase = p;
             wr.set_celestial(st);
             off.render(gpu, Some((&mut wr, up)), &draw, CLEAR)?;
-            let img = off.read_rgba(gpu)?;
+            let img = off.read_counted(gpu)?;
             if p == 0 {
                 dump(args, &mut off, gpu, "phase0");
             }
@@ -352,7 +384,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
             st.moon_angle = std::f32::consts::PI;
             wr.set_celestial(st);
             off.render(gpu, Some((&mut wr, up)), &draw, CLEAR)?;
-            let img = off.read_rgba(gpu)?;
+            let img = off.read_counted(gpu)?;
             let rgb = center_avg(&img, w, h, 24);
             let a = center_alpha(&img, w, h, 24);
             println!(
@@ -381,7 +413,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
             st.moon_phase = 0;
             wr.set_celestial(st);
             off.render(gpu, Some((&mut wr, up)), &draw, CLEAR)?;
-            let img = off.read_rgba(gpu)?;
+            let img = off.read_counted(gpu)?;
             let a = center_alpha(&img, w, h, 24);
             println!("[skyshot] alpha-write: phase-0 centre alpha {a:.1} (want ~128)");
             if (a - 128.0).abs() > 4.0 {
@@ -407,7 +439,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
             st.moon_phase = 7;
             wr.set_celestial(st);
             off.render(gpu, Some((&mut wr, up)), &draw, CLEAR)?;
-            let img = off.read_rgba(gpu)?;
+            let img = off.read_counted(gpu)?;
             dump(args, &mut off, gpu, "phase7-orient");
             let (cx, cy) = (w / 2, h / 2);
             let d = 24u32;
@@ -613,14 +645,14 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
         let neg = neg_x_view(w, h);
         wr.set_celestial(state);
         off.render(gpu, Some((&mut wr, neg)), &draw, CLEAR)?;
-        let neg_img = off.read_rgba(gpu)?;
+        let neg_img = off.read_counted(gpu)?;
         dump(args, &mut off, gpu, "m12-sunrise-negx");
         let neg_stats = warm_fan_stats(&neg_img, w, h, horizon_y);
 
         // +X: the opposite heading — the placement guard.
         let pos = pos_x_view(w, h);
         off.render(gpu, Some((&mut wr, pos)), &draw, CLEAR)?;
-        let pos_img = off.read_rgba(gpu)?;
+        let pos_img = off.read_counted(gpu)?;
         dump(args, &mut off, gpu, "m12-sunrise-posx");
         let pos_above = warm_fan_stats(&pos_img, w, h, horizon_y).map_or(0, |s| s.5);
 
@@ -724,7 +756,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
         apply_sky(&mut wr, NOON);
         wr.set_celestial(state_at(NOON));
         off.render(gpu, Some((&mut wr, vp)), &draw, CLEAR)?;
-        let img = off.read_rgba(gpu)?;
+        let img = off.read_counted(gpu)?;
         dump(args, &mut off, gpu, "sun-noon");
         // The sun disc sits at the zenith at noon; its OVERLAY-added light must
         // make the centre substantially brighter than the bare noon sky there
@@ -745,7 +777,7 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
         apply_sky(&mut wr, MIDNIGHT);
         wr.set_celestial(state_at(MIDNIGHT));
         off.render(gpu, Some((&mut wr, vp)), &draw, CLEAR)?;
-        let img = off.read_rgba(gpu)?;
+        let img = off.read_counted(gpu)?;
         dump(args, &mut off, gpu, "moon-midnight");
         let bright = count_pixels(&img, w, h, center_rect(w, h, 48), |p| luma(p) > 60.0);
         if bright < 40 {
@@ -763,14 +795,14 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
         lit.star_brightness = 0.5;
         wr.set_celestial(lit);
         off.render(gpu, Some((&mut wr, vp)), &draw, CLEAR)?;
-        let with_stars = off.read_rgba(gpu)?;
+        let with_stars = off.read_counted(gpu)?;
         dump(args, &mut off, gpu, "stars-on");
 
         let mut dark = state_at(MIDNIGHT);
         dark.star_brightness = 0.0;
         wr.set_celestial(dark);
         off.render(gpu, Some((&mut wr, vp)), &draw, CLEAR)?;
-        let no_stars = off.read_rgba(gpu)?;
+        let no_stars = off.read_counted(gpu)?;
 
         // Count pixels that brightened when stars turned on, ignoring the moon
         // region (unchanged between the two frames anyway).
@@ -846,7 +878,7 @@ fn run_sky_mode_cases(
     apply_sky(&mut wr, NOON);
     wr.set_celestial(state_at(NOON));
     off.render(gpu, Some((&mut wr, up)), draw, CLEAR)?;
-    let ow = off.read_rgba(gpu)?;
+    let ow = off.read_counted(gpu)?;
     dump(args, off, gpu, "mode-overworld");
     let ow_centre = center_avg(&ow, w, h, 8);
     println!(
@@ -864,7 +896,7 @@ fn run_sky_mode_cases(
     //     the gradient, not the sun that was plainly visible a frame ago.
     wr.set_sky_mode(SkyMode::None);
     off.render(gpu, Some((&mut wr, up)), draw, CLEAR)?;
-    let none = off.read_rgba(gpu)?;
+    let none = off.read_counted(gpu)?;
     dump(args, off, gpu, "mode-none");
     let clear_px: [u8; 4] = std::array::from_fn(|c| (CLEAR[c] * 255.0).round() as u8);
     let mut dirty = 0usize;
@@ -892,7 +924,7 @@ fn run_sky_mode_cases(
     // A level heading too, so the check is not a zenith-only accident.
     let horiz = horizon_view(w, h, 0.0);
     off.render(gpu, Some((&mut wr, horiz)), draw, CLEAR)?;
-    let none_h = off.read_rgba(gpu)?;
+    let none_h = off.read_counted(gpu)?;
     if none_h
         .chunks(4)
         .any(|px| px[0] != clear_px[0] || px[1] != clear_px[1] || px[2] != clear_px[2])
@@ -938,7 +970,7 @@ fn run_sky_mode_cases(
         ),
     ] {
         off.render(gpu, Some((&mut wr, vp)), draw, CLEAR)?;
-        let img = off.read_rgba(gpu)?;
+        let img = off.read_counted(gpu)?;
         if tag == "up" {
             dump(args, off, gpu, "mode-end-synthetic");
         }
@@ -1024,7 +1056,7 @@ fn run_sky_mode_cases(
                 palette.len()
             );
             off.render(gpu, Some((&mut wr2, up)), draw, CLEAR)?;
-            let frame = off.read_rgba(gpu)?;
+            let frame = off.read_counted(gpu)?;
             dump(args, off, gpu, "mode-end-production");
             let mut off_palette = 0usize;
             let mut worst = 0i32;
@@ -1102,7 +1134,7 @@ fn run_sky_mode_cases(
             // is the identity, leaving `T(0,100,0)` directly above.
             wr2.set_end_flash(Some((0.0, -90.0, 0.0)));
             off.render(gpu, Some((&mut wr2, up)), draw, CLEAR)?;
-            let zero = off.read_rgba(gpu)?;
+            let zero = off.read_counted(gpu)?;
             if max_channel_delta(&frame, &zero) != 0 {
                 failures.push(
                     "END flash: intensity 0 changed the frame — the 1e-5 gate is not holding".into(),
@@ -1113,7 +1145,7 @@ fn run_sky_mode_cases(
             // is `> 1.0E-5F`, not `> 0.0`.
             wr2.set_end_flash(Some((9.0e-6, -90.0, 0.0)));
             off.render(gpu, Some((&mut wr2, up)), draw, CLEAR)?;
-            let under = off.read_rgba(gpu)?;
+            let under = off.read_counted(gpu)?;
             if max_channel_delta(&frame, &under) != 0 {
                 failures.push("END flash: 9e-6 drew — the threshold is a literal 1e-5, not zero".into());
             }
@@ -1123,10 +1155,10 @@ fn run_sky_mode_cases(
             // rather than merely fading in.
             wr2.set_end_flash(Some((0.35, -90.0, 0.0)));
             off.render(gpu, Some((&mut wr2, up)), draw, CLEAR)?;
-            let dim_flash = off.read_rgba(gpu)?;
+            let dim_flash = off.read_counted(gpu)?;
             wr2.set_end_flash(Some((1.0, -90.0, 0.0)));
             off.render(gpu, Some((&mut wr2, up)), draw, CLEAR)?;
-            let full = off.read_rgba(gpu)?;
+            let full = off.read_counted(gpu)?;
             dump(args, off, gpu, "mode-end-flash");
 
             let lit = |f: &[u8]| {
@@ -1152,7 +1184,7 @@ fn run_sky_mode_cases(
             // before it.
             wr2.set_end_flash(None);
             off.render(gpu, Some((&mut wr2, up)), draw, CLEAR)?;
-            let cleared = off.read_rgba(gpu)?;
+            let cleared = off.read_counted(gpu)?;
             if max_channel_delta(&frame, &cleared) != 0 {
                 failures.push("END flash: `None` still drew a flash".into());
             }
@@ -1177,6 +1209,7 @@ fn max_channel_delta(a: &[u8], b: &[u8]) -> i32 {
 fn finish(gpu: &mut Gpu, mut off: Offscreen, failures: &[&str]) -> Result<(), String> {
     off.destroy(gpu);
     if failures.is_empty() {
+        check_frame_count()?;
         println!(
             "[skyshot] CHECK OK — sky zenith tint + sun/moon/stars/sunrise + skybox modes verified"
         );
@@ -1364,7 +1397,7 @@ fn sky_center(
     h: u32,
 ) -> Result<[f32; 3], String> {
     off.render(gpu, Some((wr, vp)), draw, CLEAR)?;
-    Ok(center_avg(&off.read_rgba(gpu)?, w, h, 16))
+    Ok(center_avg(&off.read_counted(gpu)?, w, h, 16))
 }
 
 /// Average of the (linear) alpha byte over a centred square of half-size
@@ -1769,7 +1802,7 @@ fn m12_check_body(
         fails.push(format!("M12 {name}: render: {e}"));
         return fails;
     }
-    let img = match off.read_rgba(gpu) {
+    let img = match off.read_counted(gpu) {
         Ok(i) => i,
         Err(e) => {
             fails.push(format!("M12 {name}: read: {e}"));

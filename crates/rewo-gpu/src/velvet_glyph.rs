@@ -816,11 +816,15 @@ impl Default for GlyphCache {
 mod tests {
     use super::*;
 
+    /// The fonts are committed under `assets/fonts`, so a missing one is a
+    /// broken checkout and must fail the test rather than skip it silently.
     fn font_bytes(stem: &str) -> Option<Vec<u8>> {
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../assets/fonts")
             .join(format!("{stem}.ttf"));
-        std::fs::read(p).ok()
+        Some(std::fs::read(&p).unwrap_or_else(|e| {
+            panic!("committed font {} is unreadable: {e}", p.display())
+        }))
     }
 
     fn loaded() -> Option<GlyphCache> {
@@ -878,10 +882,7 @@ mod tests {
 
     #[test]
     fn fonts_load_and_map_characters() {
-        let Some(c) = loaded() else {
-            eprintln!("assets/fonts missing — skipping");
-            return;
-        };
+        let c = loaded().expect("assets/fonts are committed");
         for fam in [Family::Fraunces, Family::Newsreader, Family::JetBrainsMono] {
             assert!(c.is_loaded(fam, false));
             assert!(c.glyph_id(fam, false, 'X').is_some(), "{fam:?} has no X");

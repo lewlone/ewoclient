@@ -683,6 +683,13 @@ fn check_render(
     args: &ItemshotArgs,
 ) -> Result<(), String> {
     let mut gpu = Gpu::new(None, true)?;
+    println!(
+        "[itemshot] Vulkan validation: {}",
+        if gpu.validation_active { "ON" } else { "off" }
+    );
+    if args.check && !gpu.validation_active {
+        return Err("itemshot: Vulkan validation requested but not active".into());
+    }
     let mut off = Offscreen::new(&mut gpu, W, H)?;
     let ring = OverlayRing::default();
     let draw = OverlayDraw {

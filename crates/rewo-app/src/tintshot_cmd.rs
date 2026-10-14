@@ -195,6 +195,7 @@ pub fn run(args: TintshotArgs) -> Result<(), String> {
     gpu_result?;
 
     if failures.is_empty() {
+        check_frame_count()?;
         println!(
             "TINTSHOT: OK — grass/foliage/water tint; spruce+birch constants; \
              dark_forest+swamp grass modifiers (exact bit/noise formulas); radius-2 \
@@ -1041,6 +1042,38 @@ fn ref_env(eye: [f64; 3], base: i32, value_of: impl Fn(u16) -> i32) -> i32 {
 // GPU checks — production Vulkan terrain + sky readback
 // ---------------------------------------------------------------------------
 
+/// How many frames this gate reads back and grades. The gate accumulates
+/// property failures rather than counting witnesses, so a section that stopped
+/// running (an emptied loop, an early skip) would still print OK; pinning the
+/// frame count makes that loud. Update it, and say why, when a case is added or
+/// removed on purpose.
+const EXPECTED_FRAMES: usize = 6;
+static FRAMES_GRADED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `Offscreen::read_rgba` that also counts the frame toward [`EXPECTED_FRAMES`].
+trait ReadCounted {
+    fn read_counted(&mut self, gpu: &Gpu) -> Result<Vec<u8>, String>;
+}
+impl ReadCounted for Offscreen {
+    fn read_counted(&mut self, gpu: &Gpu) -> Result<Vec<u8>, String> {
+        FRAMES_GRADED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.read_rgba(gpu)
+    }
+}
+
+/// Fail closed when the number of graded frames is not the pinned one.
+fn check_frame_count() -> Result<(), String> {
+    let got = FRAMES_GRADED.load(std::sync::atomic::Ordering::Relaxed);
+    println!("[tintshot] frames graded: {got} / {EXPECTED_FRAMES}");
+    if got != EXPECTED_FRAMES {
+        return Err(format!(
+            "tintshot: graded {got} frames, expected {EXPECTED_FRAMES} — a case was skipped or \
+             added without updating the pin (fail-closed)"
+        ));
+    }
+    Ok(())
+}
+
 fn gpu_checks(
     gpu: &mut Gpu,
     _data: &GameData,
@@ -1237,7 +1270,7 @@ fn render_terrain_fog(
     let proj = Mat4::from_cols_array_2d(&perspective_reverse_z(60f32.to_radians(), 1.0, 0.05));
     let vp = (proj * view).to_cols_array_2d();
     off.render(gpu, Some((&mut *wr, vp)), draw, [0.0, 0.0, 0.0, 1.0])?;
-    let img = off.read_rgba(gpu)?;
+    let img = off.read_counted(gpu)?;
     if let Some(d) = &args.out_dir {
         let _ = off.save_png(gpu, &d.join(format!("{name}.png")));
     }
@@ -1289,7 +1322,7 @@ fn render_plane(
     let proj = Mat4::from_cols_array_2d(&perspective_reverse_z(60f32.to_radians(), 1.0, 0.05));
     let vp = (proj * view).to_cols_array_2d();
     off.render(gpu, Some((&mut *wr, vp)), draw, [0.0, 0.0, 0.0, 1.0])?;
-    let img = off.read_rgba(gpu)?;
+    let img = off.read_counted(gpu)?;
     if let Some(d) = &args.out_dir {
         let _ = off.save_png(gpu, &d.join(format!("{name}.png")));
     }
@@ -1321,7 +1354,7 @@ fn render_sky(
     let proj = Mat4::from_cols_array_2d(&perspective_reverse_z(60f32.to_radians(), 1.0, 0.05));
     let vp = (proj * view).to_cols_array_2d();
     off.render(gpu, Some((&mut *wr, vp)), draw, [0.0, 0.0, 0.0, 1.0])?;
-    let img = off.read_rgba(gpu)?;
+    let img = off.read_counted(gpu)?;
     if let Some(d) = &args.out_dir {
         let _ = off.save_png(gpu, &d.join(format!("{name}.png")));
     }

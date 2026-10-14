@@ -118,7 +118,7 @@ pub fn run(args: LabelshotArgs) -> Result<(), String> {
     check_predicate(&mut c, &paths)?;
     check_teams(&mut c, &paths)?;
     check_pick(&mut c, &paths, &jar)?;
-    check_wiring(&mut c, &paths, &baked, &jar)?;
+    check_wiring(&mut c, &paths, &baked, &jar, args.check)?;
 
     println!(
         "[labelshot] witnesses observed: {} / {}",
@@ -1625,9 +1625,17 @@ fn check_wiring(
     paths: &DataPaths,
     baked: &assets::BakedAssets,
     jar: &std::path::Path,
+    check: bool,
 ) -> Result<(), String> {
     let f = Fixture::load(paths)?;
     let mut gpu = Gpu::new(None, true)?;
+    println!(
+        "[labelshot] Vulkan validation: {}",
+        if gpu.validation_active { "ON" } else { "off" }
+    );
+    if check && !gpu.validation_active {
+        return Err("labelshot: Vulkan validation requested but not active".into());
+    }
     let mut off = Offscreen::new(&mut gpu, W, H)?;
     let white: Vec<u8> = vec![255u8; 16 * 16 * 4];
     let layers = [white];

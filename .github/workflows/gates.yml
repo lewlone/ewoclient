@@ -64,3 +64,10 @@ jobs:
 
       - name: Live render check
         run: python tools/render_check.py
+
+      # Last on purpose: this rebuilds `rewo` with `--features audio`, which the
+      # steps above must not run against. The default sweep's soundshot grades
+      # only the wire / variant / device-call layers; this grades decode and the
+      # mixer too.
+      - name: Gates (soundshot, audio layers)
+        run: python tools/gates.py --audio --only soundshot

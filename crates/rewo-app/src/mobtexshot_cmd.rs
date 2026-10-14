@@ -207,7 +207,17 @@ pub fn run(args: MobtexshotArgs) -> Result<(), String> {
     let jar = client_jar(&args.version).ok_or("client jar not found")?;
     let paths = DataPaths::for_version(&args.version).ok_or("no config dir")?;
     let baked = assets::bake(&jar, &paths.blocks_json())?;
-    let mut gpu = Gpu::new(None, cfg!(debug_assertions) && !args.no_validation)?;
+    // Every build requests validation (see mobshot). `--check` is mandatory
+    // here, so a requested-but-inactive layer must fail.
+    let want_validation = !args.no_validation;
+    let mut gpu = Gpu::new(None, want_validation)?;
+    println!(
+        "[mobtexshot] Vulkan validation: {}",
+        if gpu.validation_active { "ON" } else { "off" }
+    );
+    if want_validation && !gpu.validation_active {
+        return Err("mobtexshot: Vulkan validation requested but not active".into());
+    }
     run_check(&mut gpu, &baked, &jar, &args)
 }
 

@@ -151,7 +151,7 @@ pub fn run(args: HealthbarshotArgs) -> Result<(), String> {
         failures: Vec::new(),
     };
     check_resolver(&mut c, &paths)?;
-    check_emitter(&mut c, &baked)?;
+    check_emitter(&mut c, &baked, args.check)?;
 
     println!(
         "[healthbarshot] witnesses observed: {} / {}",
@@ -604,8 +604,19 @@ fn project(vp: &Mat4, p: [f32; 3], w: f32, h: f32) -> (f32, f32) {
 // a..e — the emitter, against the spec.
 // ---------------------------------------------------------------------------
 
-fn check_emitter(c: &mut Checker, baked: &assets::BakedAssets) -> Result<(), String> {
+fn check_emitter(
+    c: &mut Checker,
+    baked: &assets::BakedAssets,
+    check: bool,
+) -> Result<(), String> {
     let mut gpu = Gpu::new(None, true)?;
+    println!(
+        "[healthbarshot] Vulkan validation: {}",
+        if gpu.validation_active { "ON" } else { "off" }
+    );
+    if check && !gpu.validation_active {
+        return Err("healthbarshot: Vulkan validation requested but not active".into());
+    }
     let mut off = Offscreen::new(&mut gpu, W, H)?;
     let white: Vec<u8> = vec![255u8; 16 * 16 * 4];
     let layers = [white];
