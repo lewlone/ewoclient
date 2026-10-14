@@ -51,7 +51,7 @@ pub struct ContainershotArgs {
 /// The exact number of witnesses a passing `--check` records. Pinned with `!=`
 /// (like the other gates): a floor of `> 0` let a refactor drop most of them
 /// silently. Update it, and say why, when a witness is added or removed.
-const EXPECTED_WITNESSES: usize = 109;
+const EXPECTED_WITNESSES: usize = 110;
 
 struct Checker {
     witnessed: usize,
