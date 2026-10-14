@@ -103,8 +103,8 @@ pub struct MeshOutput {
     pub cx: i32,
     pub cz: i32,
     pub mesh: Option<ColumnMesh>,
-    /// The mesher panicked on this job. `mesh` is then `None`; the caller
-    /// treats it like any empty column, and may submit the column again.
+    /// The mesher panicked on this job. `mesh` is then `None` - NOT an empty column: the caller keeps
+    /// the column's existing mesh and may re-submit it once ([`MeshPool::retry_after_panic`]).
     pub panicked: bool,
 }
 
@@ -123,6 +123,9 @@ pub struct MeshPool {
     /// Columns whose job has panicked, so each is logged once rather than on
     /// every re-mesh of a column that keeps tripping the same bug.
     panicked_logged: HashSet<(i32, i32)>,
+    /// Columns that already got their one automatic retry after a panic and
+    /// have not meshed cleanly since (see [`Self::retry_after_panic`]).
+    panic_retried: HashSet<(i32, i32)>,
     /// Test hook: a job for one of these columns panics inside the worker.
     #[cfg(test)]
     panic_columns: HashSet<(i32, i32)>,
@@ -160,6 +163,7 @@ impl MeshPool {
             rx,
             in_flight: HashSet::new(),
             panicked_logged: HashSet::new(),
+            panic_retried: HashSet::new(),
             #[cfg(test)]
             panic_columns: HashSet::new(),
         })
@@ -236,12 +240,33 @@ impl MeshPool {
         self.in_flight.remove(&(out.generation, out.cx, out.cz));
         if out.panicked && self.panicked_logged.insert((out.cx, out.cz)) {
             log::error!(
-                "mesh pool: the mesher panicked on column ({}, {}); it renders empty until re-meshed",
+                "mesh pool: the mesher panicked on column ({}, {}); it keeps its previous mesh (one automatic retry, then until it changes)",
                 out.cx,
                 out.cz
             );
         }
         Some(out)
+    }
+
+    /// Whether the caller should re-submit the column `out` describes
+    /// because its job panicked: **once**. A panic is usually deterministic
+    /// (the same snapshot meshes the same way), so an unbounded retry would
+    /// spin a worker forever; a transient one is covered by the single
+    /// retry. After that the column is left alone until something changes it
+    /// (a normal re-dirty submits it as ever); a clean mesh clears the
+    /// memory, so the next panic gets its retry again. Call it for every
+    /// output, panicked or not.
+    pub fn retry_after_panic(&mut self, out: &MeshOutput) -> bool {
+        let col = (out.cx, out.cz);
+        if !out.panicked {
+            self.panic_retried.remove(&col);
+            return false;
+        }
+        // Bounded: it only grows with columns that keep panicking.
+        if self.panic_retried.len() >= 4096 {
+            self.panic_retried.clear();
+        }
+        self.panic_retried.insert(col)
     }
 
     pub fn in_flight(&self) -> usize {
@@ -480,6 +505,41 @@ mod tests {
             smooth,
             "the same job shape comes back"
         );
+    }
+
+    /// One retry after a panic, then the column is left until it changes; a
+    /// clean mesh re-arms the retry.
+    #[test]
+    fn a_panicking_column_gets_one_retry_not_a_loop() {
+        let mut pool = MeshPool::new(tables()).unwrap();
+        let w = one_block_world();
+        pool.panic_columns.insert((0, 0));
+        assert!(pool.submit(0, &w, 0, 0));
+        let first = recv_blocking(&mut pool);
+        assert!(first.panicked);
+        assert!(pool.retry_after_panic(&first), "the first panic retries");
+        assert!(pool.submit(0, &w, 0, 0));
+        let second = recv_blocking(&mut pool);
+        assert!(second.panicked);
+        assert!(
+            !pool.retry_after_panic(&second),
+            "the retry's panic does not"
+        );
+        // A change to the column submits it as ever; still panicking, still
+        // no automatic retry.
+        assert!(pool.submit(0, &w, 0, 0));
+        let third = recv_blocking(&mut pool);
+        assert!(!pool.retry_after_panic(&third));
+        // A fixed (or changed) column meshes cleanly: the retry is re-armed.
+        pool.panic_columns.clear();
+        assert!(pool.submit(0, &w, 0, 0));
+        let ok = recv_blocking(&mut pool);
+        assert!(!ok.panicked && ok.mesh.is_some());
+        assert!(!pool.retry_after_panic(&ok));
+        pool.panic_columns.insert((0, 0));
+        assert!(pool.submit(0, &w, 0, 0));
+        let again = recv_blocking(&mut pool);
+        assert!(pool.retry_after_panic(&again), "re-armed by the clean mesh");
     }
 
     /// A panicking job neither aborts the process (rayon's default for a
