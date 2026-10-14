@@ -1,5 +1,6 @@
 package dev.lewlone.ewohud;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
@@ -66,27 +67,42 @@ public final class EwoKeybinds {
             if (!Files.exists(file)) {
                 return;
             }
-            for (String raw : Files.readAllLines(file)) {
-                String line = raw.trim();
-                if (line.isEmpty() || line.startsWith("#")) {
-                    continue;
+            // Decode leniently (a stray byte becomes U+FFFD on its own line)
+            // instead of readAllLines, which throws on the first malformed byte
+            // and would drop every binding in the file.
+            String text = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+            int bad = 0;
+            for (String raw : text.split("\\R")) {
+                // One bad line costs that binding only, never the later ones.
+                try {
+                    String line = raw.trim();
+                    if (line.isEmpty() || line.startsWith("#")) {
+                        continue;
+                    }
+                    int eq = line.indexOf('=');
+                    if (eq < 0) {
+                        continue;
+                    }
+                    String id = line.substring(0, eq).trim();
+                    String value = line.substring(eq + 1).trim();
+                    // `code` or `code:mods` — Phase G only needs the key code.
+                    int colon = value.indexOf(':');
+                    if (colon >= 0) {
+                        value = value.substring(0, colon);
+                    }
+                    int c = Integer.parseInt(value.trim());
+                    codes.put(id, c);
+                    if (id.equals("overlay.open")) {
+                        overlayKey = c;
+                    }
+                } catch (RuntimeException e) {
+                    if (bad++ < 3) {
+                        System.err.println("[ewo-hud] keybinds: skipped line \"" + raw + "\": " + e);
+                    }
                 }
-                int eq = line.indexOf('=');
-                if (eq < 0) {
-                    continue;
-                }
-                String id = line.substring(0, eq).trim();
-                String value = line.substring(eq + 1).trim();
-                // `code` or `code:mods` — Phase G only needs the key code.
-                int colon = value.indexOf(':');
-                if (colon >= 0) {
-                    value = value.substring(0, colon);
-                }
-                int c = Integer.parseInt(value.trim());
-                codes.put(id, c);
-                if (id.equals("overlay.open")) {
-                    overlayKey = c;
-                }
+            }
+            if (bad > 3) {
+                System.err.println("[ewo-hud] keybinds: " + bad + " lines skipped in total");
             }
         } catch (Throwable e) {
             // Keybinds are not worth crashing input over — fall back silently.

@@ -433,7 +433,9 @@ pub fn load_pvp_config() -> ewo_core::pvp::PvpConfig {
 /// `Prefs::pvp_changed` flips — the Settings → PvP-Utils tab sets the flag on
 /// every edit (toggle, slider release, sound-chip cycle).
 pub fn save_pvp_config(cfg: &ewo_core::pvp::PvpConfig) {
-    cfg.save();
+    if let Err(e) = cfg.save() {
+        log::warn!("profile: could not save pvp.toml: {}", e);
+    }
 }
 
 /// Write the active profile's `modules.toml` from the launcher's Modules tab.

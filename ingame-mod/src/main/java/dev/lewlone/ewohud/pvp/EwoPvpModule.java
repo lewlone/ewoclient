@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 
 /**
@@ -27,10 +28,21 @@ public final class EwoPvpModule {
 
     private static EwoPvpConfig config = new EwoPvpConfig();
     private static boolean loaded;
+    /** The file the live config was last loaded from. */
+    private static Path lastLoadedPath;
     /** mtime of {@code pvp.toml} when the live config was last loaded. */
     private static FileTime lastLoadedMtime;
-    /** Ticks since the last mtime poll — we only stat() every few frames. */
-    private static int pollCounter;
+    /** How often the hot-reload poll runs. Wall-clock, not per frame: at 240 fps
+     *  a frame counter polled the disk 24 times a second for an editor that
+     *  only changes the file when a human clicks. */
+    private static final long POLL_INTERVAL_NS = 250_000_000L;
+    private static long lastPollNs = System.nanoTime() - POLL_INTERVAL_NS;
+    /** Active profile name as last read from {@code profiles.toml}, and that
+     *  file's (mtime, size) at the time. {@code profiles.toml} is re-read only
+     *  when its stamp changes — it used to be read in full on every poll. */
+    private static String cachedProfile = "Default";
+    private static FileTime profilesMtime;
+    private static long profilesSize = -1L;
 
     private EwoPvpModule() {}
 
@@ -41,7 +53,8 @@ public final class EwoPvpModule {
         if (loaded) return;
         loaded = true;
         config = EwoPvpConfig.load();
-        lastLoadedMtime = currentMtime();
+        lastLoadedPath = pvpTomlPath();
+        lastLoadedMtime = currentMtime(lastLoadedPath);
         EwoJumpReset.setConfig(config);
         EwoHitRange.setConfig(config);
     }
@@ -60,16 +73,20 @@ public final class EwoPvpModule {
         return config;
     }
 
-    /** Hot-reload poll — every ~10 frames, stat {@code pvp.toml} and reload
-     *  if its mtime changed. Once-per-second-ish granularity is plenty for an
-     *  editor that drives this from human clicks. */
+    /** Hot-reload poll — a few times a second, stat {@code pvp.toml} (and
+     *  {@code profiles.toml}, to notice a profile switch) and reload if the
+     *  file or the active profile changed. Only attribute reads happen on the
+     *  hot path; nothing is read until an mtime actually differs. */
     private static void pollConfigReload() {
-        pollCounter++;
-        if (pollCounter < 10) return;
-        pollCounter = 0;
-        FileTime now = currentMtime();
+        long nowNs = System.nanoTime();
+        if (nowNs - lastPollNs < POLL_INTERVAL_NS) return;
+        lastPollNs = nowNs;
+        Path path = pvpTomlPath();
+        FileTime now = currentMtime(path);
         if (now == null) return;
-        if (lastLoadedMtime == null || now.compareTo(lastLoadedMtime) != 0) {
+        boolean switchedProfile = !path.equals(lastLoadedPath);
+        if (switchedProfile || lastLoadedMtime == null || now.compareTo(lastLoadedMtime) != 0) {
+            lastLoadedPath = path;
             lastLoadedMtime = now;
             EwoPvpConfig reloaded = EwoPvpConfig.load();
             EwoJumpReset.setConfig(reloaded);
@@ -78,9 +95,10 @@ public final class EwoPvpModule {
         }
     }
 
-    private static FileTime currentMtime() {
-        Path p = pvpTomlPath();
-        if (p == null || !Files.exists(p)) return null;
+    /** mtime of {@code p}, or null if it is unset or cannot be statted (one
+     *  syscall; a missing file is the common "no config yet" case). */
+    private static FileTime currentMtime(Path p) {
+        if (p == null) return null;
         try {
             return Files.getLastModifiedTime(p);
         } catch (IOException e) {
@@ -100,21 +118,40 @@ public final class EwoPvpModule {
         String appdata = System.getenv("APPDATA");
         if (appdata == null) return "Default";
         Path p = Paths.get(appdata, "EwoClient", "profiles.toml");
-        if (!Files.isRegularFile(p)) return "Default";
+        BasicFileAttributes attrs;
+        try {
+            attrs = Files.readAttributes(p, BasicFileAttributes.class);
+        } catch (IOException e) {
+            profilesMtime = null;
+            profilesSize = -1L;
+            cachedProfile = "Default";
+            return cachedProfile;
+        }
+        if (attrs.lastModifiedTime().equals(profilesMtime) && attrs.size() == profilesSize) {
+            return cachedProfile; // unchanged since the last read
+        }
+        String active = "Default";
         try {
             for (String line : Files.readAllLines(p)) {
                 String t = line.trim();
                 if (t.startsWith("active") && t.contains("=")) {
                     String v = t.substring(t.indexOf('=') + 1).trim();
                     if (v.length() >= 2 && v.startsWith("\"") && v.endsWith("\"")) {
-                        return v.substring(1, v.length() - 1);
+                        v = v.substring(1, v.length() - 1);
                     }
-                    return v;
+                    active = v;
+                    break;
                 }
             }
         } catch (IOException ignored) {
+            // Unreadable right now (mid-rewrite): keep the previous answer and
+            // retry on the next poll rather than caching a guess.
+            return cachedProfile;
         }
-        return "Default";
+        profilesMtime = attrs.lastModifiedTime();
+        profilesSize = attrs.size();
+        cachedProfile = active;
+        return active;
     }
 
     /** Run the per-frame trackers + fire sounds. Called from

@@ -12,6 +12,7 @@ pub mod motion;
 pub mod pvp;
 pub mod state;
 pub mod theme;
+pub mod util;
 
 pub use color::{OkLch, Srgb, Srgba};
 pub use easing::CubicBezier;

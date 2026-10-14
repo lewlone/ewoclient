@@ -59,6 +59,7 @@
 //!   static native void nativeMouseMove / nativeMouseButton / nativeMouseScroll
 //!   static native void nativeKey                   // overlay input (E4)
 //!   static native void nativeQuickEdit(boolean on) // quick-edit mode toggle
+//!   static native void nativeOverlayClosed();      // overlay screen removed: end held drags
 //!   static native void nativeForceExit();          // teardown from JVM shutdown
 //!   static native void nativeInitModules(ByteBuffer buf);  // register EwoModuleData (Rust→JVM)
 //!   static native void nativeModuleToggle(int index);      // keybind round-trip through Rust
@@ -73,14 +74,23 @@
 // the `rlib` target (see Cargo.toml). The JVM loads the cdylib and reaches the
 // crate exclusively through the `Java_…` exports below — nothing here is a
 // stable API for anyone else.
+//
+// `fixture` synthesises HUD data blocks for the harness and the tests; it is
+// compiled only for them (`--features fixture`, which the example requires),
+// so the shipped cdylib carries no test scene data.
 pub mod audio;
 pub mod crosshair;
+#[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
 pub mod hud;
+#[cfg(test)]
+mod java_mirror;
 pub mod media;
 pub mod modules;
 mod perf;
 pub mod pvp;
+#[cfg(test)]
+mod root_tests;
 mod skin;
 mod social;
 
@@ -92,7 +102,7 @@ use std::io::Write;
 use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Once, OnceLock};
+use std::sync::{Mutex, Once, OnceLock};
 use std::time::Instant;
 
 use ewo_render::FontStore;
@@ -170,20 +180,99 @@ fn gl_get_proc(name: &str) -> *const c_void {
 // standalone file at %TEMP%\ewo-jni.log.
 // ────────────────────────────────────────────────────────────────────────
 
-static LOG_INIT: Once = Once::new();
+/// Identical consecutive messages closer together than this are collapsed into
+/// one line plus a "repeated N times" note, so a per-frame failure cannot turn
+/// the log into a per-frame file write.
+const LOG_REPEAT_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// What [`LogLimiter::admit`] decided to emit for one message.
+#[derive(Debug, PartialEq, Eq)]
+struct LogLines {
+    /// A note about earlier suppressed repeats, emitted before `line`.
+    summary: Option<String>,
+    /// The message itself; `None` when it was suppressed as a repeat.
+    line: Option<String>,
+}
+
+/// Rate-limits repeated identical log messages. Pure (the caller supplies the
+/// clock) so the policy is unit-testable.
+struct LogLimiter {
+    last: String,
+    last_at: Option<Instant>,
+    suppressed: u32,
+}
+
+impl LogLimiter {
+    const fn new() -> LogLimiter {
+        LogLimiter {
+            last: String::new(),
+            last_at: None,
+            suppressed: 0,
+        }
+    }
+
+    fn admit(&mut self, msg: &str, now: Instant) -> LogLines {
+        let repeat = self.last == msg
+            && self
+                .last_at
+                .is_some_and(|t| now.saturating_duration_since(t) < LOG_REPEAT_WINDOW);
+        if repeat {
+            self.suppressed += 1;
+            return LogLines {
+                summary: None,
+                line: None,
+            };
+        }
+        let summary = (self.suppressed > 0)
+            .then(|| format!("(previous message repeated {} more times)", self.suppressed));
+        self.suppressed = 0;
+        if self.last != msg {
+            self.last.clear();
+            self.last.push_str(msg);
+        }
+        self.last_at = Some(now);
+        LogLines {
+            summary,
+            line: Some(msg.to_owned()),
+        }
+    }
+}
+
+struct LogSink {
+    limiter: LogLimiter,
+    /// Opened (and truncated) on the first message, then kept for the process
+    /// lifetime. `None` if it could not be created: logging is best-effort.
+    file: Option<std::fs::File>,
+    opened: bool,
+}
+
+static LOG_SINK: Mutex<LogSink> = Mutex::new(LogSink {
+    limiter: LogLimiter::new(),
+    file: None,
+    opened: false,
+});
 
 fn log(msg: &str) {
-    eprintln!("[ewo-jni] {msg}");
-    let path = std::env::temp_dir().join("ewo-jni.log");
-    LOG_INIT.call_once(|| {
-        let _ = std::fs::write(&path, b"");
-    });
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        let _ = writeln!(f, "[ewo-jni] {msg}");
+    // A panic while holding the lock must not silence logging for good.
+    let mut sink = LOG_SINK.lock().unwrap_or_else(|e| e.into_inner());
+    let decided = sink.limiter.admit(msg, Instant::now());
+    if !sink.opened {
+        sink.opened = true;
+        sink.file = std::fs::File::create(std::env::temp_dir().join("ewo-jni.log")).ok();
+    }
+    for text in decided.summary.iter().chain(decided.line.iter()) {
+        eprintln!("[ewo-jni] {text}");
+        if let Some(f) = sink.file.as_mut() {
+            // One buffer, one write: lines from two game processes sharing the
+            // file do not interleave mid-line.
+            let _ = f.write_all(
+                format!(
+                    "[ewo-jni] {text}
+"
+                )
+                .as_bytes(),
+            );
+        }
     }
 }
 
@@ -215,7 +304,7 @@ impl HudPaintRate {
     ];
 
     /// Minimum wall-clock seconds between paints. `Match` → 0 (never gates).
-    pub(crate) fn min_interval(self) -> f32 {
+    pub(crate) fn min_interval(self) -> f64 {
         match self {
             HudPaintRate::Match => 0.0,
             HudPaintRate::Fps120 => 1.0 / 120.0,
@@ -277,8 +366,12 @@ static MODULE_BUFFER_REF: AtomicUsize = AtomicUsize::new(0);
 /// Logs a buffer-schema mismatch at most once.
 static SCHEMA_WARN: Once = Once::new();
 
-fn elapsed_secs() -> f32 {
-    START.get_or_init(Instant::now).elapsed().as_secs_f32()
+/// Seconds since the first call. `f64` all the way down: an `f32` loses
+/// millisecond resolution after about 4.5 hours, and every gate below compares
+/// two of these. Only the animation phase handed to the painter is narrowed
+/// (see `paint`), where a few milliseconds of quantisation is invisible.
+fn elapsed_secs() -> f64 {
+    START.get_or_init(Instant::now).elapsed().as_secs_f64()
 }
 
 // One instance, in a thread-local; the size difference costs nothing.
@@ -367,7 +460,7 @@ struct Hud {
     offscreen_size: (i32, i32),
     /// Wall-clock seconds of the last completed paint. `NEG_INFINITY` until the
     /// first paint so the gate always lets frame one through.
-    last_painted: f32,
+    last_painted: f64,
     composites: u64,
     paints: u64,
     /// Variable fonts (Fraunces / JetBrains Mono / …) for the HUD widgets.
@@ -387,7 +480,7 @@ struct Hud {
     frost_size: (i32, i32),
     /// Wall-clock seconds of the last frost recompute. `NEG_INFINITY` when the
     /// cache is cold so the next overlay-open frosts immediately.
-    last_frosted: f32,
+    last_frosted: f64,
     /// Opt-in render-thread profiler (gated by a `%TEMP%/ewo-perf.on` sentinel;
     /// zero per-frame cost when off). See [`perf`].
     perf: Perf,
@@ -421,7 +514,7 @@ struct Hud {
     glass_size: (i32, i32),
     /// Wall-clock of the last framebuffer capture. Capture runs at the paint
     /// cadence, not every frame — the glass is only re-read when it is redrawn.
-    last_captured: f32,
+    last_captured: f64,
 
     // ── MC-context composite (the per-frame context-switch elimination) ──
     /// `wglShareLists` succeeded — our GL objects are visible to Minecraft's
@@ -454,7 +547,7 @@ struct Hud {
 /// The frosted backdrop is recomputed at most this often. The game behind an
 /// open overlay barely changes, so a low rate is visually invisible and keeps
 /// the expensive blur off the per-frame composite path.
-const FROST_REFRESH_INTERVAL: f32 = 1.0 / 10.0;
+const FROST_REFRESH_INTERVAL: f64 = 1.0 / 10.0;
 
 /// Allocate a budgeted offscreen GPU surface, `w`×`h`, RGBA8 premul, no MSAA
 /// (Skia anti-aliases glyphs itself). `TopLeft` origin — callers blit it.
@@ -563,6 +656,13 @@ impl Hud {
     /// `DirectContext` against it. Called on the render thread with
     /// Minecraft's context current — once at startup, and again if Minecraft
     /// replaces its context (`editor` then carries the live editor across).
+    ///
+    /// Everything after `wglCreateContext` runs under `catch_unwind`, and the
+    /// scope that makes our context current holds an [`OursCurrent`] guard, so
+    /// a panic in GL loading, Skia init or a shader build still hands Minecraft
+    /// its context back. On any failure our context is deleted: the caller
+    /// parks the thread in `HudState::Failed` and never retries, so nothing
+    /// else would ever free it.
     fn create(editor: Option<hud::Editor>) -> Option<Hud> {
         let hdc = unsafe { wglGetCurrentDC() };
         let mc_ctx = unsafe { wglGetCurrentContext() };
@@ -576,6 +676,53 @@ impl Hud {
             log("wglCreateContext failed");
             return None;
         }
+        let built = panic::catch_unwind(AssertUnwindSafe(|| {
+            Self::build(hdc, mc_ctx, our_ctx, editor)
+        }));
+        match built {
+            Ok(Some(hud)) => Some(hud),
+            Ok(None) => {
+                // `build` logged why; Minecraft's context is current again.
+                unsafe { wglDeleteContext(our_ctx) };
+                None
+            }
+            Err(_) => {
+                // The guard inside `build` already ran during unwinding.
+                log("Hud::create panicked (caught) — HUD disabled for this thread");
+                unsafe { wglDeleteContext(our_ctx) };
+                None
+            }
+        }
+    }
+
+    /// The body of [`Hud::create`], with `our_ctx` already created. Returns
+    /// with Minecraft's context current on every path.
+    fn build(
+        hdc: *mut c_void,
+        mc_ctx: *mut c_void,
+        our_ctx: *mut c_void,
+        editor: Option<hud::Editor>,
+    ) -> Option<Hud> {
+        // CPU-side setup first, so nothing that can fail without GL runs while
+        // our context is current. Fonts resolve the workspace `assets/fonts/`
+        // dir via the compile-time path baked into `ewo-render`.
+        let font_store = FontStore::new();
+        log(&format!(
+            "fonts loaded: fraunces={} jetbrains_mono={}",
+            font_store.has_fraunces, font_store.has_jetbrains_mono
+        ));
+        let perf = Perf::new();
+        // A `%TEMP%/ewo-no-mc-composite` sentinel forces the legacy composite
+        // path — a no-rebuild kill switch if the new path misbehaves on a given
+        // driver.
+        let tmp = std::env::temp_dir();
+        let force_legacy = tmp.join("ewo-no-mc-composite").exists();
+        let diag_solid = tmp.join("ewo-comp-solid").exists();
+        let diag_finish = tmp.join("ewo-comp-finish").exists();
+        if force_legacy {
+            log("MC-context composite disabled by ewo-no-mc-composite sentinel — legacy path");
+        }
+
         // Share the GL object namespace so the HUD texture Skia creates in our
         // context can be sampled from Minecraft's context for the composite quad.
         // Must precede any object creation in our context (Skia, below). Shares
@@ -584,70 +731,54 @@ impl Hud {
         if !shared {
             log("wglShareLists failed — composite falls back to per-frame context switch");
         }
-        if unsafe { wglMakeCurrent(hdc, our_ctx) } == 0 {
-            log("wglMakeCurrent(dedicated context) failed");
-            unsafe { wglDeleteContext(our_ctx) };
-            return None;
-        }
 
-        GL_LOADED.call_once(|| {
-            gl::load_with(gl_get_proc);
-            log("GL function pointers loaded via wglGetProcAddress");
-        });
-
-        let gr = Interface::new_load_with(|name| {
-            if name.starts_with("egl") {
-                return ptr::null();
+        let (gr, comp_program, comp_tex_loc, comp_solid_loc, fences) = {
+            if unsafe { wglMakeCurrent(hdc, our_ctx) } == 0 {
+                log("wglMakeCurrent(dedicated context) failed");
+                // A failed switch may leave no context current at all.
+                unsafe { wglMakeCurrent(hdc, mc_ctx) };
+                return None;
             }
-            gl_get_proc(name)
-        })
-        .and_then(|interface| direct_contexts::make_gl(interface, None));
+            // Hands the thread's context back to Minecraft when this block
+            // ends: success, failure or panic. Declared before `gr` so that on
+            // unwinding Skia's context drops while ours is still current.
+            let _back_to_minecraft = OursCurrent { hdc, mc_ctx };
 
-        // Build the composite shader program while our context is current — it's
-        // a *shared* object, so Minecraft's context can use it every frame.
-        let (comp_program, comp_tex_loc, comp_solid_loc) =
-            unsafe { build_composite_program() }.unwrap_or((0, -1, -1));
-        let mut gr = gr;
-        if let Some(gr) = gr.as_mut() {
+            GL_LOADED.call_once(|| {
+                gl::load_with(gl_get_proc);
+                log("GL function pointers loaded via wglGetProcAddress");
+            });
+
+            let gr = Interface::new_load_with(|name| {
+                if name.starts_with("egl") {
+                    return ptr::null();
+                }
+                gl_get_proc(name)
+            })
+            .and_then(|interface| direct_contexts::make_gl(interface, None));
+            let Some(mut gr) = gr else {
+                log("Skia DirectContext creation failed");
+                return None;
+            };
+
+            // Build the composite shader program while our context is current —
+            // it's a *shared* object, so Minecraft's context can use it every
+            // frame.
+            let (comp_program, comp_tex_loc, comp_solid_loc) =
+                unsafe { build_composite_program() }.unwrap_or((0, -1, -1));
             // Raw GL above ran behind Skia's back — drop its cached state.
             gr.reset(None);
-        }
-        let fences = shared
-            && gl::FenceSync::is_loaded()
-            && gl::WaitSync::is_loaded()
-            && gl::DeleteSync::is_loaded();
-
-        // Hand the thread's context back to Minecraft, success or not.
-        unsafe { wglMakeCurrent(hdc, mc_ctx) };
-
-        let Some(gr) = gr else {
-            unsafe { wglDeleteContext(our_ctx) };
-            log("Skia DirectContext creation failed");
-            return None;
+            let fences = shared
+                && gl::FenceSync::is_loaded()
+                && gl::WaitSync::is_loaded()
+                && gl::DeleteSync::is_loaded();
+            (gr, comp_program, comp_tex_loc, comp_solid_loc, fences)
         };
 
         // The fast (MC-context) composite needs both the shared namespace and a
         // working shader. Either missing → fall back to the legacy switch path.
-        // A `%TEMP%/ewo-no-mc-composite` sentinel forces the legacy path too —
-        // a no-rebuild kill switch if the new path misbehaves on a given driver.
-        let tmp = std::env::temp_dir();
-        let force_legacy = tmp.join("ewo-no-mc-composite").exists();
-        let diag_solid = tmp.join("ewo-comp-solid").exists();
-        let diag_finish = tmp.join("ewo-comp-finish").exists();
-        if force_legacy {
-            log("MC-context composite disabled by ewo-no-mc-composite sentinel — legacy path");
-        }
         let shared = shared && comp_program != 0 && !force_legacy;
 
-        // CPU-side font loading — no GL context needed. Resolves the workspace
-        // `assets/fonts/` dir via the compile-time path baked into `ewo-render`.
-        let font_store = FontStore::new();
-        log(&format!(
-            "fonts loaded: fraunces={} jetbrains_mono={}",
-            font_store.has_fraunces, font_store.has_jetbrains_mono
-        ));
-
-        let perf = Perf::new();
         log(&format!(
             "Skia DirectContext created on a dedicated GL context, isolated from Minecraft \
              (composite: {}, perf: {})",
@@ -679,7 +810,7 @@ impl Hud {
             switch_failures: 0,
             offscreen: None,
             offscreen_size: (0, 0),
-            last_painted: f32::NEG_INFINITY,
+            last_painted: f64::NEG_INFINITY,
             composites: 0,
             paints: 0,
             font_store,
@@ -688,7 +819,7 @@ impl Hud {
             frost: None,
             frost_half: None,
             frost_size: (0, 0),
-            last_frosted: f32::NEG_INFINITY,
+            last_frosted: f64::NEG_INFINITY,
             perf,
             shared,
             hud_tex: 0,
@@ -698,7 +829,7 @@ impl Hud {
             glass_rim: None,
             glass_frost: None,
             glass_size: (0, 0),
-            last_captured: f32::NEG_INFINITY,
+            last_captured: f64::NEG_INFINITY,
             comp_program,
             comp_tex_loc,
             comp_solid_loc,
@@ -815,7 +946,7 @@ impl Hud {
         if !frost {
             // Cache goes cold while the frost isn't shown, so the next open
             // recomputes immediately instead of flashing a stale frame.
-            self.last_frosted = f32::NEG_INFINITY;
+            self.last_frosted = f64::NEG_INFINITY;
         }
 
         if frost || !self.shared {
@@ -940,7 +1071,7 @@ impl Hud {
 
     /// Whether the paint clock is due (≥ `1 / paint_rate` since the last paint).
     /// Lets the fast path skip the context switch entirely on non-paint frames.
-    fn should_paint(&self, now: f32) -> bool {
+    fn should_paint(&self, now: f64) -> bool {
         now - self.last_painted >= self.editor.paint_rate().min_interval()
     }
 
@@ -1234,7 +1365,7 @@ impl Hud {
         self.glass_frost = None;
         // A capture from the old size would be sampled at the new one.
         self.last_game = None;
-        self.last_captured = f32::NEG_INFINITY;
+        self.last_captured = f64::NEG_INFINITY;
         if self.game_tex != 0 {
             unsafe { gl::DeleteTextures(1, &self.game_tex) };
             self.game_tex = 0;
@@ -1312,7 +1443,7 @@ impl Hud {
     /// Safe to call from either GL context: the texture is shared via
     /// `wglShareLists`, and this touches only the 2D texture binding, which it
     /// restores.
-    fn capture_game(&mut self, w: i32, h: i32, now: f32) -> bool {
+    fn capture_game(&mut self, w: i32, h: i32, now: f64) -> bool {
         if self.game_tex == 0 || self.glass_size != (w, h) {
             return false;
         }
@@ -1386,7 +1517,7 @@ impl Hud {
     /// least `1 / paint_rate` seconds have passed since the last paint. When
     /// gated out, the offscreen surface keeps its prior contents and
     /// `composite` simply re-blits the stale image.
-    fn paint(&mut self, now: f32, w: i32, h: i32) -> bool {
+    fn paint(&mut self, now: f64, w: i32, h: i32) -> bool {
         if now - self.last_painted < self.editor.paint_rate().min_interval() {
             return false; // capped — composite reuses the offscreen surface as-is
         }
@@ -1395,7 +1526,8 @@ impl Hud {
         // `glass_sources` needs `&mut self` (it renders into the blur surfaces)
         // and the canvas borrow would still be live.
         let frame = hud::Frame {
-            time: now,
+            // Animation phase only; the gates above stay in f64.
+            time: now as f32,
             // From the game snapshot the previous composite captured. `None` on
             // the first paint, after a resize, or if the capture path failed;
             // plates then fall back to their flat chrome.
@@ -1445,7 +1577,7 @@ impl Hud {
         } else {
             (0, 0)
         };
-        self.last_frosted = f32::NEG_INFINITY;
+        self.last_frosted = f64::NEG_INFINITY;
     }
 
     /// Frost clock — the third, slowest clock. Recompute the cached frosted
@@ -1456,7 +1588,7 @@ impl Hud {
     /// on that small surface. `composite` upscales the result with a cubic
     /// resampler — together that reads as a smooth wide gaussian without the
     /// block artifacts a single big full-res blur kernel produces.
-    fn refresh_frost(&mut self, game: &Image, now: f32) {
+    fn refresh_frost(&mut self, game: &Image, now: f64) {
         if now - self.last_frosted < FROST_REFRESH_INTERVAL {
             return; // cache still fresh — composite reuses it as-is
         }
@@ -1959,6 +2091,18 @@ pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeQuickEdit(
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
         with_hud(|hud| hud.editor.set_quick_edit(on != 0));
     }));
+}
+
+/// The overlay screen was closed (Esc, the overlay key, or any screen
+/// replacement). Called from `EwoOverlayScreen.removed()`. Minecraft sends no
+/// mouse release to a screen that is going away, so Rust ends whatever drag the
+/// button was holding here — see `Editor::on_overlay_closed`.
+#[no_mangle]
+pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeOverlayClosed(
+    _env: *mut c_void,
+    _class: *mut c_void,
+) {
+    with_hud(|hud| hud.editor.on_overlay_closed());
 }
 
 /// Register the Rust→JVM module-state block (Phase G). Called once at mod init

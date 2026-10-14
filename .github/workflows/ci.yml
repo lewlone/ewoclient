@@ -75,10 +75,10 @@ jobs:
       # that would distort a vanilla transcription are allowed in the
       # workspace [lints] table or at the item, with a reason.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --features rewo-app/gates -- -D warnings
+        run: cargo clippy --workspace --all-targets --features rewo-app/gates,ewo-jni/fixture -- -D warnings
 
       - name: Clippy (pvp)
-        run: cargo clippy -p ewo-jni -p ewo-core --all-targets --features ewo-jni/pvp,ewo-core/pvp -- -D warnings
+        run: cargo clippy -p ewo-jni -p ewo-core --all-targets --features ewo-jni/pvp,ewo-core/pvp,ewo-jni/fixture -- -D warnings
 
   fmt:
     runs-on: ubuntu-latest

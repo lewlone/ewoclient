@@ -8,6 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 glam.workspace = true
+# `pvp.rs` resolves the OS config directory the way the launcher does.
+dirs.workspace = true
 serde = { workspace = true, optional = true }
 
 [features]
