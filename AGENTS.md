@@ -190,7 +190,7 @@ configured and the account is linked.
   English only.
 - **Crates:** `ewo-core` (types, tokens, easing, module catalog; no graphics),
   `ewo-render`, `ewo-launcher` (binary), `ewo-jni` (in-game cdylib),
-  and `rewo-{proto,data,world,net,mesh,gpu,audio,app}` (binary `rewo`). Add a
+  and `rewo-{proto,data,world,ui,net,mesh,gpu,audio,app}` (binary `rewo`). Add a
   crate only for a structural reason: boundaries follow what changes together.
 
 ## Scope boundaries (current)

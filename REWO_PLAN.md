@@ -3009,6 +3009,7 @@ crates/
   rewo-proto/    # packet types + codec (VarInt, NBT, text components)
   rewo-net/      # socket, crypto, compression, state machine, session join
   rewo-world/    # sections, registries-at-runtime, entities, physics/prediction
+  rewo-ui/       # screen/widget/chat-log models (client.gui), no GPU; above world
   rewo-mesh/     # greedy mesher, model-quad path, AO/light bake, vertex pack
   rewo-gpu/      # ash: device, swapchain, allocator, pipelines, culling   [M0 ✅]
   rewo-render/   # frame graph/passes once they outgrow rewo-app (M2+)

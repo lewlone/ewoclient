@@ -16,13 +16,13 @@ Rules it enforces (each one was learned from a battery that lied):
 Usage (a battery is a small data file):
 
     from mutate_lib import Mutation, Check, run_battery
-    FILE = "crates/rewo-world/src/book_view_screen.rs"
+    FILE = "crates/rewo-ui/src/book_view_screen.rs"
     MUTATIONS = [
         Mutation("click rect includes right edge", FILE,
                  "mx < s.x + s.w", "mx <= s.x + s.w", "half-open rect"),
     ]
     CHECKS = [
-        Check(["cargo", "test", "-q", "-p", "rewo-world", "--lib", "--", "book_view"]),
+        Check(["cargo", "test", "-q", "-p", "rewo-ui", "--lib", "--", "book_view"]),
         Check(["target/debug/rewo", "bookshot", "--check"]),
     ]
     if __name__ == "__main__":

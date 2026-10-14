@@ -1,17 +1,11 @@
 ---
 paths:
-  - "crates/rewo-world/src/*screen*.rs"
+  - "crates/rewo-ui/**"
   - "crates/rewo-world/src/menu*.rs"
   - "crates/rewo-world/src/inventory.rs"
-  - "crates/rewo-world/src/recipe_*.rs"
   - "crates/rewo-world/src/stacked_contents.rs"
-  - "crates/rewo-world/src/ghost_slots.rs"
-  - "crates/rewo-world/src/edit_box.rs"
-  - "crates/rewo-world/src/anvil.rs"
   - "crates/rewo-world/src/chat*.rs"
-  - "crates/rewo-world/src/command_suggestions.rs"
   - "crates/rewo-world/src/suggestions.rs"
-  - "crates/rewo-world/src/nine_slice.rs"
   - "crates/rewo-net/src/menu.rs"
   - "crates/rewo-net/src/merchant.rs"
   - "crates/rewo-net/src/recipe_book.rs"
@@ -29,6 +23,11 @@ book, chat) and `docs/history/claude-md-session-log.md` (M143–M180).
 
 ## Structure
 
+- **Screen models live in `crates/rewo-ui`** (screens, layouts, widgets, chat
+  log, edit boxes, recipe book). It depends on `rewo-world`, never the
+  reverse: protocol state the world needs (`menu_layout`, `menu`, `inventory`,
+  `stacked_contents`, the `chat_style` Component model, `string_splitter`,
+  Brigadier's `suggestions`) stays in `rewo-world`. `rewo-net` depends on both.
 - **Vanilla has one screen slot, not a stack.** A nested screen is a replacement
   carrying a callback, and anything opening over a screen must drop the stale
   one's state.
