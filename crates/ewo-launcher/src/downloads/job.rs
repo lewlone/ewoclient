@@ -84,8 +84,25 @@ pub struct JobConfig {
 pub fn spawn(config: JobConfig, tx: Sender<JobEvent>) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name(format!("ewo-dl-{}", config.entry.id))
-        .spawn(move || run_job(config, tx))
+        .spawn(move || run_guarded(&tx, || run_job(config, tx.clone())))
         .expect("spawn download thread")
+}
+
+/// Run `job`; if it panics, report `Failed` instead of dying silently. A
+/// panicked job otherwise never sends `Done`/`Failed`, and the version would
+/// read "in flight" forever (no retry is offered while a job is in flight).
+fn run_guarded(tx: &Sender<JobEvent>, job: impl FnOnce()) {
+    if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)) {
+        let what = payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".into());
+        log::error!("downloads: job thread panicked: {what}");
+        let _ = tx.send(JobEvent::Failed(format!(
+            "download thread panicked: {what}"
+        )));
+    }
 }
 
 fn run_job(config: JobConfig, tx: Sender<JobEvent>) {
@@ -485,36 +502,34 @@ fn ensure_file(
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
     }
-    let mut reader: Box<dyn Read> = if let Some(ref p) = local_path {
+    // A local `file://` copy is whatever the user has on disk; an HTTP body
+    // is capped at the expected size plus slack (or a sane maximum when the
+    // manifest gave no size), so a hostile or broken server can't fill the
+    // disk with an endless stream.
+    let (mut reader, limit): (Box<dyn Read>, u64) = if let Some(ref p) = local_path {
         let f = fs::File::open(p).map_err(|e| format!("open {}: {}", p.display(), e))?;
-        Box::new(f)
+        (Box::new(f), u64::MAX)
     } else {
         let mut req = agent.get(url);
         for (k, v) in github_auth_headers_for(url) {
             req = req.set(k, &v);
         }
         let resp = req.call().map_err(|e| format!("GET {}: {}", url, e))?;
-        Box::new(resp.into_reader())
+        let limit = crate::util::body_limit(expected_size);
+        crate::util::check_declared_length(resp.header("Content-Length"), limit)
+            .map_err(|e| format!("GET {}: {}", url, e))?;
+        (Box::new(resp.into_reader()), limit)
     };
     let part = part_path(dest);
     let result = (|| {
         let mut file =
             fs::File::create(&part).map_err(|e| format!("create {}: {}", part.display(), e))?;
         let mut hasher = Sha1::new();
-        let mut buf = [0u8; 64 * 1024];
-        let mut written: u64 = 0;
-        loop {
-            let n = reader
-                .read(&mut buf)
-                .map_err(|e| format!("read body: {}", e))?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-            file.write_all(&buf[..n])
-                .map_err(|e| format!("write {}: {}", part.display(), e))?;
-            written += n as u64;
-        }
+        let written = crate::util::copy_capped(&mut reader, limit, |chunk| {
+            hasher.update(chunk);
+            file.write_all(chunk)
+                .map_err(|e| format!("write {}: {}", part.display(), e))
+        })?;
         drop(file);
         if local_path.is_none() {
             let got_hex = hex(&hasher.finalize());
@@ -618,6 +633,22 @@ mod tests {
         // A good existing file short-circuits without touching the network.
         ensure_file(&agent(), "https://example.invalid/lib.jar", good, 5, &dest).unwrap();
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_panicking_job_reports_failed_instead_of_staying_in_flight() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx2 = tx.clone();
+        std::thread::spawn(move || run_guarded(&tx2, || panic!("boom {}", 7)))
+            .join()
+            .expect("the guard swallows the panic");
+        match rx.try_recv() {
+            Ok(JobEvent::Failed(msg)) => assert!(msg.contains("boom 7"), "{msg}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        // A job that finishes normally sends nothing extra.
+        run_guarded(&tx, || {});
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

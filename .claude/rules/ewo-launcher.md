@@ -128,6 +128,11 @@ Subsystems:
 - `downloads/`: staged per-version → loader manifest → client → libraries →
   asset index → assets, all sha1-verified into Mojang's layout under
   `shared/`. **Don't break that layout**: vanilla-launcher interop is a feature.
+  An HTTP body is streamed through `util::copy_capped`: cut off at the
+  expected size + 64 KiB (1 GiB when the manifest has no size) and refused
+  up front on an oversized `Content-Length`; the same cap guards the JRE
+  archive. A panic in a download or JRE-fetch thread is caught and reported
+  as `Failed`, so a version never reads "in flight" forever.
 - `launch/`: `plan.rs` (token substitution), `natives.rs`, `spawn.rs` (stdout
   and stderr piped to the log panel), `jre.rs` (`pick_for_major`, `detect_all`,
   `resolve_pin`), `reaper.rs`, `prepare.rs` (launch preparation on a worker;

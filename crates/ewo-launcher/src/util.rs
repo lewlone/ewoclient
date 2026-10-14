@@ -80,6 +80,62 @@ fn percent_decode(s: &str) -> Option<String> {
 // importing them from here.
 pub use ewo_core::util::{atomic_write, validate_name, NameError};
 
+/// How far past the expected size a download body may run before it is cut
+/// off (a CDN adding a trailing newline is fine; a stream that never ends
+/// is not).
+pub const BODY_SLACK_BYTES: u64 = 64 * 1024;
+
+/// The most an HTTP body of *unknown* expected size may be (a manifest says
+/// `size: 0`). Larger than any single Mojang asset, library or client jar.
+pub const UNKNOWN_SIZE_BODY_CAP: u64 = 1 << 30;
+
+/// The most bytes to accept for a body whose expected size is `expected`
+/// (`0` = unknown).
+pub fn body_limit(expected: u64) -> u64 {
+    if expected == 0 {
+        UNKNOWN_SIZE_BODY_CAP
+    } else {
+        expected.saturating_add(BODY_SLACK_BYTES)
+    }
+}
+
+/// Fail early when the server's declared `Content-Length` is already past
+/// `limit`; an absent or unparseable header says nothing, the streaming cap
+/// in [`copy_capped`] still applies.
+pub fn check_declared_length(content_length: Option<&str>, limit: u64) -> Result<(), String> {
+    match content_length.and_then(|v| v.trim().parse::<u64>().ok()) {
+        Some(n) if n > limit => Err(format!(
+            "server announced {n} bytes, over the {limit}-byte limit"
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Stream `reader` into `sink` in chunks, failing as soon as more than
+/// `limit` bytes have arrived (at most one chunk past it is read). Returns
+/// the byte count. The sink's error aborts the copy.
+pub fn copy_capped(
+    reader: &mut dyn io::Read,
+    limit: u64,
+    mut sink: impl FnMut(&[u8]) -> Result<(), String>,
+) -> Result<u64, String> {
+    let mut buf = [0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| format!("read body: {e}"))?;
+        if n == 0 {
+            return Ok(total);
+        }
+        total += n as u64;
+        if total > limit {
+            return Err(format!("body is larger than the {limit}-byte limit"));
+        }
+        sink(&buf[..n])?;
+    }
+}
+
 /// [`atomic_write`] for a file holding credentials: on Unix the result is
 /// mode 0600. (On Windows the per-user `%APPDATA%` ACL already applies.)
 pub fn atomic_write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
@@ -206,6 +262,61 @@ mod tests {
         let bak = backup_unparseable(&path, &"test").unwrap();
         assert_eq!(fs::read_to_string(&bak).unwrap(), "two");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn body_limit_is_expected_plus_slack_or_the_unknown_cap() {
+        assert_eq!(body_limit(1000), 1000 + BODY_SLACK_BYTES);
+        assert_eq!(body_limit(0), UNKNOWN_SIZE_BODY_CAP);
+        assert_eq!(body_limit(u64::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn declared_length_is_checked_when_present() {
+        assert!(check_declared_length(Some("100"), 100).is_ok());
+        assert!(check_declared_length(Some(" 101 "), 100).is_err());
+        assert!(check_declared_length(Some("chunked?"), 100).is_ok());
+        assert!(check_declared_length(None, 100).is_ok());
+    }
+
+    /// A reader that never ends: the cap, not the source, stops the copy.
+    struct Endless(u64);
+    impl io::Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.0 += buf.len() as u64;
+            buf.fill(7);
+            Ok(buf.len())
+        }
+    }
+
+    #[test]
+    fn copy_capped_stops_an_endless_body_near_the_limit() {
+        let mut src = Endless(0);
+        let mut seen = 0u64;
+        let err = copy_capped(&mut src, 200_000, |c| {
+            seen += c.len() as u64;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(err.contains("larger than"), "{err}");
+        assert!(seen <= 200_000, "nothing past the limit reaches the sink");
+        assert!(src.0 <= 200_000 + 64 * 1024, "read at most one chunk past");
+    }
+
+    #[test]
+    fn copy_capped_passes_a_body_within_the_limit_and_sink_errors_abort() {
+        let data = vec![1u8; 100_000];
+        let mut out = Vec::new();
+        let n = copy_capped(&mut &data[..], 100_000, |c| {
+            out.extend_from_slice(c);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!((n, out.len()), (100_000, 100_000));
+        let err = copy_capped(&mut &data[..], 1 << 20, |_| Err("disk full".into())).unwrap_err();
+        assert_eq!(err, "disk full");
+        // An exact-fit body is accepted; one byte more is not.
+        assert!(copy_capped(&mut &data[..], 99_999, |_| Ok(())).is_err());
     }
 
     #[test]
