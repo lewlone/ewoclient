@@ -16,6 +16,9 @@
 //!   - hover  → translateY(-0.5)
 //!   - press  → scale(0.96)
 //!
+//! Both transforms move the chrome only (tint, rim, sheen, ripples, specks).
+//! The label is text and is never transformed (non-negotiable #2).
+//!
 //! State is owned by the caller (`VbtnState`); the `update` helper consumes a
 //! mouse position + button-down flag and returns `true` once on the click
 //! release frame.
@@ -222,7 +225,13 @@ pub fn draw_vbtn(
     fonts: &FontStore,
     primary: bool,
 ) {
-    // Hover lift + press scale, applied around the button's center.
+    // Hover lift (`translateY(-0.5px)`) + press scale (`scale(0.96)`, CSS
+    // `.vbtn.pressing`), applied around the button's center.
+    //
+    // Non-negotiable #2: the label is text, so it is never scaled. Both the
+    // press scale and the sub-pixel hover lift move the *chrome* (tint, rim,
+    // sheen, ripples, specks) only; the label stays on its whole-pixel
+    // position and reads as the button "sinking" under it.
     let lift_y = if state.hover { -0.5 } else { 0.0 };
     let scale = if state.pressing { 0.96 } else { 1.0 };
     let cx = (bounds.left + bounds.right) * 0.5;
@@ -251,20 +260,24 @@ pub fn draw_vbtn(
         canvas.restore_to_count(saved2);
     }
 
-    // Layer 4: label
+    canvas.restore_to_count(saved);
+
+    // Layer 4: label, outside the chrome transform (see above).
     draw_label(canvas, bounds, label, primary, fonts);
 
-    // Layer 5+6: ripples + cursor specks. Clipped to the button rrect so
+    // Layer 5+6: ripples + cursor specks, back inside the chrome transform so
+    // they stay registered with the rim. Clipped to the button rrect so
     // the expanding rings/dots can't bleed past the rounded corners.
     {
         let saved2 = canvas.save();
         canvas.clip_rrect(rrect, None, Some(true));
+        canvas.translate((cx, cy + lift_y));
+        canvas.scale((scale, scale));
+        canvas.translate((-cx, -cy));
         draw_ripples(canvas, bounds, &state.ripples);
         draw_specks(canvas, bounds, &state.specks);
         canvas.restore_to_count(saved2);
     }
-
-    canvas.restore_to_count(saved);
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -491,6 +504,7 @@ fn draw_sheen(canvas: &Canvas, rect: Rect, time: f32, motion_speed: f32, hover: 
     let sheen_w = btn_w * 0.4;
     // Left edge moves from -40% to 110% of button width.
     let sheen_left = rect.left + (-0.4 + progress * 1.5) * btn_w;
+    // Reduced motion: frozen at the base `left: -40%`, i.e. parked off-button.
     // Vertical extension prevents the skew exposing edges at top/bottom.
     let sheen_rect = Rect::from_xywh(sheen_left, rect.top - 4.0, sheen_w, btn_h + 8.0);
 

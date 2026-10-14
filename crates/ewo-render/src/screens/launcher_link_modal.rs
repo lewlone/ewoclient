@@ -155,17 +155,18 @@ pub fn draw_modal(
     let shroud_alpha = (state.anim / 0.67).clamp(0.0, 1.0);
     draw_shroud(canvas, card_w, card_h, shroud_alpha);
 
-    // Card entrance: translateY(10 → 0) + scale(0.97 → 1) + opacity 0 → 1.
-    // No blur per CLAUDE.md non-negotiable #3 (text-bearing surface).
+    // Card entrance (CSS `modal-card-in`): translateY(10 → 0) + scale(0.97 → 1)
+    // + opacity 0 → 1. No blur (non-negotiable #3) and no scale on anything
+    // containing text (#2): the 0.97 → 1 scale is applied to the chrome only
+    // (shadows, refract, tint, rim). The text, digit slots and buttons fade
+    // with `alpha` and translate by whole pixels so glyphs stay pixel-aligned.
     canvas.save();
     let card = card_rect(card_w, card_h);
     let cx = (card.left + card.right) * 0.5;
     let cy = (card.top + card.bottom) * 0.5;
-    let ty = (1.0 - anim) * 10.0;
+    let ty = ((1.0 - anim) * 10.0).round();
     let scale = 0.97 + 0.03 * anim;
-    canvas.translate((cx, cy + ty));
-    canvas.scale((scale, scale));
-    canvas.translate((-cx, -cy));
+    canvas.translate((0.0, ty));
 
     let alpha = anim;
 
@@ -173,7 +174,12 @@ pub fn draw_modal(
     card_paint.set_anti_alias(true);
     card_paint.set_alpha_f(alpha);
 
+    let chrome_saved = canvas.save();
+    canvas.translate((cx, cy));
+    canvas.scale((scale, scale));
+    canvas.translate((-cx, -cy));
     draw_card_chrome(canvas, &card, alpha);
+    canvas.restore_to_count(chrome_saved);
 
     let rrect = RRect::new_rect_xy(card, CARD_RADIUS, CARD_RADIUS);
     canvas.save();
@@ -280,7 +286,7 @@ pub fn draw_modal(
         true,
     );
 
-    canvas.restore(); // un-scale + translate
+    canvas.restore(); // un-translate
 }
 
 fn draw_shroud(canvas: &Canvas, card_w: f32, card_h: f32, alpha: f32) {

@@ -449,17 +449,18 @@ pub fn draw_modal(
     let shroud_alpha = (state.anim / 0.67).clamp(0.0, 1.0);
     draw_shroud(canvas, card_w, card_h, shroud_alpha);
 
-    // Layer 2 — card with entrance transform.
+    // Layer 2 — card entrance (CSS `modal-card-in`: translateY(10 -> 0) +
+    // scale(0.97 -> 1) + opacity 0 -> 1). Non-negotiable #2: nothing that
+    // contains text is scaled, so the 0.97 -> 1 scale applies to the chrome
+    // (shadows, refract, tint, rim) only. The form fades with the card and
+    // translates by whole pixels so glyphs stay pixel-aligned; at rest the two
+    // layers coincide exactly.
     let card = card_rect(card_w, card_h);
-    let cx = (card.left + card.right) * 0.5;
-    let cy = (card.top + card.bottom) * 0.5;
+    let ty = (10.0 * (1.0 - anim)).round();
     let scale = 0.97 + 0.03 * anim;
-    let ty = 10.0 * (1.0 - anim);
 
     let saved = canvas.save();
-    canvas.translate((cx, cy + ty));
-    canvas.scale((scale, scale));
-    canvas.translate((-cx, -cy));
+    canvas.translate((0.0, ty));
 
     let mut layer_paint = Paint::default();
     layer_paint.set_alpha_f(anim);
@@ -469,7 +470,16 @@ pub fn draw_modal(
             .paint(&layer_paint),
     );
 
-    draw_card(canvas, fonts, &card, _time, settings, state);
+    let cx = (card.left + card.right) * 0.5;
+    let cy = (card.top + card.bottom) * 0.5;
+    let chrome_saved = canvas.save();
+    canvas.translate((cx, cy));
+    canvas.scale((scale, scale));
+    canvas.translate((-cx, -cy));
+    draw_card_chrome(canvas, &card);
+    canvas.restore_to_count(chrome_saved);
+
+    draw_card_content(canvas, fonts, &card, _time, settings, state);
 
     canvas.restore();
     canvas.restore_to_count(saved);
@@ -531,14 +541,8 @@ fn draw_shroud(canvas: &Canvas, card_w: f32, card_h: f32, alpha: f32) {
     }
 }
 
-fn draw_card(
-    canvas: &Canvas,
-    fonts: &FontStore,
-    card: &Rect,
-    _time: f32,
-    settings: &Settings,
-    state: &NewInstanceModalState,
-) {
+/// Shadows, refract, tint and rim: everything without text (safe to scale).
+fn draw_card_chrome(canvas: &Canvas, card: &Rect) {
     let rrect = RRect::new_rect_xy(*card, CARD_RADIUS, CARD_RADIUS);
 
     // Drop shadow stack (CSS modal-card box-shadow):
@@ -593,7 +597,18 @@ fn draw_card(
         &rim,
     );
 
-    // Inner content
+}
+
+/// The form (text and widgets), clipped to the card. Never scaled.
+fn draw_card_content(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    card: &Rect,
+    _time: f32,
+    settings: &Settings,
+    state: &NewInstanceModalState,
+) {
+    let rrect = RRect::new_rect_xy(*card, CARD_RADIUS, CARD_RADIUS);
     let saved = canvas.save();
     canvas.clip_rrect(rrect, Some(ClipOp::Intersect), Some(true));
     draw_inner(canvas, fonts, card, settings, state);
