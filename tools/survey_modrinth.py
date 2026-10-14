@@ -485,7 +485,7 @@ DISPOSITION = {
     "Schematics":                 (5, "qol"),
     "Toggle sprint / sneak":      (1, "have"),   # M52a, !event.repeat guarded
     "Inventory sorting":          (4, "qol"),
-    "Block highlight / outline":  (1, "parity"),  # selection outline, rewo-gpu/src/world.rs:449
+    "Block highlight / outline":  (1, "parity"),  # selection outline, rewo-gpu/src/world/lines.rs
     "Block info under crosshair": (2, "qol"),   # Jade/WAILA class    # M-targeting draws the outline; config is the gap
     "Status-effect timers":       (2, "qol"),
     "Discord rich presence":      (1, "qol"),    # tension with OFFLINE FIRST -- opt-in only

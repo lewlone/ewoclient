@@ -13,6 +13,15 @@ paths:
 
 Reasoning per rule: `docs/rewo/milestones-*.md`. Measurements: `REWO_PLAN.md` §0.0.
 
+**`WorldRenderer` is a façade over per-subsystem modules** in
+`crates/rewo-gpu/src/world/` (`arena`, `cull`, `terrain`, `textures`,
+`lightmap`, `sky`, `gamma`, `frame`, `lines`, `scene_passes`, `entity_passes`,
+`gui_passes`, `depth`, `resources`). `world.rs` holds the struct, `SceneFrame`
+and the module map in its header; a subsystem's state is a sub-struct owned by
+its module (`Arena`, `Culler`, `TerrainPass`, `TextureArray`, `LightmapRing`,
+…), and `rewo_gpu::world::X` paths are kept by `pub use` re-exports. New work
+goes into the module that owns the subsystem, not back into `world.rs`.
+
 ## Coordinate, depth and geometry conventions
 
 - **The mesher emits WORLD-space vertices.** The shader must not add a column
@@ -53,13 +62,13 @@ Reasoning per rule: `docs/rewo/milestones-*.md`. Measurements: `REWO_PLAN.md` §
 - The text pass takes **linear** colour (`color_linear`); nine callers once
   passed sRGB bytes. White and black hide this, so test with a mid colour.
 - The Velvet passes must be built with **`world::unorm_of(target_format)`** and
-  drawn inside `WorldRenderer::with_gamma_space`, or the pipeline format
-  mismatches the attachment.
+  drawn inside `WorldRenderer::with_gamma_space` (both in `world/gamma.rs`), or
+  the pipeline format mismatches the attachment.
 - **Glint blends in gamma space** through a UNORM view of the same image
   (`MUTABLE_FORMAT`). Squaring isn't invariant under the sRGB transfer, so in
   linear space the glint quantised to nothing. Without
   `VK_KHR_swapchain_mutable_format` no glint draws at all.
-- **The gamma scope splits the frame's dynamic rendering.**
+- **The gamma scope splits the frame's dynamic rendering** (`world/gamma.rs`).
   `WorldRenderer::in_gamma_space` ends the instance and reopens it against the
   UNORM view with `LOAD`, then reopens the sRGB one. So the first instance must
   **`STORE` depth** (the glint and the other gamma-space passes test `EQUAL`
@@ -82,12 +91,12 @@ shows as `VUID-vkDestroyDevice-device-05137` with every witness green.
   a grow builds a new image (`create_texture_r8_async`, deferred destruction of
   the old one). Never rebuild the atlas through a fence-waiting upload:
   `sync_atlas` runs on the gameplay path.
-- **Terrain arena** (mega-buffer): `place_column` frees its regions on any
+- **Terrain arena** (mega-buffer, `world/arena.rs`): `place_column` frees its regions on any
   staging error; a failed `flush_uploads` unregisters the batch's columns and
   reports them via `take_lost_columns` (`pump_meshing` re-dirties them); a
   "mega-buffer full" column is kept in a retry queue and re-uploaded
-  nearest-first once removals free space; over `MAX_COLUMNS`, `sync_meta` keeps
-  the columns nearest the camera.
+  nearest-first once removals free space; over `MAX_COLUMNS`, `sync_meta`
+  (`world/cull.rs`) keeps the columns nearest the camera.
 - **Per-player texture slots are LRU** (`LruSlots` in `entities.rs`): skin,
   cape and tab-face pools evict the least recently drawn, never a slot drawn
   this frame; when all are in use the claim is refused and the player keeps the
@@ -95,9 +104,10 @@ shows as `VUID-vkDestroyDevice-device-05137` with every witness green.
   `take_evicted_textures` so the app forgets the stale address. Never index a
   pool with `next % N`.
 - **`WorldRenderer`'s per-frame inputs are two structs**: `GuiFrame` (GUI pass
-  inputs) and `SceneFrame` (camera, lightmap, sky/fog tints, fog band, sky mode,
-  celestial state, End flash, end-portal time, selected block). Its own fields
-  are GPU resources and passes: a new `set_*` input goes into one of them.
+  inputs, `world/gui_passes.rs`) and `SceneFrame` (`world.rs`: camera,
+  lightmap, sky/fog tints, fog band, sky mode, celestial state, End flash,
+  end-portal time, selected block). Its own fields are GPU resources and
+  passes: a new `set_*` input goes into one of them.
 - Swapchain: creation cleans up the swapchain and views on a partial failure;
   the format pick prefers B8G8R8A8_SRGB, then any sRGB format in the
   sRGB-nonlinear space, and warns otherwise (every pass writes linear colour and
