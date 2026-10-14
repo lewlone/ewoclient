@@ -958,6 +958,13 @@ pub struct PlaySession {
     /// table in `into_play`: the inventory stores ids and the prototype
     /// component table is keyed by name.
     glider_items: Vec<i32>,
+    /// The block and item registries [`Self::send_command`]'s parse resolves
+    /// `block_state` / `block_predicate` / `item_*` arguments against, as
+    /// vanilla's tree is built with `CommandBuildContext.simple(registryAccess,
+    /// ..)` (`ClientPacketListener.java:1688`). Cloned from `GameData` in
+    /// `into_play`; a caller that already holds an `Arc` of the same tables
+    /// may swap its own in.
+    pub command_registries: CommandRegistries,
     /// `UnderwaterAmbientSoundHandler`, and the previous tick's
     /// submersion that `LocalPlayer.updateIsUnderwater()` compares
     /// against (M142b). The handler itself is stateless; vanilla's
@@ -1844,6 +1851,10 @@ impl<'a> Connection<'a> {
         // the elytra take-off line can ask the inventory's chest slot without
         // a name round-trip. `minecraft:elytra` is one of them.
         let glider_items = glider_item_ids(&self.data.items);
+        let command_registries = CommandRegistries {
+            blocks: Some(std::sync::Arc::new(self.data.blocks.clone())),
+            items: Some(std::sync::Arc::new(self.data.items.clone())),
+        };
         // Biome registry parsed during configuration; the `biomeZoomSeed` +
         // dimension holder arrive with the play-login packet (`apply_login_shape`).
         // Access the field directly (not a `&self` method) — `self.stream` was
@@ -1969,6 +1980,7 @@ impl<'a> Connection<'a> {
             local_fall_flying: false,
             was_jump: false,
             glider_items,
+            command_registries,
             ambient_underwater: Default::default(),
             ambient_bubble: Default::default(),
             ambient_biome: Default::default(),
@@ -5675,6 +5687,13 @@ fn unpack_section_pos(packed: u64) -> (i32, i32, i32) {
 /// low nibble, not x.
 fn unpack_section_offset(pos: i32) -> (i32, i32, i32) {
     ((pos >> 8) & 15, pos & 15, (pos >> 4) & 15)
+}
+
+/// See [`PlaySession::command_registries`].
+#[derive(Clone, Default)]
+pub struct CommandRegistries {
+    pub blocks: Option<std::sync::Arc<rewo_data::blocks::Blocks>>,
+    pub items: Option<std::sync::Arc<rewo_data::items::Items>>,
 }
 
 /// Item ids whose prototype carries `minecraft:glider` — the elytra, and
