@@ -6,6 +6,12 @@ authors.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Test and debug env knobs (`REWO_FOG`, `REWO_MOB_DEBUG_TEX`, ...). Off by
+# default so a shipped renderer ignores them whatever the environment says;
+# rewo-app's `gates` feature turns it on. See `knobs.rs`.
+gates = []
+
 [dependencies]
 ash = { workspace = true }
 ash-window = { workspace = true }

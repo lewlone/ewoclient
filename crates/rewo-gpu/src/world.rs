@@ -4055,7 +4055,7 @@ fn create_host_buffer(
 /// a fixed default + override is the current compromise.
 fn parse_fog_env() -> [f32; 2] {
     let default = [80.0, 180.0];
-    std::env::var("REWO_FOG")
+    crate::knobs::var("REWO_FOG")
         .ok()
         .and_then(|s| {
             let mut it = s.split(',');
