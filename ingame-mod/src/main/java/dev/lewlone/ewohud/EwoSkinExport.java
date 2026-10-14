@@ -2,16 +2,23 @@ package dev.lewlone.ewohud;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
+import java.net.IDN;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.Locale;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -170,10 +177,18 @@ public final class EwoSkinExport {
             }
 
             if (skinUrl != null) {
-                download(skinUrl, gameDir.resolve("ewo-skin.png"));
+                try {
+                    download(skinUrl, gameDir.resolve("ewo-skin.png"));
+                } catch (IOException e) {
+                    System.err.println("[ewo-hud] skin download failed: " + e.getMessage());
+                }
             }
             if (capeUrl != null) {
-                download(capeUrl, gameDir.resolve("ewo-cape.png"));
+                try {
+                    download(capeUrl, gameDir.resolve("ewo-cape.png"));
+                } catch (IOException e) {
+                    System.err.println("[ewo-hud] cape download failed: " + e.getMessage());
+                }
             } else {
                 // No cape — clear any stale file so the viewer shows none.
                 Files.deleteIfExists(gameDir.resolve("ewo-cape.png"));
@@ -191,15 +206,119 @@ public final class EwoSkinExport {
         return (o != null && o.has("url")) ? o.get("url").getAsString() : null;
     }
 
+    /**
+     * The one host a texture URL may point at. This is vanilla's rule: authlib
+     * 9.0.75 ({@code com.mojang.authlib.yggdrasil.TextureUrlChecker
+     * .isAllowedTextureDomain}, the version 26.2's version json pins) accepts a
+     * URL only if it parses as a URI, has an http/https scheme and a host that
+     * is already lowercase after {@code IDN.toUnicode} and equals exactly
+     * {@code textures.minecraft.net} (no wildcard subdomains). We are stricter
+     * on the scheme: https only.
+     *
+     * <p>The URL comes from the {@code textures} property a <em>server</em>
+     * sends in its GameProfile, so without this check a hostile server could
+     * make the client GET a LAN address, learn its IP, or feed it a huge body.
+     */
+    static final String ALLOWED_HOST = "textures.minecraft.net";
+
+    private static final int MAX_BODY_BYTES = 1 << 20; // 1 MiB
+    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
+    private static final byte[] PNG_SIGNATURE =
+            {(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+
+    /** Closes a stalled body stream: the request timeout only covers headers. */
+    private static final ScheduledExecutorService WATCHDOG =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "ewo-skin-watchdog");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /** Whether {@code url} may be fetched as a texture (see {@link #ALLOWED_HOST}). */
+    static boolean isAllowedTextureUrl(String url) {
+        if (url == null) {
+            return false;
+        }
+        URI uri;
+        try {
+            uri = new URI(url).normalize();
+        } catch (URISyntaxException e) {
+            return false;
+        }
+        if (!"https".equals(uri.getScheme())) {
+            return false;
+        }
+        // userinfo ("https://textures.minecraft.net@evil/") parses with the
+        // right-hand host, but refuse the whole shape; and only the default port.
+        if (uri.getRawUserInfo() != null || (uri.getPort() != -1 && uri.getPort() != 443)) {
+            return false;
+        }
+        String host = uri.getHost();
+        if (host == null) {
+            return false;
+        }
+        String unicode = IDN.toUnicode(host);
+        if (!unicode.equals(unicode.toLowerCase(Locale.ROOT))) {
+            return false;
+        }
+        return ALLOWED_HOST.equals(unicode);
+    }
+
+    /**
+     * Fetch a texture PNG into {@code dest}: allow-listed https host, 5 s
+     * connect / 10 s request timeouts, redirects never followed, body capped at
+     * 1 MiB, and the bytes must start with the PNG signature before anything
+     * touches the disk. Throws {@link IOException} on any rejection.
+     */
     private static void download(String url, Path dest) throws IOException, InterruptedException {
-        HttpClient client = HttpClient.newHttpClient();
-        HttpRequest req = HttpRequest.newBuilder(URI.create(url)).GET().build();
+        if (!isAllowedTextureUrl(url)) {
+            throw new IOException("texture URL rejected (not https://" + ALLOWED_HOST + "/...)");
+        }
+        HttpClient client = HttpClient.newBuilder()
+                .connectTimeout(CONNECT_TIMEOUT)
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
+        HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                .timeout(REQUEST_TIMEOUT)
+                .GET()
+                .build();
         HttpResponse<InputStream> resp = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
-        if (resp.statusCode() != 200) {
-            return;
+        byte[] body;
+        // The request timeout only covers the headers; the watchdog closes a
+        // body stream that stalls, so this thread can never hang on a read.
+        try (InputStream in = resp.body()) {
+            ScheduledFuture<?> guard = WATCHDOG.schedule(() -> {
+                try {
+                    in.close();
+                } catch (IOException ignored) {
+                    // closing is the point
+                }
+            }, REQUEST_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+            try {
+                if (resp.statusCode() != 200) {
+                    throw new IOException("texture HTTP " + resp.statusCode());
+                }
+                long declared = resp.headers().firstValueAsLong("content-length").orElse(-1L);
+                if (declared > MAX_BODY_BYTES) {
+                    throw new IOException("texture too large (" + declared + " bytes declared)");
+                }
+                body = in.readNBytes(MAX_BODY_BYTES + 1);
+            } finally {
+                guard.cancel(false);
+            }
         }
-        try (InputStream in = resp.body(); OutputStream out = Files.newOutputStream(dest)) {
-            in.transferTo(out);
+        if (body.length > MAX_BODY_BYTES) {
+            throw new IOException("texture exceeds " + MAX_BODY_BYTES + " bytes");
         }
+        if (body.length < PNG_SIGNATURE.length) {
+            throw new IOException("texture is not a PNG (too short)");
+        }
+        for (int i = 0; i < PNG_SIGNATURE.length; i++) {
+            if (body[i] != PNG_SIGNATURE[i]) {
+                throw new IOException("texture is not a PNG (bad signature)");
+            }
+        }
+        Files.write(dest, body);
     }
 }
