@@ -70,17 +70,25 @@ pub(crate) fn sync_instance_config(instances: &mut Vec<Instance>, prefs: &Instan
 }
 
 /// The download job's loader layer for an instance loader (`None` = vanilla).
+/// The Ewo manifest URL is resolved now, from `version_id` and this
+/// machine's loader base; the instance's stored value is not used. With no
+/// base the download job runs without the loader layer (it only pre-fetches
+/// files); the launch itself then fails visibly.
 pub(crate) fn loader_spec_for(
     loader: &ewo_render::screens::instances::InstanceLoader,
+    version_id: &str,
 ) -> Option<loaders::LoaderSpec> {
     match loader {
         ewo_render::screens::instances::InstanceLoader::Vanilla
         | ewo_render::screens::instances::InstanceLoader::Native => None,
-        ewo_render::screens::instances::InstanceLoader::Ewo { manifest_url } => {
-            Some(loaders::LoaderSpec {
-                id: "ewo".to_string(),
-                url: manifest_url.clone(),
-            })
+        ewo_render::screens::instances::InstanceLoader::Ewo { .. } => {
+            match loaders::base::resolve_manifest_url(version_id) {
+                Ok(url) => Some(loaders::LoaderSpec { id: "ewo".to_string(), url }),
+                Err(e) => {
+                    log::warn!("downloads: EwoLoader layer skipped: {}", e);
+                    None
+                }
+            }
         }
     }
 }
@@ -143,10 +151,17 @@ mod tests {
 
     #[test]
     fn loader_spec_for_maps_loader_to_download_spec() {
-        assert_eq!(loader_spec_for(&InstanceLoader::Vanilla), None);
-        assert_eq!(loader_spec_for(&InstanceLoader::Native), None);
-        let url = "file:///loader/26.2.json".to_string();
-        let spec = loader_spec_for(&InstanceLoader::Ewo { manifest_url: url.clone() });
-        assert_eq!(spec, Some(LoaderSpec { id: "ewo".to_string(), url }));
+        assert_eq!(loader_spec_for(&InstanceLoader::Vanilla, "26.2"), None);
+        assert_eq!(loader_spec_for(&InstanceLoader::Native, "26.2"), None);
+        // The stored value is ignored: whatever base this machine resolves
+        // (if any) is keyed by the version line.
+        let ewo = InstanceLoader::Ewo { manifest_url: "file:///stale/26.1.json".to_string() };
+        match loader_spec_for(&ewo, "26.2.1") {
+            Some(LoaderSpec { id, url }) => {
+                assert_eq!(id, "ewo");
+                assert!(url.ends_with("/26.2.json"), "{url}");
+            }
+            None => assert!(crate::loaders::base::resolve_base().is_none()),
+        }
     }
 }

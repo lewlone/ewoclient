@@ -31,6 +31,28 @@ pub fn file_url_to_path(url: &str) -> Option<PathBuf> {
     Some(PathBuf::from(decoded))
 }
 
+/// Inverse of [`file_url_to_path`]: build a `file://` URL from a filesystem
+/// path. Backslashes become `/`, a Windows drive path gets the extra leading
+/// `/` (`file:///C:/x`), and only the characters `file_url_to_path` would
+/// misread (`%`, space, `#`, `?`) are percent-escaped.
+pub fn path_to_file_url(path: &Path) -> String {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    let mut out = String::from("file://");
+    if !raw.starts_with('/') {
+        out.push('/');
+    }
+    for ch in raw.chars() {
+        match ch {
+            '%' => out.push_str("%25"),
+            ' ' => out.push_str("%20"),
+            '#' => out.push_str("%23"),
+            '?' => out.push_str("%3F"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Decode `%XX` escapes into raw bytes, then validate as UTF-8. A `%` not
 /// followed by two hex digits is kept literally.
 fn percent_decode(s: &str) -> Option<String> {
@@ -180,6 +202,16 @@ mod tests {
         let p = file_url_to_path("file:///tmp/a%20b.jar").unwrap();
         assert!(p.to_string_lossy().ends_with("tmp/a b.jar"));
         assert!(file_url_to_path("https://x/y").is_none());
+    }
+
+    #[test]
+    fn path_to_file_url_round_trips_through_file_url_to_path() {
+        let p = Path::new(if cfg!(windows) { "C:\\a b\\100%\\x#1.jar" } else { "/a b/100%/x#1.jar" });
+        let url = path_to_file_url(p);
+        assert!(url.starts_with("file:///"), "{url}");
+        assert!(url.ends_with("/a%20b/100%25/x%231.jar"), "{url}");
+        let back = file_url_to_path(&url).unwrap();
+        assert_eq!(back.to_string_lossy().replace('\\', "/"), p.to_string_lossy().replace('\\', "/"));
     }
 
     #[test]

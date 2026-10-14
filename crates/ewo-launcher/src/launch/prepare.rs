@@ -20,6 +20,16 @@ pub struct Prepared {
     pub disabled_mod_ids: Vec<&'static str>,
 }
 
+/// Prefix of the `Err` string when an Ewo instance's loader manifest could
+/// not be resolved or fetched. The UI shows these as a launch error instead
+/// of falling back to the synthetic launch animation.
+pub const LOADER_ERR_PREFIX: &str = "EwoLoader: ";
+
+/// Whether a prepare error is a loader-manifest failure.
+pub fn is_loader_error(msg: &str) -> bool {
+    msg.starts_with(LOADER_ERR_PREFIX)
+}
+
 /// Inputs copied out of the instance for the worker.
 pub struct PrepareJob {
     pub entry: ManifestEntry,
@@ -48,28 +58,26 @@ fn run(job: PrepareJob) -> Result<Prepared, String> {
     let vanilla_pv = versions::per_version_fetch::get_or_fetch(&job.entry)
         .map_err(|e| format!("per-version fetch failed: {}", e))?;
     // Phase D: layer the instance's loader on top of vanilla, if any.
-    // Loader-fetch failures are non-fatal — we log + fall back to launching
-    // the vanilla profile so the user isn't blocked by a flaky manifest.
+    // An Ewo instance never degrades to a vanilla launch: if its loader
+    // manifest can't be resolved or fetched the launch fails with a
+    // `LOADER_ERR_PREFIX` error the launching screen shows (a silent vanilla
+    // game has no loader, mods or HUD and looks like a working launch). The
+    // base is resolved now, on this machine; the instance's stored value is
+    // not used (see `loaders::base`).
     let mut pv = match &job.loader {
         InstanceLoader::Vanilla | InstanceLoader::Native => vanilla_pv,
-        InstanceLoader::Ewo { manifest_url } => match loaders::get_or_fetch("ewo", manifest_url) {
-            Ok(loader_manifest) => {
-                log::info!(
-                    "launch: merging EwoLoader manifest \"{}\" on top of {}",
-                    loader_manifest.id,
-                    version_id
-                );
-                loaders::merge(&vanilla_pv, &loader_manifest)
-            }
-            Err(e) => {
-                log::warn!(
-                    "launch: EwoLoader fetch failed ({}) — launching vanilla {}",
-                    e,
-                    version_id
-                );
-                vanilla_pv
-            }
-        },
+        InstanceLoader::Ewo { .. } => {
+            let url = loaders::base::resolve_manifest_url(version_id)
+                .map_err(|e| format!("{LOADER_ERR_PREFIX}{e}"))?;
+            let loader_manifest = loaders::get_or_fetch("ewo", &url)
+                .map_err(|e| format!("{LOADER_ERR_PREFIX}could not load {url}: {e}"))?;
+            log::info!(
+                "launch: merging EwoLoader manifest \"{}\" on top of {}",
+                loader_manifest.id,
+                version_id
+            );
+            loaders::merge(&vanilla_pv, &loader_manifest)
+        }
     };
     // Download any library the merge added that wasn't in the vanilla
     // `PerVersion` Phase B saw at instance-setup time. Runs against the
@@ -135,4 +143,15 @@ fn run(job: PrepareJob) -> Result<Prepared, String> {
         pv,
         disabled_mod_ids,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loader_errors_are_recognised_by_prefix() {
+        assert!(is_loader_error(&format!("{LOADER_ERR_PREFIX}no manifests")));
+        assert!(!is_loader_error("per-version fetch failed: boom"));
+    }
 }

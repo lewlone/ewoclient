@@ -12,7 +12,7 @@
 //! the caller's responsibility.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::manifest::LoaderManifest;
@@ -55,9 +55,10 @@ impl std::error::Error for FetchError {}
 /// purely for offline inspection. If the loader is ever shipped with a
 /// stable URL + sha pinning, this is the spot to add a real cache.
 pub fn get_or_fetch(id: &str, url: &str) -> Result<LoaderManifest, FetchError> {
-    let body = if let Some(path) = crate::util::file_url_to_path(url) {
+    let local_path = crate::util::file_url_to_path(url);
+    let body = if let Some(path) = &local_path {
         log::info!("loader: reading {} from file {}", id, path.display());
-        fs::read_to_string(&path)
+        fs::read_to_string(path)
             .map_err(|e| FetchError::Network(format!("read {}: {}", path.display(), e)))?
     } else if url.starts_with("https://") {
         log::info!("loader: fetching {} from {}", id, url);
@@ -66,10 +67,12 @@ pub fn get_or_fetch(id: &str, url: &str) -> Result<LoaderManifest, FetchError> {
         return Err(FetchError::Other(format!("unsupported URL scheme: {}", url)));
     };
 
-    let parsed: LoaderManifest = serde_json::from_str(&body)
+    let mut parsed: LoaderManifest = serde_json::from_str(&body)
         .map_err(|e| FetchError::Parse(e.to_string()))?;
     if url.starts_with("https://") {
         reject_local_libraries(&parsed)?;
+    } else if let Some(dir) = local_path.as_deref().and_then(Path::parent) {
+        resolve_relative_libraries(&mut parsed, dir)?;
     }
 
     if let Err(e) = save_cached(id, &body) {
@@ -83,16 +86,58 @@ pub fn get_or_fetch(id: &str, url: &str) -> Result<LoaderManifest, FetchError> {
 /// are copied without a hash check, so a remote manifest could otherwise put
 /// any file on the user's disk onto the game classpath. Local (`file://`)
 /// manifests keep that ability for the EwoLoader dev loop.
+///
+/// Relative URLs (`libs/x.jar`, which a `file://` manifest resolves against
+/// its own directory) are the same hazard by another spelling, so they are
+/// rejected here too.
 fn reject_local_libraries(manifest: &LoaderManifest) -> Result<(), FetchError> {
     for lib in &manifest.libraries {
         let artifacts = lib.downloads.artifact.iter().chain(lib.downloads.classifiers.values());
         for a in artifacts {
             if !a.url.starts_with("https://") {
+                let kind = if is_relative_url(&a.url) { "relative" } else { "non-https" };
                 return Err(FetchError::Other(format!(
-                    "remote loader manifest lists a non-https library: {} ({})",
+                    "remote loader manifest lists a {} library: {} ({})",
+                    kind, lib.name, a.url
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A library `url` with no scheme at all (`libs/ewo-loader.jar`).
+fn is_relative_url(url: &str) -> bool {
+    !url.contains("://")
+}
+
+/// For a manifest read from disk: rewrite each scheme-less library `url` to
+/// a `file://` URL under `dir` (the manifest's own directory), so a bundled
+/// manifest can name `libs/<jar>` and stay movable. Absolute paths, drive
+/// letters and `..` segments are refused: a relative URL must stay inside
+/// the bundle.
+fn resolve_relative_libraries(manifest: &mut LoaderManifest, dir: &Path) -> Result<(), FetchError> {
+    for lib in &mut manifest.libraries {
+        let artifacts = lib
+            .downloads
+            .artifact
+            .iter_mut()
+            .chain(lib.downloads.classifiers.values_mut());
+        for a in artifacts {
+            if !is_relative_url(&a.url) {
+                continue;
+            }
+            let rel = a.url.replace('\\', "/");
+            let escapes = rel.starts_with('/')
+                || rel.contains(':')
+                || rel.split('/').any(|seg| seg == "..");
+            if escapes {
+                return Err(FetchError::Other(format!(
+                    "loader manifest library {} has a relative url that leaves the manifest folder: {}",
                     lib.name, a.url
                 )));
             }
+            a.url = crate::util::path_to_file_url(&dir.join(rel));
         }
     }
     Ok(())
@@ -165,6 +210,51 @@ mod tests {
             let m = manifest_with_library_url(bad);
             assert!(reject_local_libraries(&m).is_err(), "{bad} must be rejected");
         }
+    }
+
+    #[test]
+    fn remote_manifest_may_not_name_relative_libraries() {
+        for bad in ["libs/ewo-loader.jar", "./x.jar", "../x.jar"] {
+            let m = manifest_with_library_url(bad);
+            match reject_local_libraries(&m) {
+                Err(FetchError::Other(msg)) => assert!(msg.contains("relative"), "{bad}: {msg}"),
+                other => panic!("{bad} must be rejected as relative, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn local_manifest_resolves_relative_libraries_against_its_folder() {
+        let dir = env::temp_dir().join(format!("ewo-rel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("26.2.json");
+        let json = r#"{"id":"t","inheritsFrom":"26.2","mainClass":"M","libraries":[
+            {"name":"a:rel:1","downloads":{"artifact":
+                {"path":"a/rel.jar","sha1":"00","size":1,"url":"libs/rel.jar"}}},
+            {"name":"a:abs:1","downloads":{"artifact":
+                {"path":"a/abs.jar","sha1":"00","size":1,"url":"file:///elsewhere/abs.jar"}}},
+            {"name":"a:web:1","downloads":{"artifact":
+                {"path":"a/web.jar","sha1":"00","size":1,"url":"https://m.example/web.jar"}}}]}"#;
+        std::fs::write(&manifest, json).unwrap();
+        let url = crate::util::path_to_file_url(&manifest);
+
+        let m = get_or_fetch("ewo-rel-test", &url).expect("relative manifest loads");
+        let urls: Vec<String> = m
+            .libraries
+            .iter()
+            .map(|l| l.downloads.artifact.as_ref().unwrap().url.clone())
+            .collect();
+        let resolved = crate::util::file_url_to_path(&urls[0]).expect("relative became file://");
+        assert_eq!(resolved, dir.join("libs").join("rel.jar"));
+        assert_eq!(urls[1], "file:///elsewhere/abs.jar", "absolute file:// untouched");
+        assert_eq!(urls[2], "https://m.example/web.jar", "https untouched");
+
+        // A relative url may not climb out of the manifest folder.
+        let evil = json.replace("libs/rel.jar", "../../secret.jar");
+        std::fs::write(&manifest, evil).unwrap();
+        assert!(matches!(get_or_fetch("ewo-rel-test", &url), Err(FetchError::Other(_))));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
