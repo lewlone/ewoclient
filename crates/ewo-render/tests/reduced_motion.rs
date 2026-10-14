@@ -13,6 +13,7 @@ use std::sync::Mutex;
 use ewo_core::{motion, Settings, Theme};
 use ewo_render::backdrop::Backdrop;
 use ewo_render::screens::about_modal::AboutModalState;
+use ewo_render::screens::delete_instance_modal::DeleteInstanceModalState;
 use ewo_render::skia_safe::{surfaces, Color, ImageInfo, Rect, Surface};
 use ewo_render::widgets::{
     draw_glass_panel, draw_vbtn, VbtnState, VdropState, VstatusState, VtoggleState,
@@ -48,6 +49,11 @@ fn every_transition_lands_within_one_frame() {
     modal.open();
     modal.tick(FRAME);
     assert_eq!(modal.anim, 1.0, "modal entrance");
+
+    let mut delete = DeleteInstanceModalState::default();
+    delete.open("id", "name", "instances/id");
+    delete.tick(FRAME);
+    assert_eq!(delete.anim, 1.0, "delete modal entrance");
 
     let mut drop = VdropState {
         open: true,
@@ -90,6 +96,15 @@ fn transitions_still_take_their_time_when_motion_is_on() {
         modal.anim > 0.0 && modal.anim < 0.5,
         "modal entrance {}",
         modal.anim
+    );
+
+    let mut delete = DeleteInstanceModalState::default();
+    delete.open("id", "name", "instances/id");
+    delete.tick(FRAME);
+    assert!(
+        delete.anim > 0.0 && delete.anim < 0.5,
+        "delete modal entrance {}",
+        delete.anim
     );
 
     let mut toggle = VtoggleState {

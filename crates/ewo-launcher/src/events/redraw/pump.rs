@@ -66,6 +66,7 @@ impl App {
         self.pump_launch_preparation(time);
         self.pump_runtime_events(time);
         self.pump_launch_events(time);
+        self.poll_instance_delete();
         self.settle_finished_downloads();
         self.sync_version_dropdown();
     }

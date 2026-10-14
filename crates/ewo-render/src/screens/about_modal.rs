@@ -127,7 +127,7 @@ pub fn draw_modal(
     canvas.restore_to_count(saved);
 }
 
-fn draw_shroud(canvas: &Canvas, card_w: f32, card_h: f32, alpha: f32) {
+pub(crate) fn draw_shroud(canvas: &Canvas, card_w: f32, card_h: f32, alpha: f32) {
     let bounds = Rect::from_xywh(0.0, 0.0, card_w, card_h);
     if let Some(blur) = image_filters::blur((2.0, 2.0), TileMode::Clamp, None, None) {
         let saved = canvas.save();
@@ -161,7 +161,7 @@ fn draw_shroud(canvas: &Canvas, card_w: f32, card_h: f32, alpha: f32) {
 }
 
 /// Shadow, refract, tint and rim: everything without text (safe to scale).
-fn draw_card_chrome(canvas: &Canvas, card: &Rect) {
+pub(crate) fn draw_card_chrome(canvas: &Canvas, card: &Rect) {
     let rrect = RRect::new_rect_xy(*card, CARD_RADIUS, CARD_RADIUS);
 
     // Drop shadow

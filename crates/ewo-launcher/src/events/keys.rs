@@ -14,6 +14,8 @@ struct KeyFocus {
     instance_renaming: bool,
     profile_renaming: bool,
     about_open: bool,
+    /// The delete-instance confirmation is up.
+    delete_open: bool,
     link_modal_open: bool,
     /// On the Friends screen with the add-friend input focused.
     friends_add_focused: bool,
@@ -31,6 +33,8 @@ enum KeyTarget {
     ProfileRename,
     /// Esc with the About modal open.
     AboutClose,
+    /// Esc with the delete-instance confirmation open.
+    DeleteClose,
     LinkModal,
     FriendsAdd,
     /// Esc with the new-instance modal open.
@@ -38,13 +42,16 @@ enum KeyTarget {
     ModalName,
 }
 
-/// First match wins, in this order: a pending rebind, the instance rename,
+/// First match wins, in this order: a pending rebind, the delete-instance
+/// confirmation (it takes every key; only Esc does anything), the instance rename,
 /// the profile rename, Esc in About, the launcher-link modal, the
 /// add-friend input, Esc in the new-instance modal, its name field.
 /// Anything else leaves the key unhandled.
 fn key_target(f: KeyFocus) -> Option<KeyTarget> {
     if f.keybind_capture {
         Some(KeyTarget::KeybindCapture)
+    } else if f.delete_open {
+        f.escape.then_some(KeyTarget::DeleteClose)
     } else if f.instance_renaming {
         Some(KeyTarget::InstanceRename)
     } else if f.profile_renaming {
@@ -106,6 +113,7 @@ impl App {
             instance_renaming: self.instance_prefs.renaming,
             profile_renaming: self.prefs.profile_renaming.is_some(),
             about_open: self.about_modal.open,
+            delete_open: self.delete_modal.open,
             link_modal_open: self.launcher_link_modal.open,
             friends_add_focused: self.screen == Screen::Friends && self.friends_prefs.add_focused,
             modal_open: self.modal.open,
@@ -122,6 +130,13 @@ impl App {
             Some(KeyTarget::AboutClose) => {
                 log::info!("about: Esc → closing");
                 self.about_modal.close();
+            }
+            Some(KeyTarget::DeleteClose) => {
+                // Not while the folder is moving: that can't be cancelled.
+                if !self.delete_modal.busy {
+                    log::info!("delete: Esc → closing");
+                    self.delete_modal.close();
+                }
             }
             Some(KeyTarget::LinkModal) => self.key_link_modal(&logical_key, text.as_ref()),
             Some(KeyTarget::FriendsAdd) => self.key_friends_add(&logical_key, text.as_ref()),
@@ -319,6 +334,24 @@ mod tests {
     }
 
     #[test]
+    fn the_delete_confirmation_takes_every_key_and_only_esc_closes_it() {
+        let open = KeyFocus {
+            delete_open: true,
+            instance_renaming: true,
+            ..focus()
+        };
+        assert_eq!(key_target(open), None, "a letter does nothing");
+        assert_eq!(
+            key_target(KeyFocus {
+                escape: true,
+                ..open
+            }),
+            Some(KeyTarget::DeleteClose),
+            "not the rename underneath"
+        );
+    }
+
+    #[test]
     fn nothing_focused_leaves_keys_unhandled() {
         assert_eq!(key_target(focus()), None);
         assert_eq!(
@@ -337,6 +370,7 @@ mod tests {
             instance_renaming: true,
             profile_renaming: true,
             about_open: true,
+            delete_open: true,
             link_modal_open: true,
             friends_add_focused: true,
             modal_open: true,
@@ -346,6 +380,7 @@ mod tests {
         assert_eq!(key_target(all), Some(KeyTarget::KeybindCapture));
         // Peel owners off one by one: the documented priority order.
         let order = [
+            KeyTarget::DeleteClose,
             KeyTarget::InstanceRename,
             KeyTarget::ProfileRename,
             KeyTarget::AboutClose,
@@ -360,6 +395,7 @@ mod tests {
         for expect in order {
             assert_eq!(key_target(f), Some(expect));
             match expect {
+                KeyTarget::DeleteClose => f.delete_open = false,
                 KeyTarget::InstanceRename => f.instance_renaming = false,
                 KeyTarget::ProfileRename => f.profile_renaming = false,
                 KeyTarget::AboutClose => f.about_open = false,

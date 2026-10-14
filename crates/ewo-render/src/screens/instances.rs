@@ -53,7 +53,9 @@ const JAVA_RUNTIME_DROPDOWN_WIDTH: f32 = 320.0;
 /// "let the launcher pick" (its normal rule: exact major match, else the
 /// lowest installed major above the requirement). Indices >= 1 map onto
 /// the session's detected runtime list, which `App` refreshes from the
-/// JRE detector and mirrors into [`InstancePrefs::jre_runtime_labels`].
+/// JRE detector and mirrors into [`InstancePrefs::jre_runtime_labels`] and
+/// [`InstancePrefs::jre_runtime_pins`]. The dropdown index is a view of the
+/// current list only; what an instance stores is a [`JavaPin`].
 pub const JAVA_RUNTIME_AUTO_LABEL: &str = "Auto (recommended)";
 
 /// The dropdown's full option list for a set of detected-runtime labels:
@@ -64,6 +66,30 @@ pub fn java_runtime_options(detected: &[String]) -> Vec<String> {
     std::iter::once(JAVA_RUNTIME_AUTO_LABEL.to_string())
         .chain(detected.iter().cloned())
         .collect()
+}
+
+/// A per-instance Java-runtime pin, stored as the runtime's identity rather
+/// than its position in the detected list (which re-sorts whenever a JRE is
+/// installed or removed).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JavaPin {
+    /// The runtime's `java` binary, as the detector reports it.
+    pub path: String,
+    /// The major version it reported when pinned.
+    pub major: u32,
+}
+
+impl JavaPin {
+    /// The entry of `installed` this pin selects: the same binary, else (the
+    /// runtime was updated into a new folder, or moved) another install of
+    /// the pinned major. Never a different major, so a pin made for Java 21
+    /// can't drift onto a newer JRE that happens to sort in its place.
+    pub fn find(&self, installed: &[JavaPin]) -> Option<usize> {
+        installed
+            .iter()
+            .position(|j| j.path == self.path)
+            .or_else(|| installed.iter().position(|j| j.major == self.major))
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -220,6 +246,9 @@ pub struct InstancePrefs {
     /// [`java_runtime_options`]). A static list here would drift from
     /// what actually launches. Runtime-only, not persisted.
     pub jre_runtime_labels: Vec<String>,
+    /// The identity behind each runtime in `jre_runtime_labels` (entry N-1
+    /// for dropdown index N; Auto has none). Runtime-only, not persisted.
+    pub jre_runtime_pins: Vec<JavaPin>,
 }
 
 /// Duration of the new-row drop-in animation. Silk-eased from 0 to 1.
@@ -252,6 +281,7 @@ impl Default for InstancePrefs {
             rename_hover: false,
             download_pct: std::collections::HashMap::new(),
             jre_runtime_labels: java_runtime_options(&[]),
+            jre_runtime_pins: Vec::new(),
         }
     }
 }
@@ -280,9 +310,29 @@ impl InstancePrefs {
         if let Some(inst) = instances.get(self.selected) {
             self.ram.value = inst.ram as f32;
             self.render_dist.value = inst.render_distance as f32;
-            self.java_runtime.selected = inst.java_runtime;
             self.mods_on = inst.mods.iter().map(|m| m.on).collect();
         }
+        self.reselect_java(instances);
+    }
+
+    /// Point the Java-runtime dropdown at the selected instance's pin in the
+    /// current runtime list (Auto when it has none, or the pin matches
+    /// nothing installed, which is also what launch falls back to). Call it
+    /// whenever the list changes: the same runtime then keeps its place
+    /// however the list re-sorts.
+    pub fn reselect_java(&mut self, instances: &[Instance]) {
+        let pin = instances
+            .get(self.selected)
+            .and_then(|i| i.java_pin.as_ref());
+        self.java_runtime.selected = pin
+            .and_then(|p| p.find(&self.jre_runtime_pins))
+            .map_or(0, |i| i + 1);
+    }
+
+    /// The pin the dropdown's current choice stands for: `None` for Auto.
+    pub fn java_pin_for_selection(&self) -> Option<JavaPin> {
+        let i = self.java_runtime.selected.checked_sub(1)?;
+        self.jre_runtime_pins.get(i).cloned()
     }
 
     /// Initialize per-instance state from the currently-selected
@@ -380,13 +430,17 @@ pub struct Instance {
     pub ram: u32,
     #[serde(default = "default_render_distance")]
     pub render_distance: u32,
-    /// Java-runtime pin. `0` = auto (the launcher picks exact-major, else
-    /// lowest-above); `N >= 1` = entry N-1 of the session's detected
-    /// runtime list (one behind the dropdown's own index). A stale value
-    /// past the current list, or one that no longer meets the version's
-    /// requirement, falls back to auto at launch.
-    #[serde(default)]
-    pub java_runtime: usize,
+    /// Java-runtime pin: the runtime's identity, `None` = auto (the launcher
+    /// picks exact-major, else lowest-above). A pin whose runtime is gone
+    /// (and has no other install of its major), or that no longer meets the
+    /// version's requirement, falls back to auto at launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub java_pin: Option<JavaPin>,
+    /// The pre-identity pin: an index into the detected-runtime list. Only
+    /// read, from an old `instances.toml` (key `java_runtime`), never
+    /// written; the launcher resets a non-zero value to Auto on load.
+    #[serde(default, rename = "java_runtime", skip_serializing)]
+    pub legacy_java_runtime: usize,
     #[serde(default)]
     pub mods: Vec<ModInfo>,
     /// Whether this instance's vanilla artifacts (client.jar, libraries,
@@ -457,7 +511,8 @@ impl Instance {
             last_played_at: 0.0,
             ram: default_ram(),
             render_distance: default_render_distance(),
-            java_runtime: 0,
+            java_pin: None,
+            legacy_java_runtime: 0,
             mods,
             status: default_status(),
             loader: InstanceLoader::default(),
@@ -471,10 +526,9 @@ impl Instance {
         self
     }
 
-    pub fn with_config(mut self, ram: u32, render_distance: u32, java_runtime: usize) -> Self {
+    pub fn with_config(mut self, ram: u32, render_distance: u32) -> Self {
         self.ram = ram;
         self.render_distance = render_distance;
-        self.java_runtime = java_runtime;
         self
     }
 
@@ -541,7 +595,7 @@ pub fn default_instances() -> Vec<Instance> {
             "moments ago".into(),
             velvet_mods,
         )
-        .with_config(8, 16, 0)
+        .with_config(8, 16)
         .with_last_played_rank(60.0 * 5.0), // 5 min ago
         Instance::new(
             "Pearl Construct".into(),
@@ -549,7 +603,7 @@ pub fn default_instances() -> Vec<Instance> {
             "yesterday".into(),
             pearl_mods,
         )
-        .with_config(12, 24, 0)
+        .with_config(12, 24)
         .with_last_played_rank(60.0 * 60.0 * 24.0), // 1 day ago
         Instance::new(
             "Vanilla · L21".into(),
@@ -557,7 +611,7 @@ pub fn default_instances() -> Vec<Instance> {
             "3 days ago".into(),
             vec![],
         )
-        .with_config(4, 12, 1)
+        .with_config(4, 12)
         .with_last_played_rank(60.0 * 60.0 * 24.0 * 3.0), // 3 days ago
         Instance::new(
             "Snapshot · 24w40a".into(),
@@ -565,7 +619,7 @@ pub fn default_instances() -> Vec<Instance> {
             "last week".into(),
             vec![],
         )
-        .with_config(6, 8, 0)
+        .with_config(6, 8)
         .with_last_played_rank(60.0 * 60.0 * 24.0 * 7.0), // 7 days ago
     ]
 }
@@ -2214,6 +2268,60 @@ mod tests {
         assert_eq!(java_runtime_label(&p), "Java 21 · jdk-21");
         p.java_runtime.selected = 0;
         assert_eq!(java_runtime_label(&p), JAVA_RUNTIME_AUTO_LABEL);
+    }
+
+    fn pin(path: &str, major: u32) -> JavaPin {
+        JavaPin {
+            path: path.into(),
+            major,
+        }
+    }
+
+    fn pinned(java: Option<JavaPin>) -> Vec<Instance> {
+        let mut i = Instance::new("n".into(), "v".into(), "x".into(), Vec::new());
+        i.java_pin = java;
+        vec![i]
+    }
+
+    #[test]
+    fn a_pin_keeps_its_runtime_when_the_list_re_sorts() {
+        let mut p = prefs_with(&["Java 17 · a", "Java 21 · b"]);
+        p.jre_runtime_pins = vec![pin("a", 17), pin("b", 21)];
+        let list = pinned(Some(pin("b", 21)));
+        p.reselect_java(&list);
+        assert_eq!(p.java_runtime.selected, 2);
+        // A Java 8 install appears and sorts first: b is now entry 3.
+        p.jre_runtime_labels = java_runtime_options(&[
+            "Java 8 · c".into(),
+            "Java 17 · a".into(),
+            "Java 21 · b".into(),
+        ]);
+        p.jre_runtime_pins = vec![pin("c", 8), pin("a", 17), pin("b", 21)];
+        p.reselect_java(&list);
+        assert_eq!(p.java_runtime.selected, 3, "still Java 21");
+        assert_eq!(p.java_pin_for_selection(), Some(pin("b", 21)));
+    }
+
+    #[test]
+    fn a_pin_follows_an_updated_install_of_its_major_but_never_another_major() {
+        let want = pin("/jvm/jdk-21.0.4/bin/java", 21);
+        let updated = [pin("x17", 17), pin("/jvm/jdk-21.0.8/bin/java", 21)];
+        assert_eq!(want.find(&updated), Some(1));
+        let only_newer = [pin("x17", 17), pin("x25", 25)];
+        assert_eq!(want.find(&only_newer), None, "25 is not 21");
+        assert_eq!(want.find(&[]), None);
+    }
+
+    #[test]
+    fn no_pin_or_a_pin_matching_nothing_selects_auto() {
+        let mut p = prefs_with(&["Java 21 · b"]);
+        p.jre_runtime_pins = vec![pin("b", 21)];
+        p.java_runtime.selected = 1;
+        p.reselect_java(&pinned(None));
+        assert_eq!(p.java_runtime.selected, 0);
+        assert_eq!(p.java_pin_for_selection(), None);
+        p.reselect_java(&pinned(Some(pin("gone", 8))));
+        assert_eq!(p.java_runtime.selected, 0);
     }
 
     #[test]

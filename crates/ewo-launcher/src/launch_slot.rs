@@ -51,11 +51,51 @@ pub(crate) fn decide(input: SlotInput) -> SlotDecision {
     }
 }
 
+/// How often the running game is checked for a visible window.
+pub(crate) const WINDOW_POLL_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Whether the "has the game's window been seen" poll is due: a game is
+/// tracked, no window was observed yet (once seen it stays seen), and the
+/// last poll is at least [`WINDOW_POLL_EVERY`] old (or there was none).
+/// Pure, so the cadence is testable without a window system.
+pub(crate) fn window_poll_due(
+    tracked: bool,
+    window_seen: bool,
+    last_poll: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> bool {
+    tracked
+        && !window_seen
+        && last_poll.is_none_or(|t| now.saturating_duration_since(t) >= WINDOW_POLL_EVERY)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use SlotDecision::*;
     use SlotInput::*;
+
+    #[test]
+    fn window_poll_runs_about_once_a_second_until_a_window_is_seen() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        assert!(!window_poll_due(false, false, None, t0), "nothing tracked");
+        assert!(window_poll_due(true, false, None, t0), "never polled");
+        assert!(!window_poll_due(true, false, Some(t0), t0 + s(0)));
+        assert!(!window_poll_due(
+            true,
+            false,
+            Some(t0),
+            t0 + Duration::from_millis(999)
+        ));
+        assert!(window_poll_due(true, false, Some(t0), t0 + s(1)));
+        // A window already observed ends the polling for this launch.
+        assert!(!window_poll_due(true, true, Some(t0), t0 + s(60)));
+        // Time never runs backwards on an Instant, but a stale stamp from
+        // the future must not wedge the poll.
+        assert!(!window_poll_due(true, false, Some(t0 + s(5)), t0));
+    }
 
     #[test]
     fn preparing_refuses_the_click() {

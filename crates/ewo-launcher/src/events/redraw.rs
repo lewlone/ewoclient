@@ -149,6 +149,7 @@ impl App {
         }
         self.modal.tick(dt);
         self.about_modal.tick(dt);
+        self.delete_modal.tick(dt);
         self.launcher_link_modal.tick(dt);
         self.friends_prefs.tick(dt);
     }

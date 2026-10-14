@@ -362,7 +362,7 @@ fn finish_chain(
     let xsts = xsts_authorize(agent, &xbl.token)?;
 
     progress(ChainStage::LoggingIntoMinecraft);
-    let issued_at = std::time::Instant::now();
+    let issued_at = std::time::SystemTime::now();
     let mc = mc_login(agent, &xsts.token, &uhs)?;
 
     progress(ChainStage::FetchingProfile);

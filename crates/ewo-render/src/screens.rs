@@ -4,6 +4,7 @@
 //! and the modals.
 
 pub mod about_modal;
+pub mod delete_instance_modal;
 pub mod dev_overlay;
 pub mod friends;
 pub mod instances;
@@ -15,6 +16,9 @@ pub mod settings;
 pub mod tab_bar;
 
 pub use about_modal::{draw_modal as draw_about_modal, AboutModalState};
+pub use delete_instance_modal::{
+    draw_modal as draw_delete_instance_modal, DeleteInstanceModalState,
+};
 pub use dev_overlay::{draw_dev_overlay, DevOverlayState, FrameStats, Slot as DevSlot};
 pub use friends::{
     draw_friends, friends_layout, FriendActionToast, FriendRowView, FriendsCounts, FriendsLayout,

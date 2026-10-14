@@ -111,6 +111,40 @@ pub(crate) fn about_dismissal(
     }
 }
 
+/// What a click does in the delete-instance confirmation.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DeleteModalAction {
+    Cancel,
+    /// Start moving the folder to the Recycle Bin.
+    Confirm,
+    /// Shroud press: close like Cancel.
+    Shroud,
+    Nothing,
+}
+
+/// Cancel beats Confirm beats a shroud press, and while the move runs
+/// (`busy`) nothing does anything: it can neither be cancelled half way nor
+/// started twice.
+pub(crate) fn delete_modal_action(
+    cancel_clicked: bool,
+    confirm_clicked: bool,
+    busy: bool,
+    pressed: bool,
+    on_shroud: bool,
+) -> DeleteModalAction {
+    if busy {
+        DeleteModalAction::Nothing
+    } else if cancel_clicked {
+        DeleteModalAction::Cancel
+    } else if confirm_clicked {
+        DeleteModalAction::Confirm
+    } else if pressed && on_shroud {
+        DeleteModalAction::Shroud
+    } else {
+        DeleteModalAction::Nothing
+    }
+}
+
 /// What a click does in the launcher-link modal.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LinkModalAction {
@@ -374,6 +408,57 @@ mod tests {
         // A press inside the card, or a release on the shroud, is inert.
         assert_eq!(about_dismissal(false, true, false), None);
         assert_eq!(about_dismissal(false, false, true), None);
+    }
+
+    #[test]
+    fn delete_modal_priority_is_cancel_confirm_shroud_and_busy_is_inert() {
+        use DeleteModalAction::*;
+        assert_eq!(delete_modal_action(true, true, false, true, true), Cancel);
+        assert_eq!(
+            delete_modal_action(false, true, false, true, false),
+            Confirm
+        );
+        assert_eq!(delete_modal_action(false, false, false, true, true), Shroud);
+        // A press inside the card, or a release on the shroud, is inert.
+        assert_eq!(
+            delete_modal_action(false, false, false, true, false),
+            Nothing
+        );
+        assert_eq!(
+            delete_modal_action(false, false, false, false, true),
+            Nothing
+        );
+        // While the folder is moving nothing can be clicked, so it can be
+        // neither cancelled half way nor started twice.
+        for (cancel, confirm, shroud) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            assert_eq!(
+                delete_modal_action(cancel, confirm, true, true, shroud),
+                Nothing
+            );
+        }
+    }
+
+    #[test]
+    fn delete_modal_hit_rects_match_the_drawn_buttons() {
+        use ewo_render::screens::delete_instance_modal as m;
+        let (w, h) = (1100.0, 700.0);
+        let c =
+            |r: ewo_render::skia_safe::Rect| ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
+        let mut cancel = ewo_render::widgets::VghostBtnState::default();
+        let mut confirm = ewo_render::widgets::VghostBtnState::default();
+        let (cb, kb) = (
+            m::cancel_button_bounds(w, h),
+            m::confirm_button_bounds(w, h),
+        );
+        // The centre of each button hits only that button, off the shroud.
+        assert!(cancel.handle(c(cb), cb, true) && !confirm.handle(c(cb), kb, true));
+        assert!(confirm.handle(c(kb), kb, true) && !cancel.handle(c(kb), cb, true));
+        assert!(!m::shroud_consumes(c(cb), w, h) && !m::shroud_consumes(c(kb), w, h));
+        assert!(m::shroud_consumes((1.0, 1.0), w, h));
     }
 
     #[test]

@@ -100,13 +100,9 @@ impl App {
                 }
             }
             InstancesListClick::Delete(display_idx) => {
+                // Ask first; `delete_flow` does the rest on confirmation.
                 let idx = underlying(self, display_idx);
-                delete_instance(
-                    &mut self.instances,
-                    &mut self.instance_prefs,
-                    idx,
-                    self.clock.elapsed,
-                );
+                self.open_delete_modal(idx);
             }
             InstancesListClick::Select(display_idx) => {
                 let idx = underlying(self, display_idx);

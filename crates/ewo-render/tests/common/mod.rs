@@ -7,9 +7,9 @@ use ewo_core::{Screen, Settings, Theme};
 use ewo_render::app_window::draw_frame;
 use ewo_render::backdrop::Backdrop;
 use ewo_render::screens::{
-    self, AboutModalState, DevOverlayState, FrameStats, FriendsPrefs, FriendsViewState,
-    InstancePrefs, LaunchError, LauncherLinkModalState, LaunchingState, LinkRedeemView,
-    NewInstanceModalState, Prefs, ServerWidgetView, SettingsTab,
+    self, AboutModalState, DeleteInstanceModalState, DevOverlayState, FrameStats, FriendsPrefs,
+    FriendsViewState, InstancePrefs, LaunchError, LauncherLinkModalState, LaunchingState,
+    LinkRedeemView, NewInstanceModalState, Prefs, ServerWidgetView, SettingsTab,
 };
 use ewo_render::skia_safe::{surfaces, AlphaType, ColorType, ImageInfo};
 use ewo_render::text::HoverGlowState;
@@ -24,6 +24,7 @@ pub struct Scene {
     pub settings_tab: SettingsTab,
     pub time: f32,
     pub about: bool,
+    pub delete: bool,
     pub new_instance: bool,
     pub link: bool,
     pub dev: bool,
@@ -42,6 +43,7 @@ impl Scene {
             settings_tab: SettingsTab::Account,
             time: 3.7,
             about: false,
+            delete: false,
             new_instance: false,
             link: false,
             dev: false,
@@ -77,6 +79,10 @@ pub fn scenes() -> Vec<Scene> {
         Scene {
             about: true,
             ..Scene::new("about_modal", Screen::MainMenu)
+        },
+        Scene {
+            delete: true,
+            ..Scene::new("delete_instance_modal", Screen::Instances)
         },
         Scene {
             new_instance: true,
@@ -150,6 +156,15 @@ pub fn render_scaled(
         about.open();
         about.anim = 1.0;
     }
+    let mut delete = DeleteInstanceModalState::default();
+    if scene.delete {
+        delete.open(
+            "velvet-hours-1a2b3c",
+            "Velvet Hours",
+            "instances/velvet-hours-1a2b3c",
+        );
+        delete.anim = 1.0;
+    }
     let mut modal = NewInstanceModalState::default();
     if scene.new_instance {
         modal.open();
@@ -199,6 +214,7 @@ pub fn render_scaled(
         &launching,
         &modal,
         &about,
+        &delete,
         &link,
         LinkRedeemView::Idle,
         dev.as_ref(),

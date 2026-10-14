@@ -57,6 +57,7 @@ fn instances_path() -> Option<PathBuf> {
 pub fn load_instances() -> Vec<Instance> {
     let mut instances = load_instances_raw();
     let mut any_changed = assign_ids(&mut instances);
+    any_changed |= migrate_legacy_java_pins(&mut instances);
     for inst in instances.iter_mut() {
         if matches!(inst.loader, InstanceLoader::Ewo { .. })
             && bundled::sync_mods_with_catalog(&mut inst.mods)
@@ -73,6 +74,29 @@ pub fn load_instances() -> Vec<Instance> {
         save_instances(&instances);
     }
     instances
+}
+
+/// Reset the pre-identity Java-runtime pin of every instance to Auto. The old
+/// `java_runtime = N` was an index into a list that no longer exists (it once
+/// indexed a fixed fake list and was ignored at launch), so honouring it now
+/// would silently pin the Nth detected JRE, possibly a newer major than Auto
+/// picks. Returns whether anything changed (the file is then rewritten,
+/// which also drops the old key).
+fn migrate_legacy_java_pins(instances: &mut [Instance]) -> bool {
+    let mut changed = false;
+    for inst in instances.iter_mut() {
+        if inst.legacy_java_runtime != 0 {
+            log::info!(
+                "instances: \"{}\": legacy Java runtime pin #{} reset to Auto \
+                 (pins are now stored by runtime, not list position)",
+                inst.name,
+                inst.legacy_java_runtime
+            );
+            inst.legacy_java_runtime = 0;
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// Set when `instances.toml` exists but could not be read: saves are then
@@ -262,6 +286,52 @@ mod tests {
     use super::*;
     use ewo_render::screens::instances::InstanceLoader;
     use std::fs;
+
+    #[test]
+    fn a_legacy_numeric_java_pin_migrates_to_auto_and_is_not_written_back() {
+        let old = r#"
+[[instances]]
+name = "A"
+version = "VANILLA · 1.21"
+last_played = "x"
+java_runtime = 2
+
+[[instances]]
+name = "B"
+version = "VANILLA · 1.21"
+last_played = "x"
+java_runtime = 0
+"#;
+        let mut parsed: InstancesFile = toml::from_str(old).unwrap();
+        assert_eq!(parsed.instances[0].legacy_java_runtime, 2);
+        assert!(migrate_legacy_java_pins(&mut parsed.instances));
+        assert!(parsed.instances.iter().all(|i| i.java_pin.is_none()));
+        assert!(
+            !migrate_legacy_java_pins(&mut parsed.instances),
+            "second pass has nothing to do"
+        );
+        let text = toml::to_string_pretty(&parsed).unwrap();
+        assert!(!text.contains("java_runtime"), "{text}");
+    }
+
+    #[test]
+    fn a_java_pin_round_trips_and_the_legacy_index_is_never_written() {
+        use ewo_render::screens::instances::JavaPin;
+        let mut i = Instance::new("n".into(), "v".into(), "x".into(), Vec::new());
+        i.java_pin = Some(JavaPin {
+            path: "/opt/jvm/b/bin/java".into(),
+            major: 21,
+        });
+        i.legacy_java_runtime = 2;
+        let text = toml::to_string_pretty(&InstancesFile {
+            instances: vec![i.clone()],
+        })
+        .unwrap();
+        assert!(!text.contains("java_runtime"), "{text}");
+        let back: InstancesFile = toml::from_str(&text).unwrap();
+        assert_eq!(back.instances[0].java_pin, i.java_pin);
+        assert_eq!(back.instances[0].legacy_java_runtime, 0);
+    }
 
     /// Pre-loader-field `instances.toml` content must still parse — the
     /// `loader` field is `#[serde(default)]` so missing entries get

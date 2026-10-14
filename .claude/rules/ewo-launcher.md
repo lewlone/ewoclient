@@ -115,8 +115,12 @@ Subsystems:
   Service through the blocking `keyring` backend (`auth/keyring_cipher.rs`;
   `auth.toml` keeps a `keyring:v1:<slot>` marker per secret, slot
   `<uuid>:ms_refresh_token` / `<uuid>:social_token`, service `EwoClient`);
-  an unopenable entry signs out only that account, clearing a field or
-  removing an account deletes its entry (`SecretCipher::discard`), and with
+  an unopenable entry (locked keyring, no D-Bus, foreign DPAPI blob) signs
+  out only that account **in memory**: `AccountStore::unopened` keeps the
+  original stored string and every save writes it back unchanged, so a
+  transient failure never becomes a permanent sign-out (a re-sign-in, a
+  social relink or removing the account is what supersedes it); clearing a
+  field or removing an account deletes its entry (`SecretCipher::discard`), and with
   no Secret Service at startup it logs a warning and keeps the 0600
   plaintext file. Every `SecretCipher` call takes the slot; DPAPI ignores
   it. The Linux build needs `libdbus-1-dev` + `pkg-config` (CI installs it)
@@ -135,13 +139,20 @@ Subsystems:
   XBL/XSTS/MC) have hand-written redacting `Debug`. `--mint-rewo-env` saves a
   rotated refresh token back to `auth.toml`.
 - **Session lifetime** (`auth/mod.rs`): the Minecraft token's expiry is kept
-  in memory (serde-skipped, like the token). `launch_auth` decides each
+  in memory (serde-skipped, like the token) as a `TokenExpiry` on the **wall
+  clock** (`SystemTime`, issued + `expires_in`): `Instant` would not count
+  suspend on Linux (`CLOCK_MONOTONIC`), and a clock set back before the issue
+  time counts as expired. `launch_auth` decides each
   launch: Offline (no account), Ready, NeedsRefresh (no token, or within
   `TOKEN_REFRESH_MARGIN` = 10 min of expiry, with a refresh token), or
   Unavailable. A NeedsRefresh launch waits for the refresh on the auth worker
   and re-enters; a failed refresh, nothing to refresh with, or an account
   switch mid-wait fails the launch visibly. **A signed-in account never
-  launches offline.** A refresh response without `refresh_token` keeps the old
+  launches a Java game offline.** The gate is `launch_flow::auth_gate`: a
+  **Native (Rewo)** instance targets offline servers, so when the refresh
+  fails or there is nothing to refresh with it launches *without* a token
+  (only `REWO_USERNAME` is handed over) and pushes the Warn line "not signed
+  in to Microsoft — online servers will reject you" on the launching screen. A refresh response without `refresh_token` keeps the old
   one, and a refresh never moves the active-account pointer.
 - `versions/`: master manifest (6 h cache) and per-version manifests (sha1,
   permanent cache). `manifest::is_supported` is a **curated allowlist**. Don't
@@ -165,7 +176,10 @@ Subsystems:
   window (a zombie after shutdown never has one; a live game always does).
   **A game is never reaped in its first `SPAWN_GRACE_SECS` (30 s).** "Its
   window was seen" is an observation (`App::poll_game_window` asks
-  `reaper::state` about once a second while the game runs); the log markers
+  `reaper::state` about once a second while the game runs, from
+  `about_to_wait`, **not** from `on_redraw`, which returns early exactly when
+  the launcher is minimised or in the background; a Native Rewo game prints
+  no markers, so its observed window is the only early signal); the log markers
   ("lwjgl version", …) are only a hint (`active_launch_marker_seen`) that
   needs `MARKER_GRACE_SECS` (90 s) more before it can condemn a windowless
   game, and with neither signal it takes `STARTUP_GRACE_SECS` (300 s). A
@@ -175,10 +189,38 @@ Subsystems:
   and `ewo_core::util::atomic_write`'s temp name is unique per write
   (`.tmp-<pid>-<seq>`), so concurrent saves can't collide.
 - **Java runtime per instance**: the Instances dropdown is "Auto" followed by
-  the detected JREs. `Instance::java_runtime` is that index: `0` = auto
-  (`pick_for_major`), `N >= 1` = `detect_all()[N-1]`. A pin that is gone or
-  below the version's required major falls back to auto at launch with a
-  warning (`launch::jre::resolve_pin`).
+  the detected JREs, but an instance stores a **stable identity**
+  (`Instance::java_pin: Option<JavaPin { path, major }>`), not a list
+  position, so installing or removing a JRE never re-pins anything.
+  `InstancePrefs::jre_runtime_pins` mirrors the list; `reselect_java` points
+  the dropdown at the pin whenever the list changes, and only the dropdown
+  commit writes the pin (`instance_ops::sync_java_pin`). `launch::jre::resolve_pin`
+  finds the same binary, else another install of the pinned **major** (never
+  a newer one in its place), and a pin that is gone or below the version's
+  required major falls back to auto (`pick_for_major`, exact major first)
+  with a warning. The old `java_runtime = N` index (read as
+  `legacy_java_runtime`, never written) is reset to Auto on load with a log
+  line.
+- **Deleting an instance** (`delete_flow.rs`, `recycle.rs`,
+  `ewo-render` `screens/delete_instance_modal.rs`): the Worlds-list x opens a
+  confirmation modal (Velvet chrome from `about_modal`, text unscaled, silk,
+  `motion::dur`; pure hit rules in `events/hit.rs::delete_modal_action`, Esc
+  closes it, every click is inert while busy). Confirm moves
+  `instances/<id>/` to the Recycle Bin on a worker (`ewo-delete-instance`)
+  and only on success removes the instance from the list; a failure keeps
+  both and shows the error in the modal. **Never a permanent delete**: the
+  recycler trait has no fallback, `recycle_instance_folder` refuses an id that
+  is not one plain path component or a folder that is not a real directory
+  directly inside `instances/` (links/junctions out are refused), and nothing
+  in `recycle.rs` removes anything itself. Windows: `SHFileOperationW` with
+  `FOF_ALLOWUNDO | FOF_WANTNUKEWARNING | FOF_NOERRORUI | FOF_SILENT`
+  (no `\?\` paths; `FOF_NOCONFIRMATION` is deliberately off so Windows still
+  asks when an item could not be recycled, and a declined or aborted
+  operation is an error). Linux: `gio trash`, else a rename into the
+  freedesktop home Trash (`files/` + `info/*.trashinfo`, same filesystem
+  only, never copy+delete). A running or starting instance and the last
+  remaining instance can't be deleted. Shared libraries/assets/versions are
+  never touched.
 - `window/icon.rs` hands the largest PNG frame of `assets/icon.ico` to
   winit's `with_window_icon` (the borderless window's taskbar/alt-tab icon;
   the exe's embedded icon only serves Explorer and shortcuts).
@@ -205,8 +247,8 @@ Subsystems:
 - Disk root `<config>/EwoClient/` = `%APPDATA%\EwoClient` (Windows) or
   `$XDG_CONFIG_HOME/EwoClient`. It holds `shared/{versions,libraries,assets}`,
   `instances/<id>/` (stable id folders; worlds, natives, logs
-  `launch_<ts>.log`; deleting an instance leaves its folder, by design for
-  now), `dev/` (the HUD jar `ingame-mod/build.ps1` drops),
+  `launch_<ts>.log`; deleting an instance moves its folder to the Recycle
+  Bin, see below), `dev/` (the HUD jar `ingame-mod/build.ps1` drops),
   `runtime/<major>/jre/`, `auth.toml`, `profiles.toml`, `profiles/<name>/…`,
   `settings.toml`, `instances.toml`, `versions_cache.json`.
 - Every long task runs on a `std::thread` and reports over `mpsc`, polled once

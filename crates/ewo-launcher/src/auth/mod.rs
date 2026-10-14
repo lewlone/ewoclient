@@ -34,7 +34,7 @@ pub mod service;
 
 pub use service::{AuthOp, AuthService};
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -76,10 +76,11 @@ pub struct MinecraftAccount {
     /// Skipped from persistence — re-derived from `ms_refresh_token`.
     #[serde(skip)]
     pub minecraft_token: String,
-    /// When `minecraft_token` expires (from the login's `expires_in`).
-    /// In memory only, like the token itself. `None` = no live token.
+    /// When `minecraft_token` was issued and expires (from the login's
+    /// `expires_in`), on the wall clock. In memory only, like the token
+    /// itself. `None` = no live token.
     #[serde(skip)]
-    pub minecraft_token_expires_at: Option<Instant>,
+    pub minecraft_token_expires_at: Option<TokenExpiry>,
     /// Microsoft refresh token. **Sensitive — treat as a credential.**
     /// Sealed at rest by [`secret`] (DPAPI on Windows; a `0600`
     /// plaintext file elsewhere).
@@ -109,24 +110,51 @@ impl std::fmt::Debug for MinecraftAccount {
     }
 }
 
-/// When a token issued at `now` with the login response's `expires_in`
-/// (seconds) expires. A missing value assumes [`DEFAULT_TOKEN_LIFETIME`].
-pub fn token_expiry(now: Instant, expires_in: Option<u64>) -> Instant {
+/// When a Minecraft token was issued and when it expires, both on the wall
+/// clock ([`SystemTime`]). `Instant` is the wrong clock for this: Linux's
+/// `CLOCK_MONOTONIC` stops during suspend, so a laptop closed overnight would
+/// still read a day-old token as fresh. The server's expiry is wall-clock
+/// time, so the comparison is too.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TokenExpiry {
+    issued_at: SystemTime,
+    expires_at: SystemTime,
+}
+
+impl TokenExpiry {
+    /// Time left at `now`. `None` when the token has expired, or when the
+    /// clock reads earlier than the moment the token was issued (it was set
+    /// back, so no elapsed-time reasoning can be trusted: treated as expired).
+    pub fn remaining(&self, now: SystemTime) -> Option<Duration> {
+        if now < self.issued_at {
+            return None;
+        }
+        self.expires_at.duration_since(now).ok()
+    }
+}
+
+/// The expiry of a token issued at `now` with the login response's
+/// `expires_in` (seconds). A missing value assumes [`DEFAULT_TOKEN_LIFETIME`].
+pub fn token_expiry(now: SystemTime, expires_in: Option<u64>) -> TokenExpiry {
     let life = expires_in
         .map(Duration::from_secs)
         .unwrap_or(DEFAULT_TOKEN_LIFETIME);
-    now.checked_add(life)
-        .unwrap_or(now + DEFAULT_TOKEN_LIFETIME)
+    TokenExpiry {
+        issued_at: now,
+        expires_at: now
+            .checked_add(life)
+            .unwrap_or(now + DEFAULT_TOKEN_LIFETIME),
+    }
 }
 
 /// Whether a Minecraft token should be refreshed before use: it is
-/// missing, its expiry is unknown, or it has [`TOKEN_REFRESH_MARGIN`] or
-/// less left.
-pub fn token_needs_refresh(token: &str, expires_at: Option<Instant>, now: Instant) -> bool {
+/// missing, its expiry is unknown, the clock went backwards past its issue
+/// time, or it has [`TOKEN_REFRESH_MARGIN`] or less left.
+pub fn token_needs_refresh(token: &str, expires_at: Option<TokenExpiry>, now: SystemTime) -> bool {
     match expires_at {
-        Some(exp) if !token.is_empty() => {
-            exp.saturating_duration_since(now) <= TOKEN_REFRESH_MARGIN
-        }
+        Some(exp) if !token.is_empty() => exp
+            .remaining(now)
+            .is_none_or(|left| left <= TOKEN_REFRESH_MARGIN),
         _ => true,
     }
 }
@@ -148,7 +176,7 @@ pub enum LaunchAuth {
 
 /// Decide how a launch authenticates. A signed-in account never launches
 /// offline: it launches with a live token, refreshes first, or fails.
-pub fn launch_auth(active: Option<&MinecraftAccount>, now: Instant) -> LaunchAuth {
+pub fn launch_auth(active: Option<&MinecraftAccount>, now: SystemTime) -> LaunchAuth {
     let Some(a) = active else {
         return LaunchAuth::Offline;
     };
@@ -160,8 +188,10 @@ pub fn launch_auth(active: Option<&MinecraftAccount>, now: Instant) -> LaunchAut
     }
     // Nothing to refresh with. A token inside the margin but not yet
     // expired still beats failing.
-    let still_valid =
-        !a.minecraft_token.is_empty() && a.minecraft_token_expires_at.is_some_and(|exp| now < exp);
+    let still_valid = !a.minecraft_token.is_empty()
+        && a.minecraft_token_expires_at
+            .and_then(|exp| exp.remaining(now))
+            .is_some_and(|left| !left.is_zero());
     if still_valid {
         LaunchAuth::Ready
     } else {
@@ -175,7 +205,12 @@ pub fn launch_auth(active: Option<&MinecraftAccount>, now: Instant) -> LaunchAut
 mod tests {
     use super::*;
 
-    fn account(token: &str, expires_at: Option<Instant>, refresh: &str) -> MinecraftAccount {
+    /// A token issued at `issued` that is good for `life`.
+    fn expiry(issued: SystemTime, life: Duration) -> Option<TokenExpiry> {
+        Some(token_expiry(issued, Some(life.as_secs())))
+    }
+
+    fn account(token: &str, expires_at: Option<TokenExpiry>, refresh: &str) -> MinecraftAccount {
         MinecraftAccount {
             name: "Steve".into(),
             uuid: "0123456789abcdef0123456789abcdef".into(),
@@ -186,79 +221,111 @@ mod tests {
         }
     }
 
+    const HOUR: Duration = Duration::from_secs(3600);
+
     #[test]
     fn expiry_uses_expires_in_or_a_day() {
-        let now = Instant::now();
+        let now = SystemTime::now();
+        assert_eq!(token_expiry(now, Some(3600)).remaining(now), Some(HOUR));
         assert_eq!(
-            token_expiry(now, Some(3600)),
-            now + Duration::from_secs(3600)
+            token_expiry(now, None).remaining(now),
+            Some(DEFAULT_TOKEN_LIFETIME)
         );
-        assert_eq!(token_expiry(now, None), now + DEFAULT_TOKEN_LIFETIME);
     }
 
     #[test]
     fn needs_refresh_inside_the_margin() {
-        let now = Instant::now();
-        let hour = Duration::from_secs(3600);
-        assert!(
-            token_needs_refresh("", Some(now + hour), now),
-            "missing token"
-        );
+        let now = SystemTime::now();
+        let left = |d: Duration| expiry(now, d);
+        assert!(token_needs_refresh("", left(HOUR), now), "missing token");
         assert!(token_needs_refresh("t", None, now), "unknown expiry");
-        assert!(
-            !token_needs_refresh("t", Some(now + hour), now),
-            "an hour left"
-        );
+        assert!(!token_needs_refresh("t", left(HOUR), now), "an hour left");
         assert!(
             !token_needs_refresh(
                 "t",
-                Some(now + TOKEN_REFRESH_MARGIN + Duration::from_secs(1)),
+                left(TOKEN_REFRESH_MARGIN + Duration::from_secs(1)),
                 now
             ),
             "just outside the margin"
         );
         assert!(
-            token_needs_refresh("t", Some(now + TOKEN_REFRESH_MARGIN), now),
+            token_needs_refresh("t", left(TOKEN_REFRESH_MARGIN), now),
             "at the margin"
         );
         assert!(
-            token_needs_refresh("t", Some(now + Duration::from_secs(60)), now),
+            token_needs_refresh("t", left(Duration::from_secs(60)), now),
             "a minute left"
         );
-        assert!(token_needs_refresh("t", Some(now), now), "expired now");
+        assert!(
+            token_needs_refresh("t", left(Duration::ZERO), now),
+            "expired now"
+        );
         // A day-old token (the launcher left open) is expired.
-        let issued = now;
-        let later = issued + DEFAULT_TOKEN_LIFETIME + Duration::from_secs(1);
+        let later = now + DEFAULT_TOKEN_LIFETIME + Duration::from_secs(1);
         assert!(token_needs_refresh(
             "t",
-            Some(token_expiry(issued, Some(86_400))),
+            Some(token_expiry(now, Some(86_400))),
             later
         ));
     }
 
     #[test]
+    fn time_spent_suspended_counts_because_the_clock_is_wall_time() {
+        // A laptop slept 23 h 55 min with a 24 h token issued before it. A
+        // monotonic clock that stopped during suspend would still read the
+        // token as fresh; the wall clock sees it is inside the margin.
+        let issued = SystemTime::now();
+        let e = expiry(issued, DEFAULT_TOKEN_LIFETIME);
+        let hours = |h: u64| issued + Duration::from_secs(h * 3600);
+        assert!(!token_needs_refresh("t", e, hours(20)), "4 h left is fine");
+        assert!(token_needs_refresh(
+            "t",
+            e,
+            hours(23) + Duration::from_secs(55 * 60)
+        ));
+        assert!(token_needs_refresh("t", e, hours(25)), "long expired");
+    }
+
+    #[test]
+    fn a_clock_set_back_before_issue_counts_as_expired() {
+        let issued = SystemTime::now();
+        let e = expiry(issued, DEFAULT_TOKEN_LIFETIME);
+        let before = issued - HOUR * 3;
+        assert_eq!(e.unwrap().remaining(before), None);
+        assert!(token_needs_refresh("t", e, before));
+        // Nor is it "still valid" for an account with nothing to refresh
+        // with: that is reported, not launched on a token of unknown age.
+        let a = account("t", e, "");
+        assert!(matches!(
+            launch_auth(Some(&a), before),
+            LaunchAuth::Unavailable(_)
+        ));
+        assert_eq!(launch_auth(Some(&a), issued), LaunchAuth::Ready);
+    }
+
+    #[test]
     fn signed_out_launches_offline() {
-        assert_eq!(launch_auth(None, Instant::now()), LaunchAuth::Offline);
+        assert_eq!(launch_auth(None, SystemTime::now()), LaunchAuth::Offline);
     }
 
     #[test]
     fn live_token_launches() {
-        let now = Instant::now();
-        let a = account("t", Some(now + Duration::from_secs(3600)), "r");
+        let now = SystemTime::now();
+        let a = account("t", expiry(now, HOUR), "r");
         assert_eq!(launch_auth(Some(&a), now), LaunchAuth::Ready);
     }
 
     #[test]
     fn signed_in_without_token_refreshes_never_offline() {
-        let now = Instant::now();
+        let now = SystemTime::now();
         // Refresh in flight or failed at startup: no live token yet.
         let a = account("", None, "r");
         assert_eq!(launch_auth(Some(&a), now), LaunchAuth::NeedsRefresh);
         // Near expiry.
-        let a = account("t", Some(now + Duration::from_secs(60)), "r");
+        let a = account("t", expiry(now, Duration::from_secs(60)), "r");
         assert_eq!(launch_auth(Some(&a), now), LaunchAuth::NeedsRefresh);
         // Expired with nothing to refresh with: an error, not offline.
-        let a = account("t", Some(now), "");
+        let a = account("t", expiry(now, Duration::ZERO), "");
         assert!(matches!(
             launch_auth(Some(&a), now),
             LaunchAuth::Unavailable(_)
@@ -272,8 +339,8 @@ mod tests {
 
     #[test]
     fn unrefreshable_token_inside_margin_still_launches() {
-        let now = Instant::now();
-        let a = account("t", Some(now + Duration::from_secs(60)), "");
+        let now = SystemTime::now();
+        let a = account("t", expiry(now, Duration::from_secs(60)), "");
         assert_eq!(launch_auth(Some(&a), now), LaunchAuth::Ready);
     }
 }

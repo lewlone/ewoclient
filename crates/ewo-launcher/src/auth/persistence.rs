@@ -35,6 +35,16 @@ pub struct AccountStore {
     /// `minecraft_token` (it's `#[serde(skip)]` on `MinecraftAccount`).
     #[serde(default)]
     pub accounts: Vec<MinecraftAccount>,
+    /// Secrets that were on disk but could not be opened at load (a locked or
+    /// dismissed Linux keyring, no D-Bus, a DPAPI blob from another user),
+    /// keyed by slot, holding the ORIGINAL stored string (the
+    /// `keyring:v1:` / `dpapi:v1:` marker). The account is signed out in
+    /// memory only: the next save writes this string back unchanged, so a
+    /// transient failure can't become a permanent sign-out or orphan the
+    /// keyring entry. Dropped when the credential is superseded (re-sign-in,
+    /// social relink) or the account is removed. Never serialized.
+    #[serde(skip)]
+    pub(super) unopened: std::collections::HashMap<String, String>,
 }
 
 impl AccountStore {
@@ -48,6 +58,15 @@ impl AccountStore {
     /// (e.g. after a silent refresh produces a fresh refresh token). Does
     /// not change the `active` pointer.
     pub fn upsert(&mut self, account: MinecraftAccount) {
+        // A fresh credential supersedes a sealed one that never opened.
+        if !account.ms_refresh_token.is_empty() {
+            self.unopened
+                .remove(&secret::slot(&account.uuid, secret::KIND_REFRESH));
+        }
+        if account.social_token.is_some() {
+            self.unopened
+                .remove(&secret::slot(&account.uuid, secret::KIND_SOCIAL));
+        }
         if let Some(slot) = self.accounts.iter_mut().find(|a| a.uuid == account.uuid) {
             // Preserve Phase H social_token across re-auth (the auth chain
             // doesn't manage it). If the caller explicitly set one, honor
@@ -69,6 +88,8 @@ impl AccountStore {
     pub fn set_social_token(&mut self, uuid: &str, token: String) -> bool {
         if let Some(slot) = self.accounts.iter_mut().find(|a| a.uuid == uuid) {
             slot.social_token = Some(token);
+            self.unopened
+                .remove(&secret::slot(uuid, secret::KIND_SOCIAL));
             true
         } else {
             false
@@ -80,6 +101,12 @@ impl AccountStore {
     /// store is now empty.
     pub fn remove(&mut self, uuid: &str) {
         self.accounts.retain(|a| a.uuid != uuid);
+        // An explicit removal is the one thing that lets go of a held-back
+        // secret (the caller also discards the keyring entry).
+        self.unopened
+            .remove(&secret::slot(uuid, secret::KIND_REFRESH));
+        self.unopened
+            .remove(&secret::slot(uuid, secret::KIND_SOCIAL));
         if self.active.as_deref() == Some(uuid) {
             self.active = self.accounts.first().map(|a| a.uuid.clone());
         }
@@ -192,12 +219,15 @@ fn load_store_from(
     }
 }
 
-/// Open every sealed secret in `store`. A secret that cannot be opened (sealed
-/// by another user or machine, or corrupted) is dropped, which signs that
-/// account out rather than failing the whole load. Returns whether any value
+/// Open every sealed secret in `store`. A secret that cannot be opened (a
+/// locked keyring, sealed by another user or machine, or corrupted) signs that
+/// account out in memory rather than failing the whole load, but its original
+/// stored string is kept in `store.unopened` and written back unchanged by
+/// [`sealed_copy`]: the failure may be transient. Returns whether any value
 /// was plaintext that this platform would seal, so the caller re-saves it.
 pub(super) fn open_secrets(store: &mut AccountStore, cipher: &dyn secret::SecretCipher) -> bool {
     let mut had_plain = false;
+    store.unopened.clear();
     for a in &mut store.accounts {
         let refresh_slot = secret::slot(&a.uuid, secret::KIND_REFRESH);
         match secret::open(cipher, &refresh_slot, &a.ms_refresh_token) {
@@ -207,10 +237,15 @@ pub(super) fn open_secrets(store: &mut AccountStore, cipher: &dyn secret::Secret
             }
             Err(e) => {
                 log::warn!(
-                    "auth: refresh token for {} could not be opened ({e}); sign in again",
+                    "auth: refresh token for {} could not be opened ({e}); signed out for \
+                     this session, the stored value is kept",
                     a.name
                 );
-                a.ms_refresh_token.clear();
+                if !a.ms_refresh_token.is_empty() {
+                    store
+                        .unopened
+                        .insert(refresh_slot, std::mem::take(&mut a.ms_refresh_token));
+                }
             }
         }
         if let Some(tok) = a.social_token.take() {
@@ -220,7 +255,14 @@ pub(super) fn open_secrets(store: &mut AccountStore, cipher: &dyn secret::Secret
                     had_plain |= matches!(opened, secret::Opened::Plain(_));
                     a.social_token = Some(opened.into_inner());
                 }
-                Err(e) => log::warn!("auth: social token for {} dropped ({e}); relink", a.name),
+                Err(e) => {
+                    log::warn!(
+                        "auth: social token for {} could not be opened ({e}); \
+                         unlinked for this session, the stored value is kept",
+                        a.name
+                    );
+                    store.unopened.insert(social_slot, tok);
+                }
             }
         }
     }
@@ -235,12 +277,18 @@ pub(super) fn sealed_copy(
     let mut out = store.clone();
     for a in &mut out.accounts {
         let refresh_slot = secret::slot(&a.uuid, secret::KIND_REFRESH);
-        a.ms_refresh_token = secret::seal(cipher, &refresh_slot, &a.ms_refresh_token)?;
+        match store.unopened.get(&refresh_slot) {
+            // Signed out in memory only: write the original string back
+            // untouched (and leave its keyring entry alone).
+            Some(kept) if a.ms_refresh_token.is_empty() => a.ms_refresh_token = kept.clone(),
+            _ => a.ms_refresh_token = secret::seal(cipher, &refresh_slot, &a.ms_refresh_token)?,
+        }
         let social_slot = secret::slot(&a.uuid, secret::KIND_SOCIAL);
-        match a.social_token.take() {
-            Some(tok) => a.social_token = Some(secret::seal(cipher, &social_slot, &tok)?),
+        match (a.social_token.take(), store.unopened.get(&social_slot)) {
+            (Some(tok), _) => a.social_token = Some(secret::seal(cipher, &social_slot, &tok)?),
+            (None, Some(kept)) => a.social_token = Some(kept.clone()),
             // Unlinked: nothing may stay behind in a keyring.
-            None => cipher.discard(&social_slot),
+            (None, None) => cipher.discard(&social_slot),
         }
     }
     Ok(out)
@@ -313,6 +361,7 @@ mod tests {
         AccountStore {
             active: Some("uuid-a".into()),
             accounts: vec![a, account("B", "uuid-b")],
+            ..Default::default()
         }
     }
 
@@ -353,6 +402,125 @@ mod tests {
         assert_eq!(store.accounts[0].social_token, None);
         assert_eq!(store.accounts.len(), 2, "no account removed");
         assert_eq!(store.accounts[1].ms_refresh_token, "refresh-uuid-b");
+    }
+
+    /// Seals like [`FakeCipher`] but can be switched to refuse every open,
+    /// the way a locked keyring or an absent session bus does.
+    struct Flaky {
+        locked: std::cell::Cell<bool>,
+        discarded: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl Flaky {
+        fn new() -> Self {
+            Self {
+                locked: std::cell::Cell::new(false),
+                discarded: Default::default(),
+            }
+        }
+    }
+
+    impl secret::SecretCipher for Flaky {
+        fn encrypts(&self) -> bool {
+            true
+        }
+        fn protect(&self, slot: &str, plain: &[u8]) -> Result<Vec<u8>, String> {
+            FakeCipher.protect(slot, plain)
+        }
+        fn unprotect(&self, slot: &str, sealed: &[u8]) -> Result<Vec<u8>, String> {
+            if self.locked.get() {
+                return Err("keyring is locked".into());
+            }
+            FakeCipher.unprotect(slot, sealed)
+        }
+        fn discard(&self, slot: &str) {
+            self.discarded.borrow_mut().push(slot.to_string());
+        }
+    }
+
+    #[test]
+    fn a_transient_open_failure_does_not_become_a_permanent_sign_out() {
+        let cipher = Flaky::new();
+        let on_disk = sealed_copy(&two_accounts(), &cipher).unwrap();
+        let (refresh_a, social_a, refresh_b) = (
+            on_disk.accounts[0].ms_refresh_token.clone(),
+            on_disk.accounts[0].social_token.clone().unwrap(),
+            on_disk.accounts[1].ms_refresh_token.clone(),
+        );
+        cipher.discarded.borrow_mut().clear();
+
+        // Launch 1: the keyring is locked. Everyone is signed out in memory.
+        cipher.locked.set(true);
+        let mut store = on_disk;
+        open_secrets(&mut store, &cipher);
+        assert_eq!(store.accounts[0].ms_refresh_token, "");
+        assert_eq!(store.accounts[0].social_token, None);
+        assert_eq!(store.accounts[1].ms_refresh_token, "");
+
+        // Some other change saves the store meanwhile: the markers survive
+        // byte for byte and no entry is discarded.
+        let rewritten = sealed_copy(&store, &cipher).unwrap();
+        assert_eq!(rewritten.accounts[0].ms_refresh_token, refresh_a);
+        assert_eq!(
+            rewritten.accounts[0].social_token.as_deref(),
+            Some(&*social_a)
+        );
+        assert_eq!(rewritten.accounts[1].ms_refresh_token, refresh_b);
+        assert!(
+            cipher
+                .discarded
+                .borrow()
+                .iter()
+                .all(|s| !s.contains("uuid-a")),
+            "nothing of A was discarded: {:?}",
+            cipher.discarded.borrow()
+        );
+
+        // Launch 2: the keyring is back. The same file opens fine.
+        cipher.locked.set(false);
+        let mut back = rewritten;
+        open_secrets(&mut back, &cipher);
+        assert_eq!(back.accounts[0].ms_refresh_token, "refresh-uuid-a");
+        assert_eq!(back.accounts[0].social_token.as_deref(), Some("social-a"));
+        assert_eq!(back.accounts[1].ms_refresh_token, "refresh-uuid-b");
+    }
+
+    #[test]
+    fn a_held_back_secret_goes_only_on_removal_or_a_fresh_credential() {
+        let cipher = Flaky::new();
+        let mut store = sealed_copy(&two_accounts(), &cipher).unwrap();
+        cipher.locked.set(true);
+        open_secrets(&mut store, &cipher);
+        cipher.locked.set(false);
+
+        // A re-sign-in of B supplies a fresh credential: it is written, not
+        // the stale marker.
+        store.upsert(account("B", "uuid-b"));
+        let saved = sealed_copy(&store, &cipher).unwrap();
+        let mut reopened = saved.clone();
+        open_secrets(&mut reopened, &cipher);
+        assert_eq!(reopened.accounts[1].ms_refresh_token, "refresh-uuid-b");
+        // A is still held back untouched.
+        assert!(saved.accounts[0]
+            .ms_refresh_token
+            .starts_with(secret::PREFIX));
+
+        // Relinking A's social token replaces its held-back marker.
+        assert!(store.set_social_token("uuid-a", "social-new".into()));
+        let saved = sealed_copy(&store, &cipher).unwrap();
+        let mut reopened = saved;
+        open_secrets(&mut reopened, &cipher);
+        assert_eq!(
+            reopened.accounts[0].social_token.as_deref(),
+            Some("social-new")
+        );
+
+        // Removing A is the explicit sign-out: nothing of A is written back.
+        store.remove("uuid-a");
+        let saved = sealed_copy(&store, &cipher).unwrap();
+        assert_eq!(saved.accounts.len(), 1);
+        assert_eq!(saved.accounts[0].uuid, "uuid-b");
+        assert!(store.unopened.is_empty());
     }
 
     fn scratch(tag: &str) -> std::path::PathBuf {

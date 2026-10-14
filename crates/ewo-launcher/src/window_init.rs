@@ -65,7 +65,7 @@ impl App {
             .spawn(move || {
                 let n = launch::detect_jres().len();
                 log::info!("jre warm: {n} runtime(s) detected (cache primed)");
-                let _ = jre_tx.send(launch::jre::labels());
+                let _ = jre_tx.send(launch::jre::listing());
             })
             .expect("spawn jre-warm thread");
         self.jre_labels_rx = Some(jre_rx);
