@@ -483,6 +483,27 @@ impl App {
         self.auth.social_token(&active.uuid).map(str::to_string)
     }
 
+    /// Card-local bounds of the main-menu network widget, grown by the
+    /// online-name strip when there are names to show. One source for the
+    /// hover and click rects so they match what `draw_main_menu` paints.
+    fn server_widget_rect(&self, card_w: f32, card_h: f32) -> skia_safe::Rect {
+        let rows = self
+            .social
+            .server_status()
+            .map_or(0, |s| screens::server_widget_name_rows(s.online, s.players.len()));
+        screens::server_widget_bounds(card_w, card_h, rows)
+    }
+
+    /// Arriving at Friends refetches the list immediately rather than
+    /// waiting for the next 30 s cadence tick. Goes through the same gate
+    /// as every social request: with social disabled, or no linked
+    /// account, `refresh_friends_now` issues nothing.
+    fn refresh_friends_on_arrival(&mut self) {
+        if let Some(token) = self.active_social_token() {
+            self.social.refresh_friends_now(&token);
+        }
+    }
+
     /// The main-menu network widget exists only while its status poll can
     /// run: social configured and the active account linked.
     fn server_widget_visible(&self) -> bool {

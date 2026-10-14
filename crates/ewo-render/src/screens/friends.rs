@@ -14,7 +14,7 @@
 //! Empty / not-linked / loading variants render a single centered
 //! message instead of the three-section layout.
 
-use ewo_core::CubicBezier;
+use ewo_core::{motion, CubicBezier};
 use skia_safe::{Canvas, Color, Color4f, Font, Paint, PaintStyle, Point, RRect, Rect};
 
 use crate::text::{self, FontStore};
@@ -53,14 +53,52 @@ pub enum FriendsViewState<'a> {
     NotLinked,
     /// First poll hasn't returned yet. Show a centered "loading…".
     Loading,
-    /// Friends list fetched. Sections passed individually.
+    /// Friends list fetched. Sections passed individually. `action`
+    /// carries the most recent friend-mutation toast (request sent,
+    /// accepted, removed, or its failure) while it's showing.
     Loaded {
         friends: &'a [FriendRowView],
         incoming: &'a [FriendRowView],
         outgoing: &'a [FriendRowView],
+        action: Option<&'a FriendActionToast<'a>>,
     },
     /// Most recent fetch errored. Show a short message.
     Failed(&'a str),
+}
+
+/// Render-side snapshot of the last friend-mutation status for the toast
+/// line under the add bar. Built by `events.rs` from
+/// `social::FriendActionStatus` so this module stays decoupled from the
+/// social state machine.
+#[derive(Copy, Clone, Debug)]
+pub struct FriendActionToast<'a> {
+    pub text: &'a str,
+    /// Failed actions render ember; successes render lavender.
+    pub failed: bool,
+    /// Seconds since a settled status landed. `f32::INFINITY` while the
+    /// action is still submitting (drawn fully visible, no entrance).
+    pub age: f32,
+    /// Seconds until the toast expires (`f32::INFINITY` while submitting).
+    pub remaining: f32,
+}
+
+/// Entrance and exit fade lengths of the toast (before reduced motion).
+const TOAST_FADE_IN_S: f32 = 0.28;
+const TOAST_FADE_OUT_S: f32 = 0.45;
+/// Entrance drift in whole pixels. The toast is text, so it fades and
+/// translates; it never scales.
+const TOAST_DRIFT_PX: f32 = 4.0;
+
+/// `(alpha, dy)` for a toast of the given age and remaining life: a silk
+/// fade-in with a small whole-pixel upward drift, then a linear fade-out
+/// over the last `fade_out` seconds. `fade_in`/`fade_out` come in already
+/// passed through `motion::dur`, so reduced motion lands on the end state
+/// at the next frame.
+fn toast_visual(age: f32, remaining: f32, fade_in: f32, fade_out: f32) -> (f32, f32) {
+    let t_in = (age / fade_in).clamp(0.0, 1.0);
+    let eased = CubicBezier::SILK.eval(t_in);
+    let out = (remaining / fade_out).clamp(0.0, 1.0);
+    (eased * out, ((1.0 - eased) * TOAST_DRIFT_PX).round())
 }
 
 #[derive(Clone, Debug)]
@@ -155,7 +193,7 @@ pub struct FriendsCounts {
 
 impl FriendsCounts {
     pub fn from_view(view: FriendsViewState<'_>) -> Self {
-        if let FriendsViewState::Loaded { friends, incoming, outgoing } = view {
+        if let FriendsViewState::Loaded { friends, incoming, outgoing, .. } = view {
             FriendsCounts {
                 friends: friends.len(),
                 incoming: incoming.len(),
@@ -337,8 +375,11 @@ pub fn draw_friends(
         FriendsViewState::Failed(msg) => {
             draw_centered_message(canvas, fonts, card_w, card_h, msg, ACCENT_EMBER);
         }
-        FriendsViewState::Loaded { friends, incoming, outgoing } => {
+        FriendsViewState::Loaded { friends, incoming, outgoing, action } => {
             draw_add_bar(canvas, fonts, &layout, prefs);
+            if let Some(toast) = action {
+                draw_action_toast(canvas, fonts, &layout, toast);
+            }
             let mut y = layout.add_input.bottom + 36.0;
             if !incoming.is_empty() {
                 y = draw_section(
@@ -396,6 +437,44 @@ fn draw_not_linked(canvas: &Canvas, fonts: &FontStore, layout: &FriendsLayout, p
     // The button is rendered by the caller (we expose its bounds in
     // `layout.link_launcher_btn`); draw it here using the standard vbtn.
     draw_vbtn_label_only(canvas, layout.link_launcher_btn, "Link launcher", &prefs.link_launcher_btn, fonts);
+}
+
+fn draw_action_toast(
+    canvas: &Canvas,
+    fonts: &FontStore,
+    layout: &FriendsLayout,
+    toast: &FriendActionToast<'_>,
+) {
+    let (alpha, dy) = toast_visual(
+        toast.age,
+        toast.remaining,
+        motion::dur(TOAST_FADE_IN_S),
+        motion::dur(TOAST_FADE_OUT_S),
+    );
+    if alpha <= 0.0 {
+        return;
+    }
+    // Sits in the gap between the add bar and the first section head
+    // (rows start at add_input.bottom + 36), so it doesn't shift any of
+    // the row geometry the hit-rects depend on.
+    let font = fonts.newsreader_italic_axes(12.0, 400.0);
+    let base = if toast.failed { ACCENT_EMBER } else { ACCENT_LAV };
+    let mut p = Paint::default();
+    p.set_anti_alias(true);
+    p.set_color(base);
+    p.set_alpha_f(alpha);
+    let (_, m) = font.metrics();
+    // The section area starts at bottom+36 (head) with rows 24 below;
+    // baseline at bottom+26 keeps a clear ~4px from both neighbours.
+    canvas.draw_str(
+        toast.text,
+        (
+            layout.content_left,
+            layout.add_input.bottom + 26.0 + (-m.ascent) + dy,
+        ),
+        &font,
+        &p,
+    );
 }
 
 fn draw_add_bar(canvas: &Canvas, fonts: &FontStore, layout: &FriendsLayout, prefs: &FriendsPrefs) {
@@ -722,4 +801,40 @@ fn draw_centered_message(
     let advance = f.measure_str(msg, Some(&p)).0;
     let baseline = card_h * 0.5 + (-m.ascent - m.descent) * 0.5;
     canvas.draw_str(msg, (card_w * 0.5 - advance * 0.5, baseline), &f, &p);
+}
+
+#[cfg(test)]
+mod toast_tests {
+    use super::*;
+
+    #[test]
+    fn toast_fades_in_with_a_whole_pixel_drift_that_settles() {
+        let (a0, dy0) = toast_visual(0.0, 6.0, 0.28, 0.45);
+        assert_eq!((a0, dy0), (0.0, TOAST_DRIFT_PX));
+        let (a, dy) = toast_visual(0.14, 6.0, 0.28, 0.45);
+        assert!(a > 0.0 && a < 1.0);
+        assert_eq!(dy, dy.round(), "drift must be whole pixels");
+        assert_eq!(toast_visual(0.28, 6.0, 0.28, 0.45), (1.0, 0.0));
+    }
+
+    #[test]
+    fn toast_fades_out_before_it_expires() {
+        let (a, _) = toast_visual(5.8, 0.2, 0.28, 0.45);
+        assert!(a > 0.0 && a < 1.0);
+        assert_eq!(toast_visual(6.0, 0.0, 0.28, 0.45).0, 0.0);
+    }
+
+    #[test]
+    fn submitting_toast_is_fully_visible_immediately() {
+        let v = toast_visual(f32::INFINITY, f32::INFINITY, 0.28, 0.45);
+        assert_eq!(v, (1.0, 0.0));
+    }
+
+    #[test]
+    fn reduced_motion_lands_on_the_end_state_next_frame() {
+        let fi = motion::effective_duration(TOAST_FADE_IN_S, true);
+        let fo = motion::effective_duration(TOAST_FADE_OUT_S, true);
+        assert_eq!(toast_visual(0.016, 6.0, fi, fo), (1.0, 0.0));
+        assert_eq!(toast_visual(6.0, 0.0, fi, fo).0, 0.0);
+    }
 }
