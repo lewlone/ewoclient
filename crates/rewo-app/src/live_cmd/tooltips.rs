@@ -212,6 +212,58 @@ pub(super) const ENCHANT_COLOR: [f32; 3] = [170.0 / 255.0, 170.0 / 255.0, 170.0 
 /// `ChatFormatting.RED` — a curse's.
 pub(super) const CURSE_COLOR: [f32; 3] = [1.0, 85.0 / 255.0, 85.0 / 255.0];
 
+/// `MapId.addToTooltip` (M191), for a stack carrying `minecraft:map_id`.
+///
+/// ```java
+/// MapItemSavedData data = context.mapData(this);
+/// if (data == null) { "filled_map.unknown", GRAY }
+/// else {
+///    if (CUSTOM_NAME == null && postProcessing == null) "filled_map.id"(id), GRAY
+///    if (data.locked || postProcessing == LOCK)          "filled_map.locked", GRAY
+///    if (flag.isAdvanced()) {
+///       scale = min(data.scale + (postProcessing == SCALE ? 1 : 0), 4)
+///       "filled_map.scale"(1 << scale), "filled_map.level"(scale, 4), both GRAY
+///    }
+/// }
+/// ```
+///
+/// `context.mapData` is the level's map store, so a map the server has not
+/// sent (yet) reads "Unknown Map", as it does in vanilla. `MAP_POST_PROCESSING`
+/// only exists on the cartography table's preview result and is not decoded:
+/// it is taken as absent.
+pub(crate) fn map_lines(
+    map_id: i32,
+    data: Option<&rewo_world::maps::ClientMap>,
+    has_custom_name: bool,
+    advanced: bool,
+    lang: &rewo_data::lang::Language,
+) -> Vec<rewo_gpu::tooltip::Line> {
+    let gray = |s: String| vec![rewo_gpu::tooltip::Span::new(s, ENCHANT_COLOR)];
+    let Some(data) = data else {
+        return vec![gray(lang.translate("filled_map.unknown", &[]))];
+    };
+    let mut out = Vec::new();
+    if !has_custom_name {
+        out.push(gray(
+            lang.translate("filled_map.id", &[&map_id.to_string()]),
+        ));
+    }
+    if data.locked {
+        out.push(gray(lang.translate("filled_map.locked", &[])));
+    }
+    if advanced {
+        let scale = i32::from(data.scale).min(4);
+        out.push(gray(lang.translate(
+            "filled_map.scale",
+            &[&(1i64 << scale.clamp(0, 30)).to_string()],
+        )));
+        out.push(gray(
+            lang.translate("filled_map.level", &[&scale.to_string(), "4"]),
+        ));
+    }
+    out
+}
+
 /// `Enchantment.getFullname` for each of a stack's enchantments, in
 /// `ItemEnchantments.addToTooltip`'s order (M42).
 ///
@@ -494,6 +546,8 @@ pub(crate) fn screen_tooltip(
     // `Placement::with_book`; this one resolved through the centred form, so
     // with the book up it named a slot 77 GUI px right of the cursor.
     book_open: bool,
+    // M191 — the level's maps, `TooltipContext.mapData` for a map's lines.
+    maps: &rewo_world::maps::MapStore,
 ) -> Option<(
     rewo_gpu::container::TooltipDraw,
     Vec<rewo_gpu::world::OwnedTextLine>,
@@ -581,8 +635,25 @@ pub(crate) fn screen_tooltip(
             )),
             lang,
         ));
+        // `addDetailsToTooltip`'s order (`ItemStack.java:872-894` in the 26.2
+        // decompile): ... MAP_ID, BEES, CONTAINER_LOOT, CONTAINER, ...,
+        // ENCHANTMENTS, ..., LORE, ..., then UNBREAKABLE after the attribute
+        // block. M191 corrected this from enchantments -> lore -> container,
+        // which put a shulker box's contents under its lore.
+        let detail = details.get(stack.components);
+        if let Some(id) = detail.and_then(|d| d.map_id) {
+            lines.extend(map_lines(
+                id,
+                maps.get(id),
+                text.is_some_and(|t| t.custom_name.is_some()),
+                flag.advanced,
+                lang,
+            ));
+        }
+        if let Some(d) = detail {
+            lines.extend(container_lines(&d.container, items, names, lang));
+        }
         if let Some(t) = text {
-            // Vanilla's order: the enchantments come before the lore.
             lines.extend(enchantment_lines(
                 &t.enchantments,
                 enchant_registry,
@@ -595,13 +666,6 @@ pub(crate) fn screen_tooltip(
                     UNBREAKABLE_COLOR,
                 )]);
             }
-        }
-        // M66 stage 4: `minecraft:container`'s preview. Vanilla's component
-        // tooltips run in `DataComponents` registration order and `container`
-        // comes after the lore block, which is where this sits.
-        let detail = details.get(stack.components);
-        if let Some(d) = detail {
-            lines.extend(container_lines(&d.container, items, names, lang));
         }
         // M66 stage 3: the advanced block, last of everything a component adds.
         {

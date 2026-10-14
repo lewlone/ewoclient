@@ -3838,6 +3838,24 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M191 — the map tooltip, and the tooltip's component order (2026-10-15)
+
+`MapId.addToTooltip` (`live_cmd::tooltips::map_lines`): "Unknown Map" until
+the level holds the map, else "ID #n" unless the stack is renamed, "Locked",
+and with F3+H "Scaling at 1:2^scale" and "(Level scale/4)". The stack's
+`map_id` value now rides `StackComponents` and the per-fingerprint
+`StackDetail` (M93f kept presence only); `screen_tooltip` takes the session's
+`MapStore` as `TooltipContext.mapData`. `MAP_POST_PROCESSING` (the
+cartography preview only) is taken as absent.
+
+Fixed on the way: `screen_tooltip` drew enchantments, lore, Unbreakable and
+then the container preview, with a comment saying the container comes after
+the lore. The 26.2 `ItemStack.addDetailsToTooltip` (`:872-894`) runs MAP_ID,
+then CONTAINER, then ENCHANTMENTS, then LORE, with UNBREAKABLE after the
+attribute block; a named, enchanted shulker box listed its contents under its
+lore. The order now follows the decompile. `inventoryshot`, `containershot`
+and `itemshot` stay green (no witness pinned the old order).
+
 ### M190 — maps, the data half (2026-10-15)
 
 `map_item_data` was the class-C packet with "needs a map image pipeline".
