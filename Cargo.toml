@@ -30,9 +30,6 @@ winit = "0.30"
 # Math
 glam = "0.29"
 
-# Layout
-taffy = "0.7"
-
 # Logging
 log = "0.4"
 env_logger = "0.11"

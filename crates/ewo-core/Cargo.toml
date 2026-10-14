@@ -6,13 +6,8 @@ authors.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-[dependencies]
-glam.workspace = true
-serde = { workspace = true, optional = true }
-
 [features]
 default = []
-serde = ["dep:serde", "glam/serde"]
 # Opt-in: include the "assist" (PvP / packet-touching) module catalog.
 # Without this feature, REGISTRY contains only the legit-client module set
 # (visual / camera / pure render); with it, the catalog extends to the
