@@ -136,6 +136,8 @@ mod dcomp_backend {
         swap_chain: IDXGISwapChain3,
         _queue: ID3D12CommandQueue,
         device: ID3D12Device,
+        /// Whether this stack runs on the WARP software adapter.
+        on_warp: bool,
     }
 
     fn werr(what: &'static str) -> impl FnOnce(windows::core::Error) -> String {
@@ -143,10 +145,17 @@ mod dcomp_backend {
     }
 
     impl DeviceStack {
-        unsafe fn create(hwnd: HWND, width: u32, height: u32) -> Result<Self, String> {
+        /// `allow_warp`: whether the WARP software adapter may be used when no
+        /// hardware adapter works (see [`select_adapter`]).
+        unsafe fn create(
+            hwnd: HWND,
+            width: u32,
+            height: u32,
+            allow_warp: bool,
+        ) -> Result<Self, String> {
             let factory: IDXGIFactory4 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))
                 .map_err(werr("CreateDXGIFactory2"))?;
-            let (adapter, device) = pick_adapter(&factory)?;
+            let (adapter, device, on_warp) = pick_adapter(&factory, allow_warp)?;
             let queue: ID3D12CommandQueue = device
                 .CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC::default())
                 .map_err(werr("CreateCommandQueue"))?;
@@ -217,6 +226,7 @@ mod dcomp_backend {
                 swap_chain,
                 _queue: queue,
                 device,
+                on_warp,
             })
         }
 
@@ -238,6 +248,11 @@ mod dcomp_backend {
         window: Arc<Window>,
         stack: Option<DeviceStack>,
         lost: Option<Lost>,
+        /// The session's first device landed on WARP (no hardware adapter at
+        /// startup). Only then may a recreation fall back to WARP again; a
+        /// session that started on hardware never silently drops to software
+        /// because a TDR briefly broke `D3D12CreateDevice`.
+        started_on_warp: bool,
         vsync: Cell<bool>,
         width: u32,
         height: u32,
@@ -274,8 +289,11 @@ mod dcomp_backend {
             let size = window.inner_size();
             let width = size.width.max(1);
             let height = size.height.max(1);
-            let stack = unsafe { DeviceStack::create(hwnd_of(&window), width, height) }
+            // Startup is the only time WARP is a legitimate last resort.
+            let allow_warp = warp_allowed(AdapterPhase::Startup, false);
+            let stack = unsafe { DeviceStack::create(hwnd_of(&window), width, height, allow_warp) }
                 .map_err(|e| format!("initial device creation failed: {e}"))?;
+            let started_on_warp = stack.on_warp;
             log::info!(
                 "dcomp backend: D3D12 + DirectComposition swapchain {}×{}, {} buffers, premultiplied alpha",
                 width, height, BUFFER_COUNT
@@ -291,6 +309,7 @@ mod dcomp_backend {
                 window,
                 stack: Some(stack),
                 lost: None,
+                started_on_warp,
                 vsync: Cell::new(true),
                 width,
                 height,
@@ -427,7 +446,10 @@ mod dcomp_backend {
                 return false;
             }
             lost.attempts += 1;
-            match unsafe { DeviceStack::create(hwnd_of(&self.window), self.width, self.height) } {
+            let allow_warp = warp_allowed(AdapterPhase::Recreate, self.started_on_warp);
+            match unsafe {
+                DeviceStack::create(hwnd_of(&self.window), self.width, self.height, allow_warp)
+            } {
                 Ok(stack) => {
                     log::info!(
                         "dcomp backend: device recreated after {} attempt(s)",
@@ -470,21 +492,76 @@ mod dcomp_backend {
     }
 
     /// The first hardware adapter that can create a D3D12 device at feature
-    /// level 11.0 (mirrors the skia-safe d3d-window example), else the WARP
-    /// software adapter with a warning: slow, but a machine with no D3D12 GPU
-    /// (a VM, a broken driver, Remote Desktop) can still show the launcher.
-    fn pick_adapter(factory: &IDXGIFactory4) -> Result<(IDXGIAdapter1, ID3D12Device), String> {
-        if let Some(found) = enumerate_adapter(factory, false) {
-            return Ok(found);
+    /// level 11.0 (mirrors the skia-safe d3d-window example), else, when
+    /// `allow_warp`, the WARP software adapter with a warning: slow, but a
+    /// machine with no D3D12 GPU (a VM, a broken driver, Remote Desktop) can
+    /// still show the launcher. Returns the adapter, device and whether it is
+    /// WARP.
+    fn pick_adapter(
+        factory: &IDXGIFactory4,
+        allow_warp: bool,
+    ) -> Result<(IDXGIAdapter1, ID3D12Device, bool), String> {
+        let picked = select_adapter(
+            allow_warp,
+            || enumerate_adapter(factory, false),
+            || enumerate_adapter(factory, true),
+        );
+        match picked {
+            Some((AdapterKind::Hardware, (adapter, device))) => Ok((adapter, device, false)),
+            Some((AdapterKind::Warp, (adapter, device))) => {
+                log::warn!(
+                    "dcomp backend: no D3D12 hardware adapter, falling back to WARP \
+                     (software rendering, expect a low frame rate)"
+                );
+                Ok((adapter, device, true))
+            }
+            None if allow_warp => {
+                Err("no Direct3D 12 adapter, hardware or WARP, could create a device".into())
+            }
+            None => Err("no Direct3D 12 hardware adapter could create a device \
+                         (WARP is not used after startup)"
+                .into()),
         }
-        if let Some(found) = enumerate_adapter(factory, true) {
-            log::warn!(
-                "dcomp backend: no D3D12 hardware adapter, falling back to WARP \
-                 (software rendering, expect a low frame rate)"
-            );
-            return Ok(found);
+    }
+
+    /// When an adapter is being picked: at process startup, or while
+    /// rebuilding after a device loss.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum AdapterPhase {
+        Startup,
+        Recreate,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum AdapterKind {
+        Hardware,
+        Warp,
+    }
+
+    /// WARP policy. Startup may always fall back to it (a machine with no
+    /// D3D12 GPU still shows the launcher). A recreation after a TDR / driver
+    /// reset may use it only if the session already started on WARP: hardware
+    /// `D3D12CreateDevice` failing for a moment must not "recover" onto
+    /// software rendering for the rest of the session; the backoff retries
+    /// hardware instead.
+    fn warp_allowed(phase: AdapterPhase, started_on_warp: bool) -> bool {
+        phase == AdapterPhase::Startup || started_on_warp
+    }
+
+    /// The selection order as a pure function: hardware first, then WARP only
+    /// if `allow_warp`.
+    fn select_adapter<T>(
+        allow_warp: bool,
+        hardware: impl FnOnce() -> Option<T>,
+        warp: impl FnOnce() -> Option<T>,
+    ) -> Option<(AdapterKind, T)> {
+        if let Some(found) = hardware() {
+            return Some((AdapterKind::Hardware, found));
         }
-        Err("no Direct3D 12 adapter, hardware or WARP, could create a device".into())
+        if allow_warp {
+            return warp().map(|found| (AdapterKind::Warp, found));
+        }
+        None
     }
 
     /// The first adapter whose software flag equals `software` that creates a
@@ -592,7 +669,43 @@ mod dcomp_backend {
                         == DXGI_ADAPTER_FLAG_NONE
                 );
             }
-            assert!(pick_adapter(&factory()).is_ok());
+            assert!(pick_adapter(&factory(), true).is_ok());
+        }
+
+        #[test]
+        fn warp_policy_startup_vs_recreate() {
+            assert!(warp_allowed(AdapterPhase::Startup, false));
+            assert!(warp_allowed(AdapterPhase::Startup, true));
+            // A hardware session never drops to software on recreation.
+            assert!(!warp_allowed(AdapterPhase::Recreate, false));
+            // A session that started on WARP may keep using it.
+            assert!(warp_allowed(AdapterPhase::Recreate, true));
+        }
+
+        #[test]
+        fn select_adapter_prefers_hardware_and_gates_warp() {
+            let hw = || Some("hw");
+            let warp = || Some("warp");
+            let none = || None::<&str>;
+            assert_eq!(
+                select_adapter(true, hw, warp),
+                Some((AdapterKind::Hardware, "hw"))
+            );
+            assert_eq!(
+                select_adapter(false, hw, warp),
+                Some((AdapterKind::Hardware, "hw"))
+            );
+            assert_eq!(
+                select_adapter(true, none, warp),
+                Some((AdapterKind::Warp, "warp"))
+            );
+            // No hardware, WARP disallowed: fail (the backoff retries) and
+            // never even probe WARP.
+            assert_eq!(
+                select_adapter(false, none, || panic!("WARP probed when disallowed")),
+                None
+            );
+            assert_eq!(select_adapter(true, none, none), None);
         }
     }
 }
