@@ -284,6 +284,9 @@ pub struct StackComponents {
     /// there. No prototype carries MAP_ID, so a patch is the only source and
     /// the three-step `has()` collapses to this one bit.
     pub has_map_id: bool,
+    /// Its value (M191) — the tooltip's `ID #n` and the key into the level's
+    /// maps. `has_map_id` stays the predicate the menus ask.
+    pub map_id: Option<i32>,
     /// Whether the patch removed `minecraft:dye` (M93g).
     ///
     /// `isDyeItem` is `is(#LOOM_DYES) && has(DYE)`, and `has()` is false for a
@@ -556,6 +559,9 @@ pub struct StackDetail {
     pub added: Vec<i32>,
     /// Its removed ones, for the same.
     pub removed: Vec<i32>,
+    /// `minecraft:map_id`'s value (M191), for `MapId.addToTooltip`: which of
+    /// the level's maps this stack names.
+    pub map_id: Option<i32>,
 }
 
 impl StackDetail {
@@ -565,7 +571,10 @@ impl StackDetail {
     /// documents, which cost M42 its enchantment lines: a field missing here
     /// is a whole class of stack whose detail is silently discarded.
     pub fn is_empty(&self) -> bool {
-        self.container.is_empty() && self.added.is_empty() && self.removed.is_empty()
+        self.container.is_empty()
+            && self.added.is_empty()
+            && self.removed.is_empty()
+            && self.map_id.is_none()
     }
 
     /// The occupied slots, in order — [`StackComponents::container_items`] for
@@ -582,6 +591,7 @@ impl StackComponents {
             container: self.container.clone().unwrap_or_default(),
             added: self.added.clone(),
             removed: self.removed.clone(),
+            map_id: self.map_id,
         }
     }
 }
@@ -796,11 +806,9 @@ fn read_interpreted(
         return Ok(true);
     }
     if ty == ids.map_id {
-        // Presence is the answer; the value is a saved-data index this client
-        // has no use for. Still read, because the walk must stay aligned —
-        // the patch has no length prefix, so skipping a value desynchronises
-        // the rest of the packet.
-        let _ = r.varint().map_err(|_| ())?;
+        // Presence is what the menus ask (M93f); the value is the key into
+        // the level's maps, which the tooltip reads (M191).
+        out.map_id = Some(r.varint().map_err(|_| ())?);
         out.has_map_id = true;
         return Ok(true);
     }
@@ -1634,6 +1642,11 @@ mod tests {
         varint(42, &mut id);
         let c = components_of(&stack(1, 100, &[(IDS.map_id, id)], &[]));
         assert!(c.has_map_id, "a patched map_id must be seen");
+        // M191 — and its value, which the tooltip and the map store key on,
+        // carried through to the per-fingerprint detail.
+        assert_eq!(c.map_id, Some(42));
+        assert_eq!(c.detail().map_id, Some(42));
+        assert!(!c.detail().is_empty());
 
         // The negatives. A plain stack has none...
         assert!(!components_of(&stack(1, 100, &[], &[])).has_map_id);

@@ -1333,6 +1333,7 @@ fn overlays(
                 // No book on a crafter's screen, so the centred placement is
                 // the right one here and always was.
                 false,
+                &rewo_world::maps::MapStore::default(),
             )
             .is_some()
         };
@@ -1389,6 +1390,7 @@ fn overlays(
                 Some(open),
                 false,
                 false,
+                &rewo_world::maps::MapStore::default(),
             )
             .is_some()
         };
@@ -1479,6 +1481,7 @@ fn overlays(
             false,
             // A chest has no recipe book either.
             false,
+            &rewo_world::maps::MapStore::default(),
         );
         c.record(
             "o17.a_six_row_chests_hover_uses_ITS_panel_size_and_not_the_players",
@@ -3209,6 +3212,7 @@ fn overlays(
                 None,
                 false,
                 book_open,
+                &rewo_world::maps::MapStore::default(),
             )
             .is_some_and(|(_, lines, _)| lines.first().is_some_and(|l| l.text == dirt_name))
         };
@@ -3395,6 +3399,7 @@ fn overlays(
                 None,
                 false,
                 true,
+                &rewo_world::maps::MapStore::default(),
             )
             .and_then(|(_, lines, _)| lines.first().map(|l| l.text.clone()))
         };

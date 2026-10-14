@@ -2858,6 +2858,7 @@ fn check_advanced_tooltip(
             container: Vec::new(),
             added: added.iter().map(|n| name_id(n)).collect(),
             removed: removed.iter().map(|n| name_id(n)).collect(),
+            map_id: None,
         };
         StackComponents {
             added: detail.added.clone(),
@@ -3437,6 +3438,7 @@ fn check_advanced_tooltip(
                     None,
                     false,
                     false,
+                    &rewo_world::maps::MapStore::default(),
                 )
                 .map(|(_, lines, _)| lines.into_iter().map(|l| l.text).collect())
             };

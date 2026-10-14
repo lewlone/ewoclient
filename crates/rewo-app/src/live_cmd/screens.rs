@@ -852,6 +852,7 @@ pub(super) fn apply_screen(
                         .game_mode()
                         .is_some_and(|m| m.is_spectator()),
                     book_open,
+                    &session.maps,
                 )
             },
             // The book's cell tooltip, SECOND. Vanilla calls it AFTER the

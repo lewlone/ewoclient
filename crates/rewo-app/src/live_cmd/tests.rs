@@ -3652,3 +3652,62 @@ fn the_bubble_pop_resolves_and_plays_through_play_now() {
     ));
     assert_eq!(live.stats().started, 1, "{:?}", live.stats());
 }
+
+// -- the map tooltip (M191) -----------------------------------------------
+
+fn map_lang() -> rewo_data::lang::Language {
+    // `en_us.json`'s own strings.
+    rewo_data::lang::Language::from_map(
+        [
+            ("filled_map.unknown", "Unknown Map"),
+            ("filled_map.id", "ID #%s"),
+            ("filled_map.locked", "Locked"),
+            ("filled_map.scale", "Scaling at 1:%s"),
+            ("filled_map.level", "(Level %s/%s)"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect(),
+    )
+}
+
+fn map_text(lines: &[rewo_gpu::tooltip::Line]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|l| l.iter().map(|s| s.text.as_str()).collect::<String>())
+        .collect()
+}
+
+/// `MapId.addToTooltip`: unknown without data; the id unless renamed; the
+/// lock; and the scale pair only when advanced, `1 << scale` and `scale / 4`.
+#[test]
+fn a_map_tooltip_follows_map_id_add_to_tooltip() {
+    let lang = map_lang();
+    assert_eq!(
+        map_text(&map_lines(7, None, false, true, &lang)),
+        ["Unknown Map"]
+    );
+
+    let mut store = rewo_world::maps::MapStore::default();
+    store.apply(&rewo_world::maps::MapItemData {
+        map_id: 7,
+        scale: 2,
+        locked: true,
+        decorations: None,
+        patch: None,
+    });
+    let m = store.get(7);
+    assert_eq!(
+        map_text(&map_lines(7, m, false, false, &lang)),
+        ["ID #7", "Locked"]
+    );
+    assert_eq!(
+        map_text(&map_lines(7, m, true, false, &lang)),
+        ["Locked"],
+        "renamed: no id"
+    );
+    assert_eq!(
+        map_text(&map_lines(7, m, false, true, &lang)),
+        ["ID #7", "Locked", "Scaling at 1:4", "(Level 2/4)"]
+    );
+}
