@@ -14,6 +14,11 @@
 #     targets this runner and have it run unreviewed.
 name: gates
 
+# This runner is the owner's machine: the job gets a read-only token and does
+# not leave it in the persistent workspace's .git/config (see checkout below).
+permissions:
+  contents: read
+
 on:
   push:
   workflow_dispatch:
@@ -33,6 +38,23 @@ jobs:
       REWO_REQUIRE_ASSETS: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The in-game Java mod (needs the 26.1/26.2 Minecraft jars and a JDK 25
+      # under %APPDATA%\EwoClient, which only this runner has). -NoDeploy:
+      # compile + jar only, never touches the owner's live instance. The legit
+      # build also asserts its jar carries no trace of the assist package.
+      - name: Build ewo-hud mod (legit)
+        run: powershell -NoProfile -File ingame-mod/build.ps1 -NoDeploy
+
+      - name: Build ewo-hud mod (pvp)
+        run: powershell -NoProfile -File ingame-mod/build.ps1 -NoDeploy -Pvp
+
+      # Every mixin target must still exist in both jars (it would have caught
+      # the 26.2 Minecraft.destroy() miss).
+      - name: Mixin targets exist in 26.1 and 26.2
+        run: python tools/check_mixin_targets.py
 
       - name: Unit tests (assets required)
         run: cargo test --workspace --no-fail-fast --features rewo-app/gates
