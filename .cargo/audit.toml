@@ -1,0 +1,14 @@
+# cargo audit configuration (read by the `audit` job in .github/workflows/ci.yml).
+# Every ignore names the advisory, why it does not apply, and when to revisit.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071, `rsa` 0.9: Marvin attack, a timing side channel in
+    # private-key operations. No patched release exists. Rewo uses `rsa` for
+    # (1) encrypting the login shared secret with the *server's public key*,
+    # which the attack does not touch, and (2) signing chat with the
+    # Mojang-issued profile key, a private-key operation whose timing only a
+    # remote server could observe, through network jitter, and whose key
+    # Mojang rotates. Revisit when `rsa` ships a constant-time release.
+    "RUSTSEC-2023-0071",
+]

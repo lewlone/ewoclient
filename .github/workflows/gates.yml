@@ -21,6 +21,13 @@ permissions:
 
 on:
   push:
+    # Dependabot pushes its update branches into this repo, so without this a
+    # dependency bump (new crate versions, their build scripts included) would
+    # compile and run on the owner's machine before anyone reviewed it. Those
+    # branches get the hosted `ci` workflow through their pull request; the
+    # GPU gates run once the bump is merged.
+    branches-ignore:
+      - "dependabot/**"
   workflow_dispatch:
 
 concurrency:

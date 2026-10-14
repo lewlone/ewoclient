@@ -269,12 +269,20 @@ impl NetStream {
         };
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "login and configuration did not finish in time",
-            ));
+            return Err(deadline_error());
         }
         self.inner.set_read_timeout(Some(left.min(READ_TIMEOUT)))
+    }
+
+    /// A read that timed out because [`Self::arm_deadline`] capped the socket
+    /// timeout at what was left of the deadline is the deadline firing, not a
+    /// network fault: report it as such. (The OS spells the timeout
+    /// `TimedOut` on Windows, `os error 10060`, and `WouldBlock` on Unix.)
+    fn deadline_passed(&self, e: &std::io::Error) -> bool {
+        matches!(
+            e.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ) && self.deadline.is_some_and(|d| Instant::now() >= d)
     }
 
     /// Turn on AES-128-CFB8 both ways (call right after sending `key` —
@@ -308,6 +316,14 @@ impl NetStream {
         };
         Ok((read_half, write_half))
     }
+}
+
+/// The login/configuration deadline ([`HANDSHAKE_TIMEOUT`]) ran out.
+fn deadline_error() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "login and configuration did not finish in time",
+    )
 }
 
 /// Resolve `host:port` and connect to the first address that answers, each
@@ -344,7 +360,11 @@ fn connect_any(addrs: &[SocketAddr], deadline: Instant) -> Result<TcpStream, Str
 impl Read for NetStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.arm_deadline()?;
-        let n = self.inner.read(buf)?;
+        let n = match self.inner.read(buf) {
+            Ok(n) => n,
+            Err(e) if self.deadline_passed(&e) => return Err(deadline_error()),
+            Err(e) => return Err(e),
+        };
         if let Some(d) = self.dec.as_mut() {
             d.decrypt(&mut buf[..n]);
         }
