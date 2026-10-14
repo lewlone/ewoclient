@@ -47,3 +47,6 @@ tools/**/*.class
 
 # Written to the working directory by `rewo live` (client options).
 /options.txt
+
+# Cygwin/MSYS crash dumps
+*.stackdump

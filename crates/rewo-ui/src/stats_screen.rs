@@ -997,4 +997,36 @@ mod tests {
         assert_eq!(rows[1].value, "12");
         assert_eq!(rows[2].value, "2.0 s", "40 ticks");
     }
+
+    /// M186 — what a press of each widget plays. The selected tab is silent
+    /// (`TabManager.setCurrentTab` plays only on a change), the other tabs,
+    /// the sort `ImageButton`s and Done click.
+    #[test]
+    fn a_press_clicks_except_on_the_tab_already_selected() {
+        use crate::ui_sound::UiSound;
+        let model = StatsModel {
+            loading: false,
+            tab: StatsTab::Items,
+            ..StatsModel::default()
+        };
+        let labels = StatsLabels::resolve(&lang());
+        let screen = model.build_screen(&labels, 320, 240);
+        for tab in StatsTab::ALL {
+            let w = screen
+                .widget(tab.widget_id())
+                .expect("every tab is a widget");
+            let want = (tab != StatsTab::Items).then_some(UiSound::ButtonClick);
+            assert_eq!(w.down_sound(), want, "{tab:?}");
+        }
+        for col in 0..COLUMNS.len() {
+            let w = screen
+                .widget(SORT_FIRST + col as WidgetId)
+                .expect("sort button");
+            assert_eq!(w.down_sound(), Some(UiSound::ButtonClick), "sort {col}");
+        }
+        assert_eq!(
+            screen.widget(DONE).and_then(|w| w.down_sound()),
+            Some(UiSound::ButtonClick)
+        );
+    }
 }

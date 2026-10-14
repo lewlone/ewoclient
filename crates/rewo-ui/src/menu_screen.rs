@@ -2252,8 +2252,15 @@ mod m93j_crafter {
 /// What pressing a beacon button does (M93l).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BeaconPress {
-    /// Nothing: the button is disabled or hidden, or it is already selected.
+    /// Nothing: the button is disabled or hidden. The click is not consumed
+    /// and falls through to the slot logic.
     None,
+    /// The button is live and already selected (M186): `onPress`'s
+    /// `if (!this.isSelected())` makes the press change nothing, but
+    /// `AbstractWidget.mouseClicked` has already played the click and returns
+    /// `true`, so the click IS consumed. Before M186 this folded into
+    /// [`Self::None`] and the press fell through to the slots underneath.
+    Inert,
     /// The screen's new `(primary, secondary)`.
     Select(BeaconChoice),
     /// Send `set_beacon` with the current choice, then close the container.
@@ -2319,9 +2326,10 @@ pub fn beacon_press(b: BeaconButton, s: BeaconChoice) -> BeaconPress {
 
 fn beacon_select(s: BeaconChoice, effect: BeaconEffect, primary: bool) -> BeaconPress {
     let chosen = if primary { s.primary } else { s.secondary };
-    // `if (!this.isSelected())` — pressing the lit button is inert.
+    // `if (!this.isSelected())` — pressing the lit button changes nothing,
+    // but it was still pressed (clicked, consumed).
     if chosen == Some(effect) {
-        return BeaconPress::None;
+        return BeaconPress::Inert;
     }
     let mut next = s;
     if primary {
@@ -2404,7 +2412,7 @@ mod m93l_beacon_press {
             primary: Some(a),
             ..lit()
         };
-        assert_eq!(beacon_press(power(a, true, 0), s), BeaconPress::None);
+        assert_eq!(beacon_press(power(a, true, 0), s), BeaconPress::Inert);
         // ...but the same button in the OTHER column is a different selection.
         assert!(matches!(
             beacon_press(power(a, false, 0), s),
@@ -2501,7 +2509,7 @@ mod m93l_beacon_press {
             ),
             BeaconPress::None
         );
-        assert_eq!(beacon_press(up, next), BeaconPress::None);
+        assert_eq!(beacon_press(up, next), BeaconPress::Inert);
     }
 }
 

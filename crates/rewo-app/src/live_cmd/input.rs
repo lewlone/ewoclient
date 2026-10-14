@@ -613,6 +613,29 @@ impl LiveApp {
         }
     }
 
+    /// Queue what a press of widget `id` on the current screen plays (M186) —
+    /// `Widget::down_sound`, read BEFORE the press is applied, because a tab's
+    /// sound depends on whether it was already the selected one.
+    pub(super) fn queue_down_sound(&mut self, id: rewo_ui::screen::WidgetId) {
+        let sound = self
+            .screen
+            .screens
+            .current()
+            .and_then(|s| s.widget(id))
+            .and_then(|w| w.down_sound());
+        if let Some(sound) = sound {
+            self.screen.ui_sounds.play(sound);
+        }
+    }
+
+    /// Play every UI sound queued since the last frame (M186), through the
+    /// same engine as the world's sounds — see `LiveSounds::play_ui`.
+    pub(super) fn flush_ui_sounds(&mut self) {
+        for sound in self.screen.ui_sounds.take() {
+            self.sounds.play_ui(sound.event(), sound.pitch());
+        }
+    }
+
     /// One widget press on whatever screen is up (M82).
     ///
     /// This is the dispatch arm a new screen adds: the framework hands back a

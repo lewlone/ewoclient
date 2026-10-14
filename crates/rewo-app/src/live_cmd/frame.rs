@@ -21,6 +21,9 @@ impl LiveApp {
     /// property of the phase bodies).
     pub(super) fn frame(&mut self, event_loop: &ActiveEventLoop) {
         let dt = self.frame_clock();
+        // M186 — before anything can return early: a click on the
+        // disconnect screen has no session behind it and must still sound.
+        self.flush_ui_sounds();
         if !self.pump_screens(event_loop) {
             return;
         }

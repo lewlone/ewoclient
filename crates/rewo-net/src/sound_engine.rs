@@ -2850,6 +2850,30 @@ impl LiveSounds {
         }
     }
 
+    /// `soundManager.play(SimpleSoundInstance.forUI(event, pitch))` — a sound a
+    /// screen plays by itself (M186; the sites are listed in
+    /// `rewo_ui::ui_sound`).
+    ///
+    /// **Immediate, not queued for the next tick**, as vanilla's is: the click
+    /// is played from inside `mouseClicked`. It goes through the same
+    /// [`SoundSystem::accept`] as every packet sound, so it meets the same
+    /// guards, channel budget and counters, and the tick that follows starts
+    /// its reclaim clock. A UI instance is `Binding::Fixed`, relative and
+    /// unattenuated, so it consults nothing in the world, which is why
+    /// [`EmptyWorld`] stands in for one: the call works on the pause screen
+    /// and on the disconnect screen, where there is no world.
+    pub fn play_ui(&mut self, event: &str, pitch: f32) {
+        let instance = crate::sound_instance::SoundInstance::for_ui(event, pitch);
+        self.with_device(|system, registry, device| {
+            system.accept(
+                &[SoundEvent::Instance(instance)],
+                registry,
+                &EmptyWorld,
+                device,
+            );
+        });
+    }
+
     /// `SoundEngine.updateSource(camera)` — push this frame's listener (M138a).
     ///
     /// ```java
@@ -5968,6 +5992,66 @@ mod tests {
         live.drive(&[ev], &entities, None, 0, 1.0);
         assert_eq!(live.stats().no_instance, 1);
         assert_eq!(live.stats().started, 2);
+    }
+
+    /// M186 — a UI click is played immediately (no tick), with no world, and
+    /// reaches an attached backend as `forUI`'s instance: relative, no
+    /// attenuation, a quarter volume.
+    #[test]
+    fn play_ui_starts_a_relative_quarter_volume_channel_without_a_world() {
+        let log = std::rc::Rc::new(std::cell::RefCell::new(SinkLog::default()));
+        let mut live = LiveSounds::new(index_of(&["minecraft:ui.button.click"]), registry());
+        live.attach_sink(Box::new(FakeSink {
+            log: std::rc::Rc::clone(&log),
+            verdict: Some(false),
+        }));
+        live.play_ui("minecraft:ui.button.click", 1.0);
+        assert_eq!(live.stats().started, 1);
+        assert_eq!(live.system.engine.live_count(), 1);
+        let calls: Vec<ChannelCall> = log
+            .borrow()
+            .submits
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect();
+        assert!(calls.contains(&ChannelCall::SetRelative(true)), "{calls:?}");
+        assert!(
+            calls.contains(&ChannelCall::DisableAttenuation),
+            "{calls:?}"
+        );
+        assert!(calls.contains(&ChannelCall::SetVolume(0.25)), "{calls:?}");
+        assert!(calls.contains(&ChannelCall::Play), "{calls:?}");
+        assert_eq!(log.borrow().ticks, 0, "played on the press, not on a tick");
+
+        // An event the pack does not have is refused and counted, not played.
+        live.play_ui("minecraft:ui.no_such_click", 1.0);
+        assert_eq!(live.stats().started, 1);
+        assert_eq!(live.stats().not_started, 1);
+    }
+
+    /// M186 — every UI sound a screen can ask for resolves in the REAL 26.2
+    /// `sounds.json` and starts a channel through `play_ui`. The fake indexes
+    /// above cannot catch a mistyped event id; this can.
+    #[test]
+    fn every_ui_sound_resolves_in_the_real_index() {
+        let index = match rewo_data::sounds_json::load_for_version("26.2") {
+            Ok(idx) if !idx.is_empty() => idx,
+            Ok(_) | Err(_) => {
+                rewo_data::skip_test!("no unpacked 26.2 asset store (sounds.json)");
+                return;
+            }
+        };
+        let mut live = LiveSounds::new(index, registry());
+        for (n, sound) in rewo_ui::ui_sound::UiSound::ALL.into_iter().enumerate() {
+            live.play_ui(sound.event(), sound.pitch());
+            assert_eq!(
+                live.stats().started,
+                n as u32 + 1,
+                "{sound:?} ({}) did not start: {:?}",
+                sound.event(),
+                live.stats()
+            );
+        }
     }
 
     // ── the backend seam (M143) ───────────────────────────────────────────

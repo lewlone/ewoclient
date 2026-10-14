@@ -468,6 +468,16 @@ impl ApplicationHandler for LiveApp {
                         });
                         match result {
                             Some((kind, rewo_ui::screen::KeyResult::Pressed(id))) => {
+                                // M186 — `AbstractButton.keyPressed` plays the
+                                // click before `onPress`. Not for the link
+                                // prompt's Esc: `ConfirmScreen.keyPressed`
+                                // answers "No" through the callback, never
+                                // through the button.
+                                let esc_answer = kind == rewo_ui::screen::ScreenKind::ConfirmLink
+                                    && glfw_key(event.physical_key) == Some(256);
+                                if !esc_answer {
+                                    self.queue_down_sound(id);
+                                }
                                 self.press_widget(kind, id);
                                 return;
                             }
@@ -741,6 +751,9 @@ impl ApplicationHandler for LiveApp {
                     self.adv_drag.press(b);
                 }
                 if let Some((kind, rewo_ui::screen::MouseResult::Pressed(id))) = pressed {
+                    // M186 — `AbstractWidget.mouseClicked`: `playDownSound`,
+                    // then `onClick`.
+                    self.queue_down_sound(id);
                     self.press_widget(kind, id);
                 } else if let Some((_, rewo_ui::screen::MouseResult::Slider(id, v))) = pressed {
                     // M173: `onClick` -> `setValueFromMouse` — the press IS
@@ -788,7 +801,16 @@ impl ApplicationHandler for LiveApp {
                                 }
                             }
                         } else if let Some(book) = self.book.as_mut() {
-                            book.click(mx as i32, my as i32, gw);
+                            // M186 — a held book's `PageButton` has
+                            // `playTurnSound`; the lectern's (above) does not,
+                            // because `LecternScreen` builds its reader with
+                            // the no-argument `BookViewScreen()` and the
+                            // server plays the turn instead.
+                            if book.click(mx as i32, my as i32, gw) {
+                                self.screen
+                                    .ui_sounds
+                                    .play(rewo_ui::ui_sound::UiSound::PageTurn);
+                            }
                         }
                     }
                 } else if b == 0
@@ -885,6 +907,17 @@ impl ApplicationHandler for LiveApp {
                     ) {
                         return;
                     }
+                    // M186 — the loom's pattern grid, the stonecutter's
+                    // shape: a pattern consumes the press.
+                    if loom_press(
+                        session,
+                        &mut self.screen,
+                        &items,
+                        ext.width as f32,
+                        ext.height as f32,
+                    ) {
+                        return;
+                    }
                     // M93u — the merchant's trade buttons, on the same seam.
                     if merchant_press(
                         session,
@@ -943,13 +976,17 @@ impl ApplicationHandler for LiveApp {
             }
             // M173 — releasing ends a slider drag, unconditionally (the
             // M93s rule: a screen that vanished mid-drag must not strand the
-            // grab). Vanilla's `onRelease` plays the click sound here; Rewo's
-            // screens play no UI sounds at all (recorded with that family).
+            // grab). M186: and `AbstractSliderButton.onRelease` plays the
+            // click here — a slider is the one widget that clicks on release
+            // rather than on press.
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 ..
             } if self.options_drag.is_some() => {
                 self.options_drag = None;
+                self.screen
+                    .ui_sounds
+                    .play(rewo_ui::ui_sound::UiSound::ButtonClick);
             }
             // M179 — any release ends the advancements drag
             // (`AdvancementsScreen.mouseReleased`: `isScrolling = false`,

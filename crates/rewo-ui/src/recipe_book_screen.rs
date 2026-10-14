@@ -1310,8 +1310,18 @@ impl BookState {
     /// The page is not clamped here: `book_hit` only reports an arrow that is
     /// **visible**, and `page_arrows_visible` is what gates that — so a
     /// forward press cannot arrive on the last page.
+    ///
+    /// **Only a recipe cell answers the right button** (M186): `RecipeButton`
+    /// overrides `isValidClickButton` to accept 0 and 1, while the page
+    /// arrows, the filter and the tab buttons keep `AbstractWidget`'s
+    /// `button == 0`. A right click on any of those is not a press — it falls
+    /// through exactly like a miss. Before M186 a right click turned pages
+    /// and switched tabs.
     pub fn press(&mut self, hit: Option<BookHit>, right: bool) -> Option<BookAction> {
         let hit = hit?;
+        if right && !matches!(hit, BookHit::Slot(_) | BookHit::Search) {
+            return None;
+        }
         Some(match hit {
             BookHit::PageForward => {
                 self.page += 1;
@@ -1334,6 +1344,23 @@ impl BookState {
                 BookAction::Navigated
             }
         })
+    }
+}
+
+/// What a press that [`BookState::press`] accepted plays (M186): every book
+/// widget is an `AbstractWidget` that clicks in `mouseClicked` — the page
+/// arrows, each `RecipeButton`, the filter, and the `RecipeBookTabButton`s
+/// (an `ImageButton`, so re-pressing the selected tab clicks too, unlike a
+/// `TabButton`). The search field is an `EditBox`, whose `playDownSound` is
+/// empty.
+pub fn press_sound(hit: BookHit) -> Option<crate::ui_sound::UiSound> {
+    match hit {
+        BookHit::Search => None,
+        BookHit::PageForward
+        | BookHit::PageBackward
+        | BookHit::Slot(_)
+        | BookHit::Filter
+        | BookHit::Tab(_) => Some(crate::ui_sound::UiSound::ButtonClick),
     }
 }
 
@@ -1736,6 +1763,50 @@ mod tests {
             st.press(Some(BookHit::Filter), false),
             Some(BookAction::ToggleFilter)
         );
+    }
+
+    /// M186 — only `RecipeButton` widens `isValidClickButton` to the right
+    /// button; a right click on an arrow, the filter or a tab is a miss and
+    /// changes nothing.
+    #[test]
+    fn only_a_recipe_cell_answers_the_right_button() {
+        let mut st = BookState {
+            page: 1,
+            ..BookState::default()
+        };
+        for hit in [
+            BookHit::PageForward,
+            BookHit::PageBackward,
+            BookHit::Filter,
+            BookHit::Tab(2),
+        ] {
+            assert_eq!(st.press(Some(hit), true), None, "{hit:?}");
+        }
+        assert_eq!(st.page, 1, "a right click turned no page");
+        assert_eq!(st.selected_tab, 0, "and switched no tab");
+        assert_eq!(
+            st.press(Some(BookHit::Slot(3)), true),
+            Some(BookAction::Recipe {
+                index: 3,
+                right: true
+            })
+        );
+    }
+
+    /// M186 — every book widget clicks except the search `EditBox`.
+    #[test]
+    fn every_book_widget_clicks_but_the_search_field() {
+        use crate::ui_sound::UiSound;
+        for hit in [
+            BookHit::PageForward,
+            BookHit::PageBackward,
+            BookHit::Slot(0),
+            BookHit::Filter,
+            BookHit::Tab(0),
+        ] {
+            assert_eq!(press_sound(hit), Some(UiSound::ButtonClick), "{hit:?}");
+        }
+        assert_eq!(press_sound(BookHit::Search), None);
     }
 
     #[test]

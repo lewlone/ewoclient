@@ -482,6 +482,34 @@ impl Widget {
         self.is_active() && self.contains(x, y)
     }
 
+    /// What a PRESS of this widget plays (M186): `playDownSound` as each
+    /// widget class overrides it. Only meaningful for a widget that was
+    /// pressed, which already means active and visible.
+    ///
+    /// - `Button` / an `ImageButton` (a [`WidgetKind::Sprites`] that draws no
+    ///   label, the statistics sort buttons): `AbstractWidget.playDownSound`,
+    ///   the click.
+    /// - A slider: nothing on press. `AbstractSliderButton.playDownSound` is
+    ///   empty and `onRelease` plays the click instead — the app's release arm.
+    /// - A tab (a `Sprites` widget that draws its label, `MenuTabButton`):
+    ///   `TabButton.playDownSound` is empty, and the click comes from
+    ///   `TabManager.setCurrentTab(tab, true)`, which plays **only when the
+    ///   tab changes** (`if (!Objects.equals(this.currentTab, tab))`). A tab's
+    ///   `first` is `isSelected()`, so a press on the selected tab is silent.
+    /// - Labels and reserved space are inactive and cannot be pressed.
+    pub fn down_sound(&self) -> Option<crate::ui_sound::UiSound> {
+        use crate::ui_sound::UiSound;
+        match &self.kind {
+            WidgetKind::Button => Some(UiSound::ButtonClick),
+            WidgetKind::Slider { .. } => None,
+            WidgetKind::Sprites {
+                label: true, first, ..
+            } => (!first).then_some(UiSound::ButtonClick),
+            WidgetKind::Sprites { label: false, .. } => Some(UiSound::ButtonClick),
+            WidgetKind::Label { .. } | WidgetKind::MultiLabel { .. } | WidgetKind::Reserved => None,
+        }
+    }
+
     /// `AbstractWidget.isHovered`, as assigned in `extractRenderState`:
     ///
     /// ```java
@@ -1733,5 +1761,18 @@ mod tests {
             (v - (0.5 + 1.0 / 142.0)).abs() < 0.01,
             "step 1/142, got {v}"
         );
+    }
+
+    /// M186 — a button clicks on press, a slider does not (it clicks on
+    /// release, `AbstractSliderButton.onRelease`), and a label never can.
+    #[test]
+    fn down_sound_follows_each_widget_class_override() {
+        use crate::ui_sound::UiSound;
+        let b = Widget::button(1, 0, 0, 20, 20, "b");
+        assert_eq!(b.down_sound(), Some(UiSound::ButtonClick));
+        let s = Widget::slider(2, 0, 0, 150, 20, "s", 0.5);
+        assert_eq!(s.down_sound(), None);
+        let l = Widget::label(3, 0, 0, 20, "l");
+        assert_eq!(l.down_sound(), None);
     }
 }
