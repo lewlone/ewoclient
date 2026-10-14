@@ -201,6 +201,26 @@ Subsystems:
   with a warning. The old `java_runtime = N` index (read as
   `legacy_java_runtime`, never written) is reset to Auto on load with a log
   line.
+- **Deleting an instance** (`delete_flow.rs`, `recycle.rs`,
+  `ewo-render` `screens/delete_instance_modal.rs`): the Worlds-list x opens a
+  confirmation modal (Velvet chrome from `about_modal`, text unscaled, silk,
+  `motion::dur`; pure hit rules in `events/hit.rs::delete_modal_action`, Esc
+  closes it, every click is inert while busy). Confirm moves
+  `instances/<id>/` to the Recycle Bin on a worker (`ewo-delete-instance`)
+  and only on success removes the instance from the list; a failure keeps
+  both and shows the error in the modal. **Never a permanent delete**: the
+  recycler trait has no fallback, `recycle_instance_folder` refuses an id that
+  is not one plain path component or a folder that is not a real directory
+  directly inside `instances/` (links/junctions out are refused), and nothing
+  in `recycle.rs` removes anything itself. Windows: `SHFileOperationW` with
+  `FOF_ALLOWUNDO | FOF_WANTNUKEWARNING | FOF_NOERRORUI | FOF_SILENT`
+  (no `\?\` paths; `FOF_NOCONFIRMATION` is deliberately off so Windows still
+  asks when an item could not be recycled, and a declined or aborted
+  operation is an error). Linux: `gio trash`, else a rename into the
+  freedesktop home Trash (`files/` + `info/*.trashinfo`, same filesystem
+  only, never copy+delete). A running or starting instance and the last
+  remaining instance can't be deleted. Shared libraries/assets/versions are
+  never touched.
 - `window/icon.rs` hands the largest PNG frame of `assets/icon.ico` to
   winit's `with_window_icon` (the borderless window's taskbar/alt-tab icon;
   the exe's embedded icon only serves Explorer and shortcuts).
@@ -227,8 +247,8 @@ Subsystems:
 - Disk root `<config>/EwoClient/` = `%APPDATA%\EwoClient` (Windows) or
   `$XDG_CONFIG_HOME/EwoClient`. It holds `shared/{versions,libraries,assets}`,
   `instances/<id>/` (stable id folders; worlds, natives, logs
-  `launch_<ts>.log`; deleting an instance leaves its folder, by design for
-  now), `dev/` (the HUD jar `ingame-mod/build.ps1` drops),
+  `launch_<ts>.log`; deleting an instance moves its folder to the Recycle
+  Bin, see below), `dev/` (the HUD jar `ingame-mod/build.ps1` drops),
   `runtime/<major>/jre/`, `auth.toml`, `profiles.toml`, `profiles/<name>/…`,
   `settings.toml`, `instances.toml`, `versions_cache.json`.
 - Every long task runs on a `std::thread` and reports over `mpsc`, polled once

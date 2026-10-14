@@ -52,7 +52,10 @@ impl App {
             card_w: card_content_width(size, scale),
             card_h: card_content_height(size, scale),
             time: self.clock.elapsed,
-            any_modal: self.modal.open || self.about_modal.open || self.launcher_link_modal.open,
+            any_modal: self.modal.open
+                || self.about_modal.open
+                || self.delete_modal.open
+                || self.launcher_link_modal.open,
         };
 
         self.hover_chrome(h);
@@ -100,8 +103,8 @@ impl App {
         // When a modal is open it absorbs all hover state so the
         // background screen doesn't react under it. Otherwise drive
         // the active screen's widget + list/button hovers normally.
-        if self.about_modal.open {
-            // About modal absorbs hover; clear background state so
+        if self.about_modal.open || self.delete_modal.open {
+            // About / delete modals absorb hover; clear background state so
             // glows/highlights don't bleed through.
             self.instance_prefs.list_hover = None;
             self.instance_prefs.delete_hover = None;
@@ -321,6 +324,16 @@ impl App {
                 .handle(card_pos, close_rect, false);
         }
 
+        // Delete-instance modal: both buttons track the cursor.
+        if self.delete_modal.open {
+            let cancel = screens::delete_instance_modal::cancel_button_bounds(card_w, card_h);
+            let confirm = screens::delete_instance_modal::confirm_button_bounds(card_w, card_h);
+            self.delete_modal.cancel_btn.handle(card_pos, cancel, false);
+            self.delete_modal
+                .confirm_btn
+                .handle(card_pos, confirm, false);
+        }
+
         // Phase H2 launcher-link modal — drive Cancel + Submit hover.
         if self.launcher_link_modal.open {
             let cancel_rect = screens::launcher_link_modal::cancel_button_bounds(card_w, card_h);
@@ -434,7 +447,16 @@ impl App {
         // based on which control it's over. Name field → text
         // I-beam; buttons / dropdowns / slider → pointer; anywhere
         // else (including the shroud) → default arrow.
-        let modal_cursor = if self.modal.open {
+        let modal_cursor = if self.delete_modal.open {
+            let over_button = !self.delete_modal.busy
+                && [
+                    screens::delete_instance_modal::cancel_button_bounds(card_w, card_h),
+                    screens::delete_instance_modal::confirm_button_bounds(card_w, card_h),
+                ]
+                .iter()
+                .any(|r| rect_contains(r, card_pos));
+            Some(modal_cursor_icon(false, over_button))
+        } else if self.modal.open {
             if let Some(fonts) = self.fonts.as_ref() {
                 let layout = screens::new_instance_modal::compute_layout(card_w, card_h, fonts);
                 let over_name_input = rect_contains(&layout.name_input, card_pos);

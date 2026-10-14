@@ -80,6 +80,7 @@ impl App {
         let launching_state = &self.launching;
         let modal = &self.modal;
         let about_modal = &self.about_modal;
+        let delete_modal = &self.delete_modal;
         let launcher_link_modal = &self.launcher_link_modal;
         let friends_prefs = &self.friends_prefs;
         let dev_overlay = self.dev_overlay.as_ref();
@@ -125,6 +126,7 @@ impl App {
                     launching_state,
                     modal,
                     about_modal,
+                    delete_modal,
                     launcher_link_modal,
                     link_redeem,
                     dev_overlay,

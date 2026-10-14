@@ -85,6 +85,7 @@ pub fn draw_frame(
     launching_state: &screens::LaunchingState,
     modal: &screens::NewInstanceModalState,
     about_modal: &screens::AboutModalState,
+    delete_modal: &screens::DeleteInstanceModalState,
     launcher_link_modal: &screens::LauncherLinkModalState,
     link_redeem: screens::LinkRedeemView<'_>,
     dev_overlay: Option<&screens::DevOverlayState>,
@@ -202,6 +203,7 @@ pub fn draw_frame(
     // Modal overlay (above all screen content, still inside the card clip).
     screens::draw_new_instance_modal(canvas, fonts, card_w, card_h, time, settings, modal);
     screens::draw_about_modal(canvas, fonts, card_w, card_h, about_modal);
+    screens::draw_delete_instance_modal(canvas, fonts, card_w, card_h, delete_modal);
     screens::draw_launcher_link_modal(
         canvas,
         fonts,

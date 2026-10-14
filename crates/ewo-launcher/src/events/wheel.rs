@@ -72,7 +72,7 @@ impl App {
         // About modal absorbs wheel events outright — there's nothing
         // scrollable inside it, but we don't want the Instances panel
         // to scroll behind the dialog.
-        if self.about_modal.open {
+        if self.about_modal.open || self.delete_modal.open {
             return;
         }
 

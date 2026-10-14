@@ -55,6 +55,7 @@ impl App {
         if self.click_window_buttons(event_loop, c)
             || self.click_dev_overlay(c)
             || self.click_about_modal(c)
+            || self.click_delete_modal(c)
             || self.click_link_modal(c)
             || self.click_new_instance_modal(c)
         {

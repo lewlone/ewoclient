@@ -2,7 +2,10 @@
 //! each handler returns `true` whenever its modal is open, so nothing
 //! underneath ever sees the click.
 
-use super::super::hit::{about_dismissal, link_modal_action, Dismiss, LinkModalAction};
+use super::super::hit::{
+    about_dismissal, delete_modal_action, link_modal_action, DeleteModalAction, Dismiss,
+    LinkModalAction,
+};
 use super::*;
 
 impl App {
@@ -29,6 +32,45 @@ impl App {
                 self.about_modal.close();
             }
             None => {}
+        }
+        true
+    }
+
+    /// Step 0a′: the delete-instance confirmation. Cancel, a shroud press
+    /// or Esc dismiss it; the confirm button starts the move to the Recycle
+    /// Bin. While that runs, every click is inert.
+    pub(super) fn click_delete_modal(&mut self, c: Click) -> bool {
+        if !self.delete_modal.open {
+            return false;
+        }
+        let cancel = screens::delete_instance_modal::cancel_button_bounds(c.card_w, c.card_h);
+        let confirm = screens::delete_instance_modal::confirm_button_bounds(c.card_w, c.card_h);
+        let cancel_clicked = self
+            .delete_modal
+            .cancel_btn
+            .handle(c.pos, cancel, c.pressed);
+        let confirm_clicked = self
+            .delete_modal
+            .confirm_btn
+            .handle(c.pos, confirm, c.pressed);
+        let on_shroud = screens::delete_instance_modal::shroud_consumes(c.pos, c.card_w, c.card_h);
+        match delete_modal_action(
+            cancel_clicked,
+            confirm_clicked,
+            self.delete_modal.busy,
+            c.pressed,
+            on_shroud,
+        ) {
+            DeleteModalAction::Cancel => {
+                log::info!("delete: Cancel clicked");
+                self.delete_modal.close();
+            }
+            DeleteModalAction::Shroud => {
+                log::info!("delete: shroud click → closing");
+                self.delete_modal.close();
+            }
+            DeleteModalAction::Confirm => self.confirm_delete(),
+            DeleteModalAction::Nothing => {}
         }
         true
     }

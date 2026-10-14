@@ -68,6 +68,8 @@ impl App {
             launching: LaunchingState::default(),
             modal: NewInstanceModalState::default(),
             about_modal: AboutModalState::default(),
+            delete_modal: DeleteInstanceModalState::default(),
+            delete_job: None,
             launcher_link_modal: LauncherLinkModalState::default(),
             friends_prefs: FriendsPrefs::default(),
             dev_overlay: if dev {

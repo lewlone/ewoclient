@@ -21,9 +21,10 @@ use ewo_render::screens::settings::{
     ProfileView,
 };
 use ewo_render::screens::{
-    self, AboutModalState, DevOverlayState, DevSlot, FrameStats, FriendRowView, FriendsPrefs,
-    FriendsViewState, InstancePrefs, InstanceSlot, LauncherLinkModalState, LaunchingState,
-    LinkRedeemView, ModalSlot, NewInstanceModalState, Prefs, SettingsSlot, SettingsTab,
+    self, AboutModalState, DeleteInstanceModalState, DevOverlayState, DevSlot, FrameStats,
+    FriendRowView, FriendsPrefs, FriendsViewState, InstancePrefs, InstanceSlot,
+    LauncherLinkModalState, LaunchingState, LinkRedeemView, ModalSlot, NewInstanceModalState,
+    Prefs, SettingsSlot, SettingsTab,
 };
 use ewo_render::skia_safe;
 use ewo_render::text::HoverGlowState;
@@ -49,6 +50,7 @@ mod app;
 mod auth;
 mod bundled;
 mod cli;
+mod delete_flow;
 mod downloads;
 mod events;
 mod frame_pacing;
@@ -61,6 +63,7 @@ mod loaders;
 mod overlay_mods;
 mod persistence;
 mod profile;
+mod recycle;
 mod runtime;
 mod social;
 mod util;
@@ -110,6 +113,11 @@ struct App {
     launching: LaunchingState,
     modal: NewInstanceModalState,
     about_modal: AboutModalState,
+    /// Confirmation before an instance is deleted, and the folder move it
+    /// starts (`delete_flow`): the folder goes to the Recycle Bin on a
+    /// worker, and the instance leaves the list only when that worked.
+    delete_modal: DeleteInstanceModalState,
+    delete_job: Option<delete_flow::PendingDelete>,
     /// Phase H2 launcher-link modal — the 6-digit code redemption flow.
     launcher_link_modal: LauncherLinkModalState,
     /// Phase H5 Friends screen state — text input buffer, button states.

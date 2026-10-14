@@ -9,6 +9,7 @@
 //! missing.
 
 use ewo_render::screens::about_modal::{self, AboutModalState};
+use ewo_render::screens::delete_instance_modal::{self, DeleteInstanceModalState};
 use ewo_render::skia_safe::{surfaces, Color, ImageInfo, Rect, Surface};
 use ewo_render::widgets::{draw_vbtn, draw_vdrop_menu, VbtnState, VdropState};
 use ewo_render::FontStore;
@@ -91,6 +92,26 @@ fn about_modal_text_keeps_its_size_while_entering() {
     // The old 0.97 -> 1 scale was 0.990 / 0.998 there: 2-3 px on the title.
     for anim in [0.2_f32, 0.3, 0.4] {
         let got = bright_bbox(&mut about_frame(&fonts, anim), y0, y1);
+        assert_eq!(got, settled, "title size changed at anim={anim}");
+    }
+}
+
+#[test]
+fn delete_modal_title_keeps_its_size_while_entering() {
+    let Some(fonts) = fonts() else { return };
+    let frame = |anim: f32| {
+        let mut s = surface();
+        let mut state = DeleteInstanceModalState::default();
+        state.open("id-1", "Velvet Hours", "instances/id-1");
+        state.anim = anim;
+        delete_instance_modal::draw_modal(s.canvas(), &fonts, W as f32, H as f32, &state);
+        s
+    };
+    // The instance name (Fraunces 28) is the brightest text on the card.
+    let (y0, y1) = (112, 172);
+    let settled = bright_bbox(&mut frame(1.0), y0, y1);
+    for anim in [0.2_f32, 0.3, 0.4] {
+        let got = bright_bbox(&mut frame(anim), y0, y1);
         assert_eq!(got, settled, "title size changed at anim={anim}");
     }
 }

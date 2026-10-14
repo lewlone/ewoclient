@@ -7,6 +7,7 @@
 
 use ewo_core::motion;
 use ewo_render::screens::about_modal::{self, AboutModalState};
+use ewo_render::screens::delete_instance_modal::{self, DeleteInstanceModalState};
 use ewo_render::skia_safe::{surfaces, Color, EncodedImageFormat, Rect, Surface};
 use ewo_render::widgets::{draw_vbtn, draw_vdrop_menu, VbtnState, VdropState};
 use ewo_render::FontStore;
@@ -43,6 +44,25 @@ fn main() {
         };
         about_modal::draw_modal(s.canvas(), &fonts, W as f32, H as f32, &state);
         save(&mut s, &format!("modal_shot_about_{tag}.png"));
+    }
+
+    // Delete-instance confirmation: settled, and with a long name + an error.
+    for (tag, name, error) in [
+        ("ok", "Velvet Hours", None),
+        (
+            "err",
+            "A very long instance name that cannot possibly fit on one line of the card",
+            Some("access is denied (os error 5)"),
+        ),
+    ] {
+        let mut s = surfaces::raster_n32_premul((W, H)).expect("surface");
+        s.canvas().clear(backdrop);
+        let mut state = DeleteInstanceModalState::default();
+        state.open("velvet-hours-1a2b3c", name, "instances/velvet-hours-1a2b3c");
+        state.anim = 1.0;
+        state.error = error.map(str::to_string);
+        delete_instance_modal::draw_modal(s.canvas(), &fonts, W as f32, H as f32, &state);
+        save(&mut s, &format!("modal_shot_delete_{tag}.png"));
     }
 
     // Button: rest vs pressed.
