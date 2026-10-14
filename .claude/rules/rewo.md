@@ -58,6 +58,10 @@ a self-check path.
   adds a render path. Validation is `cfg!(debug_assertions)`-gated for `live`,
   so run a **debug** build. M86 found nine features that had never rendered in
   the windowed client while every headless gate was green.
+- `tools/gates.py` and `tools/render_check.py` take a machine-wide lock
+  (`tools/gpu_lock.py`) so two GPU verifications never overlap: the
+  self-hosted CI runner shares this desktop. A CI render check once read 65/66
+  while another worktree's ran beside it.
 - Before starting a test server, probe the port: a server that failed to bind
   still lets injected witnesses pass. The vanilla server stops on stdin EOF, so
   don't background it with `nohup … &`.
@@ -97,7 +101,8 @@ a self-check path.
 - Market-leader client mods (Sodium, EntityCulling, Xaero's, JourneyMap, Jade,
   WTHIT) are non-open-source. **Don't read their source as reference.**
 - Public servers are out of scope (ban risk). Staging is the user's Frogsy network.
-- **Never run `cargo fmt`.** Claim render-check witness ids (`rNN`) and atlas
+- **`cargo fmt` is enforced** (CI `fmt` job; `rustfmt.toml` pins LF; the 23
+  generated modules are `#[rustfmt::skip]`). Claim render-check witness ids (`rNN`) and atlas
   rows in §0.0's allocation table **before** writing code, and check the code
   too (`grep -oE '"r[0-9]+ ' crates/rewo-app/src/live_cmd/render_check.rs`):
   the 2026-09 play-test fix took r65 that M179 had claimed in the table.
