@@ -119,6 +119,7 @@ impl ModuleConfig {
     /// Write the active profile's `modules.toml`.
     pub fn save(&self) {
         let Some(path) = modules_toml_path() else {
+            crate::hud::log_save_skipped("modules.toml");
             return;
         };
         if let Some(parent) = path.parent() {
