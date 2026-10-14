@@ -65,3 +65,71 @@ fn the_clock_is_f64_and_monotonic() {
     assert_eq!(t + 0.0005, t, "f32 cannot represent a 0.5 ms step here");
     assert_ne!(20_000.0_f64 + 0.0005, 20_000.0_f64);
 }
+
+// -- the ABI handshake -----------------------------------------------------
+
+/// `ABI_VERSION` here and `EwoHudNative.ABI_VERSION` in the mod are one number.
+/// The mod compares what `nativeHello` returns with its own constant and
+/// refuses the dll on a difference, so editing one side alone would make every
+/// launch refuse (or, if both were left stale together, defeat the check).
+///
+/// MUTATION: bump either constant alone.
+#[test]
+fn abi_version_matches_the_java_mirror() {
+    use crate::java_mirror::{get, int_constants, read_java};
+    let java = int_constants(&read_java("EwoHudNative.java"));
+    assert_eq!(
+        get(&java, "ABI_VERSION"),
+        ABI_VERSION as i64,
+        "EwoHudNative.ABI_VERSION and ewo_jni::ABI_VERSION must be bumped together"
+    );
+    // The tagged shape: "EW" in the high half, a nonzero revision in the low.
+    assert_eq!(ABI_VERSION >> 16, 0x4557);
+    assert_ne!(ABI_VERSION & 0xffff, 0);
+}
+
+/// The exported `nativeHello` answers with it (not `void`, not a constant of
+/// its own), so what the mod reads is what the pin above compares.
+#[test]
+fn native_hello_returns_the_abi_version() {
+    let got = Java_dev_lewlone_ewohud_EwoHudNative_nativeHello(
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+    );
+    assert_eq!(got, ABI_VERSION);
+}
+
+/// The mod really gates on the handshake and really has no ambient lookup
+/// paths. A source pin, in the style of the schema mirrors: the jar cannot be
+/// run here, but the policy lives in two readable places.
+///
+/// MUTATION: restoring the `user.dir` fallback, hard-coding the Desktop path
+/// without the dev property, or dropping the version comparison.
+#[test]
+fn the_mod_checks_the_abi_and_has_no_ambient_dll_lookup() {
+    let src = crate::java_mirror::read_java("EwoHudMod.java");
+    assert!(
+        src.contains("abi != EwoHudNative.ABI_VERSION"),
+        "the mod must compare nativeHello's answer with EwoHudNative.ABI_VERSION"
+    );
+    assert!(
+        !src.contains("user.dir"),
+        "no current-directory dll fallback: the game dir is writable by packs and plugins"
+    );
+    assert!(
+        src.contains("Boolean.getBoolean(\"ewo.hud.dev\")"),
+        "the workspace target/ path is dev-only"
+    );
+    // The refusal happens before any other native call.
+    let load = src.find("System.load(").expect("loads the dll");
+    let hello = src
+        .find("EwoHudNative.nativeHello()")
+        .expect("calls nativeHello");
+    let init = src
+        .find("EwoHudNative.nativeInit(")
+        .expect("calls nativeInit");
+    assert!(
+        load < hello && hello < init,
+        "handshake between load and init"
+    );
+}

@@ -53,7 +53,7 @@
 //!
 //! JNI contract — must match `dev.lewlone.ewohud.EwoHudNative`:
 //! ```text
-//!   static native void nativeHello();              // bridge liveness check
+//!   static native int nativeHello();               // liveness + ABI handshake (ABI_VERSION)
 //!   static native void nativeInit(ByteBuffer buf); // register EwoHudData (JVM→Rust)
 //!   static native void nativeRender();             // paint + composite one frame
 //!   static native void nativeMouseMove / nativeMouseButton / nativeMouseScroll
@@ -1816,15 +1816,35 @@ fn with_hud(f: impl FnOnce(&mut Hud)) {
     }));
 }
 
-/// Liveness check. Proves the cdylib loaded and JNI linkage works.
+/// The JNI/ABI revision this cdylib speaks, returned by `nativeHello`.
+///
+/// **Mirrored by `EwoHudNative.ABI_VERSION` in the mod, and pinned to it by
+/// `abi_version_matches_the_java_mirror`.** The mod refuses a dll whose answer
+/// differs and switches the bridge off, because the jar and the dll are
+/// separate artefacts that nothing else keeps in step (the dll is looked up on
+/// disk and may be a different build from the jar beside it).
+///
+/// Bump it, on both sides, whenever the native surface or either shared data
+/// block changes incompatibly: a native method added, removed or re-signed, or
+/// an `EwoHudData` / `EwoModuleData` schema bump. The value is a magic number
+/// (`0x4557` is "EW") plus a revision in the low half rather than a bare `1`,
+/// because a **stale dll's `nativeHello` returned `void`**: called as an `int`
+/// it hands back whatever was in the return register, and a small integer
+/// would match by accident far more often than a tagged one.
+pub const ABI_VERSION: i32 = 1_163_329_537; // 0x4557_0001
+
+/// The handshake. Proves the cdylib loaded, JNI linkage works, and says which
+/// ABI revision this build speaks ([`ABI_VERSION`]); `0` if even that panicked.
 #[no_mangle]
 pub extern "system" fn Java_dev_lewlone_ewohud_EwoHudNative_nativeHello(
     _env: *mut c_void,
     _class: *mut c_void,
-) {
-    let _ = panic::catch_unwind(|| {
+) -> i32 {
+    panic::catch_unwind(|| {
         log("nativeHello — JNI bridge alive, Rust side responding");
-    });
+        ABI_VERSION
+    })
+    .unwrap_or(0)
 }
 
 /// Hard process termination for the mod's exit watchdog.

@@ -14,8 +14,22 @@ import java.nio.ByteBuffer;
 public final class EwoHudNative {
     private EwoHudNative() {}
 
-    /** Liveness check: proves the cdylib loaded and JNI linkage works. */
-    public static native void nativeHello();
+    /**
+     * The ABI revision this jar expects from {@code ewo_jni.dll}. Mirrored by
+     * {@code ABI_VERSION} in {@code crates/ewo-jni/src/lib.rs} (pinned by a
+     * test that reads this file); bump both together whenever the native
+     * surface or a shared data block changes incompatibly. A tagged number
+     * (0x4557_0001, "EW" + revision) rather than a bare 1 because a stale dll's
+     * {@code nativeHello} returned void, so a mismatch reads as garbage.
+     */
+    public static final int ABI_VERSION = 1163329537;
+
+    /**
+     * Liveness check and ABI handshake: proves the cdylib loaded and JNI
+     * linkage works, and returns the revision it speaks. The mod compares it
+     * with {@link #ABI_VERSION} and refuses the dll on a mismatch.
+     */
+    public static native int nativeHello();
 
     /**
      * Register the shared JVM&rarr;Rust data block. Called once at mod init.

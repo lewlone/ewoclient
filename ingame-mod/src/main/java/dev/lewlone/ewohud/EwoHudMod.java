@@ -50,13 +50,27 @@ public final class EwoHudMod implements ClientModInitializer {
     public void onInitializeClient() {
         Path dll = resolveNativeLibrary();
         if (dll == null) {
-            System.err.println("[ewo-hud] could not locate ewo_jni.dll — HUD spike disabled. "
-                    + "Set -Dewo.jni.path=<path> or build crates/ewo-jni.");
+            System.err.println("[ewo-hud] could not locate ewo_jni.dll — HUD disabled. "
+                    + "Put it beside the mod jar (ingame-mod/build.ps1 does), or set "
+                    + "-Dewo.jni.path=<path>; developers can add -Dewo.hud.dev=true to use "
+                    + "the checkout's target/ directory.");
             return;
         }
         try {
             System.load(dll.toAbsolutePath().toString());
-            EwoHudNative.nativeHello();
+            // The jar and the dll are separate artefacts: refuse a dll that
+            // speaks a different ABI before any other native call (a stale dll
+            // used to be found out one frame at a time, by the frame hook's
+            // failure counter).
+            int abi = EwoHudNative.nativeHello();
+            if (abi != EwoHudNative.ABI_VERSION) {
+                System.err.println("[ewo-hud] native bridge REFUSED: " + dll + " speaks ABI "
+                        + Integer.toHexString(abi) + " but this jar expects "
+                        + Integer.toHexString(EwoHudNative.ABI_VERSION)
+                        + " — the dll and the mod jar are from different builds. "
+                        + "HUD disabled for this session (rebuild with ingame-mod/build.ps1).");
+                return;
+            }
             // Allocate the JVM->Rust HUD block + the Rust->JVM module block.
             EwoHudNative.nativeInit(EwoHudData.allocate());
             EwoHudNative.nativeInitModules(EwoModuleData.allocate());
@@ -134,10 +148,18 @@ public final class EwoHudMod implements ClientModInitializer {
      * Locate {@code ewo_jni.dll}, in order:
      * <ol>
      *   <li>an explicit {@code -Dewo.jni.path} (or legacy {@code -Dewo.hud.nativePath});</li>
-     *   <li>a dll next to the mod jar, then in the game (instance) dir;</li>
-     *   <li>the EwoClientV3 cargo outputs — release before debug, except that a
-     *       debug build newer than the release build wins (the active dev loop).</li>
+     *   <li>a dll next to the mod jar;</li>
+     *   <li>only with {@code -Dewo.hud.dev=true}: the EwoClientV3 cargo outputs
+     *       under {@code ~/Desktop/EwoClientV3/target} — release before debug,
+     *       except that a debug build newer than the release build wins (the
+     *       active dev loop).</li>
      * </ol>
+     *
+     * <p>There is deliberately <b>no current-directory fallback</b> (the game
+     * dir is a folder a modpack, a world download or a plugin can write to, and
+     * a native library is code), and no hard-coded workspace path unless the
+     * developer asked for it. Whatever is found is then checked against the
+     * jar by the {@link EwoHudNative#ABI_VERSION} handshake.
      */
     private static Path resolveNativeLibrary() {
         for (String prop : new String[] { "ewo.jni.path", "ewo.hud.nativePath" }) {
@@ -161,11 +183,11 @@ public final class EwoHudMod implements ClientModInitializer {
         } catch (Exception ignored) {
             // No usable code source (e.g. a dev classpath) — fall through.
         }
-        Path gameDir = Paths.get(System.getProperty("user.dir", ".")).resolve(DLL_NAME);
-        if (Files.isRegularFile(gameDir)) {
-            return found(gameDir, "game dir");
-        }
 
+        // The developer's own checkout, only when asked for explicitly.
+        if (!Boolean.getBoolean("ewo.hud.dev")) {
+            return null;
+        }
         Path target = Paths.get(System.getProperty("user.home", "."))
                 .resolve("Desktop").resolve("EwoClientV3").resolve("target");
         Path release = target.resolve("release").resolve(DLL_NAME);
