@@ -8,11 +8,12 @@
 //! widget vocabulary. Input is keyboard-only — digits typed by the user
 //! flow through `App`'s key handler into `LauncherLinkModalState::push_digit`.
 
+use crate::gradients;
 use crate::tokens;
 use ewo_core::{motion, Settings};
 use skia_safe::{
-    canvas::SaveLayerRec, gradient_shader, image_filters, Canvas, Color, Color4f, Contains, Font,
-    Paint, PaintStyle, Point, RRect, Rect, TileMode,
+    canvas::SaveLayerRec, image_filters, Canvas, Color, Color4f, Contains, Font, Paint, PaintStyle,
+    Point, RRect, Rect, TileMode,
 };
 
 use crate::text::FontStore;
@@ -303,20 +304,16 @@ fn draw_shroud(canvas: &Canvas, card_w: f32, card_h: f32, alpha: f32) {
     p.set_anti_alias(true);
     let center = Point::new(card_w * 0.5, card_h * 0.5);
     let radius = (card_w.max(card_h)) * 0.7;
-    let shader = gradient_shader::radial(
+    let shader = gradients::radial(
         center,
         radius,
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                // Dark wine, hand-rounded in the port: no 8-bit token reproduces it.
-                Color4f::new(0.10, 0.0, 0.04, 0.55 * alpha),
-                Color4f::new(0.0, 0.0, 0.0, 0.85 * alpha),
-            ],
-            None,
-        ),
+        &[
+            // Dark wine, hand-rounded in the port: no 8-bit token reproduces it.
+            Color4f::new(0.10, 0.0, 0.04, 0.55 * alpha),
+            Color4f::new(0.0, 0.0, 0.0, 0.85 * alpha),
+        ],
         Some(&[0.0_f32, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     );
     if let Some(s) = shader {
@@ -373,20 +370,16 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect, alpha: f32) {
     }
 
     // Top warm-radial tint
-    if let Some(s) = gradient_shader::radial(
+    if let Some(s) = gradients::radial(
         Point::new((card.left + card.right) * 0.5, card.top),
         (card.width() * 0.6).max(card.height() * 0.5),
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                // Warm-white, hand-rounded in the port (a hair off `text_pearl_hot`).
-                Color4f::new(1.0, 0.96, 0.94, 0.10 * alpha),
-                Color4f::new(1.0, 0.96, 0.94, 0.0),
-            ],
-            None,
-        ),
+        &[
+            // Warm-white, hand-rounded in the port (a hair off `text_pearl_hot`).
+            Color4f::new(1.0, 0.96, 0.94, 0.10 * alpha),
+            Color4f::new(1.0, 0.96, 0.94, 0.0),
+        ],
         Some(&[0.0_f32, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     ) {
         let mut p = Paint::default();

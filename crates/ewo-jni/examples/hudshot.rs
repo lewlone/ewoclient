@@ -23,10 +23,11 @@
 
 use ewo_jni::fixture::{self, Scene};
 use ewo_jni::hud::{self, Editor, HudData};
+use ewo_render::gradients;
 use ewo_render::FontStore;
 use skia_safe::{
-    gradient_shader, image_filters, surfaces, BlendMode, ClipOp, Color, Color4f, CubicResampler,
-    Data, EncodedImageFormat, FilterMode, Image, Paint, Point, RRect, Rect, TileMode,
+    image_filters, surfaces, BlendMode, ClipOp, Color, Color4f, CubicResampler, Data,
+    EncodedImageFormat, FilterMode, Image, Paint, Point, RRect, Rect, TileMode,
 };
 
 fn main() {
@@ -401,7 +402,7 @@ fn draw_synthetic_scene(canvas: &skia_safe::Canvas, w: f32, h: f32) {
     let horizon = h * 0.46;
 
     // Sky — bright at the top where top-anchored widgets land.
-    let sky = gradient_shader::linear(
+    let sky = gradients::linear(
         (Point::new(0.0, 0.0), Point::new(0.0, horizon)),
         &[
             Color4f::new(0.44, 0.63, 0.89, 1.0),
@@ -410,7 +411,6 @@ fn draw_synthetic_scene(canvas: &skia_safe::Canvas, w: f32, h: f32) {
         None,
         TileMode::Clamp,
         None,
-        None,
     );
     let mut paint = Paint::default();
     paint.set_shader(sky);
@@ -418,7 +418,7 @@ fn draw_synthetic_scene(canvas: &skia_safe::Canvas, w: f32, h: f32) {
 
     // Sun glare — a genuinely blown-out region. Any HUD text that only works
     // on dark pixels will fail here, which is the point.
-    let glare = gradient_shader::radial(
+    let glare = gradients::radial(
         Point::new(w * 0.74, h * 0.13),
         h * 0.30,
         &[
@@ -427,7 +427,6 @@ fn draw_synthetic_scene(canvas: &skia_safe::Canvas, w: f32, h: f32) {
         ][..],
         None,
         TileMode::Clamp,
-        None,
         None,
     );
     let mut gp = Paint::default();

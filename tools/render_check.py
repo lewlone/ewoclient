@@ -48,6 +48,8 @@ import socket
 import subprocess
 import sys
 import tempfile
+
+from gpu_lock import machine_lock
 import time
 import uuid
 
@@ -106,6 +108,13 @@ def free_port():
     return port
 
 
+
+def report_path():
+    """Where this run's full output goes: per process, so two runs (or a
+    stale file from an earlier run) can never be mistaken for this one."""
+    return os.path.join(tempfile.gettempdir(),
+                        "rewo-render-check-%d.out" % os.getpid())
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", action="store_true", help="leave the server dir behind")
@@ -123,6 +132,14 @@ def main():
         sys.exit("cargo build failed -- nothing below would be about this tree")
     if not os.path.exists(REWO):
         sys.exit("no debug binary at %s after a successful build" % REWO)
+    # One GPU verification per machine (tools/gpu_lock.py): a second render
+    # check, or a gate sweep, on the same desktop would share the GPU, the
+    # window focus and this script's report path.
+    with machine_lock("tools/render_check.py"):
+        run(args)
+
+
+def run(args):
     port = free_port()
     dest = os.path.join(BASE, "testserver-rc-%d" % port)
     if os.path.exists(dest):
@@ -246,8 +263,7 @@ def main():
             )
         except subprocess.TimeoutExpired as e:
             out = (e.stdout or b"") + (e.stderr or b"")
-            io.open(os.path.join(tempfile.gettempdir(), "rewo-render-check.out"),
-                    "wb").write(out)
+            io.open(report_path(), "wb").write(out)
             sys.exit(
                 "the client did not exit within the timeout -- it is HUNG, not "
                 "slow. The usual cause is a configuration-state packet nothing "
@@ -265,9 +281,17 @@ def main():
         # In TEMP, not the repo: a tool that drops an untracked artifact into
         # the working tree makes `git status` lie about whether a run left
         # anything behind, and that check is worth more than the convenience.
-        report = os.path.join(tempfile.gettempdir(), "rewo-render-check.out")
+        report = report_path()
         io.open(report, "wb").write(text.encode("utf-8"))
         sys.stdout.buffer.write(text[-9000:].encode("utf-8", "replace"))
+        # The tail above can cut off the failing witness (a CI log once showed
+        # only "65/66"); name every non-PASS witness line explicitly.
+        bad = [l for l in text.splitlines()
+               if l.startswith("[rendercheck] ") and " PASS " not in l
+               and not l.rstrip().endswith("witnesses")]
+        if bad:
+            sys.stdout.buffer.write(
+                ("\nNOT PASSING:\n" + "\n".join(bad) + "\n").encode("utf-8", "replace"))
         sys.stdout.flush()
         print("\nRENDER_CHECK_EXIT=%s  (full output in %s)" % (code, report))
     finally:

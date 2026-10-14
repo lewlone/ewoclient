@@ -44,7 +44,7 @@ jobs:
       # A test that needs the local assets must run here, not skip.
       REWO_REQUIRE_ASSETS: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 

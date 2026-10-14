@@ -15,9 +15,10 @@
 
 use ewo_core::OkLch;
 
+use crate::gradients;
 use crate::tokens;
 use rand::{Rng, RngExt};
-use skia_safe::{gradient_shader, BlendMode, Canvas, Color4f, Paint, Path, Point, TileMode};
+use skia_safe::{BlendMode, Canvas, Color4f, Paint, PathBuilder, Point, TileMode};
 use std::f32::consts::PI;
 
 const BASE_PETALS: usize = 4;
@@ -140,7 +141,7 @@ impl Petals {
 
             // Teardrop bezier: from (0, -size) curving out and back to (0, size),
             // then mirrored back to the start.
-            let mut path = Path::new();
+            let mut path = PathBuilder::new();
             path.move_to((0.0, -p.size));
             path.cubic_to(
                 (p.size * 0.9, -p.size * 0.6),
@@ -153,6 +154,7 @@ impl Petals {
                 (0.0, -p.size),
             );
             path.close();
+            let path = path.detach();
 
             // 3-stop linear gradient across the petal (left→right).
             let c0 = tokens::shift_oklch(OkLch::new(0.75, 0.09, p.hue, p.alpha)).to_srgb_f32();
@@ -161,19 +163,15 @@ impl Petals {
             let c2 = tokens::shift_oklch(OkLch::new(0.68, 0.08, p.hue - 10.0, p.alpha * 0.6))
                 .to_srgb_f32();
 
-            let shader = gradient_shader::linear(
+            let shader = gradients::linear(
                 (Point::new(-p.size, 0.0), Point::new(p.size, 0.0)),
-                gradient_shader::GradientShaderColors::ColorsInSpace(
-                    &[
-                        Color4f::new(c0[0], c0[1], c0[2], c0[3]),
-                        Color4f::new(c1[0], c1[1], c1[2], c1[3]),
-                        Color4f::new(c2[0], c2[1], c2[2], c2[3]),
-                    ],
-                    None,
-                ),
+                &[
+                    Color4f::new(c0[0], c0[1], c0[2], c0[3]),
+                    Color4f::new(c1[0], c1[1], c1[2], c1[3]),
+                    Color4f::new(c2[0], c2[1], c2[2], c2[3]),
+                ],
                 Some(&[0.0_f32, 0.5, 1.0][..]),
                 TileMode::Clamp,
-                None,
                 None,
             )
             .expect("petal gradient");

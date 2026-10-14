@@ -73,26 +73,22 @@ pub(super) fn draw_tab_strip(canvas: &Canvas, view: OverlayView, fonts: &FontSto
             // Vertical berry→deep-wine fill.
             let mut fill = Paint::default();
             fill.set_anti_alias(true);
-            if let Some(shader) = gradient_shader::linear(
+            if let Some(shader) = gradients::linear(
                 (
                     Point::new(inset.left, inset.top),
                     Point::new(inset.left, inset.bottom),
                 ),
-                gradient_shader::GradientShaderColors::ColorsInSpace(
-                    &[
-                        rgba(BERRY, 0.62),
-                        Color4f::new(
-                            0x7F as f32 / 255.0,
-                            0x40 as f32 / 255.0,
-                            0x5A as f32 / 255.0,
-                            0.72,
-                        ),
-                    ],
-                    None,
-                ),
+                &[
+                    rgba(BERRY, 0.62),
+                    Color4f::new(
+                        0x7F as f32 / 255.0,
+                        0x40 as f32 / 255.0,
+                        0x5A as f32 / 255.0,
+                        0.72,
+                    ),
+                ],
                 None,
                 TileMode::Clamp,
-                None,
                 None,
             ) {
                 fill.set_shader(shader);
@@ -726,26 +722,22 @@ pub(super) fn draw_toggle_chip(
     let mut bg = Paint::default();
     bg.set_anti_alias(true);
     if on {
-        if let Some(shader) = gradient_shader::linear(
+        if let Some(shader) = gradients::linear(
             (
                 Point::new(rect.left, rect.top),
                 Point::new(rect.left, rect.bottom),
             ),
-            gradient_shader::GradientShaderColors::ColorsInSpace(
-                &[
-                    rgba(BERRY, 0.45),
-                    Color4f::new(
-                        0x7F as f32 / 255.0,
-                        0x40 as f32 / 255.0,
-                        0x5A as f32 / 255.0,
-                        0.45,
-                    ),
-                ],
-                None,
-            ),
+            &[
+                rgba(BERRY, 0.45),
+                Color4f::new(
+                    0x7F as f32 / 255.0,
+                    0x40 as f32 / 255.0,
+                    0x5A as f32 / 255.0,
+                    0.45,
+                ),
+            ],
             None,
             TileMode::Clamp,
-            None,
             None,
         ) {
             bg.set_shader(shader);
@@ -986,16 +978,12 @@ pub(super) fn draw_home(
     let av_rect = Rect::from_xywh(av_cx - av_r, av_cy - av_r, av_r * 2.0, av_r * 2.0);
     let mut av_fill = Paint::default();
     av_fill.set_anti_alias(true);
-    if let Some(shader) = gradient_shader::radial(
+    if let Some(shader) = gradients::radial(
         Point::new(av_cx - av_r * 0.4, av_cy - av_r * 0.4),
         av_r * 1.6,
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[rgba(ROSE, 1.0), rgba(BERRY, 1.0), rgba(WINE, 1.0)],
-            None,
-        ),
+        &[rgba(ROSE, 1.0), rgba(BERRY, 1.0), rgba(WINE, 1.0)],
         Some(&[0.0_f32, 0.6, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     ) {
         av_fill.set_shader(shader);
@@ -1117,22 +1105,18 @@ pub(super) fn draw_album_art(canvas: &Canvas, rect: Rect, media: &crate::media::
         let cy = rect.top + rect.height() * 0.35;
         let mut p = Paint::default();
         p.set_anti_alias(true);
-        if let Some(shader) = gradient_shader::sweep(
+        if let Some(shader) = gradients::sweep(
             (cx, cy),
-            gradient_shader::GradientShaderColors::ColorsInSpace(
-                &[
-                    rgba(WINE, 1.0),
-                    rgba(BERRY, 1.0),
-                    rgba(ROSE, 1.0),
-                    rgba(LAV, 1.0),
-                    rgba(BERRY, 1.0),
-                    rgba(WINE, 1.0),
-                ],
-                None,
-            ),
+            &[
+                rgba(WINE, 1.0),
+                rgba(BERRY, 1.0),
+                rgba(ROSE, 1.0),
+                rgba(LAV, 1.0),
+                rgba(BERRY, 1.0),
+                rgba(WINE, 1.0),
+            ],
             None,
             TileMode::Clamp,
-            None,
             None,
             None,
         ) {
@@ -1202,18 +1186,14 @@ pub(super) fn draw_media_button(
         );
         let mut fill = Paint::default();
         fill.set_anti_alias(true);
-        if let Some(shader) = gradient_shader::linear(
+        if let Some(shader) = gradients::linear(
             (
                 Point::new(rect.left, rect.top),
                 Point::new(rect.left, rect.bottom),
             ),
-            gradient_shader::GradientShaderColors::ColorsInSpace(
-                &[rose_lift, rgba(BERRY, 1.0)],
-                None,
-            ),
+            &[rose_lift, rgba(BERRY, 1.0)],
             None,
             TileMode::Clamp,
-            None,
             None,
         ) {
             fill.set_shader(shader);
@@ -1296,12 +1276,12 @@ pub(super) fn draw_media_button(
         // ▶ play triangle.
         'P' => {
             let path = {
-                let mut p = skia_safe::Path::new();
+                let mut p = skia_safe::PathBuilder::new();
                 p.move_to((cx - size * 0.55, cy - size));
                 p.line_to((cx + size * 0.9, cy));
                 p.line_to((cx - size * 0.55, cy + size));
                 p.close();
-                p
+                p.detach()
             };
             canvas.draw_path(&path, &g);
         }
@@ -1322,12 +1302,12 @@ pub(super) fn draw_media_button(
             let bw = size * 0.32;
             canvas.draw_rect(Rect::from_xywh(cx - size * 1.1, cy - bh * 0.5, bw, bh), &g);
             let path = {
-                let mut p = skia_safe::Path::new();
+                let mut p = skia_safe::PathBuilder::new();
                 p.move_to((cx + size * 0.9, cy - bh * 0.5));
                 p.line_to((cx - size * 0.55, cy));
                 p.line_to((cx + size * 0.9, cy + bh * 0.5));
                 p.close();
-                p
+                p.detach()
             };
             canvas.draw_path(&path, &g);
         }
@@ -1337,12 +1317,12 @@ pub(super) fn draw_media_button(
             let bw = size * 0.32;
             canvas.draw_rect(Rect::from_xywh(cx + size * 0.78, cy - bh * 0.5, bw, bh), &g);
             let path = {
-                let mut p = skia_safe::Path::new();
+                let mut p = skia_safe::PathBuilder::new();
                 p.move_to((cx - size * 0.9, cy - bh * 0.5));
                 p.line_to((cx + size * 0.55, cy));
                 p.line_to((cx - size * 0.9, cy + bh * 0.5));
                 p.close();
-                p
+                p.detach()
             };
             canvas.draw_path(&path, &g);
         }
@@ -1403,18 +1383,14 @@ pub(super) fn draw_media_large(
     let mut fill = Paint::default();
     fill.set_anti_alias(true);
     if !idle {
-        if let Some(shader) = gradient_shader::linear(
+        if let Some(shader) = gradients::linear(
             (
                 Point::new(rect.left, rect.top),
                 Point::new(rect.right, rect.bottom),
             ),
-            gradient_shader::GradientShaderColors::ColorsInSpace(
-                &[rgba(BERRY, 0.22), rgba(LAV, 0.10), rgba(WINE, 0.72)],
-                None,
-            ),
+            &[rgba(BERRY, 0.22), rgba(LAV, 0.10), rgba(WINE, 0.72)],
             Some(&[0.0_f32, 0.4, 1.0][..]),
             TileMode::Clamp,
-            None,
             None,
         ) {
             fill.set_shader(shader);
@@ -1635,18 +1611,14 @@ pub(super) fn draw_media_large(
             let fill_rect = Rect::from_xywh(track_rect.left, track_rect.top, fill_w, track_h);
             let mut fp = Paint::default();
             fp.set_anti_alias(true);
-            if let Some(shader) = gradient_shader::linear(
+            if let Some(shader) = gradients::linear(
                 (
                     Point::new(track_rect.left, track_rect.top),
                     Point::new(track_rect.right, track_rect.top),
                 ),
-                gradient_shader::GradientShaderColors::ColorsInSpace(
-                    &[rgba(ROSE, 1.0), rgba(CHAMP, 1.0)],
-                    None,
-                ),
+                &[rgba(ROSE, 1.0), rgba(CHAMP, 1.0)],
                 None,
                 TileMode::Clamp,
-                None,
                 None,
             ) {
                 fp.set_shader(shader);

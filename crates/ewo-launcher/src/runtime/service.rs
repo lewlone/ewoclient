@@ -69,7 +69,7 @@ impl RuntimeService {
         let tx = self.tx.clone();
         std::thread::Builder::new()
             .name(format!("ewo-runtime-{}", major))
-            .spawn(move || run_fetch(tx, major))
+            .spawn(move || run_fetch_guarded(tx, major))
             .expect("spawn runtime fetch");
     }
 
@@ -88,6 +88,27 @@ impl RuntimeService {
             out.push(ev);
         }
         out
+    }
+}
+
+/// [`run_fetch`], but a panic is reported as `Failed` so `in_flight` clears
+/// (otherwise the JRE fetch could never be retried).
+fn run_fetch_guarded(tx: Sender<RuntimeEvent>, major: u32) {
+    guard_fetch(&tx, major, || run_fetch(tx.clone(), major));
+}
+
+fn guard_fetch(tx: &Sender<RuntimeEvent>, major: u32, job: impl FnOnce()) {
+    if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)) {
+        let what = payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".into());
+        log::error!("runtime: fetch thread panicked: {what}");
+        let _ = tx.send(RuntimeEvent::Failed {
+            major,
+            message: format!("fetch thread panicked: {what}"),
+        });
     }
 }
 
@@ -211,43 +232,43 @@ fn download_verify(
         .get(&info.url)
         .call()
         .map_err(|e| format!("GET {}: {}", info.url, e))?;
+    // Cap the body at the size Adoptium announced (plus slack): the sha256
+    // below would reject a wrong archive, but only after it was all on disk.
+    let limit = crate::util::body_limit(info.size);
+    crate::util::check_declared_length(resp.header("Content-Length"), limit)
+        .map_err(|e| format!("GET {}: {}", info.url, e))?;
     let mut reader = resp.into_reader();
     // Stream to `<archive>.part`; only a verified file is renamed into place.
     let part = part_path(dest);
     let mut file =
         fs::File::create(&part).map_err(|e| format!("create {}: {}", part.display(), e))?;
     let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
-    let mut written: u64 = 0;
+    let mut seen: u64 = 0;
     let mut next_progress_at: u64 = 256 * 1024;
-    loop {
-        let n = match reader.read(&mut buf) {
-            Ok(n) => n,
-            Err(e) => {
-                let _ = fs::remove_file(&part);
-                return Err(format!("read: {}", e));
-            }
-        };
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-        if let Err(e) = file.write_all(&buf[..n]) {
-            let _ = fs::remove_file(&part);
-            return Err(format!("write {}: {}", part.display(), e));
-        }
-        written += n as u64;
+    let copied = crate::util::copy_capped(&mut reader, limit, |chunk| {
+        hasher.update(chunk);
+        file.write_all(chunk)
+            .map_err(|e| format!("write {}: {}", part.display(), e))?;
+        seen += chunk.len() as u64;
         // Throttle progress events — UI re-renders at most every 256KB
         // of download, plenty for a smooth progress bar.
-        if written >= next_progress_at {
+        if seen >= next_progress_at {
             let _ = tx.send(RuntimeEvent::Progress {
-                downloaded: written,
+                downloaded: seen,
                 total: info.size,
             });
             next_progress_at += 256 * 1024;
         }
-    }
+        Ok(())
+    });
     drop(file);
+    let written = match copied {
+        Ok(n) => n,
+        Err(e) => {
+            let _ = fs::remove_file(&part);
+            return Err(e);
+        }
+    };
     let actual = hex_digest(&hasher.finalize());
     if !actual.eq_ignore_ascii_case(&info.sha256) {
         let _ = fs::remove_file(&part);
@@ -377,4 +398,24 @@ fn extract_zip(file: fs::File, dest: &std::path::Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panicking_fetch_reports_failed_so_the_service_can_retry() {
+        let (tx, rx) = mpsc::channel();
+        guard_fetch(&tx, 21, || panic!("kaboom"));
+        match rx.try_recv() {
+            Ok(RuntimeEvent::Failed { major, message }) => {
+                assert_eq!(major, 21);
+                assert!(message.contains("kaboom"), "{message}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        guard_fetch(&tx, 21, || {});
+        assert!(rx.try_recv().is_err(), "a clean fetch adds no event");
+    }
 }

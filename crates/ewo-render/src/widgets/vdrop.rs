@@ -19,11 +19,12 @@
 //! CSS reference: `.vdrop`, `.vdrop-head`, `.vdrop-caret`, `.vdrop-portal-menu`,
 //! `.vdrop-panel-solid`, `.vdrop-row`, `.vdrop-dot` in `StyleSheet1`.
 
+use crate::gradients;
 use crate::tokens;
 use ewo_core::{motion, Settings};
 use skia_safe::{
-    gradient_shader, BlurStyle, Canvas, Color4f, Contains, MaskFilter, Paint, PaintStyle, Path,
-    Point, RRect, Rect, TileMode,
+    BlurStyle, Canvas, Color4f, Contains, MaskFilter, Paint, PaintStyle, Path, Point, RRect, Rect,
+    TileMode,
 };
 
 /// Per-row stagger delay (CSS `animation-delay: calc(var(--row-i) * 50ms)`).
@@ -431,18 +432,14 @@ fn draw_menu_panel(canvas: &Canvas, bounds: Rect) {
     // Solid panel body — vertical gradient. Now fully OPAQUE (was 0.96/0.97):
     // the transparency let the dark backdrop bleed through the body + corner
     // cutouts, which is what made the rounded corners read as dark squares.
-    let Some(body) = gradient_shader::linear(
+    let Some(body) = gradients::linear(
         (
             Point::new(bounds.left, bounds.top),
             Point::new(bounds.left, bounds.bottom),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[tokens::bg_card_top_a(1.0), tokens::bg_card_bottom_a(1.0)],
-            None,
-        ),
+        &[tokens::bg_card_top_a(1.0), tokens::bg_card_bottom_a(1.0)],
         Some(&[0.0_f32, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     ) else {
         return;
@@ -455,16 +452,12 @@ fn draw_menu_panel(canvas: &Canvas, bounds: Rect) {
     // ::before warm radial fade `120% 80% at 50% -10%, rose 0.10 → transparent 60%`
     let cx = (bounds.left + bounds.right) * 0.5;
     let cy = bounds.top - bounds.height() * 0.10;
-    if let Some(rad) = gradient_shader::radial(
+    if let Some(rad) = gradients::radial(
         Point::new(cx, cy),
         bounds.width() * 0.6,
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[tokens::accent_rose_a(0.10), tokens::accent_rose_a(0.0)],
-            None,
-        ),
+        &[tokens::accent_rose_a(0.10), tokens::accent_rose_a(0.0)],
         Some(&[0.0_f32, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     ) {
         let mut radp = Paint::default();
@@ -587,19 +580,15 @@ fn draw_menu_rows(
 
             let mut dot = Paint::default();
             dot.set_anti_alias(true);
-            if let Some(shader) = gradient_shader::radial(
+            if let Some(shader) = gradients::radial(
                 Point::new(dot_cx - 0.5, dot_cy - 0.5),
                 3.0,
-                gradient_shader::GradientShaderColors::ColorsInSpace(
-                    &[
-                        tokens::text_pearl_highlight_a(1.0),
-                        tokens::accent_rose_a(1.0),
-                    ],
-                    None,
-                ),
+                &[
+                    tokens::text_pearl_highlight_a(1.0),
+                    tokens::accent_rose_a(1.0),
+                ],
                 Some(&[0.0_f32, 0.7][..]),
                 TileMode::Clamp,
-                None,
                 None,
             ) {
                 dot.set_shader(shader);

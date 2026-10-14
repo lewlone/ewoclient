@@ -53,7 +53,7 @@ rand = "0.10"
 softbuffer = "0.4"
 
 # Step 2 — Skia GL stack (+ d3d for the Windows DirectComposition backend)
-skia-safe = { version = "0.78", features = ["gl", "textlayout", "d3d"] }
+skia-safe = { version = "0.153", features = ["gl", "textlayout", "d3d"] }
 glutin = "0.32"
 glutin-winit = "0.5"
 raw-window-handle = "0.6"
@@ -61,11 +61,10 @@ gl = "0.14"
 
 # v2 phase A — Microsoft auth chain. All sync (no tokio per CLAUDE.md
 # non-negotiables). `ureq` for HTTPS, `tiny_http` for the loopback redirect
-# listener, `opener` to launch the system browser, `base64`/`sha2` for
+# listener, `base64`/`sha2` for
 # PKCE, `urlencoding` for query-string assembly.
 ureq = { version = "2", features = ["json", "tls"] }
 tiny_http = "0.12"
-opener = "0.9"
 base64 = "0.23"
 sha2 = "0.11"
 sha1 = "0.11"
@@ -127,7 +126,7 @@ rewo-audio = { path = "crates/rewo-audio" }
 
 # Platform: Windows
 [workspace.dependencies.windows]
-version = "0.58"
+version = "0.62"
 features = [
     "Win32_Foundation",
     # auth.toml secrets (DPAPI)
@@ -151,7 +150,7 @@ features = [
 
 # NOTE: skia-safe is intentionally not declared here yet. It is added in step 2
 # of the build sequence (see CLAUDE.md). First Skia build is slow (~20-40 min).
-# When ready: skia-safe = { version = "0.78", features = ["gl", "textlayout"] }
+# When ready: skia-safe = { version = "0.153", features = ["gl", "textlayout"] }
 
 [profile.dev]
 opt-level = 1

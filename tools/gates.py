@@ -58,6 +58,8 @@ import subprocess
 import sys
 import tempfile
 import time
+
+from gpu_lock import machine_lock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -262,16 +264,19 @@ def main() -> int:
         rows = [r for r in rows if r[0] in wanted or r[2] in wanted]
 
     results = []
-    for label, argv, parent in rows:
-        print(f"-- {label} ...", end=" ", flush=True)
-        r = run_gate(exe, label, argv, args.timeout, args.audio, parent)
-        print(r["status"], f"({r['secs']}s)", flush=True)
-        results.append(r)
-    if not args.no_demo and not args.only:
-        print("-- demo-hash ...", end=" ", flush=True)
-        r = run_demo(exe, args.timeout, args.release)
-        print(r["status"], flush=True)
-        results.append(r)
+    # One GPU verification per machine: the self-hosted CI runner shares this
+    # desktop and device with local runs (see tools/gpu_lock.py).
+    with machine_lock("tools/gates.py"):
+        for label, argv, parent in rows:
+            print(f"-- {label} ...", end=" ", flush=True)
+            r = run_gate(exe, label, argv, args.timeout, args.audio, parent)
+            print(r["status"], f"({r['secs']}s)", flush=True)
+            results.append(r)
+        if not args.no_demo and not args.only:
+            print("-- demo-hash ...", end=" ", flush=True)
+            r = run_demo(exe, args.timeout, args.release)
+            print(r["status"], flush=True)
+            results.append(r)
 
     width = max(len(r["gate"]) for r in results)
     print()

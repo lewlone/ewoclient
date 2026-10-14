@@ -10,12 +10,13 @@
 //!
 //! Failure modes are non-fatal: a missing file falls back to the
 //! built-in default list; a malformed file is backed up to
-//! `instances.toml.bak-<ts>` and also falls back. Saves are atomic and
+//! `instances.toml.bak-<ts>` and also falls back; a file that exists but
+//! can't be *read* also falls back, but then saves are blocked for the
+//! session so the defaults never overwrite it. Saves are atomic and
 //! best-effort — we log failures but don't propagate them up because the
 //! user shouldn't see a popup just because their disk is full.
 
 use std::collections::HashSet;
-use std::fs;
 use std::path::PathBuf;
 
 use ewo_render::screens::instances::{default_instances, Instance, InstanceLoader};
@@ -74,41 +75,53 @@ pub fn load_instances() -> Vec<Instance> {
     instances
 }
 
+/// Set when `instances.toml` exists but could not be read: saves are then
+/// skipped so the defaults in memory never replace the user's file.
+static SAVE_GUARD: util::SaveGuard = util::SaveGuard::new();
+
 fn load_instances_raw() -> Vec<Instance> {
     let Some(path) = instances_path() else {
         log::warn!("config dir unresolvable — using default instances");
         return default_instances();
     };
-    if !path.exists() {
-        log::info!(
-            "no persisted instances at {} — using defaults",
-            path.display()
-        );
-        return default_instances();
-    }
-    match fs::read_to_string(&path) {
-        Ok(s) => match toml::from_str::<InstancesFile>(&s) {
-            Ok(file) if !file.instances.is_empty() => {
-                log::info!(
-                    "loaded {} instance(s) from {}",
-                    file.instances.len(),
-                    path.display()
-                );
-                file.instances
-            }
-            Ok(_) => {
-                log::info!("persisted instances file empty — using defaults");
-                default_instances()
-            }
-            Err(e) => {
-                // Keep the user's real file: the next save would otherwise
-                // overwrite it with the defaults.
-                util::backup_unparseable(&path, &e);
-                default_instances()
-            }
-        },
+    load_instances_from(&path, &SAVE_GUARD)
+}
+
+fn load_instances_from(path: &std::path::Path, guard: &util::SaveGuard) -> Vec<Instance> {
+    let text = match util::read_config(path, guard) {
+        util::ConfigRead::Text(s) => s,
+        util::ConfigRead::Missing => {
+            log::info!(
+                "no persisted instances at {} — using defaults",
+                path.display()
+            );
+            return default_instances();
+        }
+        util::ConfigRead::Corrupt(reason) => {
+            guard.backup_or_block(path, &reason, false);
+            return default_instances();
+        }
+        // Already logged loudly, and saves are blocked.
+        util::ConfigRead::Unreadable => return default_instances(),
+    };
+    match toml::from_str::<InstancesFile>(&text) {
+        Ok(file) if !file.instances.is_empty() => {
+            log::info!(
+                "loaded {} instance(s) from {}",
+                file.instances.len(),
+                path.display()
+            );
+            file.instances
+        }
+        Ok(_) => {
+            log::info!("persisted instances file empty — using defaults");
+            default_instances()
+        }
         Err(e) => {
-            log::warn!("could not read {}: {} — using defaults", path.display(), e);
+            // Keep the user's real file: the next save would otherwise
+            // overwrite it with the defaults. If even the backup fails,
+            // saves are blocked instead.
+            guard.backup_or_block(path, &e, false);
             default_instances()
         }
     }
@@ -121,12 +134,19 @@ pub fn save_instances(instances: &[Instance]) {
         log::warn!("config dir unresolvable — instance list not saved");
         return;
     };
+    save_instances_at(&path, instances, &SAVE_GUARD);
+}
+
+fn save_instances_at(path: &std::path::Path, instances: &[Instance], guard: &util::SaveGuard) {
+    if !guard.allows_save(path) {
+        return;
+    }
     let file = InstancesFile {
         instances: instances.to_vec(),
     };
     match toml::to_string_pretty(&file) {
         Ok(s) => {
-            if let Err(e) = util::atomic_write(&path, s.as_bytes()) {
+            if let Err(e) = util::atomic_write(path, s.as_bytes()) {
                 log::warn!("could not write {}: {}", path.display(), e);
             } else {
                 log::info!(
@@ -241,6 +261,7 @@ pub fn new_instance_id(name: &str, instances: &[Instance]) -> String {
 mod tests {
     use super::*;
     use ewo_render::screens::instances::InstanceLoader;
+    use std::fs;
 
     /// Pre-loader-field `instances.toml` content must still parse — the
     /// `loader` field is `#[serde(default)]` so missing entries get
@@ -346,6 +367,56 @@ mods = []
         let mut v = vec![inst];
         assert!(assign_ids_with(&mut v, &|_: &str| false));
         assert!(paths::instance_dir(&v[0].id).is_some());
+    }
+
+    #[test]
+    fn a_read_error_keeps_the_file_instead_of_saving_defaults_over_it() {
+        let dir = std::env::temp_dir().join(format!("ewo-inst-guard-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // An unreadable path (a directory stands in for a locked file).
+        let unreadable = dir.join("unreadable");
+        fs::create_dir_all(&unreadable).unwrap();
+        let guard = util::SaveGuard::new();
+        assert!(!load_instances_from(&unreadable, &guard).is_empty());
+        assert!(guard.is_blocked(), "an unreadable file blocks saves");
+
+        // With saves blocked, a good file on disk is not touched.
+        let real = dir.join("instances.toml");
+        fs::write(&real, "# the user's real instances\n").unwrap();
+        save_instances_at(&real, &[named("x")], &guard);
+        assert_eq!(
+            fs::read_to_string(&real).unwrap(),
+            "# the user's real instances\n"
+        );
+
+        // A missing file is a fresh install: saving stays allowed.
+        let fresh = util::SaveGuard::new();
+        assert!(!load_instances_from(&dir.join("nope.toml"), &fresh).is_empty());
+        assert!(!fresh.is_blocked());
+        save_instances_at(&real, &[named("x")], &fresh);
+        assert!(fs::read_to_string(&real).unwrap().contains("name = \"x\""));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_parse_error_is_backed_up_and_does_not_block_saves() {
+        let dir = std::env::temp_dir().join(format!("ewo-inst-parse-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("instances.toml");
+        fs::write(&path, "[[instances\nbroken").unwrap();
+        let guard = util::SaveGuard::new();
+        assert!(!load_instances_from(&path, &guard).is_empty());
+        assert!(!guard.is_blocked());
+        let backups = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".bak-"))
+            .count();
+        assert_eq!(backups, 1, "the unparseable file was preserved");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

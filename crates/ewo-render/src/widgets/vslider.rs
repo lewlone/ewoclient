@@ -22,11 +22,12 @@
 //! (`.vslider-value`) are deferred to step 16 polish — not load-bearing for
 //! visual parity at rest.
 
+use crate::gradients;
 use crate::tokens;
 use ewo_core::Settings;
 use skia_safe::{
-    gradient_shader, BlurStyle, Canvas, Color4f, Contains, MaskFilter, Paint, PaintStyle, Point,
-    RRect, Rect, TileMode,
+    BlurStyle, Canvas, Color4f, Contains, MaskFilter, Paint, PaintStyle, Point, RRect, Rect,
+    TileMode,
 };
 
 const TRACK_INSET_X: f32 = 6.0;
@@ -161,22 +162,18 @@ pub fn draw_vslider(
 
 fn draw_track(canvas: &Canvas, rect: &Rect, rrect: &RRect) {
     // CSS: rose 0.10 → lav 0.15 → rose 0.10
-    let Some(shader) = gradient_shader::linear(
+    let Some(shader) = gradients::linear(
         (
             Point::new(rect.left, rect.top),
             Point::new(rect.right, rect.top),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                tokens::accent_rose_a(0.10),
-                tokens::accent_lav_a(0.15),
-                tokens::accent_rose_a(0.10),
-            ],
-            None,
-        ),
+        &[
+            tokens::accent_rose_a(0.10),
+            tokens::accent_lav_a(0.15),
+            tokens::accent_rose_a(0.10),
+        ],
         Some(&[0.0_f32, 0.5, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     ) else {
         return;
@@ -189,22 +186,18 @@ fn draw_track(canvas: &Canvas, rect: &Rect, rrect: &RRect) {
 
 fn draw_fill(canvas: &Canvas, rect: &Rect, rrect: &RRect) {
     // CSS: #D4A8B8 → #E5B8C5 50% → #C9A5D4
-    let Some(shader) = gradient_shader::linear(
+    let Some(shader) = gradients::linear(
         (
             Point::new(rect.left, rect.top),
             Point::new(rect.right, rect.top),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                tokens::accent_rose_dusk_a(1.0),
-                tokens::accent_rose_a(1.0),
-                tokens::accent_lav_a(1.0),
-            ],
-            None,
-        ),
+        &[
+            tokens::accent_rose_dusk_a(1.0),
+            tokens::accent_rose_a(1.0),
+            tokens::accent_lav_a(1.0),
+        ],
         Some(&[0.0_f32, 0.5, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     ) else {
         return;
@@ -260,20 +253,16 @@ fn draw_handle(
     let handle_r = HANDLE_SIZE * 0.5;
     // Halo — `inset: -10px` of a 14×14 yields 34×34, so radius 17.
     let halo_r = 17.0 * halo_scale;
-    if let Some(halo_shader) = gradient_shader::radial(
+    if let Some(halo_shader) = gradients::radial(
         Point::new(cx, cy),
         halo_r,
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                tokens::pearl_bloom_a(0.55 * drag_boost),
-                tokens::accent_rose_a(0.20 * drag_boost),
-                tokens::accent_rose_a(0.0),
-            ],
-            None,
-        ),
+        &[
+            tokens::pearl_bloom_a(0.55 * drag_boost),
+            tokens::accent_rose_a(0.20 * drag_boost),
+            tokens::accent_rose_a(0.0),
+        ],
         Some(&[0.0_f32, 0.40, 0.75][..]),
         TileMode::Clamp,
-        None,
         None,
     ) {
         let mut halo = Paint::default();
@@ -286,20 +275,16 @@ fn draw_handle(
 
     // Core — 8×8 (3px inset of 14×14), radial pearl gradient.
     let core_r = (HANDLE_SIZE - 6.0) * 0.5;
-    if let Some(core_shader) = gradient_shader::radial(
+    if let Some(core_shader) = gradients::radial(
         Point::new(cx - core_r * 0.3, cy - core_r * 0.4),
         core_r * 1.6,
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                tokens::text_pearl_highlight_a(1.0),
-                tokens::accent_rose_a(1.0),
-                tokens::accent_berry_a(1.0),
-            ],
-            None,
-        ),
+        &[
+            tokens::text_pearl_highlight_a(1.0),
+            tokens::accent_rose_a(1.0),
+            tokens::accent_berry_a(1.0),
+        ],
         Some(&[0.0_f32, 0.50, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     ) {
         // Outer rose glow (CSS box-shadow: 0 0 6 rgba(229,184,197,0.9))

@@ -36,7 +36,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -93,7 +93,7 @@ jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -114,7 +114,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -126,11 +126,12 @@ jobs:
 
       # skia-bindings downloads a prebuilt Skia (gl + textlayout) for
       # x86_64-unknown-linux-gnu; fontconfig/EGL/GL/Wayland/xkbcommon are what
-      # its link line and the winit/glutin stack name.
+      # its link line and the winit/glutin stack name; libdbus is the launcher's
+      # Secret Service (keyring) backend.
       - name: Install system libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends             pkg-config libfontconfig1-dev libegl1-mesa-dev libgl1-mesa-dev             libwayland-dev libxkbcommon-dev libx11-dev
+          sudo apt-get install -y --no-install-recommends             pkg-config libfontconfig1-dev libegl1-mesa-dev libgl1-mesa-dev             libwayland-dev libxkbcommon-dev libx11-dev libdbus-1-dev
 
       # The workspace enables skia-safe's `d3d` feature for the Windows
       # backend. skia-bindings publishes no Linux binary with it, and its
@@ -161,7 +162,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -198,7 +199,7 @@ jobs:
       CARGO_TERM_COLOR: always
       RUSTUP_TOOLCHAIN: "1.89"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -222,7 +223,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
