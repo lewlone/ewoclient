@@ -782,6 +782,26 @@ impl App {
         self.celebrate_until = Some(time + 4.5);
     }
 
+    /// The name and meta line the launching screen shows for a synthetic
+    /// (demo or dev-simulated) launch: the selected instance, or a fixed
+    /// placeholder when the list is empty.
+    pub(crate) fn demo_launch_label(&self) -> (String, String) {
+        self.instances
+            .get(self.instance_prefs.selected)
+            .map(|i| {
+                (
+                    i.name.clone(),
+                    launch_meta(i, None, self.instance_prefs.ram.value as i32),
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    "Velvet Hours".to_string(),
+                    "VANILLA · 1.21 · ADOPTIUM 21".to_string(),
+                )
+            })
+    }
+
     /// (Re)start the download job for a Pending instance whose job failed or
     /// never ran this session. No-op while a job for it is in flight.
     pub(crate) fn retry_download(&mut self, idx: usize) {
