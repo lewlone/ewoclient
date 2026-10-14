@@ -280,7 +280,7 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
             GUI_W,
             advance.as_ref().unwrap(),
             px,
-            lang.expect("the bake carries a language"),
+            &baked.lang,
         );
         let measure = |s: &rewo_world::chat_style::ChatSpan| {
             rewo_gpu::text::width_styled(&s.text, advance.as_ref().unwrap(), s.bold)

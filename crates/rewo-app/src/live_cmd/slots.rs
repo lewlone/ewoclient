@@ -87,7 +87,7 @@ pub(crate) fn hovered_menu_slot(
 /// 77 px placement shift and not from the guard it names. A mutation deleting
 /// that guard survived. This exists so the witness can say which of the two it
 /// is measuring.
-#[cfg(any(test, feature = "gates"))]
+#[cfg(feature = "gates")]
 pub(crate) fn hovered_menu_slot_for_gate(
     layout: &'static rewo_world::menu_layout::MenuLayout,
     mouse: (f64, f64),
@@ -367,7 +367,7 @@ pub(crate) fn recipe_book_panel(
 /// [`container_panel`] for `containershot`, which drives the production
 /// builder rather than a copy of it — M45's finding: a gate that reimplements
 /// a slice of the app's setup misses whatever the app adds to it.
-#[cfg(any(test, feature = "gates"))]
+#[cfg(feature = "gates")]
 pub(crate) fn container_panel_for_test(
     layout: &'static rewo_world::menu_layout::MenuLayout,
 ) -> Option<rewo_gpu::container::ContainerPanel> {
@@ -379,7 +379,7 @@ pub(crate) fn container_panel_for_test(
 ///
 /// Drives the production builder for M45's reason: a gate that reimplements a
 /// slice of the app's setup misses whatever the app adds to it.
-#[cfg(any(test, feature = "gates"))]
+#[cfg(feature = "gates")]
 pub(crate) fn container_panel_for_open_menu(
     open: &rewo_world::menu::OpenMenu,
     xp_level: i32,
@@ -430,7 +430,7 @@ pub(crate) fn container_panel_for_open_menu(
 }
 
 /// [`BeaconEffectIds::resolve`] for `containershot`.
-#[cfg(any(test, feature = "gates"))]
+#[cfg(feature = "gates")]
 pub(crate) fn beacon_effect_ids_for_test(
     m: &rewo_data::mob_effects::MobEffects,
 ) -> BeaconEffectIds {
@@ -438,7 +438,7 @@ pub(crate) fn beacon_effect_ids_for_test(
 }
 
 /// [`sheet_index`] for `containershot`.
-#[cfg(any(test, feature = "gates"))]
+#[cfg(feature = "gates")]
 pub(crate) fn sheet_index_for_test(texture: &str) -> Option<usize> {
     sheet_index(texture)
 }

@@ -74,8 +74,10 @@ fn chat_rows_stack_upward_one_entry_height_apart() {
 /// `entryHeight - 1` would be 17.
 #[test]
 fn the_baseline_offset_is_not_the_row_height_less_one() {
-    let mut opts = rewo_world::chat::ChatOptions::default();
-    opts.line_spacing = 1.0;
+    let opts = rewo_world::chat::ChatOptions {
+        line_spacing: 1.0,
+        ..Default::default()
+    };
     assert_eq!(opts.entry_height(), 18);
     let lines = super::chat_lines(&chat_fixture(2, 0), 0, 1.0, 720.0, &opts, None, false).0;
     // chatBottom 680, minus 12.
@@ -176,8 +178,10 @@ fn the_fixture_scale_is_the_scale_the_pass_computes() {
 /// why eight milestones of green tests never contradicted the bug.
 #[test]
 fn a_row_backdrop_lands_under_its_text_at_gui_scale_three() {
-    let mut opts = rewo_world::chat::ChatOptions::default();
-    opts.scale = 2.0;
+    let opts = rewo_world::chat::ChatOptions {
+        scale: 2.0,
+        ..Default::default()
+    };
     let c = chat_fixture(3, 0);
     let fills = super::hud_fills(&c, 0, PX, SCREEN_H, &opts, false);
     let lines = super::chat_lines(&c, 0, PX, SCREEN_H, &opts, None, false).0;
@@ -324,8 +328,10 @@ fn the_fade_reaches_the_backdrop() {
 /// scale 1 and differ the moment the division is not exact.
 #[test]
 fn the_backdrops_max_width_is_a_ceil_not_the_wraps_floor() {
-    let mut opts = rewo_world::chat::ChatOptions::default();
-    opts.scale = 0.75;
+    let opts = rewo_world::chat::ChatOptions {
+        scale: 0.75,
+        ..Default::default()
+    };
     // 320 / 0.75 = 426.66… -> ceil 427, floor 426.
     let b = super::hud_fills(&chat_fixture(1, 0), 0, 1.0, 720.0, &opts, false);
     let chat_px = 0.75_f32;
@@ -360,8 +366,10 @@ fn the_fade_and_the_text_opacity_both_reach_the_line() {
     // Past 200 the line is not emitted at all, rather than emitted at 0.
     assert!(super::chat_lines(&c, 200, 1.0, 720.0, &opts, None, false).0.is_empty());
 
-    let mut dim = rewo_world::chat::ChatOptions::default();
-    dim.opacity = 0.0;
+    let dim = rewo_world::chat::ChatOptions {
+        opacity: 0.0,
+        ..Default::default()
+    };
     let lines = super::chat_lines(&c, 0, 1.0, 720.0, &dim, None, false).0;
     assert!((lines[0].alpha - 0.1).abs() < 1e-6, "the floor is 0.1, not 0");
 }
@@ -451,8 +459,10 @@ fn the_hover_and_the_render_agree_about_where_a_slot_is() {
             (oy2 + (sy as f32 + 8.0) * scale) as f64
         },
     );
-    let mut screen = super::ScreenState::default();
-    screen.mouse = mouse;
+    let screen = super::ScreenState {
+        mouse,
+        ..Default::default()
+    };
     assert_eq!(
         screen.hovered(layout, w, h, true),
         Some(9),

@@ -65,7 +65,7 @@ pub(crate) use entities::*;
 mod gui;
 pub(crate) use gui::*;
 mod headless;
-pub(crate) use headless::*;
+use headless::*;
 mod hud;
 pub(crate) use hud::*;
 mod render_check;
@@ -83,7 +83,7 @@ pub(crate) use tooltips::*;
 mod screens;
 pub(crate) use screens::*;
 mod sky;
-pub(crate) use sky::*;
+use sky::*;
 #[cfg(test)]
 mod tests;
 mod view;

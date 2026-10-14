@@ -750,7 +750,7 @@ fn check_layer_matrix(
     );
 
     // A prediction that agreed with a black clear would prove nothing either.
-    let covered = one.chunks_exact(4).filter(|p| p[0] > 8 || p[2] > 8).count();
+    let covered = one.as_chunks::<4>().0.iter().filter(|p| p[0] > 8 || p[2] > 8).count();
     c.record(
         "v11.the_portal_actually_covered_the_pixels_read",
         covered > (W * H) as usize / 4,

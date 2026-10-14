@@ -587,7 +587,7 @@ pub(super) fn edit_box_render(
 /// scene render two ways depending on when the gate ran, and a witness cannot
 /// hold that constant. At 0 the caret is visible, which is the state the
 /// existing anvil witnesses were written against.
-#[cfg(any(test, feature = "gates"))]
+#[cfg(feature = "gates")]
 pub(crate) fn anvil_field_render_for_test(
     local: &rewo_world::edit_box::EditBox,
     advance: &[u8; 256],

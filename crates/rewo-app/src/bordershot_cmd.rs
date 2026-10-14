@@ -743,7 +743,7 @@ fn overlay_offscreen(ring: &OverlayRing) -> OverlayDraw<'_> {
 }
 
 fn max_channel(px: &[u8]) -> u8 {
-    px.chunks_exact(4)
+    px.as_chunks::<4>().0.iter()
         .flat_map(|p| p[..3].iter().copied())
         .max()
         .unwrap_or(0)
@@ -757,7 +757,7 @@ fn bytes_differing(a: &[u8], b: &[u8]) -> usize {
 fn mean_lit(px: &[u8], ch: usize) -> f32 {
     let mut sum = 0f64;
     let mut n = 0usize;
-    for p in px.chunks_exact(4) {
+    for p in px.as_chunks::<4>().0 {
         if p[0] | p[1] | p[2] != 0 {
             sum += p[ch] as f64;
             n += 1;
@@ -771,7 +771,7 @@ fn mean_lit(px: &[u8], ch: usize) -> f32 {
 }
 
 fn lit_fraction(px: &[u8]) -> f32 {
-    let n = px.chunks_exact(4).filter(|p| p[0] | p[1] | p[2] != 0).count();
+    let n = px.as_chunks::<4>().0.iter().filter(|p| p[0] | p[1] | p[2] != 0).count();
     n as f32 / (px.len() / 4) as f32
 }
 
@@ -1015,7 +1015,7 @@ fn check_pixels(c: &mut Checker, args: &BordershotArgs) -> Result<(), String> {
             // fragment *replaces* the destination alpha and a discarded one
             // leaves the clear's.
             let mut half_clear = flat_tex([255, 255, 255, 255], 16);
-            for (i, px) in half_clear.chunks_exact_mut(4).enumerate() {
+            for (i, px) in half_clear.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 if i / 16 >= 8 {
                     px[3] = 0;
                 }
@@ -1048,9 +1048,9 @@ fn check_pixels(c: &mut Checker, args: &BordershotArgs) -> Result<(), String> {
                 0,
             );
             let px = shot(&mut gpu, &mut off, &mut wr3, Some(&discard_draw))?;
-            let kept = px.chunks_exact(4).filter(|p| p[3] == 255).count();
+            let kept = px.as_chunks::<4>().0.iter().filter(|p| p[3] == 255).count();
             let written: Vec<u8> = px
-                .chunks_exact(4)
+                .as_chunks::<4>().0.iter()
                 .map(|p| p[3])
                 .filter(|a| *a != 255)
                 .collect();
@@ -1084,8 +1084,8 @@ fn check_pixels(c: &mut Checker, args: &BordershotArgs) -> Result<(), String> {
                 let per_ch: Vec<usize> = (0..4)
                     .map(|ch| {
                         again
-                            .chunks_exact(4)
-                            .zip(empty.chunks_exact(4))
+                            .as_chunks::<4>().0.iter()
+                            .zip(empty.as_chunks::<4>().0)
                             .filter(|(a, b)| a[ch] != b[ch])
                             .count()
                     })

@@ -73,7 +73,7 @@
 //!   narrow window, because the column is a constant 90. `tablistshot`'s `h1`
 //!   pins which of the two is reachable.
 
-use rewo_gpu::tab_list::{self, EntrySlot, PingIcon, ScoreColumn, TabEntry, TabListInput};
+use rewo_gpu::tab_list::{self, PingIcon, ScoreColumn, TabEntry, TabListInput};
 use rewo_net::scoreboard::{DisplaySlot, RenderType, Scoreboard};
 use rewo_proto::nbt::Nbt;
 use rewo_world::chat_style::{parse_component, ChatLine, ChatStyle};
@@ -665,7 +665,7 @@ pub fn face_rects(layout: &tab_list::TabListLayout) -> Vec<(usize, tab_list::Rec
     layout
         .entries
         .iter()
-        .filter_map(|e: &EntrySlot| e.face.map(|r| (e.index, r)))
+        .filter_map(|e: &tab_list::EntrySlot| e.face.map(|r| (e.index, r)))
         .collect()
 }
 

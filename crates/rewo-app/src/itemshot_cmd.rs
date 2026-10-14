@@ -1468,7 +1468,7 @@ fn check_render(
     // independently of the shipped function.
     let independent = |src: &[u8], key: &[u8], value: &[u8]| -> Vec<u8> {
         let mut out = src.to_vec();
-        for px in out.chunks_exact_mut(4) {
+        for px in out.as_chunks_mut::<4>().0 {
             if px[3] == 0 {
                 continue;
             }

@@ -429,7 +429,7 @@ pub(crate) fn spawner_entity_id(be: &rewo_world::block_entities::BlockEntity) ->
 /// it gets the same models, rigs and animations every other mob does. The only
 /// difference is that its position comes from a mount matrix rather than from
 /// the world.
-pub(crate) fn collect_spawner_mobs<'a>(
+pub(crate) fn collect_spawner_mobs(
     world: &rewo_world::World,
     etypes: &rewo_data::entity_types::EntityTypes,
     spawner_states: &std::collections::HashSet<u32>,

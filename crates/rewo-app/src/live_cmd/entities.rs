@@ -1061,9 +1061,9 @@ pub(crate) fn resolve_arm_poses(
                 A::None | A::Eat | A::Drink | A::Bundle => {}
             }
         }
-        if held.swing.kind == SwingAnimationType::Stab && swinging {
-            ArmPose::Spear
-        } else if spears.contains(held.item_id) {
+        if (held.swing.kind == SwingAnimationType::Stab && swinging)
+            || spears.contains(held.item_id)
+        {
             ArmPose::Spear
         } else {
             ArmPose::Item
@@ -1110,9 +1110,9 @@ pub(crate) fn resolve_arm_poses(
         {
             return ArmPose::ThrowTrident;
         }
-        if held.swing.kind == SwingAnimationType::Stab && swinging {
-            ArmPose::Spear
-        } else if spears.contains(held.item_id) {
+        if (held.swing.kind == SwingAnimationType::Stab && swinging)
+            || spears.contains(held.item_id)
+        {
             ArmPose::Spear
         } else {
             // The mob path's fall-through is EMPTY, not ITEM.

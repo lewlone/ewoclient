@@ -963,8 +963,10 @@ impl ApplicationHandler for LiveApp {
                 }
             }
             WindowEvent::MouseInput {
-                state: btn, button, ..
-            } if btn == ElementState::Pressed => {
+                state: ElementState::Pressed,
+                button,
+                ..
+            } => {
                 // Left-click digs the targeted block; right-click places
                 // against its hit face, or — with nothing to place against —
                 // starts *using* the held item (M38).
@@ -1271,7 +1273,6 @@ impl LiveApp {
     /// this before anything is drawn. Windowed, it lives on the entity pass —
     /// `self.baked` was `take()`n in `resumed` and has been `None` ever since
     /// (see the `lang` field's docs).
-
     pub(super) fn advance(&self) -> Option<[u8; 256]> {
         self.state
             .as_ref()

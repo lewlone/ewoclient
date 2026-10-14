@@ -168,7 +168,7 @@ pub fn run(args: MobshotArgs) -> Result<(), String> {
         return Err("mobshot: Vulkan validation requested but not active".into());
     }
 
-    let result = if args.check {
+    if args.check {
         run_check(&mut gpu, &baked, &args)
     } else if args.emissive_check {
         run_emissive_check(&mut gpu, &baked, &args)
@@ -180,8 +180,7 @@ pub fn run(args: MobshotArgs) -> Result<(), String> {
         run_variant_check(&mut gpu, &baked, &args)
     } else {
         run_sheet(&mut gpu, &baked, &args)
-    };
-    result
+    }
 }
 
 /// Hidden overlay: the offscreen render always draws the frame-time chart,
@@ -652,7 +651,7 @@ fn run_sheet(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &MobshotArgs) -> 
         })
         .collect();
 
-    let max_h = kinds.iter().map(|k| height_of(k)).fold(2.0f32, f32::max);
+    let max_h = kinds.iter().map(height_of).fold(2.0f32, f32::max);
     let center = Vec3::new(0.0, (max_h * 0.45).max(1.0), -((rows as f32 - 1.0) * sz) / 2.0);
     let eye = if args.only.is_some() {
         // Closeup: 3/4 view fitted to the row width + tallest mob.
@@ -912,7 +911,7 @@ fn run_emissive_check(
         };
         wr.set_camera(eye.to_array());
 
-        let mut shoot = |wr: &mut WorldRenderer,
+        let shoot = |wr: &mut WorldRenderer,
                          gpu: &mut Gpu,
                          off: &mut Offscreen,
                          entity: Option<(f32, EmissiveState)>|
@@ -1126,7 +1125,7 @@ fn run_etf_check(
     let (vp, right, up, eye) = frame_kind(&wr, kind).ok_or("the cow model is unavailable")?;
     wr.set_camera(eye.to_array());
 
-    let mut shot = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, variant: u16| {
+    let shot = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, variant: u16| {
         let d = EntityDraw {
             variant,
             ..neutral_draw(kind)
@@ -1482,7 +1481,7 @@ fn run_variant_check(
     let llama = |i: i32| mv::variant_id(mv::llama_texture(i));
     let horse = |i: i32| mv::variant_id(mv::horse_texture(i));
     let distinct = |f: &dyn Fn(i32) -> Option<u16>, n: i32| {
-        (0..n).map(|i| f(i)).collect::<std::collections::HashSet<_>>().len() == n as usize
+        (0..n).map(f).collect::<std::collections::HashSet<_>>().len() == n as usize
     };
     c.record(
         "n2.each_ordinal_table_is_a_bijection_with_its_own_out_of_range_rule",
@@ -1661,7 +1660,7 @@ fn run_variant_check(
         for (kind, _) in VARIANT_MOBS {
             let Some((vp, right, up, eye)) = frame_kind(&wr, kind) else { continue };
             wr.set_camera(eye.to_array());
-            let mut shot = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, v: u16| {
+            let shot = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, v: u16| {
                 let d = EntityDraw {
                     variant: v,
                     ..neutral_draw(kind)
@@ -1770,7 +1769,7 @@ fn check_fish(
     let Some((vp_l, right_l, up_l, eye_l)) = frame_kind(wr, large) else {
         return Err("the large tropical fish model is unavailable".into());
     };
-    let mut shot = |wr: &mut WorldRenderer,
+    let shot = |wr: &mut WorldRenderer,
                     gpu: &mut Gpu,
                     off: &mut Offscreen,
                     kind: EntityModelKind,
@@ -2120,7 +2119,7 @@ fn run_tint_check(
     // through the **client's own** `undercoat_visible`, so a rule graded here
     // is a rule `collect_entities` applies — a gate that set the flag by hand
     // would grade itself (M18's lesson, and M45's).
-    let mut shot_ext = |wr: &mut WorldRenderer,
+    let shot_ext = |wr: &mut WorldRenderer,
                         gpu: &mut Gpu,
                         off: &mut Offscreen,
                         dye: Option<u8>,
@@ -2145,7 +2144,7 @@ fn run_tint_check(
     // M64's rows measure the *fleece*, so they render with the second fleece
     // suppressed — see t6 for why that is now a necessary qualification and
     // not a convenience.
-    let mut shot_of = |wr: &mut WorldRenderer,
+    let shot_of = |wr: &mut WorldRenderer,
                        gpu: &mut Gpu,
                        off: &mut Offscreen,
                        dye: Option<u8>,
@@ -2160,7 +2159,7 @@ fn run_tint_check(
         off.render(gpu, Some((wr, vp)), &draw, BG)?;
         off.read_rgba(gpu)
     };
-    let mut shot = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, dye: Option<u8>| {
+    let shot = |wr: &mut WorldRenderer, gpu: &mut Gpu, off: &mut Offscreen, dye: Option<u8>| {
         shot_of(wr, gpu, off, dye, false)
     };
     // Vanilla's default wool colour is WHITE, not "untinted" — the layer tints

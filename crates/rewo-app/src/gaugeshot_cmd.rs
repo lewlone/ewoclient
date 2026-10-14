@@ -370,10 +370,8 @@ fn check_transcription(c: &mut Checker) {
         in_table.iter().all(|b| matches!(b.icon, HudIcon::Effect(_)))
             && out_of_table.len() == 3
             && out_of_table.iter().all(|b| matches!(b.icon, HudIcon::MissingTexture)),
-        format!(
-            "len 3: ids 0,2 in-table; 3 (== len), 10, -1 all MissingTexture. An earlier \
-             cut drew nothing here — vanilla draws the checker"
-        ),
+        "len 3: ids 0,2 in-table; 3 (== len), 10, -1 all MissingTexture. An earlier \
+             cut drew nothing here — vanilla draws the checker".to_string(),
     );
 
     // t5 — three ceils: 121 of 300 underwater pops bubble 5.

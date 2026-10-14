@@ -1518,7 +1518,7 @@ fn check_wavy_lifecycle(c: &mut Checker) {
 /// skin. See the module header — this is M38's rule.
 fn magenta(img: &[u8]) -> u32 {
     let mut n = 0;
-    for px in img.chunks_exact(4) {
+    for px in img.as_chunks::<4>().0 {
         if px[0] > 150 && px[2] > 150 && px[1] < 90 {
             n += 1;
         }
@@ -1543,7 +1543,7 @@ fn magenta_in(img: &[u8], (x, y, w, h): (u32, u32, u32, u32)) -> u32 {
 
 /// The marker pixels as a mask, for comparing two silhouettes (M61).
 fn magenta_mask(img: &[u8]) -> Vec<bool> {
-    img.chunks_exact(4)
+    img.as_chunks::<4>().0.iter()
         .map(|px| px[0] > 150 && px[2] > 150 && px[1] < 90)
         .collect()
 }

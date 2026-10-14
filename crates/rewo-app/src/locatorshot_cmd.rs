@@ -1934,7 +1934,7 @@ fn check_pixels(
         ] {
             let path = std::path::PathBuf::from(dir).join(format!("{name}.png"));
             let mut px = buf.clone();
-            for p in px.chunks_exact_mut(4) {
+            for p in px.as_chunks_mut::<4>().0 {
                 p[3] = 255;
             }
             let file = std::fs::File::create(&path).map_err(|e| format!("{path:?}: {e}"))?;

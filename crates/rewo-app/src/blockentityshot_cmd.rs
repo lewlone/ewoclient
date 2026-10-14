@@ -571,8 +571,8 @@ fn check_chest_models(c: &mut Checker, version: &str) -> Result<(), String> {
     // so its halves must be absent rather than baked from the wrong sprite.
     c.record(
         "m16.the_ender_chest_has_no_halves",
-        items.block_entities.get("rewo:be/ender_chest").is_some()
-            && items.block_entities.get("rewo:be/ender_chest_left").is_none(),
+        items.block_entities.contains_key("rewo:be/ender_chest")
+            && !items.block_entities.contains_key("rewo:be/ender_chest_left"),
         "ender_chest bakes single-only — it can never be double, and the jar has \
          no ender_left.png to bake from",
     );
@@ -866,8 +866,10 @@ fn check_lids(
         }
     };
 
-    let mut lid = ChestLid::default();
-    lid.should_be_open = true;
+    let mut lid = ChestLid {
+        should_be_open: true,
+        ..ChestLid::default()
+    };
     let mut seq = Vec::new();
     let mut ok = true;
     for _ in 0..14 {
@@ -898,8 +900,10 @@ fn check_lids(
 
     // `getOpenness(a) = lerp(a, oOpenness, openness)` — the render value is
     // interpolated, so a still frame mid-tick is between the two.
-    let mut lid = ChestLid::default();
-    lid.should_be_open = true;
+    let mut lid = ChestLid {
+        should_be_open: true,
+        ..ChestLid::default()
+    };
     lid.tick();
     lid.tick();
     c.record(
@@ -4058,7 +4062,7 @@ fn check_carried_fluid_table(
         }
         let mut bad = 0usize;
         let mut nonblack = 0usize;
-        for (t, s) in tinted.chunks_exact(4).zip(raw.chunks_exact(4)) {
+        for (t, s) in tinted.as_chunks::<4>().0.iter().zip(raw.as_chunks::<4>().0) {
             if s[..3].iter().any(|&v| v != 0) {
                 nonblack += 1;
             }
@@ -4068,7 +4072,7 @@ fn check_carried_fluid_table(
                 (s[2] as u16 * LEGACY_WATER_TINT[2] / 255) as u8,
                 s[3],
             ];
-            if t != want {
+            if *t != want {
                 bad += 1;
             }
         }

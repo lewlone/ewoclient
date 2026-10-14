@@ -1163,7 +1163,7 @@ fn overlays(
     // quietly inverting the witness.
     let redness = |rgba: &[u8]| -> f64 {
         let px: Vec<f64> = rgba
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .filter(|p| p[3] > 0)
             .map(|p| p[0] as f64 - p[1] as f64)
             .collect();

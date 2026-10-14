@@ -200,11 +200,6 @@ impl Modules {
         self.zoom_held = held;
     }
 
-    #[cfg(any(test, feature = "gates"))]
-    pub fn zoom_held(&self) -> bool {
-        self.zoom_held
-    }
-
     /// Resolve everything the render path needs for this frame.
     ///
     /// **FOV order matters.** Zoom divides whatever FOV is in effect, so it

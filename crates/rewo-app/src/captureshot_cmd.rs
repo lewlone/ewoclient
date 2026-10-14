@@ -267,7 +267,7 @@ fn px(img: &[u8], x: u32, y: u32) -> [u8; 4] {
 /// readback differs from an RGBA one by.
 fn swap_rb(a: &[u8]) -> Vec<u8> {
     let mut v = a.to_vec();
-    for t in v.chunks_exact_mut(4) {
+    for t in v.as_chunks_mut::<4>().0 {
         t.swap(0, 2);
     }
     v
@@ -472,7 +472,7 @@ fn check_swizzle(
     // Vanilla forces `argb | 0xFF000000` in `takeScreenshot`, so a vanilla
     // screenshot is opaque by construction. Rewo does not, and this is the
     // witness that says it does not have to.
-    let opaque = live.png.chunks_exact(4).all(|t| t[3] == 255);
+    let opaque = live.png.as_chunks::<4>().0.iter().all(|t| t[3] == 255);
     c.record(
         "a5.a_capture_is_opaque",
         opaque,
@@ -830,8 +830,8 @@ mod tests {
     /// the +20 margins could not be met however correct the swizzle was.
     #[test]
     fn the_graded_clear_is_strictly_ordered() {
-        assert!(CLEAR_ORDERED[0] > CLEAR_ORDERED[1] + 0.2);
-        assert!(CLEAR_ORDERED[1] > CLEAR_ORDERED[2] + 0.2);
+        const { assert!(CLEAR_ORDERED[0] > CLEAR_ORDERED[1] + 0.2) };
+        const { assert!(CLEAR_ORDERED[1] > CLEAR_ORDERED[2] + 0.2) };
         assert_eq!(CLEAR_ORDERED[3], 1.0);
         // And the translucent partner differs only in alpha.
         assert_eq!(CLEAR_ORDERED[..3], CLEAR_TRANSLUCENT[..3]);
