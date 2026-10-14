@@ -93,3 +93,10 @@ caller-driven `Mixer::render`). Milestone reasoning: `docs/rewo/` and
   `pale_garden` declares music volume **0.0**.
 - The End flash's first 600 ticks never flash, and tick 0's intensity is NaN.
   Both are vanilla behaviour.
+- **Decode trim is vanilla's, measured.** `JOrbisAudioStream` caps a stream at
+  the final page's granule position and emits nothing for the first packet;
+  symphonia's `gapless(true)` reproduces it (chicken `step1.ogg` is 1595
+  frames, not 1728). `tools/vorbis_decode_oracle/` runs vanilla's own class and
+  its `vectors.tsv` pins 56 files (`decode.rs`
+  `rewo_decodes_the_same_frames_as_vanillas_own_decoder`). Don't add
+  first-packet state by hand, and don't turn gapless off.
