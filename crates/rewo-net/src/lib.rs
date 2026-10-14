@@ -50,6 +50,7 @@ pub mod item_stack;
 pub mod jump_riding;
 pub mod local_player_data;
 pub mod login;
+pub mod maps;
 pub mod menu;
 pub mod merchant;
 pub mod metadata;

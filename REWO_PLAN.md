@@ -338,8 +338,8 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   turn, stonecutter and loom select; plus the loom's missing pattern click),
 >   the recipe-book button (**M187**), the HUD's air-bubble pop (**M188**) and
 >   the loom's scrollbar (**M189**).
-> - **Still open from the box:** `sub-map` (`map_item_data` is class C in
->   `REWO_PACKET_COVERAGE.md`), `render-misc [INTERP]` and `[FLOW]`, the live
+> - **Still open from the box:** `sub-map`'s render (M190 took the decode and
+>   the map store; the held map, item frames and decoration sprites are open), `render-misc [INTERP]` and `[FLOW]`, the live
 >   r-witnesses for M179's tab clicks and M184/M185's frame-loop halves, and
 >   the listening pass (the user's).
 > - Open items the 2026-10 audit added are in `docs/AUDIT-2026-10.md`'s status
@@ -3837,6 +3837,26 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M190 — maps, the data half (2026-10-15)
+
+`map_item_data` was the class-C packet with "needs a map image pipeline".
+The data half is now in: `rewo_net::maps::read_map_item_data` decodes the
+packet (the decoration type is `holderRegistry`, a RAW id; the patch's
+absence is a single `width == 0` byte, not `ByteBufCodecs.optional`), and
+`rewo_world::maps::MapStore` on `PlaySession::maps` is
+`handleMapItemData`: a map is created on first sight with that packet's
+scale and lock (later packets never change them), a decoration list
+replaces the old one only when sent (an empty list clears), the colours are
+a patch `x + y * width` into `x + y * 128`, and the store is cleared with the
+level. A patch that would index past the map or its colour array, or a body
+with trailing bytes, is refused whole and counted. `ClientMap::rgba` is
+`MapTextureManager`'s pixel loop over `rewo_data::map_colors`, generated
+from `MapColor.java` by `tools/gen_map_colors.py` (62 materials, brightness
+180/220/255/135 read from the enum, integer `c * m / 255`, id 0 and
+undeclared ids transparent). Unit-tested against values computed by hand
+from the decompile; not yet seen against a real server's map. Open: drawing
+it (the held map in first person, item frames, the decoration sprites).
 
 ### M189 — the loom's scrollbar (2026-10-15)
 
