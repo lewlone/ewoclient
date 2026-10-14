@@ -1,5 +1,23 @@
 use super::*;
 
+/// The `open` argument for [`LiveApp::grab_for_screen`] when the chat screen
+/// opens (`opening`) or closes, or `None` to leave the cursor alone.
+///
+/// `grab_for_screen(true)` is "a screen is up": it FREES the cursor.
+/// `grab_for_screen(false)` grabs it back for mouse-look. Chat used to pass
+/// them the wrong way round, so typing a message hid and pinned the cursor and
+/// closing it freed the cursor over the game. Closing re-grabs only when no
+/// other screen is still open.
+pub(super) fn chat_cursor_arg(opening: bool, other_screen_open: bool) -> Option<bool> {
+    if opening {
+        Some(true)
+    } else if other_screen_open {
+        None
+    } else {
+        Some(false)
+    }
+}
+
 impl LiveApp {
     /// Open or close the inventory screen (M35).
     ///
@@ -557,7 +575,9 @@ impl LiveApp {
             self.chat_draft.as_ref(),
             recent_len,
         ));
-        self.grab_for_screen(false);
+        if let Some(open) = chat_cursor_arg(true, self.screen.any_open()) {
+            self.grab_for_screen(open);
+        }
     }
 
     /// `Gui.setScreen(null)` — and `ChatScreen.removed`, which is where the
@@ -574,7 +594,11 @@ impl LiveApp {
                 session.chat.reset_chat_scroll();
             }
         }
-        self.grab_for_screen(true);
+        // Another screen still up (a death screen that opened over the chat)
+        // owns the cursor: do not re-grab it from under that screen.
+        if let Some(open) = chat_cursor_arg(false, self.screen.any_open()) {
+            self.grab_for_screen(open);
+        }
     }
 
     /// One widget press on whatever screen is up (M82).

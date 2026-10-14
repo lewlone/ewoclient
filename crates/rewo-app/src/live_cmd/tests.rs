@@ -3103,3 +3103,16 @@ fn validate_unit_bounds() {
 }
 
 // -- M33: weather and clouds --------------------------------------------------
+
+// -- chat cursor grab ---------------------------------------------------------
+
+/// Opening chat FREES the cursor (`grab_for_screen(true)`); closing grabs it
+/// back only when no other screen is up. The first cut had both inverted.
+#[test]
+fn chat_frees_the_cursor_on_open_and_regrabs_on_close() {
+    use super::input::chat_cursor_arg;
+    assert_eq!(chat_cursor_arg(true, false), Some(true));
+    assert_eq!(chat_cursor_arg(false, false), Some(false));
+    // A screen that opened over the chat keeps the cursor it freed.
+    assert_eq!(chat_cursor_arg(false, true), None);
+}
