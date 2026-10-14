@@ -27,7 +27,7 @@ skia-safe.workspace = true
 gl.workspace = true
 # Raw JNI type definitions — used once, in `nativeInit`, to resolve a direct
 # `ByteBuffer`'s address via `GetDirectBufferAddress`. Just bindings, no logic.
-jni-sys = "0.3"
+jni-sys = "0.4"
 
 [features]
 default = []
