@@ -128,7 +128,10 @@ impl SkinLoader {
             (TexKind::Cape, info.cape.as_ref()),
         ] {
             let Some(url) = url else { continue };
-            if self.requested.insert((uuid, kind)) {
+            // Bounded like the session's own map (`MAX_TRACKED_SKINS`).
+            if self.requested.len() < 2 * rewo_net::skins::MAX_TRACKED_SKINS
+                && self.requested.insert((uuid, kind))
+            {
                 let _ = self.req_tx.send((uuid, kind, url.clone(), info.slim));
             }
         }

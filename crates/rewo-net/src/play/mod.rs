@@ -3905,7 +3905,13 @@ impl PlaySession {
                 .as_deref()
                 .and_then(crate::skins::decode_textures_property)
             {
-                if self.player_skins.get(&e.uuid) != Some(&info) {
+                // Bounded: a hostile server can announce unlimited UUIDs, or
+                // flip one UUID's textures forever. Past the cap, new UUIDs and
+                // further changes are ignored (default skin), not queued.
+                let room = (self.player_skins.contains_key(&e.uuid)
+                    || self.player_skins.len() < crate::skins::MAX_TRACKED_SKINS)
+                    && self.pending_skins.len() < crate::skins::MAX_TRACKED_SKINS;
+                if room && self.player_skins.get(&e.uuid) != Some(&info) {
                     self.player_skins.insert(e.uuid, info.clone());
                     self.pending_skins.push((e.uuid, info));
                 }

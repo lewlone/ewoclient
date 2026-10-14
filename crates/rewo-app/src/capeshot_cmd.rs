@@ -652,15 +652,15 @@ fn check_suppression(c: &mut Checker, f: &Fixture) {
 // ---- 4. the wire ---------------------------------------------------------
 
 fn check_wire(c: &mut Checker, paths: &rewo_data::DataPaths) -> Result<(), String> {
-    // `{"textures":{"CAPE":{"url":"http://x/c"}}}` in base64 — written out
+    // `{"textures":{"CAPE":{"url":"http://textures.minecraft.net/c"}}}` in base64 — written out
     // rather than encoded here so the fixture is the *wire* form the decoder
     // actually receives, and so this gate needs no base64 dependency.
-    let b64 = "eyJ0ZXh0dXJlcyI6eyJDQVBFIjp7InVybCI6Imh0dHA6Ly94L2MifX19";
+    let b64 = "eyJ0ZXh0dXJlcyI6eyJDQVBFIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L2MifX19";
     let info = rewo_net::skins::decode_textures_property(b64);
     c.record(
         "e1.a_cape_only_profile_resolves_a_cape",
         info.as_ref()
-            .is_some_and(|i| i.cape.as_deref() == Some("http://x/c") && i.url.is_none()),
+            .is_some_and(|i| i.cape.as_deref() == Some("http://textures.minecraft.net/c") && i.url.is_none()),
         format!(
             "{:?}; MUTATION requiring a SKIN entry — which is what the decoder did \
              before M60 — returns None and loses the cape entirely",
