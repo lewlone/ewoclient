@@ -58,7 +58,7 @@ Author identity for both repos: `lewlone <valtteri.e.saarinen@gmail.com>`.
 
 | You're working on | Read |
 |---|---|
-| Anything: what's broken or open | `docs/REVIEW-2026-09.md` (independent review, 2026-09-25, and fix status; anything listed there as open is open) |
+| Anything: what's broken or open | `docs/AUDIT-2026-10.md` (full audit, 2026-10-14, with a status column) and `docs/REVIEW-2026-09.md` (the earlier review's fix ledger) |
 | Rewo, anything | `REWO_PLAN.md` §0.0 (numbers, gates, gotchas). The old session handoffs (`HANDOFF.md`, `AGENT_LOOP_BRIEF.md`) are retired to `docs/history/` |
 | Rewo packets | `REWO_PACKET_COVERAGE.md` (its table is machine-checked by a test in `ids.rs`) |
 | Rewo audio / Velvet HUD / feature choice | `REWO_AUDIO_PLAN.md` / `REWO_VELVET_UI_PLAN.md` / `REWO_FEATURE_SURVEY.md` |
@@ -103,27 +103,33 @@ Code comments cite sections of this file by name. They now live here:
 
 ```bash
 cargo build --workspace
-cargo test --workspace --no-fail-fast       # unit tests (some skip without local assets)
-REWO_REQUIRE_ASSETS=1 cargo test --workspace  # a test that would skip fails instead
-python tools/gates.py                        # every `rewo *shot --check` gate + demo PNG hash
+cargo test --workspace --no-fail-fast --features rewo-app/gates   # what CI runs (some skip without local assets)
+REWO_REQUIRE_ASSETS=1 cargo test --workspace --features rewo-app/gates  # a test that would skip fails instead
+python tools/gates.py                        # every `rewo *shot --check` gate (pinned set) + demo PNG hash
 python tools/gates.py --only mobshot,itemshot
 python tools/render_check.py                 # stages a fresh vanilla server, runs `rewo live --render-check`
+python tools/numbers.py                      # regenerate REWO_PLAN.md §0.0's numbers block (--from-logs to skip re-running)
 cargo run -p ewo-launcher                    # launcher (add --dev for the tweaks overlay)
-cargo run -p rewo-app -- live --host HOST:PORT
+cargo run -p rewo-app -- live --host HOST --port PORT
 cargo build -p rewo-app --features gates     # gate subcommands, `live --render-check`, `play`, REWO_* test knobs
 powershell ingame-mod/build.ps1 [-Pvp]       # builds ewo-jni + the mod jar AND deploys it
-powershell package.ps1                       # release bundle into dist/EwoClient
+powershell ingame-mod/build.ps1 -NoDeploy    # compile + jar only (CI, audits, worktrees)
+python tools/check_mixin_targets.py          # every mixin target resolves in the 26.1 and 26.2 jars
+powershell package.ps1 [-LoaderRepo PATH]    # release bundle into dist/EwoClient, EwoLoader manifests included
 python tools/regen_agents_mirror.py          # after editing this file: regenerate AGENTS.md
 ```
 
 - **Local-only inputs.** Most gates and several tests need
   `%APPDATA%/EwoClient/rewo/26.2/` (datagen reports + a Vineflower decompile of
   the user's own client jar) and a Vulkan device with the SDK's validation
-  layers. Hosted CI (`ci.yml`, required check `test` on `main`) runs only
-  build + `cargo test` + clippy. `gates.yml` runs the tests with
-  `REWO_REQUIRE_ASSETS=1`, `gates.py` and `render_check.py` on every push, on
-  the owner's self-hosted runner (label `rewo-gpu`); it has no `pull_request`
-  trigger, and outside contributors' workflow runs need approval.
+  layers. Hosted CI (`ci.yml`, required check `test` on `main`) runs build +
+  `cargo test` + clippy with `--features rewo-app/gates`, the pvp half, a
+  default-features build of what ships, an MSRV check and `cargo audit`.
+  `gates.yml` builds the mod (`-NoDeploy`, legit + pvp), runs
+  `check_mixin_targets.py`, the tests with `REWO_REQUIRE_ASSETS=1`, `gates.py`
+  and `render_check.py` on every push, on the owner's self-hosted runner
+  (label `rewo-gpu`); it has no `pull_request` trigger, and outside
+  contributors' workflow runs need approval.
 - A test that needs local assets calls `rewo_data::skip_test!("reason")`, never
   returns silently: it prints `SKIP:`, and panics under `REWO_REQUIRE_ASSETS=1`.
 - **Gate rules** (enforced by `tools/gates.py`): a gate passes only if it exits
@@ -140,7 +146,8 @@ From the prototype author's intent. They're load-bearing:
    continuously. Static screens fail the parity test.
 2. **Don't transform anything that contains text.** Scaling a text container
    re-rasterizes every glyph and softens dense text. Animate adjacent layers
-   (tint layers) instead.
+   (tint layers) instead: entrances scale chrome only, and text fades and
+   moves by whole pixels (`ewo-render/tests/text_not_scaled.rs`).
 3. **Don't blur during entrance animations on text-bearing surfaces.** Same
    reason. The author removed `filter: blur` from the modal entrance.
 4. **The `--silk` curve `cubic-bezier(0.22, 1, 0.36, 1)` is the signature
@@ -149,14 +156,18 @@ From the prototype author's intent. They're load-bearing:
 5. **Pearl dust is on every screen.** So are velvet folds, caustics and bokeh.
    That's identity, not decoration.
 6. **Reduced motion** (Windows `SPI_GETCLIENTAREAANIMATION`) collapses all
-   animations to under 1 ms. Honor it.
+   animations to under 1 ms. Honor it: every duration goes through
+   `ewo_core::motion` (`dur`, `ambient_time`; see `ewo-visual.md`).
 7. **`isolation: isolate` semantics matter.** The backdrop is its own
    compositing context, so screen-blend particles must not blend into panel
    content above.
 
 Plus: **"OFFLINE FIRST. NOTHING PHONES HOME."** No telemetry, analytics,
-auto-update or news. The only network calls are auth, the version manifest, the
-asset CDN and, once the user links an account, the social API.
+auto-update or news. The only network calls are auth, the version manifest and
+asset CDN, the Adoptium JRE API, the Maven/Modrinth/GitHub hosts a loader
+manifest names (sha1-pinned), server-supplied skin downloads restricted to
+`textures.minecraft.net`, and the social API only once `EWO_BOT_API_BASE` is
+configured and the account is linked.
 
 ## Architecture (locked decisions)
 
@@ -198,8 +209,8 @@ Every change ships with a self-check path: a PNG render harness, a
 
 - Rewo gates and the live render check are described in `.claude/rules/rewo.md` and
   §0.0.
-- **`ewo-*` crate tests aren't in any verification loop.** Run them yourself
-  (`cargo test -p ewo-jni --lib`, etc.) when you touch those crates.
+- `ewo-*` crate tests run in CI, but no gate exercises the launcher's pixels or
+  the HUD in a live game. Run `cargo test -p <crate>` when you touch one.
 - In-game mod changes go through `ingame-mod/build.ps1`, never hand `javac`.
 - Report honestly: a green gate proves what it grades and nothing more (audio
   gates can't hear; injected witnesses pass against a dead server).
@@ -209,12 +220,14 @@ Every change ships with a self-check path: a PNG render harness, a
 - **Line endings: measure with a byte count, never a shell pattern containing
   a raw CR.** `core.autocrlf` is false and there's no `.gitattributes`. The tree
   is overwhelmingly LF; `rewo-gpu/src/cem.rs` is all-CRLF, and
-  `rewo-app/src/mobshot_cmd.rs`, `rewo-gpu/src/vanilla_hier.rs`,
-  `rewo-world/src/chunk.rs` and `rewo-world/src/light.rs` are mixed. Don't let
-  an editor normalise them into a whole-file diff.
+  `rewo-app/src/mobshot_cmd.rs`, `rewo-app/src/cem_pack.rs`,
+  `rewo-gpu/src/vanilla_hier.rs`, `rewo-world/src/chunk.rs`,
+  `rewo-world/src/light.rs`, `KeyboardHandlerMixin.java` and most
+  `ingame-mod` `assist/*.java` module files are mixed (measure before editing). Don't let an editor normalise them into a
+  whole-file diff.
 - **Don't keep the same number in two places.** Current Rewo counts live only in
-  `REWO_PLAN.md` §0.0. Prose beside a machine-checked number rots, and the
-  number doesn't.
+  `REWO_PLAN.md` §0.0's generated block (`tools/numbers.py`). Prose beside a
+  machine-checked number rots, and the number doesn't.
 - **Verify a claim before acting on it**, including claims in these docs.
   Several recorded "blockers" and doc statements have been wrong. Check
   `git log --oneline`, the code or the decompile.

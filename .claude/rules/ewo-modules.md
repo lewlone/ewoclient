@@ -49,12 +49,21 @@ a build flag and their classes **must not exist in the legit jar at all**.
   `ewo-jni` and `ewo-launcher`. `cargo build` builds legit;
   `cargo build --features pvp` builds pvp.
 - Java assist sources live in `dev.lewlone.ewohud.assist.*` (slot constants in
-  `assist.AssistSlots`, mixin `assist.mixin.PlayerAttackAssistMixin`). The legit
-  `EwoModules` resolves `…assist.EwoAssist` **reflectively** and no-ops when
-  it's absent.
+  `assist.AssistSlots`, mixin `assist.mixin.PlayerAttackAssistMixin`). **The
+  dependency points from assist to legit, never back**: `EwoModules` ticks and
+  routes keys through the neutral `EwoExtensionHook`, and the pvp-only
+  `assist.EwoAssistEntry` client entrypoint (declared only in
+  `fabric-pvp.mod.json`) registers into it. The legit jar has no class, string
+  or reflective name for the assist package. (Until 2026-10 `EwoModules` did
+  `Class.forName("…assist.EwoAssist")`, which put the name in the legit jar's
+  constant pool.)
 - Two mixin configs: `ewohud.mixins.json` always, and `ewohud-pvp.mixins.json`
   in the pvp jar only. `build.ps1 -Pvp` ships `fabric-pvp.mod.json` as
   `fabric.mod.json`.
+- **`build.ps1` asserts the split**: the legit jar fails the build if any entry
+  sits under `dev/lewlone/ewohud/assist/` or any entry's bytes mention the
+  package; the pvp jar fails without `EwoAssistEntry`. CI (`gates.yml`) builds
+  both with `-NoDeploy`.
 - Regression guards in `ewo-core` fail if a deleted id (`auto_crit`,
   `mace_combo`, `wind_charge_mlg`) reappears or the legit registry exceeds 12.
   `triggerbot` was renamed and humanized into `swing_cadence` (min interval,

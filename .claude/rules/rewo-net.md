@@ -61,6 +61,14 @@ Reasoning and examples for each rule: `docs/rewo/` and `REWO_PLAN.md` §15.
   answered** (Rewo replies `FAILED_DOWNLOAD`, since only `DECLINED` kicks), or
   the login hangs forever with no error (M166).
 - An unknown `game_event` type is a silent no-op, not a decode error.
+- **NBT strings are Java modified UTF-8** (`DataInputStream.readUTF`: NUL is
+  `C0 80`, supplementary characters are CESU-8 surrogate pairs), decoded by
+  `rewo_proto::nbt::decode_modified_utf8`. Only NBT uses `readUTF` on the
+  wire; every other protocol string is VarInt-prefixed UTF-8.
+- **Login answers its queries**: `custom_query` gets a null answer and
+  `cookie_request` an answer from the jar (`rewo-net/src/login.rs`), or a
+  server waiting on them stalls the login. A negative compression threshold
+  disables compression.
 
 ## Metadata indices are polymorphic
 
@@ -80,7 +88,14 @@ trusting it. Class and ancestry sets come from `tools/gen_entity_classes.py`
   id with a dropped body reads as "handled" to every grep.
 - **A clean 3-way apply isn't evidence of no collision.** Grep for duplicate
   fields and unreachable second arms after merging branches that touch
-  `play.rs`, `ids.rs` or `lib.rs`.
+  `play/` (`mod.rs`, `dispatch.rs`, `outgoing.rs`, `tests.rs`), `ids.rs` or
+  `lib.rs`.
+- **Every dropped or malformed body is counted.** Play-state drops go through
+  `PlaySession::decode_failed`, configuration through `route_decode_failed`
+  (folded into the session counter), once per packet, and a packet applies
+  all-or-nothing as vanilla's decode-then-handle does. `net soak` fails on any
+  `decode_failures`. Known gap: `remove_entities` and `player_info_remove`
+  skip a truncated entry without counting it.
 - `update_tags` overrides jar tags (a datapack retag otherwise yields a wrong
   swing duration or a missing tooltip line with no error). Jar-derived tables
   (`tools/gen_*.py`, "Do not edit" generated files) carry that datapack caveat.
@@ -94,9 +109,30 @@ clears the five format flags, `§r` resets to the enclosing style, and `#f00`
 is `parseInt`, not CSS. Flatten `§` at wire time wherever text is drawn.
 Styled spans (`ChatSpan`) live in `rewo-world`.
 
+## Server-supplied data is untrusted
+
+- **Skin and cape URLs** from a `textures` property must pass
+  `rewo_net::skins::allowed_texture_url`: scheme http/https, host exactly
+  `textures.minecraft.net` (authlib 9.0.75's `TextureUrlChecker`, which 26.2
+  pins; 26.1's 7.0.63 is the same, and the wildcard `*.minecraft.net` /
+  `*.mojang.com` rule is the older 7.0.61), no userinfo, port or odd
+  characters. `rewo-app/src/skin_fetch.rs` re-checks at fetch time, upgrades
+  http to https, uses timeouts and no redirects, caps the body at 1 MiB and
+  checks PNG dimensions before decoding. The Java mod mirrors the rule.
+- **Bounded logs**: `PlaySession::chat_log` keeps the newest
+  `MAX_CHAT_HISTORY` (100) lines through `chat_wire::push_chat_log`.
+- **Non-finite teleports** are dropped field-group by field-group
+  (`resolve_teleport`) and counted; float sorts use `total_cmp`.
+
 ## Online mode
 
 AES-128-CFB8 both directions, Mojang session join with the BigInteger server
 hash, and signed chat over the verbatim `updateSignature` layout. Mojang's
 private key is PKCS#8 DER under a PKCS#1 label: strip the armour and parse the
 DER directly.
+
+Outgoing commands parse against the block and item registries
+(`signed_command::signable_command`, `CommandRegistries`), as vanilla's
+`CommandBuildContext` does, so a `minecraft:message` argument after a
+`block_state` or `item` argument is collected and signed. Vanilla does not sign
+past a root redirect (`execute ... run say`); a test pins that.

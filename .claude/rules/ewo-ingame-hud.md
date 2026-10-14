@@ -18,9 +18,20 @@ plus Phase F's dashboard). The modules and legit/pvp split have their own rule
    framebuffer but two GL state machines. Each frame does `wglMakeCurrent` to
    our context, draws, then hands the thread's context back untouched. A shared
    context flickered, then crashed `nvoglv64.dll`.
-2. **The frame hook is `RenderSystem.flipFrame` HEAD** (`EwoHudMixin`), a
-   universal end-of-frame point. Fabric's `ScreenEvents.afterExtract` fires too
-   early in 26.x's deferred GUI.
+2. **The frame hook is the end of the frame**: `RenderSystem.flipFrame` HEAD
+   on 26.1 (`EwoHudMixin`), and `Minecraft.renderFrame` at its
+   `GpuSurface.present()` call on 26.2 (`EwoHudMixin262`). Fabric's
+   `ScreenEvents.afterExtract` fires too early in 26.x's deferred GUI. Both call
+   `EwoFrameHook`, which catches any `Throwable` from the native call or the
+   module tick and disables the native bridge for the session after 5
+   consecutive failing frames (a stale dll has no ABI handshake). The exit
+   watchdog keys off its own `killPathLoaded` flag, so disabling the bridge
+   does not disarm it.
+5. **Exit watchdog arm points**: `MinecraftShutdownMixin` on `destroy` (26.1,
+   in `EwoMixinPlugin.LEGACY_ONLY`) and `MinecraftShutdownMixin262` on
+   `exitWorldAndClose` (26.2 removed `destroy`). Both `require = 0`, so a
+   rename is silent at runtime: `python tools/check_mixin_targets.py` resolves
+   every mixin target, method and `INVOKE` against both jars and is the guard.
 3. **Mods run in Mojmap with no remapping.** The on-disk MC jar is Mojmap-named
    (26.x ships deobfuscated), EwoLoader logs `Mappings not present!`, and mods
    build with plain `javac` against the jar. The jar is Java-25 bytecode, so the
@@ -41,8 +52,10 @@ plus Phase F's dashboard). The modules and legit/pvp split have their own rule
   mirror between `EwoHudData.java` and `hud/mod.rs`.
 - Rust→Java: **`EwoModuleData`**, the mirror image, for module state
   (`modules.rs`). **Bump both sides together.** The 2026-05-26
-  bump reached Java only, and the drift guard sat inert for three months. A test
-  now pins the pairing.
+  bump reached Java only, and the drift guard sat inert for three months.
+  `schema_version_matches_the_java_mirror` only asserts the Rust literal (it
+  never reads the Java file), and the HUD schema has no pin at all, so the
+  pairing is still checked by hand.
 - Overlay tab strip (`OverlayView::ALL`): HOME · HUD · CROSSHAIR · MODULES ·
   PVP · MODS · FRIENDS · SETTINGS. `hud::tab_layout` sizes from
   `ALL.len()`; it was once hardcoded to 6 and clipped a tab.
@@ -52,9 +65,14 @@ plus Phase F's dashboard). The modules and legit/pvp split have their own rule
 ## Build, deploy, test
 
 - **Always run `ingame-mod/build.ps1`** (add `-Pvp` for the assist build); never
-  run `javac` by hand. It deploys the jar past the stale `file://` library cache
-  (see `ewo-loader-integration.md`). If a change "doesn't take effect", compare
-  sha1s first.
+  run `javac` by hand. A deploying build copies the jar and `ewo_jni.dll` into
+  `shared/libraries/dev/lewlone/ewo-hud/0.1.0/` and the jar to the dev drop
+  `%APPDATA%\EwoClient\dev\ewo-hud-0.1.0.jar` that the loader manifests point at
+  (see `ewo-loader-integration.md`). **`-NoDeploy`** compiles and jars only
+  (no cargo build, nothing copied): use it in CI, audits and worktrees, and
+  while Minecraft is running. The legit build fails if its jar carries any
+  assist entry or names the assist package; the pvp build fails without
+  `EwoAssistEntry`.
 - `EwoHudMod` finds `ewo_jni.dll` in this order: `-Dewo.jni.path` /
   `-Dewo.hud.nativePath` (the launcher sets it when a dll ships beside its exe),
   beside the mod jar (where `build.ps1` deploys it), the game dir, then
@@ -71,7 +89,8 @@ plus Phase F's dashboard). The modules and legit/pvp split have their own rule
   check per frame. Kept on purpose; it is not leftover leak-hunt code.
 - In-game crashes in `nvoglv64.dll` under load come from **NVIDIA Threaded
   Optimization** fighting the second GL context. Ask the user to disable it in
-  NVCP.
+  NVCP. The frame paths restore Minecraft's context through an RAII guard;
+  **`Hud::create`'s GL init does not yet** (2026-10 audit, open).
 
 ## Feature notes that invert if guessed
 
@@ -79,6 +98,14 @@ plus Phase F's dashboard). The modules and legit/pvp split have their own rule
   the GameProfile `textures` property **reflectively**, because build-time
   authlib differs from runtime (record `properties()`/`value()` vs
   `getProperties()`/`getValue()`) and a direct call throws `NoSuchMethodError`.
+- **Skin and cape downloads are server-supplied URLs.** `EwoSkinExport` and
+  `EwoTargetSkin` accept only host `textures.minecraft.net` (authlib 9.0.75 on
+  26.2 and 7.0.63 on 26.1 enforce exactly that host; the `*.minecraft.net` /
+  `*.mojang.com` wildcard is 7.0.61's, 1.21.x), http upgraded to https, no
+  userinfo, port or escapes, at most 512 bytes; then 5 s connect / 10 s request
+  timeouts, a body-stall watchdog, no redirects, a 1 MiB cap and a PNG
+  signature check before anything is written. Same rule as Rewo's
+  `skins::allowed_texture_url`.
   The viewer reloads on `ewo-skin.png` **mtime change**, or a stale file
   freezes the slim flag.
 - **Custom crosshair**: when enabled, `GuiCrosshairMixin` asks

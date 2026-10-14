@@ -4,8 +4,10 @@
 > this plan were scoped narrower than stated ("0 VUIDs" without synchronization
 > validation; "CORRECTIONS 0" on flat ground only; light parity on the
 > full-recompute path only). Findings and fix status: `docs/REVIEW-2026-09.md`.
-> Current numbers come from `cargo test --workspace` and `python tools/gates.py`,
-> not from the prose below.
+> The October 2026 audit (`docs/AUDIT-2026-10.md`) re-graded that review and its
+> work order has been executed; its status column says what is still open.
+> Current numbers are the generated block at the top of §0.0
+> (`python tools/numbers.py`), not the prose below.
 
 
 **Rewo** (from "rewolution", as Ewo came from "ewolution") is a from-scratch
@@ -17,21 +19,33 @@ doc's reasoning was pressure-tested against the live repo and the on-disk
 26.2 jar on 2026-07-21; its four product decisions are kept, a set of factual
 errors is corrected (§2), and several missing workstreams are added (§3).
 
-**Status: shipped and headlessly verified through M151 (2026-08-14).** `main`
-carries all of it and no branch or worktree holds a commit off it; the
-long-standing branch risk (everything from M10 on living on one unmerged
-branch) closed on 2026-07-27 and has stayed closed. See §0.0 for the
+**Status: maintained through M185 and the 2026-10 audit fixes.** No commit or
+doc records an M181 or M183. M182, M184 and M185 are rescued 2026-08 work that sat
+uncommitted in the main checkout and was ported in 2026-10 (§15). See §0.0 for the
 fresh-session handoff and §15 for the per-milestone log — **§0.0's numbers are
 maintained, its forward-looking prose is not; check `git log --oneline` before
 trusting a paragraph.**
 
 ---
 
-## 0.0 HANDOFF — read this first (fresh session, updated 2026-08-13 after M149g)
+## 0.0 HANDOFF — read this first (maintained through M185 and the 2026-10 audit fixes)
 
 This section exists because the project is being handed to a session with no
 prior context. **Read §0.0 → §0.1 → skim §2 (corrections) → §15 (status
 log), then critique before continuing.** The rest of the plan is reference.
+
+### Current numbers — generated, the only place they live
+
+Every current count (tests per crate, gates, per-gate witnesses, render-check
+witnesses, the demo hash) is in the block below, written by
+`python tools/numbers.py` from `cargo test` and `tools/gates.py --json`
+output. Do not copy a number from it into prose; point at it. Any number
+elsewhere in this file is the measurement at the time it was written.
+
+<!-- numbers:begin -->
+_Not generated yet: run `python tools/numbers.py` (or
+`python tools/numbers.py --from-logs test.log gates.json`)._
+<!-- numbers:end -->
 
 ### What Rewo is, in one paragraph
 
@@ -39,14 +53,18 @@ A from-scratch Rust Minecraft: Java Edition **client** — it speaks the
 vanilla network protocol (pinned **26.2 / protocol 776**), decodes the world
 the server sends, and renders it with **raw Vulkan via `ash`**. Multiplayer
 only (no singleplayer/worldgen). It lives in the `EwoClientV3` Cargo
-workspace as `crates/rewo-*` (~11k LoC) and plugs into the EwoClient launcher
-as a future `Native` instance kind. The four **fixed product decisions**
+workspace as the eight `crates/rewo-*` crates and launches from the EwoClient
+launcher as a `Native` instance. The four **fixed product decisions**
 (don't silently pivot; raise a genuine objection with the user instead):
 (1) from-scratch vanilla-protocol client, (2) performance = frame-time
 consistency + input latency first, (3) raw Vulkan not wgpu, (4) integrates
 into EwoClient reusing its MS auth. Everything else is open to revision.
 
-### Where it is: M0–M157 shipped, all merged to `main`
+### Where it is: M0–M185 shipped
+
+The updates below are dated narrative from the M87–M180 arcs and are kept as
+written; for what shipped after them see §15 (M182, M184, M185) and
+`docs/AUDIT-2026-10.md`.
 
 **Update (2026-08-03, the M87–M93 container arc).** Seven milestones landed
 after the cold-start audit below, **all merged to `main`**: M87 the
@@ -151,85 +169,55 @@ not close the listening pass, and its module doc carries §4's "What the gate
 does NOT assert" paragraph verbatim** so a future session reading only the gate
 still learns that a green run is not evidence this client makes a sound.
 
-Current measurement, re-taken **2026-08-25 after M180**:
-**3495 tests, 0 failures** (**world 1259, net 1257, gpu 320, data 235, app 236,
-mesh 52, proto 16, audio 120** — read off the runner per crate; note the
-2026-08-24 writeup's splits summed to 3486 against a 3489 headline — the +3
-was never accountable, and since 2026-08-25 the headline and splits agree).
-**There are EIGHT rewo crates now**, not seven: M138b added `rewo-audio`, and a
-loop written against the old list drops its tests silently. Note the per-crate invocation is
-not uniform: `rewo-app` is a **binary** crate, so it needs `--bins` where the
-other six take `--lib`, and `--lib` there is `error: no library targets`, exit
-101, and **no** `test result` line at all. Assert that a result line exists
-rather than summing whatever appears. **Read each crate's EXIT CODE, not
-just its count**: a crate whose tests fail to compile prints no `test result`
-line at all, contributes 0, and reads as silence — M110 hit exactly that and
-the only signal was the total falling. **Breakdowns written before the
-2026-08-06 pass were estimated, not measured**, and did not sum to the totals
-beside them; the totals were always a real sum, so only the splits were wrong.
-Read them off `cargo test`'s own per-binary lines rather than apportioning a
-total by hand — and read them **before** writing the sentence: M100 and M101
-were each written with a guessed split and corrected a step later, which is
-three occurrences of the same habit. `containershot` **109/109**, `inventoryshot`
-**158/158**, `itemshot` 75/75, `handshot` 34/34, `swingshot` 97/97, `particleshot`
-34/34, `mobshot` 246/246, `sidebarshot` 17/17, **`tablistshot` 42/42** (M151,
-raised by M155 and M158), **`live --render-check` **64/64** with validation ON and 0
-validation errors** — r46 arrived with M147, r47 with M151, r48-r50 with M162,
-r51/r52 with M163, r53 with M164, r54 with M165, r55/r56 with M166,
-r57-r60 with M168-M170, r61 with M172, r62 with M173 and **r63/r64 with M174**, and the whole
-thing reproduces with `python tools/render_check.py`, which stands up a fresh
-server, **builds first** (it used only to check the binary existed, so a source
-change not followed by a manual `cargo build` was graded against the previous
-compile — M151 lost a mutation verification to exactly that) and carries both
-caller requirements, **has a timeout as of M166** (an untimed `subprocess.run`
-inherited the client's worst failure mode — a hung client hung the gate with no
-exit code and nothing to read), and **stages the two blocking configuration
-tasks**, without which the run scores nothing at all; demo PNG
-`2cc56b4acbfb92cb`, byte-identical. `REWO_PACKET_COVERAGE.md` is at **124 / 0 / 17**, class C
-**6** (M177 took the advancements pair; M171/M172 the book viewer, M174 the sign editor; M152 `update_recipes`, M166 `resource_pack_push`) — M96–M107 consume packets M93y already decoded, M108 resolved
-`delete_chat`, M113 the Brigadier tree and M114 the two suggestion packets.
+**Current measurements are the generated block at the top of §0.0**; this
+paragraph used to carry hand-copied test totals, per-gate counts, the
+render-check total and the demo hash, and every one of them had drifted by the
+2026-10 audit. What stays true about taking them:
 
-**There are **43** serverless gate commands, not the "fourteen" older paragraphs in
-this file say** — those sentences are historical records of the count *at the
-time* and are correct as such. Re-measured from a cold start on 2026-08-08 by
-running every one, and again after M125, M126 and the M127–M134 integration:
-all green, **0 validation errors**; re-measured again on 2026-08-20, when the
-count reached **37** (`mobtexshot`, M165) — `sidebarshot` (17) came from M132, **`soundshot`**
-(28 default / 48 under `--features audio`) and **`tablistshot`** (42, raised by M155 and M158) are the
-two newest, and `blockentityshot` reads **177** rather than the 172 the list
-below records. **M178 added `advshot`, making 43 — and M179 raised it to 20
-witnesses; all 43 re-run exit 0 on 2026-08-25.** Enumerate them rather
-than trusting a list, since the list is what rots:
+- **There are EIGHT rewo crates** (M138b added `rewo-audio`); a loop written
+  against an older list drops tests silently. `tools/numbers.py` maps every
+  test binary to its crate from the `Cargo.toml`s, so it does not depend on a
+  hand-kept list.
+- The per-crate invocation is not uniform: `rewo-app` is a **binary** crate
+  (`--bins`, not `--lib`; `--lib` there is `error: no library targets`, exit
+  101, and no `test result` line). **Read each crate's exit code, not just its
+  count**: a crate whose tests fail to compile prints no `test result` line
+  and reads as silence (M110). `numbers.py` reports targets that did not build
+  or failed instead of summing whatever appeared.
+- Read splits off `cargo test`'s per-binary lines, never apportion a total by
+  hand (M100, M101).
+- `live --render-check` reproduces with `python tools/render_check.py`, which
+  stands up a fresh server, **builds first** (M151 graded a stale compile),
+  carries both caller requirements, **has a timeout** (M166), **stages the two
+  blocking configuration tasks** (without them the run scores nothing) and
+  sets `REWO_GIVE_DIRT` so the dirt-in-slot-0 scene the baseline was
+  calibrated with stays identical. Its witness count is
+  `EXPECTED_RENDER_CHECK_WITNESSES`; which milestone added which `rNN` is the
+  allocation table below.
+- Packet coverage is the machine-checked table in `REWO_PACKET_COVERAGE.md`.
+
+**The gate set is pinned.** `tools/gates.py` discovers the gates from
+`rewo --help` and fails unless they match its `EXPECTED_GATES` list exactly,
+so "how many gates" is that list's length, not a sentence here. Older
+paragraphs in this file that say "fourteen", "34" or "36" gates are records of
+the count at the time. To enumerate by hand:
 
 ```
 rewo.exe --help | grep -E '^  [a-z]+shot|^  [a-z]+check'
 ```
 
-Their witness counts. The 2026-08-14 run added the two newest — **`soundshot`**
-(28 in a default build / 48 under `--features audio`) and **`tablistshot`** (42)
-— to the list re-measured by running all 34 on 2026-08-10 (M137).
-**Only two had drifted from the M124 list this replaced** — `titleshot` and
-`deathshot`, both moved by M130 and M137 — so the rest are unchanged rather than
-unchecked: `mobshot` 246, `blockentityshot` **177** (was 172 on that date; M142c's
-bubble-column witnesses moved it, and this line was the only stale entry of the 29 —
-re-measured 2026-08-13 by running the gate, which reports 177/177),
-`inventoryshot` 158, `containershot` 107, `swingshot` 97, `itemshot` 75,
-`capeshot` 69, `titleshot` 58, `hurtshot` 56, `locatorshot` 49, `labelshot` 47,
-`statshot` 47, `rideshot` 45, `attributeshot` 43, `hudshot` 41, `deathshot` 43,
-`serverlinkshot` 37, `weathershot` 35, `handshot` 34, `particleshot` 34,
-`healthbarshot` 33, `bordershot` 31, `eventshot` 28, `danceshot` 24,
-`breakshot` 22, `captureshot` 17, `portalshot` 12, plus `abilityshot` 96/96 and
-the six that print a prose summary rather than a count (`skyshot`,
-`lightmapshot`, `tintshot`, `meshshot`, `dimensioncheck`).
+Most gates pin an exact `EXPECTED_WITNESSES`; `skyshot`, `lightmapshot` and
+`tintshot` pin a frame count, `meshshot` the oracle's fingerprint, `mobshot` a
+mob-view count, and `leashshot` and `dimensioncheck` pin no total (2026-10
+audit: open). The generated block lists each.
 
 **`soundshot` is the one gate whose count depends on how the binary was
-built** (2026-08-13): **28** by default and **48** with `--features audio`,
-because layers (d) and (m) live in `rewo-audio` and M143 made that dependency
-optional and off by default so the one `rewo` binary all 36 gates are
-subcommands of does not link cpal and symphonia. It fail-closes on whichever
-lock applies and prints which configuration it ran, so neither can lose a
-witness silently — but **a default-build green run does not grade decode or
-the mixer at all**, which is what the ordinary sweep above measures.
+built**: layers (d) and (m) live in `rewo-audio`, which M143 made optional and
+off by default so the one `rewo` binary the gates are subcommands of does not
+link cpal and symphonia. It fail-closes on whichever lock applies and prints
+which configuration it ran — but **a default-build green run does not grade
+decode or the mixer at all**. `python tools/gates.py --audio --only soundshot`
+runs the audio configuration (CI's `gates.yml` does, as its last step).
 
 **`live --render-check` now has TWO caller requirements, not one.** r14 needs
 items in the hotbar and **r25 needs a MULTI-PAGE recipe book**, so the staged
@@ -267,7 +255,29 @@ injected**: the container, the book and the chat all drive themselves, so only
 r25 — which needs a real server to grant recipes — could tell. A gate whose
 witnesses are mostly self-driven can look healthy against nothing.
 
-### What to do next (updated 2026-08-12, after M148)
+### What to do next (updated 2026-08-12, after M148; 2026-10 corrections first)
+
+> **2026-10 corrections to the box below** (checked against the code and
+> `git log`; the box's own text is left as written):
+> - **Done since it was written:** the effect-id `MissingTextureAtlasSprite`
+>   checker (**M182**); the lectern's menu-backed reader with a serverbound
+>   `container_close` (**M184**); the happy-ghast quad-leash (**M185**);
+>   `sub-sign` (the sign editor, **M174**); `render-misc [AO]` (smooth
+>   lighting: `BlockModelLighter` ported in `smooth_light.rs`, see
+>   `docs/REVIEW-2026-09.md`).
+> - **Light:** `light_update` now honours the empty-section masks, and
+>   `Column::sky_full_above` can only be *raised* by a `light_update` (its
+>   masks name only changed sections); an unstored sky section below the top
+>   reads the bottom row of the nearest stored layer above (`fill_sky_gaps`),
+>   as `SkyLightSectionStorage` does. See the M14-era light entry in §15 and
+>   commit `edb6f8e`.
+> - **Still open from the box:** `sub-map` (`map_item_data` is class C in
+>   `REWO_PACKET_COVERAGE.md`), `render-misc [INTERP]` and `[FLOW]`, the
+>   UI-sound family (page turn, button click, bubble pop), the live
+>   r-witnesses for M179's tab clicks and M184/M185's frame-loop halves, and
+>   the listening pass (the user's).
+> - Open items the 2026-10 audit added are in `docs/AUDIT-2026-10.md`'s status
+>   column.
 
 > **Read this box first; the rest of the section is the 2026-08-10 rewrite and
 > its items have moved.** M141 took the ten tickable ramps, M141d–h every
@@ -352,16 +362,9 @@ witnesses are mostly self-driven can look healthy against nothing.
 > version of this box listed has shipped. What follows is measured on the merged
 > tree, not carried forward.
 >
-> **The state (re-measured 2026-08-25 after M180):** **43** serverless gates
-> green with 0 validation errors (`advshot` is the 43rd, **20/20**;
-> `bookshot` raised to **24/24** by M180), **3495
-> tests**, `live --render-check` **64/64** exit 0, packet coverage **124 / 0 / 17**
-> with classes A and B empty, demo PNG `2cc56b4acbfb92cb` byte-identical.
->
-> *(superseded — the post-M178 line, kept for the diff:)* **43** serverless gates
-> green with 0 validation errors (`advshot` is the 43rd, 14/14), **3489
-> tests**, `live --render-check` **64/64** exit 0, packet coverage **122 / 0 / 19**
-> with classes A and B empty, demo PNG `2cc56b4acbfb92cb` byte-identical.
+> **The state:** the generated numbers block at the top of §0.0. (This line
+> used to restate tests, gates, render-check, coverage and the demo hash by
+> hand; all of them had drifted by the 2026-10 audit.)
 >
 > **A 20-agent survey (2026-08-17) specced every open gap and every one of the
 > twenty specs came back `needs-revision`.** The verified specs are the best
@@ -432,31 +435,30 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   SADDLE equipment slot, the camel/nautilus dash cooldowns, and the four-way
 >   `nextContextualInfoState` selector — graded by `gaugeshot`'s j-witnesses
 >   and r59 live. **Still open from M168/M169:** the bubble-pop sound
->   (`Hud.playAirBubblePoppedSound` — a layout has no sound channel);
->   `MissingTextureAtlasSprite` for an effect id past the table (Rewo draws
->   nothing where vanilla draws the magenta checker); and the camel's
->   `LAST_POSE_CHANGE_TICK` decodes but no metadata path calls
->   `set_last_pose_change_tick`, so `refuseToMove()` is exercised only by unit
->   tests — a real sitting camel is not yet un-jumpable live.
+>   (`Hud.playAirBubblePoppedSound` — a layout has no sound channel).
+>   ~~`MissingTextureAtlasSprite` for an effect id past the table~~ **DONE
+>   (M182)**. ~~The camel's `LAST_POSE_CHANGE_TICK` has no metadata path~~
+>   **stale when written**: `rewo-net`'s metadata arm calls
+>   `set_last_pose_change_tick` (checked 2026-10).
 > * ~~**`p4-leash`** (the rope).~~ **DONE (M170)** — the decode was gated since
 >   M77; M170 drew it (`leash::build_ribbon` + `WorldRenderer::draw_leash` +
 >   `collect_leashes`), graded by the new `leashshot` gate and r60 live. ~~Open
 >   from it: the block/sky light is an RGB interpolation of the two endpoints~~
 >   **CLOSED (M176)** — the ribbon now carries PACKED `(block, sky)` per end,
 >   interpolates the components and evaluates the lightmap curve per vertex
->   (`LeashFeatureRenderer.java:60-77`); the happy-ghast quad-leach branch is
->   still not drawn (nothing Rewo renders takes it).
+>   (`LeashFeatureRenderer.java:60-77`); ~~the happy-ghast quad-leash branch is
+>   still not drawn~~ **DONE (M185)**.
 > * ~~**`sub-book`**~~ **DONE — M171 the decode + model, M172 the render
 >   (2026-08-23).** The reader draws pixel-faithfully (`bookshot` 24/24, r61
 >   live), including the writable-book fallback (`BookAccess.fromItem` — there
 >   is no WritableBookViewScreen in 26.2). ~~Open from it: page-text CLICK
 >   events~~ **DONE (M180, 2026-08-25)** — the ClickableStyleFinder walk over
 >   a shared layout, one-based ChangePage through `force_page`, RunCommand
->   sent unsigned after the (empty) close. Still open: the lectern's
->   menu-backed reader, and the
+>   sent unsigned after the (empty) close. ~~Still open: the lectern's
+>   menu-backed reader~~ **DONE (M184)**; still open: the
 >   page-turn sound (Rewo's screens play no UI sounds at all yet — one
->   family). **`sub-sign`** and **`sub-map`** are the same decode+screen
->   shape; ~~**`options`' volume sliders**~~ **DONE — M173 (2026-08-23):**
+>   family). ~~**`sub-sign`**~~ (**DONE, M174**) and **`sub-map`** (open) are
+>   the same decode+screen shape; ~~**`options`' volume sliders**~~ **DONE — M173 (2026-08-23):**
 >   the eleven sliders, the whole options wiring (which was model-only end
 >   to end — the pause OPTIONS button logged "not implemented"), and
 >   `refreshCategoryVolume`, whose absence had kept the music fade's gain
@@ -479,10 +481,12 @@ witnesses are mostly self-driven can look healthy against nothing.
 >   and the unknown-backdrop fallback — ~~and M179's tab clicks~~ **DONE
 >   (M179, 2026-08-25)**: clicks select + send `opened_tab` (unconditionally,
 >   per `ClientAdvancements.java:77-86`), wheel and drag scroll the tree; live
->   r65 witnesses for the sends are claimed in the allocation table and
->   deferred to a servered session.
-> * **`render-misc [AO]` and `[FLOW]`** — both need a decision the agents cannot
->   make. `[AO]`: an exact `prepareQuadAmbientOcclusion` wants 8+8 bits of
+>   witnesses for the sends are deferred to a servered session (their r65
+>   claim collided; see the allocation table).
+> * **`render-misc [AO]` and `[FLOW]`** — ~~`[AO]`~~ **DONE** (smooth
+>   lighting, `BlockModelLighter` ported in `smooth_light.rs`; see
+>   `docs/REVIEW-2026-09.md`), so the text below is history for `[AO]`. Both
+>   needed a decision the agents could not make. `[AO]`: an exact `prepareQuadAmbientOcclusion` wants 8+8 bits of
 >   per-vertex light where `MeshVertex` has 4+4 and **11 spare bits**, reopening
 >   M15's rejected 24-byte reasoning — **and doing the cheap heuristic first pins
 >   the heuristic in witnesses and blocks the exact one, so do not start either.**
@@ -500,6 +504,10 @@ witnesses are mostly self-driven can look healthy against nothing.
 > `SlotRing`, no eviction — the 33rd distinct player of a session overwrites slot
 > 0), `explode`'s call site in `play.rs`, and three `live_cmd` sign/tooltip
 > bypasses reachable only serverlessly. See the M165 entry.
+> **(2026-10:** `MobDef::textures` is now pinned by
+> `every_mob_texture_key_exists_in_the_baked_specs` (M182); the slot
+> recycling already had a `SlotRing` with eviction (`rewo-gpu/src/entities.rs`)
+> when this was written; `play.rs` is now `play/`.)
 >
 > Candidates for the next *code* milestone, none of them blocked:
 >
@@ -1586,7 +1594,9 @@ list that follows is the 2026-07-27 snapshot and is left as written.
 - **Canonical demo PNG** SHA-256
   `2cc56b4acbfb92cb91398c27e5c4735885abff9331f66b7dc83bdbc002246635` —
   byte-identical from M15 through M38. Any change to it is a regression until
-  argued otherwise.
+  argued otherwise. (It was rebaselined on purpose in 2026-09 by the mesher
+  occlusion fix and smooth lighting; the current hash is `tools/demo_hash.txt`,
+  whose history says why.)
 
 ### What to do next — HISTORICAL (2026-07-27); the live one is above
 
@@ -1901,11 +1911,11 @@ this shape once.
 
 | Resource | Where | Guard as of M160 |
 |---|---|---|
-| `live --render-check` witness ids (`rNN`) | `live_cmd.rs` | `witness_seam_faults` + `EXPECTED_RENDER_CHECK_WITNESSES`, unit-tested. Fails closed on a duplicate, a wrong count, or a gap. |
+| `live --render-check` witness ids (`rNN`) | `live_cmd/render_check.rs` (was `live_cmd.rs`) | `witness_seam_faults` + `EXPECTED_RENDER_CHECK_WITNESSES`, unit-tested. Fails closed on a duplicate, a wrong count, or a gap. |
 | HUD atlas coordinates | `rewo-gpu/src/hud.rs` | Every `place` is recorded and a `debug_assert` rejects any overlap. Verified to fire. |
 | Widget-sheet shelf coordinates | `rewo-gpu/src/screen.rs` | Its packer already clamps (`:314-317`); the shelf is hand-laid and its sheet indices are an append-only contract. **Not yet overlap-checked** — see below. |
 | `MENU_OVERLAY_SPRITES` / `MENU_BACKGROUND_TEXTURES` index contracts | `rewo-data/src/assets.rs` | Append-only by convention. **Not yet asserted.** |
-| The demo PNG hash `2cc56b4acbfb92cb` | prose only | Asserted in docs, not in code. A second rebaseline is invisible. |
+| The demo PNG hash | `tools/demo_hash.txt` | Asserted by `tools/gates.py`'s demo-hash row (2026-09); a rebaseline is a visible diff of that file. |
 | Entity-atlas bands and the five round-robin pools | `entities.rs`, `hud.rs` | Absolute placements; `FACE_ATLAS_Y`'s pool is claimed as one region in the HUD overlap check. |
 
 #### Allocation — claim your row here, in the commit that starts the work
@@ -1926,8 +1936,9 @@ this shape once.
 | M175 — the baby sheets | — | entity-atlas shelves gain the 10 same-size `*_baby` sheets; origins are computed by the packer at build time and consumed as normalized UV offsets, so there is nothing to claim | `mobtexshot` m8, n1-n4 |
 | M177 — advancements decode + model | — (no live witnesses) | — | `rewo-net`/`rewo-world` unit tests; battery `tools/m177_mutate.py` |
 | M178 — advancements render + gate | — (planned r65/r66 NOT taken; the gate is serverless and no live witness landed) | screen-pass atlas 512 -> **1024 tall**; below y=512: `AdvWindow` (252x140 crop) at (0,512), `AdvTab(0..23)` rows y=656/692, `AdvFrame(0..5)` y=724, boxes y=754/782/810, `AdvBackground(0..4)` y=840; `SHEET_COUNT` 58 -> 97 | `advshot` a*/m*/p* (14), battery `tools/m178_mutate.py` |
-| M179 — advancement clicks *(claimed 2026-08-25 at session start)* | **r65** (CLAIMED — live click witnesses DEFERRED to a servered session; named here so nothing else takes the id) | — | extends `advshot`; live witnesses for tab clicks + CLOSED_SCREEN |
-| *(next free)* | **r66** | — | — |
+| M179 — advancement clicks *(claimed 2026-08-25 at session start)* | ~~**r65**~~ (the claim COLLIDED: the 2026-09-26 play-test fix took r65 without reading this row; the M179 live witnesses never landed and take the next free id when they do) | — | extends `advshot`; live witnesses for tab clicks + CLOSED_SCREEN |
+| Play-test fix, `1da1b41` (2026-09-26) — the windowed client builds the text and container passes | **r65, r66** | — | (live only) |
+| *(next free)* | **r67** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table
@@ -1938,7 +1949,7 @@ have produced exactly the duplicate the table exists to prevent.
 `witness_seam_faults` would have caught it — but only under a live server,
 which is the hole named immediately below. **Until this table is populated by
 something other than discipline, measure the free id from the code**
-(`grep -oE '"r[0-9]+ ' crates/rewo-app/src/live_cmd.rs`) and reconcile the
+(`grep -oE '"r[0-9]+ ' crates/rewo-app/src/live_cmd/render_check.rs`) and reconcile the
 table afterwards.
 
 **And the seam this table exists for has a hole, found by the wave it was built
@@ -3748,6 +3759,59 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M182, M184, M185 — the rescued 2026-08 work, ported (2026-10)
+
+Written 2026-08-28 in the main checkout and never committed; saved verbatim as
+`rescue/main-checkout-2026-08` (`691ff70`) during the 2026-10 audit and ported
+onto the audited tree as three commits. That branch's REWO_PLAN.md diff holds
+the original long-form entries; these are the short record. Counts are not
+restated (§0.0's generated block has them).
+
+### M185 — the happy-ghast quad-leash (`5bee7e7`)
+
+`EntityRenderer.extractLeashStates`' quad branch: when the holder is a happy
+ghast (the only `supportQuadLeashAsHolder` override) and the leashed entity
+supports quad leashing, the rope is four `slack = false` ribbons from the
+entity's four shoulder points to the ghast's four underside points.
+`quad_leash_offsets`, `quad_leash_shape` and `GHAST_HOLDER_SHAPE` live beside
+`collect_leashes` in `live_cmd/entities.rs`. The class set is the horse line
+and camels (llama and trader llama excluded: `Llama` overrides back to false),
+boats and rafts, and the sniffer. Two unit tests in `live_cmd/tests.rs`
+(`quad_offsets_are_the_four_shoulder_points`,
+`quad_leash_shapes_match_the_class_sets`). The live gather has no r-witness
+yet; it joins the deferred batch.
+
+### M184 — the lectern's menu-backed reader (`5120af4`, `f7b1484`)
+
+`LecternScreen extends BookViewScreen`: pages from the menu's slot 0, the page
+from container-data 0, and every page turn or Take Book is a
+`container_button_click` the server echoes (back/forward 1/2, Take Book 3,
+`100 + page` for a forced page). Closing the lectern sends the new serverbound
+`container_close` (`container_close_body`, `PlaySession::container_close`).
+`build_lectern_screen` adds the two-button mayBuild footer, decided from
+`own_game_mode()` (not spectator). `containershot` gains `m9`.
+
+Changed from the rescued code: the reader's identity is `(container_id,
+OpenMenu::open_serial)`, a counter `Menus::apply_open_screen` stamps, because
+the rescue keyed on `data_writes`, which grows on every `container_set_data`
+and would have dropped the reader on the first page echo; and mayBuild reads
+the real game mode where the rescue passed a UUID that is never known.
+`f7b1484` followed: a window resize rebuilt the reader with the plain
+Done-only builder and lost Take Book; both paths now share
+`LiveApp::book_view_screen_for`. The frame-loop sends have no live r-witness.
+
+### M182 — the missing-texture effect icon and the `MobDef::textures` pin (`13f1d65`)
+
+`Hud.getMobEffectSprite` falls back to `MissingTextureAtlasSprite` for an
+effect with no key; Rewo drew nothing. `SurvivalInputs::effect_table_len`
+(fed `fx::MOB_EFFECTS.len()` by `live_cmd`) splits ids outside `0..len`,
+negatives included, into `HudIcon::MissingTexture`, drawn as vanilla's
+quadrant checker in four solid quads, so the atlas does not move.
+`gaugeshot` gains `t4b` (the layout split) and `p_effect_missing` (pixels).
+`rewo-gpu`'s `every_mob_texture_key_exists_in_the_baked_specs` pins every
+`MobDef::textures` key against `rewo-data`'s baked specs (a dev-dependency),
+closing that item of the M165 known-deletable list.
 
 ### M180 — the written-book page-text clicks: one layout walk, a backwards witness, and an equivalent survivor (2026-08-25)
 
@@ -13678,7 +13742,7 @@ capability).**
   "verified." That can't detect a scrambled UV map. Going forward, mob/texture
   work must verify **texture-face correspondence** (a face-labeled debug
   texture rendered from 3 angles), not just shape.
-- Full redo brief written: [`REWO_MOB_REDO_HANDOFF.md`](REWO_MOB_REDO_HANDOFF.md)
+- Full redo brief written: [`REWO_MOB_REDO_HANDOFF.md`](docs/history/REWO_MOB_REDO_HANDOFF.md) (retired to `docs/history/`)
   — the verbatim vanilla `Cube`/`Polygon` algorithm to port, the file/symbol
   inventory, the per-mob vanilla model sources, the mandatory verification
   method, and the keep/don't-touch + traps list. The redo itself is handed to
@@ -14628,7 +14692,13 @@ neither mask stayed `None` and read as 0. Vanilla reads those as full-bright:
 the server only sends sky arrays for sections near terrain (measured: `sky=[1,2]`,
 `empty_sky=[0]`, sections 2..23 in neither), so **everything above the terrain
 was silently sky-0**. `Column::sky_full_above` now tracks the boundary, set from
-the masks and re-set by `light_update`. This had been invisible for a long time
+the masks and re-set by `light_update`. *(Changed 2026-10, `edb6f8e`: a
+`light_update`'s masks name only the sections it changed, so it can **raise**
+`sky_full_above` but never lower it; an unstored sky section below the top now
+reads the bottom row of the nearest stored layer above (`fill_sky_gaps`, as
+`SkyLightSectionStorage.getLightValue` does) rather than 15; and the empty
+masks are honoured — an empty sky section is a stored zero layer, an empty
+block section drops its array.)* This had been invisible for a long time
 because on the flat test world the player stands where real arrays exist — it
 took a second, independent implementation to disagree with the decoder.
 

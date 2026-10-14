@@ -52,6 +52,14 @@ Reasoning per rule: `docs/rewo/milestones-*.md`. Measurements: `REWO_PLAN.md` §
   (`MUTABLE_FORMAT`). Squaring isn't invariant under the sRGB transfer, so in
   linear space the glint quantised to nothing. Without
   `VK_KHR_swapchain_mutable_format` no glint draws at all.
+- **The gamma scope splits the frame's dynamic rendering.**
+  `WorldRenderer::in_gamma_space` ends the instance and reopens it against the
+  UNORM view with `LOAD`, then reopens the sRGB one. So the first instance must
+  **`STORE` depth** (the glint and the other gamma-space passes test `EQUAL`
+  against it; `DONT_CARE` leaves it undefined), and `scope_barrier` orders each
+  reopen against the previous store (a global barrier, since the colour image
+  is written through one view and read through its twin). Sync validation
+  cannot see a missing `STORE`.
 
 ## GPU resource lifetime
 
@@ -61,6 +69,11 @@ the top destroys memory in-flight command buffers reference (40,532 VUIDs in
 M86). A pass rebuilt by an `init_*` throws away state installed on it before
 the rebuild (M44), so install after. Destroy every pipeline you create: a leak
 shows as `VUID-vkDestroyDevice-device-05137` with every witness green.
+
+Debug knobs this crate reads (`REWO_FOG`, `REWO_MOB_DEBUG_TEX`,
+`REWO_CEM_NOANIM`, `REWO_NO_SYNC_VALIDATION`) go through `src/knobs.rs` and
+read as unset unless the crate's `gates` feature is on (rewo-app's `gates`
+enables it). Add new ones there, not as `std::env::var`.
 
 ## HUD / screen coordinates
 

@@ -66,6 +66,15 @@ Full history: `docs/history/ewoclient-v1.md` (Steps 1–16) and
   (refresh/social tokens DPAPI-sealed on Windows by `auth/secret.rs`, legacy
   plaintext migrates on load; 0600 plaintext elsewhere). The Entra app
   `f901fc74-7e36-439d-80a8-c2e548f47fdc` is on Mojang's allowlist.
+- **Session lifetime** (`auth/mod.rs`): the Minecraft token's expiry is kept
+  in memory (serde-skipped, like the token). `launch_auth` decides each
+  launch: Offline (no account), Ready, NeedsRefresh (no token, or within
+  `TOKEN_REFRESH_MARGIN` = 10 min of expiry, with a refresh token), or
+  Unavailable. A NeedsRefresh launch waits for the refresh on the auth worker
+  and re-enters; a failed refresh, nothing to refresh with, or an account
+  switch mid-wait fails the launch visibly. **A signed-in account never
+  launches offline.** A refresh response without `refresh_token` keeps the old
+  one, and a refresh never moves the active-account pointer.
 - `versions/`: master manifest (6 h cache) and per-version manifests (sha1,
   permanent cache). `manifest::is_supported` is a **curated allowlist**. Don't
   widen it without a reason.
@@ -73,9 +82,22 @@ Full history: `docs/history/ewoclient-v1.md` (Steps 1–16) and
   asset index → assets, all sha1-verified into Mojang's layout under
   `shared/`. **Don't break that layout**: vanilla-launcher interop is a feature.
 - `launch/`: `plan.rs` (token substitution), `natives.rs`, `spawn.rs` (stdout
-  and stderr piped to the log panel), `jre.rs` (`pick_for_major`), `reaper.rs`
-  (kills a lingering JVM or `rewo.exe` before relaunch). `runtime/`: Adoptium
+  and stderr piped to the log panel), `jre.rs` (`pick_for_major`, `detect_all`,
+  `resolve_pin`), `reaper.rs`, `prepare.rs` (launch preparation on a worker;
+  the JRE re-scan after a bundled JRE install runs on a worker too). `runtime/`: Adoptium
   JRE auto-fetch into `runtime/<major>/jre/`.
+- **Reaper** (`launch/reaper.rs`): kills only a process this launcher spawned
+  and recorded (PID **and** creation time, in memory and `last-launch.pid`),
+  still running, exactly `java(w).exe` or `rewo.exe`, and owning no visible
+  window (a zombie after shutdown never has one; a live game always does).
+- **Java runtime per instance**: the Instances dropdown is "Auto" followed by
+  the detected JREs. `Instance::java_runtime` is that index: `0` = auto
+  (`pick_for_major`), `N >= 1` = `detect_all()[N-1]`. A pin that is gone or
+  below the version's required major falls back to auto at launch with a
+  warning (`launch::jre::resolve_pin`).
+- `window/icon.rs` hands the largest PNG frame of `assets/icon.ico` to
+  winit's `with_window_icon` (the borderless window's taskbar/alt-tab icon;
+  the exe's embedded icon only serves Explorer and shortcuts).
 - `profile.rs`: client profiles (global, not per-instance): `profiles.toml` +
   `profiles/<name>/{client.toml,hud.toml,modules.toml,…}`; `settings.toml` is
   global-only. `profile::is_valid_name` rejects path-unsafe names.
@@ -90,13 +112,22 @@ Full history: `docs/history/ewoclient-v1.md` (Steps 1–16) and
 
 - Disk root `<config>/EwoClient/` = `%APPDATA%\EwoClient` (Windows) or
   `$XDG_CONFIG_HOME/EwoClient`. It holds `shared/{versions,libraries,assets}`,
-  `instances/<name>/` (worlds, natives, logs `launch_<ts>.log`),
+  `instances/<id>/` (stable id folders; worlds, natives, logs
+  `launch_<ts>.log`; deleting an instance leaves its folder, by design for
+  now), `dev/` (the HUD jar `ingame-mod/build.ps1` drops),
   `runtime/<major>/jre/`, `auth.toml`, `profiles.toml`, `profiles/<name>/…`,
   `settings.toml`, `instances.toml`, `versions_cache.json`.
 - Every long task runs on a `std::thread` and reports over `mpsc`, polled once
   per frame. **No tokio/smol.**
 - All HTTP goes through `ureq` (sync) with User-Agent
   `EwoClient/0.1 (+https://github.com/lewlone/ewoclient)`.
+- **Runtime knobs** (environment, none has a compiled-in default host):
+  `EWO_BOT_API_BASE` (the social API, https only; unset = social off),
+  `EWO_LOBBY_ADDR` (the network widget's join address; unset = no JOIN),
+  `EWO_LOADER_BASE` (overrides the EwoLoader manifest base; see
+  `ewo-loader-integration.md`), `EWO_DEV_SERVER=host:port` (dev join for
+  Native instances). Child processes get the launcher env minus
+  `*TOKEN*`/`*SECRET*` variables.
 - Release builds use `windows_subsystem = "windows"` (no console). The icon
   `assets/icon.ico` is embedded by `build.rs` via `winresource`. `package.ps1`
   builds and stages a self-contained `dist/EwoClient/` and repoints the Desktop
@@ -105,8 +136,10 @@ Full history: `docs/history/ewoclient-v1.md` (Steps 1–16) and
 ## What NOT to do
 
 - Don't prefetch Microsoft credentials at startup. Fetch lazily on launch.
-- No Discord presence, telemetry, news or auto-update. The only network calls
-  are auth, the version manifest, the asset CDN and (once linked) social.
+- No Discord presence, telemetry, news or auto-update. The network calls are
+  auth, the version manifest and asset CDN, the Adoptium JRE API, the Maven /
+  Modrinth / GitHub hosts a loader manifest names (sha1-pinned), and social
+  only once `EWO_BOT_API_BASE` is set and the account is linked.
 - Don't write your own auth library logic from memory. Follow the documented
   Microsoft scheme exactly.
 - Theme variants (Pearl/Obsidian/Champagne) are dropdown stubs. Don't add
