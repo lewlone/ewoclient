@@ -573,7 +573,7 @@ pub const MAX_PROFILE_NAME_LEN: usize = 48;
 /// directory `dirs` returns, and it is what the rest of the in-game cdylib
 /// (`hud.toml`, `modules.toml`, `profiles.toml`) reads, so a process whose
 /// `APPDATA` is redirected (tests, portable setups) still agrees with itself.
-fn config_base() -> Option<PathBuf> {
+pub fn config_base() -> Option<PathBuf> {
     std::env::var_os("APPDATA")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
@@ -587,6 +587,16 @@ fn config_base() -> Option<PathBuf> {
 /// Windows device names, and no leading or trailing whitespace. The name
 /// reaches us from the user-editable `profiles.toml`, so it is untrusted.
 fn toml_path_in(base: &Path, profile: &str) -> Option<PathBuf> {
+    profile_file_in(base, profile, "pvp.toml")
+}
+
+/// `<base>/EwoClient/profiles/<profile>/<file>`, or `None` if `profile` is not
+/// safe to join into a path (the rule on [`toml_path_in`]). Every per-profile
+/// file the in-game cdylib reads or writes (`hud.toml`, `modules.toml`,
+/// `crosshair.toml`, `ewo-friends.txt`, `pvp.toml`) goes through this, so a
+/// hand-edited `active = "../.."` in `profiles.toml` cannot steer a write
+/// outside the profiles folder.
+pub fn profile_file_in(base: &Path, profile: &str, file: &str) -> Option<PathBuf> {
     if validate_name(profile, MAX_PROFILE_NAME_LEN).ok()? != profile {
         return None;
     }
@@ -594,8 +604,19 @@ fn toml_path_in(base: &Path, profile: &str) -> Option<PathBuf> {
         base.join("EwoClient")
             .join("profiles")
             .join(profile)
-            .join("pvp.toml"),
+            .join(file),
     )
+}
+
+/// [`profile_file_in`] under [`config_base`].
+pub fn profile_file(profile: &str, file: &str) -> Option<PathBuf> {
+    profile_file_in(&config_base()?, profile, file)
+}
+
+/// `<config>/EwoClient/<file>` for the files that are not per profile
+/// (`profiles.toml`, the legacy single `hud.toml`).
+pub fn ewo_config_file(file: &str) -> Option<PathBuf> {
+    Some(config_base()?.join("EwoClient").join(file))
 }
 
 /// `<config>/EwoClient/profiles/<active>/pvp.toml`; `None` if there is no
@@ -760,5 +781,29 @@ mod tests {
             PvpConfig::defaults().jump_reset_fade_ticks
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_per_profile_file_rejects_an_unsafe_active_profile() {
+        let base = std::path::Path::new("cfg");
+        for file in [
+            "hud.toml",
+            "modules.toml",
+            "crosshair.toml",
+            "ewo-friends.txt",
+        ] {
+            assert_eq!(
+                profile_file_in(base, "Default", file),
+                Some(
+                    base.join("EwoClient")
+                        .join("profiles")
+                        .join("Default")
+                        .join(file)
+                )
+            );
+            for bad in ["..", "../..", "a/b", r"a\b", "", " Default", "CON"] {
+                assert_eq!(profile_file_in(base, bad, file), None, "{bad:?} / {file}");
+            }
+        }
     }
 }

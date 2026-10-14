@@ -36,15 +36,8 @@ pub struct FriendLine {
 /// `%APPDATA%/EwoClient/profiles/<active>/ewo-friends.txt`. Mirrors the path
 /// resolution in [`crate::crosshair::crosshair_toml_path`].
 fn friends_file_path() -> Option<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")?;
     let profile = crate::hud::read_active_profile().unwrap_or_else(|| "Default".to_string());
-    Some(
-        PathBuf::from(appdata)
-            .join("EwoClient")
-            .join("profiles")
-            .join(profile)
-            .join("ewo-friends.txt"),
-    )
+    ewo_core::pvp::profile_file(&profile, "ewo-friends.txt")
 }
 
 thread_local! {

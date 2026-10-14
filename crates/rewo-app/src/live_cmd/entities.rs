@@ -71,7 +71,7 @@ pub(crate) struct PreviewTextures {
 /// Async player-texture loader: a worker thread fetches + decodes skin and
 /// cape PNGs off the render/tick path; the main loop uploads each result
 /// into the entity atlas and records its slot. They arrive rarely (once per
-/// player at join), so the per-texture `wait_idle` in the upload is cheap.
+/// player at join); each upload is a region copy with no queue wait.
 pub(crate) struct SkinLoader {
     pub(super) req_tx: std::sync::mpsc::Sender<(u128, TexKind, String, bool)>,
     pub(super) res_rx: std::sync::mpsc::Receiver<(u128, TexKind, bool, Vec<u8>)>,

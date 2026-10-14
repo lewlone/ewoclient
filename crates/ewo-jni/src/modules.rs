@@ -194,15 +194,8 @@ unsafe fn write_f32(base: *mut u8, off: usize, v: f32) {
 /// `%APPDATA%/EwoClient/profiles/<active>/modules.toml` — per client profile,
 /// resolved like `hud.rs`'s `hud_toml_path`.
 fn modules_toml_path() -> Option<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")?;
     let profile = crate::hud::read_active_profile().unwrap_or_else(|| "Default".to_string());
-    Some(
-        PathBuf::from(appdata)
-            .join("EwoClient")
-            .join("profiles")
-            .join(profile)
-            .join("modules.toml"),
-    )
+    ewo_core::pvp::profile_file(&profile, "modules.toml")
 }
 
 #[cfg(test)]

@@ -572,7 +572,7 @@ pub(super) fn fmt_playtime(secs: i32) -> String {
 
 /// `%APPDATA%/EwoClient/profiles.toml`.
 pub(super) fn profiles_toml_path() -> Option<PathBuf> {
-    std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("EwoClient").join("profiles.toml"))
+    ewo_core::pvp::ewo_config_file("profiles.toml")
 }
 
 /// Read `profiles.toml` — `(active, all profile names)`. `None` if the file

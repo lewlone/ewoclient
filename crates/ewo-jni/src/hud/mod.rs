@@ -1015,23 +1015,15 @@ impl HudLayout {
 /// per client profile (Phase F). Resolved from `%APPDATA%` — the cdylib
 /// runs inside the Minecraft JVM, which inherits the launcher's environment.
 fn hud_toml_path() -> Option<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")?;
     let profile = read_active_profile().unwrap_or_else(|| "Default".to_string());
-    Some(
-        PathBuf::from(appdata)
-            .join("EwoClient")
-            .join("profiles")
-            .join(profile)
-            .join("hud.toml"),
-    )
+    ewo_core::pvp::profile_file(&profile, "hud.toml")
 }
 
 /// The pre-Phase-F single `hud.toml` location. Read as a fallback so an
 /// existing layout survives the move to per-profile files; the next save
 /// writes the new per-profile path.
 fn legacy_hud_toml_path() -> Option<PathBuf> {
-    std::env::var_os("APPDATA")
-        .map(|appdata| PathBuf::from(appdata).join("EwoClient").join("hud.toml"))
+    ewo_core::pvp::ewo_config_file("hud.toml")
 }
 
 // ────────────────────────────────────────────────────────────────────────

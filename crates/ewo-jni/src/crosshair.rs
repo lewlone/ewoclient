@@ -279,15 +279,8 @@ fn paint_arms_and_dot(
 /// `%APPDATA%` isn't set; falls back to a `"Default"` profile name when the
 /// `profiles.toml` registry isn't readable. Mirrors `hud.rs`'s path resolver.
 pub fn crosshair_toml_path() -> Option<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")?;
     let profile = crate::hud::read_active_profile().unwrap_or_else(|| "Default".to_string());
-    Some(
-        PathBuf::from(appdata)
-            .join("EwoClient")
-            .join("profiles")
-            .join(profile)
-            .join("crosshair.toml"),
-    )
+    ewo_core::pvp::profile_file(&profile, "crosshair.toml")
 }
 
 /// Load `crosshair.toml` for the active profile. Any missing field falls
