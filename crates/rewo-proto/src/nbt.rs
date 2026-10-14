@@ -136,12 +136,108 @@ impl Nbt {
     }
 }
 
+/// `StringTag.readAccounted` / `CompoundTag.readString` → `DataInput.readUTF`
+/// (`StringTag.java:22`, `CompoundTag.java:130`; the network path reaches it
+/// through `FriendlyByteBuf.readNbt` → `NbtIo.readAnyTag(new
+/// ByteBufInputStream(..))`, `FriendlyByteBuf.java:553`, whose `readUTF` is
+/// `DataInputStream.readUTF`).
 fn read_string(r: &mut PacketReader) -> Result<String> {
     let len = r.u16()? as usize;
     let bytes = r.take(len)?;
-    // Java "modified UTF-8" — treat as UTF-8 with lossy fallback; the
-    // difference (surrogate pairs, encoded NUL) never matters for our uses.
-    Ok(String::from_utf8_lossy(bytes).into_owned())
+    decode_modified_utf8(bytes)
+}
+
+/// Java's *modified* UTF-8, as `DataInputStream.readUTF` decodes it (JDK 25
+/// `DataInputStream.java:629-669`). It is not UTF-8, and the difference shows:
+/// NUL is the overlong `C0 80`, and a supplementary character is a CESU-8
+/// surrogate pair — two 3-byte sequences, so 😀 (U+1F600) is
+/// `ED A0 BD ED B8 80`. A standard UTF-8 decoder rejects both (every emoji in
+/// chat, sign, item or scoreboard NBT used to render as U+FFFD).
+///
+/// Byte classes, exactly as the JDK switches on `c >> 4`:
+/// - `0..=7`: one byte, the char itself (a raw `00` is accepted too);
+/// - `12 | 13`: two bytes, the second must be `10xxxxxx`; overlong forms
+///   (`C0 80`, `C1 BF`) are accepted, not rejected;
+/// - `14`: three bytes, both continuations `10xxxxxx`; the result is one
+///   UTF-16 unit, which may be half of a surrogate pair;
+/// - anything else (a stray continuation byte, `F0..FF`) and a sequence cut
+///   off by the end of the string throw `UTFDataFormatException`, which is an
+///   `Err` here (vanilla fails the whole packet decode the same way).
+///
+/// The result is a run of UTF-16 units. A Java `String` can hold an unpaired
+/// surrogate and a Rust `String` cannot, so each unpaired surrogate becomes
+/// U+FFFD (one unit for one unit, so `NbtAccounter`'s `data.length()` charge
+/// is unchanged). Paired surrogates join into the supplementary character.
+pub fn decode_modified_utf8(bytes: &[u8]) -> Result<String> {
+    // `uncheckedCountPositives == utflen`: the all-ASCII fast path, which
+    // includes a raw 0x00 byte.
+    if bytes.is_ascii() {
+        // ASCII is valid UTF-8, so this cannot fail.
+        return Ok(bytes.iter().map(|&b| b as char).collect());
+    }
+    let malformed = |what: String| ProtoError::Nbt(format!("modified UTF-8: {what}"));
+    let n = bytes.len();
+    let mut units: Vec<u16> = Vec::with_capacity(n);
+    let mut i = 0;
+    while i < n {
+        let c = bytes[i];
+        match c >> 4 {
+            0..=7 => {
+                units.push(c as u16);
+                i += 1;
+            }
+            12 | 13 => {
+                if i + 2 > n {
+                    return Err(malformed("partial character at end".into()));
+                }
+                let c2 = bytes[i + 1];
+                if c2 & 0xC0 != 0x80 {
+                    return Err(malformed(format!("malformed input around byte {}", i + 2)));
+                }
+                units.push(((c as u16 & 0x1F) << 6) | (c2 as u16 & 0x3F));
+                i += 2;
+            }
+            14 => {
+                if i + 3 > n {
+                    return Err(malformed("partial character at end".into()));
+                }
+                let (c2, c3) = (bytes[i + 1], bytes[i + 2]);
+                if c2 & 0xC0 != 0x80 || c3 & 0xC0 != 0x80 {
+                    return Err(malformed(format!("malformed input around byte {}", i + 2)));
+                }
+                units.push(((c as u16 & 0x0F) << 12) | ((c2 as u16 & 0x3F) << 6) | (c3 as u16 & 0x3F));
+                i += 3;
+            }
+            _ => return Err(malformed(format!("malformed input around byte {i}"))),
+        }
+    }
+    Ok(String::from_utf16_lossy(&units))
+}
+
+/// `DataOutputStream.writeUTF`'s body (JDK 25 `DataOutputStream.java:364-392`,
+/// `putChar`): each UTF-16 unit of `s` as 1 byte (`0x01..=0x7F`), 2 bytes
+/// (NUL and `0x80..=0x7FF`) or 3 bytes (the rest, surrogates included, so a
+/// supplementary character becomes a 6-byte CESU-8 pair). Returns the bytes
+/// without the u16 length prefix. `None` when the encoding is over 65,535
+/// bytes, where `writeUTF` throws (and vanilla's
+/// `NbtIo.StringFallbackDataOutput`, `NbtIo.java:197-203`, writes `""`).
+pub fn encode_modified_utf8(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len());
+    for u in s.encode_utf16() {
+        match u {
+            0x0001..=0x007F => out.push(u as u8),
+            0x0000 | 0x0080..=0x07FF => {
+                out.push(0xC0 | (u >> 6) as u8);
+                out.push(0x80 | (u & 0x3F) as u8);
+            }
+            _ => {
+                out.push(0xE0 | (u >> 12) as u8);
+                out.push(0x80 | ((u >> 6) & 0x3F) as u8);
+                out.push(0x80 | (u & 0x3F) as u8);
+            }
+        }
+    }
+    (out.len() <= u16::MAX as usize).then_some(out)
 }
 
 /// `ListTag.addAndUnwrap` — undo the wrapper a **heterogeneous** list is
@@ -567,5 +663,110 @@ mod tests {
         buf.extend_from_slice(&[0, 0, 0, 1]);
         let mut r = PacketReader::new(&buf);
         assert!(Nbt::read_network(&mut r).is_err());
+    }
+
+    // -- Java modified UTF-8 (`DataInput.readUTF`) --------------------------
+    //
+    // Every byte string below is what JDK 25's `DataOutputStream.writeUTF`
+    // emits (checked by running it), not what this file's encoder emits: the
+    // encoder is under test too.
+
+    /// A `TAG_String` root carrying `body` (length-prefixed as `writeUTF` does).
+    fn string_tag(body: &[u8]) -> Vec<u8> {
+        let mut buf = vec![8u8];
+        buf.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        buf.extend_from_slice(body);
+        buf
+    }
+
+    fn read_string_tag(body: &[u8]) -> Result<Nbt> {
+        let buf = string_tag(body);
+        let mut r = PacketReader::new(&buf);
+        let v = Nbt::read_network(&mut r);
+        assert!(v.is_err() || r.is_empty(), "the string must consume its bytes");
+        v
+    }
+
+    /// `(Java string, writeUTF body)` pairs, bytes from the real JDK.
+    const JAVA_PAIRS: &[(&str, &[u8])] = &[
+        ("hi", &[0x68, 0x69]),
+        ("\u{e9}", &[0xC3, 0xA9]),
+        ("\u{20ac}", &[0xE2, 0x82, 0xAC]),
+        ("\u{0}", &[0xC0, 0x80]),
+        ("\u{1F600}", &[0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x80]),
+        (
+            "a\u{0}\u{e9}\u{20ac}\u{1F600}z",
+            &[0x61, 0xC0, 0x80, 0xC3, 0xA9, 0xE2, 0x82, 0xAC, 0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x80, 0x7A],
+        ),
+    ];
+
+    #[test]
+    fn modified_utf8_decodes_the_jdk_bytes() {
+        for (want, body) in JAVA_PAIRS {
+            assert_eq!(
+                read_string_tag(body).unwrap(),
+                Nbt::String((*want).to_string()),
+                "{body:02X?}"
+            );
+        }
+    }
+
+    /// The emoji case end to end, inside a compound key and value — the
+    /// pre-fix reader turned both into six U+FFFD.
+    #[test]
+    fn an_emoji_in_a_compound_key_and_value_survives() {
+        let emoji: &[u8] = &[0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x80];
+        let mut buf = vec![10u8, 8];
+        buf.extend_from_slice(&(emoji.len() as u16).to_be_bytes());
+        buf.extend_from_slice(emoji);
+        buf.extend_from_slice(&(emoji.len() as u16).to_be_bytes());
+        buf.extend_from_slice(emoji);
+        buf.push(0);
+        let nbt = Nbt::read_network(&mut PacketReader::new(&buf)).unwrap();
+        assert_eq!(nbt, Nbt::Compound(vec![("\u{1F600}".into(), Nbt::String("\u{1F600}".into()))]));
+    }
+
+    #[test]
+    fn modified_utf8_encoder_matches_the_jdk() {
+        for (s, body) in JAVA_PAIRS {
+            assert_eq!(encode_modified_utf8(s).as_deref(), Some(*body), "{s:?}");
+        }
+        // Over 65,535 encoded bytes is `writeUTF`'s UTFDataFormatException.
+        assert_eq!(encode_modified_utf8(&"a".repeat(65_535)).map(|v| v.len()), Some(65_535));
+        assert_eq!(encode_modified_utf8(&"a".repeat(65_536)), None);
+        assert_eq!(encode_modified_utf8(&"\u{20ac}".repeat(21_846)), None);
+    }
+
+    /// The JDK's verdict on each malformed body (run against `readUTF`):
+    /// every one is a `UTFDataFormatException`, and the packet fails.
+    #[test]
+    fn malformed_modified_utf8_is_an_error() {
+        let bad: &[&[u8]] = &[
+            &[0x80],                   // stray continuation: "around byte 0"
+            &[0xF0],                   // 1111xxxx: "around byte 0"
+            &[0xF0, 0x9F, 0x98, 0x80], // 4-byte UTF-8 is not modified UTF-8
+            &[0xC3],                   // "partial character at end"
+            &[0xE2, 0x82],             // "partial character at end"
+            &[0xC3, 0x41],             // bad continuation: "around byte 2"
+            &[0xE2, 0x41, 0xAC],       // bad continuation: "around byte 2"
+        ];
+        for body in bad {
+            assert!(read_string_tag(body).is_err(), "{body:02X?} must be rejected");
+            assert!(decode_modified_utf8(body).is_err());
+        }
+    }
+
+    /// What `readUTF` accepts that a UTF-8 decoder would not: overlong
+    /// two-byte forms and a raw NUL byte (JDK: `C1 BF` → U+007F, `00` → U+0000).
+    #[test]
+    fn modified_utf8_accepts_what_the_jdk_accepts() {
+        assert_eq!(decode_modified_utf8(&[0xC1, 0xBF]).unwrap(), "\u{7f}");
+        assert_eq!(decode_modified_utf8(&[0x00]).unwrap(), "\u{0}");
+        // A lone high surrogate (writeUTF of "\ud83d" is ED A0 BD) is a legal
+        // Java string; a Rust `String` cannot hold it, so it becomes U+FFFD —
+        // one UTF-16 unit for one, keeping the accounter's length charge.
+        let lone = decode_modified_utf8(&[0xED, 0xA0, 0xBD]).unwrap();
+        assert_eq!(lone, "\u{FFFD}");
+        assert_eq!(utf16_len(&lone), 1);
     }
 }
