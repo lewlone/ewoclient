@@ -20,11 +20,18 @@
 //! can drop results from a world that no longer exists — the pool never
 //! silently drops or reorders them.
 //!
+//! **A panicking job never takes the process down.** rayon aborts on a panic
+//! in a `spawn`ed closure that has no `panic_handler`, and the in-flight entry
+//! would never clear. Each job runs under `catch_unwind`, always reports
+//! (`mesh: None`, `panicked: true`), and so the column leaves `in_flight` and
+//! can be re-requested; the pool logs each panicking column once.
+//!
 //! `mesh_all` is the one-shot companion for snapshot renders (`view`,
 //! `live --out`): parallel over the caller's `&World` directly (no
 //! snapshots needed — nothing mutates during a one-shot), order-preserving.
 
 use std::collections::HashSet;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 
@@ -96,6 +103,9 @@ pub struct MeshOutput {
     pub cx: i32,
     pub cz: i32,
     pub mesh: Option<ColumnMesh>,
+    /// The mesher panicked on this job. `mesh` is then `None`; the caller
+    /// treats it like any empty column, and may submit the column again.
+    pub panicked: bool,
 }
 
 pub struct MeshPool {
@@ -110,6 +120,12 @@ pub struct MeshPool {
     /// Identity is `(generation, cx, cz)` — a new generation may re-enter a
     /// coordinate whose old-world job has not landed yet.
     in_flight: HashSet<(u64, i32, i32)>,
+    /// Columns whose job has panicked, so each is logged once rather than on
+    /// every re-mesh of a column that keeps tripping the same bug.
+    panicked_logged: HashSet<(i32, i32)>,
+    /// Test hook: a job for one of these columns panics inside the worker.
+    #[cfg(test)]
+    panic_columns: HashSet<(i32, i32)>,
 }
 
 impl MeshPool {
@@ -128,6 +144,9 @@ impl MeshPool {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .thread_name(|i| format!("rewo-mesh-{i}"))
+            // Backstop only: every job already runs under `catch_unwind`
+            // (see `submit`). Without a handler rayon aborts the process.
+            .panic_handler(|_| log::error!("mesh pool: a worker job panicked outside its guard"))
             .build()
             .map_err(|e| format!("mesh pool: {e}"))?;
         log::info!("mesh pool: {threads} workers");
@@ -140,6 +159,9 @@ impl MeshPool {
             tx,
             rx,
             in_flight: HashSet::new(),
+            panicked_logged: HashSet::new(),
+            #[cfg(test)]
+            panic_columns: HashSet::new(),
         })
     }
 
@@ -169,22 +191,40 @@ impl MeshPool {
         let tables = Arc::clone(&self.tables);
         let smooth_lighting = self.smooth_lighting;
         let tx = self.tx.clone();
+        #[cfg(test)]
+        let inject_panic = self.panic_columns.contains(&(cx, cz));
+        #[cfg(not(test))]
+        let inject_panic = false;
         self.pool.spawn(move || {
-            let mesh = mesh_column_with(
-                &snapshot,
-                MeshInputs {
-                    smooth_lighting,
-                    ..tables.inputs()
-                },
-                cx,
-                cz,
-            );
-            // Receiver gone = app is shutting down; the result is moot.
+            // The snapshot and tables are owned by (or shared read-only
+            // with) this job alone and are dropped with it, so a panic cannot
+            // leave state that anything observes afterwards.
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                if inject_panic {
+                    panic!("injected mesher panic at ({cx}, {cz})");
+                }
+                mesh_column_with(
+                    &snapshot,
+                    MeshInputs {
+                        smooth_lighting,
+                        ..tables.inputs()
+                    },
+                    cx,
+                    cz,
+                )
+            }));
+            let (mesh, panicked) = match result {
+                Ok(mesh) => (mesh, false),
+                Err(_) => (None, true),
+            };
+            // Always report, so `in_flight` clears. Receiver gone = app is
+            // shutting down; the result is moot.
             let _ = tx.send(MeshOutput {
                 generation,
                 cx,
                 cz,
                 mesh,
+                panicked,
             });
         });
         true
@@ -194,6 +234,13 @@ impl MeshPool {
     pub fn try_recv(&mut self) -> Option<MeshOutput> {
         let out = self.rx.try_recv().ok()?;
         self.in_flight.remove(&(out.generation, out.cx, out.cz));
+        if out.panicked && self.panicked_logged.insert((out.cx, out.cz)) {
+            log::error!(
+                "mesh pool: the mesher panicked on column ({}, {}); it renders empty until re-meshed",
+                out.cx,
+                out.cz
+            );
+        }
         Some(out)
     }
 
@@ -237,6 +284,7 @@ pub fn mesh_all_with(
             cx,
             cz,
             mesh: mesh_column_with(world, inputs, cx, cz),
+            panicked: false,
         })
         .collect()
 }
@@ -431,6 +479,44 @@ mod tests {
             up_face(&recv_blocking(&mut pool).mesh.expect("meshed")),
             smooth,
             "the same job shape comes back"
+        );
+    }
+
+    /// A panicking job neither aborts the process (rayon's default for a
+    /// `spawn` with no handler) nor strands the column in `in_flight`: it
+    /// reports `mesh: None, panicked: true`, other columns keep meshing, and
+    /// the same column can be re-requested and mesh normally.
+    #[test]
+    fn panicking_job_reports_and_column_can_be_resubmitted() {
+        let mut pool = MeshPool::new(tables()).unwrap();
+        let mut world = one_block_world();
+        world.ensure_column(1, 0);
+        world.set_block(20, 10, 4, 1);
+        pool.panic_columns.insert((0, 0));
+
+        assert!(pool.submit(9, &world, 0, 0));
+        assert!(pool.submit(9, &world, 1, 0));
+        let mut outs = [recv_blocking(&mut pool), recv_blocking(&mut pool)];
+        outs.sort_by_key(|o| o.cx);
+        assert_eq!((outs[0].cx, outs[0].panicked), (0, true));
+        assert!(outs[0].mesh.is_none(), "a panicked job reports no mesh");
+        assert_eq!((outs[1].cx, outs[1].panicked), (1, false));
+        assert!(outs[1].mesh.is_some(), "the healthy job still meshes");
+        assert_eq!(pool.in_flight(), 0, "the panicked job left in_flight");
+        assert!(pool.panicked_logged.contains(&(0, 0)));
+
+        // Same column, same generation: accepted again, and with the fault
+        // gone it meshes normally.
+        pool.panic_columns.clear();
+        assert!(
+            pool.submit(9, &world, 0, 0),
+            "column must be re-requestable"
+        );
+        let again = recv_blocking(&mut pool);
+        assert!(!again.panicked);
+        assert_eq!(
+            again.mesh.expect("meshes after the fault").vertices.len(),
+            24
         );
     }
 
