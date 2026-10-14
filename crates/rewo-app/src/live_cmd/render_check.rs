@@ -1,12 +1,5 @@
 use super::*;
 
-/// How many seconds `--render-check` runs for when `--run-seconds` is absent.
-///
-/// Long enough for the server to send the inventory and for the weather /
-/// particle paths to have been reached many times over, short enough to be a
-/// gate rather than a soak.
-pub(super) const RENDER_CHECK_SECONDS: f32 = 8.0;
-
 /// `ChatFormatting.GRAY`'s 0xAAAAAA, in the LINEAR space the text pass wants.
 ///
 /// Spelled out rather than taken from `parse_color` + `srgb_to_linear`,
@@ -1617,25 +1610,6 @@ pub(crate) fn witness_seam_faults(names: &[&str], expected: usize) -> Vec<String
         ));
     }
     faults
-}
-
-/// Whether the wavy cape is switched on for this run (M61).
-pub(crate) fn wavy_cape_requested(flag: bool) -> bool {
-    flag || matches!(
-        std::env::var("REWO_WAVY_CAPE").as_deref(),
-        Ok("1") | Ok("true")
-    )
-}
-
-/// Reject a `[0, 1]` option before any I/O so a bad `--gamma` /
-/// `--darkness-effect-scale` fails fast with a named error (M13).
-pub(super) fn validate_unit(name: &str, v: f32) -> Result<(), String> {
-    if !v.is_finite() || !(0.0..=1.0).contains(&v) {
-        return Err(format!(
-            "--{name} must be a finite value in [0, 1], got {v}"
-        ));
-    }
-    Ok(())
 }
 
 impl LiveApp {

@@ -1523,8 +1523,11 @@ impl LiveApp {
             if let Some(session) = self.session.as_mut() {
                 match session.send_sign_update(view.pos, view.is_front, &view.state.lines) {
                     Ok(()) => {
-                        if let Some(c) = self.check.as_mut() {
-                            c.sign_update_sent = true;
+                        #[cfg(feature = "gates")]
+                        {
+                            if let Some(c) = self.check.as_mut() {
+                                c.sign_update_sent = true;
+                            }
                         }
                     }
                     Err(e) => log::warn!("live: sign_update send failed: {e}"),

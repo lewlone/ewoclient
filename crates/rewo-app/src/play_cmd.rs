@@ -6,6 +6,15 @@
 //! matches vanilla's simulation gets few/no corrections; drift shows up as
 //! rubber-banding the server sends back. This is the DoD verification —
 //! no human, no window.
+//!
+//! **This harness synthesises packets by design, and that is why it is
+//! gates-only.** `mod play_cmd` is compiled only with `--features gates`, so
+//! the shipped binary has neither the subcommand nor the item synthesis in its
+//! build step (a creative-inventory `creative_set_hotbar` of dirt, which only
+//! works against a creative test server). The `live` client's equivalent first-
+//! spawn dirt stack is the `REWO_GIVE_DIRT` knob; here the stack is part of the
+//! scripted build action instead, so `--no-build` is the opt-out and no knob is
+//! needed. Both sit behind the same `gates` feature.
 
 use std::time::{Duration, Instant};
 
@@ -1842,6 +1851,9 @@ fn drive(
             // Anchor the build targets to the (now-stationary) feet block.
             acted.anchor = Some(feet_block(session));
             // Give + hold a stack of dirt (creative server), then select it.
+            // Item synthesis, so it is part of the gates-only harness (see the
+            // module doc) and `--no-build` skips it, the way `live` needs
+            // `REWO_GIVE_DIRT`.
             if let Some(dirt) = dirt_item {
                 let _ = session.creative_set_hotbar(0, dirt, 64);
                 let _ = session.select_hotbar(0);

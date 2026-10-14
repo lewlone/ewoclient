@@ -515,6 +515,7 @@ pub(super) fn menu_slot_rects(
 
 /// The player inventory's slot rects — [`menu_slot_rects`] for the menu that
 /// was the only one before M87.
+#[cfg(feature = "gates")]
 pub(super) fn screen_slot_rects(w: f32, h: f32) -> Vec<(f32, f32, f32)> {
     menu_slot_rects(&rewo_world::inventory::Inventory::default(), w, h, false)
 }

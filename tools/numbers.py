@@ -194,7 +194,9 @@ def gate_source_count(gate: str) -> str:
                        ("EXPECTED_FRAMES", " frames")):
         vals = const(text, name)
         if vals:
-            return f"{vals[0]}{unit}"
+            probes = const(text, "EXPECTED_PROBES")
+            extra = f", {probes[0]} graded comparisons" if probes else ""
+            return f"{vals[0]}{unit}{extra}"
     m = re.search(r"\bconst EXPECTED_FINGERPRINT: *\[u64; *(\d+)\]", text)
     if m:
         return f"fingerprint of {m.group(1)} counts"

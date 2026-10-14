@@ -115,13 +115,20 @@ pub fn run(args: LightmapshotArgs) -> Result<(), String> {
     run_check(&mut gpu, &args)
 }
 
-/// How many frames this gate reads back and grades. The gate accumulates
-/// property failures rather than counting witnesses, so a section that stopped
-/// running (an emptied loop, an early skip) would still print OK; pinning the
-/// frame count makes that loud. Update it, and say why, when a case is added or
-/// removed on purpose.
+/// How many frames this gate reads back. The gate accumulates property failures
+/// rather than naming witnesses, so a section that stopped running would still
+/// print OK; pinning the frame count makes a dropped frame loud. A frame count
+/// alone proves only that frames were read back, so [`EXPECTED_PROBES`] pins the
+/// comparisons that graded them. Update both, and say why, when a case is added
+/// or removed on purpose.
 const EXPECTED_FRAMES: usize = 31;
 static FRAMES_GRADED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many failure conditions this gate evaluates (every `PROBES.bad(..)`
+/// call), measured by running it. A section that renders but stops comparing, a
+/// loop that runs fewer times, or a deleted `if` moves this and fails the gate.
+const EXPECTED_PROBES: usize = 87;
+static PROBES: crate::probes::ProbeCounter = crate::probes::ProbeCounter::new();
 
 /// `Offscreen::read_rgba` that also counts the frame toward [`EXPECTED_FRAMES`].
 trait ReadCounted {
@@ -134,8 +141,8 @@ impl ReadCounted for Offscreen {
     }
 }
 
-/// Fail closed when the number of graded frames is not the pinned one.
-fn check_frame_count() -> Result<(), String> {
+/// Fail closed when the frame or probe count is not the pinned one.
+fn check_pins() -> Result<(), String> {
     let got = FRAMES_GRADED.load(std::sync::atomic::Ordering::Relaxed);
     println!("[lightmapshot] frames graded: {got} / {EXPECTED_FRAMES}");
     if got != EXPECTED_FRAMES {
@@ -144,7 +151,7 @@ fn check_frame_count() -> Result<(), String> {
              added without updating the pin (fail-closed)"
         ));
     }
-    Ok(())
+    PROBES.check("lightmapshot", EXPECTED_PROBES)
 }
 
 fn run_check(gpu: &mut Gpu, args: &LightmapshotArgs) -> Result<(), String> {
@@ -197,7 +204,7 @@ fn run_check(gpu: &mut Gpu, args: &LightmapshotArgs) -> Result<(), String> {
     result?;
 
     if failures.is_empty() {
-        check_frame_count()?;
+        check_pins()?;
         if args.check {
             println!("[lightmapshot] CHECK OK — terrain + water + packed color + dimension ambient + entity lightmap matrix verified");
         } else {
@@ -254,7 +261,7 @@ fn run_cases(
         println!(
             "[lightmapshot] {name}: blue actual {actual_b} correct {correct_b} old {OLD_BLUE} → closer-by {closer}"
         );
-        if closer < 5 {
+        if PROBES.bad(closer < 5) {
             failures.push(format!(
                 "{name}: blue {actual_b} not >=5 closer to correct {correct_b} than old {OLD_BLUE} (closer-by {closer})"
             ));
@@ -284,7 +291,7 @@ fn run_cases(
 
         let d = max_delta(a1, a2);
         println!("[lightmapshot] block-factor 1.0 vs 1.8 max channel Δ {d}");
-        if d < 10 {
+        if PROBES.bad(d < 10) {
             failures.push(format!(
                 "block-factor 1.0 vs 1.8 differ by only {d} (<10, expected a clear response)"
             ));
@@ -312,7 +319,7 @@ fn run_cases(
             "[lightmapshot] gamma luma ramp {:.2} → {:.2} → {:.2}",
             lumas[0], lumas[1], lumas[2]
         );
-        if !(lumas[0] < lumas[1] && lumas[1] < lumas[2]) {
+        if PROBES.bad(!(lumas[0] < lumas[1] && lumas[1] < lumas[2])) {
             failures.push(format!(
                 "gamma luma not strictly increasing: {:.2} {:.2} {:.2}",
                 lumas[0], lumas[1], lumas[2]
@@ -346,7 +353,7 @@ fn run_cases(
             a[0], a[1], a[2]
         );
         for c in 0..3 {
-            if a[c] > 1 {
+            if PROBES.bad(a[c] > 1) {
                 failures.push(format!(
                     "{name} channel {c}: NaN store readback {} > 1 (expected ~black)",
                     a[c]
@@ -378,7 +385,7 @@ fn run_cases(
         );
 
         // Pure-math property asserts (no render needed).
-        if ds_zero != 0.0 {
+        if PROBES.bad(ds_zero != 0.0) {
             failures.push(format!(
                 "darkness zero-pulse (tick 22) expected 0, got {ds_zero}"
             ));
@@ -395,7 +402,7 @@ fn run_cases(
         println!(
             "[lightmapshot] darkness dbl-opt: cos {dbl_cos:.6} → expected {expect_dbl:.8}, actual {ds_dbl:.8}"
         );
-        if (ds_dbl - expect_dbl).abs() > 1e-6 {
+        if PROBES.bad((ds_dbl - expect_dbl).abs() > 1e-6) {
             failures.push(format!(
                 "darkness double-option multiply: {ds_dbl} != {expect_dbl} (max(0, Mth.cos·0.45·blend·option)·option)"
             ));
@@ -431,7 +438,7 @@ fn run_cases(
         // subtraction, so the outputs must differ measurably.
         let d = max_delta(ap, az);
         println!("[lightmapshot] darkness positive vs zero max channel Δ {d}");
-        if d < 3 {
+        if PROBES.bad(d < 3) {
             failures.push(format!(
                 "darkness positive vs zero differ by only {d} (<3, expected measurable)"
             ));
@@ -456,7 +463,7 @@ fn run_cases(
         let ao = render_quad(gpu, off, wr, view_proj, draw, name_o, 4, 4, gw, false, args)?;
         let d = max_delta(aw, ao);
         println!("[lightmapshot] water (alpha 255) vs opaque max channel Δ {d}");
-        if d > CHANNEL_TOL {
+        if PROBES.bad(d > CHANNEL_TOL) {
             failures.push(format!(
                 "water (alpha 255) vs opaque differ by {d} (>{CHANNEL_TOL})"
             ));
@@ -546,7 +553,7 @@ fn run_cases(
         for c in 0..3 {
             let white_lin = srgb_to_linear(aw[c] as f32 / 255.0);
             let colored_lin = srgb_to_linear(ac[c] as f32 / 255.0);
-            if white_lin < RATIO_FLOOR {
+            if PROBES.bad(white_lin < RATIO_FLOOR) {
                 failures.push(format!(
                     "packed-color channel {c}: white reference linear {white_lin:.4} < {RATIO_FLOOR} — too dark to grade the ratio"
                 ));
@@ -558,7 +565,7 @@ fn run_cases(
                 "[lightmapshot] packed-color channel {c}: colored/white linear ratio {ratio:.4} vs reconstructed {:.4} (|Δ| {e:.4})",
                 color[c]
             );
-            if e > RATIO_TOL {
+            if PROBES.bad(e > RATIO_TOL) {
                 failures.push(format!(
                     "packed-color channel {c}: linear ratio {ratio:.4} vs reconstructed colour {:.4} (|Δ| {e:.4} > {RATIO_TOL})",
                     color[c]
@@ -606,7 +613,7 @@ fn run_cases(
             false,
             args,
         )?;
-        if !(luma(lo) < luma(smooth) && luma(smooth) < luma(hi)) {
+        if PROBES.bad(!(luma(lo) < luma(smooth) && luma(smooth) < luma(hi))) {
             failures.push(format!(
                 "{name_s}: luma {} is not strictly between block 12 ({}) and block 13 ({}) — the smooth fraction was not sampled",
                 luma(smooth),
@@ -691,7 +698,7 @@ fn run_cases(
             let d = max_delta(*a, black);
             println!("[lightmapshot] ambient {tag} vs black-ambient max channel Δ {d}");
             // Even the Overworld's dim #0a0a0a is 10/255 linear ≈ sRGB 89.
-            if d < 20 {
+            if PROBES.bad(d < 20) {
                 failures.push(format!(
                     "ambient {tag}: only Δ{d} vs the black-ambient baseline (<20) — the ambient uniform does not own the pixel"
                 ));
@@ -702,7 +709,7 @@ fn run_cases(
         for (i, (ta, a)) in unlit.iter().enumerate() {
             for (tb, b) in unlit.iter().skip(i + 1) {
                 let d = max_delta(*a, *b);
-                if d < 10 {
+                if PROBES.bad(d < 10) {
                     failures.push(format!(
                         "ambient {ta} vs {tb}: max channel Δ{d} (<10) — dimensions not distinguishable"
                     ));
@@ -712,7 +719,7 @@ fn run_cases(
         // The End's ambient is greenish (#3f473f: G > R == B); the readback must
         // carry that ordering, which a channel transpose in the UBO would break.
         let end_px = unlit[2].1;
-        if !(end_px[1] > end_px[0] && end_px[0] == end_px[2]) {
+        if PROBES.bad(!(end_px[1] > end_px[0] && end_px[0] == end_px[2])) {
             failures.push(format!(
                 "ambient end: readback {end_px:?} does not carry #3f473f's G>R==B ordering"
             ));
@@ -755,7 +762,7 @@ fn run_cases(
         )?;
         let dm = max_delta(am, ap);
         println!("[lightmapshot] ambient mid-lit (b4s4) nether vs default max channel Δ {dm}");
-        if dm < 10 {
+        if PROBES.bad(dm < 10) {
             failures.push(format!(
                 "ambient mid-lit: nether vs default differ by only {dm} (<10)"
             ));
@@ -798,7 +805,7 @@ fn run_cases(
         )?;
         let dw = max_delta(aw, ao);
         println!("[lightmapshot] ambient water vs opaque max channel Δ {dw}");
-        if dw > CHANNEL_TOL {
+        if PROBES.bad(dw > CHANNEL_TOL) {
             failures.push(format!(
                 "ambient water vs opaque differ by {dw} (>{CHANNEL_TOL}) — water.frag missed the ambient uniform"
             ));
@@ -884,7 +891,7 @@ fn run_cases(
              read {env_only:?} predicted {want_half:?} (unfogged {clear:?})",
             frac(0.0, 32.0)
         );
-        if !close(env_only, want_half) {
+        if PROBES.bad(!close(env_only, want_half)) {
             failures.push(format!(
                 "fog-env: read {env_only:?}, predicted {want_half:?} from the unfogged \
                  {clear:?} — the environmental band is not reaching the shader, or its \
@@ -892,7 +899,7 @@ fn run_cases(
             ));
         }
         // It must actually have done something, or the case grades nothing.
-        if close(env_only, clear) {
+        if PROBES.bad(close(env_only, clear)) {
             failures.push(format!(
                 "fog-env: {env_only:?} is indistinguishable from the unfogged \
                  {clear:?} — the band had no effect at all"
@@ -915,7 +922,7 @@ fn run_cases(
             false,
             args,
         )?;
-        if !close(rd_only, env_only) {
+        if PROBES.bad(!close(rd_only, env_only)) {
             failures.push(format!(
                 "fog-rd: the render-distance band at (0, 32) gives {rd_only:?} where the \
                  environmental band at the same numbers gives {env_only:?} — they feed \
@@ -947,13 +954,13 @@ fn run_cases(
             "[lightmapshot] fog-max: rd 0.5 + env 0.25 -> read {both:?}; max {want_max:?} \
              sum {want_sum:?} min {want_min:?}"
         );
-        if !close(both, want_max) {
+        if PROBES.bad(!close(both, want_max)) {
             failures.push(format!(
                 "fog-max: read {both:?}, expected the MAX {want_max:?} (a sum would give \
                  {want_sum:?}, a min {want_min:?})"
             ));
         }
-        if close(want_max, want_min) || close(want_max, want_sum) {
+        if PROBES.bad(close(want_max, want_min) || close(want_max, want_sum)) {
             failures.push(format!(
                 "fog-max is vacuous: max {want_max:?}, sum {want_sum:?} and min \
                  {want_min:?} are not far enough apart to tell them apart"
@@ -976,7 +983,7 @@ fn run_cases(
             false,
             args,
         )?;
-        if !close(weak, want_max) {
+        if PROBES.bad(!close(weak, want_max)) {
             failures.push(format!(
                 "fog-weak-env: a nearly-disabled environmental band changed the result to \
                  {weak:?} from {want_max:?} — a max cannot be reduced by its smaller term"
@@ -1128,7 +1135,7 @@ fn run_entity_case(
     // yields ≈2.4k lit pixels, so require a robust floor well under that but
     // far above noise.
     const MIN_LIT_PIXELS: usize = 1000;
-    if lit_pixels < MIN_LIT_PIXELS {
+    if PROBES.bad(lit_pixels < MIN_LIT_PIXELS) {
         failures.push(format!(
             "{name}: only {lit_pixels} lit pixels (< {MIN_LIT_PIXELS}) — camera/mask wrong, cannot grade"
         ));
@@ -1150,7 +1157,7 @@ fn run_entity_case(
     const RATIO_TOL: f64 = 0.04;
     for c in 0..3 {
         let e = (act_norm[c] - exp_norm[c]).abs();
-        if e > RATIO_TOL {
+        if PROBES.bad(e > RATIO_TOL) {
             failures.push(format!(
                 "{name} channel {c}: normalized light ratio {:.4} vs expected {:.4} (|Δ| {e:.4} > {RATIO_TOL})",
                 act_norm[c], exp_norm[c]
@@ -1346,7 +1353,7 @@ fn compare_case(
     );
     for c in 0..3 {
         let diff = (actual[c] as i32 - expected[c] as i32).abs();
-        if diff > CHANNEL_TOL {
+        if PROBES.bad(diff > CHANNEL_TOL) {
             failures.push(format!(
                 "{name} channel {c}: actual {} vs expected {} (|Δ| {diff} > {CHANNEL_TOL})",
                 actual[c], expected[c]

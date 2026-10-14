@@ -238,7 +238,9 @@ impl LiveApp {
             }
         }
 
-        // `--render-check` scripted injections (no-op without `--render-check`).
+        // `--render-check` scripted injections (no-op without `--render-check`,
+        // and not compiled at all without `--features gates`).
+        #[cfg(feature = "gates")]
         self.render_check_inject();
 
         // M85: mirror the server's links out of the session while it is
@@ -466,6 +468,7 @@ impl LiveApp {
             // `player_chat` through the signature cache, the trust level, the
             // wrap and the geometry, so r26 grades the whole chain on an
             // otherwise unstaged run.
+            #[cfg(feature = "gates")]
             if self.check.is_some() {
                 let _ = session.send_chat("rewo render-check");
                 // M164 (r48) — a waterlogged block for the mesher to find.
@@ -507,7 +510,10 @@ impl LiveApp {
         // Upload finished meshes + feed the worker pool. (Uploads are
         // async slot-ring submissions — the CPU never waits on the copy;
         // same-queue FIFO ordering keeps this frame's draws safe.)
+        #[cfg(feature = "gates")]
         let mut carried_cells = self.check.as_ref().map_or(0, |c| c.carried_fluid_cells);
+        #[cfg(not(feature = "gates"))]
+        let mut carried_cells = 0;
         let pumped = pump_meshing(
             session,
             &mut state.gpu,
@@ -516,6 +522,7 @@ impl LiveApp {
             UPLOAD_BUDGET,
             &mut carried_cells,
         );
+        #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
             c.carried_fluid_cells = carried_cells;
         }
@@ -631,6 +638,7 @@ impl LiveApp {
         // M163 — read the label OFF THE DRAW LIST, not off the entity table:
         // the claim is that the resolved string reached the renderer, and a
         // table-level read would stay green if `resolve_labels` dropped it.
+        #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
             // M166 — mirror only when it has grown. Fixed at configuration
             // time except for a mid-session `resource_pack_push`, so this is a
@@ -657,48 +665,43 @@ impl LiveApp {
         // loop drains sound *events*; this moves the ears.
         self.sounds
             .update_listener(eye_f64(session), session.player.yaw, session.player.pitch);
-        // Read BACK off the device rather than counting the call: deleting
-        // `update_listener`'s body would leave a call-site counter green.
-        let pushes = self.sounds.device.listener_pushes;
-        let fwd = self.sounds.device.last_listener.map(|t| t.forward);
-        // Read off the MANAGER, which is the engine's, rather than off anything
-        // this frame computed — the claim is that a track was actually started,
-        // not that a situation was named.
-        let music = self.sounds.system.music.current().map(str::to_string);
-        // M162 — LATCHED rather than sampled at the end, because a one-shot is
-        // reclaimed 20 ticks after its channel is released and the run goes on
-        // for several seconds after the injection. Read off the ENGINE, not off
-        // anything the injection computed.
-        let wither = self
-            .sounds
-            .system
-            .engine
-            .live_position("minecraft:entity.wither.spawn");
-        let boom = self
-            .sounds
-            .system
-            .engine
-            .live_position("minecraft:entity.generic.explode");
-        let queued = self.sounds.system.stats.queued_delayed;
-        let (tails, sounds_queued) = (
-            session.motion_stats.explosion_tails,
-            session.motion_stats.explosion_sounds,
-        );
+        #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
-            c.listener_pushes = pushes;
-            c.listener_forward = fwd;
-            if music.is_some() {
-                c.music_started = music;
+            // Read BACK off the device rather than counting the call: deleting
+            // `update_listener`'s body would leave a call-site counter green.
+            c.listener_pushes = self.sounds.device.listener_pushes;
+            c.listener_forward = self.sounds.device.last_listener.map(|t| t.forward);
+            // Read off the MANAGER, which is the engine's, rather than off
+            // anything this frame computed — the claim is that a track was
+            // actually started, not that a situation was named.
+            if let Some(music) = self.sounds.system.music.current() {
+                c.music_started = Some(music.to_string());
             }
+            // M162 — LATCHED rather than sampled at the end, because a one-shot
+            // is reclaimed 20 ticks after its channel is released and the run
+            // goes on for several seconds after the injection. Read off the
+            // ENGINE, not off anything the injection computed.
             if c.global_event_sound.is_none() {
-                c.global_event_sound = wither;
+                c.global_event_sound = self
+                    .sounds
+                    .system
+                    .engine
+                    .live_position("minecraft:entity.wither.spawn");
             }
             if c.explosion_sound.is_none() {
-                c.explosion_sound = boom;
+                c.explosion_sound = self
+                    .sounds
+                    .system
+                    .engine
+                    .live_position("minecraft:entity.generic.explode");
             }
-            c.queued_delayed = c.queued_delayed.max(queued);
-            c.explosion_tails = c.explosion_tails.max(tails);
-            c.explosion_sounds_queued = c.explosion_sounds_queued.max(sounds_queued);
+            c.queued_delayed = c
+                .queued_delayed
+                .max(self.sounds.system.stats.queued_delayed);
+            c.explosion_tails = c.explosion_tails.max(session.motion_stats.explosion_tails);
+            c.explosion_sounds_queued = c
+                .explosion_sounds_queued
+                .max(session.motion_stats.explosion_sounds);
         }
         // Before `set_entities`: the entity pass reads the eye as the CEM
         // `player_pos_*`, which FA aims mob eyes/heads with.
@@ -726,6 +729,7 @@ impl LiveApp {
                 // Counting a *finite* band rather than "we took the Some arm"
                 // is what makes this a value witness — the arm could be taken
                 // and still hand the renderer nonsense.
+                #[cfg(feature = "gates")]
                 if let Some(c) = self.check.as_mut() {
                     if band[0] < 1.0e8 {
                         c.fog_band_frames += 1;
@@ -794,6 +798,7 @@ impl LiveApp {
         // renderer. The RAW-KEY half is a prefix match because
         // `getRenderMessages` truncates each line to the board, so an
         // unresolved `block.minecraft.dirt` arrives as `block.minecraft.di`.
+        #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
             if sign_lines.iter().any(|l| l.text == SIGN_WITNESS_RESOLVED) {
                 c.sign_resolved_frames += 1;
@@ -835,6 +840,7 @@ impl LiveApp {
         // every `Zombie` in the frame — is a claim about the world: another
         // fixture that spawns one satisfies it, so a partially decoded
         // injection would pass on somebody else's mob.
+        #[cfg(feature = "gates")]
         if let Some(rc) = self.check.as_mut() {
             let mine: Vec<[f32; 3]> = CROWD_IDS
                 .iter()
@@ -919,6 +925,7 @@ impl LiveApp {
             })
             .flatten();
         if let Some(baked) = self.baked.as_ref() {
+            #[cfg(feature = "gates")]
             if let Some(c) = self.check.as_mut() {
                 c.gui_item_frames += 1;
             }
@@ -927,6 +934,7 @@ impl LiveApp {
                 .gui_items
                 .get_or_insert_with(|| GuiItemState::new(baked));
             if self.screen.inventory_open() {
+                #[cfg(feature = "gates")]
                 if let Some(c) = self.check.as_mut() {
                     c.screen_frames += 1;
                 }
@@ -1005,6 +1013,7 @@ impl LiveApp {
                 // model's own geometry (the counter is the only text the book
                 // draws on that row) rather than on its content, which is a
                 // translation and would tie the gate to a language.
+                #[cfg(feature = "gates")]
                 if let Some(c) = self.check.as_mut() {
                     let (_, bt, sc) = rewo_gpu::container::recipe_book_origin(sw, sh);
                     let row = bt + rewo_world::recipe_book_screen::PAGE_LABEL_Y as f32 * sc;
@@ -1020,8 +1029,9 @@ impl LiveApp {
                 // and the field placement it forced.
                 // M104 — split by whether an overlay was up, because the claim
                 // one frame over is a DIFFERENCE and not a threshold.
-                let overlay_up = self.screen.book_overlay.is_some();
+                #[cfg(feature = "gates")]
                 if let Some(c) = self.check.as_mut() {
+                    let overlay_up = self.screen.book_overlay.is_some();
                     let q = state.world_renderer.container_panel_book_quads();
                     if overlay_up {
                         c.book_overlay_quads_max = c.book_overlay_quads_max.max(q);
@@ -1033,6 +1043,7 @@ impl LiveApp {
                 // draw path set it. Asking the open menu's layout instead
                 // would answer 168 for a chest whether or not the panel
                 // builder returned one.
+                #[cfg(feature = "gates")]
                 if let Some(h) = state.world_renderer.container_panel_height() {
                     let forced = self.screen_forced_open;
                     if let Some(c) = self.check.as_mut() {
@@ -1084,6 +1095,7 @@ impl LiveApp {
         // M38: the first-person hand. Suppressed while the inventory screen is
         // open — the screen owns the view, and vanilla does the same.
         if let Some(baked) = self.baked.as_ref() {
+            #[cfg(feature = "gates")]
             if let Some(c) = self.check.as_mut() {
                 c.hand_frames += 1;
             }
@@ -1109,6 +1121,7 @@ impl LiveApp {
         // M33: the cloud deck and this frame's precipitation. The assets are
         // built lazily because `baked` arrives with the session.
         if let Some(baked) = self.baked.as_ref() {
+            #[cfg(feature = "gates")]
             if let Some(c) = self.check.as_mut() {
                 c.weather_frames += 1;
             }
@@ -1169,6 +1182,7 @@ impl LiveApp {
             extent.width as f32,
             extent.height as f32,
         );
+        #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
             use rewo_gpu::hud::HudIcon;
             use rewo_gpu::survival_hud::ArmorSprite;
@@ -1361,6 +1375,7 @@ impl LiveApp {
                 &rewo_world::chat::ChatOptions::default(),
             );
             if !bar.is_empty() {
+                #[cfg(feature = "gates")]
                 if let Some(c) = self.check.as_mut() {
                     c.chat_scrollbar_frames += 1;
                 }
@@ -1373,6 +1388,7 @@ impl LiveApp {
                 if let Some(list) = cs.suggestions.list() {
                     let fills = suggestion_popup_fills(list, cs.suggestions.config());
                     if !fills.is_empty() {
+                        #[cfg(feature = "gates")]
                         if let Some(c) = self.check.as_mut() {
                             c.suggestion_popup_frames += 1;
                         }
@@ -1384,6 +1400,7 @@ impl LiveApp {
                     // box exists only when the popup does not. Drawing both
                     // stacks two panels over one field.
                     if !usage_fills.is_empty() {
+                        #[cfg(feature = "gates")]
                         if let Some(c) = self.check.as_mut() {
                             c.usage_box_frames += 1;
                         }
@@ -1391,6 +1408,7 @@ impl LiveApp {
                     backdrops.extend(usage_fills.clone());
                 }
             }
+            #[cfg(feature = "gates")]
             if let Some(c) = self.check.as_mut() {
                 c.chat_screen_frames += 1;
             }
@@ -1417,6 +1435,7 @@ impl LiveApp {
         if let (Some(v), Some(l)) = (tab_list.as_ref(), tab_layout.as_ref()) {
             backdrops.extend(crate::tab_list_view::fills(l));
             tab_icons = crate::tab_list_view::icons(v, l);
+            #[cfg(feature = "gates")]
             if let Some(c) = self.check.as_mut() {
                 c.tab_list_frames += 1;
                 c.tab_list_rows_max = c.tab_list_rows_max.max(l.entries.len());
@@ -1491,12 +1510,14 @@ impl LiveApp {
             _ => Vec::new(),
         };
         let sidebar_lines = text.len();
+        #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
             if sidebar_lines > 0 {
                 c.sidebar_frames += 1;
                 c.sidebar_text_max = c.sidebar_text_max.max(sidebar_lines);
             }
         }
+        #[cfg_attr(not(feature = "gates"), allow(unused_variables))]
         let chat_range =
             (built_chat_range.start + sidebar_lines)..(built_chat_range.end + sidebar_lines);
         text.extend(built);
@@ -1511,6 +1532,7 @@ impl LiveApp {
                 None => 0,
             };
             if chat_runs.is_some() {
+                #[cfg(feature = "gates")]
                 if let Some(c) = self.check.as_mut() {
                     c.highlighted_command_frames += 1;
                 }
@@ -1541,6 +1563,7 @@ impl LiveApp {
                 .iter()
                 .any(|l| l.text.starts_with("Unknown command") && l.color_linear == [1.0, 1.0, 1.0])
             {
+                #[cfg(feature = "gates")]
                 if let Some(c) = self.check.as_mut() {
                     c.parse_error_frames += 1;
                 }
@@ -1548,6 +1571,7 @@ impl LiveApp {
             text.extend(usage_text);
         }
         if !chat_rows.is_empty() {
+            #[cfg(feature = "gates")]
             if let Some(c) = self.check.as_mut() {
                 c.chat_line_frames += 1;
             }
@@ -1568,6 +1592,7 @@ impl LiveApp {
         // back to its key as a SINGLE span, by construction, so it still lands
         // in one `text` line — and scanning the wider list keeps the check that
         // no key leaked into some other surface.
+        #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
             // M126d — over the chat lines this frame actually drew, and
             // **within one row**. Across the whole box is a much weaker claim
@@ -1817,6 +1842,7 @@ impl LiveApp {
                 // `chrome.sprites` (the book art's stratum — backdrop, then
                 // board, then widgets/text), then selection/caret fills, then
                 // the four centred lines.
+                #[cfg(feature = "gates")]
                 if let Some(c) = self.check.as_mut() {
                     c.sign_edit_frames += 1;
                 }
@@ -1895,6 +1921,7 @@ impl LiveApp {
                 None => 0,
             };
             let lines = crate::tab_list_view::text(v, l, px, &width_of);
+            #[cfg(feature = "gates")]
             if let Some(c) = self.check.as_mut() {
                 c.tab_list_text_max = c.tab_list_text_max.max(lines.len());
             }
@@ -1986,7 +2013,9 @@ impl LiveApp {
         // M86's gate samples here: after every `set_*` this frame made and
         // before `render` consumes them, which is the only window in which the
         // rings' current slots are the ones about to be bound.
+        #[cfg(feature = "gates")]
         let baked_live = self.baked.is_some();
+        #[cfg(feature = "gates")]
         if let Some(c) = self.check.as_mut() {
             c.frames += 1;
             c.baked_frames += u64::from(baked_live);

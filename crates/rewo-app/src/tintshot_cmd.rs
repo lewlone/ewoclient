@@ -195,7 +195,7 @@ pub fn run(args: TintshotArgs) -> Result<(), String> {
     gpu_result?;
 
     if failures.is_empty() {
-        check_frame_count()?;
+        check_pins()?;
         println!(
             "TINTSHOT: OK — grass/foliage/water tint; spruce+birch constants; \
              dark_forest+swamp grass modifiers (exact bit/noise formulas); radius-2 \
@@ -427,7 +427,7 @@ fn cpu_checks(
     // -- birch_leaves → the BIRCH CONSTANT (128,167,85), distinct from spruce. -
     check_exact_tint(failures, "birch", &mesh, 5, 8, 5, BIRCH_RGB);
     // -- stone → NO tinted vertices (reject "everything gets tinted") --------
-    if !tinted_verts(&mesh, 2, 8, 14).is_empty() {
+    if PROBES.bad(!tinted_verts(&mesh, 2, 8, 14).is_empty()) {
         failures.push("stone control: an untinted block produced tinted vertices".into());
     } else {
         println!("[tintshot] stone control: no tint (correct)");
@@ -474,7 +474,7 @@ fn check_tint_ratio(
     expect_argb: i32,
 ) {
     let verts = tinted_verts(mesh, x, y, z);
-    if verts.is_empty() {
+    if PROBES.bad(verts.is_empty()) {
         failures.push(format!("{name}: no tinted vertices at ({x},{y},{z})"));
         return;
     }
@@ -492,7 +492,7 @@ fn check_tint_ratio(
         let k = v.reconstructed_color()[dom] / exp[dom].max(1e-6);
         let pred = [exp[0] * k, exp[1] * k, exp[2] * k];
         let ok = (0..3).all(|c| approx(v.reconstructed_color()[c], pred[c]));
-        if !ok {
+        if PROBES.bad(!ok) {
             failures.push(format!(
                 "{name}: vertex color {:?} not the {expect_argb:#08x} ratio (k={k:.3} → {pred:?})",
                 v.reconstructed_color(),
@@ -524,7 +524,7 @@ fn check_exact_tint(
     expect: [u8; 3],
 ) {
     let verts = tinted_verts(mesh, x, y, z);
-    if verts.is_empty() {
+    if PROBES.bad(verts.is_empty()) {
         failures.push(format!("{name}: no tinted vertices at ({x},{y},{z})"));
         return;
     }
@@ -543,7 +543,7 @@ fn check_exact_tint(
             sa.total_cmp(&sb)
         })
         .unwrap();
-    if (0..3).any(|c| (top.reconstructed_color()[c] - exp[c]).abs() > 0.5 / 255.0) {
+    if PROBES.bad((0..3).any(|c| (top.reconstructed_color()[c] - exp[c]).abs() > 0.5 / 255.0)) {
         failures.push(format!(
             "{name}: top-face tint {:?} != exact {expect:?}/255 ({exp:?})",
             top.reconstructed_color()
@@ -553,7 +553,7 @@ fn check_exact_tint(
     let dom = (0..3).max_by(|&a, &b| exp[a].total_cmp(&exp[b])).unwrap();
     for v in &verts {
         let k = v.reconstructed_color()[dom] / exp[dom].max(1e-6);
-        if (0..3).any(|c| !approx(v.reconstructed_color()[c], exp[c] * k)) {
+        if PROBES.bad((0..3).any(|c| !approx(v.reconstructed_color()[c], exp[c] * k))) {
             failures.push(format!(
                 "{name}: vertex {:?} is not a face-shade of {expect:?} (k={k:.3})",
                 v.reconstructed_color()
@@ -723,21 +723,23 @@ fn check_raw_vs_legacy(
     // Legacy path uses the PRE-TINTED layer + white; biome path uses RAW + tint.
     let legacy_top = top_face_layers(legacy, x, y, z);
     let biome_top = top_face_layers(biome, x, y, z);
-    if !legacy_top.contains(&pretint) {
+    if PROBES.bad(!legacy_top.contains(&pretint)) {
         failures.push(format!(
             "raw-vs-legacy: legacy top-face layers {legacy_top:?} do not include the pre-tinted {pretint}"
         ));
     }
-    if !biome_top.contains(&raw) {
+    if PROBES.bad(!biome_top.contains(&raw)) {
         failures.push(format!(
             "raw-vs-legacy: biome top-face layers {biome_top:?} do not include the raw {raw}"
         ));
     }
     // And the legacy color is white (untinted), biome is tinted.
-    if let Some(v) = tinted_verts(legacy, x, y, z).first() {
+    let legacy_tint = tinted_verts(legacy, x, y, z)
+        .first()
+        .map(|v| v.reconstructed_color());
+    if PROBES.bad(legacy_tint.is_some()) {
         failures.push(format!(
-            "raw-vs-legacy: legacy path is tinted ({:?}), expected white",
-            v.reconstructed_color()
+            "raw-vs-legacy: legacy path is tinted ({legacy_tint:?}), expected white"
         ));
     }
     println!("[tintshot] raw-vs-legacy: legacy→layer {pretint} white, biome→layer {raw} tinted");
@@ -861,12 +863,12 @@ fn check_tall_grass_below(failures: &mut Vec<String>, paths: &DataPaths, baked: 
         (Some(u), Some(l)) => {
             let ut = tints(u);
             let lt = tints(l);
-            if !ut.contains(&TintSource::GrassBelow) {
+            if PROBES.bad(!ut.contains(&TintSource::GrassBelow)) {
                 failures.push(format!(
                     "tall_grass upper (state {u}) tints {ut:?} lack GrassBelow"
                 ));
             }
-            if !lt.contains(&TintSource::Grass) {
+            if PROBES.bad(!lt.contains(&TintSource::Grass)) {
                 failures.push(format!(
                     "tall_grass lower (state {l}) tints {lt:?} lack Grass"
                 ));
@@ -895,13 +897,13 @@ fn sky_fog_checks(failures: &mut Vec<String>) {
     // constant-sky bug would give the wrong biome.
     let eye_a = [8.0, 8.0, 8.0]; // x=8 → quart 2, window quarts -1..4 all < 8 = A
     let sky_a = world.camera_sky(eye_a).expect("camera sky A");
-    if sky_a != A_SKY {
+    if PROBES.bad(sky_a != A_SKY) {
         failures.push(format!(
             "camera sky (deep A): {sky_a:#08x} != A_SKY {A_SKY:#08x}"
         ));
     }
     let fog_a = world.camera_fog(eye_a).expect("camera fog A");
-    if fog_a != DIM_FOG {
+    if PROBES.bad(fog_a != DIM_FOG) {
         failures.push(format!(
             "camera fog (deep A): {fog_a:#08x} != dimension base {DIM_FOG:#08x} (fog override handling)"
         ));
@@ -911,13 +913,13 @@ fn sky_fog_checks(failures: &mut Vec<String>) {
     // not constant, and that B's fog OVERRIDE wins over the dimension base.
     let eye_b = [48.0, 8.0, 8.0]; // x=48 → quart 12, window quarts 9..14 all >= 8 = B
     let sky_b = world.camera_sky(eye_b).expect("camera sky B");
-    if sky_b != B_SKY {
+    if PROBES.bad(sky_b != B_SKY) {
         failures.push(format!(
             "camera sky (deep B): {sky_b:#08x} != B_SKY {B_SKY:#08x}"
         ));
     }
     let fog_b = world.camera_fog(eye_b).expect("camera fog B");
-    if fog_b != B_FOG {
+    if PROBES.bad(fog_b != B_FOG) {
         failures.push(format!(
             "camera fog (deep B): {fog_b:#08x} != B_FOG {B_FOG:#08x} (biome fog override not applied)"
         ));
@@ -942,11 +944,11 @@ fn sky_fog_checks(failures: &mut Vec<String>) {
     let eye_bnd = [32.0, 8.0, 8.0]; // x=32 = the A/B quart boundary
     let sky_bnd = world.camera_sky(eye_bnd).expect("camera sky boundary");
     let sky_ref = ref_env(eye_bnd, DIM_SKY, sky_value);
-    if sky_bnd != sky_ref {
+    if PROBES.bad(sky_bnd != sky_ref) {
         failures.push(format!(
             "camera sky (boundary): {sky_bnd:#08x} != independent raw-quart Gaussian {sky_ref:#08x}"
         ));
-    } else if sky_bnd == A_SKY || sky_bnd == B_SKY {
+    } else if PROBES.bad(sky_bnd == A_SKY || sky_bnd == B_SKY) {
         failures.push(
             "camera sky (boundary) equals a single biome — no blend, check is vacuous".into(),
         );
@@ -959,11 +961,11 @@ fn sky_fog_checks(failures: &mut Vec<String>) {
     // Gaussian all interact correctly (a raw-quart reference, not the fiddle).
     let fog_bnd = world.camera_fog(eye_bnd).expect("camera fog boundary");
     let fog_ref = ref_env(eye_bnd, DIM_FOG, fog_value);
-    if fog_bnd != fog_ref {
+    if PROBES.bad(fog_bnd != fog_ref) {
         failures.push(format!(
             "camera fog (boundary): {fog_bnd:#08x} != independent raw-quart Gaussian {fog_ref:#08x}"
         ));
-    } else if fog_bnd == DIM_FOG || fog_bnd == B_FOG {
+    } else if PROBES.bad(fog_bnd == DIM_FOG || fog_bnd == B_FOG) {
         failures.push(
             "camera fog (boundary) equals a single value — no blend, check is vacuous".into(),
         );
@@ -1047,13 +1049,20 @@ fn ref_env(eye: [f64; 3], base: i32, value_of: impl Fn(u16) -> i32) -> i32 {
 // GPU checks — production Vulkan terrain + sky readback
 // ---------------------------------------------------------------------------
 
-/// How many frames this gate reads back and grades. The gate accumulates
-/// property failures rather than counting witnesses, so a section that stopped
-/// running (an emptied loop, an early skip) would still print OK; pinning the
-/// frame count makes that loud. Update it, and say why, when a case is added or
-/// removed on purpose.
+/// How many frames this gate reads back. The gate accumulates property failures
+/// rather than naming witnesses, so a section that stopped running would still
+/// print OK; pinning the frame count makes a dropped frame loud. A frame count
+/// alone proves only that frames were read back, so [`EXPECTED_PROBES`] pins the
+/// comparisons that graded them. Update both, and say why, when a case is added
+/// or removed on purpose.
 const EXPECTED_FRAMES: usize = 6;
 static FRAMES_GRADED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many failure conditions this gate evaluates (every `PROBES.bad(..)`
+/// call), measured by running it. A section that renders but stops comparing, a
+/// loop that runs fewer times, or a deleted `if` moves this and fails the gate.
+const EXPECTED_PROBES: usize = 337;
+static PROBES: crate::probes::ProbeCounter = crate::probes::ProbeCounter::new();
 
 /// `Offscreen::read_rgba` that also counts the frame toward [`EXPECTED_FRAMES`].
 trait ReadCounted {
@@ -1066,8 +1075,8 @@ impl ReadCounted for Offscreen {
     }
 }
 
-/// Fail closed when the number of graded frames is not the pinned one.
-fn check_frame_count() -> Result<(), String> {
+/// Fail closed when the frame or probe count is not the pinned one.
+fn check_pins() -> Result<(), String> {
     let got = FRAMES_GRADED.load(std::sync::atomic::Ordering::Relaxed);
     println!("[tintshot] frames graded: {got} / {EXPECTED_FRAMES}");
     if got != EXPECTED_FRAMES {
@@ -1076,7 +1085,7 @@ fn check_frame_count() -> Result<(), String> {
              added without updating the pin (fail-closed)"
         ));
     }
-    Ok(())
+    PROBES.check("tintshot", EXPECTED_PROBES)
 }
 
 fn gpu_checks(
@@ -1120,9 +1129,10 @@ fn gpu_render(
     // If the GPU ignored the mesh tint color, the readback would be the grey
     // grass texture; if it produced constant-plains, it would be green.
     let grass_px = render_plane(gpu, off, wr, draw, baked, st.grass_block, 0, args, "grass")?;
-    if !(grass_px[0] as i32 > grass_px[1] as i32 + 20
-        && grass_px[0] as i32 > grass_px[2] as i32 + 20)
-    {
+    if PROBES.bad(
+        !(grass_px[0] as i32 > grass_px[1] as i32 + 20
+            && grass_px[0] as i32 > grass_px[2] as i32 + 20),
+    ) {
         failures.push(format!(
             "GPU grass plane readback {grass_px:?} is not red-dominant — GPU ignores mesh tint (or constant-plains)"
         ));
@@ -1132,9 +1142,10 @@ fn gpu_render(
 
     // A uniform water plane in biome A → BLUE-tinted.
     let water_px = render_plane(gpu, off, wr, draw, baked, st.water, 0, args, "water")?;
-    if !(water_px[2] as i32 > water_px[0] as i32 + 20
-        && water_px[2] as i32 > water_px[1] as i32 + 20)
-    {
+    if PROBES.bad(
+        !(water_px[2] as i32 > water_px[0] as i32 + 20
+            && water_px[2] as i32 > water_px[1] as i32 + 20),
+    ) {
         failures.push(format!(
             "GPU water plane readback {water_px:?} is not blue-dominant — water tint missing on the GPU path"
         ));
@@ -1151,12 +1162,12 @@ fn gpu_render(
     // Orange horizon: r > b. The default horizon (pale blue) has b >= r.
     let sky_orange = sky_biome[0] as i32 > sky_biome[2] as i32 + 15;
     let sky_differs = max_delta(sky_biome, sky_default) > 10;
-    if !sky_orange {
+    if PROBES.bad(!sky_orange) {
         failures.push(format!(
             "GPU sky readback {sky_biome:?} is not the orange biome sky — sky/fog uniform ignored"
         ));
     }
-    if !sky_differs {
+    if PROBES.bad(!sky_differs) {
         failures.push(format!(
             "GPU sky: biome {sky_biome:?} == default {sky_default:?} — the sky base uniform has no effect"
         ));
@@ -1196,17 +1207,17 @@ fn gpu_render(
     let fog_b_ok = fog_b_px[2] as i32 > fog_b_px[0] as i32 + 20
         && fog_b_px[2] as i32 > fog_b_px[1] as i32 + 20;
     let fog_changed = max_delta(fog_g_px, fog_b_px) > 10;
-    if !fog_g_ok {
+    if PROBES.bad(!fog_g_ok) {
         failures.push(format!(
             "GPU terrain fog (green base) readback {fog_g_px:?} is not green-dominant — fog_col path not driving terrain (or it followed the red sky)"
         ));
     }
-    if !fog_b_ok {
+    if PROBES.bad(!fog_b_ok) {
         failures.push(format!(
             "GPU terrain fog (blue base) readback {fog_b_px:?} is not blue-dominant — fog base uniform ignored"
         ));
     }
-    if !fog_changed {
+    if PROBES.bad(!fog_changed) {
         failures.push(format!(
             "GPU terrain fog: green {fog_g_px:?} == blue {fog_b_px:?} — the fog base uniform has no effect"
         ));
