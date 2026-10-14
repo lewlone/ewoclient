@@ -11,7 +11,10 @@
 //! no `toml` crate dep (the cdylib doesn't want one — same constraint as
 //! `modules.rs` / `hud.toml`).
 
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use crate::util::{atomic_write, validate_name};
 
 // ──────────────────────────────────────────────────────────────────────────
 // Sound palette — wire-mirror of `EwoPvpSounds`.
@@ -313,10 +316,25 @@ impl PvpConfig {
     /// Load the active profile's `pvp.toml`, falling back to defaults — a hand-
     /// edited or absent file never breaks the feature.
     pub fn load() -> Self {
+        match pvp_toml_path() {
+            Some(path) => Self::load_from(&path),
+            None => Self::defaults(),
+        }
+    }
+
+    /// [`PvpConfig::load`] from an explicit file; defaults if it is absent or
+    /// unreadable.
+    pub fn load_from(path: &Path) -> Self {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Self::parse(&text),
+            Err(_) => Self::defaults(),
+        }
+    }
+
+    /// Parse `pvp.toml` text over the defaults; unknown or malformed lines are
+    /// ignored.
+    pub fn parse(text: &str) -> Self {
         let mut cfg = Self::defaults();
-        let Some(text) = pvp_toml_path().and_then(|p| std::fs::read_to_string(p).ok()) else {
-            return cfg;
-        };
         let mut section = String::new();
         for line in text.lines() {
             let line = line.trim();
@@ -431,14 +449,29 @@ impl PvpConfig {
     }
 
     /// Write the active profile's `pvp.toml`. The Java mod polls the file's
-    /// mtime each frame and hot-reloads on a change.
-    pub fn save(&self) {
-        let Some(path) = pvp_toml_path() else {
-            return;
-        };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+    /// mtime each frame and hot-reloads on a change, so the write is atomic
+    /// (temp file + rename): the mod can never read a half-written file.
+    ///
+    /// Errors are returned, not swallowed: there may be no config directory,
+    /// the active profile's name may be unsafe to use as a path, or the write
+    /// itself may fail. Callers log them.
+    pub fn save(&self) -> io::Result<()> {
+        let path = pvp_toml_path().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "no config directory, or the active profile name is not a safe path component",
+            )
+        })?;
+        self.save_to(&path)
+    }
+
+    /// [`PvpConfig::save`] to an explicit file.
+    pub fn save_to(&self, path: &Path) -> io::Result<()> {
+        atomic_write(path, self.to_toml().as_bytes())
+    }
+
+    /// The `pvp.toml` text for this config (what [`PvpConfig::parse`] reads).
+    pub fn to_toml(&self) -> String {
         let mut s = String::with_capacity(2048);
         s.push_str("# EwoClient PvP Utils config — per client profile.\n");
         s.push_str("# Schema 1, written by the in-game overlay editor.\n");
@@ -500,7 +533,7 @@ impl PvpConfig {
             push_color(&mut s, "color", z.color);
         }
 
-        let _ = std::fs::write(&path, s);
+        s
     }
 }
 
@@ -528,42 +561,62 @@ fn parse_color(s: &str, fb: i32) -> i32 {
         .unwrap_or(fb)
 }
 
-/// `%APPDATA%/EwoClient/profiles/<active>/pvp.toml`.
-pub fn pvp_toml_path() -> Option<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")?;
-    Some(
-        PathBuf::from(appdata)
-            .join("EwoClient")
-            .join("profiles")
-            .join(read_active_profile())
-            .join("pvp.toml"),
-    )
+/// Longest profile name the launcher accepts (`ewo_launcher::profile::MAX_NAME_LEN`).
+pub const MAX_PROFILE_NAME_LEN: usize = 48;
+
+/// The OS config directory the whole of EwoClient lives under (the parent of
+/// `EwoClient/`): the `dirs` crate's `config_dir()` (`%APPDATA%` on Windows,
+/// `$XDG_CONFIG_HOME` or `~/.config` on Linux), the same lookup the launcher
+/// uses.
+///
+/// `%APPDATA%` is consulted first when it is set. On Windows that is the same
+/// directory `dirs` returns, and it is what the rest of the in-game cdylib
+/// (`hud.toml`, `modules.toml`, `profiles.toml`) reads, so a process whose
+/// `APPDATA` is redirected (tests, portable setups) still agrees with itself.
+fn config_base() -> Option<PathBuf> {
+    std::env::var_os("APPDATA")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(dirs::config_dir)
 }
 
-/// `%APPDATA%/EwoClient/profiles/<active>/pvp.toml`, with a caller-supplied
-/// profile name — used by the launcher's Profiles tab where the user can edit
-/// the inactive-profile config too (a rare path; the active-profile lookup is
-/// the common case via [`pvp_toml_path`]).
-pub fn pvp_toml_path_for(profile: &str) -> Option<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")?;
+/// `<base>/EwoClient/profiles/<profile>/pvp.toml`, or `None` if `profile` is
+/// not safe to join into a path. Same rule as the launcher's
+/// `profile::profile_dir`: non-empty, at most [`MAX_PROFILE_NAME_LEN`] chars,
+/// no path separators or other forbidden characters, no `..`, no reserved
+/// Windows device names, and no leading or trailing whitespace. The name
+/// reaches us from the user-editable `profiles.toml`, so it is untrusted.
+fn toml_path_in(base: &Path, profile: &str) -> Option<PathBuf> {
+    if validate_name(profile, MAX_PROFILE_NAME_LEN).ok()? != profile {
+        return None;
+    }
     Some(
-        PathBuf::from(appdata)
-            .join("EwoClient")
+        base.join("EwoClient")
             .join("profiles")
             .join(profile)
             .join("pvp.toml"),
     )
 }
 
-/// Parse `<config>/EwoClient/profiles.toml` for the `active = "Name"` line.
-/// Defaults to `"Default"` — matches the launcher's `profile.rs` fallback.
-fn read_active_profile() -> String {
-    let Some(appdata) = std::env::var_os("APPDATA") else {
-        return "Default".to_string();
-    };
-    let path = PathBuf::from(appdata)
-        .join("EwoClient")
-        .join("profiles.toml");
+/// `<config>/EwoClient/profiles/<active>/pvp.toml`; `None` if there is no
+/// config directory or the active profile's name is unsafe.
+pub fn pvp_toml_path() -> Option<PathBuf> {
+    let base = config_base()?;
+    toml_path_in(&base, &active_profile_in(&base))
+}
+
+/// `<config>/EwoClient/profiles/<profile>/pvp.toml`, with a caller-supplied
+/// profile name — used by the launcher's Profiles tab where the user can edit
+/// the inactive-profile config too (a rare path; the active-profile lookup is
+/// the common case via [`pvp_toml_path`]). `None` for an unsafe name.
+pub fn pvp_toml_path_for(profile: &str) -> Option<PathBuf> {
+    toml_path_in(&config_base()?, profile)
+}
+
+/// The `active = "Name"` line of `<base>/EwoClient/profiles.toml`. Defaults to
+/// `"Default"` — matches the launcher's `profile.rs` fallback.
+fn active_profile_in(base: &Path) -> String {
+    let path = base.join("EwoClient").join("profiles.toml");
     let Ok(text) = std::fs::read_to_string(&path) else {
         return "Default".to_string();
     };
@@ -576,4 +629,136 @@ fn read_active_profile() -> String {
         }
     }
     "Default".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ewo-pvp-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn path_is_under_the_ewoclient_profile_dir() {
+        let base = Path::new("cfg");
+        assert_eq!(
+            toml_path_in(base, "Default"),
+            Some(base.join("EwoClient/profiles/Default/pvp.toml"))
+        );
+        assert!(toml_path_in(base, "PvP 2").is_some());
+    }
+
+    #[test]
+    fn unsafe_profile_names_never_become_paths() {
+        let base = Path::new("cfg");
+        for bad in [
+            "",
+            " ",
+            ".",
+            "..",
+            "../x",
+            "a/b",
+            "a\\b",
+            "C:",
+            "C:\\x",
+            "x..y",
+            "trailing.",
+            "con",
+            "NUL.txt",
+            "a\u{0}b",
+            " padded",
+            "padded ",
+        ] {
+            assert_eq!(toml_path_in(base, bad), None, "{bad:?} must be rejected");
+        }
+        assert_eq!(
+            toml_path_in(base, &"x".repeat(MAX_PROFILE_NAME_LEN + 1)),
+            None
+        );
+        assert!(toml_path_in(base, &"x".repeat(MAX_PROFILE_NAME_LEN)).is_some());
+    }
+
+    #[test]
+    fn active_profile_comes_from_profiles_toml_and_is_validated_when_joined() {
+        let base = scratch("active");
+        let ewo = base.join("EwoClient");
+        std::fs::create_dir_all(&ewo).unwrap();
+
+        assert_eq!(active_profile_in(&base), "Default", "no profiles.toml");
+
+        std::fs::write(ewo.join("profiles.toml"), "active = \"Cinematic\"\n").unwrap();
+        assert_eq!(active_profile_in(&base), "Cinematic");
+
+        // A hand-edited traversal attempt reads back as-is but joins to nothing.
+        std::fs::write(ewo.join("profiles.toml"), "active = \"..\\..\\evil\"\n").unwrap();
+        let active = active_profile_in(&base);
+        assert_eq!(toml_path_in(&base, &active), None);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn save_then_load_round_trips_and_replaces_atomically() {
+        let dir = scratch("roundtrip");
+        let path = dir.join("EwoClient/profiles/Default/pvp.toml");
+
+        let mut cfg = PvpConfig::defaults();
+        cfg.jump_reset_fade_ticks = 33;
+        cfg.zone2.enabled = true;
+        cfg.zone2.min_dist = 2.25;
+        cfg.sound_late.sound = PvpSound::Anvil;
+        cfg.color_perfect = 0x123456;
+        cfg.save_to(&path).unwrap(); // creates the directories
+
+        let back = PvpConfig::load_from(&path);
+        assert_eq!(back.jump_reset_fade_ticks, 33);
+        assert!(back.zone2.enabled);
+        assert_eq!(back.zone2.min_dist, 2.25);
+        assert_eq!(back.sound_late.sound, PvpSound::Anvil);
+        assert_eq!(back.color_perfect, 0x123456);
+        assert_eq!(back.to_toml(), cfg.to_toml());
+
+        // A second save replaces the file and leaves no temp file for the
+        // Java mod (or anything else listing the directory) to trip over.
+        cfg.jump_reset_fade_ticks = 5;
+        cfg.save_to(&path).unwrap();
+        assert_eq!(PvpConfig::load_from(&path).jump_reset_fade_ticks, 5);
+        let names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["pvp.toml".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_reports_errors() {
+        let dir = scratch("err");
+        // A directory sits where the file must go, so the replace fails.
+        let path = dir.join("pvp.toml");
+        std::fs::create_dir_all(path.join("occupied")).unwrap();
+        assert!(PvpConfig::defaults().save_to(&path).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_or_garbled_file_loads_defaults() {
+        let dir = scratch("garbled");
+        let missing = dir.join("nope.toml");
+        assert_eq!(
+            PvpConfig::load_from(&missing).to_toml(),
+            PvpConfig::defaults().to_toml()
+        );
+        let junk = dir.join("junk.toml");
+        std::fs::write(&junk, "[jump_reset]\nfade_ticks = banana\n???\n").unwrap();
+        assert_eq!(
+            PvpConfig::load_from(&junk).jump_reset_fade_ticks,
+            PvpConfig::defaults().jump_reset_fade_ticks
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

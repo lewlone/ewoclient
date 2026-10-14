@@ -229,6 +229,15 @@ impl Editor {
         self.layout.glass_strength
     }
 
+    /// Persist the PvP-Utils config, logging (not swallowing) a failure. The
+    /// Java mod hot-reloads `pvp.toml` on its mtime, so a silent failure would
+    /// look like an edit that simply does nothing.
+    pub(super) fn save_pvp(&self) {
+        if let Err(e) = self.pvp.save() {
+            crate::log(&format!("pvp.toml: could not save: {e}"));
+        }
+    }
+
     /// Finish every drag that a left-button release (or the overlay going away)
     /// ends, persisting what each one edits live. Idempotent: with nothing held
     /// it touches no state and writes no file.
@@ -240,7 +249,7 @@ impl Editor {
         }
         if self.pvp_drag.take().is_some() {
             // A PVP-tab slider drag finished — persist the config.
-            self.pvp.save();
+            self.save_pvp();
         }
         if self.crosshair_ui.drag.take().is_some() {
             // A crosshair-tab slider drag finished — clamp + persist.
@@ -887,7 +896,7 @@ impl Editor {
                     4 => self.pvp.floating_health_enabled = !self.pvp.floating_health_enabled,
                     _ => {}
                 }
-                self.pvp.save();
+                self.save_pvp();
                 return;
             }
         }
@@ -899,7 +908,7 @@ impl Editor {
                 let slot = self.pvp.sound_for_tier_mut(tier);
                 let next = (slot.sound.index() + 1) % crate::pvp::PvpSound::ALL.len();
                 slot.sound = crate::pvp::PvpSound::ALL[next];
-                self.pvp.save();
+                self.save_pvp();
                 return;
             }
         }
@@ -918,7 +927,7 @@ impl Editor {
             if point_in(layout.zone_enable[i], x, y) {
                 let z = self.pvp.zone_mut(i);
                 z.enabled = !z.enabled;
-                self.pvp.save();
+                self.save_pvp();
                 return;
             }
             if point_in(layout.zone_min[i], x, y) {
@@ -935,7 +944,7 @@ impl Editor {
                 let z = self.pvp.zone_mut(i);
                 let next = (z.sound.index() + 1) % crate::pvp::PvpSound::ALL.len();
                 z.sound = crate::pvp::PvpSound::ALL[next];
-                self.pvp.save();
+                self.save_pvp();
                 return;
             }
             if point_in(layout.zone_volume[i], x, y) {

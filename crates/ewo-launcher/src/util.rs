@@ -1,7 +1,7 @@
 //! Small launcher-wide helpers that don't belong to any one subsystem.
 
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// Convert a `file://` URL into a filesystem path, or return `None` for a
@@ -75,34 +75,10 @@ fn percent_decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// Write `contents` to `path` atomically: write a temp file in the same
-/// directory, fsync it, then rename over the target. A crash mid-write leaves
-/// either the old file or the new one, never a truncated mix. Creates the
-/// parent directory if missing.
-pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)?;
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
-    let mut tmp_name = file_name.to_os_string();
-    tmp_name.push(format!(".tmp-{}", std::process::id()));
-    let tmp = parent.join(tmp_name);
-    let result = (|| {
-        let mut f = fs::File::create(&tmp)?;
-        f.write_all(contents)?;
-        f.sync_all()?;
-        drop(f);
-        fs::rename(&tmp, path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result
-}
+// The write and the name rules are shared with `ewo-core` (its `pvp.toml`
+// writer uses both), so they live there; everything in the launcher keeps
+// importing them from here.
+pub use ewo_core::util::{atomic_write, validate_name, NameError};
 
 /// [`atomic_write`] for a file holding credentials: on Unix the result is
 /// mode 0600. (On Windows the per-user `%APPDATA%` ACL already applies.)
@@ -148,54 +124,6 @@ pub fn backup_unparseable(path: &Path, reason: &dyn std::fmt::Display) -> Option
             None
         }
     }
-}
-
-/// Why a user-supplied name can't be used as a directory / display name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NameError {
-    Empty,
-    TooLong,
-    /// `/ \ : * ? " < > |` or a control character.
-    ForbiddenChar,
-    /// `.`/`..`, a trailing dot or space, or a reserved Windows device name.
-    Reserved,
-}
-
-/// Validate a name that may end up as a path component. Returns the trimmed
-/// name on success. `max_chars` bounds the length in `char`s.
-pub fn validate_name(name: &str, max_chars: usize) -> Result<&str, NameError> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(NameError::Empty);
-    }
-    if name.chars().count() > max_chars {
-        return Err(NameError::TooLong);
-    }
-    if name
-        .chars()
-        .any(|c| c.is_control() || "/\\:*?\"<>|".contains(c))
-    {
-        return Err(NameError::ForbiddenChar);
-    }
-    if name == "." || name == ".." || name.ends_with('.') || name.contains("..") {
-        return Err(NameError::Reserved);
-    }
-    // Windows reserves these device names, with or without an extension.
-    let stem = name
-        .split('.')
-        .next()
-        .unwrap_or(name)
-        .trim_end()
-        .to_ascii_uppercase();
-    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.len() == 4
-            && stem.as_bytes()[3].is_ascii_digit()
-            && stem.as_bytes()[3] != b'0');
-    if reserved {
-        return Err(NameError::Reserved);
-    }
-    Ok(name)
 }
 
 #[cfg(test)]
