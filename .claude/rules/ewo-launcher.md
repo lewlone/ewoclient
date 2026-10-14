@@ -216,7 +216,11 @@ Subsystems:
   `FOF_ALLOWUNDO | FOF_WANTNUKEWARNING | FOF_NOERRORUI | FOF_SILENT`
   (no `\?\` paths; `FOF_NOCONFIRMATION` is deliberately off so Windows still
   asks when an item could not be recycled, and a declined or aborted
-  operation is an error). Linux: `gio trash`, else a rename into the
+  operation is an error; the launcher's HWND is the owner
+  (`OsRecycler::owner`, `window::owner_handle`) so that prompt opens in
+  front of the launcher, not behind it). Linux: `gio trash` under a 30 s
+  deadline (`run_with_timeout` kills it; the delete then errors with the
+  folder untouched), else a rename into the
   freedesktop home Trash (`files/` + `info/*.trashinfo`, same filesystem
   only, never copy+delete). A running or starting instance and the last
   remaining instance can't be deleted. Shared libraries/assets/versions are
