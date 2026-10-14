@@ -32,8 +32,7 @@ use ewo_render::{app_window, Clock, FontStore, GlBackend, VbtnState};
 use auth::{AuthOp, AuthService};
 use instance_ops::{delete_instance, loader_spec_for, sync_instance_config};
 use launch_flow::{
-    launch_meta, persist_launch_log, PendingAuthLaunch, PendingPrepare, PendingRelaunch,
-    PrepareFail,
+    persist_launch_log, PendingAuthLaunch, PendingPrepare, PendingRelaunch, PrepareFail,
 };
 use view_models::{format_auth_error, friend_entry_to_view, screen_name};
 use window_hit::*;
@@ -104,30 +103,6 @@ const IDLE_THRESHOLD_SECS: f32 = 0.5;
 /// caustics, breathing, drifting motes) runs on multi-second periods, so it's
 /// fully smooth here; the eye can't resolve more on those layers.
 const IDLE_FPS: f32 = 120.0;
-
-/// Fallback delay (seconds after JVM spawn) before the launcher minimizes
-/// itself if no window-ready marker was seen in the game log. Generous
-/// enough to cover a slow cold start / heavy modpack on a spinning disk,
-/// while still guaranteeing the hand-off eventually happens.
-const MINIMIZE_FALLBACK_SECS: f32 = 25.0;
-
-/// Does this game-log line signal that Minecraft's window is coming up on
-/// screen? These substrings are logged right as the client initializes its
-/// render backend / audio / narrator — i.e. the moment the game becomes
-/// visible — so seeing one is our cue to minimize the launcher. Matched
-/// case-insensitively; kept deliberately broad so vanilla and modded
-/// (Fabric/loader) log formats both trip it.
-fn is_window_ready_marker(line: &str) -> bool {
-    let lower = line.to_ascii_lowercase();
-    const MARKERS: [&str; 5] = [
-        "backend library: lwjgl", // client render backend init — window created
-        "lwjgl version",          // same signal, alternate phrasing
-        "openal initialized",     // sound engine — just after window shows
-        "sound engine started",   // "
-        "narrator library",       // accessibility init at client startup
-    ];
-    MARKERS.iter().any(|m| lower.contains(m))
-}
 
 struct App {
     window: Option<Arc<Window>>,
