@@ -41,7 +41,7 @@ clap = { version = "4", features = ["derive"] }
 # Settings persistence
 dirs = "7"
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1"
 
 # Bytemuck for vertex data
 bytemuck = { version = "1", features = ["derive"] }
