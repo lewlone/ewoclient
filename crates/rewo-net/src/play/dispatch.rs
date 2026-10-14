@@ -741,7 +741,7 @@ impl PlaySession {
                 if line.is_empty() {
                     continue;
                 }
-                self.chat_log.push(line);
+                crate::chat_wire::push_chat_log(&mut self.chat_log, line);
                 self.chat_events.push(crate::chat_wire::ChatEvent::Message {
                     text: spans,
                     signature: None,
@@ -1132,7 +1132,7 @@ impl PlaySession {
                     self.chat_events
                         .push(crate::chat_wire::ChatEvent::Overlay(content));
                 } else if !content.is_empty() {
-                    self.chat_log.push(content);
+                    crate::chat_wire::push_chat_log(&mut self.chat_log, content);
                     self.chat_events.push(crate::chat_wire::ChatEvent::Message {
                         text: spans,
                         signature: None,
@@ -1165,7 +1165,7 @@ impl PlaySession {
                     // Bound before the `if let` on purpose: the two closures
                     // borrow `self`, and an `if let` scrutinee's temporaries
                     // live for the whole block, which would collide with the
-                    // `self.chat_log.push` inside it.
+                    // `push_chat_log(&mut self.chat_log, ..)` inside it.
                     let outcome = crate::chat_wire::show_message(
                         &chat,
                         received,
@@ -1189,8 +1189,10 @@ impl PlaySession {
                         // wrapped as `Component.literal`, and `chat_style`'s
                         // walk runs `push_legacy` over a literal's text.
                         let spans = self.chat_component_spans(&content);
-                        self.chat_log
-                            .push(rewo_world::chat_style::plain_text(&spans));
+                        crate::chat_wire::push_chat_log(
+                            &mut self.chat_log,
+                            rewo_world::chat_style::plain_text(&spans),
+                        );
                         self.chat_events.push(crate::chat_wire::ChatEvent::Message {
                             text: spans,
                             signature: chat.signature,

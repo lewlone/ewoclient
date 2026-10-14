@@ -1118,10 +1118,11 @@ pub struct PlaySession {
     /// `LocalPlayer`'s client-side flight controller: the double-tap toggle and
     /// its `jumpTriggerTime` window.
     pub flight: rewo_world::abilities::FlightControl,
-    /// Every chat line as plain text, cumulative — vanilla's
+    /// The newest chat lines as plain text (at most `MAX_CHAT_HISTORY`, via
+    /// [`crate::chat_wire::push_chat_log`]) — vanilla's
     /// `LOGGER.info("[CHAT] {}")`, which `logChatMessage` writes beside the
-    /// `ChatComponent` rather than instead of it. Harnesses count it; the HUD
-    /// does not read it.
+    /// `ChatComponent` rather than instead of it. Harnesses read it; the HUD
+    /// does not. Not a running total: it was, and grew all session.
     pub chat_log: Vec<String>,
     /// The structured feed the chat HUD consumes, drained by
     /// [`Self::take_chat_events`]. Separate from `chat_log` for the reason
