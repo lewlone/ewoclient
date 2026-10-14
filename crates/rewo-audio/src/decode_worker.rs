@@ -97,8 +97,22 @@ impl DecodeWorker {
                 // Ends when the sender is dropped, which is the app shutting
                 // down. A detached thread is fine: it holds no device and the
                 // OS reclaims it.
+                //
+                // **A panicking decode is that job's failure, not the
+                // thread's.** A dead worker would strand every channel parked
+                // on a key it had accepted (see `drain` for the backstop).
+                let mut warned = false;
                 while let Ok(key) = job_rx.recv() {
-                    let decoded = source.open(&key).map(Arc::new);
+                    let decoded = crate::buffers::contained(|| source.open(&key)).map(Arc::new);
+                    if let Err(e) = &decoded {
+                        if !warned && e.starts_with("the decoder panicked") {
+                            warned = true;
+                            log::warn!(
+                                "audio: a static decode panicked ({key}); it counts as a failed \
+                                 decode and the worker carries on"
+                            );
+                        }
+                    }
                     if res_tx.send((key, decoded)).is_err() {
                         break;
                     }
@@ -140,11 +154,33 @@ impl DecodeWorker {
     }
 
     /// Drain everything the worker has finished. Never blocks.
+    ///
+    /// **If the worker has gone, every key still in flight comes back as a
+    /// failure.** Nothing else will ever answer them, and a channel parked on
+    /// one would otherwise report "not stopped" for the rest of the session — a
+    /// pool slot leaked per key.
     pub fn drain(&mut self) -> Vec<Decoded> {
         let mut out = Vec::new();
-        while let Ok(d) = self.rx.try_recv() {
-            self.inflight.remove(&d.0);
-            out.push(d);
+        loop {
+            match self.rx.try_recv() {
+                Ok(d) => {
+                    self.inflight.remove(&d.0);
+                    out.push(d);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if !self.inflight.is_empty() {
+                        log::warn!(
+                            "audio: the decode worker exited with {} decode(s) in flight",
+                            self.inflight.len()
+                        );
+                    }
+                    for key in self.inflight.drain() {
+                        out.push((key, Err("the decode worker exited".to_string())));
+                    }
+                    break;
+                }
+            }
         }
         out
     }
@@ -297,5 +333,71 @@ mod tests {
         let (mut w, _o, _b) = worker();
         assert!(w.drain().is_empty());
         assert!(w.drain().is_empty());
+    }
+
+    struct Panicky;
+
+    impl PcmSource for Panicky {
+        fn open(&mut self, key: &str) -> Result<Pcm, String> {
+            if key == "boom" {
+                panic!("injected decoder panic");
+            }
+            Ok(Pcm {
+                samples: vec![0i16; 8],
+                channels: 1,
+                sample_rate: 44100,
+            })
+        }
+    }
+
+    /// **A panicking decode is that job's failure, and the worker carries on.**
+    /// Before, the panic killed the thread and every later request was parked
+    /// against a worker that would never answer.
+    #[test]
+    fn a_panicking_decode_is_a_failure_and_the_worker_survives() {
+        let mut w = DecodeWorker::spawn(Panicky);
+        assert!(w.request("boom"));
+        let got = wait_for(&mut w, 1);
+        let (key, result) = &got[0];
+        assert_eq!(key, "boom");
+        let err = result.as_ref().expect_err("a panic is a failed decode");
+        assert!(
+            err.contains("panicked") && err.contains("injected"),
+            "{err}"
+        );
+        assert_eq!(w.inflight_count(), 0);
+
+        assert!(w.request("fine"), "the worker is still accepting jobs");
+        let got = wait_for(&mut w, 1);
+        assert!(got[0].1.is_ok(), "and still decoding");
+    }
+
+    /// **The backstop: a worker that exits with keys in flight answers them all
+    /// as failures**, so channels parked on them are reclaimed rather than
+    /// waiting on a thread that no longer exists.
+    #[test]
+    fn a_worker_that_exits_fails_everything_in_flight() {
+        let (tx, job_rx) = std::sync::mpsc::channel::<String>();
+        let (res_tx, rx) = std::sync::mpsc::channel::<Decoded>();
+        // A worker that takes one job and dies without answering it.
+        let t = std::thread::spawn(move || {
+            let _ = job_rx.recv();
+            drop(res_tx);
+        });
+        let mut w = DecodeWorker {
+            tx,
+            rx,
+            inflight: HashSet::new(),
+        };
+        assert!(w.request("a"));
+        t.join().unwrap();
+        // The job channel is gone too, so a new request is refused rather than
+        // parked.
+        assert!(!w.request("b"));
+        let got = w.drain();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, "a");
+        assert!(got[0].1.is_err());
+        assert_eq!(w.inflight_count(), 0, "nothing left waiting");
     }
 }
