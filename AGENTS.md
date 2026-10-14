@@ -110,7 +110,7 @@ python tools/gates.py --only mobshot,itemshot
 python tools/render_check.py                 # stages a fresh vanilla server, runs `rewo live --render-check`
 python tools/numbers.py                      # regenerate REWO_PLAN.md §0.0's numbers block (--from-logs to skip re-running)
 cargo run -p ewo-launcher                    # launcher (add --dev for the tweaks overlay)
-cargo run -p rewo-app -- live --host HOST:PORT
+cargo run -p rewo-app -- live --host HOST --port PORT
 cargo build -p rewo-app --features gates     # gate subcommands, `live --render-check`, `play`, REWO_* test knobs
 powershell ingame-mod/build.ps1 [-Pvp]       # builds ewo-jni + the mod jar AND deploys it
 powershell ingame-mod/build.ps1 -NoDeploy    # compile + jar only (CI, audits, worktrees)
