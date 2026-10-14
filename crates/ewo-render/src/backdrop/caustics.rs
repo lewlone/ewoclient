@@ -34,11 +34,11 @@ use std::cell::RefCell;
 
 use ewo_core::{motion, OkLch};
 
+use crate::gradients;
 use crate::tokens;
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::{
-    gradient_shader, image_filters, BlendMode, Canvas, Color4f, ImageFilter, Matrix, Paint, Point,
-    Rect, TileMode,
+    image_filters, BlendMode, Canvas, Color4f, ImageFilter, Matrix, Paint, Point, Rect, TileMode,
 };
 
 thread_local! {
@@ -178,13 +178,12 @@ fn draw_blob(canvas: &Canvas, layer_rect: &Rect, blob: &CausticBlob) {
     let inner = Color4f::new(srgb[0], srgb[1], srgb[2], srgb[3]);
     let outer = Color4f::new(srgb[0], srgb[1], srgb[2], 0.0);
 
-    let shader = gradient_shader::radial(
+    let shader = gradients::radial(
         Point::new(cx, cy),
         radius,
-        gradient_shader::GradientShaderColors::ColorsInSpace(&[inner, outer], None),
+        &[inner, outer],
         Some(&[0.0_f32, 0.60][..]),
         TileMode::Clamp,
-        None,
         Some(&local),
     )
     .expect("caustic blob shader");

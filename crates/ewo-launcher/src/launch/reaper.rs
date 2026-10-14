@@ -156,7 +156,7 @@ pub fn reap_recorded_zombies() -> usize {
 #[cfg(target_os = "windows")]
 mod imp {
     use super::{same_process, GameState, Tracked};
-    use windows::Win32::Foundation::{CloseHandle, FALSE, FILETIME, HANDLE, WAIT_TIMEOUT};
+    use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_TIMEOUT};
     use windows::Win32::System::Threading::{
         GetProcessTimes, OpenProcess, TerminateProcess, WaitForSingleObject,
         PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
@@ -179,7 +179,7 @@ mod imp {
         if terminate {
             access |= PROCESS_TERMINATE;
         }
-        match unsafe { OpenProcess(access, FALSE, pid) } {
+        match unsafe { OpenProcess(access, false, pid) } {
             Ok(h) if !h.is_invalid() => Some(Handle(h)),
             _ => None,
         }
@@ -253,7 +253,8 @@ mod imp {
     }
 
     fn pid_has_visible_window(pid: u32) -> bool {
-        use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+        use windows::core::BOOL;
+        use windows::Win32::Foundation::{HWND, LPARAM};
         use windows::Win32::UI::WindowsAndMessaging::{
             EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
         };

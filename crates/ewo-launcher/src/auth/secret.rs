@@ -116,7 +116,7 @@ mod dpapi {
             return Vec::new();
         }
         let v = std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec();
-        let _ = LocalFree(HLOCAL(out.pbData as *mut _));
+        let _ = LocalFree(Some(HLOCAL(out.pbData as *mut _)));
         v
     }
 

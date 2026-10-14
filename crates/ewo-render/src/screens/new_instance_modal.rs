@@ -12,11 +12,12 @@
 //! after every screen so it can spill outside any panel clips, and closes
 //! on shroud click / Cancel button / Esc / tab switch.
 
+use crate::gradients;
 use crate::tokens;
 use ewo_core::{motion, Settings};
 use skia_safe::{
-    canvas::SaveLayerRec, gradient_shader, image_filters, BlurStyle, Canvas, ClipOp, Color4f,
-    Contains, MaskFilter, Paint, PaintStyle, Point, RRect, Rect, TileMode,
+    canvas::SaveLayerRec, image_filters, BlurStyle, Canvas, ClipOp, Color4f, Contains, MaskFilter,
+    Paint, PaintStyle, Point, RRect, Rect, TileMode,
 };
 
 use crate::text::{self, FontStore};
@@ -528,19 +529,15 @@ fn draw_shroud(canvas: &Canvas, card_w: f32, card_h: f32, alpha: f32) {
         let cx = card_w * 0.5;
         let cy = card_h * 0.5;
         let radius = (card_w.max(card_h)) * 0.7;
-        if let Some(shader) = gradient_shader::radial(
+        if let Some(shader) = gradients::radial(
             Point::new(cx, cy),
             radius,
-            gradient_shader::GradientShaderColors::ColorsInSpace(
-                &[
-                    tokens::bg_scrim_a(0.55 * alpha),
-                    tokens::bg_scrim_a(0.85 * alpha),
-                ],
-                None,
-            ),
+            &[
+                tokens::bg_scrim_a(0.55 * alpha),
+                tokens::bg_scrim_a(0.85 * alpha),
+            ],
             Some(&[0.0_f32, 1.0][..]),
             TileMode::Clamp,
-            None,
             None,
         ) {
             let mut p = Paint::default();
@@ -571,18 +568,14 @@ fn draw_card_chrome(canvas: &Canvas, card: &Rect) {
         canvas.save_layer(&rec);
         let mut fill = Paint::default();
         fill.set_anti_alias(true);
-        if let Some(shader) = gradient_shader::linear(
+        if let Some(shader) = gradients::linear(
             (
                 Point::new(card.left, card.top),
                 Point::new(card.left, card.bottom),
             ),
-            gradient_shader::GradientShaderColors::ColorsInSpace(
-                &[tokens::bg_card_top_a(0.92), tokens::bg_card_bottom_a(0.95)],
-                None,
-            ),
+            &[tokens::bg_card_top_a(0.92), tokens::bg_card_bottom_a(0.95)],
             Some(&[0.0_f32, 1.0][..]),
             TileMode::Clamp,
-            None,
             None,
         ) {
             fill.set_shader(shader);
@@ -653,22 +646,18 @@ fn draw_card_shadows(canvas: &Canvas, card: &Rect, rrect: &RRect) {
 
 fn draw_card_tint(canvas: &Canvas, card: &Rect, rrect: &RRect) {
     // 135° linear (rose 0.10 → berry 0.06 → lav 0.10)
-    if let Some(shader) = gradient_shader::linear(
+    if let Some(shader) = gradients::linear(
         (
             Point::new(card.left, card.top),
             Point::new(card.right, card.bottom),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                tokens::accent_rose_a(0.10),
-                tokens::accent_berry_a(0.06),
-                tokens::accent_lav_a(0.10),
-            ],
-            None,
-        ),
+        &[
+            tokens::accent_rose_a(0.10),
+            tokens::accent_berry_a(0.06),
+            tokens::accent_lav_a(0.10),
+        ],
         Some(&[0.0_f32, 0.40, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     ) {
         let mut p = Paint::default();
@@ -679,16 +668,12 @@ fn draw_card_tint(canvas: &Canvas, card: &Rect, rrect: &RRect) {
     // Top radial fade — warm-white peak above the card
     let cx = (card.left + card.right) * 0.5;
     let cy = card.top - card.height() * 0.2;
-    if let Some(shader) = gradient_shader::radial(
+    if let Some(shader) = gradients::radial(
         Point::new(cx, cy),
         card.width() * 0.7,
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[tokens::text_pearl_a(0.14), tokens::text_pearl_a(0.0)],
-            None,
-        ),
+        &[tokens::text_pearl_a(0.14), tokens::text_pearl_a(0.0)],
         Some(&[0.0_f32, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     ) {
         let mut p = Paint::default();

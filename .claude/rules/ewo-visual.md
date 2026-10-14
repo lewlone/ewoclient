@@ -112,6 +112,8 @@ Backdrop layer order in code is wine → folds → caustics → bokeh → dust �
   factors and fails a logical-size cache.
 - Pearl-dust halos are a baked 64 px sprite stamped with per-mote alpha. The
   inner berry glow is baked once per window size (`GLOW_CACHE`).
+- Gradient shaders go through `ewo_render::gradients::{linear, radial, sweep}`
+  (skia-safe deprecated the `gradient_shader` free functions in 0.93).
 - CSS blur radius → Skia sigma: `σ = radius / 2`. Spread = inflate/deflate the
   source rrect (Skia's mask blur has no spread).
 - Inner velvet-fold layers screen-blend **each** layer (`mix-blend-mode: screen`

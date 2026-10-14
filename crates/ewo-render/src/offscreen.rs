@@ -58,7 +58,7 @@ pub fn new_layer(canvas: &Canvas, size: LayerSize) -> Option<Surface> {
 /// that logical `(0, 0)` lands on, with no resampling. The current clip still
 /// applies.
 pub fn blit_layer(canvas: &Canvas, image: &Image) {
-    let origin = canvas.local_to_device_as_3x3().map_xy(0.0, 0.0);
+    let origin = canvas.local_to_device_as_3x3().map_point((0.0, 0.0));
     let saved = canvas.save();
     canvas.reset_matrix();
     canvas.draw_image(image, (origin.x.round(), origin.y.round()), None);

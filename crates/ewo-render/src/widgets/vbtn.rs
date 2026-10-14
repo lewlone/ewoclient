@@ -23,12 +23,13 @@
 //! mouse position + button-down flag and returns `true` once on the click
 //! release frame.
 
+use crate::gradients;
 use crate::text::{self, FontStore};
 use crate::tokens;
 use ewo_core::motion;
 use skia_safe::{
-    gradient_shader, BlendMode, BlurStyle, Canvas, Color4f, Contains, MaskFilter, Matrix, Paint,
-    PaintStyle, Point, RRect, Rect, TileMode,
+    BlendMode, BlurStyle, Canvas, Color4f, Contains, MaskFilter, Matrix, Paint, PaintStyle, Point,
+    RRect, Rect, TileMode,
 };
 
 const RIPPLE_LIFE_S: f32 = 0.62;
@@ -295,20 +296,16 @@ fn draw_ripples(canvas: &Canvas, bounds: Rect, ripples: &[Ripple]) {
         let cx = bounds.left + r.x;
         let cy = bounds.top + r.y;
 
-        if let Some(shader) = gradient_shader::radial(
+        if let Some(shader) = gradients::radial(
             Point::new(cx, cy),
             (diam * 0.5).max(0.5),
-            gradient_shader::GradientShaderColors::ColorsInSpace(
-                &[
-                    tokens::pearl_ripple_a(0.8 * opacity),
-                    tokens::accent_rose_a(0.4 * opacity),
-                    tokens::accent_rose_a(0.0),
-                ],
-                None,
-            ),
+            &[
+                tokens::pearl_ripple_a(0.8 * opacity),
+                tokens::accent_rose_a(0.4 * opacity),
+                tokens::accent_rose_a(0.0),
+            ],
             Some(&[0.0_f32, 0.40, 0.70][..]),
             TileMode::Clamp,
-            None,
             None,
         ) {
             let mut p = Paint::default();
@@ -345,20 +342,16 @@ fn draw_specks(canvas: &Canvas, bounds: Rect, specks: &[Speck]) {
         if radius <= 0.0 {
             continue;
         }
-        if let Some(shader) = gradient_shader::radial(
+        if let Some(shader) = gradients::radial(
             Point::new(cx, cy),
             radius,
-            gradient_shader::GradientShaderColors::ColorsInSpace(
-                &[
-                    tokens::pearl_speck_a(0.9 * opacity),
-                    Color4f::new(r, g, b, 0.4 * opacity),
-                    Color4f::new(r, g, b, 0.0),
-                ],
-                None,
-            ),
+            &[
+                tokens::pearl_speck_a(0.9 * opacity),
+                Color4f::new(r, g, b, 0.4 * opacity),
+                Color4f::new(r, g, b, 0.0),
+            ],
             Some(&[0.0_f32, 0.50, 0.80][..]),
             TileMode::Clamp,
-            None,
             None,
         ) {
             let mut p = Paint::default();
@@ -416,22 +409,18 @@ fn draw_tint(canvas: &Canvas, rect: Rect, radius: f32, primary: bool) {
         (0.10, 0.06, 0.08)
     };
     let rrect = RRect::new_rect_xy(rect, radius, radius);
-    let shader = gradient_shader::linear(
+    let shader = gradients::linear(
         (
             Point::new(rect.left, rect.top),
             Point::new(rect.right, rect.bottom),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                tokens::accent_rose_a(a1),
-                tokens::accent_berry_a(a2),
-                tokens::accent_lav_a(a3),
-            ],
-            None,
-        ),
+        &[
+            tokens::accent_rose_a(a1),
+            tokens::accent_berry_a(a2),
+            tokens::accent_lav_a(a3),
+        ],
         Some(&[0.0_f32, 0.4, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     )
     .expect("vbtn tint shader");
@@ -468,22 +457,18 @@ fn draw_rim(canvas: &Canvas, rect: Rect, radius: f32, time: f32, motion_speed: f
     };
 
     let rrect = RRect::new_rect_xy(rect, radius, radius);
-    let shader = gradient_shader::linear(
+    let shader = gradients::linear(
         (
             Point::new(rect.left, rect.top),
             Point::new(rect.right, rect.bottom),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                tokens::accent_rose_a(a1),
-                tokens::accent_lav_a(a2),
-                tokens::accent_champ_a(a3),
-            ],
-            None,
-        ),
+        &[
+            tokens::accent_rose_a(a1),
+            tokens::accent_lav_a(a2),
+            tokens::accent_champ_a(a3),
+        ],
         Some(&[0.0_f32, 0.5, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     )
     .expect("vbtn rim shader");
@@ -515,24 +500,20 @@ fn draw_sheen(canvas: &Canvas, rect: Rect, time: f32, motion_speed: f32, hover: 
     // Vertical extension prevents the skew exposing edges at top/bottom.
     let sheen_rect = Rect::from_xywh(sheen_left, rect.top - 4.0, sheen_w, btn_h + 8.0);
 
-    let shader = gradient_shader::linear(
+    let shader = gradients::linear(
         (
             Point::new(sheen_rect.left, 0.0),
             Point::new(sheen_rect.right, 0.0),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                Color4f::new(0.0, 0.0, 0.0, 0.0),
-                tokens::text_pearl_highlight_a(0.18),
-                tokens::accent_rose_a(0.35),
-                tokens::text_pearl_highlight_a(0.18),
-                Color4f::new(0.0, 0.0, 0.0, 0.0),
-            ],
-            None,
-        ),
+        &[
+            Color4f::new(0.0, 0.0, 0.0, 0.0),
+            tokens::text_pearl_highlight_a(0.18),
+            tokens::accent_rose_a(0.35),
+            tokens::text_pearl_highlight_a(0.18),
+            Color4f::new(0.0, 0.0, 0.0, 0.0),
+        ],
         Some(&[0.0_f32, 0.30, 0.50, 0.70, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     )
     .expect("vbtn sheen shader");

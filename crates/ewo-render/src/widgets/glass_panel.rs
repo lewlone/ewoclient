@@ -27,11 +27,12 @@
 //! `settings.rs` tab changes) or animate the chrome layers separately, as
 //! the modals do; the inner content is never scaled.
 
+use crate::gradients;
 use crate::tokens;
 use ewo_core::{motion, Settings};
 use skia_safe::{
-    canvas::SaveLayerRec, gradient_shader, image_filters, BlurStyle, Canvas, ClipOp, Color4f,
-    MaskFilter, Matrix, Paint, PaintStyle, Point, RRect, Rect, TileMode,
+    canvas::SaveLayerRec, image_filters, BlurStyle, Canvas, ClipOp, Color4f, MaskFilter, Matrix,
+    Paint, PaintStyle, Point, RRect, Rect, TileMode,
 };
 
 pub const PANEL_RADIUS: f32 = 18.0;
@@ -140,22 +141,18 @@ fn draw_tint(
     canvas.clip_rrect(*rrect, Some(ClipOp::Intersect), Some(true));
 
     // 135° linear gradient.
-    if let Some(lin) = gradient_shader::linear(
+    if let Some(lin) = gradients::linear(
         (
             Point::new(bounds.left, bounds.top),
             Point::new(bounds.right, bounds.bottom),
         ),
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                tokens::accent_rose_a(0.18),
-                tokens::accent_berry_a(0.12),
-                tokens::accent_lav_a(0.16),
-            ],
-            None,
-        ),
+        &[
+            tokens::accent_rose_a(0.18),
+            tokens::accent_berry_a(0.12),
+            tokens::accent_lav_a(0.16),
+        ],
         Some(&[0.0_f32, 0.40, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     ) {
         let mut p = Paint::default();
@@ -175,16 +172,12 @@ fn draw_tint(
     local.pre_translate((cx, cy));
     local.pre_scale((1.0, (bounds.height() * 0.8) / base_r), None);
     local.pre_translate((-cx, -cy));
-    if let Some(rad) = gradient_shader::radial(
+    if let Some(rad) = gradients::radial(
         Point::new(cx, cy),
         base_r,
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[tokens::text_pearl_a(0.14), tokens::text_pearl_a(0.0)],
-            None,
-        ),
+        &[tokens::text_pearl_a(0.14), tokens::text_pearl_a(0.0)],
         Some(&[0.0_f32, 1.0][..]),
         TileMode::Clamp,
-        None,
         Some(&local),
     ) {
         let mut p = Paint::default();
@@ -264,12 +257,11 @@ fn draw_horizontal_rim(canvas: &Canvas, rect: Rect, phase: f32, colors: [Color4f
     let p0 = rect.left - offset;
     let p1 = p0 + pattern_w;
 
-    let Some(shader) = gradient_shader::linear(
+    let Some(shader) = gradients::linear(
         (Point::new(p0, rect.top), Point::new(p1, rect.top)),
-        gradient_shader::GradientShaderColors::ColorsInSpace(&colors, None),
+        &colors,
         Some(&[0.0_f32, 0.20, 0.40, 0.60, 0.80, 1.0][..]),
         TileMode::Repeat,
-        None,
         None,
     ) else {
         return;
@@ -289,12 +281,11 @@ fn draw_vertical_rim(canvas: &Canvas, rect: Rect, phase: f32, colors: [Color4f; 
     let p0 = rect.top - offset;
     let p1 = p0 + pattern_h;
 
-    let Some(shader) = gradient_shader::linear(
+    let Some(shader) = gradients::linear(
         (Point::new(rect.left, p0), Point::new(rect.left, p1)),
-        gradient_shader::GradientShaderColors::ColorsInSpace(&colors, None),
+        &colors,
         Some(&[0.0_f32, 0.20, 0.40, 0.60, 0.80, 1.0][..]),
         TileMode::Repeat,
-        None,
         None,
     ) else {
         return;

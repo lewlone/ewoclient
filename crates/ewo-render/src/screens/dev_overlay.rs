@@ -16,11 +16,12 @@
 //! via `Backdrop::resize`; everything else is read every frame so it
 //! takes effect immediately.
 
+use crate::gradients;
 use crate::tokens;
 use ewo_core::Settings;
 use skia_safe::{
-    canvas::SaveLayerRec, gradient_shader, image_filters, BlurStyle, Canvas, ClipOp, Color4f,
-    MaskFilter, Paint, PaintStyle, Point, RRect, Rect, TileMode,
+    canvas::SaveLayerRec, image_filters, BlurStyle, Canvas, ClipOp, Color4f, MaskFilter, Paint,
+    PaintStyle, Point, RRect, Rect, TileMode,
 };
 
 use crate::screens::launching::LaunchError;
@@ -284,16 +285,12 @@ fn draw_chrome(canvas: &Canvas, panel: &Rect, rrect: &RRect) {
 
     // Subtle top warm-fade (matches the launcher's overall aesthetic)
     let cx = (panel.left + panel.right) * 0.5;
-    if let Some(shader) = gradient_shader::radial(
+    if let Some(shader) = gradients::radial(
         Point::new(cx, panel.top - panel.height() * 0.2),
         panel.width() * 0.7,
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[tokens::accent_rose_a(0.06), tokens::accent_rose_a(0.0)],
-            None,
-        ),
+        &[tokens::accent_rose_a(0.06), tokens::accent_rose_a(0.0)],
         Some(&[0.0_f32, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     ) {
         let mut p = Paint::default();

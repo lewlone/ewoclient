@@ -17,12 +17,13 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 use ewo_core::modules as catalog;
+use ewo_render::gradients;
 use ewo_render::text::{draw_tracked_em, measure_tracked_em};
 use ewo_render::widgets::{draw_liquid_glass, GlassBackdrop, LiquidGlassParams};
 use ewo_render::FontStore;
 use skia_safe::{
-    gradient_shader, BlurStyle, Canvas, ClipOp, Color4f, Data, Font, Image, MaskFilter, Paint,
-    PaintStyle, Point, RRect, Rect, TileMode,
+    BlurStyle, Canvas, ClipOp, Color4f, Data, Font, Image, MaskFilter, Paint, PaintStyle, Point,
+    RRect, Rect, TileMode,
 };
 
 // ── Velvet theme tokens — straight from `ewo_core::theme::Theme::VELVET` ────

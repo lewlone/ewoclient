@@ -29,10 +29,11 @@
 //! }
 //! ```
 
+use crate::gradients;
 use crate::tokens;
 use skia_safe::{
-    gradient_shader, BlurStyle, Canvas, Color4f, Contains, MaskFilter, Paint, PaintStyle, Point,
-    RRect, Rect, TileMode,
+    BlurStyle, Canvas, Color4f, Contains, MaskFilter, Paint, PaintStyle, Point, RRect, Rect,
+    TileMode,
 };
 
 pub const TOGGLE_W: f32 = 44.0;
@@ -157,20 +158,16 @@ fn draw_pearl(canvas: &Canvas, bounds: &Rect, anim: f32) {
 
     // Pearl body — `radial-gradient(circle at 30% 30%, #FFF6F0, #E5B8C5 60%, #C8A4B4)`.
     let grad_origin = Point::new(pearl_cx - pearl_r * 0.4, pearl_cy - pearl_r * 0.4);
-    if let Some(shader) = gradient_shader::radial(
+    if let Some(shader) = gradients::radial(
         grad_origin,
         pearl_r * 1.6,
-        gradient_shader::GradientShaderColors::ColorsInSpace(
-            &[
-                tokens::text_pearl_hot_a(1.0),
-                tokens::accent_rose_a(1.0),
-                tokens::accent_rose_edge_a(1.0),
-            ],
-            None,
-        ),
+        &[
+            tokens::text_pearl_hot_a(1.0),
+            tokens::accent_rose_a(1.0),
+            tokens::accent_rose_edge_a(1.0),
+        ],
         Some(&[0.0_f32, 0.60, 1.0][..]),
         TileMode::Clamp,
-        None,
         None,
     ) {
         let mut pearl = Paint::default();

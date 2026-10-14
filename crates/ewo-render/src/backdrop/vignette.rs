@@ -12,7 +12,8 @@
 //! Drawn last in the backdrop stack — over the wine, caustics, and bokeh —
 //! so it dims those layers gracefully toward the edges of the card.
 
-use skia_safe::{gradient_shader, Canvas, Color4f, Matrix, Paint, Point, Rect, TileMode};
+use crate::gradients;
+use skia_safe::{Canvas, Color4f, Matrix, Paint, Point, Rect, TileMode};
 
 pub fn draw(canvas: &Canvas, w: f32, h: f32) {
     let cx = 0.50 * w;
@@ -33,13 +34,12 @@ pub fn draw(canvas: &Canvas, w: f32, h: f32) {
     let inner = Color4f::new(0.0, 0.0, 0.0, 0.0);
     let outer = Color4f::new(0.0, 0.0, 0.0, 0.50);
 
-    let shader = gradient_shader::radial(
+    let shader = gradients::radial(
         Point::new(cx, cy),
         radius,
-        gradient_shader::GradientShaderColors::ColorsInSpace(&[inner, outer], None),
+        &[inner, outer],
         Some(&[0.30_f32, 0.85][..]),
         TileMode::Clamp,
-        None,
         Some(&local),
     )
     .expect("vignette shader");
