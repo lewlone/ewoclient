@@ -80,6 +80,14 @@ jobs:
       - name: Clippy (pvp)
         run: cargo clippy -p ewo-jni -p ewo-core --all-targets --features ewo-jni/pvp,ewo-core/pvp,ewo-jni/fixture -- -D warnings
 
+      # rewo-app's `audio` feature (the cpal backend, soundshot's decode and
+      # mixer layers) is off in every other build here, so a lint in code only
+      # it compiles went unseen until 2026-10-14.
+      - name: Clippy + test (audio)
+        run: |
+          cargo clippy -p rewo-audio -p rewo-app --all-targets --features rewo-app/gates,rewo-app/audio -- -D warnings
+          cargo test -p rewo-app --features rewo-app/gates,rewo-app/audio
+
   fmt:
     runs-on: ubuntu-latest
     steps:
