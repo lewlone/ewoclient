@@ -42,9 +42,14 @@
 //! library with either an async runtime (forbidden by the architecture) or a
 //! dependency this client does not otherwise need. One UDP question and one
 //! answer is small enough to write, test over captured packets, and bound: one
-//! second per nameserver, three nameservers at most, no TCP retry (a truncated
-//! answer is "no redirect"). The nameservers are the system's own
-//! (`/etc/resolv.conf`; `GetNetworkParams` on Windows) — never a public
+//! second per nameserver for the datagram, three nameservers at most, and a
+//! truncated answer (the `TC` bit) is asked again over TCP to the same
+//! nameserver, as the JDK's JNDI resolver does (RFC 7766: a 2-byte big-endian
+//! length before each message). The whole lookup shares one deadline of
+//! [`MAX_NAMESERVERS`] x the per-nameserver timeout (3 s by default), TCP
+//! included, so a stalling nameserver costs the connect screen at most that.
+//! The nameservers are the system's own (`/etc/resolv.conf`;
+//! `GetAdaptersAddresses` and `GetNetworkParams` on Windows) — never a public
 //! resolver Rewo picked.
 //!
 //! # Untrusted input
@@ -55,13 +60,16 @@
 //! answers whose owner is the question name (or a CNAME alias of it) count, and
 //! a response whose id, question or source is not ours is ignored.
 
-use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::io::{Read, Write};
+use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
 use std::time::{Duration, Instant};
 
 /// `ServerAddress.parseString`'s default.
 pub const DEFAULT_PORT: u16 = 25565;
 
-/// Per-nameserver wait for an answer.
+/// Per-nameserver wait for an answer: the UDP datagram's, and separately the
+/// TCP retry's (connect, request and response together). The lookup as a whole
+/// never exceeds [`MAX_NAMESERVERS`] times this.
 pub const QUERY_TIMEOUT: Duration = Duration::from_secs(1);
 /// Nameservers asked, in order, before giving up.
 pub const MAX_NAMESERVERS: usize = 3;
@@ -192,8 +200,8 @@ pub enum SrvError {
     Malformed,
     /// Not the answer to our question (id, flags or question mismatch).
     NotOurs,
-    /// The `TC` bit: the answer did not fit in a UDP datagram. Rewo does not
-    /// retry over TCP; the lookup is "no redirect".
+    /// The `TC` bit: the answer did not fit in a UDP datagram. The transport
+    /// asks again over TCP; a TCP answer that still says so is a failure.
     Truncated,
     /// A nonzero RCODE (SERVFAIL, REFUSED, ...). NXDOMAIN is not an error
     /// here: it is a definitive "no records" and parses as an empty list.
@@ -429,13 +437,21 @@ pub fn pick(records: &[SrvRecord]) -> Option<SrvTarget> {
 /// Ask `servers` (in order, at most [`MAX_NAMESERVERS`]) for the SRV records of
 /// `_minecraft._tcp.<host>`.
 ///
+/// `timeout` is each nameserver's wait, for its UDP datagram and again for a
+/// TCP retry; the whole call ends by `timeout x` the number of nameservers
+/// asked (at most [`MAX_NAMESERVERS`]).
+///
 /// `None` is "no redirect" whatever the reason — no nameserver, a timeout, a
-/// refusal, a truncated or malformed answer, or no record. The reason is
-/// logged at debug.
+/// refusal, a malformed answer, or no record. The reason is logged at debug.
 pub fn lookup_with(host: &str, servers: &[SocketAddr], timeout: Duration) -> Option<SrvTarget> {
     let name = srv_name(host)?;
+    let asked = servers.len().min(MAX_NAMESERVERS);
+    let overall = Instant::now() + timeout * asked as u32;
     for server in servers.iter().take(MAX_NAMESERVERS) {
-        match query_one(*server, &name, timeout) {
+        if Instant::now() >= overall {
+            break;
+        }
+        match query_one(*server, &name, timeout, overall) {
             Ok(records) => return pick(&records),
             Err(e) => log::debug!("srv: {server}: {e}"),
         }
@@ -443,27 +459,71 @@ pub fn lookup_with(host: &str, servers: &[SocketAddr], timeout: Duration) -> Opt
     None
 }
 
-fn query_one(server: SocketAddr, name: &str, timeout: Duration) -> Result<Vec<SrvRecord>, String> {
+/// `timeout` from now, but never past `overall`.
+fn bounded(timeout: Duration, overall: Instant) -> Instant {
+    (Instant::now() + timeout).min(overall)
+}
+
+fn query_one(
+    server: SocketAddr,
+    name: &str,
+    timeout: Duration,
+    overall: Instant,
+) -> Result<Vec<SrvRecord>, String> {
     let id: u16 = rand::random();
     let query = build_query(id, name).ok_or("unencodable name")?;
+    match query_udp(server, id, name, &query, bounded(timeout, overall)) {
+        // The answer did not fit a datagram: ask the same nameserver over TCP.
+        Err(UdpFailure::Parsed(SrvError::Truncated)) => {
+            log::debug!("srv: {server}: truncated over UDP, retrying over TCP");
+            query_tcp(server, id, name, &query, bounded(timeout, overall))
+        }
+        Err(e) => Err(e.to_string()),
+        Ok(records) => Ok(records),
+    }
+}
+
+/// Why the UDP leg failed: a socket or timing failure, or an answer that was
+/// received and refused.
+enum UdpFailure {
+    Io(String),
+    Parsed(SrvError),
+}
+
+impl std::fmt::Display for UdpFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UdpFailure::Io(e) => f.write_str(e),
+            UdpFailure::Parsed(e) => write!(f, "{e:?}"),
+        }
+    }
+}
+
+fn query_udp(
+    server: SocketAddr,
+    id: u16,
+    name: &str,
+    query: &[u8],
+    deadline: Instant,
+) -> Result<Vec<SrvRecord>, UdpFailure> {
+    let io = |what: &str, e: std::io::Error| UdpFailure::Io(format!("{what}: {e}"));
     let bind: SocketAddr = if server.is_ipv4() {
         ([0, 0, 0, 0], 0).into()
     } else {
         ([0u16; 8], 0).into()
     };
-    let sock = UdpSocket::bind(bind).map_err(|e| format!("bind: {e}"))?;
+    let sock = UdpSocket::bind(bind).map_err(|e| io("bind", e))?;
     // `connect` makes the kernel drop datagrams from any other source.
-    sock.connect(server).map_err(|e| format!("connect: {e}"))?;
-    sock.send(&query).map_err(|e| format!("send: {e}"))?;
-    let deadline = Instant::now() + timeout;
+    sock.connect(server).map_err(|e| io("connect", e))?;
+    sock.send(query).map_err(|e| io("send", e))?;
     let mut buf = [0u8; 1500];
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Err("timed out".into());
+            return Err(UdpFailure::Io("timed out".into()));
         }
         sock.set_read_timeout(Some(left))
-            .map_err(|e| format!("timeout: {e}"))?;
+            .map_err(|e| io("timeout", e))?;
         let n = match sock.recv(&mut buf) {
             Ok(n) => n,
             Err(e)
@@ -472,18 +532,95 @@ fn query_one(server: SocketAddr, name: &str, timeout: Duration) -> Result<Vec<Sr
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) =>
             {
-                return Err("timed out".into());
+                return Err(UdpFailure::Io("timed out".into()));
             }
-            Err(e) => return Err(format!("recv: {e}")),
+            Err(e) => return Err(io("recv", e)),
         };
         match parse_response(id, name, &buf[..n]) {
             // Someone else's datagram (wrong id or question): keep waiting for
             // ours until the deadline.
             Err(SrvError::NotOurs) => continue,
-            Err(e) => return Err(format!("{e:?}")),
+            Err(e) => return Err(UdpFailure::Parsed(e)),
             Ok(records) => return Ok(records),
         }
     }
+}
+
+/// The request as DNS-over-TCP frames it (RFC 1035 4.2.2, RFC 7766): the
+/// message behind a big-endian `u16` length.
+fn tcp_frame(query: &[u8]) -> Option<Vec<u8>> {
+    let len = u16::try_from(query.len()).ok()?;
+    let mut out = Vec::with_capacity(2 + query.len());
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(query);
+    Some(out)
+}
+
+/// Read exactly `buf.len()` bytes before `deadline`: the socket's timeout is
+/// re-armed with what is left before every read, so a peer that drips bytes
+/// cannot stretch the wait past it.
+fn read_exact_by(stream: &mut TcpStream, buf: &mut [u8], deadline: Instant) -> Result<(), String> {
+    let mut got = 0;
+    while got < buf.len() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err("timed out".into());
+        }
+        stream
+            .set_read_timeout(Some(left))
+            .map_err(|e| format!("timeout: {e}"))?;
+        match stream.read(&mut buf[got..]) {
+            Ok(0) => return Err("tcp: closed before the whole answer".into()),
+            Ok(n) => got += n,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err("timed out".into());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(format!("tcp recv: {e}")),
+        }
+    }
+    Ok(())
+}
+
+/// The truncated answer's retry: connect to the same nameserver on TCP, send
+/// the same question, read one length-prefixed answer. Everything, connect
+/// included, is bounded by `deadline`.
+fn query_tcp(
+    server: SocketAddr,
+    id: u16,
+    name: &str,
+    query: &[u8],
+    deadline: Instant,
+) -> Result<Vec<SrvRecord>, String> {
+    let frame = tcp_frame(query).ok_or("tcp: question too long")?;
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err("timed out".into());
+    }
+    let mut stream =
+        TcpStream::connect_timeout(&server, left).map_err(|e| format!("tcp connect: {e}"))?;
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err("timed out".into());
+    }
+    stream
+        .set_write_timeout(Some(left))
+        .map_err(|e| format!("timeout: {e}"))?;
+    stream
+        .write_all(&frame)
+        .map_err(|e| format!("tcp send: {e}"))?;
+    let mut len = [0u8; 2];
+    read_exact_by(&mut stream, &mut len, deadline)?;
+    // The length is a u16, so the answer is at most 64 KiB: bounded by the
+    // wire format, no further cap needed.
+    let mut answer = vec![0u8; u16::from_be_bytes(len) as usize];
+    read_exact_by(&mut stream, &mut answer, deadline)?;
+    parse_response(id, name, &answer).map_err(|e| format!("tcp answer: {e:?}"))
 }
 
 /// The system's configured nameservers, in preference order.
@@ -518,8 +655,240 @@ pub fn lookup_system(host: &str) -> Option<SrvTarget> {
     lookup_with(host, &system_nameservers(), QUERY_TIMEOUT)
 }
 
+/// Windows' nameservers: every operational adapter's DNS servers, IPv4 and
+/// IPv6, in adapter order (`GetAdaptersAddresses`), then anything only
+/// `GetNetworkParams` (IPv4, all adapters merged) knows. The first call is the
+/// one that sees IPv6; the second keeps the list as complete as before it
+/// existed, so a failure of the new call costs nothing.
 #[cfg(windows)]
 fn windows_nameservers() -> Vec<SocketAddr> {
+    let mut out = adapter_nameservers();
+    for server in network_params_nameservers() {
+        if !out.contains(&server) {
+            out.push(server);
+        }
+    }
+    out
+}
+
+/// A DNS server as the OS reports it, from the raw bytes of its `SOCKADDR`
+/// (little-endian Windows: `AF_INET` = 2, `AF_INET6` = 23), on port 53.
+///
+/// `None` for an unreadable or short address, the unspecified address, the
+/// deprecated site-local `fec0::/10` (Windows lists `fec0:0:0:ffff::1` for an
+/// adapter with no IPv6 DNS configured, and it never answers), and a
+/// link-local IPv6 address with no scope id (it cannot be reached without
+/// one). A link-local address WITH its scope id is kept, which is what lets a
+/// router-advertised resolver work: std's `SocketAddrV6` carries the scope.
+#[cfg(any(windows, test))]
+fn nameserver_from_sockaddr(sa: &[u8]) -> Option<SocketAddr> {
+    const AF_INET: u16 = 2;
+    const AF_INET6: u16 = 23;
+    let family = u16::from_ne_bytes([*sa.first()?, *sa.get(1)?]);
+    match family {
+        // sockaddr_in: family u16, port u16, addr [u8; 4], zero [u8; 8].
+        AF_INET => {
+            let a: [u8; 4] = sa.get(4..8)?.try_into().ok()?;
+            let ip = std::net::Ipv4Addr::from(a);
+            (!ip.is_unspecified()).then(|| SocketAddr::new(IpAddr::V4(ip), 53))
+        }
+        // sockaddr_in6: family u16, port u16, flowinfo u32, addr [u8; 16],
+        // scope_id u32.
+        AF_INET6 => {
+            let a: [u8; 16] = sa.get(8..24)?.try_into().ok()?;
+            let scope = u32::from_ne_bytes(sa.get(24..28)?.try_into().ok()?);
+            let ip = std::net::Ipv6Addr::from(a);
+            let top = ip.segments()[0];
+            let link_local = top & 0xffc0 == 0xfe80;
+            let site_local = top & 0xffc0 == 0xfec0;
+            if ip.is_unspecified() || site_local || (link_local && scope == 0) {
+                return None;
+            }
+            Some(SocketAddr::V6(std::net::SocketAddrV6::new(
+                ip,
+                53,
+                0,
+                if link_local { scope } else { 0 },
+            )))
+        }
+        _ => None,
+    }
+}
+
+/// The DNS servers of every operational, non-loopback adapter, IPv4 and IPv6,
+/// from `GetAdaptersAddresses`. Empty when the call fails.
+#[cfg(windows)]
+fn adapter_nameservers() -> Vec<SocketAddr> {
+    use std::ffi::c_void;
+
+    /// `SOCKET_ADDRESS`.
+    #[repr(C)]
+    struct SocketAddress {
+        sockaddr: *const u8,
+        sockaddr_length: i32,
+    }
+    /// `IP_ADAPTER_DNS_SERVER_ADDRESS_XP`: the `Length`/`Reserved` pair is the
+    /// header's anonymous union with a `ULONGLONG`, 8 bytes either way.
+    #[allow(dead_code)]
+    #[repr(C)]
+    struct DnsServerAddress {
+        length: u32,
+        reserved: u32,
+        next: *const DnsServerAddress,
+        address: SocketAddress,
+    }
+    /// `IP_ADAPTER_ADDRESSES_LH` up to `OperStatus`, the last field read. It
+    /// is a prefix of the OS's struct, only ever reached through the OS's own
+    /// pointers, so the trailing fields it omits do not matter; `length` is
+    /// the OS's own size for the entry, and the offsets below are checked.
+    #[allow(dead_code)]
+    #[repr(C)]
+    struct AdapterAddresses {
+        length: u32,
+        if_index: u32,
+        next: *const AdapterAddresses,
+        adapter_name: *const u8,
+        first_unicast: *const c_void,
+        first_anycast: *const c_void,
+        first_multicast: *const c_void,
+        first_dns_server: *const DnsServerAddress,
+        dns_suffix: *const u16,
+        description: *const u16,
+        friendly_name: *const u16,
+        physical_address: [u8; 8],
+        physical_address_length: u32,
+        flags: u32,
+        mtu: u32,
+        if_type: u32,
+        oper_status: u32,
+    }
+    // The offsets <iptypes.h> gives these structs: an 8-byte header, `Next`,
+    // `AdapterName`, three address-list heads, then `FirstDnsServerAddress`,
+    // and so on. A drifted declaration fails the build, not a read.
+    #[cfg(target_pointer_width = "64")]
+    const _: () = {
+        assert!(std::mem::offset_of!(AdapterAddresses, next) == 8);
+        assert!(std::mem::offset_of!(AdapterAddresses, first_dns_server) == 48);
+        assert!(std::mem::offset_of!(AdapterAddresses, physical_address) == 80);
+        assert!(std::mem::offset_of!(AdapterAddresses, oper_status) == 104);
+        assert!(std::mem::offset_of!(DnsServerAddress, next) == 8);
+        assert!(std::mem::offset_of!(DnsServerAddress, address) == 16);
+    };
+    #[cfg(target_pointer_width = "32")]
+    const _: () = {
+        assert!(std::mem::offset_of!(AdapterAddresses, next) == 8);
+        assert!(std::mem::offset_of!(AdapterAddresses, first_dns_server) == 28);
+        assert!(std::mem::offset_of!(AdapterAddresses, oper_status) == 68);
+        assert!(std::mem::offset_of!(DnsServerAddress, next) == 8);
+        assert!(std::mem::offset_of!(DnsServerAddress, address) == 12);
+    };
+
+    #[link(name = "iphlpapi")]
+    extern "system" {
+        fn GetAdaptersAddresses(
+            family: u32,
+            flags: u32,
+            reserved: *mut c_void,
+            addresses: *mut c_void,
+            size: *mut u32,
+        ) -> u32;
+    }
+    const AF_UNSPEC: u32 = 0;
+    // SKIP_UNICAST | SKIP_ANYCAST | SKIP_MULTICAST | SKIP_FRIENDLY_NAME: only
+    // the DNS server list is wanted.
+    const FLAGS: u32 = 0x0001 | 0x0002 | 0x0004 | 0x0020;
+    const ERROR_BUFFER_OVERFLOW: u32 = 111;
+    const NO_ERROR: u32 = 0;
+    const IF_OPER_STATUS_UP: u32 = 1;
+    const IF_TYPE_SOFTWARE_LOOPBACK: u32 = 24;
+
+    // Microsoft's advice is a 15 KiB first buffer; the list can grow between
+    // the sizing call and the filling one, hence a few attempts.
+    let mut len: u32 = 15 * 1024;
+    let mut buf: Vec<u64> = Vec::new();
+    let mut filled = false;
+    for _ in 0..4 {
+        // `u64` elements give the 8-byte alignment the structs' pointers need.
+        buf = vec![0u64; (len as usize).div_ceil(8)];
+        // SAFETY: `buf` holds at least `len` writable bytes (rounded up to
+        // eight) and `len` is the size passed; the other pointers are null as
+        // documented. On `ERROR_BUFFER_OVERFLOW` `len` is the size required.
+        let rc = unsafe {
+            GetAdaptersAddresses(
+                AF_UNSPEC,
+                FLAGS,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut len,
+            )
+        };
+        if rc == NO_ERROR {
+            filled = true;
+            break;
+        }
+        if rc != ERROR_BUFFER_OVERFLOW {
+            return Vec::new();
+        }
+    }
+    if !filled {
+        return Vec::new();
+    }
+
+    // Every pointer below is one the OS wrote into `buf`; before following
+    // one, check that the `size` bytes it names lie inside `buf`, so a
+    // garbled list can end the walk but never read outside the allocation.
+    let base = buf.as_ptr() as usize;
+    let end = base + buf.len() * 8;
+    let inside = |p: *const u8, size: usize| {
+        let at = p as usize;
+        at >= base && at.checked_add(size).is_some_and(|e| e <= end)
+    };
+
+    let mut out: Vec<SocketAddr> = Vec::new();
+    let mut adapter: *const AdapterAddresses = buf.as_ptr().cast();
+    let mut adapters = 0;
+    while !adapter.is_null() && adapters < 128 {
+        if !inside(adapter.cast(), std::mem::size_of::<AdapterAddresses>()) {
+            break;
+        }
+        // SAFETY: in bounds (checked), 8-aligned (the buffer is, and the OS
+        // lays entries out aligned), initialised by the call; read-only.
+        let a = unsafe { &*adapter };
+        if a.oper_status == IF_OPER_STATUS_UP && a.if_type != IF_TYPE_SOFTWARE_LOOPBACK {
+            let mut dns = a.first_dns_server;
+            let mut hops = 0;
+            while !dns.is_null() && hops < 16 {
+                if !inside(dns.cast(), std::mem::size_of::<DnsServerAddress>()) {
+                    break;
+                }
+                // SAFETY: as for the adapter entry.
+                let d = unsafe { &*dns };
+                let sa_len = d.address.sockaddr_length;
+                if sa_len > 0 && inside(d.address.sockaddr, sa_len as usize) {
+                    // SAFETY: `sa_len` bytes at `sockaddr` are inside `buf`
+                    // (checked) and initialised by the call; `u8` has no
+                    // alignment requirement.
+                    let sa =
+                        unsafe { std::slice::from_raw_parts(d.address.sockaddr, sa_len as usize) };
+                    if let Some(server) = nameserver_from_sockaddr(sa) {
+                        if !out.contains(&server) {
+                            out.push(server);
+                        }
+                    }
+                }
+                dns = d.next;
+                hops += 1;
+            }
+        }
+        adapter = a.next;
+        adapters += 1;
+    }
+    out
+}
+
+/// `GetNetworkParams`: the IPv4 servers of every adapter, merged.
+#[cfg(windows)]
+fn network_params_nameservers() -> Vec<SocketAddr> {
     use std::ffi::c_void;
 
     /// `IP_ADDR_STRING`. Fields the call fills but we do not read are kept so
@@ -597,6 +966,7 @@ fn windows_nameservers() -> Vec<SocketAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
 
     /// A real SRV response, captured from a recursive resolver for
     /// `_minecraft._tcp.hypixel.net`: id `0x1234`, one answer, the owner as a
@@ -1131,14 +1501,352 @@ mod tests {
     }
 
     /// On this machine the system nameservers are discoverable (Windows reads
-    /// them through `GetNetworkParams`, elsewhere resolv.conf). It does not
-    /// query anything.
+    /// them through `GetAdaptersAddresses` and `GetNetworkParams`, elsewhere
+    /// resolv.conf). It does not query anything.
     #[test]
     fn the_system_nameservers_can_be_listed() {
         let servers = system_nameservers();
         println!("system nameservers: {servers:?}");
         // A CI container may legitimately have none; the call must just work.
         assert!(servers.len() <= 64);
+        for (i, s) in servers.iter().enumerate() {
+            assert_eq!(s.port(), 53);
+            assert!(!s.ip().is_unspecified(), "{s}");
+            assert!(!servers[..i].contains(s), "{s} listed twice");
+        }
+    }
+
+    /// Windows' two sources, each on its own (the merge is covered above): the
+    /// adapter list is the one that can carry IPv6.
+    #[cfg(windows)]
+    #[test]
+    fn both_windows_sources_run_and_agree_on_the_shape() {
+        let adapters = adapter_nameservers();
+        let params = network_params_nameservers();
+        println!("GetAdaptersAddresses: {adapters:?}\nGetNetworkParams: {params:?}");
+        for s in adapters.iter().chain(&params) {
+            assert_eq!(s.port(), 53);
+            assert!(!s.ip().is_unspecified());
+        }
+        // The merge never loses an IPv4 server the old call knew.
+        let all = windows_nameservers();
+        for s in &params {
+            assert!(all.contains(s), "{s} lost in the merge");
+        }
+    }
+
+    // ── SOCKADDR -> nameserver (the Windows adapter list's element) ──────
+
+    fn sockaddr_in(ip: [u8; 4]) -> Vec<u8> {
+        let mut b = vec![0u8; 16];
+        b[0..2].copy_from_slice(&2u16.to_ne_bytes());
+        b[4..8].copy_from_slice(&ip);
+        b
+    }
+
+    fn sockaddr_in6(ip: &str, scope: u32) -> Vec<u8> {
+        let mut b = vec![0u8; 28];
+        b[0..2].copy_from_slice(&23u16.to_ne_bytes());
+        b[8..24].copy_from_slice(&ip.parse::<std::net::Ipv6Addr>().unwrap().octets());
+        b[24..28].copy_from_slice(&scope.to_ne_bytes());
+        b
+    }
+
+    #[test]
+    fn a_sockaddr_becomes_a_nameserver_on_port_53() {
+        assert_eq!(
+            nameserver_from_sockaddr(&sockaddr_in([192, 168, 1, 1])),
+            Some("192.168.1.1:53".parse().unwrap())
+        );
+        assert_eq!(
+            nameserver_from_sockaddr(&sockaddr_in6("2001:4860:4860::8888", 0)),
+            Some("[2001:4860:4860::8888]:53".parse().unwrap())
+        );
+        // Unique-local, a common router-advertised resolver.
+        assert!(nameserver_from_sockaddr(&sockaddr_in6("fd00::1", 0)).is_some());
+    }
+
+    #[test]
+    fn link_local_needs_its_scope_and_keeps_it() {
+        let with = nameserver_from_sockaddr(&sockaddr_in6("fe80::1", 12)).unwrap();
+        match with {
+            SocketAddr::V6(v6) => {
+                assert_eq!(v6.scope_id(), 12, "the interface survives");
+                assert_eq!(v6.port(), 53);
+            }
+            SocketAddr::V4(_) => panic!("expected IPv6"),
+        }
+        assert_eq!(
+            nameserver_from_sockaddr(&sockaddr_in6("fe80::1", 0)),
+            None,
+            "unreachable without a scope"
+        );
+    }
+
+    #[test]
+    fn junk_nameservers_are_skipped() {
+        // Windows' placeholder for an adapter with no IPv6 DNS.
+        assert_eq!(
+            nameserver_from_sockaddr(&sockaddr_in6("fec0:0:0:ffff::1", 1)),
+            None
+        );
+        assert_eq!(nameserver_from_sockaddr(&sockaddr_in([0, 0, 0, 0])), None);
+        assert_eq!(nameserver_from_sockaddr(&sockaddr_in6("::", 0)), None);
+        // Short buffers and other families never panic or invent an address.
+        let v6 = sockaddr_in6("2001:db8::1", 0);
+        for n in 0..v6.len() {
+            let _ = nameserver_from_sockaddr(&v6[..n]);
+        }
+        assert_eq!(nameserver_from_sockaddr(&v6[..27]), None);
+        assert_eq!(
+            nameserver_from_sockaddr(&sockaddr_in([1, 1, 1, 1])[..7]),
+            None
+        );
+        let mut other = sockaddr_in([1, 1, 1, 1]);
+        other[0..2].copy_from_slice(&99u16.to_ne_bytes());
+        assert_eq!(nameserver_from_sockaddr(&other), None);
+        assert_eq!(nameserver_from_sockaddr(&[]), None);
+    }
+
+    // ── the TCP retry for a truncated answer ─────────────────────────────
+
+    #[test]
+    fn the_tcp_frame_is_length_then_message() {
+        let q = build_query(0x1234, NAME).unwrap();
+        let f = tcp_frame(&q).unwrap();
+        assert_eq!(&f[..2], &(q.len() as u16).to_be_bytes());
+        assert_eq!(&f[2..], &q[..]);
+        assert_eq!(
+            tcp_frame(&vec![0u8; 65536]),
+            None,
+            "a u16 length cannot say 64 KiB"
+        );
+        assert!(tcp_frame(&vec![0u8; 65535]).is_some());
+    }
+
+    /// The UDP answer with the TC bit set, as a nameserver whose real answer
+    /// is too big for a datagram sends it.
+    fn truncated_for(query: &[u8]) -> Vec<u8> {
+        let mut r = answer_for(query);
+        r[2] |= 0x02;
+        r
+    }
+
+    /// One accepted TCP exchange: read the length-prefixed question.
+    fn read_tcp_query(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        let mut len = [0u8; 2];
+        stream.read_exact(&mut len).unwrap();
+        let mut q = vec![0u8; u16::from_be_bytes(len) as usize];
+        stream.read_exact(&mut q).unwrap();
+        q
+    }
+
+    fn framed(answer: &[u8]) -> Vec<u8> {
+        let mut f = (answer.len() as u16).to_be_bytes().to_vec();
+        f.extend_from_slice(answer);
+        f
+    }
+
+    type TcpHandler = Box<dyn Fn(std::net::TcpStream) + Send + 'static>;
+
+    /// A nameserver on loopback whose UDP side answers `truncated_for` after
+    /// `udp_delay` and whose TCP side (same port number; TCP and UDP ports are
+    /// separate) runs `tcp` on the first connection. `None` leaves TCP closed.
+    fn tc_server(udp_delay: Duration, tcp: Option<TcpHandler>) -> SocketAddr {
+        let (udp, listener) = (0..100)
+            .find_map(|_| {
+                let udp = UdpSocket::bind("127.0.0.1:0").ok()?;
+                let port = udp.local_addr().ok()?.port();
+                match tcp {
+                    None => Some((udp, None)),
+                    Some(_) => std::net::TcpListener::bind(("127.0.0.1", port))
+                        .ok()
+                        .map(|l| (udp, Some(l))),
+                }
+            })
+            .expect("a port free for both UDP and TCP");
+        let addr = udp.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 512];
+            if let Ok((n, from)) = udp.recv_from(&mut buf) {
+                std::thread::sleep(udp_delay);
+                let _ = udp.send_to(&truncated_for(&buf[..n]), from);
+            }
+        });
+        if let (Some(listener), Some(handler)) = (listener, tcp) {
+            std::thread::spawn(move || {
+                if let Ok((stream, _)) = listener.accept() {
+                    handler(stream);
+                }
+            });
+        }
+        addr
+    }
+
+    /// A truncated UDP answer is asked again over TCP, to the same nameserver,
+    /// the same question (and id), and the TCP answer is the one used.
+    ///
+    /// MUTATION: treating TC as "no redirect" returns `None`; a missing length
+    /// prefix hangs the fake server's `read_exact` and the lookup times out.
+    #[test]
+    fn a_truncated_answer_is_retried_over_tcp() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let server = tc_server(
+            Duration::ZERO,
+            Some(Box::new(move |mut s| {
+                let q = read_tcp_query(&mut s);
+                s.write_all(&framed(&answer_for(&q))).unwrap();
+                seen2.lock().unwrap().push(q);
+            })),
+        );
+        let got = lookup_with("hypixel.net", &[server], Duration::from_secs(2));
+        assert_eq!(
+            got,
+            Some(SrvTarget {
+                host: "mc.hypixel.net.".into(),
+                port: 25565
+            })
+        );
+        let q = seen.lock().unwrap()[0].clone();
+        assert_eq!(
+            &q[2..],
+            &build_query(u16::from_be_bytes([q[0], q[1]]), NAME).unwrap()[2..]
+        );
+    }
+
+    /// The answer may arrive in pieces: the length split from its body, the
+    /// body in dribbles.
+    #[test]
+    fn a_dribbled_tcp_answer_is_reassembled() {
+        let server = tc_server(
+            Duration::ZERO,
+            Some(Box::new(|mut s| {
+                let q = read_tcp_query(&mut s);
+                let f = framed(&answer_for(&q));
+                s.set_nodelay(true).unwrap();
+                for chunk in [&f[..1], &f[1..2], &f[2..20], &f[20..]] {
+                    s.write_all(chunk).unwrap();
+                    s.flush().unwrap();
+                    std::thread::sleep(Duration::from_millis(30));
+                }
+            })),
+        );
+        assert!(lookup_with("hypixel.net", &[server], Duration::from_secs(2)).is_some());
+    }
+
+    /// A TCP answer that is not ours (another id), that says "truncated"
+    /// again, or that is cut off is "no redirect", never a half-read record.
+    #[test]
+    fn a_bad_tcp_answer_is_no_redirect() {
+        type Corrupt = fn(Vec<u8>) -> Vec<u8>;
+        let cases: [(&str, Corrupt); 3] = [
+            ("wrong id", |mut a| {
+                a[0] ^= 0xff;
+                a
+            }),
+            ("still truncated", |mut a| {
+                a[2] |= 0x02;
+                a
+            }),
+            ("cut off", |a| a[..a.len() - 5].to_vec()),
+        ];
+        for (what, corrupt) in cases {
+            let server = tc_server(
+                Duration::ZERO,
+                Some(Box::new(move |mut s| {
+                    let q = read_tcp_query(&mut s);
+                    let a = corrupt(answer_for(&q));
+                    // For "cut off" the length still claims the full answer.
+                    let full = answer_for(&q).len() as u16;
+                    let mut f = full.to_be_bytes().to_vec();
+                    f.extend_from_slice(&a);
+                    s.write_all(&f).unwrap();
+                    // Close, so a short body ends the read at once.
+                })),
+            );
+            let t = Instant::now();
+            assert_eq!(
+                lookup_with("hypixel.net", &[server], Duration::from_secs(2)),
+                None,
+                "{what}"
+            );
+            assert!(t.elapsed() < Duration::from_secs(2), "{what}");
+        }
+    }
+
+    /// A nameserver that takes the TCP connection and never answers costs the
+    /// per-nameserver timeout, not forever; one that refuses TCP costs nothing.
+    #[test]
+    fn a_silent_or_closed_tcp_side_is_bounded() {
+        let silent = tc_server(
+            Duration::ZERO,
+            Some(Box::new(|s| {
+                std::thread::sleep(Duration::from_millis(1500));
+                drop(s);
+            })),
+        );
+        let t = Instant::now();
+        assert_eq!(
+            lookup_with("hypixel.net", &[silent], Duration::from_millis(250)),
+            None
+        );
+        let e = t.elapsed();
+        assert!(
+            e >= Duration::from_millis(200),
+            "waited for the answer: {e:?}"
+        );
+        assert!(
+            e < Duration::from_millis(1200),
+            "bounded by the timeout: {e:?}"
+        );
+
+        let closed = tc_server(Duration::ZERO, None);
+        let t = Instant::now();
+        assert_eq!(
+            lookup_with("hypixel.net", &[closed], Duration::from_millis(250)),
+            None
+        );
+        assert!(t.elapsed() < Duration::from_millis(1200));
+    }
+
+    /// The TCP retry lives inside the same overall deadline as the UDP wait:
+    /// three nameservers that each answer UDP slowly (just inside the
+    /// per-nameserver timeout) and then stall TCP take no more than
+    /// 3 x timeout in all, where UDP + TCP per nameserver would be ~1.9 x each.
+    ///
+    /// MUTATION: giving every TCP leg a fresh `timeout` instead of
+    /// `bounded(timeout, overall)` makes this ~1.15 s instead of ~0.9 s.
+    #[test]
+    fn the_tcp_retry_fits_inside_the_overall_deadline() {
+        let stall = || -> Option<TcpHandler> {
+            Some(Box::new(|s| {
+                std::thread::sleep(Duration::from_millis(2500));
+                drop(s);
+            }))
+        };
+        let timeout = Duration::from_millis(300);
+        let servers = [
+            tc_server(Duration::from_millis(270), stall()),
+            tc_server(Duration::from_millis(270), stall()),
+            tc_server(Duration::from_millis(270), stall()),
+        ];
+        let t = Instant::now();
+        assert_eq!(lookup_with("hypixel.net", &servers, timeout), None);
+        let e = t.elapsed();
+        assert!(
+            e < timeout * MAX_NAMESERVERS as u32 + Duration::from_millis(150),
+            "overall deadline exceeded: {e:?}"
+        );
+    }
+
+    /// A later nameserver still gets its turn after an earlier one's TCP
+    /// retry failed fast.
+    #[test]
+    fn a_failed_tcp_retry_falls_through_to_the_next_nameserver() {
+        let closed = tc_server(Duration::ZERO, None);
+        let live = fake_server(|q| vec![answer_for(q)]);
+        assert!(lookup_with("hypixel.net", &[closed, live], Duration::from_secs(2)).is_some());
     }
 
     /// Manual: run this crate's lib tests with `real_lookup -- --ignored
