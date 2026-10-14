@@ -14,9 +14,12 @@
 //! tokio/smol — sync HTTP via `ureq` per the CLAUDE.md non-negotiables.
 //!
 //! Persistence: refresh tokens are saved at
-//! `<config>/EwoClient/auth.toml` so the user signs in once. On startup
-//! we attempt a silent refresh in the background; if it fails (network
-//! down, refresh token expired/revoked), we fall back to "Sign in" UX.
+//! `<config>/EwoClient/auth.toml` so the user signs in once (sealed with
+//! DPAPI on Windows, see [`secret`]). On startup we attempt a silent
+//! refresh in the background; if it fails (network down, refresh token
+//! expired/revoked), we fall back to "Sign in" UX. Before every launch
+//! the Minecraft token is refreshed again if it is missing or close to
+//! expiry ([`launch_auth`]).
 
 pub mod chain;
 pub mod loopback;
@@ -26,6 +29,8 @@ pub mod secret;
 pub mod service;
 
 pub use service::{AuthOp, AuthService};
+
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -44,10 +49,19 @@ pub const TENANT: &str = "consumers";
 /// refresh token.
 pub const SCOPES: &str = "XboxLive.signin offline_access";
 
+/// Refresh the Minecraft token before a launch when it has less than this
+/// left. A game session outlives its launch, so a token that expires a
+/// minute after the JVM starts is as bad as an expired one.
+pub const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(10 * 60);
+
+/// Assumed Minecraft token lifetime when the login response omits
+/// `expires_in` (Minecraft Services documents and sends 86400 s).
+pub const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// A signed-in Minecraft account, persisted to disk and held in memory
 /// while the user is signed in. The Minecraft access token is short-lived
 /// (~24h) — kept in memory only; we re-derive it from the refresh token
-/// on startup or when expired.
+/// on startup, and before a launch when it is missing or close to expiry.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MinecraftAccount {
     /// Minecraft display name (e.g. "Notch").
@@ -58,11 +72,15 @@ pub struct MinecraftAccount {
     /// Skipped from persistence — re-derived from `ms_refresh_token`.
     #[serde(skip)]
     pub minecraft_token: String,
+    /// When `minecraft_token` expires (from the login's `expires_in`).
+    /// In memory only, like the token itself. `None` = no live token.
+    #[serde(skip)]
+    pub minecraft_token_expires_at: Option<Instant>,
     /// Microsoft refresh token. **Sensitive — treat as a credential.**
-    /// Currently stored plaintext in `auth.toml`; encrypting at rest is
-    /// a follow-up if/when we ship this binary widely.
+    /// Sealed at rest by [`secret`] (DPAPI on Windows; a `0600`
+    /// plaintext file elsewhere).
     pub ms_refresh_token: String,
-    /// Phase H2: per-user bearer token for the chickenedin bot API.
+    /// Phase H2: per-user bearer token for the Frogsy bot API.
     /// `None` until the user completes the in-game `/launcher-link`
     /// flow + redeems the code in the launcher's link modal. Sensitive
     /// — single revocable credential per launcher install.
@@ -81,6 +99,143 @@ impl std::fmt::Debug for MinecraftAccount {
             .field("ms_refresh_token", &"<redacted>")
             .field("social_token", &self.social_token.as_ref().map(|_| "<redacted>"))
             .finish()
+    }
+}
+
+/// When a token issued at `now` with the login response's `expires_in`
+/// (seconds) expires. A missing value assumes [`DEFAULT_TOKEN_LIFETIME`].
+pub fn token_expiry(now: Instant, expires_in: Option<u64>) -> Instant {
+    let life = expires_in.map(Duration::from_secs).unwrap_or(DEFAULT_TOKEN_LIFETIME);
+    now.checked_add(life).unwrap_or(now + DEFAULT_TOKEN_LIFETIME)
+}
+
+/// Whether a Minecraft token should be refreshed before use: it is
+/// missing, its expiry is unknown, or it has [`TOKEN_REFRESH_MARGIN`] or
+/// less left.
+pub fn token_needs_refresh(token: &str, expires_at: Option<Instant>, now: Instant) -> bool {
+    match expires_at {
+        Some(exp) if !token.is_empty() => {
+            exp.saturating_duration_since(now) <= TOKEN_REFRESH_MARGIN
+        }
+        _ => true,
+    }
+}
+
+/// How a launch should authenticate, decided from the active account.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LaunchAuth {
+    /// No account is signed in: launch with an offline profile, as always.
+    Offline,
+    /// The active account's token is good: launch with it.
+    Ready,
+    /// The token is missing or close to expiry and a refresh token
+    /// exists: refresh first, then launch.
+    NeedsRefresh,
+    /// Signed in, but no usable token can be had. Fail the launch with
+    /// this message; never fall back to offline for a signed-in account.
+    Unavailable(&'static str),
+}
+
+/// Decide how a launch authenticates. A signed-in account never launches
+/// offline: it launches with a live token, refreshes first, or fails.
+pub fn launch_auth(active: Option<&MinecraftAccount>, now: Instant) -> LaunchAuth {
+    let Some(a) = active else {
+        return LaunchAuth::Offline;
+    };
+    if !token_needs_refresh(&a.minecraft_token, a.minecraft_token_expires_at, now) {
+        return LaunchAuth::Ready;
+    }
+    if !a.ms_refresh_token.is_empty() {
+        return LaunchAuth::NeedsRefresh;
+    }
+    // Nothing to refresh with. A token inside the margin but not yet
+    // expired still beats failing.
+    let still_valid = !a.minecraft_token.is_empty()
+        && a.minecraft_token_expires_at.is_some_and(|exp| now < exp);
+    if still_valid {
+        LaunchAuth::Ready
+    } else {
+        LaunchAuth::Unavailable(
+            "your Microsoft session has expired; sign in again in Settings → Account",
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn account(token: &str, expires_at: Option<Instant>, refresh: &str) -> MinecraftAccount {
+        MinecraftAccount {
+            name: "Steve".into(),
+            uuid: "0123456789abcdef0123456789abcdef".into(),
+            minecraft_token: token.into(),
+            minecraft_token_expires_at: expires_at,
+            ms_refresh_token: refresh.into(),
+            social_token: None,
+        }
+    }
+
+    #[test]
+    fn expiry_uses_expires_in_or_a_day() {
+        let now = Instant::now();
+        assert_eq!(token_expiry(now, Some(3600)), now + Duration::from_secs(3600));
+        assert_eq!(token_expiry(now, None), now + DEFAULT_TOKEN_LIFETIME);
+    }
+
+    #[test]
+    fn needs_refresh_inside_the_margin() {
+        let now = Instant::now();
+        let hour = Duration::from_secs(3600);
+        assert!(token_needs_refresh("", Some(now + hour), now), "missing token");
+        assert!(token_needs_refresh("t", None, now), "unknown expiry");
+        assert!(!token_needs_refresh("t", Some(now + hour), now), "an hour left");
+        assert!(
+            !token_needs_refresh("t", Some(now + TOKEN_REFRESH_MARGIN + Duration::from_secs(1)), now),
+            "just outside the margin"
+        );
+        assert!(token_needs_refresh("t", Some(now + TOKEN_REFRESH_MARGIN), now), "at the margin");
+        assert!(token_needs_refresh("t", Some(now + Duration::from_secs(60)), now), "a minute left");
+        assert!(token_needs_refresh("t", Some(now), now), "expired now");
+        // A day-old token (the launcher left open) is expired.
+        let issued = now;
+        let later = issued + DEFAULT_TOKEN_LIFETIME + Duration::from_secs(1);
+        assert!(token_needs_refresh("t", Some(token_expiry(issued, Some(86_400))), later));
+    }
+
+    #[test]
+    fn signed_out_launches_offline() {
+        assert_eq!(launch_auth(None, Instant::now()), LaunchAuth::Offline);
+    }
+
+    #[test]
+    fn live_token_launches() {
+        let now = Instant::now();
+        let a = account("t", Some(now + Duration::from_secs(3600)), "r");
+        assert_eq!(launch_auth(Some(&a), now), LaunchAuth::Ready);
+    }
+
+    #[test]
+    fn signed_in_without_token_refreshes_never_offline() {
+        let now = Instant::now();
+        // Refresh in flight or failed at startup: no live token yet.
+        let a = account("", None, "r");
+        assert_eq!(launch_auth(Some(&a), now), LaunchAuth::NeedsRefresh);
+        // Near expiry.
+        let a = account("t", Some(now + Duration::from_secs(60)), "r");
+        assert_eq!(launch_auth(Some(&a), now), LaunchAuth::NeedsRefresh);
+        // Expired with nothing to refresh with: an error, not offline.
+        let a = account("t", Some(now), "");
+        assert!(matches!(launch_auth(Some(&a), now), LaunchAuth::Unavailable(_)));
+        let a = account("", None, "");
+        assert!(matches!(launch_auth(Some(&a), now), LaunchAuth::Unavailable(_)));
+    }
+
+    #[test]
+    fn unrefreshable_token_inside_margin_still_launches() {
+        let now = Instant::now();
+        let a = account("t", Some(now + Duration::from_secs(60)), "");
+        assert_eq!(launch_auth(Some(&a), now), LaunchAuth::Ready);
     }
 }
 

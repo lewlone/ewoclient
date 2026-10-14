@@ -1650,8 +1650,13 @@ impl App {
             }
         }
 
+        // Continue a launch that was waiting on a token refresh.
+        self.poll_auth_launch(time);
         // Finish a JVM launch whose background preparation is done.
         self.poll_prepare(time);
+        // Retry a launch deferred on a JRE download once the background
+        // re-scan that picks the new JRE up has finished.
+        self.poll_jre_rescan(time);
 
         // Drain runtime (bundled-JRE) events. Surface progress
         // as Info lines on the launching screen; on Done, kick
@@ -1660,6 +1665,7 @@ impl App {
         for ev in runtime_events {
             match ev {
                 runtime::RuntimeEvent::Resolved { major, info } => {
+                    self.runtime_log_bucket = 0;
                     self.launching.push_real_line(
                         screens::RealSeverity::Info,
                         format!(
@@ -1679,9 +1685,10 @@ impl App {
                     if total > 0 {
                         let frac = downloaded as f32 / total as f32;
                         self.launching.set_real_progress(Some(frac));
-                        let pct = frac * 100.0;
-                        let bucket = (pct as u32) / 10 * 10;
-                        if bucket > 0 && bucket.is_multiple_of(10) {
+                        if let Some(bucket) =
+                            progress_log_bucket(self.runtime_log_bucket, downloaded, total)
+                        {
+                            self.runtime_log_bucket = bucket;
                             let line = format!(
                                 "[ewo] downloading runtime: {:>3}% ({} / {} MB)",
                                 bucket,
@@ -1709,29 +1716,11 @@ impl App {
                         ),
                         time,
                     );
-                    launch::jre::invalidate_cache();
-                    // If the launch we deferred is for this
-                    // major, retry it now.
-                    if let Some(p) = self.pending_relaunch.clone() {
-                        if p.waiting_for_major == major {
-                            self.pending_relaunch = None;
-                            let ok = self.try_real_launch(
-                                p.instance_idx,
-                                &p.instance_name,
-                                &p.instance_meta,
-                                time,
-                                PrepareFail::Error("retry failed after JRE install"),
-                            );
-                            if !ok {
-                                self.launching.push_real_line(
-                                    screens::RealSeverity::Warn,
-                                    "[ewo] retry failed after JRE install".into(),
-                                    time,
-                                );
-                                self.launching.set_real_exit(Some(127), time);
-                            }
-                        }
-                    }
+                    // Re-scan installed JREs on a worker (it runs
+                    // `java -version` per candidate, which must not
+                    // stall the UI thread); `poll_jre_rescan` retries
+                    // the deferred launch once it reports back.
+                    self.jre_rescan_rx = Some(launch::jre::rescan_in_background(major));
                 }
                 runtime::RuntimeEvent::Failed { major, message } => {
                     log::warn!("runtime: Java {} fetch failed: {}", major, message);
@@ -2306,5 +2295,46 @@ impl App {
         if self.focused {
             window.request_redraw();
         }
+    }
+}
+
+/// The 10 % bucket to log for a runtime-download progress event, or
+/// `None` when it was already logged (`last` is the last bucket logged,
+/// `0` at the start of a download). Each of 10 %, 20 %, …, 100 % is
+/// logged once, however many progress events land inside it.
+fn progress_log_bucket(last: u32, downloaded: u64, total: u64) -> Option<u32> {
+    if total == 0 {
+        return None;
+    }
+    let pct = (downloaded.min(total) * 100 / total) as u32;
+    let bucket = pct / 10 * 10;
+    (bucket > last).then_some(bucket)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::progress_log_bucket;
+
+    #[test]
+    fn each_progress_bucket_logs_once() {
+        let total = 1000;
+        let mut last = 0;
+        let mut logged = Vec::new();
+        // Many events per bucket, as the download thread sends them.
+        for downloaded in (0..=total).step_by(7).chain([total]) {
+            if let Some(b) = progress_log_bucket(last, downloaded, total) {
+                last = b;
+                logged.push(b);
+            }
+        }
+        assert_eq!(logged, vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
+    }
+
+    #[test]
+    fn progress_edge_cases() {
+        assert_eq!(progress_log_bucket(0, 5, 0), None, "unknown total");
+        assert_eq!(progress_log_bucket(0, 50, 1000), None, "under 10 %");
+        assert_eq!(progress_log_bucket(0, 2000, 1000), Some(100), "overshoot clamps");
+        assert_eq!(progress_log_bucket(30, 350, 1000), None, "same bucket again");
     }
 }

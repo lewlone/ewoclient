@@ -49,6 +49,29 @@ pub fn invalidate_cache() {
     *cache.lock().unwrap() = None;
 }
 
+/// Re-scan on a worker thread and swap the result into the cache, then
+/// send `tag` on the returned channel. Used after a bundled JRE download:
+/// the scan runs `java -version` per candidate and `where java`, which
+/// must not stall the UI thread. The old list stays readable until the
+/// new one is swapped in (no invalidate-then-rescan window in which a
+/// UI-thread `pick_for_major` would scan cold).
+pub fn rescan_in_background(tag: u32) -> std::sync::mpsc::Receiver<u32> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("ewo-jre-rescan".into())
+        .spawn(move || {
+            let scanned = scan();
+            *cache_handle().lock().unwrap() = Some(scanned);
+            let _ = tx.send(tag);
+        });
+    if let Err(e) = spawned {
+        // No thread: fall back to a lazy rescan on the next lookup.
+        log::warn!("jre: could not spawn the rescan thread ({e}); rescanning lazily");
+        invalidate_cache();
+    }
+    rx
+}
+
 fn cache_handle() -> &'static Mutex<Option<Vec<DetectedJre>>> {
     static CACHE: OnceLock<Mutex<Option<Vec<DetectedJre>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(None))
