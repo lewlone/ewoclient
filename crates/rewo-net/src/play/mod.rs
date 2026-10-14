@@ -1180,7 +1180,7 @@ pub struct PlaySession {
     /// The chat HUD's store (M108). Lives here because the events that feed
     /// it do; it is *driven* from the app, which owns the font it wraps with
     /// and the GUI clock it stamps with — see [`Self::apply_chat_events`].
-    pub chat: rewo_world::chat::ChatComponent,
+    pub chat: rewo_ui::chat::ChatComponent,
     /// `Gui.setOverlayMessage`'s text, from a `system_chat` with `overlay`
     /// set. `None` until one arrives.
     pub chat_overlay: Option<String>,
@@ -1245,8 +1245,8 @@ pub struct PlaySession {
     /// constructors and only `createDisconnectionInfo` fills `bugReportLink`,
     /// so a disconnect screen that inferred the cause from the text would
     /// offer the server's bug-report link on a plain kick. See
-    /// [`rewo_world::disconnect_screen::DisconnectCause`].
-    pub disconnect_cause: Option<rewo_world::disconnect_screen::DisconnectCause>,
+    /// [`rewo_ui::disconnect_screen::DisconnectCause`].
+    pub disconnect_cause: Option<rewo_ui::disconnect_screen::DisconnectCause>,
     // sendPosition cadence state (decompiled LocalPlayer).
     last_pos: (f64, f64, f64),
     last_rot: (f32, f32),
@@ -2020,7 +2020,7 @@ impl<'a> Connection<'a> {
             chat_events: Vec::new(),
             signature_cache: crate::chat_wire::MessageSignatureCache::default(),
             chat_clock_millis: 0,
-            chat: rewo_world::chat::ChatComponent::new(),
+            chat: rewo_ui::chat::ChatComponent::new(),
             commands: crate::commands::CommandTree::default(),
             suggestions: crate::suggestion_wire::SuggestionProviderState::new(),
             suggestion_reply: None,
@@ -2188,7 +2188,7 @@ impl PlaySession {
                 log::warn!("net: connection lost: {e}");
                 self.disconnect = Some(e.clone());
                 self.disconnect_cause =
-                    Some(rewo_world::disconnect_screen::DisconnectCause::ClientError);
+                    Some(rewo_ui::disconnect_screen::DisconnectCause::ClientError);
             }
         }
         sent
@@ -2915,7 +2915,7 @@ impl PlaySession {
                         // *does* offer the server's bug-report link — the whole
                         // point of the link being that it reports a server bug.
                         self.disconnect_cause =
-                            Some(rewo_world::disconnect_screen::DisconnectCause::ClientError);
+                            Some(rewo_ui::disconnect_screen::DisconnectCause::ClientError);
                     }
                     return Ok(applied);
                 }
@@ -2949,7 +2949,7 @@ impl PlaySession {
             None | Some(ReaderClosed { eof: true, .. }) => {
                 self.disconnect = Some("connection closed".into());
                 self.disconnect_cause =
-                    Some(rewo_world::disconnect_screen::DisconnectCause::EndOfStream);
+                    Some(rewo_ui::disconnect_screen::DisconnectCause::EndOfStream);
             }
             // A frame the client could not accept — oversized, badly
             // compressed, undecryptable — or a read timeout: vanilla's
@@ -2958,7 +2958,7 @@ impl PlaySession {
                 log::warn!("net: connection lost: {reason}");
                 self.disconnect = Some(reason);
                 self.disconnect_cause =
-                    Some(rewo_world::disconnect_screen::DisconnectCause::ClientError);
+                    Some(rewo_ui::disconnect_screen::DisconnectCause::ClientError);
             }
         }
     }
@@ -3001,7 +3001,7 @@ impl PlaySession {
                 // Configuration's disconnect body is the same component
                 // `ClientboundDisconnectPacket` carries.
                 let (reason, cause) =
-                    rewo_world::disconnect_screen::read_disconnect(body, self.lang.as_deref());
+                    rewo_ui::disconnect_screen::read_disconnect(body, self.lang.as_deref());
                 self.disconnect = Some(reason);
                 self.disconnect_cause = Some(cause);
                 Ok(())
@@ -5058,7 +5058,7 @@ impl PlaySession {
     /// `ChatComponent.tick` runs **after** the events, so a deletion queued
     /// this frame is not also retried this frame — `processMessageDeletionQueue`
     /// is a separate `tick()` in vanilla for the same reason.
-    pub fn apply_chat_events(&mut self, gui_tick: i32, ctx: &rewo_world::chat::WrapContext<'_>) {
+    pub fn apply_chat_events(&mut self, gui_tick: i32, ctx: &rewo_ui::chat::WrapContext<'_>) {
         let events = std::mem::take(&mut self.chat_events);
         if let Some(overlay) =
             crate::chat_wire::apply_chat_events(&mut self.chat, events, gui_tick, ctx)

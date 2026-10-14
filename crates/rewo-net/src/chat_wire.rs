@@ -503,10 +503,10 @@ pub enum ChatTrustLevel {
 impl ChatTrustLevel {
     /// `createTag` — **`SECURE` gets no tag at all**, which is why the return
     /// is an `Option` and not a fourth "plain" variant.
-    pub fn create_tag(self) -> Option<rewo_world::chat::MessageTag> {
+    pub fn create_tag(self) -> Option<rewo_ui::chat::MessageTag> {
         match self {
-            Self::Modified => Some(rewo_world::chat::MessageTag::CHAT_MODIFIED),
-            Self::NotSecure => Some(rewo_world::chat::MessageTag::CHAT_NOT_SECURE),
+            Self::Modified => Some(rewo_ui::chat::MessageTag::CHAT_MODIFIED),
+            Self::NotSecure => Some(rewo_ui::chat::MessageTag::CHAT_NOT_SECURE),
             Self::Secure => None,
         }
     }
@@ -526,7 +526,7 @@ pub enum ChatOutcome {
         /// a string since M127, because that is what the decoration produces
         /// and what carries its style.
         content: rewo_proto::nbt::Nbt,
-        tag: Option<rewo_world::chat::MessageTag>,
+        tag: Option<rewo_ui::chat::MessageTag>,
     },
 }
 
@@ -628,7 +628,7 @@ pub enum ChatEvent {
     /// `ChatComponent.addPlayerMessage` / `addServerSystemMessage`.
     Message {
         /// The message's spans. A `String` until M126b — see
-        /// [`rewo_world::chat::GuiMessage::content`]. Player chat arrives as a
+        /// [`rewo_ui::chat::GuiMessage::content`]. Player chat arrives as a
         /// plain string on the wire and becomes spans through
         /// [`rewo_world::chat_style::parse_legacy`], which is what resolves the
         /// `§` codes servers put in it; system and disguised chat arrive as
@@ -637,8 +637,8 @@ pub enum ChatEvent {
         /// Present only for a signed player message — the key a later
         /// [`Self::Delete`] matches on.
         signature: Option<Box<Signature>>,
-        tag: Option<rewo_world::chat::MessageTag>,
-        source: rewo_world::chat::MessageSource,
+        tag: Option<rewo_ui::chat::MessageTag>,
+        source: rewo_ui::chat::MessageSource,
     },
     /// `Gui.setOverlayMessage` — the action bar. **Not a chat line**; a
     /// `system_chat` with `overlay` set never reaches the chat store at all.
@@ -663,10 +663,10 @@ pub enum ChatEvent {
 /// reason: `processMessageDeletionQueue` is called from `Gui.tick`, not from
 /// the packet handler.
 pub fn apply_chat_events(
-    chat: &mut rewo_world::chat::ChatComponent,
+    chat: &mut rewo_ui::chat::ChatComponent,
     events: Vec<ChatEvent>,
     gui_tick: i32,
-    ctx: &rewo_world::chat::WrapContext<'_>,
+    ctx: &rewo_ui::chat::WrapContext<'_>,
 ) -> Option<String> {
     let mut overlay = None;
     for event in events {
@@ -677,7 +677,7 @@ pub fn apply_chat_events(
                 tag,
                 source,
             } => chat.add_message(
-                rewo_world::chat::GuiMessage {
+                rewo_ui::chat::GuiMessage {
                     added_time: gui_tick,
                     content: text,
                     signature,
@@ -697,7 +697,7 @@ pub fn apply_chat_events(
 }
 
 /// Append one line to `PlaySession::chat_log`, keeping only the newest
-/// [`rewo_world::chat::MAX_CHAT_HISTORY`] (`ChatComponent.MAX_CHAT_HISTORY =
+/// [`rewo_ui::chat::MAX_CHAT_HISTORY`] (`ChatComponent.MAX_CHAT_HISTORY =
 /// 100`, `ChatComponent.java:45`).
 ///
 /// The log is vanilla's `LOGGER.info("[CHAT] ..")` mirror and nothing in
@@ -707,7 +707,7 @@ pub fn apply_chat_events(
 /// public `Vec` directly, so it can be over the cap by more than one.
 pub fn push_chat_log(log: &mut Vec<String>, line: String) {
     log.push(line);
-    let max = rewo_world::chat::MAX_CHAT_HISTORY;
+    let max = rewo_ui::chat::MAX_CHAT_HISTORY;
     if log.len() > max {
         log.drain(..log.len() - max);
     }
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn the_chat_log_keeps_the_newest_hundred_lines() {
-        let max = rewo_world::chat::MAX_CHAT_HISTORY;
+        let max = rewo_ui::chat::MAX_CHAT_HISTORY;
         assert_eq!(max, 100);
         let mut log = Vec::new();
         for i in 0..250 {
@@ -1085,11 +1085,11 @@ mod tests {
         assert_eq!(ChatTrustLevel::Secure.create_tag(), None);
         assert_eq!(
             ChatTrustLevel::NotSecure.create_tag(),
-            Some(rewo_world::chat::MessageTag::CHAT_NOT_SECURE),
+            Some(rewo_ui::chat::MessageTag::CHAT_NOT_SECURE),
         );
         assert_eq!(
             ChatTrustLevel::Modified.create_tag(),
-            Some(rewo_world::chat::MessageTag::CHAT_MODIFIED),
+            Some(rewo_ui::chat::MessageTag::CHAT_MODIFIED),
         );
     }
 
@@ -1118,7 +1118,7 @@ mod tests {
             panic!("expected a shown message")
         };
         assert_eq!(plain(&content), "#ello");
-        assert_eq!(tag, Some(rewo_world::chat::MessageTag::CHAT_MODIFIED));
+        assert_eq!(tag, Some(rewo_ui::chat::MessageTag::CHAT_MODIFIED));
     }
 
     #[test]
@@ -1138,7 +1138,7 @@ mod tests {
         let text = plain(&content);
         assert!(text.contains("ello"), "rendered from the signed content");
         assert!(!text.contains("REWRITTEN"));
-        assert_eq!(tag, Some(rewo_world::chat::MessageTag::CHAT_MODIFIED));
+        assert_eq!(tag, Some(rewo_ui::chat::MessageTag::CHAT_MODIFIED));
     }
 
     #[test]
@@ -1152,7 +1152,7 @@ mod tests {
             panic!("expected a shown message")
         };
         assert_eq!(plain(&content), "hello");
-        assert_eq!(tag, Some(rewo_world::chat::MessageTag::CHAT_MODIFIED));
+        assert_eq!(tag, Some(rewo_ui::chat::MessageTag::CHAT_MODIFIED));
     }
 
     #[test]
@@ -1330,12 +1330,12 @@ mod tests {
 
     // ── applying a batch ─────────────────────────────────────────────────
 
-    fn wrap_ctx() -> rewo_world::chat::WrapContext<'static> {
+    fn wrap_ctx() -> rewo_ui::chat::WrapContext<'static> {
         fn w6(s: &str, style: rewo_world::chat_style::ChatStyle) -> i32 {
             s.chars().count() as i32 * (6 + i32::from(style.bold))
         }
-        rewo_world::chat::WrapContext {
-            options: rewo_world::chat::ChatOptions::default(),
+        rewo_ui::chat::WrapContext {
+            options: rewo_ui::chat::ChatOptions::default(),
             focused: false,
             width_of: &w6,
             deleted_marker_text: "deleted",
@@ -1347,7 +1347,7 @@ mod tests {
             text: vec![rewo_world::chat_style::ChatStyle::WHITE.span(text)],
             signature,
             tag: None,
-            source: rewo_world::chat::MessageSource::Player,
+            source: rewo_ui::chat::MessageSource::Player,
         }
     }
 
@@ -1355,7 +1355,7 @@ mod tests {
     fn a_batch_of_messages_reaches_the_store() {
         // The witness that did not exist when a mutation made the drain a
         // no-op: chat would have rendered empty forever with every test green.
-        let mut chat = rewo_world::chat::ChatComponent::new();
+        let mut chat = rewo_ui::chat::ChatComponent::new();
         let overlay = apply_chat_events(
             &mut chat,
             vec![message("first", None), message("second", None)],
@@ -1373,7 +1373,7 @@ mod tests {
 
     #[test]
     fn an_overlay_is_returned_and_never_stored_as_chat() {
-        let mut chat = rewo_world::chat::ChatComponent::new();
+        let mut chat = rewo_ui::chat::ChatComponent::new();
         let overlay = apply_chat_events(
             &mut chat,
             vec![ChatEvent::Overlay("action bar".into())],
@@ -1386,7 +1386,7 @@ mod tests {
 
     #[test]
     fn the_last_overlay_of_a_batch_wins() {
-        let mut chat = rewo_world::chat::ChatComponent::new();
+        let mut chat = rewo_ui::chat::ChatComponent::new();
         let overlay = apply_chat_events(
             &mut chat,
             vec![
@@ -1404,7 +1404,7 @@ mod tests {
         // The message is 0 ticks old, so the deletion is delayed rather than
         // applied — and `tick` running after the batch must not immediately
         // retry it, or the 60-tick guard is defeated by its own batch.
-        let mut chat = rewo_world::chat::ChatComponent::new();
+        let mut chat = rewo_ui::chat::ChatComponent::new();
         apply_chat_events(
             &mut chat,
             vec![message("secret", Some(sig(4))), ChatEvent::Delete(sig(4))],
@@ -1430,7 +1430,7 @@ mod tests {
         // `tick` is outside the loop, so a frame with no packets still
         // advances a pending deletion. Inside the loop it would stall forever
         // on a quiet server.
-        let mut chat = rewo_world::chat::ChatComponent::new();
+        let mut chat = rewo_ui::chat::ChatComponent::new();
         apply_chat_events(
             &mut chat,
             vec![message("secret", Some(sig(4))), ChatEvent::Delete(sig(4))],

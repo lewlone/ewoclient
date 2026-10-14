@@ -197,12 +197,12 @@ pub fn run(args: ContainershotArgs) -> Result<(), String> {
         menus.apply_open_screen(7, 17, "Lectern".into());
         let menu = menus.open().expect("lectern menu");
         let book_screen =
-            rewo_world::book_view_screen::build_lectern_screen(320, 240, "Done", "Take Book");
+            rewo_ui::book_view_screen::build_lectern_screen(320, 240, "Done", "Take Book");
         c.record(
             "m9.an_open_lectern_is_a_bookview_screen_not_a_container",
             menu.layout.name == "lectern"
                 && crate::live_cmd::container_panel_for_test(menu.layout).is_none()
-                && book_screen.kind == rewo_world::screen::ScreenKind::BookView,
+                && book_screen.kind == rewo_ui::screen::ScreenKind::BookView,
             "open_screen(17) -> no panel (m8) AND the framework screen is the reader              with the mayBuild footer; the sync in live_cmd opens exactly this shape",
         );
     }
@@ -1497,7 +1497,7 @@ fn overlays(
     {
         let beacon_layout = rewo_world::menu_layout::layout_of(9).unwrap();
         let at_beacon = probe(beacon_layout);
-        let mut beacon_frame = |over: Option<rewo_world::menu_screen::BeaconChoice>,
+        let mut beacon_frame = |over: Option<rewo_ui::menu_screen::BeaconChoice>,
                                 gpu: &mut Gpu,
                                 off: &mut Offscreen,
                                 wr: &mut WorldRenderer|
@@ -1513,9 +1513,9 @@ fn overlays(
         };
         let none = beacon_frame(None, gpu, off, wr)?;
         let picked = beacon_frame(
-            Some(rewo_world::menu_screen::BeaconChoice {
+            Some(rewo_ui::menu_screen::BeaconChoice {
                 levels: 4,
-                primary: Some(rewo_world::menu_screen::BeaconEffect::ALL[0]),
+                primary: Some(rewo_ui::menu_screen::BeaconEffect::ALL[0]),
                 secondary: None,
                 has_payment: true,
             }),
@@ -1653,9 +1653,9 @@ fn overlays(
         let on_frame = loom_frame(true, gpu, off, wr)?;
         // The preview rect of cell (0,0): 5x10 at (+4, +2) inside a 14 px cell
         // whose origin is the grid's.
-        let (cx, cy) = rewo_world::menu_screen::loom_cell_origin(0, 0);
-        let pv = rewo_world::menu_screen::loom_pattern_preview(cx, cy);
-        let backing = rewo_world::menu_screen::LOOM_PREVIEW_BACKING;
+        let (cx, cy) = rewo_ui::menu_screen::loom_cell_origin(0, 0);
+        let pv = rewo_ui::menu_screen::loom_pattern_preview(cx, cy);
+        let backing = rewo_ui::menu_screen::LOOM_PREVIEW_BACKING;
         let grey = [
             ((backing >> 16) & 0xFF) as u8,
             ((backing >> 8) & 0xFF) as u8,
@@ -1699,7 +1699,7 @@ fn overlays(
     // leaves untested is `cut_view`'s own resolution, which
     // `stonecutter_table`'s tests grade list-side.
     {
-        use rewo_world::menu_screen as ms;
+        use rewo_ui::menu_screen as ms;
         let cut_layout = rewo_world::menu_layout::layout_of(24).unwrap();
         let at_cut = probe(cut_layout);
         // Six recipes, so the grid half-fills its second row and cannot scroll.
@@ -1872,7 +1872,7 @@ fn overlays(
     // RENDER reads it — the two cursor forms and the selection quad — through
     // the production `anvil_field_render`.
     {
-        use rewo_world::edit_box as eb;
+        use rewo_ui::edit_box as eb;
         let anvil_layout = rewo_world::menu_layout::layout_of(8).unwrap();
         let at_anvil = probe(anvil_layout);
         let mut field_frame = |setup: &dyn Fn(&mut eb::EditBox),
@@ -1889,7 +1889,7 @@ fn overlays(
                 assert!(o.menu.set_content(1, &content, None));
             }
             let open = m.open().expect("open");
-            let mut field = eb::EditBox::new(rewo_world::anvil::MAX_NAME_LENGTH);
+            let mut field = eb::EditBox::new(rewo_ui::anvil::MAX_NAME_LENGTH);
             field.set_focused(true);
             setup(&mut field);
             let mut panel = crate::live_cmd::container_panel_for_open_menu(
@@ -2017,7 +2017,7 @@ fn overlays(
 
     // y1..y4 — the merchant's trade list (M93u).
     {
-        use rewo_world::merchant_screen as ms;
+        use rewo_ui::merchant_screen as ms;
         let mer_layout = rewo_world::menu_layout::layout_of(19).unwrap();
         let at_mer = probe(mer_layout);
         let offer = |out_of_stock: bool| rewo_net::merchant::MerchantOffer {
@@ -2136,7 +2136,7 @@ fn overlays(
 
         // y5..y7 — the XP bar (M93v).
         {
-            use rewo_world::merchant_screen as bar;
+            use rewo_ui::merchant_screen as bar;
             let probe_x = |frac: f32| {
                 bar::XP_BAR_X + ((bar::XP_BAR_W as f32 * frac) as i32).min(bar::XP_BAR_W - 1)
             };
@@ -2205,7 +2205,7 @@ fn overlays(
 
         // z1..z3 — the trade button's chrome (M93x).
         {
-            use rewo_world::merchant_screen as ms;
+            use rewo_ui::merchant_screen as ms;
             let by = ms::button_y(0) + 10;
             let bare = mer_frame(0, 0, false, None, false, None, gpu, off, wr)?;
             let plain = mer_frame(3, 0, false, None, false, None, gpu, off, wr)?;
@@ -2261,7 +2261,7 @@ fn overlays(
         // y9 — the discounted price pair (M93w): one icon, TWO numbers, and a
         // strikethrough through the first.
         {
-            use rewo_world::merchant_screen as ms;
+            use rewo_ui::merchant_screen as ms;
             let plain = mer_frame(3, 0, false, None, false, None, gpu, off, wr)?;
             let cut = mer_frame(3, 0, false, None, true, None, gpu, off, wr)?;
             // The strikethrough's own row, at COST_A_X + 7, item y + 12.
@@ -2327,7 +2327,7 @@ fn overlays(
     // Two origins are in play: the menu's, which an open book MOVES, and the
     // book's own, which is anchored to the window.
     {
-        use rewo_world::recipe_book_screen as rb;
+        use rewo_ui::recipe_book_screen as rb;
         let (bl, bt, bsc) = rewo_gpu::container::recipe_book_origin(W as f32, H as f32);
         let book_items = rewo_data::items::Items::load(
             &rewo_data::DataPaths::for_version("26.2")
@@ -2387,7 +2387,7 @@ fn overlays(
         // (M45). Both are `None` for every witness written before M104, so
         // nothing already green moves.
         let mut book_frame = |b: Option<&crate::live_cmd::BookRender>,
-                              overlay: Option<&rewo_world::recipe_overlay::Open>,
+                              overlay: Option<&rewo_ui::recipe_overlay::Open>,
                               book_mouse: Option<(i32, i32)>,
                               gpu: &mut Gpu,
                               off: &mut Offscreen,
@@ -2430,7 +2430,7 @@ fn overlays(
         let unc_frame = book_frame(Some(&uncraftable_slots), None, None, gpu, off, wr)?;
         // M104's frames, taken here for the same reason the four above are:
         // `book_frame` borrows `shot` and must be dropped before b4 uses it.
-        use rewo_world::recipe_overlay as ro;
+        use rewo_ui::recipe_overlay as ro;
         let opened = |flags: &[bool], furnace: bool| ro::Open {
             // Anchored on the cell a right-click on slot 0 would open it from,
             // which is inside every clamp - the clamps have their own witnesses
@@ -2618,7 +2618,7 @@ fn overlays(
         // live client does not take (M45/M93q). Every pre-M104 call passes
         // `None`, so nothing already green moves.
         let icons_of = |b: Option<&crate::live_cmd::BookRender>,
-                        o: Option<&rewo_world::recipe_overlay::Open>|
+                        o: Option<&rewo_ui::recipe_overlay::Open>|
          -> usize {
             let inv = rewo_world::inventory::Inventory::default();
             crate::live_cmd::screen_icons(
@@ -2712,7 +2712,7 @@ fn overlays(
         // to avoid, and both need a position, so here it is.
         let icons_at = |b: Option<&crate::live_cmd::BookRender>,
                         inv: &rewo_world::inventory::Inventory,
-                        o: Option<&rewo_world::recipe_overlay::Open>|
+                        o: Option<&rewo_ui::recipe_overlay::Open>|
          -> Vec<rewo_gpu::gui_item::GuiItem> {
             crate::live_cmd::screen_icons(
                 inv,
@@ -3157,7 +3157,7 @@ fn overlays(
         // `setTooltipForNextFrameInternal` only assigns when nothing has
         // claimed the frame yet.
         let ghost_of = |slot: usize, item: i32| {
-            vec![rewo_world::ghost_slots::Ghost {
+            vec![rewo_ui::ghost_slots::Ghost {
                 slot,
                 items: vec![item],
                 is_result: false,
@@ -3222,7 +3222,7 @@ fn overlays(
         // express the claim at all: a one-item ghost makes `item(cycle)` and
         // `items.first()` the same function, so a build that lost the cycle
         // would pass b21 unchanged.
-        let alternating = vec![rewo_world::ghost_slots::Ghost {
+        let alternating = vec![rewo_ui::ghost_slots::Ghost {
             slot: 1,
             items: vec![dirt_id, stone_id],
             is_result: false,

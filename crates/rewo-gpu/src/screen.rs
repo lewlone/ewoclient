@@ -99,16 +99,16 @@ const ATLAS_W: u32 = 512;
 const ATLAS_H: u32 = 1024;
 
 /// `Button.BIG_WIDTH` / `Button.DEFAULT_HEIGHT`, and the three sheets' own
-/// size. Mirrored from `rewo_world::screen` rather than imported: `rewo-gpu`
-/// holds no dependency on the world crate, the same arrangement the font, skin
+/// size. Mirrored from `rewo_ui::screen` rather than imported: `rewo-gpu`
+/// holds no dependency on the world or UI crates, the same arrangement the font, skin
 /// and container slices use.
 pub const SPRITE_W: i32 = 200;
 pub const SPRITE_H: i32 = 20;
 
 /// Which of `AbstractButton.SPRITES` to blit.
 ///
-/// A mirror of `rewo_world::screen::ButtonSprite` for the crate-boundary
-/// reason above. The *choice* between the three is the world crate's — it is
+/// A mirror of `rewo_ui::screen::ButtonSprite` for the crate-boundary
+/// reason above. The *choice* between the three is the UI crate's — it is
 /// `WidgetSprites.get(active, hoveredOrFocused)` and belongs with the widget
 /// model — so this type never decides, it only names.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -120,7 +120,7 @@ pub enum ButtonSprite {
 
 /// Every sheet in this pass's atlas, as a flat index (M84).
 ///
-/// A mirror of `rewo_world::screen::Sprite` widened with the sheets no widget
+/// A mirror of `rewo_ui::screen::Sprite` widened with the sheets no widget
 /// selects — the two tiled backgrounds and the separators, which are screen
 /// *chrome* rather than widget state.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

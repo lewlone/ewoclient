@@ -10,6 +10,9 @@ rust-version.workspace = true
 rewo-proto = { workspace = true }
 rewo-data = { workspace = true }
 rewo-world = { workspace = true }
+# Session state owns UI models (the chat log, the disconnect cause, the
+# recipe overlay shape). rewo-ui never depends on rewo-net, so no cycle.
+rewo-ui = { workspace = true }
 log = { workspace = true }
 # M7 online-mode: login encryption + Mojang session join + chat signing.
 aes = { workspace = true }

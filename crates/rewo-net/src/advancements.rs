@@ -7,7 +7,7 @@
 //! contents, per-root background textures and hover tooltips. This module is
 //! the half that has to come first (M63's split): what the wire says, and what
 //! `ClientAdvancements` does with it. The screen model lives in
-//! [`rewo_world::advancements_screen`] and the render in `live_cmd`.
+//! [`rewo_ui::advancements_screen`] and the render in `live_cmd`.
 //!
 //! # Wire shapes, and the two traps in them
 //!

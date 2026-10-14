@@ -23,7 +23,7 @@
 //!    labelled `dialog.value().common().computeExternalTitle()`. The list lives
 //!    on a separate screen — a `ServerLinksDialogScreen`, one button per entry —
 //!    which the button opens. See [`crate::server_links`]'s consumers in
-//!    `rewo_world::{pause_screen, server_links_screen}`.
+//!    `rewo_ui::{pause_screen, server_links_screen}`.
 //!
 //! 2. **The disconnect screen shows at most *one* link, and only ever
 //!    `BUG_REPORT`.** `DisconnectedScreen` never mentions `ServerLinks` at all.

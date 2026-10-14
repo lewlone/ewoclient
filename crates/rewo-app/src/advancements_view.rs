@@ -1,6 +1,6 @@
 //! The advancements screen's render half (M178).
 //!
-//! [`rewo_world::advancements_screen`] owns the layout and the clocks; this
+//! [`rewo_ui::advancements_screen`] owns the layout and the clocks; this
 //! turns a session's `ClientAdvancements` snapshot into that model plus a
 //! [`rewo_gpu::screen::ScreenDraw`], text lines and item icons. Split out of
 //! `live_cmd` for the stats_view reason: **the gate must drive these
@@ -42,11 +42,9 @@
 use rewo_data::lang::Language;
 use rewo_gpu::screen::{Fill, ScissorBatch, ScreenDraw, Sheet, SpriteDraw};
 use rewo_gpu::world::OwnedTextLine;
+use rewo_ui::advancements_screen::{self as asm, Frame, NodeInput, TabKind};
+use rewo_world::chat_style;
 use rewo_world::string_splitter::find_line_break;
-use rewo_world::{
-    advancements_screen::{self as asm, Frame, NodeInput, TabKind},
-    chat_style,
-};
 
 use crate::live_cmd::srgb_bytes_to_linear_f;
 

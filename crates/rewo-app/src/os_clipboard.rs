@@ -1,7 +1,7 @@
 //! The desktop clipboard — vanilla's `KeyboardHandler.getClipboard` /
 //! `setClipboard`, which read and write the system clipboard through GLFW.
 //!
-//! The edit boxes keep their own `&mut String` clipboard (`rewo_world::edit_box`);
+//! The edit boxes keep their own `&mut String` clipboard (`rewo_ui::edit_box`);
 //! the live client syncs that buffer with this one: the system text is pulled
 //! in when Ctrl+V is pressed, and a buffer an in-game copy/cut changed is
 //! pushed out. An unavailable clipboard reads as nothing and writes are

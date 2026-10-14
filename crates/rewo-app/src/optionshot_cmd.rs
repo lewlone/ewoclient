@@ -22,7 +22,7 @@ use rewo_gpu::world::{SkyMode, WorldRenderer};
 use rewo_gpu::Gpu;
 use rewo_net::options::Options;
 use rewo_net::sounds::SoundSource;
-use rewo_world::options_screen as os;
+use rewo_ui::options_screen as os;
 
 /// Total named properties. Locked so a skipped one fails the run.
 const EXPECTED_WITNESSES: usize = 12;
@@ -150,7 +150,7 @@ fn check_pixels(
                 wr: &mut WorldRenderer,
                 opts: Option<&Options>,
                 mouse: Option<(f64, f64)>,
-                dragging: Option<rewo_world::screen::WidgetId>,
+                dragging: Option<rewo_ui::screen::WidgetId>,
                 dump: &str|
      -> Result<Vec<u8>, String> {
         let mut chrome = rewo_gpu::screen::ScreenDraw::default();
@@ -353,7 +353,7 @@ fn check_pixels(
     let sliders = screen
         .widgets
         .iter()
-        .filter(|w| matches!(w.kind, rewo_world::screen::WidgetKind::Slider { .. }))
+        .filter(|w| matches!(w.kind, rewo_ui::screen::WidgetKind::Slider { .. }))
         .count();
     c.record(
         "o9.eleven_sliders_one_frequency_button_one_done",
@@ -390,7 +390,7 @@ fn check_pixels(
     let r = sc.mouse_clicked(press_x, (my + 10) as f64, 0);
     let ok = matches!(
         r,
-        rewo_world::screen::MouseResult::Slider(id, v)
+        rewo_ui::screen::MouseResult::Slider(id, v)
             if id == os::widget_id(0, 0) && (v - 0.75).abs() < 0.01
     );
     c.record(

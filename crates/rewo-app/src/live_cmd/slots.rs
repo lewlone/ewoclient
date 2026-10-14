@@ -63,7 +63,7 @@ pub(crate) fn hovered_menu_slot(
     // function.
     let scale = rewo_gpu::hud::gui_scale(w, h);
     let gui_w = (w / scale) as i32;
-    if book_open && rewo_world::recipe_book_screen::width_too_narrow(gui_w) {
+    if book_open && rewo_ui::recipe_book_screen::width_too_narrow(gui_w) {
         return None;
     }
     let (gx, gy) = rewo_gpu::container::screen_to_gui_placed(
@@ -163,7 +163,7 @@ pub(super) fn frame_tooltip<T, C>(
 /// leaves the ghost painted and stops it describing itself.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn ghost_tooltip(
-    ghosts: &[rewo_world::ghost_slots::Ghost],
+    ghosts: &[rewo_ui::ghost_slots::Ghost],
     cycle: i32,
     layout: &'static rewo_world::menu_layout::MenuLayout,
     book_open: bool,
@@ -207,7 +207,7 @@ pub(crate) fn ghost_tooltip(
 /// the untestable surface rather than pretend to cover it.
 pub(super) fn book_labels(
     b: &BookRender,
-    field: &rewo_world::edit_box::EditBox,
+    field: &rewo_ui::edit_box::EditBox,
     lang: &rewo_data::lang::Language,
     advance: &[u8; 256],
     w: f32,
@@ -242,13 +242,13 @@ pub(super) fn book_labels(
 ///   two are arithmetically identical here; the hand-written form is kept
 ///   because it is what the class does.
 pub(super) fn book_page_label(
-    view: rewo_world::recipe_book_screen::BookView,
+    view: rewo_ui::recipe_book_screen::BookView,
     lang: &rewo_data::lang::Language,
     advance: &[u8; 256],
     w: f32,
     h: f32,
 ) -> Option<rewo_gpu::world::OwnedTextLine> {
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     // `Language.getOrDefault` returns the key when the map has no entry, and a
     // template with no specifiers survives `decomposeTemplate` unchanged — so
     // `or_key` is vanilla's behaviour, not a local fallback.
@@ -286,11 +286,11 @@ pub(crate) fn recipe_book_panel(
     field: &[(usize, rewo_gpu::container::PanelBlit)],
     // M104 — the open which-of-these overlay, if any, and the cursor in book
     // pixels for its hover. Drawn LAST, which is `graphics.nextStratum()`.
-    open: Option<&rewo_world::recipe_overlay::Open>,
+    open: Option<&rewo_ui::recipe_overlay::Open>,
     book_mouse: Option<(i32, i32)>,
 ) -> Option<rewo_gpu::container::RecipeBookPanel> {
     use rewo_data::assets as a;
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     let view = b.view?;
     let mut blits = Vec::new();
     let mut overlays = Vec::new();
@@ -402,7 +402,7 @@ pub(crate) fn container_panel_for_open_menu(
     // M93m — the beacon screen's own choice. Carried on the SAME entry point
     // the gate already drives rather than a second one, so `containershot`
     // cannot exercise a path the live client does not take (M45).
-    beacon_override: Option<rewo_world::menu_screen::BeaconChoice>,
+    beacon_override: Option<rewo_ui::menu_screen::BeaconChoice>,
     // M93q — the loom's grid. Carried for the same reason as the beacon's
     // choice, and needed for the same reason: with it hardcoded `None` the
     // gate could not reach `menu_overlays`' loom arm at all, so M93q's fill

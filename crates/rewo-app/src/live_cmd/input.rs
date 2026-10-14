@@ -42,7 +42,7 @@ impl LiveApp {
     /// whenever the cursor did, and `isScrollBarActive` alone would let a list
     /// that shrank under a held thumb keep scrolling past its end.
     pub(super) fn cut_drag(&mut self) {
-        use rewo_world::menu_screen as ms;
+        use rewo_ui::menu_screen as ms;
         if !self.screen.cut.is_some_and(|c| c.scrolling) {
             return;
         }
@@ -80,7 +80,7 @@ impl LiveApp {
 
     /// `MerchantScreen.mouseDragged` / `mouseScrolled` (M93u).
     pub(super) fn merchant_drag(&mut self) {
-        use rewo_world::merchant_screen as ms;
+        use rewo_ui::merchant_screen as ms;
         if !self.screen.merchant.is_some_and(|l| l.dragging) {
             return;
         }
@@ -140,19 +140,19 @@ impl LiveApp {
     ///
     /// The hit test is passed as a closure so it runs only when the popup
     /// declines, which is vanilla's order. It needs three things this method
-    /// has and [`rewo_world::chat_screen::ChatScreen`] does not: the chat
+    /// has and [`rewo_ui::chat_screen::ChatScreen`] does not: the chat
     /// store, the font's advances, and the box geometry.
-    pub(super) fn chat_mouse_pressed(&mut self, button: u8) -> rewo_world::chat_screen::ChatClick {
-        use rewo_world::chat_screen::ChatClick;
+    pub(super) fn chat_mouse_pressed(&mut self, button: u8) -> rewo_ui::chat_screen::ChatClick {
+        use rewo_ui::chat_screen::ChatClick;
         let Some(ext) = self.state.as_ref().map(|s| s.window.inner_size()) else {
             return ChatClick::NotHandled;
         };
         let gui_px = gui_px(ext.width, ext.height);
         let (mx, my) = (self.screen.mouse.0 as f32, self.screen.mouse.1 as f32);
         let advance = self.advance();
-        let opts = rewo_world::chat::ChatOptions::default();
+        let opts = rewo_ui::chat::ChatOptions::default();
         let chat_px = gui_px * opts.scale as f32;
-        let geom = rewo_world::chat::ChatBoxGeometry::new(ext.height as f32, chat_px, &opts);
+        let geom = rewo_ui::chat::ChatBoxGeometry::new(ext.height as f32, chat_px, &opts);
         // `mouse_gui` in integers, which is what `(int)event.x()` is.
         let (imx, imy) = self.mouse_gui();
         let outcome = {
@@ -170,7 +170,7 @@ impl LiveApp {
                 None => 0,
             };
             let hit = |shift: bool| {
-                rewo_world::chat::clickable_style_at(
+                rewo_ui::chat::clickable_style_at(
                     chat,
                     gui_tick,
                     // The chat screen is open, which is exactly what
@@ -219,10 +219,10 @@ impl LiveApp {
     }
 
     /// The input field's geometry, as `CommandSuggestions` measures from it.
-    pub(super) fn suggestion_metrics(&self) -> rewo_world::command_suggestions::InputMetrics {
+    pub(super) fn suggestion_metrics(&self) -> rewo_ui::command_suggestions::InputMetrics {
         let (gui_w, gui_h) = self.gui_size();
-        let (x, _y, w, _h) = rewo_world::chat_screen::input_rect(gui_w, gui_h);
-        rewo_world::command_suggestions::InputMetrics {
+        let (x, _y, w, _h) = rewo_ui::chat_screen::input_rect(gui_w, gui_h);
+        rewo_ui::command_suggestions::InputMetrics {
             x,
             // `getInnerWidth()` is `bordered ? width - 8 : width`, and the
             // chat field calls `setBordered(false)`.
@@ -234,11 +234,11 @@ impl LiveApp {
     /// One key press while the chat screen is up (M110).
     ///
     /// The adapter M97's lesson keeps producing: every rule lives in
-    /// `rewo_world::chat_screen` and reaches a test; this turns the returned
+    /// `rewo_ui::chat_screen` and reaches a test; this turns the returned
     /// `ChatAction` into the two things only the app can do — talk to the
     /// socket and close the screen.
     pub(super) fn chat_key(&mut self, key: i32, modifiers: i32) {
-        use rewo_world::chat_screen::{ChatAction, ExitReason};
+        use rewo_ui::chat_screen::{ChatAction, ExitReason};
         // Esc is `onClose`, and it is checked here rather than inside the
         // model because `Screen.keyPressed` handles it before the focused
         // widget — an `EditBox` with `canLoseFocus` false would otherwise
@@ -253,7 +253,7 @@ impl LiveApp {
         let (recent, per_page) = match self.session.as_ref() {
             Some(session) => (
                 session.chat.recent_chat().to_vec(),
-                rewo_world::chat::ChatOptions::default().lines_per_page(true),
+                rewo_ui::chat::ChatOptions::default().lines_per_page(true),
             ),
             None => (Vec::new(), 20),
         };
@@ -265,7 +265,7 @@ impl LiveApp {
             Some(a) => rewo_gpu::text::width(s, a),
             None => 0,
         };
-        let env = rewo_world::chat_screen::SuggestionEnv {
+        let env = rewo_ui::chat_screen::SuggestionEnv {
             metrics,
             width: &width_of,
             tab_words: &words,
@@ -275,7 +275,7 @@ impl LiveApp {
         };
         let action = match self.chat_screen.as_mut() {
             Some(s) => s.key_pressed(
-                rewo_world::edit_box::Input { key, modifiers },
+                rewo_ui::edit_box::Input { key, modifiers },
                 &mut clip,
                 &recent,
                 per_page,
@@ -317,8 +317,8 @@ impl LiveApp {
                             Some(a) => rewo_gpu::text::width_styled(s, a, st.bold),
                             None => 0,
                         };
-                    let ctx = rewo_world::chat::WrapContext {
-                        options: rewo_world::chat::ChatOptions::default(),
+                    let ctx = rewo_ui::chat::WrapContext {
+                        options: rewo_ui::chat::ChatOptions::default(),
                         // The box is TALLER while the screen is open, and
                         // `scrollChat` clamps against `getLinesPerPage()` — so
                         // `false` here would clamp the focused view against the
@@ -356,7 +356,7 @@ impl LiveApp {
             Some(a) => rewo_gpu::text::width(s, a),
             None => 0,
         };
-        let env = rewo_world::chat_screen::SuggestionEnv {
+        let env = rewo_ui::chat_screen::SuggestionEnv {
             metrics,
             width: &width_of,
             tab_words: &words,
@@ -384,7 +384,7 @@ impl LiveApp {
     /// A free-standing associated function rather than a method, for the same
     /// reason `chat_runs` is: the frame already holds the session borrowed.
     pub(super) fn usage_box_parts(
-        cs: Option<&rewo_world::chat_screen::ChatScreen>,
+        cs: Option<&rewo_ui::chat_screen::ChatScreen>,
         session: &PlaySession,
         cache: &Option<(String, rewo_net::dispatcher::ParseResults)>,
         advance: Option<[u8; 256]>,
@@ -424,7 +424,7 @@ impl LiveApp {
         };
         let (gui_w, gui_h) = gui;
         let _ = gui_w;
-        let (fx, _fy, fw, _fh) = rewo_world::chat_screen::input_rect(gui_w, gui_h);
+        let (fx, _fy, fw, _fh) = rewo_ui::chat_screen::input_rect(gui_w, gui_h);
         // `getScreenX(startPos)` — the field's x plus the width of everything
         // before the word being completed.
         let start = rewo_net::command_format::usage_lines_start(parsed, cursor);
@@ -555,7 +555,7 @@ impl LiveApp {
             Some(a) => rewo_gpu::text::width(s, a),
             None => 0,
         };
-        let env = rewo_world::chat_screen::SuggestionEnv {
+        let env = rewo_ui::chat_screen::SuggestionEnv {
             metrics,
             width: &width_of,
             tab_words: &[],
@@ -567,13 +567,13 @@ impl LiveApp {
     }
 
     /// `T` / `/` — `ChatComponent.openScreen`.
-    pub(super) fn open_chat_screen(&mut self, method: rewo_world::chat_screen::ChatMethod) {
+    pub(super) fn open_chat_screen(&mut self, method: rewo_ui::chat_screen::ChatMethod) {
         let recent_len = self
             .session
             .as_ref()
             .map(|s| s.chat.recent_chat().len())
             .unwrap_or(0);
-        self.chat_screen = Some(rewo_world::chat_screen::ChatScreen::open(
+        self.chat_screen = Some(rewo_ui::chat_screen::ChatScreen::open(
             method,
             self.chat_draft.as_ref(),
             recent_len,
@@ -586,7 +586,7 @@ impl LiveApp {
     /// `Gui.setScreen(null)` — and `ChatScreen.removed`, which is where the
     /// draft is decided and the chat scroll goes back to the bottom.
     pub(super) fn close_chat_screen(&mut self) {
-        use rewo_world::chat_screen::DraftOutcome;
+        use rewo_ui::chat_screen::DraftOutcome;
         if let Some(s) = self.chat_screen.take() {
             match s.removed(true) {
                 DraftOutcome::Discard => self.chat_draft = None,
@@ -610,17 +610,17 @@ impl LiveApp {
     /// `(ScreenKind, WidgetId)` and the app decides what it means.
     pub(super) fn press_widget(
         &mut self,
-        kind: rewo_world::screen::ScreenKind,
-        id: rewo_world::screen::WidgetId,
+        kind: rewo_ui::screen::ScreenKind,
+        id: rewo_ui::screen::WidgetId,
     ) {
-        use rewo_world::death_screen as ds;
-        use rewo_world::screen::ScreenKind;
+        use rewo_ui::death_screen as ds;
+        use rewo_ui::screen::ScreenKind;
         match (kind, id) {
             // M84: the statistics screen. `Done` is `onClose()`, a tab press is
             // `selectTab`, and a sort button is `sortByColumn` — the last two
             // rebuild, because a tab change moves the six sort widgets and
             // reselects every tab's sheet.
-            (ScreenKind::Stats, rewo_world::stats_screen::DONE) => {
+            (ScreenKind::Stats, rewo_ui::stats_screen::DONE) => {
                 self.close_stats();
             }
             (ScreenKind::Stats, id) => {
@@ -648,13 +648,13 @@ impl LiveApp {
             // M172: the book's Done button is `onClose()`. M184: the
             // lectern's footer adds Take Book -> `sendButtonClick(3)`; the
             // screen stays up (the server's slot echo empties the book).
-            (ScreenKind::BookView, rewo_world::book_view_screen::DONE) => {
+            (ScreenKind::BookView, rewo_ui::book_view_screen::DONE) => {
                 self.close_book();
             }
-            (ScreenKind::BookView, rewo_world::book_view_screen::TAKE_BOOK) => {
+            (ScreenKind::BookView, rewo_ui::book_view_screen::TAKE_BOOK) => {
                 if let Some(session) = self.session.as_mut() {
-                    if let Err(e) = session
-                        .container_button_click(rewo_world::book_view_screen::LECTERN_TAKE_BOOK)
+                    if let Err(e) =
+                        session.container_button_click(rewo_ui::book_view_screen::LECTERN_TAKE_BOOK)
                     {
                         log::warn!("live: lectern take_book: {e}");
                     }
@@ -662,12 +662,12 @@ impl LiveApp {
             }
             // M178: the advancements footer's Done is `onClose()` — which
             // lands in `removed()`'s CLOSED_SCREEN send, as every exit does.
-            (ScreenKind::Advancements, rewo_world::advancements_screen::DONE) => {
+            (ScreenKind::Advancements, rewo_ui::advancements_screen::DONE) => {
                 self.close_advancements();
             }
             // M174: the sign editor's Done is `onDone()` — which COMMITS
             // (the packet is in `removed()`, reached by every exit).
-            (ScreenKind::SignEdit, rewo_world::sign_edit_screen::DONE) => {
+            (ScreenKind::SignEdit, rewo_ui::sign_edit_screen::DONE) => {
                 self.close_sign_edit();
             }
             // M173: the options pages.
@@ -675,20 +675,20 @@ impl LiveApp {
                 self.options_press(id);
             }
             // M85's three screens.
-            (ScreenKind::Pause, rewo_world::pause_screen::RETURN_TO_GAME) => {
+            (ScreenKind::Pause, rewo_ui::pause_screen::RETURN_TO_GAME) => {
                 // `this.minecraft.gui.setScreen(null); mouseHandler.grabMouse();`
                 self.close_view_screen();
             }
-            (ScreenKind::Pause, rewo_world::pause_screen::OPTIONS) => {
+            (ScreenKind::Pause, rewo_ui::pause_screen::OPTIONS) => {
                 // M173: the options are real now — the root page, whose Done
                 // and Esc return here.
-                self.open_options_screen(rewo_world::options_screen::OptionsPage::Root);
+                self.open_options_screen(rewo_ui::options_screen::OptionsPage::Root);
             }
-            (ScreenKind::Pause, rewo_world::pause_screen::SERVER_LINKS) => {
+            (ScreenKind::Pause, rewo_ui::pause_screen::SERVER_LINKS) => {
                 // `minecraft.player.connection.showDialog(dialog, this)`.
                 self.open_links_screen();
             }
-            (ScreenKind::Pause, rewo_world::pause_screen::DISCONNECT) => {
+            (ScreenKind::Pause, rewo_ui::pause_screen::DISCONNECT) => {
                 // `minecraft.disconnectFromWorld(DEFAULT_QUIT_MESSAGE)`. Rewo
                 // has no title screen to land on, so leaving the session is
                 // the whole of it — the same call the death screen's second
@@ -703,7 +703,7 @@ impl LiveApp {
                 // rather than silently swallowed.
                 log::info!("live: pause screen — widget {id} is not implemented");
             }
-            (ScreenKind::ServerLinks, rewo_world::server_links_screen::BACK) => {
+            (ScreenKind::ServerLinks, rewo_ui::server_links_screen::BACK) => {
                 // `DialogAction.CLOSE` → `previousScreen`, which is the pause
                 // screen this dialog was opened from.
                 self.open_pause_screen();
@@ -715,7 +715,7 @@ impl LiveApp {
                 // turned the prompt off. Launching a browser from a string a
                 // remote server chose is a decision, not a transcription — see
                 // `rewo_net::server_links`.
-                let i = rewo_world::server_links_screen::link_index(id).unwrap_or(0);
+                let i = rewo_ui::server_links_screen::link_index(id).unwrap_or(0);
                 match self.server_links.entries().get(i) {
                     Some(e) => log::info!(
                         "live: server link {i} selected: {} (Rewo does not open URLs)",
@@ -745,8 +745,8 @@ impl LiveApp {
     }
 
     /// M173 — one press on an options page's widget.
-    pub(super) fn options_press(&mut self, id: rewo_world::screen::WidgetId) {
-        use rewo_world::options_screen as os;
+    pub(super) fn options_press(&mut self, id: rewo_ui::screen::WidgetId) {
+        use rewo_ui::options_screen as os;
         let Some(page) = self.options_view else {
             return;
         };
@@ -865,7 +865,7 @@ impl LiveApp {
             rewo_gpu::text::width_styled(&s.text, &advance, s.bold)
         };
         let Some(event) =
-            rewo_world::book_view_screen::click_event_at(book, gw, &measure, mx as i32, my as i32)
+            rewo_ui::book_view_screen::click_event_at(book, gw, &measure, mx as i32, my as i32)
         else {
             return false;
         };
@@ -878,7 +878,7 @@ impl LiveApp {
             rewo_world::chat_events::ClickEvent::ChangePage(page) => {
                 if self.lectern_shown.is_some() {
                     if let Some(session) = self.session.as_mut() {
-                        let button = rewo_world::book_view_screen::lectern_force_button(page - 1);
+                        let button = rewo_ui::book_view_screen::lectern_force_button(page - 1);
                         if let Err(e) = session.container_button_click(button) {
                             log::warn!("live: lectern force page: {e}");
                         }

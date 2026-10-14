@@ -11,8 +11,8 @@
 //! a raw player_combat_kill body (built here)
 //!   -> rewo_net::route_player_combat_kill   (with a REAL `Ids::resolve`d table)
 //!   -> rewo_net::death_action               (handlePlayerCombatKill's own branch)
-//!   -> rewo_world::death_screen::DeathScreen::build   (== `init()`)
-//!   -> rewo_world::screen::Screen            (the routing + focus + tick model)
+//!   -> rewo_ui::death_screen::DeathScreen::build   (== `init()`)
+//!   -> rewo_ui::screen::Screen            (the routing + focus + tick model)
 //!   -> live_cmd::{death_screen_chrome, death_screen_lines}  (the SAME builders
 //!                                                            the frame path calls)
 //!   -> WorldRenderer::{set_screen, set_text} -> ScreenPass / TextPass
@@ -60,8 +60,8 @@ use rewo_gpu::world::{SkyMode, WorldRenderer};
 use rewo_gpu::Gpu;
 use rewo_net::ids::Ids;
 use rewo_proto::writer::PacketWriter;
-use rewo_world::death_screen::{self as ds, DeathScreen};
-use rewo_world::screen::{ButtonSprite, KeyResult, MouseResult, Screen, ScreenKind, Widget};
+use rewo_ui::death_screen::{self as ds, DeathScreen};
+use rewo_ui::screen::{ButtonSprite, KeyResult, MouseResult, Screen, ScreenKind, Widget};
 
 /// Total named properties this gate asserts. Locked so a skipped property
 /// fails the run even when nothing mismatched.

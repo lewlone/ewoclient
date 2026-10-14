@@ -1,0 +1,19 @@
+[package]
+name = "rewo-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Screen, widget and chat-log MODELS (no GPU). Depends on rewo-world for the
+# Component model (`chat_style`), the menu/inventory state and the stats
+# counter; rewo-world never depends on this crate.
+[dependencies]
+rewo-proto = { workspace = true }
+rewo-data = { workspace = true }
+rewo-world = { workspace = true }
+log = { workspace = true }
+
+[lints]
+workspace = true

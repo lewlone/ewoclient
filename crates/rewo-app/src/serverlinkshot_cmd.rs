@@ -8,8 +8,8 @@
 //!   -> rewo_net::route_session            (with a REAL `Ids::resolve`d table)
 //!   -> rewo_net::session::apply           (the same fn the configuration loop calls)
 //!   -> rewo_net::session::SessionState    (where the links live while the session does)
-//!   -> rewo_world::{pause_screen, server_links_screen, disconnect_screen}::build
-//!   -> rewo_world::layout                 (GridLayout / LinearLayout / FrameLayout)
+//!   -> rewo_ui::{pause_screen, server_links_screen, disconnect_screen}::build
+//!   -> rewo_ui::layout                 (GridLayout / LinearLayout / FrameLayout)
 //!   -> live_cmd::{screen_chrome, screen_text_lines}   (the SAME builders the frame path calls)
 //!   -> WorldRenderer::{set_screen, set_text} -> ScreenPass / TextPass
 //!   -> Offscreen::read_rgba               (real pixels)
@@ -72,10 +72,10 @@ use rewo_gpu::Gpu;
 use rewo_net::ids::Ids;
 use rewo_net::server_links::{self as sl, KnownLinkType, ServerLink, ServerLinkLabel, ServerLinks};
 use rewo_proto::writer::PacketWriter;
-use rewo_world::disconnect_screen as dc;
-use rewo_world::pause_screen as ps;
-use rewo_world::screen::{MouseResult, Screen, WidgetKind};
-use rewo_world::server_links_screen as sls;
+use rewo_ui::disconnect_screen as dc;
+use rewo_ui::pause_screen as ps;
+use rewo_ui::screen::{MouseResult, Screen, WidgetKind};
+use rewo_ui::server_links_screen as sls;
 
 /// Total named properties this gate asserts. Locked so a skipped property
 /// fails the run even when nothing mismatched.
@@ -676,7 +676,7 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
     // is what this milestone's own unit test asserted until the transcription
     // disagreed with it. And `setX` truncates where `setY` rounds, four lines
     // apart in `AbstractChildWrapper`.
-    let mut d = rewo_world::layout::Divisor::new(5, 2);
+    let mut d = rewo_ui::layout::Divisor::new(5, 2);
     let parts: Vec<i32> = std::iter::from_fn(|| d.next_int()).collect();
     c.record(
         "m12.the_divisor_carries_its_remainder_forward_to_the_later_part",
@@ -685,7 +685,7 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
     );
     c.record(
         "m13.frame_alignment_truncates_where_grid_vertical_alignment_rounds",
-        rewo_world::layout::align_in_dimension(0, 21, 20, 0.5) == 0
+        rewo_ui::layout::align_in_dimension(0, 21, 20, 0.5) == 0
             && back.as_ref().is_some_and(|b| b.y == GUI_H - 33 + 7),
         "`(int)Mth.lerp(...)` in `alignInDimension` against \
          `Math.round(Mth.lerp(...))` in `AbstractChildWrapper.setY` — one \
@@ -697,7 +697,7 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
     // MUTATION: copying the death screen's `with_close_on_esc(false)` onto the
     // pause screen. It would then be inescapable except through its own
     // buttons, which is a close relative of a hung client.
-    use rewo_world::screen::KeyResult;
+    use rewo_ui::screen::KeyResult;
     c.record(
         "m14.esc_closes_the_pause_screen_and_cannot_dismiss_the_disconnect_one",
         with.clone().key_pressed(256, false) == KeyResult::Close
@@ -933,7 +933,7 @@ fn check_pixels(
     let link0 = dialog
         .widget(sls::LINK_BASE)
         .cloned()
-        .unwrap_or_else(|| rewo_world::screen::Widget::button(0, 0, 0, 1, 1, ""));
+        .unwrap_or_else(|| rewo_ui::screen::Widget::button(0, 0, 0, 1, 1, ""));
     let (bx0, by0) = ((link0.x * SCALE) as u32, (link0.y * SCALE) as u32);
     let (bx1, by1) = (
         ((link0.x + link0.width) * SCALE) as u32,
@@ -1055,7 +1055,7 @@ fn check_pixels(
     let title = dialog
         .widget(sls::TITLE)
         .cloned()
-        .unwrap_or_else(|| rewo_world::screen::Widget::label(0, 0, 0, 1, ""));
+        .unwrap_or_else(|| rewo_ui::screen::Widget::label(0, 0, 0, 1, ""));
     let title_band = |buf: &[u8]| {
         let y0 = (title.y * SCALE) as u32;
         (y0..y0 + 9 * SCALE as u32)
@@ -1092,7 +1092,7 @@ fn check_pixels(
     let reason = disconnected
         .widget(dc::REASON)
         .cloned()
-        .unwrap_or_else(|| rewo_world::screen::Widget::multi_label(0, 0, 0, 1, Vec::new(), false));
+        .unwrap_or_else(|| rewo_ui::screen::Widget::multi_label(0, 0, 0, 1, Vec::new(), false));
     let (lines, centered) = match &reason.kind {
         WidgetKind::MultiLabel { lines, centered } => (lines.clone(), *centered),
         _ => (Vec::new(), false),

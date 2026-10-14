@@ -74,9 +74,9 @@
 //! are unreachable in `rewo_net::command_format::usage_lines`. The blocker is
 //! an options screen and an account fetch, not a decode.
 
-use crate::chat_events::ClickEvent;
-use crate::chat_style::ChatStyle;
 use crate::edit_box::{key, EditBox, Input};
+use rewo_world::chat_events::ClickEvent;
+use rewo_world::chat_style::ChatStyle;
 
 /// `ChatScreen.MOUSE_SCROLL_SPEED`.
 pub const MOUSE_SCROLL_SPEED: f64 = 7.0;
@@ -114,7 +114,7 @@ pub enum ChatClick {
     /// Consumed, and everything it asked for has already happened.
     Handled,
     /// `Util.getPlatform().openUri(uri)`. Already gated to `http`/`https` at
-    /// decode — see [`crate::chat_events`] — so the caller does not re-check
+    /// decode — see [`rewo_world::chat_events`] — so the caller does not re-check
     /// and cannot forget to.
     OpenUrl(String),
     /// `connection.sendUnattendedCommand(command)`, the leading slash already
@@ -348,7 +348,7 @@ impl ChatScreen {
     /// `updateUsageInfo`, whose tail is the `showSuggestions` below.
     pub fn accept_suggestions(
         &mut self,
-        suggestions: crate::suggestions::Suggestions,
+        suggestions: rewo_world::suggestions::Suggestions,
         env: &SuggestionEnv<'_>,
     ) {
         self.suggestions.set_pending(Some(suggestions));
@@ -1273,7 +1273,7 @@ mod tests {
 
     // ---- M128: clickable chat text ---------------------------------------
 
-    use crate::chat_events::{ChatEvents, ClickEvent};
+    use rewo_world::chat_events::{ChatEvents, ClickEvent};
     use std::sync::Arc;
 
     fn styled(events: ChatEvents) -> ChatStyle {

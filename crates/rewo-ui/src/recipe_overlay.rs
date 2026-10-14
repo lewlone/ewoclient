@@ -293,7 +293,7 @@ pub struct Pos {
 
 /// The display shapes the two button classes recognise.
 ///
-/// Shape-neutral because `rewo-net` depends on `rewo-world` and not the other
+/// Shape-neutral because `rewo-net` depends on `rewo-ui` and not the other
 /// way round, so `RecipeDisplay` cannot be named here. The caller maps its own
 /// display onto this and resolves the ingredient indices afterwards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

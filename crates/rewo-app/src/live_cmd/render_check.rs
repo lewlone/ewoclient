@@ -801,14 +801,14 @@ impl RenderCheck {
         // `CRAFTING_TABS` rather than written as a literal: M95 corrected that
         // count from four to five, and a literal would have been quietly
         // generous by one from then on.
-        let min_quads = 1 + rewo_world::recipe_book_screen::CRAFTING_TABS.len() + 1;
+        let min_quads = 1 + rewo_ui::recipe_book_screen::CRAFTING_TABS.len() + 1;
         row(
             "r23 the recipe book was drawn in the windowed client",
             self.book_quads_max >= min_quads,
             format!(
                 "{} quads at peak (panel + {} crafting tabs + filter = {min_quads} with an empty grid)",
                 self.book_quads_max,
-                rewo_world::recipe_book_screen::CRAFTING_TABS.len()
+                rewo_ui::recipe_book_screen::CRAFTING_TABS.len()
             ),
         );
         // M104 — and that the which-of-these overlay reached the windowed
@@ -860,7 +860,7 @@ impl RenderCheck {
         // graded by unit tests on both sides of the seam
         // (`the_fade_and_the_text_opacity_both_reach_the_line` here,
         // `a_message_holds_full_alpha_for_one_hundred_and_eighty_ticks` in
-        // `rewo_world::chat`). Lengthening the run to reach the fade would turn
+        // `rewo_ui::chat`). Lengthening the run to reach the fade would turn
         // a gate into a soak for one property two tests already pin.
         row(
             "r26 the chat box drew a line in the windowed client",
@@ -2006,7 +2006,7 @@ impl LiveApp {
                 // a stale `self.view`.
                 if self.options_staged == 0 && elapsed >= limit * 0.06 {
                     self.options_staged = 1;
-                    self.open_options_screen(rewo_world::options_screen::OptionsPage::Sound);
+                    self.open_options_screen(rewo_ui::options_screen::OptionsPage::Sound);
                 }
                 if self.options_staged == 1 && elapsed >= limit * 0.12 {
                     self.options_staged = 2;
@@ -2431,7 +2431,7 @@ impl LiveApp {
                             session.inject_packet(pid, &body);
                         }
                     }
-                    self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Message);
+                    self.open_chat_screen(rewo_ui::chat_screen::ChatMethod::Message);
                     // `onEdited` is what turns suggestions on and asks for
                     // them; nothing else in a windowed run types.
                     self.chat_char('r');
@@ -2481,9 +2481,7 @@ impl LiveApp {
                     }
                     let outcome = self.chat_mouse_pressed(0);
                     if outcome
-                        == rewo_world::chat_screen::ChatClick::RunCommand(
-                            CLICK_WITNESS_COMMAND.into(),
-                        )
+                        == rewo_ui::chat_screen::ChatClick::RunCommand(CLICK_WITNESS_COMMAND.into())
                     {
                         if let Some(c) = self.check.as_mut() {
                             c.chat_click_ok += 1;
@@ -2501,7 +2499,7 @@ impl LiveApp {
                 let limit = self.run_seconds.unwrap_or(RENDER_CHECK_SECONDS);
                 if self.started.elapsed().as_secs_f32() >= limit * 0.55 {
                     self.close_chat_screen();
-                    self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Command);
+                    self.open_chat_screen(rewo_ui::chat_screen::ChatMethod::Command);
                     self.chat_char('g');
                     // …and then on to `/give `, which is where an ARGUMENT is
                     // expected: the integer child suggests nothing, so no
@@ -2545,7 +2543,7 @@ impl LiveApp {
                     // when what it had actually typed was
                     // `/give @s dirt setblock `.
                     self.chat_draft = None;
-                    self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Command);
+                    self.open_chat_screen(rewo_ui::chat_screen::ChatMethod::Command);
                     for ch in "setblock ".chars() {
                         self.chat_char(ch);
                     }
@@ -2561,7 +2559,7 @@ impl LiveApp {
                     self.close_chat_screen();
                     // The draft drop M120 needed, for M110's reason.
                     self.chat_draft = None;
-                    self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Command);
+                    self.open_chat_screen(rewo_ui::chat_screen::ChatMethod::Command);
                     for ch in "scoreboard objectives setdisplay ".chars() {
                         self.chat_char(ch);
                     }
@@ -2589,7 +2587,7 @@ impl LiveApp {
                     self.close_chat_screen();
                     // The draft drop M120 needed, for M110's reason.
                     self.chat_draft = None;
-                    self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Command);
+                    self.open_chat_screen(rewo_ui::chat_screen::ChatMethod::Command);
                     for ch in "rewonosuchcommand".chars() {
                         self.chat_char(ch);
                     }
@@ -2692,8 +2690,8 @@ impl LiveApp {
                     // the view, and both are false for a crafting table's
                     // unfiltered book — the rest is named so the fixture reads
                     // as a whole `BookView` rather than a partial one.
-                    let view = rewo_world::recipe_book_screen::BookView {
-                        tabs: rewo_world::recipe_book_screen::CRAFTING_TABS.len(),
+                    let view = rewo_ui::recipe_book_screen::BookView {
+                        tabs: rewo_ui::recipe_book_screen::CRAFTING_TABS.len(),
                         selected_tab: 0,
                         page: 0,
                         total_pages: 1,
@@ -2702,7 +2700,7 @@ impl LiveApp {
                         furnace_family: false,
                     };
                     let collection = (0..3)
-                        .map(|i| rewo_world::recipe_overlay::Button {
+                        .map(|i| rewo_ui::recipe_overlay::Button {
                             recipe: i,
                             craftable: i == 0,
                             slots: Vec::new(),

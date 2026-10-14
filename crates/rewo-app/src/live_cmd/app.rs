@@ -232,18 +232,18 @@ impl ApplicationHandler for LiveApp {
                             let mut clip = std::mem::take(&mut self.clipboard);
                             let outcome = self.sign_edit.as_mut().map(|v| {
                                 v.state.key_pressed(
-                                    rewo_world::edit_box::Input::new(key, mods),
+                                    rewo_ui::edit_box::Input::new(key, mods),
                                     &width_fn,
                                     &mut clip,
                                 )
                             });
                             self.clipboard = clip;
                             match outcome {
-                                Some(rewo_world::sign_edit_screen::SignKey::Handled) => {
+                                Some(rewo_ui::sign_edit_screen::SignKey::Handled) => {
                                     self.echo_sign_edit();
                                     return;
                                 }
-                                Some(rewo_world::sign_edit_screen::SignKey::Close) => {
+                                Some(rewo_ui::sign_edit_screen::SignKey::Close) => {
                                     self.close_sign_edit();
                                     return;
                                 }
@@ -299,7 +299,7 @@ impl ApplicationHandler for LiveApp {
                             // the order is belt-and-braces rather than a
                             // contract.
                             if self.screen.book_search.is_focused() {
-                                let input = rewo_world::edit_box::Input::new(key, mods);
+                                let input = rewo_ui::edit_box::Input::new(key, mods);
                                 let consumed =
                                     self.screen.book_search.key_pressed(input, &mut clip);
                                 self.clipboard = clip;
@@ -307,7 +307,7 @@ impl ApplicationHandler for LiveApp {
                                     follow_cursor(
                                         &mut self.screen.book_search,
                                         self.baked.as_ref(),
-                                        rewo_world::recipe_book_screen::SEARCH_INNER_W,
+                                        rewo_ui::recipe_book_screen::SEARCH_INNER_W,
                                     );
                                     return;
                                 }
@@ -318,7 +318,7 @@ impl ApplicationHandler for LiveApp {
                                 &mut self.screen,
                                 &items,
                                 self.baked.as_ref(),
-                                rewo_world::edit_box::Input::new(key, mods),
+                                rewo_ui::edit_box::Input::new(key, mods),
                                 &mut clip,
                             );
                             self.clipboard = clip;
@@ -341,7 +341,7 @@ impl ApplicationHandler for LiveApp {
                                     follow_cursor(
                                         &mut self.screen.book_search,
                                         self.baked.as_ref(),
-                                        rewo_world::recipe_book_screen::SEARCH_INNER_W,
+                                        rewo_ui::recipe_book_screen::SEARCH_INNER_W,
                                     );
                                 }
                                 any |= anvil_char(
@@ -426,9 +426,9 @@ impl ApplicationHandler for LiveApp {
                             // the same buttons the arrows send.
                             if self.lectern_shown.is_some() {
                                 let button = if k == 266 {
-                                    rewo_world::book_view_screen::LECTERN_PAGE_BACK
+                                    rewo_ui::book_view_screen::LECTERN_PAGE_BACK
                                 } else {
-                                    rewo_world::book_view_screen::LECTERN_PAGE_FORWARD
+                                    rewo_ui::book_view_screen::LECTERN_PAGE_FORWARD
                                 };
                                 if let Some(session) = self.session.as_mut() {
                                     if let Err(e) = session.container_button_click(button) {
@@ -459,33 +459,33 @@ impl ApplicationHandler for LiveApp {
                                 .map(|s| (s.kind, s.key_pressed(k, shift)))
                         });
                         match result {
-                            Some((kind, rewo_world::screen::KeyResult::Pressed(id))) => {
+                            Some((kind, rewo_ui::screen::KeyResult::Pressed(id))) => {
                                 self.press_widget(kind, id);
                                 return;
                             }
-                            Some((kind, rewo_world::screen::KeyResult::Close)) => {
+                            Some((kind, rewo_ui::screen::KeyResult::Close)) => {
                                 // `onClose()`. For a dialog that is
                                 // `DialogAction.CLOSE` → the previous screen,
                                 // which is the pause screen it was opened
                                 // from; for everything else it is
                                 // `setScreen(null)`.
-                                if kind == rewo_world::screen::ScreenKind::ServerLinks {
+                                if kind == rewo_ui::screen::ScreenKind::ServerLinks {
                                     self.open_pause_screen();
-                                } else if kind == rewo_world::screen::ScreenKind::Stats {
+                                } else if kind == rewo_ui::screen::ScreenKind::Stats {
                                     // M84: a screen with per-screen state must
                                     // drop it here too, or `pump_stats_screen`
                                     // re-opens the screen Esc just closed.
                                     self.close_stats();
-                                } else if kind == rewo_world::screen::ScreenKind::BookView {
+                                } else if kind == rewo_ui::screen::ScreenKind::BookView {
                                     // M172: same rule — the render arm keys on
                                     // `self.book`, so it drops with the screen.
                                     self.close_book();
-                                } else if kind == rewo_world::screen::ScreenKind::SignEdit {
+                                } else if kind == rewo_ui::screen::ScreenKind::SignEdit {
                                     // M174: Esc COMMITS (belt-and-braces — the
                                     // sign arm consumes Esc before this
                                     // dispatch can see it).
                                     self.close_sign_edit();
-                                } else if kind == rewo_world::screen::ScreenKind::Options
+                                } else if kind == rewo_ui::screen::ScreenKind::Options
                                     && self.options_view.is_some()
                                 {
                                     // M173: Esc = onClose — a sub-page returns
@@ -497,7 +497,7 @@ impl ApplicationHandler for LiveApp {
                                 }
                                 return;
                             }
-                            Some((_, rewo_world::screen::KeyResult::Handled)) => return,
+                            Some((_, rewo_ui::screen::KeyResult::Handled)) => return,
                             _ => {}
                         }
                     }
@@ -606,10 +606,10 @@ impl ApplicationHandler for LiveApp {
                     // whenever a chat screen is already open, so `T` cannot
                     // both open the screen and be typed into it.
                     PhysicalKey::Code(KeyCode::KeyT) if p => {
-                        self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Message);
+                        self.open_chat_screen(rewo_ui::chat_screen::ChatMethod::Message);
                     }
                     PhysicalKey::Code(KeyCode::Slash) if p => {
-                        self.open_chat_screen(rewo_world::chat_screen::ChatMethod::Command);
+                        self.open_chat_screen(rewo_ui::chat_screen::ChatMethod::Command);
                     }
                     // E opens and closes the inventory (M35).
                     PhysicalKey::Code(KeyCode::KeyE) if p => {
@@ -717,15 +717,15 @@ impl ApplicationHandler for LiveApp {
                 if self.advancements.is_some() {
                     self.adv_drag.press(b);
                 }
-                if let Some((kind, rewo_world::screen::MouseResult::Pressed(id))) = pressed {
+                if let Some((kind, rewo_ui::screen::MouseResult::Pressed(id))) = pressed {
                     self.press_widget(kind, id);
-                } else if let Some((_, rewo_world::screen::MouseResult::Slider(id, v))) = pressed {
+                } else if let Some((_, rewo_ui::screen::MouseResult::Slider(id, v))) = pressed {
                     // M173: `onClick` -> `setValueFromMouse` — the press IS
                     // the first value change, and it arms the drag.
                     self.options_slider_changed(id, v);
                     self.options_drag = Some(id);
                 } else if b == 0
-                    && matches!(pressed, Some((rewo_world::screen::ScreenKind::BookView, _)))
+                    && matches!(pressed, Some((rewo_ui::screen::ScreenKind::BookView, _)))
                 {
                     // M180: the page-text click events run FIRST — vanilla's
                     // `BookViewScreen.mouseClicked` walks the
@@ -751,11 +751,11 @@ impl ApplicationHandler for LiveApp {
                                 .as_ref()
                                 .and_then(|b| b.arrow_at(mx as i32, my as i32, gw));
                             if let Some(button) = send.map(|a| match a {
-                                rewo_world::book_view_screen::BookArrow::Back => {
-                                    rewo_world::book_view_screen::LECTERN_PAGE_BACK
+                                rewo_ui::book_view_screen::BookArrow::Back => {
+                                    rewo_ui::book_view_screen::LECTERN_PAGE_BACK
                                 }
-                                rewo_world::book_view_screen::BookArrow::Forward => {
-                                    rewo_world::book_view_screen::LECTERN_PAGE_FORWARD
+                                rewo_ui::book_view_screen::BookArrow::Forward => {
+                                    rewo_ui::book_view_screen::LECTERN_PAGE_FORWARD
                                 }
                             }) {
                                 if let Some(session) = self.session.as_mut() {
@@ -771,7 +771,7 @@ impl ApplicationHandler for LiveApp {
                 } else if b == 0
                     && matches!(
                         pressed,
-                        Some((rewo_world::screen::ScreenKind::Advancements, _))
+                        Some((rewo_ui::screen::ScreenKind::Advancements, _))
                     )
                 {
                     // M179: the tab strip. Not framework widgets (vanilla's
@@ -1132,7 +1132,7 @@ impl ApplicationHandler for LiveApp {
 
 impl LiveApp {
     pub(super) fn merchant_wheel(&mut self, dy: f64) {
-        use rewo_world::merchant_screen as ms;
+        use rewo_ui::merchant_screen as ms;
         let Some(session) = self.session.as_ref() else {
             return;
         };
@@ -1157,7 +1157,7 @@ impl LiveApp {
     /// The sign is vanilla's `scrollOffs - scrollY / offscreenRows`, the same
     /// minus M84 records for `AbstractScrollArea`.
     pub(super) fn cut_wheel(&mut self, dy: f64) {
-        use rewo_world::menu_screen as ms;
+        use rewo_ui::menu_screen as ms;
         if self.screen.cut.is_none() {
             return;
         }
@@ -1203,8 +1203,8 @@ impl LiveApp {
         self.screen.book_overlay = None;
         if open {
             let (gw, gh) = self.gui_size();
-            self.screen.screens.open(rewo_world::screen::Screen::new(
-                rewo_world::screen::ScreenKind::Inventory,
+            self.screen.screens.open(rewo_ui::screen::Screen::new(
+                rewo_ui::screen::ScreenKind::Inventory,
                 gw,
                 gh,
             ));
@@ -1228,7 +1228,7 @@ impl LiveApp {
         gw: i32,
         gh: i32,
         lectern: bool,
-    ) -> rewo_world::screen::Screen {
+    ) -> rewo_ui::screen::Screen {
         let done = self.lang.get_or_default("gui.done", "Done").to_string();
         let may_build = !self
             .session
@@ -1240,9 +1240,9 @@ impl LiveApp {
                 .lang
                 .get_or_default("lectern.take_book", "Take Book")
                 .to_string();
-            rewo_world::book_view_screen::build_lectern_screen(gw, gh, &done, &take)
+            rewo_ui::book_view_screen::build_lectern_screen(gw, gh, &done, &take)
         } else {
-            rewo_world::book_view_screen::build_screen(gw, gh, &done)
+            rewo_ui::book_view_screen::build_screen(gw, gh, &done)
         }
     }
 
@@ -1317,7 +1317,7 @@ impl LiveApp {
 
     /// `PauseScreen(true)` — Esc with a session behind it (M85).
     pub(super) fn open_pause_screen(&mut self) {
-        let labels = rewo_world::pause_screen::PauseLabels::resolve(&self.lang);
+        let labels = rewo_ui::pause_screen::PauseLabels::resolve(&self.lang);
         // `!connection.serverLinks().isEmpty()` — the packet's whole effect on
         // this screen. Read from the durable mirror, which is the same value
         // the session holds while it is alive.
@@ -1330,14 +1330,14 @@ impl LiveApp {
 
     /// The button on the pause screen — `showDialog(Dialogs.SERVER_LINKS)`.
     pub(super) fn open_links_screen(&mut self) {
-        let labels = rewo_world::server_links_screen::ServerLinksLabels {
+        let labels = rewo_ui::server_links_screen::ServerLinksLabels {
             title: self
                 .lang
-                .or_key(rewo_world::server_links_screen::KEY_TITLE)
+                .or_key(rewo_ui::server_links_screen::KEY_TITLE)
                 .to_string(),
             back: self
                 .lang
-                .or_key(rewo_world::server_links_screen::KEY_BACK)
+                .or_key(rewo_ui::server_links_screen::KEY_BACK)
                 .to_string(),
             // `ServerLinks.Entry.displayName()` —
             // `type.map(KnownLinkType::displayName, r -> r)`: the lang map for
@@ -1369,7 +1369,7 @@ impl LiveApp {
     /// `createDisconnectScreen` — **the screen with no session behind it.**
     pub(super) fn open_disconnect_screen(
         &mut self,
-        cause: rewo_world::disconnect_screen::DisconnectCause,
+        cause: rewo_ui::disconnect_screen::DisconnectCause,
         reason: String,
     ) {
         use rewo_net::server_links::KnownLinkType;
@@ -1380,12 +1380,9 @@ impl LiveApp {
             .server_links
             .find_known_type(KnownLinkType::BugReport)
             .map(|e| e.link.clone());
-        let details = rewo_world::disconnect_screen::DisconnectDetails::new(
-            cause,
-            reason,
-            candidate.as_deref(),
-        );
-        let labels = rewo_world::disconnect_screen::DisconnectLabels::resolve(&self.lang);
+        let details =
+            rewo_ui::disconnect_screen::DisconnectDetails::new(cause, reason, candidate.as_deref());
+        let labels = rewo_ui::disconnect_screen::DisconnectLabels::resolve(&self.lang);
         log::warn!(
             "live: disconnected ({cause:?}): {} — bug report link: {:?}",
             details.reason,
@@ -1411,18 +1408,18 @@ impl LiveApp {
             ScreenView::None => return,
             ScreenView::Pause(labels, has_links) => {
                 let tw = self.text_width(&labels.title);
-                rewo_world::pause_screen::build(labels, *has_links, tw, gw, gh)
+                rewo_ui::pause_screen::build(labels, *has_links, tw, gw, gh)
             }
             ScreenView::Links(labels) => {
                 let tw = self.text_width(&labels.title);
-                rewo_world::server_links_screen::build(labels, tw, gw, gh)
+                rewo_ui::server_links_screen::build(labels, tw, gw, gh)
             }
             ScreenView::Disconnected(labels, details) => {
                 let width_of = move |t: &str| match &advance {
                     Some(a) => rewo_gpu::text::width(t, a),
                     None => 0,
                 };
-                rewo_world::disconnect_screen::build(labels, details, gw, gh, &width_of)
+                rewo_ui::disconnect_screen::build(labels, details, gw, gh, &width_of)
             }
         };
         self.screen.screens.open(screen);
@@ -1442,7 +1439,7 @@ impl LiveApp {
     /// with no request sits on "Retrieving statistics…" forever.
     pub(super) fn open_stats(&mut self) {
         let (gw, gh) = self.gui_size();
-        let labels = rewo_world::stats_screen::StatsLabels::resolve(&self.lang);
+        let labels = rewo_ui::stats_screen::StatsLabels::resolve(&self.lang);
         let counter = self
             .session
             .as_ref()
@@ -1475,7 +1472,7 @@ impl LiveApp {
         }
     }
 
-    pub(super) fn open_book_screen(&mut self, view: rewo_world::book_view_screen::BookViewScreen) {
+    pub(super) fn open_book_screen(&mut self, view: rewo_ui::book_view_screen::BookViewScreen) {
         let (gw, gh) = self.gui_size();
         let done = self.lang.get_or_default("gui.done", "Done").to_string();
         // M184: a held book's reader REPLACES the lectern screen —
@@ -1490,7 +1487,7 @@ impl LiveApp {
         self.book = Some(view);
         self.screen
             .screens
-            .open(rewo_world::book_view_screen::build_screen(gw, gh, &done));
+            .open(rewo_ui::book_view_screen::build_screen(gw, gh, &done));
         self.grab_for_screen(true);
     }
 
@@ -1585,7 +1582,7 @@ impl LiveApp {
     /// M173 — open an options page. `Screens` is one slot, so this both
     /// opens and navigates; the durable values live on `self.options` and the
     /// widgets are rebuilt from them (the M82 resize rule).
-    pub(super) fn open_options_screen(&mut self, page: rewo_world::options_screen::OptionsPage) {
+    pub(super) fn open_options_screen(&mut self, page: rewo_ui::options_screen::OptionsPage) {
         self.options_view = Some(page);
         self.options_drag = None;
         self.rebuild_options_screen();
@@ -1593,7 +1590,7 @@ impl LiveApp {
     }
 
     pub(super) fn rebuild_options_screen(&mut self) {
-        use rewo_world::options_screen as os;
+        use rewo_ui::options_screen as os;
         let Some(page) = self.options_view else {
             return;
         };
@@ -1624,7 +1621,7 @@ impl LiveApp {
         }
         .to_string();
         let tw = self.text_width(&title);
-        screen.widgets.push(rewo_world::screen::Widget::label(
+        screen.widgets.push(rewo_ui::screen::Widget::label(
             os::DONE + 1,
             (gw - tw) / 2,
             (os::FOOTER_HEIGHT - 9) / 2,
@@ -1640,7 +1637,7 @@ impl LiveApp {
     /// (a slider never saves per drag; the cycle buttons saved per click
     /// already).
     pub(super) fn close_options(&mut self) {
-        use rewo_world::options_screen::OptionsPage;
+        use rewo_ui::options_screen::OptionsPage;
         let page = self.options_view.take();
         self.options_drag = None;
         save_options(self.options);
@@ -1660,8 +1657,8 @@ impl LiveApp {
 
     /// M173 — a slider's value changed (press, drag, or arrow key): apply it
     /// to the option, the live engine, and the widget's own label.
-    pub(super) fn options_slider_changed(&mut self, id: rewo_world::screen::WidgetId, value: f32) {
-        use rewo_world::options_screen as os;
+    pub(super) fn options_slider_changed(&mut self, id: rewo_ui::screen::WidgetId, value: f32) {
+        use rewo_ui::options_screen as os;
         if self.options_view != Some(os::OptionsPage::Sound) {
             return;
         }
@@ -1728,7 +1725,7 @@ impl LiveApp {
         self.adv_drag
             .cursor_seed((self.screen.mouse.0, self.screen.mouse.1));
         let done = self.lang.or_key("gui.done").to_string();
-        let screen = rewo_world::advancements_screen::build_screen(gw, gh, &done);
+        let screen = rewo_ui::advancements_screen::build_screen(gw, gh, &done);
         self.screen.screens.open(screen);
         self.grab_for_screen(true);
         if let Some(tab) = selected {

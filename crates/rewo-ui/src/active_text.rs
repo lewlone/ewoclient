@@ -87,7 +87,7 @@
 //! row under the cursor wins — which, since a point is inside at most one
 //! row's band, is the row the cursor is in.
 
-use crate::chat_style::{ChatSpan, ChatStyle};
+use rewo_world::chat_style::{ChatSpan, ChatStyle};
 
 /// `GlyphInfo.getShadowOffset()`.
 pub const SHADOW_OFFSET: f32 = 1.0;
@@ -174,7 +174,7 @@ pub struct Prepared {
 /// `Font.prepareText` for one styled line at `(x, y)`, in the space the text is
 /// drawn in.
 ///
-/// `width_of` is the same provider [`crate::string_splitter`] takes —
+/// `width_of` is the same provider [`rewo_world::string_splitter`] takes —
 /// `getGlyph(cp).info().getAdvance(style.isBold())` — so a hit test and a wrap
 /// cannot disagree about where a character sits.
 pub fn prepare(
@@ -324,7 +324,7 @@ impl ClickableStyleFinder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat_events::{ChatEvents, ClickEvent};
+    use rewo_world::chat_events::{ChatEvents, ClickEvent};
     use std::sync::Arc;
 
     /// A six-pixel font with vanilla's one-pixel bold offset — the same

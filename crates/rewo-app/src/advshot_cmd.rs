@@ -483,7 +483,7 @@ pub fn run(args: AdvshotArgs) -> Result<(), String> {
     // Probes sit on the frame's OPAQUE border rows (alpha 255): the window's
     // interior is transparent by design — the contents show through it.
     let win = &sprites.adv_window;
-    let (wx, wy) = rewo_world::advancements_screen::window_origin(GUI_W, GUI_H);
+    let (wx, wy) = rewo_ui::advancements_screen::window_origin(GUI_W, GUI_H);
     let probes = [(10u32, 10u32), (126, 3), (248, 130)];
     let mut all = true;
     let mut detail = String::new();
@@ -501,12 +501,12 @@ pub fn run(args: AdvshotArgs) -> Result<(), String> {
     // p3 — the scissor holds: the contents area shows backdrop tiles, but the
     // strip BELOW THE WHOLE WINDOW (past its 140px bottom edge) keeps the
     // clear colour. Closer strips are the window's own opaque border.
-    let below_y = (wy + rewo_world::advancements_screen::WINDOW_H + 4) * SCALE;
+    let below_y = (wy + rewo_ui::advancements_screen::WINDOW_H + 4) * SCALE;
     let below_ok = px(&frame, (wx + 40) * SCALE, below_y) == [0, 255, 0];
     let inside_ok = px(
         &frame,
-        (wx + rewo_world::advancements_screen::INSIDE_X + 4) * SCALE,
-        (wy + rewo_world::advancements_screen::INSIDE_Y + 4) * SCALE,
+        (wx + rewo_ui::advancements_screen::INSIDE_X + 4) * SCALE,
+        (wy + rewo_ui::advancements_screen::INSIDE_Y + 4) * SCALE,
     ) != [0, 255, 0];
     c.record(
         "p3.the_scissor_clips_contents_at_the_inside_rect",
@@ -521,8 +521,8 @@ pub fn run(args: AdvshotArgs) -> Result<(), String> {
     let t = &mut view2.screen.tabs[0];
     t.ensure_centered();
     let in_origin = (
-        wx + rewo_world::advancements_screen::INSIDE_X,
-        wy + rewo_world::advancements_screen::INSIDE_Y,
+        wx + rewo_ui::advancements_screen::INSIDE_X,
+        wy + rewo_ui::advancements_screen::INSIDE_Y,
     );
     let (sx, sy) = t.scroll_int();
     let runs = t.connectivity(sx, sy, false);
@@ -626,7 +626,7 @@ pub fn run(args: AdvshotArgs) -> Result<(), String> {
     // from any tooltip geometry.
     let probe = (
         in_origin.0 + 4,
-        in_origin.1 + rewo_world::advancements_screen::INSIDE_H - 8,
+        in_origin.1 + rewo_ui::advancements_screen::INSIDE_H - 8,
     );
     let before = px(&frame, probe.0 * SCALE, probe.1 * SCALE);
     let after = px(&hover_frame, probe.0 * SCALE, probe.1 * SCALE);

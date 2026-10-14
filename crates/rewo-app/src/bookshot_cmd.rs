@@ -21,7 +21,7 @@ use rewo_data::assets;
 use rewo_gpu::offscreen::Offscreen;
 use rewo_gpu::world::{SkyMode, WorldRenderer};
 use rewo_gpu::Gpu;
-use rewo_world::book_view_screen::{self as bv, BookViewScreen};
+use rewo_ui::book_view_screen::{self as bv, BookViewScreen};
 use rewo_world::chat_style::ChatSpan;
 use rewo_world::inventory::SlotText;
 
@@ -285,7 +285,7 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
         let measure = |s: &rewo_world::chat_style::ChatSpan| {
             rewo_gpu::text::width_styled(&s.text, advance.as_ref().unwrap(), s.bold)
         };
-        let laid = rewo_world::book_view_screen::layout_spans(&book, GUI_W, &measure);
+        let laid = rewo_ui::book_view_screen::layout_spans(&book, GUI_W, &measure);
         let agree = drawn.len() > laid.len()
             && laid.iter().zip(&drawn).all(|(ls, dl)| {
                 (dl.x - ls.x as f32 * px).abs() < 0.01 && (dl.y - ls.y as f32 * px).abs() < 0.01
@@ -310,12 +310,12 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
         let measure = |s: &rewo_world::chat_style::ChatSpan| {
             rewo_gpu::text::width_styled(&s.text, advance.as_ref().unwrap(), s.bold)
         };
-        let laid = rewo_world::book_view_screen::layout_spans(&book, GUI_W, &measure);
+        let laid = rewo_ui::book_view_screen::layout_spans(&book, GUI_W, &measure);
         let clickable = laid
             .iter()
             .find(|ls| ls.span.click().is_some())
             .expect("one clickable span");
-        let ev = rewo_world::book_view_screen::click_event_at(
+        let ev = rewo_ui::book_view_screen::click_event_at(
             &book,
             GUI_W,
             &measure,
@@ -342,12 +342,12 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
         let measure = |s: &rewo_world::chat_style::ChatSpan| {
             rewo_gpu::text::width_styled(&s.text, advance.as_ref().unwrap(), s.bold)
         };
-        let laid = rewo_world::book_view_screen::layout_spans(&book, GUI_W, &measure);
+        let laid = rewo_ui::book_view_screen::layout_spans(&book, GUI_W, &measure);
         let clickable = laid
             .iter()
             .find(|ls| ls.span.click().is_some())
             .expect("one clickable span");
-        let left_in = rewo_world::book_view_screen::click_event_at(
+        let left_in = rewo_ui::book_view_screen::click_event_at(
             &book,
             GUI_W,
             &measure,
@@ -355,7 +355,7 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
             clickable.y + 4,
         )
         .is_some();
-        let right_out = rewo_world::book_view_screen::click_event_at(
+        let right_out = rewo_ui::book_view_screen::click_event_at(
             &book,
             GUI_W,
             &measure,
@@ -363,7 +363,7 @@ fn check_model(c: &mut Checker, baked: &assets::BakedAssets) {
             clickable.y + 4,
         )
         .is_none();
-        let plain_out = rewo_world::book_view_screen::click_event_at(
+        let plain_out = rewo_ui::book_view_screen::click_event_at(
             &book,
             GUI_W,
             &measure,

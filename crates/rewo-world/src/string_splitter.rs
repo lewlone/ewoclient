@@ -2,8 +2,9 @@
 //! built on it — the second of which is not the first with a flag.
 //!
 //! M85 transcribed `splitLines(String, int, Style)` inside
-//! [`crate::disconnect_screen`] for the disconnect reason, and that is still
-//! where it lives and what its callers use. M108 needs the **other** overload,
+//! `disconnect_screen` for the disconnect reason; it now lives here as
+//! [`split_lines`] (moved down when the screens left `rewo-world` for
+//! `rewo-ui`). M108 needs the **other** overload,
 //! `splitLines(FormattedText, int, Style, BiConsumer<FormattedText, Boolean>)`,
 //! because that is the one `ComponentRenderUtils.wrapComponents` calls and
 //! therefore the one every chat message is wrapped by.
@@ -81,7 +82,7 @@
 //! **UTF-16.** Vanilla indexes code units and advances `nextChar` by
 //! `Character.charCount(codepoint)`; Rewo indexes `char` (Unicode scalars).
 //! The two agree for everything in the BMP. The same list of omissions
-//! [`crate::disconnect_screen::split_lines`] records (the `§`-code
+//! [`split_lines`] records (the `§`-code
 //! re-emission, bidi) applies unchanged — with one now retired: `§` codes are
 //! resolved into separate spans by `parse_component` before they reach here,
 //! so the style genuinely survives a break instead of being dropped with the
@@ -94,14 +95,15 @@ use crate::chat_style::{ChatLine, ChatSpan, ChatStyle};
 /// Returns the position to break at, or `None` for `endOfText` (the sweep ran
 /// off the end without wanting a break, so the remainder is one line).
 ///
-/// This is the unstyled spelling, kept for [`crate::disconnect_screen`], whose
+/// This is the unstyled spelling, kept for [`split_lines`] (the disconnect
+/// screen's wrap, `rewo_ui::disconnect_screen`), whose
 /// vanilla counterpart really does take a `String`. [`find_styled_line_break`]
 /// is the same sweep over a part list, and
 /// `the_two_finders_agree_on_a_single_plain_part` pins that they are one
 /// algorithm rather than two that happen to look alike.
 ///
 /// Three details that are not the obvious greedy wrap, all load-bearing and
-/// all pinned by [`crate::disconnect_screen`]'s tests:
+/// all pinned by `rewo_ui::disconnect_screen`'s tests:
 ///
 /// * The overflow test is `width > maxWidth` measured **after** adding the
 ///   character, so a line whose width exactly equals `maxWidth` still fits.
@@ -141,6 +143,76 @@ pub fn find_line_break(
         }
     }
     None
+}
+
+/// `StringSplitter.splitLines` — greedy wrap at the last space that fits, hard
+/// break when there is none, and `\n` always breaks.
+///
+/// ```java
+/// case 10:  return this.finishIteration(adjustedPosition, style);       // '\n'
+/// case 32:  this.lastSpace = adjustedPosition; …                        // ' '
+/// default:  this.width += charWidth;
+///           if (!this.hadNonZeroWidthChar || !(this.width > this.maxWidth)) { … keep going … }
+///           else return this.lastSpace != -1 ? finishIteration(this.lastSpace, …)
+///                                            : finishIteration(adjustedPosition, style);
+/// ```
+///
+/// and the outer loop drops the break character **only when it is a space or a
+/// newline**:
+///
+/// ```java
+/// int adjustedBreak = firstTailChar != '\n' && firstTailChar != ' ' ? lineBreak : lineBreak + 1;
+/// ```
+///
+/// Three details that are not the obvious greedy-wrap:
+///
+/// * **The overflow test is `width > maxWidth` measured *after* adding the
+///   character**, so a line whose width exactly equals `maxWidth` still fits.
+/// * **`hadNonZeroWidthChar` guarantees progress**: the first visible character
+///   of a line is always accepted, even if it alone is wider than `maxWidth`,
+///   so a very narrow box makes one-character lines rather than looping.
+/// * **`maxWidth` is floored at 1** (`Math.max(maxWidth, 1.0F)`), which is what
+///   stops a zero or negative width from doing the same.
+///
+/// **What is not transcribed:** style runs (Rewo flattens a `Component` to
+/// plain text before it gets here, so there is one style), the `§`-code
+/// re-emission `StringDecomposer` does, surrogate pairs, and bidi. Every one of
+/// those changes *where* a break lands only for text this screen does not
+/// receive — a disconnect reason is a short plain sentence — and each is a
+/// larger subsystem than the wrap.
+///
+/// **This is the `String` overload.** M108 needed the `FormattedText` one, and
+/// they are not the same function — see [`crate::string_splitter`], which owns
+/// the shared `LineBreakFinder` both call and documents where the two diverge.
+/// The sweep below moved there verbatim; every break lands where it did.
+pub fn split_lines(text: &str, max_width: i32, width_of: &dyn Fn(&str) -> i32) -> Vec<String> {
+    let bytes: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    while start < bytes.len() {
+        let Some(line_break) =
+            crate::string_splitter::find_line_break(&bytes, start, max_width, width_of)
+        else {
+            // `endOfText` — the whole remainder is one line.
+            out.push(bytes[start..].iter().collect());
+            break;
+        };
+        let tail = bytes[line_break];
+        let adjusted = if tail != '\n' && tail != ' ' {
+            line_break
+        } else {
+            line_break + 1
+        };
+        out.push(bytes[start..line_break].iter().collect());
+        start = adjusted;
+    }
+    if out.is_empty() {
+        // A zero-length message is one empty line, which is what
+        // `MultiLineLabel.create` on an empty component produces: `getLineCount`
+        // is 1, so the widget is 9 px tall rather than 0.
+        out.push(String::new());
+    }
+    out
 }
 
 /// The same sweep across a list of styled parts, returning the break position
@@ -335,10 +407,10 @@ impl WrappedLine {
 /// `StringSplitter.splitLines(FormattedText, int, Style, BiConsumer)`.
 ///
 /// See the module docs for how this differs from
-/// [`crate::disconnect_screen::split_lines`], which transcribes the `String`
+/// [`split_lines`], which transcribes the `String`
 /// overload. An empty input yields **no** lines here; the one-empty-line rule
 /// belongs to `wrapComponents`, not to the splitter — see
-/// `crate::chat::wrap_components`.
+/// `rewo_ui::chat::wrap_components`.
 pub fn split_lines_wrapped(
     input: &[ChatSpan],
     max_width: i32,
@@ -409,7 +481,7 @@ mod tests {
     use super::*;
 
     /// A 6-px-per-character font, matching the fixture
-    /// [`crate::disconnect_screen`]'s tests use so the two overloads can be
+    /// `rewo_ui::disconnect_screen`'s tests use so the two overloads can be
     /// compared on identical inputs. Bold costs the vanilla
     /// `GlyphInfo.getBoldOffset()` of one pixel.
     fn w6s(s: &str, style: ChatStyle) -> i32 {
@@ -499,10 +571,7 @@ mod tests {
             lines("a\n", 600),
             vec![("a".into(), false), (String::new(), false)],
         );
-        assert_eq!(
-            crate::disconnect_screen::split_lines("a\n", 600, &w6),
-            vec!["a"],
-        );
+        assert_eq!(split_lines("a\n", 600, &w6), vec!["a"],);
     }
 
     #[test]
@@ -543,7 +612,7 @@ mod tests {
             ("a\nb", 600),
             ("abc", 1),
         ] {
-            let a = crate::disconnect_screen::split_lines(text, width, &w6);
+            let a = split_lines(text, width, &w6);
             let b: Vec<String> = split_lines_wrapped(&[plain(text)], width, &w6s)
                 .into_iter()
                 .map(|l| l.plain())

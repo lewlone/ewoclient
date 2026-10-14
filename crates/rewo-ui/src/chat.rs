@@ -34,8 +34,8 @@
 //! `endOfEntry` is set on the **last** wrapped line (`i == lines.size() - 1`),
 //! which is the one at index 0 — the *bottom* line of the message.
 
-use crate::chat_style::{ChatLine, ChatSpan, ChatStyle};
-use crate::string_splitter::split_lines_wrapped;
+use rewo_world::chat_style::{ChatLine, ChatSpan, ChatStyle};
+use rewo_world::string_splitter::split_lines_wrapped;
 
 /// `ChatComponent.MAX_CHAT_HISTORY` — applied separately to the message list
 /// and the wrapped-line list.
@@ -134,7 +134,7 @@ pub struct GuiMessage {
     /// deletion delay both measure against it.
     pub added_time: i32,
     /// `content` — the message's spans, as
-    /// [`crate::chat_style::parse_component`] resolved them.
+    /// [`rewo_world::chat_style::parse_component`] resolved them.
     ///
     /// A `String` until M126b. It is what a `/msg`'s grey italic, a
     /// team-coloured sender and every `§` code a server sends all needed, and
@@ -168,7 +168,7 @@ pub struct GuiMessageLine {
 ///    is `codepoint(32, Style.EMPTY)`. Applied *after* wrapping, so the space
 ///    does not count toward `maxWidth` and a continuation line is one space
 ///    wider than the box it was wrapped to. A line that follows an explicit
-///    `\n` gets none — see [`crate::string_splitter`] for why that is not the
+///    `\n` gets none — see [`rewo_world::string_splitter`] for why that is not the
 ///    same as "every line after the first".
 ///
 ///    **`INDENT` carries `Style.EMPTY`, not the line's style**, and it is a
@@ -932,7 +932,7 @@ mod tests {
     /// A line's characters, for the assertions that are about wrapping rather
     /// than about style.
     fn t(line: &ChatLine) -> String {
-        crate::chat_style::plain_text(line)
+        rewo_world::chat_style::plain_text(line)
     }
 
     fn ctx(focused: bool) -> WrapContext<'static> {
@@ -1013,8 +1013,8 @@ mod tests {
         c.delete_message(&[4u8; 256], TIME_BEFORE_MESSAGE_DELETION, &ctx(false));
         let marker = &c.all_messages()[0].content;
         assert_eq!(marker.len(), 1);
-        let gray = crate::chat_style::rgb_f32(crate::chat_style::NAMED_COLORS[7].1);
-        assert_eq!(crate::chat_style::NAMED_COLORS[7].0, "gray");
+        let gray = rewo_world::chat_style::rgb_f32(rewo_world::chat_style::NAMED_COLORS[7].1);
+        assert_eq!(rewo_world::chat_style::NAMED_COLORS[7].0, "gray");
         assert_eq!(marker[0].color, gray);
         assert!(marker[0].italic);
         assert!(!marker[0].bold);
@@ -1449,7 +1449,7 @@ mod tests {
     /// right runs the command (M128).
     #[test]
     fn the_wrap_indent_is_not_part_of_the_link() {
-        use crate::chat_events::{ChatEvents, ClickEvent};
+        use rewo_world::chat_events::{ChatEvents, ClickEvent};
         let link = ChatStyle {
             events: Some(std::sync::Arc::new(ChatEvents {
                 click: Some(ClickEvent::RunCommand("/x".into())),
@@ -1472,7 +1472,7 @@ mod tests {
     // ---- M128: the hit test ---------------------------------------------
 
     fn link_msg(added_time: i32, text: &str, cmd: &str) -> GuiMessage {
-        use crate::chat_events::{ChatEvents, ClickEvent};
+        use rewo_world::chat_events::{ChatEvents, ClickEvent};
         let style = ChatStyle {
             events: Some(std::sync::Arc::new(ChatEvents {
                 click: Some(ClickEvent::RunCommand(cmd.into())),
@@ -1504,7 +1504,7 @@ mod tests {
     }
 
     fn hit(chat: &ChatComponent, mouse: (f32, f32)) -> Option<String> {
-        use crate::chat_events::ClickEvent;
+        use rewo_world::chat_events::ClickEvent;
         let opts = ChatOptions::default();
         let g = ChatBoxGeometry::new(240.0, 1.0, &opts);
         let style = clickable_style_at(chat, 0, true, &opts, &g, 1.0, 1.0, mouse, &w6s, false)?;

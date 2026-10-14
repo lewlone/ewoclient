@@ -130,7 +130,7 @@ impl Suggestion {
     ///
     /// **Indices are Java string indices**, so the caller must have built the
     /// range against the same UTF-16 view. `input` here is a `&[u16]` for that
-    /// reason — the same choice [`crate::edit_box`] makes and for the same
+    /// reason — the same choice `rewo_ui::edit_box` makes and for the same
     /// reason.
     pub fn apply(&self, input: &[u16]) -> Vec<u16> {
         let text: Vec<u16> = self.text.encode_utf16().collect();

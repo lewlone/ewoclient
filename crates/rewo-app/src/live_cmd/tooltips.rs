@@ -694,7 +694,7 @@ pub(crate) fn book_tooltip(
     Vec<rewo_gpu::world::OwnedTextLine>,
     Vec<rewo_gpu::velvet_text::OwnedRun>,
 )> {
-    use rewo_world::recipe_book_screen as rb;
+    use rewo_ui::recipe_book_screen as rb;
     let view = b.view?;
     let (bx, by) = book_mouse?;
     let slot = rb::page_tooltip_slot(rb::book_hit(bx, by, view, view.tabs), overlay_open)?;

@@ -11,6 +11,7 @@ members = [
     "crates/rewo-data",
     "crates/rewo-net",
     "crates/rewo-world",
+    "crates/rewo-ui",
     "crates/rewo-mesh",
     "crates/rewo-audio",
 ]
@@ -113,6 +114,7 @@ rewo-proto = { path = "crates/rewo-proto" }
 rewo-data = { path = "crates/rewo-data" }
 rewo-net = { path = "crates/rewo-net" }
 rewo-world = { path = "crates/rewo-world" }
+rewo-ui = { path = "crates/rewo-ui" }
 rewo-mesh = { path = "crates/rewo-mesh" }
 # M143 — reached by rewo-app only under its OPTIONAL `audio` feature. Listing it
 # here does not link it: a default `cargo build` pulls in neither cpal nor

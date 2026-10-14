@@ -19,12 +19,12 @@ pub(crate) fn screen_icons(
     // the menu's origin too.
     book: Option<&BookRender>,
     // M103 — the ghost recipe's slots, and the cycle index its items rotate on.
-    ghosts: &[rewo_world::ghost_slots::Ghost],
+    ghosts: &[rewo_ui::ghost_slots::Ghost],
     cycle: i32,
     // M104 — the open which-of-these overlay, whose ingredient grids are items
     // too. Supplied rather than reached for, so a gate drives the same call
     // the live client makes (M45).
-    overlay: Option<&rewo_world::recipe_overlay::Open>,
+    overlay: Option<&rewo_ui::recipe_overlay::Open>,
 ) -> (
     Vec<rewo_gpu::gui_item::GuiItem>,
     Vec<rewo_gpu::world::OwnedTextLine>,
@@ -92,8 +92,8 @@ pub(crate) fn screen_icons(
         let (bk, view) = b;
         let (bl, bt, _) = rewo_gpu::container::recipe_book_origin(w, h);
         let tabs = bk.book.tabs();
-        for icon in rewo_world::recipe_book_screen::book_icons(view, tabs, &bk.slot_shadowed) {
-            use rewo_world::recipe_book_screen::BookIconKind as K;
+        for icon in rewo_ui::recipe_book_screen::book_icons(view, tabs, &bk.slot_shadowed) {
+            use rewo_ui::recipe_book_screen::BookIconKind as K;
             let id = match icon.kind {
                 K::TabPrimary(i) => tabs.get(i).and_then(|t| items.id(t.primary)),
                 K::TabSecondary(i) => tabs
@@ -130,16 +130,16 @@ pub(crate) fn screen_icons(
     if let Some(o) = overlay {
         let (bl, bt, _) = rewo_gpu::container::recipe_book_origin(w, h);
         for (i, b) in o.buttons.iter().enumerate() {
-            let button = rewo_world::recipe_overlay::button_origin(o.origin, i, o.total());
+            let button = rewo_ui::recipe_overlay::button_origin(o.origin, i, o.total());
             for (pos, choices) in &b.slots {
                 // One-level cycle, on the same clock the cells use — so a cell
                 // and the overlay it opened can be showing different items on
                 // the same frame.
-                let Some(n) = rewo_world::recipe_overlay::select_ingredient(choices.len(), cycle)
+                let Some(n) = rewo_ui::recipe_overlay::select_ingredient(choices.len(), cycle)
                 else {
                     continue;
                 };
-                let (ix, iy, size) = rewo_world::recipe_overlay::item_rect(button, *pos);
+                let (ix, iy, size) = rewo_ui::recipe_overlay::item_rect(button, *pos);
                 if let Some(g) = icon_for(
                     items,
                     trim_materials,
@@ -168,7 +168,7 @@ pub(crate) fn screen_icons(
             open.map_or(176.0, |m| m.layout.image_w as f32),
             open.map_or(166.0, |m| m.layout.image_h as f32),
         );
-        for pos_index in 0..rewo_world::menu_screen::CUT_PAGE {
+        for pos_index in 0..rewo_ui::menu_screen::CUT_PAGE {
             let index = c.start_index + pos_index;
             let Some(recipe) = usize::try_from(index).ok().and_then(|i| c.recipes.get(i)) else {
                 break;
@@ -176,7 +176,7 @@ pub(crate) fn screen_icons(
             let Some(id) = items.id(recipe.result) else {
                 continue;
             };
-            let (gx, gy) = rewo_world::menu_screen::cut_cell_origin(pos_index);
+            let (gx, gy) = rewo_ui::menu_screen::cut_cell_origin(pos_index);
             if let Some(icon) = icon_for(
                 items,
                 trim_materials,
@@ -194,7 +194,7 @@ pub(crate) fn screen_icons(
     // they DO carry counts: `extractOffers` calls `itemDecorations` for cost B
     // and the result, and `extractAndDecorateCostA` for cost A.
     if let Some(v) = merchant {
-        use rewo_world::merchant_screen as ms;
+        use rewo_ui::merchant_screen as ms;
         let (left, top, scale) = rewo_gpu::container::gui_origin_for(
             w,
             h,
@@ -380,7 +380,7 @@ pub(super) fn count_label_of(
 /// An empty row draws nothing at all — `cost == 0` returns before the numeral,
 /// the name and the cost, so a table with no item shows three blank rows.
 pub(super) fn enchant_cost_labels(
-    rows: [rewo_world::menu_screen::EnchantRow; 3],
+    rows: [rewo_ui::menu_screen::EnchantRow; 3],
     advance: &[u8; 256],
     w: f32,
     h: f32,
@@ -395,7 +395,7 @@ pub(super) fn enchant_cost_labels(
         };
         let text = cost.to_string();
         let (x, y) =
-            rewo_world::menu_screen::enchant_cost_pos(i, rewo_gpu::text::width(&text, advance));
+            rewo_ui::menu_screen::enchant_cost_pos(i, rewo_gpu::text::width(&text, advance));
         out.push(rewo_gpu::world::OwnedTextLine {
             x: left + x as f32 * scale,
             y: top + y as f32 * scale,
@@ -430,7 +430,7 @@ pub(super) const ANVIL_FIELD: (i32, i32, i32) = (62, 24, 103);
 /// pulled back by `-1` for an insert cursor, so the run is contiguous either
 /// way and one label is exact.
 pub(super) fn anvil_field_render(
-    local: &rewo_world::edit_box::EditBox,
+    local: &rewo_ui::edit_box::EditBox,
     advance: &[u8; 256],
     w: f32,
     h: f32,
@@ -467,7 +467,7 @@ pub(super) fn anvil_field_render(
 /// `(x, y, inner_width)` in that surface's own coordinates. `hint` is the text
 /// drawn when the field is **empty and unfocused**, with its own colour.
 pub(super) fn edit_box_render(
-    local: &rewo_world::edit_box::EditBox,
+    local: &rewo_ui::edit_box::EditBox,
     advance: &[u8; 256],
     (left, top, scale): (f32, f32, f32),
     (fx, fy, inner): (i32, i32, i32),
@@ -617,7 +617,7 @@ pub(super) fn edit_box_render(
 /// existing anvil witnesses were written against.
 #[cfg(feature = "gates")]
 pub(crate) fn anvil_field_render_for_test(
-    local: &rewo_world::edit_box::EditBox,
+    local: &rewo_ui::edit_box::EditBox,
     advance: &[u8; 256],
     w: f32,
     h: f32,

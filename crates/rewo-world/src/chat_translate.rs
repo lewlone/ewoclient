@@ -239,7 +239,7 @@ fn java_scientific(s: String) -> String {
 /// It is kept as a name rather than deleted because the five chat call sites
 /// read better for it and because *why the styling is discarded* is a chat
 /// fact, not a flatten fact: the chat store is plain text — see
-/// `rewo_world::chat::GuiMessage::content`. That is a pre-existing limitation
+/// `rewo_ui::chat::GuiMessage::content`. That is a pre-existing limitation
 /// M125 does not lift; what changes is that the text being discarded down to
 /// is English rather than a translation key.
 ///

@@ -65,8 +65,8 @@ use crate::screen::{
     Backdrop, Screen, ScreenKind, ScrollList, Sprite, Widget, WidgetId, WidgetKind, WidgetSprites,
     BUTTON_HEIGHT, BUTTON_WIDTH,
 };
-use crate::stats::{self, StatKey, StatsCounter};
 use rewo_data::stats::{Formatter, StatRegistries};
+use rewo_world::stats::{self, StatKey, StatsCounter};
 
 // ---------------------------------------------------------------------------
 // Widget ids.

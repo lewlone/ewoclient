@@ -1,6 +1,6 @@
 //! The statistics screen's render half (M84).
 //!
-//! `rewo_world::stats_screen` owns the layout and the rows; this turns them
+//! `rewo_ui::stats_screen` owns the layout and the rows; this turns them
 //! into a [`rewo_gpu::screen::ScreenDraw`] and a list of text runs. Split out
 //! of `live_cmd` rather than added to it for one reason worth stating: the gate
 //! must drive **these** builders, and a function buried in a 10k-line file with
@@ -42,12 +42,12 @@
 //!   would fall outside the band is **skipped entirely**. The visible
 //!   difference is a row popping in rather than sliding in.
 //! * **An items row draws its registry name** where vanilla draws only an item
-//!   icon. See `rewo_world::stats_screen`'s module docs for why.
+//!   icon. See `rewo_ui::stats_screen`'s module docs for why.
 
 use rewo_gpu::screen::{ButtonDraw, ButtonSprite, Fill, ScreenDraw, Sheet, SpriteDraw};
 use rewo_gpu::world::OwnedTextLine;
-use rewo_world::screen::{Screen, Sprite, WidgetKind, SCROLLBAR_WIDTH};
-use rewo_world::stats_screen::{self as ss, StatsLabels, StatsModel, StatsTab};
+use rewo_ui::screen::{Screen, Sprite, WidgetKind, SCROLLBAR_WIDTH};
+use rewo_ui::stats_screen::{self as ss, StatsLabels, StatsModel, StatsTab};
 
 /// Everything the statistics screen holds across frames.
 pub struct StatsView {
@@ -91,7 +91,7 @@ impl StatsView {
 
     /// A widget press. Returns `true` when the screen must be rebuilt (a tab
     /// change moves the sort buttons and reselects a sheet).
-    pub fn press(&mut self, id: rewo_world::screen::WidgetId) -> bool {
+    pub fn press(&mut self, id: rewo_ui::screen::WidgetId) -> bool {
         if let Some(tab) = StatsTab::from_widget(id) {
             if self.model.tab_active(tab) {
                 self.model.tab = tab;
@@ -199,9 +199,9 @@ pub fn chrome(
                 width: w.width,
                 height: w.height,
                 sprite: match w.sprite(w.is_hovered(mouse), focused == Some(w.id)) {
-                    rewo_world::screen::ButtonSprite::Enabled => ButtonSprite::Enabled,
-                    rewo_world::screen::ButtonSprite::Disabled => ButtonSprite::Disabled,
-                    rewo_world::screen::ButtonSprite::Highlighted => ButtonSprite::Highlighted,
+                    rewo_ui::screen::ButtonSprite::Enabled => ButtonSprite::Enabled,
+                    rewo_ui::screen::ButtonSprite::Disabled => ButtonSprite::Disabled,
+                    rewo_ui::screen::ButtonSprite::Highlighted => ButtonSprite::Highlighted,
                 },
             }),
             WidgetKind::Sprites {
@@ -361,7 +361,7 @@ pub fn chrome(
     }
 }
 
-/// `rewo_world::screen::Sprite` → this pass's sheet + how it fills.
+/// `rewo_ui::screen::Sprite` → this pass's sheet + how it fills.
 fn lower(s: Sprite) -> (Sheet, Fill) {
     let nine = Fill::NineSlice(rewo_gpu::screen::TAB_BORDER);
     match s {
@@ -383,7 +383,7 @@ fn lower(s: Sprite) -> (Sheet, Fill) {
 /// Whether a row's content band is wholly inside the list's own box.
 ///
 /// The scissor deviation, in one place — see the module docs.
-fn row_visible(list: &rewo_world::screen::ScrollList, row: usize) -> bool {
+fn row_visible(list: &rewo_ui::screen::ScrollList, row: usize) -> bool {
     list.row_top(row) >= list.y && list.row_bottom(row) <= list.bottom()
 }
 

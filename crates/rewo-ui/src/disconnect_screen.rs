@@ -93,6 +93,10 @@
 use crate::layout::{center_in_rectangle, Element, Linear, Settings};
 use crate::screen::{Screen, ScreenKind, Widget, WidgetId, BUTTON_HEIGHT, LINE_HEIGHT};
 
+/// Moved to [`rewo_world::string_splitter`] beside the `FormattedText` overload;
+/// re-exported so this screen's callers keep their path.
+pub use rewo_world::string_splitter::split_lines;
+
 /// `gui.toMenu` — "Back to Server List".
 pub const BACK: WidgetId = 0;
 /// `gui.report_to_server` — present only when [`DisconnectDetails::bug_report_link`] is.
@@ -163,7 +167,7 @@ impl DisconnectDetails {
     ///
     /// `candidate` is the caller's
     /// `serverLinks.findKnownType(BUG_REPORT).map(Entry::link)` — resolved by
-    /// the app, not here, because **`rewo-net` depends on `rewo-world`** and
+    /// the app, not here, because **`rewo-net` depends on `rewo-ui`** and
     /// the reverse edge would be a cycle. That is not a workaround: the app is
     /// also the layer that has to have *kept* the links past the session's
     /// death (see the module docs), so the lookup belongs where the durable
@@ -201,46 +205,6 @@ impl DisconnectLabels {
     }
 }
 
-/// `StringSplitter.splitLines` — greedy wrap at the last space that fits, hard
-/// break when there is none, and `\n` always breaks.
-///
-/// ```java
-/// case 10:  return this.finishIteration(adjustedPosition, style);       // '\n'
-/// case 32:  this.lastSpace = adjustedPosition; …                        // ' '
-/// default:  this.width += charWidth;
-///           if (!this.hadNonZeroWidthChar || !(this.width > this.maxWidth)) { … keep going … }
-///           else return this.lastSpace != -1 ? finishIteration(this.lastSpace, …)
-///                                            : finishIteration(adjustedPosition, style);
-/// ```
-///
-/// and the outer loop drops the break character **only when it is a space or a
-/// newline**:
-///
-/// ```java
-/// int adjustedBreak = firstTailChar != '\n' && firstTailChar != ' ' ? lineBreak : lineBreak + 1;
-/// ```
-///
-/// Three details that are not the obvious greedy-wrap:
-///
-/// * **The overflow test is `width > maxWidth` measured *after* adding the
-///   character**, so a line whose width exactly equals `maxWidth` still fits.
-/// * **`hadNonZeroWidthChar` guarantees progress**: the first visible character
-///   of a line is always accepted, even if it alone is wider than `maxWidth`,
-///   so a very narrow box makes one-character lines rather than looping.
-/// * **`maxWidth` is floored at 1** (`Math.max(maxWidth, 1.0F)`), which is what
-///   stops a zero or negative width from doing the same.
-///
-/// **What is not transcribed:** style runs (Rewo flattens a `Component` to
-/// plain text before it gets here, so there is one style), the `§`-code
-/// re-emission `StringDecomposer` does, surrogate pairs, and bidi. Every one of
-/// those changes *where* a break lands only for text this screen does not
-/// receive — a disconnect reason is a short plain sentence — and each is a
-/// larger subsystem than the wrap.
-///
-/// **This is the `String` overload.** M108 needed the `FormattedText` one, and
-/// they are not the same function — see [`crate::string_splitter`], which owns
-/// the shared `LineBreakFinder` both call and documents where the two diverge.
-/// The sweep below moved there verbatim; every break lands where it did.
 /// `ClientboundDisconnectPacket` — the reason, resolved (M129).
 ///
 /// The whole handler rather than a helper it calls, because the handler lives
@@ -278,37 +242,7 @@ pub fn read_disconnect(
 /// module anywhere in the repo (M71/M97) — logic reachable only through it is
 /// untestable by construction.
 pub fn reason_text(tag: &rewo_proto::nbt::Nbt, lang: Option<&rewo_data::lang::Language>) -> String {
-    crate::chat_translate::chat_component_text(tag, lang)
-}
-
-pub fn split_lines(text: &str, max_width: i32, width_of: &dyn Fn(&str) -> i32) -> Vec<String> {
-    let bytes: Vec<char> = text.chars().collect();
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    while start < bytes.len() {
-        let Some(line_break) =
-            crate::string_splitter::find_line_break(&bytes, start, max_width, width_of)
-        else {
-            // `endOfText` — the whole remainder is one line.
-            out.push(bytes[start..].iter().collect());
-            break;
-        };
-        let tail = bytes[line_break];
-        let adjusted = if tail != '\n' && tail != ' ' {
-            line_break
-        } else {
-            line_break + 1
-        };
-        out.push(bytes[start..line_break].iter().collect());
-        start = adjusted;
-    }
-    if out.is_empty() {
-        // A zero-length message is one empty line, which is what
-        // `MultiLineLabel.create` on an empty component produces: `getLineCount`
-        // is 1, so the widget is 9 px tall rather than 0.
-        out.push(String::new());
-    }
-    out
+    rewo_world::chat_translate::chat_component_text(tag, lang)
 }
 
 /// `DisconnectedScreen.init` + `repositionElements`.

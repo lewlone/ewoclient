@@ -214,7 +214,7 @@ const BOOK_WIDTH_TOO_NARROW_BELOW: f32 = 379.0;
 ///
 /// Exposed as a function rather than making the constants `pub` so the only
 /// way to read them from outside is the one the test uses — a caller that
-/// wanted the geometry would get it from `rewo_world::recipe_book_screen`,
+/// wanted the geometry would get it from `rewo_ui::recipe_book_screen`,
 /// which is where it belongs.
 pub fn book_constants_for_cross_check() -> (f32, f32, f32, f32, usize) {
     (
@@ -689,7 +689,7 @@ fn shelf_pack(sizes: impl IntoIterator<Item = (u32, u32)>) -> (Vec<(u32, u32, u3
 /// One background blit of a container panel: where it goes in GUI pixels
 /// relative to the panel's top-left, and which pixels of the sheet it takes.
 ///
-/// A pass-local type rather than `rewo_world::menu_screen::PanelQuad`, because
+/// A pass-local type rather than `rewo_ui::menu_screen::PanelQuad`, because
 /// `rewo-gpu` holds no dependency on the world crate — the same arrangement the
 /// font and skin slices use. The caller converts, which is also where the
 /// sheet-size normalisation is undone: this carries **pixels**, so the two
@@ -823,7 +823,7 @@ pub struct ContainerPass {
     ///
     /// Pixels rather than a `Rect`, because a screen samples a *sub-rect* of
     /// its sheet (a chest takes two bands out of `generic_54.png`) and the
-    /// sub-rect is computed per menu by `rewo_world::menu_screen`. Storing a
+    /// sub-rect is computed per menu by `rewo_ui::menu_screen`. Storing a
     /// normalised whole-sheet rect would mean converting back to pixels to
     /// index into it.
     menu_sheets: Vec<(u32, u32, u32, u32)>,

@@ -1,6 +1,6 @@
 use super::*;
 
-/// Drain the session's chat events into its [`rewo_world::chat::ChatComponent`].
+/// Drain the session's chat events into its [`rewo_ui::chat::ChatComponent`].
 ///
 /// The seam exists because the store needs two things the wire cannot supply:
 /// the font to wrap against (`addMessageToDisplayQueue` calls
@@ -21,8 +21,8 @@ pub(super) fn apply_chat(session: &mut PlaySession, advance: Option<[u8; 256]>) 
         Some(a) => rewo_gpu::text::width_styled(t, a, st.bold),
         None => 0,
     };
-    let ctx = rewo_world::chat::WrapContext {
-        options: rewo_world::chat::ChatOptions::default(),
+    let ctx = rewo_ui::chat::WrapContext {
+        options: rewo_ui::chat::ChatOptions::default(),
         focused: false,
         width_of: &width_of,
         deleted_marker_text: DELETED_CHAT_MESSAGE,
@@ -143,7 +143,7 @@ pub(super) fn build_text(
         session.ticks as i32,
         px,
         screen_h,
-        &rewo_world::chat::ChatOptions::default(),
+        &rewo_ui::chat::ChatOptions::default(),
         advance.as_ref(),
         chat_focused,
     );
@@ -169,7 +169,7 @@ pub(super) fn build_text(
 /// slant, so the colour is reproduced and the italic is not — named here
 /// rather than silently dropped.
 pub(super) fn chat_input_lines(
-    screen: &rewo_world::chat_screen::ChatScreen,
+    screen: &rewo_ui::chat_screen::ChatScreen,
     px: f32,
     gui_w: i32,
     gui_h: i32,
@@ -178,7 +178,7 @@ pub(super) fn chat_input_lines(
     width_of: &dyn Fn(&str) -> i32,
 ) -> Vec<rewo_gpu::world::OwnedTextLine> {
     use rewo_gpu::world::OwnedTextLine;
-    let (x, y, _w, h) = rewo_world::chat_screen::input_rect(gui_w, gui_h);
+    let (x, y, _w, h) = rewo_ui::chat_screen::input_rect(gui_w, gui_h);
     // `EditBox.renderWidget`'s unbordered text origin: the box's own x, and
     // vertically centred by `(height - 8) / 2` — 2 here, not 0 and not 3.
     let text_x = x as f32 * px;
@@ -315,10 +315,10 @@ pub(super) fn chat_input_lines(
 ///    [`suggestion_popup_text`] does take one, because the text pass is the pass
 ///    that wants screen pixels.
 pub(super) fn suggestion_popup_fills(
-    list: &rewo_world::command_suggestions::SuggestionsList,
-    cfg: rewo_world::command_suggestions::SuggestionsConfig,
+    list: &rewo_ui::command_suggestions::SuggestionsList,
+    cfg: rewo_ui::command_suggestions::SuggestionsConfig,
 ) -> Vec<rewo_gpu::hud::HudFill> {
-    use rewo_world::command_suggestions::{INDICATOR_COLOR, LINE_HEIGHT};
+    use rewo_ui::command_suggestions::{INDICATOR_COLOR, LINE_HEIGHT};
     let rect = list.rect;
     let limit = list.shown(cfg) as i32;
     let fill = |x: i32, y: i32, w: i32, h: i32, argb: u32| rewo_gpu::hud::HudFill {
@@ -364,11 +364,11 @@ pub(super) fn suggestion_popup_fills(
 /// the selected entry and grey for the rest. `graphics.text`'s five-argument
 /// form drops a shadow (M105), so these do too.
 pub(super) fn suggestion_popup_text(
-    list: &rewo_world::command_suggestions::SuggestionsList,
-    cfg: rewo_world::command_suggestions::SuggestionsConfig,
+    list: &rewo_ui::command_suggestions::SuggestionsList,
+    cfg: rewo_ui::command_suggestions::SuggestionsConfig,
     px: f32,
 ) -> Vec<rewo_gpu::world::OwnedTextLine> {
-    use rewo_world::command_suggestions::{LINE_HEIGHT, SELECTED_COLOR, UNSELECTED_COLOR};
+    use rewo_ui::command_suggestions::{LINE_HEIGHT, SELECTED_COLOR, UNSELECTED_COLOR};
     let rect = list.rect;
     let limit = list.shown(cfg);
     (0..limit)
@@ -407,7 +407,7 @@ pub(super) fn suggestion_popup_text(
 /// would take the whole app with it.
 pub(super) fn chat_runs(
     cache: &mut Option<(String, rewo_net::dispatcher::ParseResults)>,
-    screen: Option<&rewo_world::chat_screen::ChatScreen>,
+    screen: Option<&rewo_ui::chat_screen::ChatScreen>,
     session: &PlaySession,
     cmd: rewo_net::dispatcher::CommandCtx<'_>,
 ) -> Option<Vec<rewo_net::command_format::Run>> {
@@ -460,13 +460,13 @@ pub(super) fn usage_box(
     let mut text = Vec::new();
     for (y, line) in lines.iter().enumerate() {
         let line_y = gui_h
-            - rewo_world::command_suggestions::USAGE_OFFSET_FROM_BOTTOM
-            - rewo_world::command_suggestions::LINE_HEIGHT * y as i32;
+            - rewo_ui::command_suggestions::USAGE_OFFSET_FROM_BOTTOM
+            - rewo_ui::command_suggestions::LINE_HEIGHT * y as i32;
         fills.push(rewo_gpu::hud::HudFill {
             x: (position - 1) as f32 * px,
             y: line_y as f32 * px,
             w: (box_width + 2) as f32 * px,
-            h: rewo_world::command_suggestions::LINE_HEIGHT as f32 * px,
+            h: rewo_ui::command_suggestions::LINE_HEIGHT as f32 * px,
             alpha: ((fill_color >> 24) & 0xFF) as f32 / 255.0,
             rgb: srgb_bytes_to_linear(fill_color & 0x00FF_FFFF),
         });
@@ -502,14 +502,14 @@ pub(super) fn usage_box(
 /// from the same `visible_lines` the rows and their fills read rather than
 /// from `linesPerPage`: a page that is not full gives a shorter thumb.
 pub(super) fn chat_scrollbar(
-    chat: &rewo_world::chat::ChatComponent,
+    chat: &rewo_ui::chat::ChatComponent,
     gui_tick: i32,
     px: f32,
     screen_h: f32,
-    opts: &rewo_world::chat::ChatOptions,
+    opts: &rewo_ui::chat::ChatOptions,
 ) -> Vec<rewo_gpu::hud::HudFill> {
     let chat_px = px * opts.scale as f32;
-    let chat_bottom = ((screen_h / chat_px) - rewo_world::chat::BOTTOM_MARGIN as f32).floor();
+    let chat_bottom = ((screen_h / chat_px) - rewo_ui::chat::BOTTOM_MARGIN as f32).floor();
     let max_width = (opts.width() as f32 / opts.scale as f32).ceil();
     let visible = chat.visible_lines(gui_tick, true, opts).len() as i32;
     // GUI pixels, exactly as in `hud_fills` and for the same reason — `chat_px`
@@ -522,7 +522,7 @@ pub(super) fn chat_scrollbar(
         .map(|r| rewo_gpu::hud::HudFill {
             // The pose is translated by `MESSAGE_INDENT` before these, exactly
             // as it is before the rows' fills.
-            x: (r.x + rewo_world::chat::MESSAGE_INDENT) as f32 * chat_gui,
+            x: (r.x + rewo_ui::chat::MESSAGE_INDENT) as f32 * chat_gui,
             y: r.y as f32 * chat_gui,
             w: r.w as f32 * chat_gui,
             h: r.h as f32 * chat_gui,
@@ -537,7 +537,7 @@ pub(super) fn chat_scrollbar(
 /// `fill(2, height - 14, width - 2, height - 2, getBackgroundColor(Integer.MIN_VALUE))`
 /// — a fixed alpha 128, which does **not** follow the text-background slider
 /// the chat rows' own fills read. See
-/// [`rewo_world::chat_screen::INPUT_BACKDROP_ALPHA`].
+/// [`rewo_ui::chat_screen::INPUT_BACKDROP_ALPHA`].
 ///
 /// **It takes no GUI scale, deliberately.** `input_backdrop_rect` is handed GUI
 /// dimensions and returns GUI pixels, which is already the unit
@@ -546,13 +546,13 @@ pub(super) fn chat_scrollbar(
 /// y 2034 on a 720-tall screen; not having the scale in scope is a stronger
 /// guarantee than remembering not to use it.
 pub(super) fn chat_input_backdrop(gui_w: i32, gui_h: i32) -> rewo_gpu::hud::HudFill {
-    let (x, y, w, h) = rewo_world::chat_screen::input_backdrop_rect(gui_w, gui_h);
+    let (x, y, w, h) = rewo_ui::chat_screen::input_backdrop_rect(gui_w, gui_h);
     rewo_gpu::hud::HudFill {
         x: x as f32,
         y: y as f32,
         w: w as f32,
         h: h as f32,
-        alpha: rewo_world::chat_screen::INPUT_BACKDROP_ALPHA,
+        alpha: rewo_ui::chat_screen::INPUT_BACKDROP_ALPHA,
         // `getBackgroundColor` builds it with `colorFromFloat(_, 0, 0, 0)` —
         // black, like the rows'.
         rgb: [0.0; 3],
@@ -593,11 +593,11 @@ pub(super) fn chat_input_backdrop(gui_w: i32, gui_h: i32) -> rewo_gpu::hud::HudF
 /// `OwnedTextLine::alpha` already exists — its doc comment says "chat fades
 /// old lines", written before there was a chat that faded.
 pub(super) fn chat_lines(
-    chat: &rewo_world::chat::ChatComponent,
+    chat: &rewo_ui::chat::ChatComponent,
     gui_tick: i32,
     px: f32,
     screen_h: f32,
-    opts: &rewo_world::chat::ChatOptions,
+    opts: &rewo_ui::chat::ChatOptions,
     advance: Option<&[u8; 256]>,
     focused: bool,
 ) -> (Vec<rewo_gpu::world::OwnedTextLine>, Vec<(String, usize)>) {
@@ -606,12 +606,12 @@ pub(super) fn chat_lines(
     // pixel is `px * scale` screen pixels and every offset below is in chat
     // pixels.
     let chat_px = px * opts.scale as f32;
-    // M128 — ONE geometry, shared with `rewo_world::chat::clickable_style_at`.
+    // M128 — ONE geometry, shared with `rewo_ui::chat::clickable_style_at`.
     // Vanilla's lookup is not a second derivation of the layout: it calls the
     // same private `extractRenderState` the draw does, and the four times a
     // per-call-site copy has drifted in this repo are M89, M94/M95, M106b and
     // M112.
-    let geom = rewo_world::chat::ChatBoxGeometry::new(screen_h, chat_px, opts);
+    let geom = rewo_ui::chat::ChatBoxGeometry::new(screen_h, chat_px, opts);
     let text_opacity = opts.text_opacity();
     // Focused chat is a taller box with no fade. Supplied by the caller
     // (M110) rather than hardcoded: it is a fact about whether a `ChatScreen`
@@ -624,7 +624,7 @@ pub(super) fn chat_lines(
     for line in chat.visible_lines(gui_tick, focused, opts) {
         let y = geom.text_top(line.index) * chat_px;
         // `pose.translate(4.0F, 0.0F)` — `MESSAGE_INDENT`.
-        let mut pen = rewo_world::chat::MESSAGE_INDENT as f32 * chat_px;
+        let mut pen = rewo_ui::chat::MESSAGE_INDENT as f32 * chat_px;
         let mut row = String::new();
         let row_start = out.len();
         for span in line.text {
@@ -858,7 +858,7 @@ pub(crate) fn resolve_book_pages(
     advance: Option<&[u8; 256]>,
     lang: Option<&rewo_data::lang::Language>,
 ) -> Option<Vec<Vec<rewo_world::chat_style::ChatLine>>> {
-    use rewo_world::book_view_screen::{PAGE_TEXT_COLOR, TEXT_WIDTH};
+    use rewo_ui::book_view_screen::{PAGE_TEXT_COLOR, TEXT_WIDTH};
     use rewo_world::chat_style::{self, ChatStyle};
     let base = ChatStyle::plain(chat_style::rgb_f32(PAGE_TEXT_COLOR));
     let advance = advance.copied();
@@ -899,8 +899,8 @@ pub(crate) fn resolve_book_pages(
 /// stubbed.
 pub(crate) fn root_rows(
     lang: &rewo_data::lang::Language,
-) -> Vec<rewo_world::options_screen::OptionRow> {
-    use rewo_world::options_screen::{OptionRow, RowItem};
+) -> Vec<rewo_ui::options_screen::OptionRow> {
+    use rewo_ui::options_screen::{OptionRow, RowItem};
     vec![
         OptionRow::small(
             RowItem::Button(
@@ -931,9 +931,9 @@ pub(crate) fn root_rows(
 pub(crate) fn sound_rows(
     options: &rewo_net::options::Options,
     lang: &rewo_data::lang::Language,
-) -> Vec<rewo_world::options_screen::OptionRow> {
+) -> Vec<rewo_ui::options_screen::OptionRow> {
     use rewo_net::sounds::SoundSource;
-    use rewo_world::options_screen::{percent_label, OptionRow, RowItem};
+    use rewo_ui::options_screen::{percent_label, OptionRow, RowItem};
     let off = lang.get_or_default("options.off", "OFF");
     let item = |source: SoundSource| {
         let caption_key = format!("soundCategory.{}", source.name());
@@ -962,7 +962,7 @@ pub(crate) fn sound_rows(
         rewo_net::options::frequency_name(options.music_frequency),
     );
     rows.push(OptionRow::small(
-        RowItem::Button(rewo_world::options_screen::cycle_label(caption, value)),
+        RowItem::Button(rewo_ui::options_screen::cycle_label(caption, value)),
         None,
     ));
     rows
@@ -972,12 +972,12 @@ pub(crate) fn sound_rows(
 /// `options.ao`'s cycle button, the fifth of vanilla's `qualityOptions`
 /// (`VideoSettingsScreen.java:51`) and the whole of Rewo's page. Everything
 /// else on the three sections is absent rather than stubbed (see
-/// [`rewo_world::options_screen::OptionsPage::Video`]).
+/// [`rewo_ui::options_screen::OptionsPage::Video`]).
 pub(crate) fn video_rows(
     options: &rewo_net::options::Options,
     lang: &rewo_data::lang::Language,
-) -> Vec<rewo_world::options_screen::OptionRow> {
-    use rewo_world::options_screen::{bool_label, cycle_label, OptionRow, RowItem};
+) -> Vec<rewo_ui::options_screen::OptionRow> {
+    use rewo_ui::options_screen::{bool_label, cycle_label, OptionRow, RowItem};
     let caption = lang.get_or_default("options.ao", "Smooth Lighting");
     vec![OptionRow::small(
         RowItem::Button(cycle_label(caption, bool_label(options.smooth_lighting))),
@@ -989,8 +989,8 @@ pub(crate) fn video_rows(
 pub(crate) fn accessibility_rows(
     options: &rewo_net::options::Options,
     lang: &rewo_data::lang::Language,
-) -> Vec<rewo_world::options_screen::OptionRow> {
-    use rewo_world::options_screen::{bool_label, cycle_label, OptionRow, RowItem};
+) -> Vec<rewo_ui::options_screen::OptionRow> {
+    use rewo_ui::options_screen::{bool_label, cycle_label, OptionRow, RowItem};
     let caption = lang.get_or_default("options.hideLightningFlashes", "Hide Lightning Flashes");
     vec![OptionRow::small(
         RowItem::Button(cycle_label(
@@ -1012,12 +1012,12 @@ pub(crate) fn accessibility_rows(
 /// (ASYMMETRIC — it can never be a single border number), highlighted when
 /// hovered or dragging (`canChangeValue`).
 pub(crate) fn slider_sprites(
-    screen: &rewo_world::screen::Screen,
+    screen: &rewo_ui::screen::Screen,
     mouse: Option<(f64, f64)>,
-    dragging: Option<rewo_world::screen::WidgetId>,
+    dragging: Option<rewo_ui::screen::WidgetId>,
 ) -> Vec<rewo_gpu::screen::SpriteDraw> {
     use rewo_gpu::screen::{Fill, Sheet, SpriteDraw};
-    use rewo_world::screen::{slider_handle_x, WidgetKind};
+    use rewo_ui::screen::{slider_handle_x, WidgetKind};
     let mut out = Vec::new();
     for w in screen.widgets.iter().filter(|w| w.visible) {
         let WidgetKind::Slider { value } = w.kind else {
@@ -1048,12 +1048,12 @@ pub(crate) fn slider_sprites(
 }
 
 /// M174 — the sign editor's app-side state. The model lives in
-/// `rewo_world::sign_edit_screen`; this carries what the model cannot know:
+/// `rewo_ui::sign_edit_screen`; this carries what the model cannot know:
 /// where the sign is, which face, its dye + glowing (captured at open —
 /// `setMessage` preserves both), which wood sheet, and the blink epoch
 /// (vanilla stamps `cursorBlinkStartTime = Util.getMillis()` in `init()`).
 pub(crate) struct SignEditView {
-    pub state: rewo_world::sign_edit_screen::SignEditState,
+    pub state: rewo_ui::sign_edit_screen::SignEditState,
     pub pos: (i32, i32, i32),
     pub is_front: bool,
     /// The face's dye text colour, `0xRRGGBB`.
@@ -1066,17 +1066,17 @@ pub(crate) struct SignEditView {
 /// The sign editor's board blit (M174): the standing board is the whole
 /// 24x26 sheet; the WALL board samples only the top 12 rows (the plaque —
 /// the other 14 are the post) at the same origin; the hanging board is its
-/// whole 16x16. All through [`rewo_world::sign_edit_screen::board_sprite`]'s
+/// whole 16x16. All through [`rewo_ui::sign_edit_screen::board_sprite`]'s
 /// nearest-integer rounding of the fractional pose rect (a stated ≤0.6-px
 /// deviation — vanilla rasterises the exact rect).
 pub(crate) fn sign_board_sprite(
-    kind: rewo_world::sign_edit_screen::SignKind,
+    kind: rewo_ui::sign_edit_screen::SignKind,
     wood: u8,
     gui_w: i32,
 ) -> rewo_gpu::screen::SpriteDraw {
     use rewo_gpu::screen::{Fill, Sheet, SpriteDraw};
-    use rewo_world::sign_edit_screen::SignKind;
-    let (x, y, w, h) = rewo_world::sign_edit_screen::board_sprite(kind, gui_w);
+    use rewo_ui::sign_edit_screen::SignKind;
+    let (x, y, w, h) = rewo_ui::sign_edit_screen::board_sprite(kind, gui_w);
     let (sheet, fill) = match kind {
         SignKind::Standing => (Sheet::SignBoard(wood), Fill::Stretch),
         SignKind::Wall => (Sheet::SignBoard(wood), Fill::SubRect(0, 0, 24, 12)),
@@ -1122,7 +1122,7 @@ pub(crate) fn sign_edit_draws(
     Vec<rewo_gpu::screen::SpriteDraw>,
 ) {
     use rewo_gpu::screen::{Fill, Sheet, SpriteDraw};
-    use rewo_world::sign_edit_screen as se;
+    use rewo_ui::sign_edit_screen as se;
     let width_fn = |t: &str| rewo_gpu::text::width(t, advance);
     let kind = view.state.kind;
     let ts = kind.text_scale();
@@ -1189,17 +1189,15 @@ pub(crate) fn sign_edit_draws(
 
 /// sprite (M172). The `PageArrow` index order is the bake's declared one:
 /// 0 forward, 1 forward_highlighted, 2 backward, 3 backward_highlighted.
-pub(crate) fn book_sprite(
-    d: rewo_world::book_view_screen::BookDraw,
-) -> rewo_gpu::screen::SpriteDraw {
+pub(crate) fn book_sprite(d: rewo_ui::book_view_screen::BookDraw) -> rewo_gpu::screen::SpriteDraw {
     use rewo_gpu::screen::{Fill, Sheet, SpriteDraw};
-    use rewo_world::book_view_screen::BookDraw;
+    use rewo_ui::book_view_screen::BookDraw;
     match d {
         BookDraw::Background { x, y } => SpriteDraw {
             x,
             y,
-            width: rewo_world::book_view_screen::IMAGE_W,
-            height: rewo_world::book_view_screen::IMAGE_H,
+            width: rewo_ui::book_view_screen::IMAGE_W,
+            height: rewo_ui::book_view_screen::IMAGE_H,
             sheet: Sheet::BookBackground,
             // The bake cropped `book.png` to exactly the 192x192 the blit
             // samples, so whole-sheet Stretch IS the 1:1 blit.
@@ -1214,8 +1212,8 @@ pub(crate) fn book_sprite(
         } => SpriteDraw {
             x,
             y,
-            width: rewo_world::book_view_screen::PAGE_BUTTON_W,
-            height: rewo_world::book_view_screen::PAGE_BUTTON_H,
+            width: rewo_ui::book_view_screen::PAGE_BUTTON_W,
+            height: rewo_ui::book_view_screen::PAGE_BUTTON_H,
             sheet: Sheet::PageArrow(match (forward, highlighted) {
                 (true, false) => 0,
                 (true, true) => 1,
@@ -1237,13 +1235,13 @@ pub(crate) fn book_sprite(
 /// over the spans — a page span with its own colour keeps it
 /// (`mergeStyles` = component-present wins), which the resolve already did.
 pub(crate) fn book_text_lines(
-    book: &rewo_world::book_view_screen::BookViewScreen,
+    book: &rewo_ui::book_view_screen::BookViewScreen,
     gui_w: i32,
     advance: &[u8; 256],
     px: f32,
     lang: &rewo_data::lang::Language,
 ) -> Vec<rewo_gpu::world::OwnedTextLine> {
-    use rewo_world::book_view_screen as bv;
+    use rewo_ui::book_view_screen as bv;
     let mut out = Vec::new();
     // The spans come from THE layout walk — the same one the click hit-test
     // reads — so a drawn span and its clickable rect cannot disagree (M89's
@@ -1365,15 +1363,15 @@ pub(crate) fn srgb_bytes_to_linear(rgb: u32) -> [f32; 3] {
 /// LIST rather than pixels. Measured during M132 with a unit probe — a fill at
 /// `(100, 100, 20, 20)` lands at screen `(200, 200)-(240, 240)`.
 pub(super) fn hud_fills(
-    chat: &rewo_world::chat::ChatComponent,
+    chat: &rewo_ui::chat::ChatComponent,
     gui_tick: i32,
     px: f32,
     screen_h: f32,
-    opts: &rewo_world::chat::ChatOptions,
+    opts: &rewo_ui::chat::ChatOptions,
     focused: bool,
 ) -> Vec<rewo_gpu::hud::HudFill> {
     let chat_px = px * opts.scale as f32;
-    let chat_bottom = ((screen_h / chat_px) - rewo_world::chat::BOTTOM_MARGIN as f32).floor();
+    let chat_bottom = ((screen_h / chat_px) - rewo_ui::chat::BOTTOM_MARGIN as f32).floor();
     let entry_height = opts.entry_height() as f32;
     // `Mth.ceil(this.getWidth() / scale)`.
     let max_width = (opts.width() as f32 / opts.scale as f32).ceil();
@@ -1398,7 +1396,7 @@ pub(super) fn hud_fills(
             let entry_top = entry_bottom - entry_height;
             rewo_gpu::hud::HudFill {
                 // `fill(-4, …)` under a pose translated by +4.
-                x: (rewo_world::chat::MESSAGE_INDENT as f32 - 4.0) * chat_gui,
+                x: (rewo_ui::chat::MESSAGE_INDENT as f32 - 4.0) * chat_gui,
                 y: entry_top * chat_gui,
                 // right - left = (maxWidth + 4 + 4) - (-4).
                 w: (max_width + 12.0) * chat_gui,
